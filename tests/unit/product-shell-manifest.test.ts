@@ -77,7 +77,7 @@ const FAKE_TEMPLATES = [
 ];
 
 const FAKE_PROJECT_TEMPLATES = [
-  { id: "discord-community-bot", name: "Discord Community Bot", description: "d", kind: "customer_bot" },
+  { id: "community-member-monitoring", name: "Community Member Monitoring", description: "d" },
 ];
 const FAKE_AGENTS = [{ id: "launchpad-support-v1", name: "Support Agent", description: "d" }];
 

@@ -125,8 +125,8 @@ export interface TemplateBootstrap {
   setup_scripts?: string[];
   /** Project templates (project-templates.ts ids) stamped into the space at bootstrap — the
    *  pre-configured project presets a template ships, distinct from `projects` (which are plain
-   *  named thread-groups). A customer_bot preset arrives with its own execution ceiling, spend
-   *  cap, and STOP/opt-out rules already wired. */
+   *  named thread-groups). These presets cannot grant external customer-bot behavior; that is
+   *  provided by an explicitly installed and connected extension. */
   project_templates?: string[];
   /** What the assistant proactively does once onboarding completes. */
   first_contact?: TemplateFirstContact;
@@ -551,10 +551,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { name: "Support", default_agent_id: "launchpad-support-v1" },
         { name: "Content", default_agent_id: "launchpad-content-v1" },
       ],
-      // A Whop business lives in Discord — a preconfigured community bot project (its own
-      // execution ceiling, spend cap and human-takeover rules already wired) is exactly the kind
-      // of thing an owner should never have to assemble by hand.
-      project_templates: ["discord-community-bot"],
       setup_scripts: ["mcp.list_tools"],
       first_contact: {
         goal:
@@ -1032,7 +1028,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { name: "Customer Desk", default_agent_id: "launchpad-support-v1" },
         { name: "Revenue & Growth", default_agent_id: "launchpad-leadgen-v1" },
       ],
-      project_templates: ["whatsapp-support-bot"],
       first_contact: { goal: "Turn the local service offer into an operating plan. Confirm the isolated business wallet and checkout connection, define the first customer segment and service area, draft the lead-to-booking flow, and send the owner a concrete first-week growth plan with any approvals needed." },
     },
   },
@@ -1062,7 +1057,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { name: "Content & Growth", default_agent_id: "launchpad-content-v1" },
         { name: "Revenue Review", default_agent_id: "launchpad-fulfillment-v1" },
       ],
-      project_templates: ["whatsapp-support-bot"],
       first_contact: { goal: "Set up the niche commerce venture around the chosen category. Confirm the isolated business wallet, inspect the connected catalogue if present, propose the first offer and fulfilment workflow, and send the owner the first campaign and revenue-review plan. Report missing product facts instead of inventing them." },
     },
   },

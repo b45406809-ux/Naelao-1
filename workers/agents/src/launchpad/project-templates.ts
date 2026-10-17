@@ -5,9 +5,9 @@
  *
  * Distinct from Launchpad SpaceType templates (launchpad/spacetype.ts): a SpaceType template
  * configures an entire SPACE at provisioning time; a project template configures ONE generic
- * workspace within an existing Space. Domain behavior, including external customer support,
- * belongs to installed templates/extensions and their declared channel/tool capabilities, not to
- * a customer-service project kind.
+ * workspace within an existing Space. External customer behavior belongs to installed
+ * extensions and their declared channel/data capabilities; generic project presets cannot
+ * impersonate or automatically install that behavior.
  */
 
 import type { ChannelType } from "./channels.js";
@@ -56,54 +56,7 @@ export interface ProjectTemplate {
   scheduled_jobs?: ScheduledJobSeed[];
 }
 
-// Baseline compliance rules every customer-bot template includes (highest priority — checked
-// first). STOP/unsubscribe is a WhatsApp Business Platform requirement, not just good practice.
-const BASELINE_RULES: ProjectRuleSeed[] = [
-  { trigger_pattern: "STOP", action: "reply", reply_text: "You've been unsubscribed and won't receive further messages. Reply START to resubscribe.", priority: 1000 },
-  { trigger_pattern: "UNSUBSCRIBE", action: "reply", reply_text: "You've been unsubscribed and won't receive further messages. Reply START to resubscribe.", priority: 1000 },
-  { trigger_pattern: "talk to a human", action: "human_takeover", priority: 900 },
-  { trigger_pattern: "speak to a person", action: "human_takeover", priority: 900 },
-];
-
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
-  {
-    id: "whatsapp-support-bot",
-    name: "WhatsApp Support Bot",
-    description: "Answers customer questions on your WhatsApp Business number. Read-only by default — it can look things up and reply, never run code or touch external services.",
-    suggested_channel: "whatsapp",
-    external_channel_profile: true,
-    execution_ceiling: 2,
-    daily_spend_cap_credits: 2000,
-    rules: [
-      ...BASELINE_RULES,
-      { trigger_pattern: "hours", action: "reply", reply_text: "We're open Monday-Friday, 9am-5pm. We'll reply to your message as soon as we're back.", priority: 10 },
-      { trigger_pattern: "hi", action: "reply", reply_text: "Hi! Thanks for reaching out — how can we help?", priority: 1 },
-    ],
-  },
-  {
-    id: "discord-community-bot",
-    name: "Discord Community Bot",
-    description: "Answers member questions in your Discord server. Same restricted execution as the WhatsApp template — talk and look things up, nothing else.",
-    suggested_channel: "discord",
-    external_channel_profile: true,
-    execution_ceiling: 2,
-    daily_spend_cap_credits: 2000,
-    rules: [
-      { trigger_pattern: "talk to a human", action: "human_takeover", priority: 900 },
-      { trigger_pattern: "speak to a person", action: "human_takeover", priority: 900 },
-      { trigger_pattern: "rules", action: "reply", reply_text: "Check the #rules channel for our community guidelines.", priority: 10 },
-    ],
-  },
-  {
-    id: "email-support-bot",
-    name: "Email Support Bot",
-    description: "Drafts replies to inbound support email. Slightly higher ceiling (Tier 3) so it can pull data via a script when answering, still no browser/container access.",
-    suggested_channel: "email",
-    external_channel_profile: true,
-    execution_ceiling: 3,
-    daily_spend_cap_credits: 3000,
-    rules: BASELINE_RULES,
-  },
   // ── Generic workspace templates — schedule/observation-driven ──
   {
     id: "community-member-monitoring",

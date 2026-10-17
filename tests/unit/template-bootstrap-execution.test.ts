@@ -139,8 +139,8 @@ describe("whop-seller — the populated template", () => {
     expect(autonomy.options).toHaveLength(3);
   });
 
-  it("ships project-template presets and a first-contact plan", () => {
-    expect(tpl.bootstrap!.project_templates).toContain("discord-community-bot");
+  it("ships a first-contact plan without creating a hardcoded customer-bot preset", () => {
+    expect(tpl.bootstrap!.project_templates ?? []).not.toContain("discord-community-bot");
     const goal = tpl.bootstrap!.first_contact!.goal;
     // The instruction must tell the assistant to LOOK before it plans — a first contact that
     // invents numbers it never checked is exactly the failure mode this wording guards against.

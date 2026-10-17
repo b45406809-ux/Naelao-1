@@ -89,14 +89,13 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     via the `memory` prebuilt; sub-agent fan-out is real (batched `agent.spawn`, isolated
     per-child budget, capped at 16 concurrent like Claude Code's own pattern). Full detail:
     `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.11-A1.12.
-11. **Customer-bot projects (WhatsApp/Discord/email business bots) are now BUILT.** A
-    **project** (not a new DO) can be flagged `kind='customer_bot'`: capped execution ceiling
-    (script.create/update/run all fail closed above it), a daily spend cap, and no-code
-    "after the customer says X, this happens" rules (`reply` / `run_script` /
-    `human_takeover`) checked before the reasoning loop ever runs. WhatsApp joined the
-    channel catalogue (Meta Cloud API, `X-Hub-Signature-256`). No-code project templates
-    (`whatsapp-support-bot`, `discord-community-bot`, `email-support-bot`) seed STOP/opt-out
-    + human-takeover by default. Full detail: appendix §A1.13.
+11. **Customer-facing channel behavior is extension-owned.** The historical `customer_bot`
+    structural project kind and the `whatsapp-support-bot`, `discord-community-bot`, and
+    `email-support-bot` project presets are retired from active creation and bootstrap catalogs.
+    Use a generic project plus an explicitly bound external channel extension. The host still
+    owns provider webhook verification, channel connection, human takeover, and delivery; an
+    external handler receives only its restricted channel context. The old appendix §A1.13
+    describes the superseded built-in path and must not be used as current implementation guidance.
 12. **Thread hierarchy, real token accounting, Memory OS Fabric/Wiki, sub-agent progress +
     concurrency ceiling are now BUILT.** Sub-agent spawns and channel sessions mirror into
     SpaceDO's `threads` table as ordinary subthreads (`thread_kind` + `parent_thread_id`,
@@ -2503,7 +2502,7 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     template presets, first contact) stays behind onboarding since it genuinely needs the connected
     account. `whop-seller` itself went from a stub to a real template: OAuth-first `whop_connection`
     (required) with the pasted-key prompt demoted to an explicitly optional fallback, an
-    `owner_channel` picker, an `autonomy` choice, `project_templates: ["discord-community-bot"]`,
+    `owner_channel` picker, an `autonomy` choice, and no customer-bot project preset,
     and a `first_contact.goal` instructing the assistant to actually READ the connected Whop account
     via mcp-connector before proposing anything, respecting the owner's autonomy setting.
     `OnboardingPrompt` gained `help` (plain-language, non-technical) and `type: "connection"|
@@ -2589,9 +2588,9 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     **Verified live end to end on production**, not just in tests: business created → provisioning
     polled → checklist returned the real 6 prompts → answers saved → completion correctly REFUSED
     with `missing:["whop_connection"]` → connector connected → completion returned
-    `project_templates_applied:["discord-community-bot"]` and `first_contact_sent:true` → re-run
-    returned `first_contact_sent:false` → the business really contains Wallet/Members/Support/
-    Content/Discord Community Bot → a different end user of the same product got 403 on both verbs.
+    `first_contact_sent:true` → re-run returned `first_contact_sent:false` → the business really
+    contains Wallet/Members/Support/Content projects → a different end user of the same product
+    got 403 on both verbs.
     Screenshots confirm the new Home, Discover, and both wizard steps render correctly signed in.
     **Two brittle test doubles fixed in passing** (one hardcoded a query's exact column list and
     started 404ing when the real query selected one more column; one answered every agents-worker

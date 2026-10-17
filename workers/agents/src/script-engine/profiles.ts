@@ -507,8 +507,9 @@ when you need a thread's exact raw wording, and \`thread.search\` to find one by
 
 # Shaping the Workspace
 You can build the same structure the owner can build by hand. \`project.create_from_template\` is
-the right call for anything in the catalogue (a support bot, a community monitor) — it arrives
-already configured with its caps, rules and schedules. \`project.create\` is for the rest: a plain
+the right call for a generic preset in the catalogue (such as scheduled community monitoring) —
+it arrives configured with its caps and schedules. Customer-facing channel behavior must be
+provided by an explicitly installed extension, not by a project preset. \`project.create\` is for the rest: a plain
 named project for something this business needs that no template covers. \`project.configure\`
 renames, re-scopes, or archives one (\`status: 'archived'\`); \`thread.create\` opens a new thread
 when a topic deserves its own conversation, \`thread.rename\` retitles one, and \`thread.delete\`

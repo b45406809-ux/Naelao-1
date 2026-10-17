@@ -137,22 +137,14 @@ automatically once the signature checks out. The hourly cron drains each connect
 unanswered queue (`channel_links` table, `0038_channel_links.sql` + `project_id` in
 `0039_channel_links_project.sql`) through the agent's script-first loop.
 
-## Customer-bot projects (WhatsApp/Discord/email business bots — A1.13)
+## External channel extensions
 
-No secrets beyond the channel signing secrets above. Configuration is all data, set via the
-spaces worker (no `wrangler secret put` needed):
-
-- `POST /spaces/:id/projects/from-template { template_id }` — the fast path. Creates a fully
-  configured project (execution ceiling, spend cap, starter no-code rules) from one of
-  `whatsapp-support-bot` / `discord-community-bot` / `email-support-bot`
-  (`launchpad/project-templates.ts`). Returns the `project_id` to pass to
-  `/channels/:channel/connect`.
-- Manual path: `POST /spaces/:id/projects` then `PATCH /spaces/:id/projects/:projectId
-  { kind: "customer_bot", execution_ceiling, daily_spend_cap_credits, channel_config }`, plus
-  `POST /spaces/:id/projects/:projectId/rules` per rule.
-- Observability: `GET /spaces/:id/channels/sessions`, `GET /spaces/:id/channels/unanswered`.
-- Human takeover: `POST /spaces/:id/channels/sessions/:sessionId/takeover` (silence the bot)
-  / `.../resume` (hand it back).
+Provider webhook secrets and signing keys remain host-managed as described above. Connect a
+provider to a project, then bind an active project extension that declares a channel-only
+handler. The handler does not receive provider secrets or member capabilities. The old
+`customer_bot` project kind and support-bot project presets are retired; historical A1.13
+instructions below are not a current setup path. Conversation monitoring and human takeover
+remain available through the channel session APIs.
 
 ## Thread hierarchy + sub-agent progress (A1.14)
 

@@ -368,6 +368,11 @@ unsupported by design — see A1.11).
 
 ## A1.13 Customer-bot projects (WhatsApp/Discord/email business bots) — BUILT
 
+> **Historical design, superseded:** the structural `customer_bot` kind and these built-in
+> customer-service templates are not the current product model. External customer behavior is
+> provided by an installed channel extension under the host-owned, channel-only context. See
+> `new plan/FDE-EXTENSIONS-AND-MICROAPPS-ARCHITECTURE.md` and `new plan/FOUNDRY-REMAINING.md`.
+
 The builder's own scenario: *"I have a WhatsApp Business number my customers message — I
 want a bot that answers Q&A, but I don't want it to be a full agent executing stuff for
 customers without us knowing."* Settled by making a **project** (not a new DO, not a new

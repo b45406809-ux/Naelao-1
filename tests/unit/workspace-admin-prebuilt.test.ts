@@ -88,7 +88,7 @@ describe("workspace-admin prebuilt", () => {
       return {};
     });
     const result = await workspaceAdmin.operations["project.create_from_template"]!(
-      { template_id: "whatsapp-support-bot" },
+      { template_id: "community-member-monitoring" },
       { env, run: noopRun }
     );
     expect(result).toMatchObject({ id: "proj-new" });
@@ -99,7 +99,7 @@ describe("workspace-admin prebuilt", () => {
     // Step 2: configure (kind/execution_ceiling/spend cap set from the template).
     const configureCall = calls.find((c) => c.method === "PATCH" && c.url.includes("/projects/proj-new"));
     expect(configureCall).toBeTruthy();
-    expect((configureCall!.body as { kind: string }).kind).toBe("customer_bot");
+    expect((configureCall!.body as { kind: string }).kind).toBe("workspace");
     // Every call carries a verified internal token, not a forgeable static header.
     for (const call of calls) {
       expect(await verifyInternalToken(call.headers["x-naelao-internal-token"], "tenant-1", PLATFORM_SECRET)).toBe(true);
@@ -207,7 +207,7 @@ describe("workspace-admin prebuilt", () => {
     it("forwards it on every call of a multi-step create_from_template too", async () => {
       const calls: Call[] = [];
       const env = { ...makeEnv(calls, () => ({ id: "proj-new", name: "Support" })), userId: "end-user-7" } as ScriptEngineEnv;
-      await workspaceAdmin.operations["project.create_from_template"]!({ template_id: "whatsapp-support-bot" }, { env, run: noopRun });
+      await workspaceAdmin.operations["project.create_from_template"]!({ template_id: "community-member-monitoring" }, { env, run: noopRun });
       expect(calls.length).toBeGreaterThan(1);
       for (const call of calls) expect(call.headers["x-naelao-user-id"]).toBe("end-user-7");
     });

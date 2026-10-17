@@ -3,10 +3,8 @@ import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
 
-// POST /spaces/:spaceId/projects/from-template generalized beyond customer_bot: any catalogue
-// entry (workspace-kind included) can be stamped onto a new project in one call — the project
-// row (kind, ceiling, cap, thread cap, agent binding/allowlist, channel_config when relevant),
-// its rules, and its scheduled jobs.
+// The from-template route stamps generic project presets. Customer-facing behavior is installed
+// as an extension and is intentionally not represented by a bot-specific project preset.
 
 const SECRET = "test-platform-secret";
 const SPACE_ID = "space-1";
@@ -60,25 +58,25 @@ async function req(templateId: string): Promise<Request> {
   });
 }
 
-describe("POST /spaces/:spaceId/projects/from-template — generalized beyond customer_bot", () => {
-  it("applies a customer_bot template: kind, channel_config, rules — no scheduled jobs", async () => {
+describe("POST /spaces/:spaceId/projects/from-template — generic project presets", () => {
+  it("applies a generic scheduled-workspace template without configuring an external bot channel", async () => {
     const { env, projectCalls } = makeEnv();
-    const res = await app.fetch(await req("whatsapp-support-bot"), env);
+    const res = await app.fetch(await req("community-member-monitoring"), env);
     expect(res.status).toBe(201);
-    const body = await res.json() as { kind: string; suggested_channel: string; next_step: string };
-    expect(body.kind).toBe("customer_bot");
-    expect(body.suggested_channel).toBe("whatsapp");
-    expect(body.next_step).toContain("/channels/whatsapp/connect");
+    const body = await res.json() as { kind: string; suggested_channel?: string; next_step?: string };
+    expect(body.kind).toBe("workspace");
+    expect(body.suggested_channel).toBeUndefined();
+    expect(body.next_step).toBeUndefined();
 
     const patchCall = projectCalls.find((c) => c.method === "PATCH")!;
-    const patchBody = patchCall.body as { kind: string; channel_config: Record<string, unknown> };
-    expect(patchBody.kind).toBe("customer_bot");
-    expect(patchBody.channel_config).toEqual({ whatsapp: { connected: false } });
+    const patchBody = patchCall.body as { kind: string; channel_config?: unknown };
+    expect(patchBody.kind).toBe("workspace");
+    expect(patchBody.channel_config).toBeUndefined();
 
     const ruleCalls = projectCalls.filter((c) => c.path.endsWith("/rules"));
-    expect(ruleCalls.length).toBeGreaterThan(0);
+    expect(ruleCalls).toHaveLength(0);
     const jobCalls = projectCalls.filter((c) => c.path.endsWith("/scheduled-jobs"));
-    expect(jobCalls.length).toBe(0);
+    expect(jobCalls).toHaveLength(1);
   });
 
   it("applies a workspace-kind template: agent binding at creation, no channel_config, seeds a scheduled job", async () => {
@@ -144,7 +142,7 @@ describe("POST /spaces/:spaceId/projects/from-template — generalized beyond cu
         "x-naelao-user-id": "end-user-42",
         "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID),
       },
-      body: JSON.stringify({ template_id: "whatsapp-support-bot" }),
+      body: JSON.stringify({ template_id: "community-member-monitoring" }),
     });
     const res = await app.fetch(httpReq, env);
     expect(res.status).toBe(201);
@@ -179,7 +177,7 @@ describe("POST /spaces/:spaceId/projects/from-template — generalized beyond cu
         "x-naelao-tenant-id": TENANT_ID,
         "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID),
       },
-      body: JSON.stringify({ template_id: "whatsapp-support-bot" }),
+      body: JSON.stringify({ template_id: "community-member-monitoring" }),
     });
     await app.fetch(httpReq, env);
     const createCall = projectCalls.find((c) => c.path === `/spaces/${SPACE_ID}/projects` && c.method === "POST");
@@ -225,38 +223,31 @@ describe("POST /spaces/:spaceId/projects/from-template — generalized beyond cu
       SPACES_WORKER: { fetch: spacesFetch },
     } as unknown as AgentsEnv;
 
-    // whatsapp-support-bot has both rules AND (per the templates it draws from) is the kind that
-    // seeds rules; community-member-monitoring seeds a scheduled job — whatsapp-support-bot is
-    // enough on its own to prove rules are skipped; reuse it for the job-skip assertion too by
-    // checking scheduled-jobs calls stay at 0 regardless (it seeds none even when new).
-    const res = await app.fetch(await req("whatsapp-support-bot"), env);
+    // Existing projects are reconfigured idempotently, but their scheduled jobs are not duplicated.
+    const res = await app.fetch(await req("community-member-monitoring"), env);
     expect(res.status).toBe(201);
 
     // The config PATCH still happened — a re-run reconfigures, it just doesn't re-seed.
     const patchCalls = projectCalls.filter((c) => c.method === "PATCH");
     expect(patchCalls).toHaveLength(1);
 
-    const ruleCalls = projectCalls.filter((c) => c.path.endsWith("/rules"));
-    expect(ruleCalls).toHaveLength(0);
     const jobCalls = projectCalls.filter((c) => c.path.endsWith("/scheduled-jobs"));
     expect(jobCalls).toHaveLength(0);
   });
 
-  it("a genuinely new project (created: true, the explicit form) still seeds rules normally", async () => {
+  it("a genuinely new project (created: true) seeds its scheduled job", async () => {
     const projectCalls: Array<{ path: string; method: string }> = [];
     const spacesFetch = vi.fn(async (input: RequestInfo) => {
       const req2 = input as Request;
       const url = new URL(req2.url);
       projectCalls.push({ path: url.pathname, method: req2.method });
       if (url.pathname === `/spaces/${SPACE_ID}/projects` && req2.method === "POST") {
-        return Response.json({ id: "proj-1", name: "WhatsApp Support", created: true }, { status: 201 });
+        return Response.json({ id: "proj-1", name: "Community", created: true }, { status: 201 });
       }
       if (url.pathname === `/spaces/${SPACE_ID}/projects/proj-1` && req2.method === "PATCH") {
         return Response.json({ id: "proj-1" }, { status: 200 });
       }
-      if (url.pathname === `/spaces/${SPACE_ID}/projects/proj-1/rules` && req2.method === "POST") {
-        return Response.json({ id: "rule-1" }, { status: 201 });
-      }
+      if (url.pathname === `/spaces/${SPACE_ID}/scheduled-jobs` && req2.method === "POST") return Response.json({ id: "job-1" }, { status: 201 });
       return new Response("not found", { status: 404 });
     });
     const env = {
@@ -267,9 +258,9 @@ describe("POST /spaces/:spaceId/projects/from-template — generalized beyond cu
       SPACES_WORKER: { fetch: spacesFetch },
     } as unknown as AgentsEnv;
 
-    const res = await app.fetch(await req("whatsapp-support-bot"), env);
+    const res = await app.fetch(await req("community-member-monitoring"), env);
     expect(res.status).toBe(201);
-    const ruleCalls = projectCalls.filter((c) => c.path.endsWith("/rules"));
-    expect(ruleCalls.length).toBeGreaterThan(0);
+    const jobCalls = projectCalls.filter((c) => c.path.endsWith("/scheduled-jobs"));
+    expect(jobCalls).toHaveLength(1);
   });
 });
