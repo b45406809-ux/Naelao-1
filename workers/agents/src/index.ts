@@ -8678,6 +8678,7 @@ async function sweepUndeliveredNotifications(env: AgentsEnv, spaceId: string, te
 }
 
 async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<void> {
+  if (msg.kind === "scheduled_job" && !msg.jobId) return;
   const wakePolicy = await resolveWakeContext(env, msg.spaceId, msg.tenantId);
   switch (msg.kind) {
     case "heartbeat": {

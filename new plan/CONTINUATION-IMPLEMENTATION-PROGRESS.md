@@ -1230,3 +1230,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Project viewers may read routine schedule metadata; the existing admin floor still controls create, edit, pause, and delete. Legacy assistant-scope jobs remain filtered separately; the Crons/Routines tab is now hidden in Space Assistant sessions because platform automations are project-anchored and the Space Assistant uses its separate Heartbeats surface.
 - Added regression coverage for visible-project filtering and denial of a private project's schedule. The old product-root GET expectation assumed root membership without a `space_members` row; the current `resolveEndUserBusinessRole` contract fails closed without an explicit membership, so the stale test now asserts 403.
 - Verification: Spaces Worker, Agents Worker, and Shell typechecks passed; all scheduled jobs route/dispatch tests passed (38 tests); `git diff --check` passed.
+
+### Phase 3 claim lease integration tests (2026-10-17)
+
+- Exercised the actual migration and claim SQL against the repository's SQLite-backed D1 test adapter. Concurrent claims for one job/sweep produce exactly one owner; an active lease blocks the next sweep; a paused job cannot be claimed; and a crashed job can be claimed after the 30-minute lease expires.
+- A malformed scheduled queue message with no job ID now exits before policy D1 reads.
+- Verification: scheduled dispatch SQLite integration tests passed (4 tests); scheduled-jobs route/dispatch tests passed (38 tests); worker typechecks passed in the prior checkpoint.
