@@ -1009,6 +1009,7 @@ export interface Project {
   max_threads: number;
   allowed_agent_ids: string[] | null;
   created_at: string;
+  last_activity_at?: string | null;
   // Generic project shape plus independently configured business features.
   kind?: string;
   external_channel_profile?: number | boolean;

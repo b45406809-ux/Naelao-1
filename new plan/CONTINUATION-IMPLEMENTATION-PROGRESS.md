@@ -1216,3 +1216,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - This closes the race where a pause between enqueue and consume could still start a job, and it prevents duplicate deliveries from re-running a routine within one sweep. The existing DO active-run guard remains an additional overlap check.
 - Verification: Agents Worker typecheck passed; scheduled dispatch claim tests passed (3 tests); prior schedule tool tests (10 tests), Shell typecheck, and `git diff --check` remain green from the preceding checkpoint.
 - Remaining Phase 3 work: extend tests to exercise the claim against the D1 SQLite runtime and pause/queue race; define/implement missed-tick coalescing and quiet-hours policy; prove routine execution admission is charged/reserved within the correct Project scope; implement the isolated Space Project Steward extension workspace, read-only project portfolio data, ranking/evidence UI, and explicit review confirmation flow.
+
+### Phase 3 portfolio visibility checkpoint (2026-10-17)
+
+- Project Bot cards now show each project's next enabled routine or the number of paused routines. The authenticated roster loads the existing job list once and filters it by project ID.
+- Added an explicitly heuristic portfolio review signal for active projects with no recorded activity in at least 30 days, based on the existing `projects.last_activity_at` field. It links to project settings and explicitly states that it does not pause, archive, or delete anything.
+- Verification: Shell typecheck and `git diff --check` passed.
+- This is an interim read-only UI signal, not the planned Space Project Steward extension. It has no isolated extension instance/workspace, journal/task/extension-health evidence, scheduled review/ranking, confidence record, or confirmation workflow. Those remain Phase 3 blockers.

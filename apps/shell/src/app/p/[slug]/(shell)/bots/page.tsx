@@ -6,7 +6,7 @@ import { Button, Card, CardDesc, CardTitle } from "@naelao/ui";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProduct } from "@/lib/product-context";
 import { useSessionCredentials } from "@/lib/auth-provider";
-import { createThread, listAgentDefinitions, listProjects, listThreads, type AgentDefinitionSummary, type Project, type ThreadSummary } from "@/lib/api";
+import { createThread, listAgentDefinitions, listProjects, listScheduledJobs, listThreads, type AgentDefinitionSummary, type Project, type ScheduledJob, type ThreadSummary } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
 
 export default function ProjectBotsPage() {
@@ -17,6 +17,7 @@ export default function ProjectBotsPage() {
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [agents, setAgents] = React.useState<AgentDefinitionSummary[]>([]);
   const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
+  const [scheduledJobs, setScheduledJobs] = React.useState<ScheduledJob[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState(false);
   const [creatingProjectId, setCreatingProjectId] = React.useState<string | null>(null);
@@ -28,15 +29,18 @@ export default function ProjectBotsPage() {
     setProjects([]);
     setAgents([]);
     setThreads([]);
+      setScheduledJobs([]);
     try {
-      const [nextProjects, nextAgents, nextThreads] = await Promise.all([
+      const [nextProjects, nextAgents, nextThreads, nextJobs] = await Promise.all([
         listProjects(activeSpaceId, session),
         listAgentDefinitions(activeSpaceId, session),
         listThreads(activeSpaceId, session),
+        listScheduledJobs(activeSpaceId, session),
       ]);
       setProjects(nextProjects.filter((project) => project.status === "active"));
       setAgents(nextAgents);
       setThreads(nextThreads.filter((thread) => thread.project_id && !thread.parent_thread_id && thread.thread_kind === "primary"));
+      setScheduledJobs(nextJobs);
     } catch {
       setLoadError(true);
     } finally {
@@ -57,6 +61,14 @@ export default function ProjectBotsPage() {
     }
     return latest;
   }, [threads]);
+
+  const reviewSignals = React.useMemo(() => {
+    const inactivityCutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    return projects.filter((project) => {
+      const activity = Date.parse(project.last_activity_at ?? project.created_at);
+      return project.status === "active" && Number.isFinite(activity) && activity < inactivityCutoff;
+    });
+  }, [projects]);
 
   async function startThread(project: Project, panel?: "crons") {
     if (!session || creatingProjectId) return;
@@ -82,6 +94,22 @@ export default function ProjectBotsPage() {
         Project Bots use the same planner and worker system as the Space Assistant, scoped to one project. Customer-facing channel handlers are separate extensions and never open these internal threads.
       </div>
 
+      {!loading && !loadError && reviewSignals.length > 0 && (
+        <section aria-labelledby="portfolio-review-title" className="settings-block" style={{ padding: 14, marginBottom: 16 }}>
+          <div id="portfolio-review-title" style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Projects to review</div>
+          <p style={{ margin: "0 0 10px", color: "var(--text3)", fontSize: 12 }}>
+            These active projects have no recorded activity for at least 30 days. This is a review signal only; it does not pause Bots or extensions, archive projects, or delete data.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {reviewSignals.map((project) => (
+              <Button key={project.id} variant="secondary" onClick={() => router.push(`/p/${product.slug}/projects/${project.id}`)}>
+                Review {project.name}
+              </Button>
+            ))}
+          </div>
+        </section>
+      )}
+
       {loading ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading project Bots…</p>
       ) : loadError ? (
@@ -100,6 +128,10 @@ export default function ProjectBotsPage() {
           {projects.map((project) => {
             const planner = project.default_agent_id ? agentById.get(project.default_agent_id) : undefined;
             const latestThread = latestThreadByProject.get(project.id);
+            const projectJobs = scheduledJobs.filter((job) => job.project_id === project.id);
+            const nextRoutine = projectJobs
+              .filter((job) => job.enabled && job.next_run_at != null)
+              .sort((a, b) => a.next_run_at! - b.next_run_at!)[0];
             const isCreating = creatingProjectId === project.id;
             return (
               <Card key={project.id}>
@@ -113,6 +145,13 @@ export default function ProjectBotsPage() {
                 <CardDesc>{planner?.name ?? "Project Bot"}{project.description ? ` · ${project.description}` : ""}</CardDesc>
                 <div style={{ minHeight: 34, fontSize: 11.5, color: "var(--text3)", margin: "10px 0" }}>
                   {latestThread ? `Last thread activity ${relativeTime(latestThread.updated_at)}` : "No project threads yet"}
+                </div>
+                <div style={{ minHeight: 30, fontSize: 11.5, color: "var(--text3)", marginBottom: 10 }}>
+                  {nextRoutine
+                    ? `Next routine: ${nextRoutine.name} · ${relativeTime(new Date(nextRoutine.next_run_at!).toISOString())}`
+                    : projectJobs.length > 0
+                      ? `${projectJobs.length} routine${projectJobs.length === 1 ? "" : "s"} paused`
+                      : "No proactive routine set"}
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                   {latestThread && <Button variant="secondary" onClick={() => openThread(latestThread.id)}>Continue</Button>}
