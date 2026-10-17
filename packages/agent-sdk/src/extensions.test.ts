@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateExtensionManifest } from "./extensions.js";
+import { parseExtensionBundle, validateExtensionManifest } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
 describe("immutable extension kernel", () => {
@@ -22,5 +22,30 @@ describe("immutable extension kernel", () => {
     ] }] };
     expect(validateExtensionManifest(manifest).gadgets[0]?.migrations).toHaveLength(2);
     expect(() => validateExtensionManifest({ ...manifest, gadgets: [{ ...manifest.gadgets[0], migrations: [{ version: 2, description: "second", up: "CREATE TABLE x(id TEXT)" }, { version: 1, description: "first", up: "CREATE TABLE y(id TEXT)" }] }] })).toThrow("migration_versions_must_increase");
+  });
+});
+
+describe("composed extension bundle contract", () => {
+  const bundle = {
+    schemaVersion: "1.0", kind: "extension_bundle", id: "trading_mentor", version: "1.0.0",
+    primitives: [
+      { schemaVersion: "1.0", kind: "canvas", id: "mentor_console", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./console.tsx", dynamicPage: false },
+      { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] },
+    ],
+    workerRoles: [{ id: "answer_student", invocation: "workflow_step", execution: "worker", entry: "./answer.ts", primitiveIds: ["student_whatsapp"] }],
+    connections: [{ id: "student_channel", provider: "whatsapp", purpose: "Receive and reply to student messages", required: true }],
+    knowledge: [{ id: "course_material", purpose: "Answer student questions from owner-approved materials", access: "owner_published_external" }],
+  } as const;
+
+  it("composes UI, public channel, execution role, host connection, and explicit knowledge publication", () => {
+    expect(parseExtensionBundle(bundle)).toMatchObject({ id: "trading_mentor", primitives: [{ kind: "canvas" }, { kind: "channel" }], workerRoles: [{ execution: "worker" }], knowledge: [{ access: "owner_published_external" }] });
+  });
+  it("keeps invocation role and execution tier distinct and rejects dangling references", () => {
+    expect(() => parseExtensionBundle({ ...bundle, workerRoles: [{ ...bundle.workerRoles[0], primitiveIds: ["missing"] }] })).toThrow("invalid_worker_primitive_reference");
+    expect(() => parseExtensionBundle({ ...bundle, workerRoles: [{ ...bundle.workerRoles[0], execution: "subagent" }] })).toThrow("invalid_worker_execution");
+  });
+  it("rejects connection secrets and implicit Knowledge exposure from the package", () => {
+    expect(() => parseExtensionBundle({ ...bundle, connections: [{ ...bundle.connections[0], accessToken: "secret" }] })).toThrow("unknown_field:accessToken");
+    expect(() => parseExtensionBundle({ ...bundle, knowledge: [{ ...bundle.knowledge[0], access: "project_all" }] })).toThrow("invalid_knowledge_access");
   });
 });

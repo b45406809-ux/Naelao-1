@@ -230,7 +230,40 @@ export interface ContainerContract extends ExtensionContractBase {
 export interface LinterContract extends ExtensionContractBase { kind: "linter"; mode: "deterministic" | "semantic"; entry: string; failureMode: "warn" | "block"; }
 export interface WorkflowContract extends ExtensionContractBase { kind: "workflow"; executionMode: ExecutionMode; steps: readonly string[]; toolNames: readonly string[]; }
 export type ExtensionPrimitiveManifest = GadgetContract | CanvasContract | ChannelContract | ContainerContract | LinterContract | WorkflowContract;
-export interface ExtensionBundleManifest { schemaVersion: ExtensionSchemaVersion; kind: "extension_bundle"; id: string; version: string; primitives: readonly ExtensionPrimitiveManifest[]; }
+/**
+ * A worker role is an invocation shape, not a trust boundary or a runtime tier.
+ * Its authority is still derived from the primitive grants and host-issued install.
+ */
+export interface ExtensionWorkerRole {
+  id: string;
+  invocation: "subagent" | "workflow_step" | "tool";
+  execution: "worker" | "container" | "web_container";
+  entry: string;
+  primitiveIds: readonly string[];
+}
+/** Host-managed provider dependency. Secrets and transport always remain host-owned. */
+export interface ExtensionConnectionRequirement {
+  id: string;
+  provider: string;
+  purpose: string;
+  required: boolean;
+}
+/** Named project knowledge that the owner may publish to a restricted public handler. */
+export interface ExtensionKnowledgeRequirement {
+  id: string;
+  purpose: string;
+  access: "member_only" | "owner_published_external";
+}
+export interface ExtensionBundleManifest {
+  schemaVersion: ExtensionSchemaVersion;
+  kind: "extension_bundle";
+  id: string;
+  version: string;
+  primitives: readonly ExtensionPrimitiveManifest[];
+  workerRoles?: readonly ExtensionWorkerRole[];
+  connections?: readonly ExtensionConnectionRequirement[];
+  knowledge?: readonly ExtensionKnowledgeRequirement[];
+}
 
 const CONTRACT_KINDS = new Set<ExtensionPrimitiveKind>(["gadget", "canvas", "channel", "container", "linter", "workflow"]);
 const CONTRACT_ID = /^[a-z][a-z0-9._-]{1,63}$/;
@@ -343,6 +376,58 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
   return Object.freeze(raw as unknown as ExtensionPrimitiveManifest);
 }
 export function serializeExtensionPrimitive(value: ExtensionPrimitiveManifest): string { return JSON.stringify(parseExtensionPrimitive(value)); }
+
+/** Strict package boundary for composed FDEs. This validates declarations only; installation
+ * must still bind each declaration to host-authorized grants and immutable artifact contents. */
+export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
+  contractAssert(value !== null && typeof value === "object" && !Array.isArray(value), "bundle_object_required");
+  const raw = value as Record<string, unknown>;
+  rejectUnknownContractKeys(raw, new Set(["schemaVersion", "kind", "id", "version", "primitives", "workerRoles", "connections", "knowledge"]));
+  contractAssert(raw.schemaVersion === "1.0" && raw.kind === "extension_bundle", "invalid_bundle_version_or_kind");
+  contractAssert(typeof raw.id === "string" && CONTRACT_ID.test(raw.id), "invalid_bundle_id");
+  contractAssert(typeof raw.version === "string" && SEMVER.test(raw.version), "invalid_bundle_version");
+  contractAssert(Array.isArray(raw.primitives) && raw.primitives.length <= 128, "invalid_bundle_primitives");
+  const primitives = (raw.primitives as unknown[]).map(parseExtensionPrimitive);
+  const primitiveIds = new Set<string>();
+  for (const primitive of primitives) {
+    contractAssert(!primitiveIds.has(primitive.id), "duplicate_bundle_primitive_id");
+    primitiveIds.add(primitive.id);
+  }
+  const workerRoles = raw.workerRoles;
+  if (workerRoles !== undefined) {
+    contractAssert(Array.isArray(workerRoles) && workerRoles.length <= 64, "invalid_worker_roles");
+    const ids = new Set<string>();
+    for (const item of workerRoles as unknown[]) {
+      contractAssert(item !== null && typeof item === "object" && !Array.isArray(item), "invalid_worker_role");
+      const role = item as Record<string, unknown>;
+      rejectUnknownContractKeys(role, new Set(["id", "invocation", "execution", "entry", "primitiveIds"]));
+      contractAssert(typeof role.id === "string" && CONTRACT_ID.test(role.id) && !ids.has(role.id), "invalid_worker_role_id");
+      ids.add(role.id);
+      contractAssert(["subagent", "workflow_step", "tool"].includes(String(role.invocation)), "invalid_worker_invocation");
+      contractAssert(["worker", "container", "web_container"].includes(String(role.execution)), "invalid_worker_execution");
+      contractAssert(typeof role.entry === "string" && CONTRACT_PATH.test(role.entry), "invalid_worker_entry");
+      contractAssert(Array.isArray(role.primitiveIds) && new Set(role.primitiveIds).size === role.primitiveIds.length && (role.primitiveIds as unknown[]).every(id => typeof id === "string" && primitiveIds.has(id)), "invalid_worker_primitive_reference");
+    }
+  }
+  for (const [field, max] of [["connections", 32], ["knowledge", 64]] as const) {
+    const entries = raw[field];
+    if (entries === undefined) continue;
+    contractAssert(Array.isArray(entries) && entries.length <= max, `invalid_bundle_${field}`);
+    const ids = new Set<string>();
+    for (const item of entries as unknown[]) {
+      contractAssert(item !== null && typeof item === "object" && !Array.isArray(item), `invalid_bundle_${field}_entry`);
+      const entry = item as Record<string, unknown>;
+      const allowed = field === "connections" ? new Set(["id", "provider", "purpose", "required"]) : new Set(["id", "purpose", "access"]);
+      rejectUnknownContractKeys(entry, allowed);
+      contractAssert(typeof entry.id === "string" && CONTRACT_ID.test(entry.id) && !ids.has(entry.id), `invalid_bundle_${field}_id`);
+      ids.add(entry.id);
+      contractAssert(typeof entry.purpose === "string" && entry.purpose.trim().length > 0 && entry.purpose.length <= 240, `invalid_bundle_${field}_purpose`);
+      if (field === "connections") contractAssert(typeof entry.provider === "string" && CONTRACT_ID.test(entry.provider) && typeof entry.required === "boolean", "invalid_connection_requirement");
+      else contractAssert(["member_only", "owner_published_external"].includes(String(entry.access)), "invalid_knowledge_access");
+    }
+  }
+  return Object.freeze({ ...raw, primitives: Object.freeze(primitives) }) as unknown as ExtensionBundleManifest;
+}
 export function defineGadget(value: GadgetContract): GadgetContract { return parseExtensionPrimitive(value) as GadgetContract; }
 export function defineCanvas(value: CanvasContract): CanvasContract { return parseExtensionPrimitive(value) as CanvasContract; }
 export function defineChannelAdapter(value: ChannelContract): ChannelContract { return parseExtensionPrimitive(value) as ChannelContract; }
