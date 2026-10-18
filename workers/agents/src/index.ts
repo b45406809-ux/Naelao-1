@@ -291,6 +291,8 @@ export interface AgentsEnv extends Cloudflare.Env {
    * not have a current OpenRouter catalog entry we can use for live pricing. */
   SCALEDOWN_API_KEY?: string;
   SCALEDOWN_INPUT_USD_PER_MILLION?: string;
+  /** Opt in to a seven-day actor/project scoped derivative cache in the AGENT_CACHE KV binding. */
+  SCALEDOWN_DERIVATIVE_CACHE_ENABLED?: string;
   // CF Workers AI — for free-tier agents and sub-agent vision tasks.
   AI: Ai;
   PLATFORM_DB: D1Database;

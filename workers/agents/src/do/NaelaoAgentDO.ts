@@ -1074,6 +1074,7 @@ export interface AgentDOEnv {
   NAELAO_AIG_TOKEN?: string;
   SCALEDOWN_API_KEY?: string;
   SCALEDOWN_INPUT_USD_PER_MILLION?: string;
+  SCALEDOWN_DERIVATIVE_CACHE_ENABLED?: string;
   /** Optional since the vendor cutover — see NAELAO_AIG_TOKEN. */
   ANTHROPIC_API_KEY?: string;
   /** A real Google AI Studio (Gemini) API key, BYOK — lets the model switcher offer Gemini models
@@ -1167,6 +1168,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const config = this.env.SCRIPTS_R2 ? await loadAgentConfig(this.env.SCRIPTS_R2, identity.spaceId, identity.agentId) : null;
     if (!config) return Response.json({ error: "workflow_agent_unavailable" }, { status: 503 });
     if (config.requiresApprovalFor?.includes(body.operation)) return Response.json({ error: "workflow_human_approval_required" }, { status: 409 });
+    if (body.operation.startsWith("document.") && !this.consumeWorkflowDocumentCall(identity.runId))
+      return Response.json({ error_code: "document_workflow_call_limit" }, { status: 429 });
     if (["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(body.operation)) {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId || !identity.capabilities.includes(body.operation))
         return Response.json({ error: "workflow_gadget_grant_invalid" }, { status: 403 });
@@ -1195,12 +1198,114 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     env.humanInvokerId = identity.actorId;
     env.effectiveRole = gate.effectiveRole ?? (grant.role === "viewer" ? "viewer" : grant.role === "owner" || grant.role === "admin" ? "owner" : "editor");
     env.maxTier = Math.max(1, Math.min(6, gate.maxTier ?? config.manifest?.capabilities.maxTier ?? 3)) as ExecutionTier;
+    if (body.operation === "document.summarize" || body.operation === "document.extract" || body.operation === "document.compress") {
+      if (body.airGappedOnly) return Response.json({ error_code: "private_document_cloud_processing_denied" }, { status: 403 });
+      env.documentProcessor = await this.createWorkflowDocumentProcessor({
+        tenantId: identity.tenantId, spaceId: identity.spaceId, ...(identity.projectId ? { projectId: identity.projectId } : {}),
+        userId: identity.actorId, callerRole: grant.role, hasSpendCap: gate.hasSpendCap,
+        ...(gate.walletProjectId ? { walletProjectId: gate.walletProjectId } : {}), runId: identity.runId,
+      });
+    }
     const tools = new ScriptToolSurface(env, config.scripts.prebuilt, { role: config.manifest?.role ?? "DEV_OPERATOR" });
     if (!tools.availableOperations().includes(body.operation)) return Response.json({ error: "workflow_operation_not_installed" }, { status: 403 });
     env.orchestration = this.buildOrchestrationHooks(identity.spaceId, identity.agentId, identity.tenantId, "", body.idempotencyKey, identity.runId, identity.projectId, tools, identity.actorId, undefined, undefined, undefined, env);
     const result = await tools.run(body.operation, body.params);
     return Response.json(JSON.parse(JSON.stringify(result)), { status: result.ok ? 200 : 409 });
   }
+
+  /** Specialist calls made by a durable workflow step use the same Space policy, model evidence,
+   * caller budget, and independent provider settlement as calls inside an interactive run. */
+  private async createWorkflowDocumentProcessor(scope: {
+    tenantId: string; spaceId: string; projectId?: string; userId: string; callerRole: string;
+    hasSpendCap: boolean; walletProjectId?: string; runId: string;
+  }): Promise<DocumentProcessingGateway> {
+    const policyResponse = await this.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/internal/spaces/${encodeURIComponent(scope.spaceId)}/model-policy`,
+      { headers: await this.internalHeaders(scope.tenantId) },
+    ));
+    if (!policyResponse.ok) throw new Error("document_processing_model_policy_unavailable");
+    const policy = await policyResponse.json<{ policy?: SpaceModelPolicy | null }>();
+    const process = async <K extends keyof DocumentProcessingGateway>(operation: K, input: Parameters<DocumentProcessingGateway[K]>[0]) => {
+      if (operation === "compress") {
+        const model = DOCUMENT_MODELS.compress;
+        if (!validateModelForSpacePolicy(model, policy.policy).ok) throw new Error("document_processing_model_policy_denied");
+        const millionRate = Number(this.env.SCALEDOWN_INPUT_USD_PER_MILLION);
+        if (!this.env.SCALEDOWN_API_KEY || !Number.isFinite(millionRate) || millionRate <= 0 || millionRate > 1000)
+          throw new Error("native_compression_provider_or_rate_unconfigured");
+        const pricing = { inputUsdPerToken: millionRate / 1_000_000, outputUsdPerToken: 0,
+          rateCardVersion: `scaledown-native-input-usd-per-million:${millionRate}` };
+        return this.runWorkflowDocumentOperation({ ...scope, model, pricing, input, nativeApiKey: this.env.SCALEDOWN_API_KEY,
+          cacheScope: JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId ?? "_space", scope.userId,
+            policy.policy?.mode, [...(policy.policy?.allowedModelIds ?? [])].sort()]) });
+      }
+      const model = DOCUMENT_MODELS[operation];
+      if (!validateModelForSpacePolicy(model, policy.policy).ok) throw new Error("document_processing_model_policy_denied");
+      const credentials = await this.resolveBusinessLlmOverride(scope.spaceId, scope.tenantId, model);
+      if (!credentials.openRouterApiKey) throw new Error("document_processing_space_openrouter_key_required");
+      const catalog = await fetchOpenRouterCatalog(credentials.openRouterApiKey);
+      const candidate = catalog.find((entry) => entry.model === model);
+      if (!candidate?.inputModalities?.includes("text") || !candidate.outputModalities?.includes("text")
+        || candidate.promptPriceUsdPerToken === undefined || candidate.completionPriceUsdPerToken !== 0 || !candidate.contextLength)
+        throw new Error("document_processing_catalog_evidence_unavailable");
+      return this.runWorkflowDocumentOperation({ ...scope, model, credentials, contextLength: candidate.contextLength,
+        pricing: { inputUsdPerToken: candidate.promptPriceUsdPerToken, outputUsdPerToken: candidate.completionPriceUsdPerToken,
+          rateCardVersion: `openrouter:${candidate.catalogObservedAt}` }, input,
+        cacheScope: JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId ?? "_space", scope.userId,
+          policy.policy?.mode, [...(policy.policy?.allowedModelIds ?? [])].sort()]) });
+    };
+    return {
+      summarize: (input) => process("summarize", input) as unknown as ReturnType<DocumentProcessingGateway["summarize"]>,
+      extract: (input) => process("extract", input) as unknown as ReturnType<DocumentProcessingGateway["extract"]>,
+      compress: (input) => process("compress", input) as unknown as ReturnType<DocumentProcessingGateway["compress"]>,
+    };
+  }
+
+  private async runWorkflowDocumentOperation<K extends keyof DocumentProcessingGateway>(args: {
+    tenantId: string; spaceId: string; projectId?: string; userId: string; callerRole: string;
+    hasSpendCap: boolean; walletProjectId?: string | null; runId: string; model: string;
+    pricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion: string };
+    contextLength?: number; credentials?: Partial<Pick<GatewayOpts, "openRouterApiKey">>; nativeApiKey?: string; cacheScope: string;
+    input: Parameters<DocumentProcessingGateway[K]>[0];
+  }): Promise<Awaited<ReturnType<DocumentProcessingGateway[K]>>> {
+    const processingRunId = `document:${args.runId}:${crypto.randomUUID()}`;
+    let reserved = false;
+    const processor = createScaleDownProcessor({
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
+        ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...args.credentials },
+      ...(args.nativeApiKey ? { nativeApiKey: args.nativeApiKey } : {}),
+      ...(this.env.SCALEDOWN_DERIVATIVE_CACHE_ENABLED === "true" && this.env.AGENT_CACHE ? {
+        cache: this.env.AGENT_CACHE,
+        cacheScope: args.cacheScope,
+      } : {}),
+      authorize: async (request) => {
+        if (args.contextLength && request.requestBytes + request.maxOutputTokens > args.contextLength) throw new Error("document_processing_context_limit");
+        const allowed = await this.reserveRunInferenceCost({ spaceId: args.spaceId, tenantId: args.tenantId, projectId: args.projectId,
+          userId: args.userId, callerRole: args.callerRole, hasSpendCap: args.hasSpendCap, runId: processingRunId, model: args.model,
+          serializedRequestBytes: request.requestBytes, maxOutputTokens: request.maxOutputTokens, sequence: 1,
+          modelPricing: args.pricing, onReserved: () => { reserved = true; } });
+        if (!allowed) throw new Error("document_processing_budget_exhausted");
+      },
+      recordUsage: async (usage) => this.settleRunBilling({ spaceId: args.spaceId, tenantId: args.tenantId, projectId: args.projectId,
+        userId: args.userId, callerRole: args.callerRole, hasSpendCap: args.hasSpendCap, walletProjectId: args.walletProjectId ?? null,
+        runId: processingRunId, model: args.model, modelPricing: args.pricing, tokensUsed: usage.inputTokens + (usage.outputTokens ?? 0),
+        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens ?? 0, notes: [], projectSpendReserved: Boolean(args.projectId && args.hasSpendCap && reserved),
+        endUserCreditReserved: Boolean(!args.projectId && args.callerRole === "product_end_user" && reserved),
+        llmQuotaReserved: Boolean(!args.projectId && BUILDER_CALLER_ROLES.has(args.callerRole) && reserved) }),
+    });
+    return processor[args.model === DOCUMENT_MODELS.compress ? "compress" : args.model === DOCUMENT_MODELS.extract ? "extract" : "summarize"](args.input as never) as Awaited<ReturnType<DocumentProcessingGateway[K]>>;
+  }
+
+  private consumeWorkflowDocumentCall(runId: string): boolean {
+    const now = Date.now();
+    this.ctx.storage.sql.exec("DELETE FROM workflow_document_budget WHERE updated_at < ?", now - 90 * 86_400_000);
+    const rows = this.ctx.storage.sql.exec(
+      `INSERT INTO workflow_document_budget(run_id,call_count,updated_at) VALUES(?,1,?)
+       ON CONFLICT(run_id) DO UPDATE SET call_count=call_count+1,updated_at=excluded.updated_at
+       WHERE workflow_document_budget.call_count < 48 RETURNING call_count`, runId, now,
+    ).toArray();
+    return rows.length === 1;
+  }
+
   /** Normalize every assistant/operator into the one kernel configuration used by this DO. */
   assembleUniversalAgent(manifest: UniversalAgentManifest, businessContext?: BusinessContext) {
     const maxTier = Math.max(1, Math.min(6, Number(manifest.capabilities.maxTier ?? 1))) as ExecutionTier;
@@ -1345,6 +1450,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         summary         TEXT NOT NULL,
         covered_messages INTEGER NOT NULL,
         updated_at      TEXT NOT NULL
+      )
+    `);
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_document_budget (
+        run_id TEXT PRIMARY KEY, call_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
       )
     `);
 
@@ -4840,7 +4950,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const processor = createScaleDownProcessor({ gateway: {
           accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
           ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...credentials,
-        }, ...(this.env.SCALEDOWN_API_KEY ? { nativeApiKey: this.env.SCALEDOWN_API_KEY } : {}), authorize: async request => {
+        }, ...(this.env.SCALEDOWN_API_KEY ? { nativeApiKey: this.env.SCALEDOWN_API_KEY } : {}),
+        ...(this.env.SCALEDOWN_DERIVATIVE_CACHE_ENABLED === "true" && this.env.AGENT_CACHE ? {
+          cache: this.env.AGENT_CACHE,
+          cacheScope: JSON.stringify([tenantId, spaceId, projectId ?? "_space", userId ?? "system", policy.policy?.mode,
+            [...(policy.policy?.allowedModelIds ?? [])].sort()]),
+        } : {}), authorize: async request => {
           if (contextLength && request.requestBytes + request.maxOutputTokens > contextLength) throw new Error("document_processing_context_limit");
           const allowed = await this.reserveRunInferenceCost({ spaceId, tenantId, projectId, userId, callerRole, hasSpendCap,
             runId: processingRunId, model, serializedRequestBytes: request.requestBytes, maxOutputTokens: request.maxOutputTokens,

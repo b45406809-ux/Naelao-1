@@ -228,4 +228,52 @@ describe("ScaleDown task-specific provider contracts", () => {
     ).rejects.toThrow("provider_unconfigured");
     expect(fetcher).not.toHaveBeenCalled();
   });
+  it("caches validated derivatives for the same source and policy scope with no second provider charge", async () => {
+    const values = new Map<string, string>();
+    const cache = {
+      get: vi.fn(async (key: string) => values.get(key) ?? null),
+      put: vi.fn(async (key: string, value: string) => {
+        values.set(key, value);
+      }),
+    };
+    const first = setup(completion("Summary A"), {
+      cache,
+      cacheScope: "tenant:s:project:p:actor:u:policy:v1",
+    });
+    await first.processor.summarize({
+      text: "source",
+      sourceId: "workspace:a#sha256:1",
+    });
+    const second = setup(completion("Should not be called"), {
+      cache,
+      cacheScope: "tenant:s:project:p:actor:u:policy:v1",
+    });
+    const cached = await second.processor.summarize({
+      text: "source",
+      sourceId: "workspace:a#sha256:1",
+    });
+    expect(cached).toMatchObject({
+      text: "Summary A",
+      usage: { inputTokens: 0, outputTokens: 0, cacheHit: true },
+    });
+    expect(second.fetcher).not.toHaveBeenCalled();
+    expect(second.authorize).not.toHaveBeenCalled();
+    const otherActor = setup(completion("Summary B"), {
+      cache,
+      cacheScope: "tenant:s:project:p:actor:other:policy:v1",
+    });
+    expect(
+      (
+        await otherActor.processor.summarize({
+          text: "source",
+          sourceId: "workspace:a#sha256:1",
+        })
+      ).text
+    ).toBe("Summary B");
+    expect(cache.put).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      { expirationTtl: 604800 }
+    );
+  });
 });
