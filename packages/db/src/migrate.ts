@@ -43,7 +43,7 @@ export interface MigratableStorage {
 }
 
 /** Split a block of ;-terminated SQL statements into individual statements, respecting
- *  single-quoted string literals (e.g. DEFAULT (datetime('now'))) and both comment styles
+ *  SQL string/identifier quoting (e.g. DEFAULT (datetime('now'))) and both comment styles
  *  (-- line comments, /* block comments *​/) this codebase's migrations use — a semicolon
  *  inside either is never mistaken for a statement boundary (a first version of this function
  *  didn't skip "-- ...;" line-comment text, which split "ALTER TABLE ... ADD COLUMN x TEXT; --
@@ -57,10 +57,11 @@ export interface MigratableStorage {
 function splitStatements(sqlText: string): string[] {
   const statements: string[] = [];
   let current = "";
-  let inString = false;
+  let quote: "'" | '"' | "`" | "[" | null = null;
   let inLineComment = false;
   let inBlockComment = false;
   let triggerBlockDepth = 0;
+  let caseDepth = 0;
   let word = "";
 
   // Trigger bodies contain semicolons before their final END. Keep those
@@ -68,7 +69,11 @@ function splitStatements(sqlText: string): string[] {
   const flushWord = () => {
     const normalized = word.toUpperCase();
     if (normalized === "BEGIN") triggerBlockDepth++;
-    if (normalized === "END" && triggerBlockDepth > 0) triggerBlockDepth--;
+    if (normalized === "CASE") caseDepth++;
+    if (normalized === "END") {
+      if (caseDepth > 0) caseDepth--;
+      else if (triggerBlockDepth > 0) triggerBlockDepth--;
+    }
     word = "";
   };
   for (let i = 0; i < sqlText.length; i++) {
@@ -89,22 +94,36 @@ function splitStatements(sqlText: string): string[] {
       }
       continue;
     }
-    if (!inString && ch === "-" && next === "-") {
+    if (quote !== null) {
+      const closing = quote === "[" ? "]" : quote;
+      current += ch;
+      if (ch === closing && next === closing) {
+        current += next;
+        i++;
+      } else if (ch === closing) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`" || ch === "[") {
+      flushWord();
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "-" && next === "-") {
       inLineComment = true;
       current += ch;
       continue;
     }
-    if (!inString && ch === "/" && next === "*") {
+    if (ch === "/" && next === "*") {
       inBlockComment = true;
       current += ch;
       continue;
     }
-    if (!inString) {
-      if (ch && /[A-Za-z_]/.test(ch)) word += ch;
-      else flushWord();
-    }
-    if (ch === "'") inString = !inString;
-    if (ch === ";" && !inString && triggerBlockDepth === 0) {
+    if (ch && /[A-Za-z_]/.test(ch)) word += ch;
+    else flushWord();
+    if (ch === ";" && triggerBlockDepth === 0) {
       // A chunk that's comment-only (e.g. a trailing "-- note" after the last real
       // statement's semicolon) has no SQL content — pushing it would hand sql.exec() a
       // string containing nothing but a comment, which throws "SQL code did not contain

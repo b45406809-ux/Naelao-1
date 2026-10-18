@@ -5,6 +5,6 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
-  "scripts": { "build": "tsc", "typecheck": "tsc --noEmit" },
-  "devDependencies": { "typescript": "*", "@cloudflare/workers-types": "*" }
+  "scripts": { "build": "tsc", "typecheck": "tsc --noEmit", "test": "vitest run" },
+  "devDependencies": { "typescript": "*", "@cloudflare/workers-types": "*", "vitest": "^2.1.8" }
 }

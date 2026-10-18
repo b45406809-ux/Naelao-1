@@ -627,11 +627,13 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/db`
 
-- [ ] `packages/db/package.json`
-- [ ] `packages/db/src/index.ts`
-- [ ] `packages/db/src/migrate.ts`
+- [x] `packages/db/package.json`
+- [x] `packages/db/src/index.ts`
+- [x] `packages/db/src/migrate.ts`
 - [ ] `packages/db/src/sql.ts`
-- [ ] `packages/db/tsconfig.json`
+- [x] `packages/db/src/migrate.test.ts` (added stress coverage)
+- [x] `packages/db/vitest.config.ts` (added package test discovery)
+- [x] `packages/db/tsconfig.json`
 
 ### `packages/entitlements`
 
@@ -1049,7 +1051,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/cross-project-handoff.test.ts`
 - [ ] `tests/unit/customer-bot-rules-business-membership.test.ts`
 - [ ] `tests/unit/daily-digest.test.ts`
-- [ ] `tests/unit/db-migrations.test.ts`
+- [x] `tests/unit/db-migrations.test.ts` (included in the DB package project)
 - [ ] `tests/unit/deposit-personal-credits.test.ts`
 - [ ] `tests/unit/desk-drop.test.ts`
 - [ ] `tests/unit/developer-payout-reconciliation.test.ts`

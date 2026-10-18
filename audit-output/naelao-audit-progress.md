@@ -122,11 +122,31 @@ The focused crypto project passed **21 tests across 2 files**; focused TypeScrip
 - Durable Object names include caller-supplied type/resource identifiers; their production validation and Cloudflare name length constraints belong to the caller/runtime boundary and remain to be reviewed.
 - Plaintext and authenticated metadata are capped in this library, but full production payload-size distributions and migration impact are not measured.
 
+## DB migration stress pass (2026-10-18)
+
+This pass covered package exports, SQL helper consumers, and migration initialization in `workers/spaces/src/do/SpaceDO.ts` and `ProductUserDO.ts`. Existing migration tests were outside the package workspace, so the DB package now registers both the package source stress tests and the existing SQLite migration suite.
+
+| File | Features and stress boundaries exercised | Evidence / disposition |
+|---|---|---|
+| `packages/db/src/migrate.ts` | Migration version validation, transaction rollback, replay behavior, statement splitting across comments/strings/trigger blocks, SQL execution diagnostics | Fixed a parser bug where `CASE ... END` inside a trigger was mistaken for the trigger terminator. The splitter now tracks CASE nesting and single/double/backtick/bracket quoting, including escaped closing delimiters, so semicolons in quoted identifiers are preserved. |
+| `packages/db/src/migrate.test.ts` | Real SQLite trigger with CASE and multiple statements; semicolon inside a quoted table identifier | 2 new regression tests pass against the in-memory SQLite DO storage shim. |
+| `packages/db/package.json`, `packages/db/tsconfig.json`, `packages/db/vitest.config.ts` | Build/typecheck/test discovery and root test inclusion | Added package test script/config and Vitest dependency; tests are excluded from the package declaration build. Package TypeScript check passes. |
+| `tests/unit/db-migrations.test.ts`, `workers/spaces/src/do/SpaceDO-migrations.test.ts` | Atomic migration rollback, replay, migration table behavior, production SpaceDO migration application | Existing DB suite passes (6 tests); SpaceDO migrations pass in the full configured workspace. |
+
+Focused DB tests passed **8 tests across 2 files**. The configured workspace passed with **230 test files and 989 tests**. Focused Biome checks passed on the newly added test and Vitest config. The touched migration source retains pre-existing formatting/lint diagnostics; they were not mass-reformatted.
+
+### Remaining DB risks and unverified behavior
+
+- Transaction semantics use the Node SQLite shim; Cloudflare's actual `transactionSync()` behavior and migration lock contention were not exercised in a live Worker runtime.
+- Existing migration versions are checked for duplicates and completeness, but the package has no persisted checksum to detect a historical migration body being edited after deployment.
+- `packages/db/src/sql.ts` helper behavior and all `queryAll`/`queryOne` callsites remain pending; package review is not complete.
+- The migration splitter covers SQLite's supported quote forms relevant to the tested statements; malformed unterminated quote/comment input relies on SQLite rejection and transaction rollback.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 228 test files, 981 tests, with webhook, idempotency, sweeper, auth, and crypto projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 230 test files, 989 tests, with webhook, idempotency, sweeper, auth, crypto, and DB projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |
