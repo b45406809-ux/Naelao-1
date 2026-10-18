@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1844` tracked/non-ignored files; `1638` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`).
+Inventory basis: `1846` tracked/non-ignored files; `1640` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`).
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -561,11 +561,13 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/auth`
 
-- [ ] `packages/auth/package.json`
-- [ ] `packages/auth/src/index.ts`
-- [ ] `packages/auth/src/jwt.ts`
-- [ ] `packages/auth/src/rbac.ts`
-- [ ] `packages/auth/tsconfig.json`
+- [x] `packages/auth/vitest.config.ts`
+- [x] `packages/auth/src/rbac.test.ts`
+- [x] `packages/auth/package.json`
+- [x] `packages/auth/src/index.ts`
+- [x] `packages/auth/src/jwt.ts`
+- [x] `packages/auth/src/rbac.ts`
+- [x] `packages/auth/tsconfig.json`
 
 ### `packages/billing-core`
 
@@ -1135,7 +1137,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/onboarding-oauth-availability.test.ts`
 - [ ] `tests/unit/owner-voice-ticket-route.test.ts`
 - [ ] `tests/unit/packages/analytics-schema.test.ts`
-- [ ] `tests/unit/packages/auth.test.ts`
+- [x] `tests/unit/packages/auth.test.ts`
 - [ ] `tests/unit/packages/billing-core.test.ts`
 - [ ] `tests/unit/packages/crypto.test.ts`
 - [ ] `tests/unit/packages/entitlements.test.ts`

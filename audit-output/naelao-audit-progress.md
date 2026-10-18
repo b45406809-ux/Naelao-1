@@ -88,11 +88,24 @@ This batch's focused tests passed **24 tests** (14 package D1 tests, 9 legacy un
 - The sweeper cron runs daily, so physical deletion can lag expiry by nearly a day even though reads and lock replacement enforce expiry directly.
 - Full worker sweeper behavior, other cleanup functions, deployment bindings, and route-to-store wiring remain unreviewed.
 
+## Auth RBAC stress pass (2026-10-18)
+
+The auth package exports JWT verification and a static role-permission matrix. Repository search found no production callsites of `hasPermission`/`assertPermission`; the existing tests were only in `tests/unit`, outside the configured package/worker workspace.
+
+| File | Feature / boundaries | Evidence / disposition |
+|---|---|---|
+| `packages/auth/src/rbac.ts` | Owner/admin/editor/viewer distinctions; product-end-user and agent zero-permission roles; malformed runtime roles and permission strings; assertion-before-action behavior | Existing matrix checked against role definitions. Runtime unknown role/permission values fail closed. Added 9 stress cases in `src/rbac.test.ts`. No source defect reproduced in this file. |
+| `packages/auth/src/index.ts` | Public source exports | Verified both JWT and RBAC modules are exported. |
+| `packages/auth/package.json`, `tsconfig.json`, `vitest.config.ts` | Package build/typecheck inputs and configured test discovery | Added test script/config; included existing root auth suite in this package project so it runs in the configured workspace. Package typecheck passed. |
+| `packages/auth/src/jwt.ts`, `tests/unit/packages/auth.test.ts` | JWT claim shape, strict decoding, expiration equality, oversized and malformed tokens, role checks | JWT fixes from the earlier security pass remain covered. The legacy auth suite (13 tests) and new RBAC suite (9 tests) pass together: 22 tests. |
+
+Focused Biome checks passed on the added test/config files. No route-to-RBAC callsite was found, so enforcement relies on other worker-local policy layers; validating every route's independent authorization remains open. The configured workspace suite passed with the auth project registered: **226 test files, 960 tests**.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 224 test files, 938 tests, with webhook, idempotency, and sweeper projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 226 test files, 960 tests, with webhook, idempotency, sweeper, and auth projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |
