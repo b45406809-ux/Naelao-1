@@ -111,4 +111,37 @@ describe("usage events v2 migration", () => {
     expect(db.db.prepare("SELECT org_id FROM usage_events ORDER BY org_id").all()).toEqual([{ org_id: "tenant-a" }, { org_id: "tenant-b" }]);
     db.db.close();
   });
+
+  it("returns an admin-facing project usage summary scoped to its tenant, space, and project", async () => {
+    const db = createFakeD1([
+      `CREATE TABLE usage_events(id TEXT PRIMARY KEY,org_id TEXT NOT NULL,space_id TEXT,event_type TEXT NOT NULL,quantity INTEGER NOT NULL DEFAULT 1,recorded_at TEXT NOT NULL,event_hash TEXT UNIQUE);`,
+      readFileSync(join(__dirname, "../../infra/migrations/0109_usage_events_v2.sql"), "utf8"),
+    ]);
+    const insert = db.db.prepare(`INSERT INTO usage_events(id,org_id,space_id,event_type,quantity,recorded_at,unit,cost_credits,
+      project_id,installation_id,provider,connector_provider,payer_kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    insert.run("p1", "tenant-a", "space-a", "project_llm_tokens", 1, new Date().toISOString(), "tokens", 4, "project-a", "install-a", "openrouter", null, "space_wallet");
+    insert.run("p2", "tenant-a", "space-a", "connector_calls", 3, new Date().toISOString(), "invocations", null, "project-a", "install-a", null, "whatsapp", "unknown");
+    insert.run("other-project", "tenant-a", "space-a", "connector_calls", 99, new Date().toISOString(), "invocations", 99, "project-b", "install-b", null, "telegram", "space_wallet");
+    insert.run("other-tenant", "tenant-b", "space-a", "connector_calls", 99, new Date().toISOString(), "invocations", 99, "project-a", "install-b", null, "telegram", "space_wallet");
+
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const env = { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, PLATFORM_DB: db,
+      QUOTA_CACHE: { async get() { return null; }, async put() {}, async delete() {} }, BILLING_EVENTS: { async send() {} } } as never;
+    const response = await billingWorker.fetch(new Request("https://billing.naelao.com/internal/usage/project-summary?space_id=space-a&project_id=project-a&days=30", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+    }), env, ctx);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ project_id: "project-a", space_id: "space-a", days: 30,
+      cost_credits: 4, event_count: 2, unpriced_event_count: 1,
+      breakdown: [
+        { event_type: "project_llm_tokens", unit: "tokens", payer_kind: "space_wallet", installation_id: "install-a", provider: "openrouter", event_count: 1, quantity: 1, cost_credits: 4, unpriced_event_count: 0 },
+        { event_type: "connector_calls", unit: "invocations", payer_kind: "unknown", installation_id: "install-a", connector_provider: "whatsapp", event_count: 1, quantity: 3, cost_credits: null, unpriced_event_count: 1 },
+      ],
+    });
+    const invalidPeriod = await billingWorker.fetch(new Request("https://billing.naelao.com/internal/usage/project-summary?space_id=space-a&project_id=project-a&days=2", {
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+    }), env, ctx);
+    expect(invalidPeriod.status).toBe(400);
+    db.db.close();
+  });
 });

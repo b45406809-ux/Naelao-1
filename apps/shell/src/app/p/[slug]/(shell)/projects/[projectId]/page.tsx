@@ -26,6 +26,7 @@ import {
   createThread,
   deleteKbDocument,
   getProject,
+  getProjectUsageSummary,
   instantiateAgentTemplate,
   listAgentDefinitions,
   listAgentTemplates,
@@ -45,6 +46,7 @@ import {
   type KbDocument,
   type Project,
   type ProjectDepartment,
+  type ProjectUsageSummary,
   type ThreadSummary,
 } from "@/lib/api";
 import { Button, Card, CardDesc, CardLabel, CardTitle, CardValue, FormInput, FormSelect, FormTextarea, Modal, Toast, useToast } from "@naelao/ui";
@@ -59,6 +61,17 @@ const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
 
 function hasExternalChannelProfile(project: Project): boolean {
   return Boolean(project.external_channel_profile);
+}
+
+function usagePayerLabel(payer: string): string {
+  switch (payer) {
+    case "space_wallet": return "Project wallet";
+    case "consumer_credits": return "User credits";
+    case "plan_quota": return "Space plan";
+    case "platform": return "Platform";
+    case "legacy": return "Legacy event";
+    default: return "Payer not assigned";
+  }
 }
 
 export default function ProjectDetailPage() {
@@ -78,6 +91,10 @@ export default function ProjectDetailPage() {
   const [departmentToAdd, setDepartmentToAdd] = React.useState("");
   const [newDepartmentName, setNewDepartmentName] = React.useState("");
   const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
+  const [usageSummary, setUsageSummary] = React.useState<ProjectUsageSummary | null>(null);
+  const [usageLoading, setUsageLoading] = React.useState(true);
+  const [usageError, setUsageError] = React.useState(false);
+  const [usageDays, setUsageDays] = React.useState(30);
   const [agents, setAgents] = React.useState<AgentDefinitionSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [creating, setCreating] = React.useState(false);
@@ -114,6 +131,22 @@ export default function ProjectDetailPage() {
   const [draftDefaultAgentId, setDraftDefaultAgentId] = React.useState("");
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
+
+  React.useEffect(() => {
+    let current = true;
+    setUsageSummary(null);
+    setUsageError(false);
+    if (!creds) {
+      setUsageLoading(false);
+      return () => { current = false; };
+    }
+    setUsageLoading(true);
+    void getProjectUsageSummary(activeSpaceId, params.projectId, creds, usageDays)
+      .then((summary) => { if (current) setUsageSummary(summary); })
+      .catch(() => { if (current) setUsageError(true); })
+      .finally(() => { if (current) setUsageLoading(false); });
+    return () => { current = false; };
+  }, [activeSpaceId, params.projectId, session, usageDays]);
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
@@ -767,6 +800,52 @@ export default function ProjectDetailPage() {
           </Button>
         </div>
       </div>
+
+      <div className="page-header" style={{ marginTop: 24 }}>
+        <div className="section-label" style={{ marginBottom: 0 }}>Project usage</div>
+        <label style={{ fontSize: 12, color: "var(--text2)" }}>
+          Period{" "}
+          <select aria-label="Project usage period" value={usageDays} onChange={(event) => setUsageDays(Number(event.target.value))}>
+            <option value={1}>Last 24 hours</option>
+            <option value={7}>Last 7 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+          </select>
+        </label>
+      </div>
+      <section aria-label="Project usage summary" className="settings-block" style={{ padding: 16 }}>
+        {usageLoading ? <p role="status" style={{ color: "var(--text3)", margin: 0 }}>Loading project usage…</p> : usageError ? (
+          <p role="status" style={{ color: "var(--text3)", margin: 0 }}>Usage details are available to project admins. If you are an admin, refresh to try again.</p>
+        ) : !usageSummary || usageSummary.event_count === 0 ? (
+          <p style={{ color: "var(--text3)", margin: 0 }}>No measured project usage in this period.</p>
+        ) : (
+          <>
+            <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 14 }}>
+              <div><div className="settings-row-label">Priced usage</div><strong>{usageSummary.cost_credits.toLocaleString()} credits</strong></div>
+              <div><div className="settings-row-label">Recorded events</div><strong>{usageSummary.event_count.toLocaleString()}</strong></div>
+              {usageSummary.unpriced_event_count > 0 && <div><div className="settings-row-label">Unpriced events</div><strong>{usageSummary.unpriced_event_count.toLocaleString()}</strong></div>}
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {usageSummary.breakdown.map((item, index) => (
+                <div key={`${item.event_type}:${item.payer_kind}:${item.installation_id ?? ""}:${item.provider ?? item.connector_provider ?? ""}:${index}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 500 }}>{item.event_type.replaceAll("_", " ")} · {usagePayerLabel(item.payer_kind)}</div>
+                    <div style={{ fontSize: 11, color: "var(--text3)" }}>
+                      {item.quantity.toLocaleString()} {item.unit} · {item.event_count} event{item.event_count === 1 ? "" : "s"}
+                      {item.provider ? ` · ${item.provider}` : ""}{item.connector_provider ? ` · ${item.connector_provider}` : ""}
+                      {item.installation_id ? ` · installation ${item.installation_id}` : ""}
+                    </div>
+                  </div>
+                  <span style={{ fontSize: 12, color: item.cost_credits === null ? "var(--text3)" : "var(--text)" }}>
+                    {item.cost_credits === null ? `Unpriced (${item.unpriced_event_count} events)` : `${item.cost_credits.toLocaleString()} credits`}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {usageSummary.breakdown.length === 200 && <p style={{ fontSize: 11, color: "var(--text3)", margin: "10px 0 0" }}>Showing the 200 largest usage groups; the totals above include all recorded events.</p>}
+          </>
+        )}
+      </section>
 
       <div className="page-header" style={{ marginTop: 24 }}>
         <div className="section-label" style={{ marginBottom: 0 }}>

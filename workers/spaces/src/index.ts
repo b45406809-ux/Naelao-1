@@ -1773,6 +1773,23 @@ app.use("/spaces/:spaceId/projects/:projectId/rules/:ruleId", requireInternalHma
 app.use("/spaces/:spaceId/projects/:projectId/rules/:ruleId", requireBusinessMembership({ DELETE: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/spend", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
+app.use("/spaces/:spaceId/projects/:projectId/usage", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/usage", requireBusinessMembership({ GET: "admin" }));
+app.get("/spaces/:spaceId/projects/:projectId/usage", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable" }, 503);
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
+  const query = new URLSearchParams({ space_id: spaceId, project_id: projectId, days: c.req.query("days") ?? "30" });
+  const response = await c.env.BILLING_WORKER.fetch(new Request(`http://billing-worker/internal/usage/project-summary?${query}`, {
+    headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+  }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
 // Launchpad Wallet (user-directed feature). credit/debit are internal-only (called by the
 // billing worker's LS webhook handler after a top-up, and by the wallet script-engine prebuilt
 // running inside NaelaoAgentDO) — same posture as /spend, never a direct end-user write surface.

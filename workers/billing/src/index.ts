@@ -779,6 +779,46 @@ app.get("/internal/usage/llm-tokens/summary", async (c) => {
   return c.json({ ...summary, plan_tier: planTier });
 });
 
+// Owner/admin display summary for a single Project. The Spaces Worker performs project membership
+// authorization before calling this service; HMAC authentication binds the tenant here.
+app.use("/internal/usage/project-summary", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.get("/internal/usage/project-summary", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  const spaceId = c.req.query("space_id") ?? "";
+  const projectId = c.req.query("project_id") ?? "";
+  const days = Number(c.req.query("days") ?? "30");
+  if (!orgId || !spaceId || spaceId.length > 128 || !projectId || projectId.length > 128 || ![1, 7, 30, 90].includes(days)) {
+    return c.json({ error_code: "bad_request" }, 400);
+  }
+  const totals = await c.env.PLATFORM_DB.prepare(`SELECT COUNT(*) AS event_count,
+      COALESCE(SUM(cost_credits),0) AS cost_credits,
+      SUM(CASE WHEN cost_credits IS NULL THEN 1 ELSE 0 END) AS unpriced_event_count
+    FROM usage_events WHERE org_id=? AND space_id=? AND project_id=? AND recorded_at>=datetime('now',?)`)
+    .bind(orgId, spaceId, projectId, `-${days} days`).first<{
+      event_count: number; cost_credits: number; unpriced_event_count: number;
+    }>();
+  const rows = await c.env.PLATFORM_DB.prepare(`SELECT event_type,COALESCE(unit,'units') AS unit,
+      COALESCE(payer_kind,'legacy') AS payer_kind,installation_id,provider,connector_provider,
+      COUNT(*) AS event_count,COALESCE(SUM(quantity),0) AS quantity,
+      SUM(cost_credits) AS cost_credits,SUM(CASE WHEN cost_credits IS NULL THEN 1 ELSE 0 END) AS unpriced_event_count
+    FROM usage_events WHERE org_id=? AND space_id=? AND project_id=? AND recorded_at>=datetime('now',?)
+    GROUP BY event_type,unit,payer_kind,installation_id,provider,connector_provider
+    ORDER BY COALESCE(SUM(cost_credits),-1) DESC,event_type LIMIT 200`)
+    .bind(orgId, spaceId, projectId, `-${days} days`).all<{
+      event_type: string; unit: string; payer_kind: string; installation_id: string | null;
+      provider: string | null; connector_provider: string | null; event_count: number; quantity: number;
+      cost_credits: number | null; unpriced_event_count: number;
+    }>();
+  const breakdown = rows.results;
+  return c.json({
+    project_id: projectId, space_id: spaceId, days,
+    cost_credits: totals?.cost_credits ?? 0,
+    event_count: totals?.event_count ?? 0,
+    unpriced_event_count: totals?.unpriced_event_count ?? 0,
+    breakdown,
+  });
+});
+
 // ── POST /internal/commerce/checkout ─────────────────────────────────────────
 // Called by the reserved `commerce` prebuilt script. The ONLY money-in path: creates a Lemon
 // Squeezy checkout on Naelao's store for a product, carrying space_id + product_id + fee_bps in

@@ -1153,6 +1153,34 @@ export async function getProject(spaceId: string, projectId: string, session: Se
   return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}`, { session });
 }
 
+export interface ProjectUsageBreakdown {
+  event_type: string;
+  unit: string;
+  payer_kind: string;
+  installation_id: string | null;
+  provider: string | null;
+  connector_provider: string | null;
+  event_count: number;
+  quantity: number;
+  cost_credits: number | null;
+  unpriced_event_count: number;
+}
+
+export interface ProjectUsageSummary {
+  project_id: string;
+  space_id: string;
+  days: number;
+  cost_credits: number;
+  event_count: number;
+  unpriced_event_count: number;
+  breakdown: ProjectUsageBreakdown[];
+}
+
+export function getProjectUsageSummary(spaceId: string, projectId: string, session: SessionCredentials, days = 30) {
+  const query = new URLSearchParams({ days: String(days) });
+  return apiFetch<ProjectUsageSummary>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/usage?${query}`, { session, cache: "no-store" });
+}
+
 // WS-4.2: surfaces the already-built rich project config (customer_bot kind, execution ceiling,
 // spend cap, max threads, agent bindings) — PATCH succeeds for an admin/owner in the target
 // business (or fails 403, same "identity here, authorization there" pattern as every other
