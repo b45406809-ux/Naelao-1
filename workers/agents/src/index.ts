@@ -8755,7 +8755,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
         `http://spaces-worker/internal/spaces/${encodeURIComponent(msg.spaceId)}/project-steward/summary`, { headers }
       ));
       if (!response.ok) throw new Error(`Project Steward summary unavailable (HTTP ${response.status})`);
-      const payload = await response.json<{ grant: string; generated_at: number; data: Array<{ project_id: string; project_name: string; created_at: string; last_activity_at: string | null; failed_routines: Array<{ routine_id: string; consecutive_failures: number }> }> }>();
+      const payload = await response.json<{ grant: string; generated_at: number; data: Array<{ project_id: string; project_name: string; created_at: string; last_activity_at: string | null; failed_routines: Array<{ routine_id: string; consecutive_failures: number }>; pending_task_count: number; in_progress_task_count: number; blocked_task_count: number; active_extension_count: number }> }>();
       if (payload.grant !== "space.project_steward.read_summary.v1" || !Array.isArray(payload.data)) throw new Error("Invalid Project Steward summary grant response");
       const facts = payload.data.map((row) => ({
         project_id: row.project_id,
@@ -8763,6 +8763,10 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
         created_at: row.created_at,
         last_activity_at: row.last_activity_at,
         failed_routines: row.failed_routines.map((routine) => ({ id: routine.routine_id, consecutive_failures: routine.consecutive_failures })),
+        pending_task_count: row.pending_task_count,
+        in_progress_task_count: row.in_progress_task_count,
+        blocked_task_count: row.blocked_task_count,
+        active_extension_count: row.active_extension_count,
       }));
       const generatedAt = Date.now();
       const report = { run_day: runDay, generated_at: generatedAt, advisory_only: true, data: rankProjectStewardReviews(facts, generatedAt) };

@@ -100,7 +100,11 @@ export default function ProjectBotsPage() {
             {stewardReviews.map((review) => (
               <li key={`${review.project_id}:${review.recommendation}`} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12, color: "var(--text2)" }}>
-                  <strong>{review.project_name}</strong> · {review.recommendation === "inspect_routine" ? `${review.evidence[0]?.count ?? 0} routine failure(s)` : `No activity for ${review.evidence[0]?.days ?? 0} days`} · {review.confidence} confidence
+                  <strong>{review.project_name}</strong> · {review.recommendation === "inspect_routine"
+                    ? `${review.evidence.find((item) => item.kind === "routine_failures")?.count ?? 0} routine failure(s)`
+                    : review.recommendation === "review_blocked_work"
+                      ? `${review.evidence.find((item) => item.kind === "blocked_tasks")?.count ?? 0} blocked task(s)`
+                      : `No activity for ${review.evidence.find((item) => item.kind === "inactivity")?.days ?? 0} days${review.evidence.find((item) => item.kind === "active_extensions") ? ` · ${review.evidence.find((item) => item.kind === "active_extensions")?.count} active extension(s)` : ""}`} · {review.confidence} confidence
                 </span>
                 <Button variant="secondary" onClick={() => router.push(`/p/${product.slug}/projects/${review.project_id}`)}>Review project</Button>
               </li>

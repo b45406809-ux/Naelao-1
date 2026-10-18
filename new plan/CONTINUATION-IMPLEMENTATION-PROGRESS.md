@@ -1277,6 +1277,13 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: scheduled-jobs dispatch tests passed (42 tests), including assertions for project thread/session linking and exact project scope; Agents typecheck and `git diff --check` passed.
 - Direct script routines continue using their existing isolated direct execution path. Durable run-to-thread replay reuse and richer routine result delivery remain open; the dispatch claim prevents normal queue duplicate creation for the same routine sweep.
 
+### Phase 3 portfolio evidence checkpoint (2026-10-18)
+
+- Expanded the internal Steward summary with compact per-project pending, in-progress, and blocked task counts and active extension-install counts. The SpaceDO query returns no task titles, files, member identities, or conversation content.
+- The deterministic ranker now prioritizes blocked work with high confidence, retains routine failure priority, and attaches pending-work/active-extension evidence to stale-project check-ins. The Shell explains the evidence and links to the project; all recommendations remain advisory.
+- Verification: Agents, Spaces, and Shell typechecks passed; project-steward review/report and SpaceDO fact suites passed (25 tests); `git diff --check` passed.
+- Still open in Phase 3: journal summaries, extension run/connection health and spend evidence, typed decision records with actor attribution, and the reversible owner-confirmed retirement review flow. No project lifecycle action was added.
+
 ### Phase 4 external usage controls checkpoint (2026-10-17)
 
 - Added project setting `external_daily_message_cap` (0 = unlimited, maximum 10,000) and exposed it in Project settings as a per-person daily limit for external channel traffic.

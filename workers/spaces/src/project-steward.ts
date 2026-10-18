@@ -4,15 +4,19 @@ export interface ProjectStewardFact {
   last_activity_at: string | null;
   created_at: string;
   failed_routines: Array<{ id: string; consecutive_failures: number }>;
+  pending_task_count?: number;
+  in_progress_task_count?: number;
+  blocked_task_count?: number;
+  active_extension_count?: number;
 }
 
 export interface ProjectStewardReview {
   project_id: string;
   project_name: string;
-  recommendation: "inspect_routine" | "owner_check_in";
+  recommendation: "inspect_routine" | "review_blocked_work" | "owner_check_in";
   confidence: "low" | "high";
   priority: number;
-  evidence: Array<{ kind: "routine_failures" | "inactivity"; count?: number; days?: number; last_activity_at?: string | null }>;
+  evidence: Array<{ kind: "routine_failures" | "blocked_tasks" | "inactivity" | "pending_tasks" | "active_extensions"; count?: number; days?: number; last_activity_at?: string | null }>;
 }
 
 /** Deterministic, advisory-only portfolio ranking. It deliberately cannot change project or
@@ -38,14 +42,31 @@ export function rankProjectStewardReviews(
         priority: 100 + Math.min(failureCount, 20),
         evidence: [{ kind: "routine_failures", count: failureCount }],
       });
+    } else if ((fact.blocked_task_count ?? 0) > 0) {
+      const blockedCount = fact.blocked_task_count ?? 0;
+      reviews.push({
+        project_id: fact.project_id,
+        project_name: fact.project_name,
+        recommendation: "review_blocked_work",
+        confidence: "high",
+        priority: 80 + Math.min(blockedCount, 20),
+        evidence: [{ kind: "blocked_tasks", count: blockedCount }],
+      });
     } else if (inactiveDays * 86_400_000 >= inactivityThresholdMs) {
+      const evidence: ProjectStewardReview["evidence"] = [
+        { kind: "inactivity", days: inactiveDays, last_activity_at: fact.last_activity_at },
+      ];
+      const pendingCount = fact.pending_task_count ?? 0;
+      const extensionCount = fact.active_extension_count ?? 0;
+      if (pendingCount > 0) evidence.push({ kind: "pending_tasks", count: pendingCount });
+      if (extensionCount > 0) evidence.push({ kind: "active_extensions", count: extensionCount });
       reviews.push({
         project_id: fact.project_id,
         project_name: fact.project_name,
         recommendation: "owner_check_in",
         confidence: "low",
         priority: 30 + Math.min(inactiveDays - inactivityThresholdDays, 30),
-        evidence: [{ kind: "inactivity", days: inactiveDays, last_activity_at: fact.last_activity_at }],
+        evidence,
       });
     }
   }

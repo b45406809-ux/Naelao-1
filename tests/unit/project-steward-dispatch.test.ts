@@ -67,7 +67,7 @@ describe("daily Project Steward dispatch claims", () => {
         if (request.url.endsWith("/project-steward/installation")) return Response.json({ installation_id: "installation-id-1", platform_managed: true });
         expect(request.url).toContain("/internal/spaces/space-review/project-steward/summary");
         return Response.json({ grant: "space.project_steward.read_summary.v1", generated_at: Date.now(), data: [
-          { project_id: "project-1", project_name: "Needs care", created_at: "2024-01-01T00:00:00Z", last_activity_at: "2024-01-01T00:00:00Z", failed_routines: [{ routine_id: "routine-1", consecutive_failures: 2 }] },
+          { project_id: "project-1", project_name: "Needs care", created_at: "2024-01-01T00:00:00Z", last_activity_at: "2024-01-01T00:00:00Z", failed_routines: [{ routine_id: "routine-1", consecutive_failures: 2 }], pending_task_count: 1, in_progress_task_count: 0, blocked_task_count: 0, active_extension_count: 1 },
         ] });
       } },
       SCRIPTS_R2: { async put(key: string) { archive.push(key); } },

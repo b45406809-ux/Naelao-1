@@ -2770,6 +2770,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/business-wallet/settle") return this.settleBusinessWallet(request);
       if (method === "POST" && url.pathname === "/internal/business-wallet/withdraw") return this.withdrawBusinessWallet(request);
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
+      if (url.pathname === "/project-steward-facts" && method === "GET") return this.projectStewardFacts(url.searchParams);
       if (url.pathname === "/machine-authority" && method === "POST") return this.machineAuthority(request);
       if (url.pathname === "/container-installations" && method === "GET") {
         const rows = queryAll<{ manifest_json: string }>(this.ctx.storage.sql as never,
@@ -11887,6 +11888,42 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       "SELECT manifest_json,installed_by,installed_at,updated_at FROM installed_extensions ORDER BY extension_id"
     );
     return Response.json({ extensions: rows.map((row) => ({ manifest: JSON.parse(row.manifest_json) as ExtensionManifest, installedBy: row.installed_by, installedAt: row.installed_at, updatedAt: row.updated_at })) });
+  }
+
+  /** Small, deterministic portfolio facts for the platform Steward. No task text, files,
+   * conversations, user identities, or provider payloads cross this read-only boundary. */
+  private projectStewardFacts(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    if (!spaceId) return Response.json({ error_code: "space_id_required" }, { status: 400 });
+    const projects = queryAll<{ project_id: string; project_name: string; created_at: string; last_activity_at: string | null }>(
+      this.ctx.storage.sql as never,
+      "SELECT id AS project_id,name AS project_name,created_at,last_activity_at FROM projects WHERE space_id=? AND status='active' ORDER BY id",
+      spaceId,
+    );
+    if (!projects.length) return Response.json({ data: [] });
+    const placeholders = projects.map(() => "?").join(",");
+    const projectIds = projects.map((project) => project.project_id);
+    const taskCounts = queryAll<{ project_id: string; status: string; count: number }>(this.ctx.storage.sql as never,
+      `SELECT project_id,status,COUNT(*) AS count FROM tasks WHERE space_id=? AND project_id IN (${placeholders}) GROUP BY project_id,status`, spaceId, ...projectIds);
+    const extensions = queryAll<{ project_id: string; count: number }>(this.ctx.storage.sql as never,
+      `SELECT project_id,COUNT(*) AS count FROM extension_instances WHERE space_id=? AND status='active' AND project_id IN (${placeholders}) GROUP BY project_id`, spaceId, ...projectIds);
+    const tasksByProject = new Map<string, Map<string, number>>();
+    for (const row of taskCounts) {
+      const statuses = tasksByProject.get(row.project_id) ?? new Map<string, number>();
+      statuses.set(row.status, row.count);
+      tasksByProject.set(row.project_id, statuses);
+    }
+    const extensionsByProject = new Map(extensions.map((row) => [row.project_id, row.count]));
+    return Response.json({ data: projects.map((project) => {
+      const statuses = tasksByProject.get(project.project_id);
+      return {
+        ...project,
+        pending_task_count: statuses?.get("pending") ?? 0,
+        in_progress_task_count: statuses?.get("in_progress") ?? 0,
+        blocked_task_count: statuses?.get("blocked") ?? 0,
+        active_extension_count: extensionsByProject.get(project.project_id) ?? 0,
+      };
+    }) });
   }
 
   private async installExtension(request: Request): Promise<Response> {

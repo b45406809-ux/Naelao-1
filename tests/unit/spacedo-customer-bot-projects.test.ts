@@ -100,6 +100,20 @@ describe("SpaceDO — customer-bot project config", () => {
     expect(otherInstallation.json).toMatchObject({ allowed: false, count: 1 });
   });
 
+  it("exposes only compact task and active-install counts to the Steward facts grant", async () => {
+    const project = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Care queue" });
+    await call(spaceDO, "/tasks", "POST", { space_id: "space1", project_id: project.json.id, title: "Blocked", status: "blocked" });
+    await call(spaceDO, "/tasks", "POST", { space_id: "space1", project_id: project.json.id, title: "Pending", status: "pending" });
+    const facts = await call(spaceDO, "/project-steward-facts?space_id=space1", "GET");
+    expect(facts.status).toBe(200);
+    expect(facts.json.data).toEqual([expect.objectContaining({
+      project_id: project.json.id, project_name: "Care queue", pending_task_count: 1,
+      in_progress_task_count: 0, blocked_task_count: 1, active_extension_count: 0,
+    })]);
+    expect(JSON.stringify(facts.json)).not.toContain("Blocked");
+    expect(JSON.stringify(facts.json)).not.toContain("Pending");
+  });
+
   it("rejects an unknown project kind", async () => {
     const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "X" });
     const bad = await call(spaceDO, `/projects/${created.json.id}`, "PATCH", { kind: "evil_kind" });

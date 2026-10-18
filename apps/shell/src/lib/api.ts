@@ -1029,10 +1029,10 @@ export async function listProjects(spaceId: string, session: SessionCredentials)
 export interface ProjectStewardReview {
   project_id: string;
   project_name: string;
-  recommendation: "inspect_routine" | "owner_check_in";
+  recommendation: "inspect_routine" | "review_blocked_work" | "owner_check_in";
   confidence: "low" | "high";
   priority: number;
-  evidence: Array<{ kind: "routine_failures" | "inactivity"; count?: number; days?: number; last_activity_at?: string | null }>;
+  evidence: Array<{ kind: "routine_failures" | "blocked_tasks" | "inactivity" | "pending_tasks" | "active_extensions"; count?: number; days?: number; last_activity_at?: string | null }>;
 }
 
 /** Advisory-only, deterministic portfolio signals. No lifecycle changes are performed. */

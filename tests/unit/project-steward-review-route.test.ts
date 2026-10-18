@@ -35,7 +35,9 @@ describe("project steward review route", () => {
       PLATFORM_DB: platformDb,
       SPACE_DO: {
         idFromName: (name: string) => name,
-        get: () => ({ fetch: async () => Response.json({ data: visibleProjects }) }),
+        get: () => ({ fetch: async (request: Request) => request.url.includes("project-steward-facts")
+          ? Response.json({ data: [{ project_id: "project-visible", project_name: "Visible project", created_at: "2025-01-01T00:00:00Z", last_activity_at: null, pending_task_count: 0, in_progress_task_count: 0, blocked_task_count: 0, active_extension_count: 0 }] })
+          : Response.json({ data: visibleProjects }) }),
       },
     };
     const token = await mintInternalToken(SECRET, TENANT);
@@ -65,7 +67,9 @@ describe("project steward review route", () => {
     ];
     const env = {
       PLATFORM_SECRET: SECRET, ENVIRONMENT: "test", PLATFORM_DB: platformDb,
-      SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async () => Response.json({ data: projects }) }) },
+      SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => request.url.includes("project-steward-facts")
+        ? Response.json({ data: [{ project_id: "project-visible", project_name: "Visible", created_at: "2025-01-01T00:00:00Z", last_activity_at: null, pending_task_count: 0, in_progress_task_count: 0, blocked_task_count: 0, active_extension_count: 0 }] })
+        : Response.json({ data: projects }) }) },
     };
     const path = `https://spaces.naelao.com/internal/spaces/${SPACE}/project-steward/summary`;
     const denied = await spacesWorker.fetch(new Request(path), env as never, ctx);
@@ -87,9 +91,9 @@ describe("project steward review route", () => {
       VALUES ('${SPACE}','${TENANT}',1792195200000,'{"run_day":"2026-10-17","generated_at":1792195200000,"advisory_only":true,"data":[{"project_id":"project-visible","recommendation":"owner_check_in"},{"project_id":"project-hidden","recommendation":"inspect_routine"}]}',1792195200000)`);
     const env = {
       PLATFORM_SECRET: SECRET, ENVIRONMENT: "test", PLATFORM_DB: platformDb,
-      SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async () => Response.json({ data: [
-        { id: "project-visible", name: "Visible", status: "active", created_at: "2025-01-01T00:00:00Z", last_activity_at: null },
-      ] }) }) },
+      SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => request.url.includes("project-steward-facts")
+        ? Response.json({ data: [{ project_id: "project-visible", project_name: "Visible", created_at: "2025-01-01T00:00:00Z", last_activity_at: null, pending_task_count: 0, in_progress_task_count: 0, blocked_task_count: 0, active_extension_count: 0 }] })
+        : Response.json({ data: [{ id: "project-visible", name: "Visible", status: "active", created_at: "2025-01-01T00:00:00Z", last_activity_at: null }] }) }) },
     };
     const token = await mintInternalToken(SECRET, TENANT);
     const response = await spacesWorker.fetch(new Request(`https://spaces.naelao.com/spaces/${SPACE}/project-steward/reviews`, {

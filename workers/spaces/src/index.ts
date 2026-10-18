@@ -3372,15 +3372,11 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
   if (visibleIds instanceof Response) return visibleIds;
   if (visibleIds.length === 0) return c.json({ data: [], count: 0, generated_at: Date.now() });
 
-  const identity = getCallerIdentity(c);
-  const projectParams = new URLSearchParams({ space_id: spaceId });
-  if (identity.userId) projectParams.set("viewer_id", identity.userId);
-  else projectParams.set("space_manager", "1");
   const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
-  const projectResponse = await forwardToSpaceDO(stub, `/projects?${projectParams.toString()}`, "GET");
+  const projectResponse = await forwardToSpaceDO(stub, `/project-steward-facts?${new URLSearchParams({ space_id: spaceId })}`, "GET");
   if (!projectResponse.ok) return c.json({ error_code: "project_review_unavailable" }, 503);
-  const projectPayload = await projectResponse.json<{ data?: Array<{ id: string; name: string; status: string; created_at: string; last_activity_at: string | null }> }>();
-  const projects = (projectPayload.data ?? []).filter((project) => visibleIds.includes(project.id) && project.status === "active");
+  const projectPayload = await projectResponse.json<{ data?: Array<{ project_id: string; project_name: string; created_at: string; last_activity_at: string | null; pending_task_count: number; in_progress_task_count: number; blocked_task_count: number; active_extension_count: number }> }>();
+  const projects = (projectPayload.data ?? []).filter((project) => visibleIds.includes(project.project_id));
   if (projects.length === 0) return c.json({ data: [], count: 0, generated_at: Date.now() });
 
   // Prefer the last scheduled Space Project Steward report. Filter it against the caller's
@@ -3405,7 +3401,7 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
     `SELECT project_id, id, consecutive_failures FROM scheduled_jobs
       WHERE space_id = ? AND project_id IN (${placeholders}) AND consecutive_failures > 0
       ORDER BY consecutive_failures DESC, id`
-  ).bind(spaceId, ...projects.map((project) => project.id)).all<{ project_id: string; id: string; consecutive_failures: number }>();
+  ).bind(spaceId, ...projects.map((project) => project.project_id)).all<{ project_id: string; id: string; consecutive_failures: number }>();
   const failuresByProject = new Map<string, Array<{ id: string; consecutive_failures: number }>>();
   for (const failure of failures) {
     const list = failuresByProject.get(failure.project_id) ?? [];
@@ -3413,11 +3409,15 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
     failuresByProject.set(failure.project_id, list);
   }
   const facts: ProjectStewardFact[] = projects.map((project) => ({
-    project_id: project.id,
-    project_name: project.name,
+    project_id: project.project_id,
+    project_name: project.project_name,
     last_activity_at: project.last_activity_at,
     created_at: project.created_at,
-    failed_routines: failuresByProject.get(project.id) ?? [],
+    failed_routines: failuresByProject.get(project.project_id) ?? [],
+    pending_task_count: project.pending_task_count,
+    in_progress_task_count: project.in_progress_task_count,
+    blocked_task_count: project.blocked_task_count,
+    active_extension_count: project.active_extension_count,
   }));
   const data = rankProjectStewardReviews(facts);
   return c.json({ data, count: data.length, generated_at: Date.now(), advisory_only: true });
@@ -3432,16 +3432,16 @@ app.get("/internal/spaces/:spaceId/project-steward/summary", async (c) => {
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
   const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
-  const projectResponse = await forwardToSpaceDO(stub, `/projects?${new URLSearchParams({ space_id: spaceId, space_manager: "1" })}`, "GET");
+  const projectResponse = await forwardToSpaceDO(stub, `/project-steward-facts?${new URLSearchParams({ space_id: spaceId })}`, "GET");
   if (!projectResponse.ok) return c.json({ error_code: "project_review_unavailable" }, 503);
-  const payload = await projectResponse.json<{ data?: Array<{ id: string; name: string; status: string; created_at: string; last_activity_at: string | null }> }>();
-  const projects = (payload.data ?? []).filter((project) => project.status === "active");
+  const payload = await projectResponse.json<{ data?: Array<{ project_id: string; project_name: string; created_at: string; last_activity_at: string | null; pending_task_count: number; in_progress_task_count: number; blocked_task_count: number; active_extension_count: number }> }>();
+  const projects = payload.data ?? [];
   if (!projects.length) return c.json({ grant: "space.project_steward.read_summary.v1", data: [], generated_at: Date.now() });
   const placeholders = projects.map(() => "?").join(",");
   const { results } = await c.env.PLATFORM_DB.prepare(
     `SELECT project_id, id, consecutive_failures FROM scheduled_jobs
       WHERE space_id=? AND project_id IN (${placeholders}) AND consecutive_failures>0 ORDER BY project_id,id`
-  ).bind(spaceId, ...projects.map((project) => project.id)).all<{ project_id: string; id: string; consecutive_failures: number }>();
+  ).bind(spaceId, ...projects.map((project) => project.project_id)).all<{ project_id: string; id: string; consecutive_failures: number }>();
   const failures = new Map<string, Array<{ routine_id: string; consecutive_failures: number }>>();
   for (const row of results) {
     const current = failures.get(row.project_id) ?? [];
@@ -3449,8 +3449,10 @@ app.get("/internal/spaces/:spaceId/project-steward/summary", async (c) => {
     failures.set(row.project_id, current);
   }
   return c.json({ grant: "space.project_steward.read_summary.v1", generated_at: Date.now(), data: projects.map((project) => ({
-    project_id: project.id, project_name: project.name, created_at: project.created_at,
-    last_activity_at: project.last_activity_at, failed_routines: failures.get(project.id) ?? [],
+    project_id: project.project_id, project_name: project.project_name, created_at: project.created_at,
+    last_activity_at: project.last_activity_at, failed_routines: failures.get(project.project_id) ?? [],
+    pending_task_count: project.pending_task_count, in_progress_task_count: project.in_progress_task_count,
+    blocked_task_count: project.blocked_task_count, active_extension_count: project.active_extension_count,
   })) });
 });
 
