@@ -101,11 +101,32 @@ The auth package exports JWT verification and a static role-permission matrix. R
 
 Focused Biome checks passed on the added test/config files. No route-to-RBAC callsite was found, so enforcement relies on other worker-local policy layers; validating every route's independent authorization remains open. The configured workspace suite passed with the auth project registered: **226 test files, 960 tests**.
 
+## Crypto package stress pass (2026-10-18)
+
+This bounded review covered the crypto package exports and in-repository consumers found by search: credential encryption (`workers/credentials`), encrypted tool output (`workers/agents/src/script-engine/tool-output.ts`), and HMAC-based Durable Object naming throughout `workers/spaces` and `workers/agents`. The package's legacy tests were previously outside the configured workspace, so a package Vitest project now runs both legacy and new source tests.
+
+| File | Features and stress boundaries exercised | Evidence / disposition |
+|---|---|---|
+| `packages/crypto/src/index.ts` | PBKDF2 metadata verification, malformed hex/base64, AES-GCM envelopes and authenticated metadata, wrapped DEK framing, key lengths, HMAC signatures, large byte-to-base64 conversion, key derivation scope | Rejects noncanonical/attacker-controlled password metadata before derivation, malformed envelopes and encodings, invalid key sizes, absent key scope, and oversized password/plaintext/AAD. HMAC verification validates exact hex signatures. Large base64 conversion now chunks input. |
+| `packages/crypto/src/index.test.ts` | Invalid iterations/algorithm/salt/hash; malformed signatures; invalid DEK/wrapped-DEK formats; algorithm/IV/tag/AAD mismatch; 1 MB payload; tenant/space key separation | 6 new focused tests pass. |
+| `packages/crypto/package.json`, `packages/crypto/tsconfig.json`, `packages/crypto/vitest.config.ts` | Build/typecheck inputs, test dependency/configuration, discovery of legacy package tests | Added Vitest script/dependency and workspace config. Package typecheck passes. |
+| `tests/unit/packages/crypto.test.ts` | Existing hashing, encrypt/decrypt, wrap/unwrap, HMAC, and derivation round trips | 15 existing tests pass in the crypto package project. |
+
+The focused crypto project passed **21 tests across 2 files**; focused TypeScript and Biome checks passed. The configured workspace passed with **228 test files and 981 tests**.
+
+### Remaining crypto risks and unverified behavior
+
+- PBKDF2 verification is fixed to the stored 100,000-iteration Workers ceiling. Raising this requires a format/version migration and Worker runtime compatibility test.
+- `deriveKek` uses PBKDF2 with one iteration as a deterministic tenant scoping function; the platform secret must carry strong entropy and be rotated deliberately. This does not replace a managed KMS/HSM.
+- Stress tests use Node WebCrypto and mocks; Cloudflare Workers crypto limits, D1/R2 persistence, key rotation, and live ciphertext compatibility were not exercised.
+- Durable Object names include caller-supplied type/resource identifiers; their production validation and Cloudflare name length constraints belong to the caller/runtime boundary and remain to be reviewed.
+- Plaintext and authenticated metadata are capped in this library, but full production payload-size distributions and migration impact are not measured.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 226 test files, 960 tests, with webhook, idempotency, sweeper, and auth projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 228 test files, 981 tests, with webhook, idempotency, sweeper, auth, and crypto projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

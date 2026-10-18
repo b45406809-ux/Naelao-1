@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1846
-Files with source or executable-configuration extensions: 1640
-Inventory revision: f4b1278d plus the auth RBAC audit batch files in this working tree
+Files: 1848
+Files with source or executable-configuration extensions: 1642
+Inventory revision: crypto audit batch in the current working tree
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -780,9 +780,11 @@ packages/
     tsconfig.json
   crypto/
     src/
+      index.test.ts
       index.ts
     package.json
     tsconfig.json
+    vitest.config.ts
   db/
     src/
       index.ts

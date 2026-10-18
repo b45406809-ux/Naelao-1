@@ -619,9 +619,11 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/crypto`
 
-- [ ] `packages/crypto/package.json`
-- [ ] `packages/crypto/src/index.ts`
-- [ ] `packages/crypto/tsconfig.json`
+- [x] `packages/crypto/package.json`
+- [x] `packages/crypto/src/index.ts`
+- [x] `packages/crypto/src/index.test.ts` (added stress coverage)
+- [x] `packages/crypto/vitest.config.ts` (added package test discovery)
+- [x] `packages/crypto/tsconfig.json`
 
 ### `packages/db`
 
@@ -1139,7 +1141,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/packages/analytics-schema.test.ts`
 - [x] `tests/unit/packages/auth.test.ts`
 - [ ] `tests/unit/packages/billing-core.test.ts`
-- [ ] `tests/unit/packages/crypto.test.ts`
+- [x] `tests/unit/packages/crypto.test.ts` (included in crypto workspace project)
 - [ ] `tests/unit/packages/entitlements.test.ts`
 - [ ] `tests/unit/packages/events-cron.test.ts`
 - [ ] `tests/unit/packages/events.test.ts`
