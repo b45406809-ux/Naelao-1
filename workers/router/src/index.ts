@@ -648,6 +648,19 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/workspace\/files(\/.*)?$/,
   // Visual workflow plan drafts are owner/admin writes; Spaces validates and compiles them.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/workflows\/plan$/,
+  // Signed project-extension install/rollback/release management. These patterns only establish
+  // the product session identity; the Spaces/Agents handlers still enforce project membership,
+  // owner/admin policy, publisher trust, and exact installation scope.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions$/,
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions\/([^/]+)\/releases$/,
+  /^\/spaces\/([^/]+)\/extension-releases\/rollback$/,
+  /^\/spaces\/([^/]+)\/extension-publishers(\/[^/]+)?$/,
+  // Composed provider connections are installation scoped and re-authorized by Agents.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions\/([^/]+)\/connections\/([^/]+)(?:\/(?:oauth\/slack\/start|telegram\/connect|routes(?:\/available)?))?$/,
+  // Extension channel installation and operations queue; the downstream worker owns role checks.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions$/,
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions\/([^/]+)(?:\/(?:session-state|inbox(?:\/(?:sla|notes|assign|takeover|delete-conversation|reply|export))?))?$/,
+  /^\/spaces\/([^/]+)\/assistant\/channel-extensions$/,
   // F-WALLET-7: the consolidated per-business wallet view (balance + lifetime cut summary +
   // recent transactions) the shell's business Wallet section reads. Gated by
   // requireBusinessMembership (member GET) on the spaces worker — identity here, authorization there.
@@ -1328,6 +1341,14 @@ api.all("/spaces/:spaceId/customer-voice/*", async (c) =>
 // Provider OAuth, credential vaulting, and connection lifecycle for a specific composed project
 // extension are Agents-owned. Keep this before `/spaces/*` so it does not land in Spaces Worker.
 api.all("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+// The external channel inbox is Agents-owned; channel installation, removal, and session cleanup
+// remain on Spaces. Keep the exact inbox subtree ahead of the general Spaces project proxy.
+api.all("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 

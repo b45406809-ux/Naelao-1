@@ -1540,3 +1540,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The visual editor now accepts an explicit static JSON mock output for each step, applies those outputs through earlier-step references, and shows the simulated calls/results. Fixtures are capped at 16 KB per step and 64 KB total. They are local-only and are not included in the saved plan.
 - Verification: SDK typecheck and full SDK tests passed (9 tests); Shell typecheck passed; `git diff --check` passed.
 - This remains an offline composition check. It does not validate live tool output schemas, execute provider/Worker calls, or estimate credits.
+
+### Phase 7 signed internal workflow package install checkpoint (2026-10-18)
+
+- Added an SDK builder that turns a validated declarative plan into a canonical workflow-only extension manifest and artifact. The Shell can now create that package, display the publisher signing payload, accept a signature from an already trusted key, and submit it through the existing signed project-extension installation route. It never asks for or stores a private key. Gadget operations are rejected by this shortcut because they require the explicit per-role/table grants in the composed-package editor.
+- Product-session routing now explicitly allows the signed extension install, publisher-key management, release/rollback, provider-connection, channel install/inbox, and workflow draft paths. The external inbox subtree is routed to the Agents worker, while installation and cleanup stay with Spaces. The downstream membership and owner/admin checks remain authoritative.
+- Verification: SDK typecheck/build and full SDK tests passed (10 tests); Shell typecheck passed; Router typecheck passed; 25 path/routing tests passed, including ensuring the inbox reaches Agents and unrelated paths remain excluded; `git diff --check` passed.
+- The installed item is an internal project workflow under the existing planner/worker architecture. Upgrade migration/rollback state safety, scheduling UX, approval nodes, recovery/checkpoints, and live cost evidence remain open.

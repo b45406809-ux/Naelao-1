@@ -1,3 +1,5 @@
+import { validateExtensionManifest, type ExtensionManifest } from "@naelao/agent-sdk";
+
 /** Small declarative workflow plan for visual editors. Plans only name host-issued capabilities;
  * generated code invokes them through the durable workflow context and cannot introduce imports,
  * arbitrary JavaScript, credentials, or new capabilities. */
@@ -6,7 +8,6 @@ export interface WorkflowPlanStep {
   operation: string;
   args: Record<string, unknown>;
 }
-
 export interface WorkflowPlan {
   schemaVersion: "1.0";
   steps: readonly WorkflowPlanStep[];
@@ -17,6 +18,22 @@ export interface CompiledWorkflowPlan {
   stepIds: string[];
   capabilities: string[];
   sourceBytes: number;
+}
+
+export function createWorkflowExtensionRelease(input: { extensionId: string; version: string; plan: WorkflowPlan; allowedCapabilities: readonly string[] }): {
+  manifest: ExtensionManifest; artifactPath: "./workflow.ts"; source: string; operations: string[];
+} {
+  const compiled = compileWorkflowPlan(input.plan, input.allowedCapabilities);
+  if (compiled.capabilities.some(operation => operation.startsWith("extension.gadget."))) throw new Error("workflow_gadget_action_grants_required");
+  const artifactPath = "./workflow.ts" as const;
+  const manifest = validateExtensionManifest({
+    id: input.extensionId, type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.workflow"], gadgets: [], daemons: [], commands: [],
+    bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: input.extensionId, version: input.version,
+      primitives: [{ schemaVersion: "1.0", kind: "workflow", id: "workflow", version: input.version, permissions: [], capabilityRequirements: [], lifecycle: {},
+        executionMode: "interactive", entry: artifactPath, steps: [], toolNames: compiled.capabilities }],
+      workerRoles: [{ id: "workflow_member", principal: "project_member", invocation: "workflow_step", execution: "worker", entry: artifactPath, primitiveIds: ["workflow"] }] },
+  });
+  return { manifest, artifactPath, source: compiled.source, operations: compiled.capabilities };
 }
 
 const STEP_ID = /^[a-z][a-z0-9_-]{0,47}$/;

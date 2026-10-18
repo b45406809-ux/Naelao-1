@@ -1,16 +1,16 @@
 "use client";
 
 import * as React from "react";
-import { compileWorkflowPlan, type WorkflowPlanStep } from "@naelao/sdk/workflow";
+import { compileWorkflowPlan, createWorkflowExtensionRelease, type WorkflowPlanStep } from "@naelao/sdk/workflow";
 import { runMockWorkflowPlan } from "@naelao/sdk/testing";
+import { canonicalExtensionManifestForPublisher, extensionPublisherSigningPayload } from "@naelao/agent-sdk";
 import { Button } from "@naelao/ui";
-import { saveWorkflowPlanDraft, type SessionCredentials } from "@/lib/api";
+import { installProjectCanvasExtension, listExtensionPublisherKeys, saveWorkflowPlanDraft, type ExtensionPublisherKey, type SessionCredentials } from "@/lib/api";
 
 type DraftStep = { id: string; operation: string; args: string; mockResponse: string };
 const newStep = (index: number): DraftStep => ({ id: `step-${index}`, operation: "", args: "{}", mockResponse: JSON.stringify({ simulated: true, step: `step-${index}` }, null, 2) });
 
-/** A bounded editor for a declarative plan. It writes a validated draft; scheduling and runtime
- * grants remain in the existing workflow installation path. */
+/** A bounded plan editor with offline mock and a signed internal workflow package path. */
 export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId: string; projectId: string; session: SessionCredentials }) {
   const [name, setName] = React.useState("new-workflow");
   const [steps, setSteps] = React.useState<DraftStep[]>([newStep(1)]);
@@ -18,10 +18,28 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
   const [error, setError] = React.useState<string | null>(null);
   const [saved, setSaved] = React.useState<{ path: string; digest: string; bytes: number } | null>(null);
   const [offlineRun, setOfflineRun] = React.useState<ReturnType<typeof runMockWorkflowPlan> | null>(null);
+  const [extensionId, setExtensionId] = React.useState("ext_workflow_plan");
+  const [version, setVersion] = React.useState("1.0.0");
+  const [instanceKey, setInstanceKey] = React.useState("workflow_bot");
+  const [publisherKeys, setPublisherKeys] = React.useState<ExtensionPublisherKey[]>([]);
+  const [publisherKeyId, setPublisherKeyId] = React.useState("");
+  const [publisherSignature, setPublisherSignature] = React.useState("");
+  const [installConfirmed, setInstallConfirmed] = React.useState(false);
+  const [upgradeConfirmed, setUpgradeConfirmed] = React.useState(false);
+  const [installResult, setInstallResult] = React.useState<string | null>(null);
+  const [keyLoadError, setKeyLoadError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let live = true;
+    setPublisherKeys([]); setPublisherKeyId(""); setPublisherSignature(""); setKeyLoadError(null);
+    listExtensionPublisherKeys(spaceId, session).then(result => { if (live) setPublisherKeys(result.publishers); })
+      .catch(cause => { if (live) setKeyLoadError(cause instanceof Error ? cause.message : "Couldn't load trusted publisher keys."); });
+    return () => { live = false; };
+  }, [spaceId, session]);
 
   const update = (index: number, patch: Partial<DraftStep>) => {
     setSteps(previous => previous.map((step, i) => i === index ? { ...step, ...patch } : step));
-    setSaved(null); setOfflineRun(null);
+    setSaved(null); setOfflineRun(null); setPublisherSignature(""); setInstallConfirmed(false); setInstallResult(null);
   };
 
   const build = () => {
@@ -68,6 +86,30 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
   };
 
   const preview = (() => { try { return build(); } catch { return null; } })();
+  const releaseDraft = (() => {
+    try {
+      if (!/^[a-z][a-z0-9_-]{1,63}$/.test(extensionId) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)
+        || !/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) throw new Error("Use a valid extension ID, semantic version, and instance key.");
+      const { plan } = build();
+      const release = createWorkflowExtensionRelease({ extensionId, version, plan, allowedCapabilities: plan.steps.map(step => step.operation) });
+      const artifacts = { [release.artifactPath]: release.source };
+      const manifestJson = canonicalExtensionManifestForPublisher(release.manifest);
+      return { ...release, manifestJson, artifacts, signingPayload: extensionPublisherSigningPayload(manifestJson, artifacts) };
+    } catch (cause) { return { error: cause instanceof Error ? cause.message : "Couldn't prepare an internal workflow release." }; }
+  })();
+
+  const installWorkflow = async () => {
+    if (!releaseDraft || "error" in releaseDraft) return;
+    setBusy(true); setError(null); setInstallResult(null);
+    try {
+      if (!publisherKeyId || !publisherSignature.trim()) throw new Error("Choose a trusted active publisher key and provide its release signature.");
+      const result = await installProjectCanvasExtension(spaceId, projectId, session, releaseDraft.manifest, releaseDraft.artifacts, upgradeConfirmed, instanceKey,
+        { key_id: publisherKeyId, signature: publisherSignature.trim() });
+      if (!result.installed) throw new Error(result.message ?? result.error_code ?? "Workflow extension installation failed.");
+      setInstallResult(`Installed ${extensionId} v${version} as instance ${result.installationId ?? instanceKey}. This is an internal project workflow; it does not expose a customer channel.`);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Couldn't install the signed workflow extension."); }
+    finally { setBusy(false); }
+  };
 
   return <section aria-labelledby="workflow-plan-title" style={{ margin: "24px 0", padding: 20, border: "1px solid var(--border, #ddd)", borderRadius: 12 }}>
     <h2 id="workflow-plan-title">Compose a workflow plan</h2>
@@ -83,12 +125,12 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
           <label>Capability operation<input className="form-input" value={step.operation} maxLength={96} placeholder="for example, documents.summarize" onChange={event => update(index, { operation: event.target.value })} /></label>
           <label>Arguments (JSON object)<textarea className="form-input" rows={4} value={step.args} onChange={event => update(index, { args: event.target.value })} spellCheck={false} /></label>
           <label>Offline mock output (JSON)<textarea className="form-input" rows={3} value={step.mockResponse} onChange={event => update(index, { mockResponse: event.target.value })} spellCheck={false} /><span>This static result is used only by “Run offline mock”. It is never sent to a provider.</span></label>
-          <Button type="button" disabled={steps.length <= 1} onClick={() => { setSteps(previous => previous.filter((_, i) => i !== index)); setSaved(null); setOfflineRun(null); }}>Remove step</Button>
+          <Button type="button" disabled={steps.length <= 1} onClick={() => { setSteps(previous => previous.filter((_, i) => i !== index)); setSaved(null); setOfflineRun(null); setPublisherSignature(""); setInstallConfirmed(false); setInstallResult(null); }}>Remove step</Button>
         </fieldset>
       </li>)}
     </ol>
     <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-      <Button type="button" disabled={steps.length >= 64} onClick={() => { setSteps(previous => { let index = 1; while (previous.some(step => step.id === `step-${index}`)) index++; return [...previous, newStep(index)]; }); setSaved(null); setOfflineRun(null); }}>Add step</Button>
+      <Button type="button" disabled={steps.length >= 64} onClick={() => { setSteps(previous => { let index = 1; while (previous.some(step => step.id === `step-${index}`)) index++; return [...previous, newStep(index)]; }); setSaved(null); setOfflineRun(null); setPublisherSignature(""); setInstallConfirmed(false); setInstallResult(null); }}>Add step</Button>
       <Button type="button" disabled={!preview} onClick={runOffline}>Run offline mock</Button>
       <Button type="button" disabled={busy || !preview} onClick={save}>{busy ? "Validating and saving…" : "Validate and save draft"}</Button>
     </div>
@@ -96,5 +138,24 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
     {error && <p role="alert">{error}</p>}
     {offlineRun && <div role="status"><h3>Offline mock passed</h3><p>No provider calls, Worker runs, or credits were used. This is a structural test with simulated tool results; cost is not measured.</p><pre style={{ overflowX: "auto", whiteSpace: "pre-wrap" }}>{JSON.stringify({ result: offlineRun.result, profile: offlineRun.profile }, null, 2)}</pre></div>}
     {saved && <p role="status">Validated draft saved at <code>{saved.path}</code> ({saved.bytes} bytes, digest {saved.digest.slice(0, 12)}…). It is not connected to workflow installation or scheduling yet.</p>}
+    <details style={{ marginTop: 18, padding: 14, border: "1px solid var(--border, #ddd)", borderRadius: 10 }}>
+      <summary style={{ cursor: "pointer", fontWeight: 650 }}>Package this as an internal project workflow</summary>
+      <p>This creates a signed extension bundle containing this workflow only. It uses the project-member workflow role and the existing planner/worker runtime. It adds no external channel and cannot grant new tool access.</p>
+      <label>Extension ID<input className="form-input" value={extensionId} maxLength={64} onChange={event => { setExtensionId(event.target.value); setPublisherSignature(""); setInstallConfirmed(false); setUpgradeConfirmed(false); setInstallResult(null); }} /></label>
+      <label>Version<input className="form-input" value={version} maxLength={64} onChange={event => { setVersion(event.target.value); setPublisherSignature(""); setInstallConfirmed(false); setUpgradeConfirmed(false); setInstallResult(null); }} /></label>
+      <label>Installation instance key<input className="form-input" value={instanceKey} maxLength={32} onChange={event => { setInstanceKey(event.target.value); setInstallConfirmed(false); setInstallResult(null); }} /></label>
+      {releaseDraft && "error" in releaseDraft ? <p role="alert">{releaseDraft.error}</p> : releaseDraft && <>
+        <p>Review the declaration: workflow <code>workflow</code>, entry <code>./workflow.ts</code>, operations {preview?.compiled.capabilities.map(item => <code key={item}> {item}</code>)}. Runtime authorization remains enforced by the host.</p>
+        <p>If no active key is listed, register one in the project Extensions panel. Signing happens outside Naelao; no private key is entered or stored here.</p>
+        <label>Trusted publisher key<select className="form-input" value={publisherKeyId} onChange={event => { setPublisherKeyId(event.target.value); setPublisherSignature(""); setInstallConfirmed(false); setInstallResult(null); }}><option value="">Choose active key</option>{publisherKeys.filter(key => key.status === "active").map(key => <option key={key.key_id} value={key.key_id}>{key.publisher_id} · {key.key_id.slice(0, 12)}…</option>)}</select></label>
+        {keyLoadError && <p role="alert">{keyLoadError}</p>}
+        <label>Release signature (base64url)<input className="form-input" value={publisherSignature} onChange={event => { setPublisherSignature(event.target.value); setInstallConfirmed(false); setInstallResult(null); }} placeholder="Sign the payload below with the trusted publisher's private key" /></label>
+        <details><summary>Canonical publisher signing payload</summary><p>Sign this JSON with the publisher key using <code>signExtensionPublisherRelease</code> from <code>@naelao/agent-sdk</code>. The private key stays outside Naelao.</p><pre style={{ maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap" }}>{JSON.stringify({ manifestJson: releaseDraft.manifestJson, artifacts: releaseDraft.artifacts, signingPayload: releaseDraft.signingPayload }, null, 2)}</pre></details>
+        <label style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={installConfirmed} onChange={event => setInstallConfirmed(event.target.checked)} />I reviewed the internal workflow manifest, operations, and generated artifact.</label>
+        <label style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={upgradeConfirmed} onChange={event => setUpgradeConfirmed(event.target.checked)} />Approve a forward version upgrade for this extension ID</label>
+        <Button type="button" disabled={busy || !installConfirmed || !publisherKeyId || !publisherSignature.trim()} onClick={installWorkflow}>{busy ? "Installing…" : "Install signed internal workflow"}</Button>
+      </>}
+    </details>
+    {installResult && <p role="status">{installResult}</p>}
   </section>;
 }

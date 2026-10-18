@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compileWorkflowPlan } from "./workflow.js";
+import { compileWorkflowPlan, createWorkflowExtensionRelease } from "./workflow.js";
 
 describe("declarative workflow plan compiler", () => {
   it("emits durable, capability-bound steps with data serialized as JSON", () => {
@@ -34,5 +34,18 @@ describe("declarative workflow plan compiler", () => {
       { id: "lookup", operation: "records.read", args: {} },
       { id: "notify", operation: "notifications.email", args: { to: { $workflowRef: "lookup#/owner/~2email" } } },
     ] }, ["records.read", "notifications.email"])).toThrow("workflow_plan_reference_invalid");
+  });
+
+  it("builds a signed-package-ready internal workflow bundle and refuses ungranted Gadget table actions", () => {
+    const release = createWorkflowExtensionRelease({ extensionId: "ext_course_helper", version: "1.0.0",
+      plan: { schemaVersion: "1.0", steps: [{ id: "summarize", operation: "knowledge.search", args: { query: "lesson" } }] },
+      allowedCapabilities: ["knowledge.search"] });
+    expect(release).toMatchObject({ artifactPath: "./workflow.ts", operations: ["knowledge.search"], manifest: {
+      id: "ext_course_helper", bundle: { id: "ext_course_helper", primitives: [{ id: "workflow", kind: "workflow", entry: "./workflow.ts" }],
+        workerRoles: [{ principal: "project_member", primitiveIds: ["workflow"] }] },
+    } });
+    expect(() => createWorkflowExtensionRelease({ extensionId: "ext_course_helper", version: "1.0.0",
+      plan: { schemaVersion: "1.0", steps: [{ id: "write", operation: "extension.gadget.insert", args: { gadget_id: "notes", table: "items", record: {} } }] },
+      allowedCapabilities: ["extension.gadget.insert"] })).toThrow("workflow_gadget_action_grants_required");
   });
 });

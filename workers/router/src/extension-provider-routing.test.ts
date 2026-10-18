@@ -22,6 +22,25 @@ describe("project extension provider routing", () => {
     expect(env.SPACES_WORKER.fetch).not.toHaveBeenCalled();
   });
 
+  it("forwards the installation-scoped external inbox subtree to Agents", async () => {
+    const secret = "router-test-platform-secret";
+    const workerFetch = vi.fn(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe("/spaces/space-1/projects/project-1/channel-extensions/install-1/inbox/assign");
+      expect(request.headers.get("x-naelao-user-id")).toBe("owner-1");
+      expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
+      return Response.json({ assigned: true });
+    });
+    const token = await signJwt({ sub: "owner-1", tid: "tenant-1", email: "owner@example.test", role: "owner", scopes: [] }, secret);
+    const env = { ENVIRONMENT: "test", JWT_SECRET: secret, PLATFORM_SECRET: secret, AGENTS_WORKER: { fetch: workerFetch },
+      SPACES_WORKER: { fetch: vi.fn(() => Response.json({ wrong_worker: true })) } } as unknown as Env;
+    const response = await app.request("/v1/spaces/space-1/projects/project-1/channel-extensions/install-1/inbox/assign", {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ event_id: "event-1" }),
+    }, env);
+    expect(response.status).toBe(200);
+    expect(workerFetch).toHaveBeenCalledOnce();
+    expect(env.SPACES_WORKER.fetch).not.toHaveBeenCalled();
+  });
+
   it("leaves the Slack callback and per-install Telegram webhook public for providers", async () => {
     const workerFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));
     const secret = "router-test-platform-secret";
