@@ -1323,3 +1323,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - If inference fails after reservation, the reservation is settled at zero to release the hold immediately instead of waiting for its lease to expire. Delivery failures after a completed inference do not erase its cost.
 - Verification: focused restricted-answer and settlement tests passed (11 tests); Agents Worker typecheck and `git diff --check` passed. An initial typecheck caught an exact-optional-property typing issue in the optional usage evidence; corrected before the passing run.
 - Phase 4 remains open for unified, versioned usage events across inference/execution/storage/connectors, broader install/run and provider spend budgets, abuse policy settings, and usage reconciliation/UI.
+
+### Phase 3 direct scheduled-script budget checkpoint (2026-10-18)
+
+- Direct event/scheduled scripts with a Project scope now re-read the SpaceDO project policy, enforce the project's execution-tier ceiling, check the shared Space wallet before running, and reserve one credit against a configured daily Project cap. This covers the bounded single isolate/container infrastructure charge; Tier 1/no-cost executions settle the hold at zero.
+- After execution, the host records infrastructure usage and settles the Project cap plus wallet using a run-scoped idempotency key. A thrown execution releases the held amount. Projectless Space-wide scripts preserve their existing behavior.
+- Verification: Agents Worker typecheck passed; scheduled dispatch and adjacent restricted-answer suites passed (14 tests); `git diff --check` passed.
+- This closes direct-script policy admission, not full routine economics: project goal runs reserve model inference through the normal planner entrypoint, while a unified per-run reservation covering both inference and every possible execution/storage/connector resource remains a Phase 4 requirement. Dispatch-to-DO at-most-once replay for ambiguous direct-script execution also remains open.
