@@ -34,6 +34,15 @@ describe("project steward review ranking", () => {
     ]));
   });
 
+  it("surfaces expired or failed external extension connections before inactivity prompts", () => {
+    const reviews = rankProjectStewardReviews([
+      { project_id: "connection", project_name: "Connection", created_at: "2026-01-01T00:00:00Z", last_activity_at: "2026-01-01T00:00:00Z", failed_routines: [], unhealthy_extension_connection_count: 2 },
+      { project_id: "blocked", project_name: "Blocked", created_at: "2026-01-01T00:00:00Z", last_activity_at: null, failed_routines: [], blocked_task_count: 1 },
+    ], Date.parse("2026-01-15T00:00:00Z"));
+    expect(reviews.map((review) => review.project_id)).toEqual(["blocked", "connection"]);
+    expect(reviews[1]).toMatchObject({ recommendation: "inspect_extension_health", confidence: "high", evidence: [{ kind: "connection_failures", count: 2 }] });
+  });
+
   it("never emits archive, delete, pause, or extension shutdown actions", () => {
     const reviews = rankProjectStewardReviews([
       { project_id: "quiet", project_name: "Quiet", created_at: "2025-01-01T00:00:00Z", last_activity_at: "2025-01-01T00:00:00Z", failed_routines: [] },

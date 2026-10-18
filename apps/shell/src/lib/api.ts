@@ -1036,10 +1036,10 @@ export async function saveWorkflowPlanDraft(spaceId: string, projectId: string, 
 export interface ProjectStewardReview {
   project_id: string;
   project_name: string;
-  recommendation: "inspect_routine" | "review_blocked_work" | "owner_check_in";
+  recommendation: "inspect_routine" | "review_blocked_work" | "inspect_extension_health" | "owner_check_in";
   confidence: "low" | "high";
   priority: number;
-  evidence: Array<{ kind: "routine_failures" | "blocked_tasks" | "inactivity" | "pending_tasks" | "active_extensions"; count?: number; days?: number; last_activity_at?: string | null }>;
+  evidence: Array<{ kind: "routine_failures" | "blocked_tasks" | "connection_failures" | "inactivity" | "pending_tasks" | "active_extensions"; count?: number; days?: number; last_activity_at?: string | null }>;
   review_key: string;
   decision?: { action: "acknowledge"; actor_id: string; note: string | null; created_at: number };
 }

@@ -118,7 +118,7 @@ export default function ProjectBotsPage() {
         <section aria-labelledby="portfolio-review-title" className="settings-block" style={{ padding: 14, marginBottom: 16 }}>
           <div id="portfolio-review-title" style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Project review signals</div>
           <p style={{ margin: "0 0 10px", color: "var(--text3)", fontSize: 12 }}>
-            Deterministic signals from project activity and routine failures. They are advisory only. Owner/admin review choices are recorded against the current evidence; no Bot or extension is paused and no project is archived or deleted.
+            Deterministic signals from project activity, routine failures, blocked work, and external extension connection health. They are advisory only. Owner/admin review choices are recorded against the current evidence; no Bot or extension is paused and no project is archived or deleted.
           </p>
           {decisionError && <p role="alert" style={{ color: "#dc2626", fontSize: 12 }}>Couldn’t save that review decision. Refresh and try again.</p>}
           <ul style={{ display: "grid", gap: 8, listStyle: "none", padding: 0, margin: 0 }}>
@@ -129,7 +129,9 @@ export default function ProjectBotsPage() {
                     ? `${review.evidence.find((item) => item.kind === "routine_failures")?.count ?? 0} routine failure(s)`
                     : review.recommendation === "review_blocked_work"
                       ? `${review.evidence.find((item) => item.kind === "blocked_tasks")?.count ?? 0} blocked task(s)`
-                      : `No activity for ${review.evidence.find((item) => item.kind === "inactivity")?.days ?? 0} days${review.evidence.find((item) => item.kind === "active_extensions") ? ` · ${review.evidence.find((item) => item.kind === "active_extensions")?.count} active extension(s)` : ""}`} · {review.confidence} confidence
+                      : review.recommendation === "inspect_extension_health"
+                        ? `${review.evidence.find((item) => item.kind === "connection_failures")?.count ?? 0} external extension connection(s) need attention`
+                        : `No activity for ${review.evidence.find((item) => item.kind === "inactivity")?.days ?? 0} days${review.evidence.find((item) => item.kind === "active_extensions") ? ` · ${review.evidence.find((item) => item.kind === "active_extensions")?.count} active extension(s)` : ""}`} · {review.confidence} confidence
                 </span>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   {review.decision && <span style={{ fontSize: 11, color: "var(--text3)" }}>Reviewed by {review.decision.actor_id}</span>}

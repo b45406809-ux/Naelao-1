@@ -1561,3 +1561,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The Project Bots roster now lets an owner/admin attach a bounded 240-character note to an acknowledge, snooze, or dismiss action. The note is stored with the existing evidence-keyed decision record and displayed again on an acknowledged signal. This captures human context alongside the actor and exact signal evidence.
 - Verification: Shell typecheck passed; `git diff --check` passed. The change uses the existing authorized decision API; no new lifecycle mutation was introduced.
 - Remaining: the UI note is optional, snoozed/dismissed records remain hidden as before, and no retirement action was added. The actual reversible retirement flow still needs impact preview, explicit owner confirmation, routine/extension/channel quiescence, and a coordinated restore record.
+
+### Phase 3 provider-health review evidence checkpoint (2026-10-18)
+
+- The typed Space Project Steward summary now includes only the count of project extension provider connections in `expired` or `error` state. The count is joined to currently visible projects in the Spaces Worker; no provider account IDs, labels, credentials, or tokens leave the summary boundary.
+- The deterministic ranker emits a high-confidence `inspect_extension_health` review when a project has such connections. It ranks behind blocked work and routine failures and includes the count as evidence. Owner/admin decision validation accepts this new recommendation, and the Project Bots roster labels it clearly.
+- Verification: Spaces, Agents, and Shell typechecks passed; Steward ranker/decision suites passed (7 tests); `git diff --check` passed.
+- Remaining Phase 3: provider connection `error`/`expired` state is only as fresh as the provider lifecycle writer; include exact run/spend context, and implement the reviewed reversible retirement workflow with a routine fence and extension/channel quiescence. No automatic pause/archive was introduced.

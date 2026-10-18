@@ -8,15 +8,16 @@ export interface ProjectStewardFact {
   in_progress_task_count?: number;
   blocked_task_count?: number;
   active_extension_count?: number;
+  unhealthy_extension_connection_count?: number;
 }
 
 export interface ProjectStewardReview {
   project_id: string;
   project_name: string;
-  recommendation: "inspect_routine" | "review_blocked_work" | "owner_check_in";
+  recommendation: "inspect_routine" | "review_blocked_work" | "inspect_extension_health" | "owner_check_in";
   confidence: "low" | "high";
   priority: number;
-  evidence: Array<{ kind: "routine_failures" | "blocked_tasks" | "inactivity" | "pending_tasks" | "active_extensions"; count?: number; days?: number; last_activity_at?: string | null }>;
+  evidence: Array<{ kind: "routine_failures" | "blocked_tasks" | "connection_failures" | "inactivity" | "pending_tasks" | "active_extensions"; count?: number; days?: number; last_activity_at?: string | null }>;
 }
 
 /** Deterministic, advisory-only portfolio ranking. It deliberately cannot change project or
@@ -51,6 +52,16 @@ export function rankProjectStewardReviews(
         confidence: "high",
         priority: 80 + Math.min(blockedCount, 20),
         evidence: [{ kind: "blocked_tasks", count: blockedCount }],
+      });
+    } else if ((fact.unhealthy_extension_connection_count ?? 0) > 0) {
+      const failureCount = fact.unhealthy_extension_connection_count ?? 0;
+      reviews.push({
+        project_id: fact.project_id,
+        project_name: fact.project_name,
+        recommendation: "inspect_extension_health",
+        confidence: "high",
+        priority: 70 + Math.min(failureCount, 20),
+        evidence: [{ kind: "connection_failures", count: failureCount }],
       });
     } else if (inactiveDays * 86_400_000 >= inactivityThresholdMs) {
       const evidence: ProjectStewardReview["evidence"] = [

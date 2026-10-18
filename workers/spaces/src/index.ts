@@ -3530,7 +3530,7 @@ async function applyProjectStewardDecisions(c: any, spaceId: string, tenantId: s
   const now = Date.now();
   const visible: Array<ProjectStewardReview & { review_key: string; decision?: { action: string; actor_id: string; note: string | null; created_at: number } }> = [];
   for (const review of reviews) {
-    if (!review || !["inspect_routine", "review_blocked_work", "owner_check_in"].includes(review.recommendation)
+    if (!review || !["inspect_routine", "review_blocked_work", "inspect_extension_health", "owner_check_in"].includes(review.recommendation)
       || !Array.isArray(review.evidence)) continue;
     const reviewKey = await projectStewardReviewKey(review);
     const row = byKey.get(`${review.project_id}:${reviewKey}`);
@@ -3579,6 +3579,12 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
       WHERE space_id = ? AND project_id IN (${placeholders}) AND consecutive_failures > 0
       ORDER BY consecutive_failures DESC, id`
   ).bind(spaceId, ...projects.map((project) => project.project_id)).all<{ project_id: string; id: string; consecutive_failures: number }>();
+  const { results: unhealthyConnections } = await c.env.PLATFORM_DB.prepare(
+    `SELECT project_id,COUNT(*) AS count FROM extension_provider_connections
+      WHERE tenant_id=? AND space_id=? AND project_id IN (${placeholders}) AND status IN ('expired','error')
+      GROUP BY project_id`
+  ).bind(owned.tenantId, spaceId, ...projects.map((project) => project.project_id)).all<{ project_id: string; count: number }>();
+  const connectionFailuresByProject = new Map(unhealthyConnections.map((row) => [row.project_id, row.count]));
   const failuresByProject = new Map<string, Array<{ id: string; consecutive_failures: number }>>();
   for (const failure of failures) {
     const list = failuresByProject.get(failure.project_id) ?? [];
@@ -3595,6 +3601,7 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
     in_progress_task_count: project.in_progress_task_count,
     blocked_task_count: project.blocked_task_count,
     active_extension_count: project.active_extension_count,
+    unhealthy_extension_connection_count: connectionFailuresByProject.get(project.project_id) ?? 0,
   }));
   const data = await applyProjectStewardDecisions(c, spaceId, owned.tenantId, visibleIds, rankProjectStewardReviews(facts));
   return c.json({ data, count: data.length, generated_at: Date.now(), advisory_only: true });
@@ -3610,7 +3617,7 @@ app.post("/spaces/:spaceId/project-steward/reviews/decision", async (c) => {
   const body = await c.req.json<{ project_id?: string; review_key?: string; recommendation?: string; action?: string; note?: string }>().catch(() => null);
   if (!body) return c.json({ error_code: "invalid_project_review_decision" }, 400);
   if (!body.project_id || !/^[a-f0-9]{64}$/.test(body.review_key ?? "")
-    || !["inspect_routine", "review_blocked_work", "owner_check_in"].includes(body.recommendation ?? "")
+    || !["inspect_routine", "review_blocked_work", "inspect_extension_health", "owner_check_in"].includes(body.recommendation ?? "")
     || !isProjectStewardDecisionAction(body.action)
     || (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 240))) {
     return c.json({ error_code: "invalid_project_review_decision" }, 400);
@@ -3649,6 +3656,12 @@ app.get("/internal/spaces/:spaceId/project-steward/summary", async (c) => {
     `SELECT project_id, id, consecutive_failures FROM scheduled_jobs
       WHERE space_id=? AND project_id IN (${placeholders}) AND consecutive_failures>0 ORDER BY project_id,id`
   ).bind(spaceId, ...projects.map((project) => project.project_id)).all<{ project_id: string; id: string; consecutive_failures: number }>();
+  const { results: unhealthyConnections } = await c.env.PLATFORM_DB.prepare(
+    `SELECT project_id,COUNT(*) AS count FROM extension_provider_connections
+      WHERE tenant_id=? AND space_id=? AND project_id IN (${placeholders}) AND status IN ('expired','error')
+      GROUP BY project_id`
+  ).bind(owned.tenantId, spaceId, ...projects.map((project) => project.project_id)).all<{ project_id: string; count: number }>();
+  const connectionFailuresByProject = new Map(unhealthyConnections.map((row) => [row.project_id, row.count]));
   const failures = new Map<string, Array<{ routine_id: string; consecutive_failures: number }>>();
   for (const row of results) {
     const current = failures.get(row.project_id) ?? [];
@@ -3660,6 +3673,7 @@ app.get("/internal/spaces/:spaceId/project-steward/summary", async (c) => {
     last_activity_at: project.last_activity_at, failed_routines: failures.get(project.project_id) ?? [],
     pending_task_count: project.pending_task_count, in_progress_task_count: project.in_progress_task_count,
     blocked_task_count: project.blocked_task_count, active_extension_count: project.active_extension_count,
+    unhealthy_extension_connection_count: connectionFailuresByProject.get(project.project_id) ?? 0,
   })) });
 });
 
