@@ -8,7 +8,6 @@ import { useSessionCredentials } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { listProjects, type Project } from "@/lib/api";
 import { AssistantSidePanelBody } from "@/components/AssistantSidePanels";
-import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
 import { WorkflowPlanComposer } from "@/components/WorkflowPlanComposer";
 
 export default function WorkflowsPage() {
@@ -34,7 +33,7 @@ export default function WorkflowsPage() {
   }, [activeSpaceId, session, retry]);
   const selected = projects.find(p => p.id === projectId);
   return <div className="page-view">
-    <div className="page-header"><h1 className="page-title">Workflows</h1><p className="page-subtitle">Schedule recurring work and manage automatic replies for each project.</p></div>
+    <div className="page-header"><h1 className="page-title">Workflows</h1><p className="page-subtitle">Build workflows and schedule recurring work for each project’s internal planner. External channel conversations are handled by installed project extensions.</p></div>
     {loading ? <p role="status">Loading projects…</p> : error ? <div role="alert"><p>{error}</p><Button onClick={() => setRetry(value => value + 1)}>Retry</Button></div> : !projects.length ? <div className="card"><h2>Create a project to automate your work</h2><p>Each workflow belongs to a project, with its own files and access permissions.</p><Link href={`/p/${product.slug}/projects/all`}>Choose a project template</Link></div> : <>
       <label htmlFor="workflow-project">Project</label>
       <select id="workflow-project" className="form-input" value={projectId} onChange={event => setProjectId(event.target.value)} style={{ margin: "8px 0 24px", maxWidth: 480 }}>
@@ -43,7 +42,6 @@ export default function WorkflowsPage() {
       {selected && session && <div key={`${activeSpaceId}:${selected.id}`} className="card" style={{ cursor: "default" }}>
         <WorkflowPlanComposer spaceId={activeSpaceId} projectId={selected.id} session={session} />
         <AssistantSidePanelBody tab="crons" spaceId={activeSpaceId} projectId={selected.id} session={session} isBusinessSpace={activeSpaceId !== product.space_id} />
-        {Boolean(selected.external_channel_profile) && <CustomerBotAutomation spaceId={activeSpaceId} projectId={selected.id} creds={session} />}
       </div>}
     </>}
   </div>;

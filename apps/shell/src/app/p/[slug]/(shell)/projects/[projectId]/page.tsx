@@ -13,7 +13,7 @@
 // thread/agent's fake run counts. Everything else here is real, fetched data.
 
 import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
-import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
+import { AssistantSidePanelBody } from "@/components/AssistantSidePanels";
 import { ProjectKindPanel } from "@/components/ProjectKindPanel";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
@@ -58,10 +58,6 @@ const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
   active: "green",
   archived: undefined,
 };
-
-function hasExternalChannelProfile(project: Project): boolean {
-  return Boolean(project.external_channel_profile);
-}
 
 function usagePayerLabel(payer: string): string {
   switch (payer) {
@@ -571,10 +567,19 @@ export default function ProjectDetailPage() {
           shell's generic Settings/Threads/KB scaffolding. */}
       {creds && <ProjectKindPanel project={project} spaceId={activeSpaceId} creds={creds} />}
 
-      {/* External-channel automation rules are project configuration, not a project kind. */}
-      {creds && hasExternalChannelProfile(project) && (
-        <CustomerBotAutomation spaceId={activeSpaceId} projectId={project.id} creds={creds} />
-      )}
+      {session && <section className="settings-block" style={{ marginTop: 24, padding: 16 }}>
+        <div className="section-label" style={{ marginTop: 0 }}>Project extensions and channels</div>
+        <p style={{ color: "var(--text3)", fontSize: 13, margin: "0 0 12px" }}>
+          External conversations run through installed, project-scoped extensions. They do not open or act as internal Project Bot threads.
+        </p>
+        <AssistantSidePanelBody
+          tab="channels"
+          spaceId={activeSpaceId}
+          projectId={project.id}
+          session={creds!}
+          isBusinessSpace={activeSpaceId !== product.space_id}
+        />
+      </section>}
 
       {/* Real data only — no fabricated "credits used" tile the way the mockup's equivalent had. */}
       <div className="grid-4">
