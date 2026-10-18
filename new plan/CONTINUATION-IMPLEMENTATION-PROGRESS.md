@@ -1583,6 +1583,12 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents typecheck passed; session-store and usage-event suites passed (8 tests), including UTF-8 deltas, overwrite no-op, deletion, and event idempotency identity; `git diff --check` passed.
 - This records write-time deltas only. Expiry cleanup, conversation deletion, uninstall/retention cleanup, SQLite page allocation, and exact retained byte-time are not yet reconciled. Telemetry failure after a sent reply is queued through the DO outbox where possible and never converts the sent reply into a session failure.
 
+### Project Bot product-model precision (2026-10-18)
+
+- Tightened the roadmap definition: Project Bot is the product role/name for the existing project-scoped planner, not another principal, agent record, service, or runtime. Its identity is the existing project plus planner/agent identity. Internal project channels and sessions/threads invoke that planner; routines add proactivity by waking the same planner through existing internal entry points. The same planner/worker topology as the Space Assistant remains unchanged.
+- Phase 2 now explicitly forbids adding a duplicate Bot principal/runtime, and Phase 3 routine acceptance requires dispatch to the same project planner path. External/customer handlers remain isolated extension principals and cannot route into internal Project Bot sessions.
+- This corrects implementation wording only; it does not change planner behavior or add a new record/API. Repository implementation continues to associate the Bots roster with existing project/agent identities.
+
 ### Phase 6 WhatsApp per-install outbound routing correction (2026-10-18)
 
 - Fixed the Notifications Worker so an external extension's WhatsApp reply resolves the phone-number ID from the exact active `(tenant, Space, installation, connection)` record, alongside that installation's vault token. Extension-scoped sends can no longer fall back to the Space/platform phone-number ID. Provider `401/403` marks that exact connection as needing attention.

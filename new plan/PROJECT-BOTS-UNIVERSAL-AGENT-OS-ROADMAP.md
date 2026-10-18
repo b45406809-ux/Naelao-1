@@ -16,6 +16,8 @@ A **Project Bot is the planner for its project**: the project-scoped counterpart
 
 **Clarification from the user (2026-10-18):** “Project Bot” names this same project-scoped planner when it is accessed through internal project channels or sessions/threads and can run proactively. It is not a distinct worker/sub-agent or a new planner tier. The project planner continues using the Space Assistant’s existing planner/worker topology. External customer-facing channel handlers remain separate extension principals; do not route them into Project Bot threads or planner context.
 
+In implementation terms, **Project Bot is a product role/name for the existing project-scoped planner, not a second agent principal, runtime, or separately addressable bot service**. Its canonical identity comes from the project plus the existing project planner/agent identity. Internal project channels and sessions/threads are entry points to that planner. Proactivity is provided by routines/events that invoke the same planner through its normal internal path; it does not create a second conversation path or change how work is delegated. Store Bot-facing profile/presence metadata against the existing project/planner identity rather than creating a parallel Bot record unless repository evidence shows a required field cannot live there.
+
 Project Bots are internal. Members access them through in-app project sessions/threads and any explicitly configured **internal** project channel. A Project Bot is never exposed as a customer-facing or public channel handler. Customer-facing messaging is served by a separate external extension handler with an external principal and narrowly granted data/actions; it cannot invoke the Project Bot planner, join internal threads, or inherit member permissions. A composed extension may provide both internal tools/workflows and an external channel surface, but the host keeps their principals, contexts, and grants separate.
 
 A **Space Project Steward** is a platform-provided Space-wide extension installation. It runs in its own Space extension workspace, not the Space Assistant workspace. It periodically reviews authorized project journals and project metadata, prioritizes projects needing attention, and proposes the next useful action. It can flag apparent completion or inactivity and prepare a retirement review. It cannot autonomously delete project data or shut down a user’s running extensions. The Space Assistant or an authorized human reviews evidence and confirms pause/archive actions.
@@ -54,7 +56,7 @@ Evidence sources in the repo include `new plan/TRANSCRIPT-CROSS-SOURCE-RECONCILI
 Use these concepts consistently in UI, manifest, APIs, logs, and billing:
 
 1. **Space Assistant** — the existing general-scope planner for one Space. It can coordinate across projects according to Space-level grants. It has its own assistant workspace and internal conversation.
-2. **Project Bot** — the planner for one project, using the same planner/worker architecture as the Space Assistant with a project-bound identity, workspace, grants, internal threads, and routines. It is not a customer-facing channel bot.
+2. **Project Bot** — the product role/name of the existing planner for one project, using the same planner/worker architecture as the Space Assistant with project scope, workspace, grants, internal threads, and routines. It is not an additional runtime or customer-facing channel bot.
 3. **Project** — stable project identity, files/Knowledge, journals, tasks, activity, members, templates, installed extensions, and lifecycle.
 4. **Extension package** — versioned composition of primitives, not a synonym for one primitive. Its manifest needs stable IDs and declarations for workers/roles, workflows, Canvas, Gadgets, channels, scripts, required connections, Knowledge grants, events, data retention, runtime/resource envelope, and upgrade/migration behavior.
 5. **Installation instance** — a particular installation of a package in a Space or project, with its own credentials, bindings, state namespace, limits, enabled/paused state, and version. One package can have multiple instances.
@@ -70,15 +72,15 @@ Workspace scopes remain separate: project planner workspace; Space Assistant wor
 
 Create, configure, pause, resume, archive, and restore a Project Bot through the owning project. Project creation may provision the project planner identity with no autonomous schedule and no enabled external-channel route. The user starts by opening an internal project session/thread, selecting a template, or asking the Space Assistant to create/configure the Project Bot. The Project Bot can handle an internal one-off task, saved routine, project event, or approved delegated workflow.
 
-The Bot has:
+The project planner, presented in the product as its Bot, has:
 
-- stable project and Bot IDs, a name/avatar/role description, and canonical internal project threads plus optional task/run threads;
+- stable project and existing planner/agent IDs, a name/avatar/role description, and canonical internal project threads plus optional task/run threads; do not mint a second principal ID solely for the Bot label;
 - project-only default files, Knowledge, journal, and memory, with separately reviewed Space-wide grants where needed;
 - a policy profile, tool/capability grants, execution ceiling, model/effort policy, schedule, internal notification target, and budget;
 - visible status (idle, running, awaiting approval, paused, blocked by budget/connection, failed) and activity timeline;
 - pause/resume controls that immediately fence off new starts and safely handle in-flight work; cancellation behavior depends on the runtime’s side-effect certainty.
 
-The Project Bot **is** the project planner, not a worker under a separate project planner. Instantiate/configure the same planner architecture used by the Space Assistant with the project’s verified scope and policy. It uses the existing worker topology for delegated work. Attribute planner decisions, worker runs, internal sessions, and extension actions separately in the audit trail. A public extension handler is never routed through this planner.
+The Project Bot **is** the project planner, not a worker under a separate project planner and not a parallel bot runtime. Invoke/configure the same planner architecture and internal entry points used by the Space Assistant with the project’s verified scope and policy. It uses the existing worker topology for delegated work. Attribute planner decisions, worker runs, internal sessions, and extension actions separately in the audit trail. A public extension handler is never routed through this planner.
 
 ### 4.2 Routine scheduler
 
@@ -265,11 +267,11 @@ The user’s standing delivery preference is to checkpoint successful work in fo
 
 ### Phase 2 — Project Bot identity and navigation
 
-- Add canonical Bot metadata and conversation/routine association to an existing project/agent identity (avoid duplicate agent record if one already represents it).
+- Add any needed Bot-facing profile metadata and conversation/routine association to the existing project/agent identity; do not add a separate Bot principal or planner runtime.
 - Add Bots roster/detail route, activity/state, stable IDs, project scope display, approval queue and responsive keyboard navigation.
 - Add tests for multiple Bots, member isolation, URL refresh/history, switch Space/project, archived project, and stale cache/data rejection.
 
-**Gate:** user can open the internal Project Bot through project sessions/threads and the Space Assistant through Space sessions; both use the same planner/worker architecture but enforce distinct scope, workspace, and permissions. External customer-channel traffic cannot enter either planner directly.
+**Gate:** user opens the existing project-scoped planner through internal project channels/sessions/threads and the Space Assistant through Space sessions; routines wake that same project planner through the normal internal entry point. Both use the same planner/worker architecture but enforce distinct scope, workspace, and permissions. No duplicate Bot principal/runtime is created, and external customer-channel traffic cannot enter either planner directly.
 
 ### Phase 3 — Durable routines and portfolio stewardship
 
