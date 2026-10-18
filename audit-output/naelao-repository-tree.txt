@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1876
-Files with source or executable-configuration extensions: 1670
-Inventory revision: write-guard security stress batch in the current working tree
+Files: 1877
+Files with source or executable-configuration extensions: 1671
+Inventory revision: audit and blueprint validation stress batch in the current working tree
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -890,6 +890,7 @@ packages/
     src/
       air-gap.test.ts
       air-gap.ts
+      audit-blueprint-bounds.test.ts
       audit.ts
       blueprint-scrubber.ts
       blueprint-security.test.ts
