@@ -1316,3 +1316,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents and Spaces typechecks passed; quota and SpaceDO lifecycle tests passed (16 tests); `git diff --check` passed.
 - Remaining Phase 4 gaps: cost-rate versioning and unified usage events for inference, execution, storage, and connectors; install/run budgets beyond the shared external message cap; provider-level spend controls; owner off-topic thresholds and alert settings; payer/credit UI and failure reconciliation across all charged paths.
 - Updated the Project settings copy to say the cap is shared across every extension instance in that project and provider, matching the enforced scope.
+
+### Phase 4 direct external-answer billing checkpoint (2026-10-18)
+
+- The customer-extension path that asks the host to answer from owner-published Knowledge now records actual model usage, settles its project daily-cap reservation, and debits the project's wallet with an idempotent message-scoped key. When a provider omits token usage, the pre-inference estimate is used for accounting.
+- If inference fails after reservation, the reservation is settled at zero to release the hold immediately instead of waiting for its lease to expire. Delivery failures after a completed inference do not erase its cost.
+- Verification: focused restricted-answer and settlement tests passed (11 tests); Agents Worker typecheck and `git diff --check` passed. An initial typecheck caught an exact-optional-property typing issue in the optional usage evidence; corrected before the passing run.
+- Phase 4 remains open for unified, versioned usage events across inference/execution/storage/connectors, broader install/run and provider spend budgets, abuse policy settings, and usage reconciliation/UI.

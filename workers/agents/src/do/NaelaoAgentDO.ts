@@ -28,6 +28,7 @@ import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
+import { externalAnswerCredits, releaseExternalAnswerSpend, settleExternalAnswerSpend } from "./external-channel-spend.js";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
@@ -7627,7 +7628,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch (error) {
       return Response.json({ error_code: "model_price_unavailable", error: error instanceof Error ? error.message : "Fresh model price evidence unavailable" }, { status: 503 });
     }
-    const channelReservation = { enabled: false, projectId: "", runId: "", sequence: 0, reserved: false };
+    const channelReservation = { enabled: false, projectId: "", runId: "", sequence: 0, reserved: false, estimatedCredits: 0 };
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY && !model.startsWith("openrouter/") ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}), ...byokOverride },
@@ -7635,9 +7636,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       model,
       ...(body.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: body.openRouterCapabilityEvidence } : {}),
       reserveInferenceCost: async (inference) => {
-        if (!channelReservation.enabled) return true;
         const estimate = estimateRequestCostCredits(inference.serializedRequestBytes, inference.maxOutputTokens, inference.model,
           inference.model.startsWith("openrouter/") ? channelModelPricing : undefined);
+        channelReservation.estimatedCredits += estimate.estimatedCredits;
+        if (!channelReservation.enabled) return true;
         const response = await this.env.SPACES_WORKER.fetch(new Request(
           `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(channelReservation.projectId)}/spend`,
           { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
@@ -7695,6 +7697,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       channelReservation.runId = `channel:${msg.id}`;
       channelReservation.sequence = 0;
       channelReservation.reserved = false;
+      channelReservation.estimatedCredits = 0;
       // Untrusted inbound text — moderate before it ever reaches the reasoning prompt or a rule
       // match. This used to just count "escalated" and continue — the message was silently
       // dropped with nobody ever told a customer-bot channel (including a business's own inbound
@@ -7965,13 +7968,34 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='published_knowledge_required' WHERE message_id=?", msg.id);
             takeover("The handler requested a generated answer but has no owner-published Knowledge sources. Review the conversation manually."); escalated++; continue;
           }
+          let answer: Awaited<ReturnType<GatewayReasoner["answerExternal"]>>;
           try {
-            const answer = await reasoner.answerExternal({ question: run.channel_answers[0]!,
+            answer = await reasoner.answerExternal({ question: run.channel_answers[0]!,
               sources: publishedKnowledge.map(source => ({ title: source.title, content: source.content })), maxOutputTokens: 320 });
-            replyText = answer.text;
           } catch {
+            if (msg.project_id && channelReservation.enabled) {
+              await releaseExternalAnswerSpend({ reserved: channelReservation.reserved,
+                settle: settledCredits => this.settleProjectSpendReservation(spaceId, tenantId, msg.project_id!, channelReservation.runId, settledCredits),
+                markSettled: () => { channelReservation.reserved = false; } });
+            }
             this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='external_answer_failed' WHERE message_id=?", msg.id);
             takeover("A restricted answer could not be generated within the available model, budget, or safety policy. Review the conversation manually."); escalated++; continue;
+          }
+          replyText = answer.text;
+          const credits = externalAnswerCredits({ ...(answer.usage ? { usage: answer.usage } : {}), model,
+            ...(channelModelPricing ? { pricing: channelModelPricing } : {}),
+            estimatedCredits: channelReservation.estimatedCredits });
+          if (msg.project_id) {
+            this.addProjectSpend(msg.project_id, credits);
+            if (channelReservation.enabled) {
+              await settleExternalAnswerSpend({ reserved: channelReservation.reserved, credits,
+                settle: settledCredits => this.settleProjectSpendReservation(spaceId, tenantId, msg.project_id!, channelReservation.runId, settledCredits),
+                markSettled: () => { channelReservation.reserved = false; } });
+            }
+            if (walletCheck?.ok && walletCheck.walletProjectId) {
+              const billingNotes: string[] = [];
+              await this.debitProjectWallet(spaceId, tenantId, walletCheck.walletProjectId, credits, billingNotes, channelReservation.runId);
+            }
           }
         }
         if (!replyText || !moderateText(replyText).allowed) {
