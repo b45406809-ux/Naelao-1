@@ -1361,6 +1361,13 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents and Billing Worker typechecks passed; focused Agents usage/external-answer/workflow tests passed (9 tests) and real-SQLite usage/workflow ledger tests passed (4 tests); `git diff --check` passed.
 - Remaining Phase 4 work includes extension-owned inference and connector operations outside this public reply path, storage bytes, verified provider billing, installation/run/provider-specific ceilings, off-topic budgets/alerts, payer visibility and failed-charge reconciliation.
 
+### Phase 4 Knowledge storage-byte ledger checkpoint (2026-10-18)
+
+- Knowledge ingestion now totals UTF-8/original PDF bytes actually accepted by its R2 puts: original source, serialized chunks, citation chunks, and the optional AutoRAG mirror. It records the aggregate under the Space/Project/document idempotency key after successful ingestion, or records the partial successful writes if later ingestion fails.
+- The Knowledge Worker now has a Billing Worker service binding. Its event is `storage_bytes_written` with unit `bytes`, project scope, no invented `cost_credits`, and unknown payer until a real storage pricing/payer contract exists. This measures bytes written, not retained GB-months or a full bucket inventory.
+- Verification: Knowledge typecheck and Wrangler dry-run passed with the new service binding; storage-report helper tests (2), real-SQLite usage-event tests (4), and `git diff --check` passed.
+- Remaining: storage accounting for extension artifacts, conversation sessions, attachments and archives; overwrite/delete reconciliation, retained-byte snapshots, pricing attribution, and workspace/install storage ceilings.
+
 ### Phase 3 direct scheduled-script budget checkpoint (2026-10-18)
 
 - Direct event/scheduled scripts with a Project scope now re-read the SpaceDO project policy, enforce the project's execution-tier ceiling, check the shared Space wallet before running, and reserve one credit against a configured daily Project cap. This covers the bounded single isolate/container infrastructure charge; Tier 1/no-cost executions settle the hold at zero.

@@ -20,6 +20,10 @@ workers_dev = false
 [ai]
 binding = "AI"
 
+[[services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
 [[kv_namespaces]]
 binding = "KB_CACHE"
 id = "bd6fe7b9c8eb40c8922c85249888add7"
@@ -58,5 +62,13 @@ RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85"
 [env.staging]
 vars = { ENVIRONMENT = "staging", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85" }
 
+[[env.staging.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
 [env.production]
 vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85" }
+
+[[env.production.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"

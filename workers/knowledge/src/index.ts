@@ -13,6 +13,7 @@ import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
 import { createParseV5Request } from "./parse-v5.js";
 import { sparseRank } from "./search.js";
+import { reportKnowledgeStorageWrite } from "./storage-usage.js";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -20,6 +21,7 @@ interface KnowledgeEnv {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
+  BILLING_WORKER?: Fetcher;
   KB_BUCKET: R2Bucket;
   KB_VECTORS: VectorizeIndex;
   KB_CACHE: KVNamespace;
@@ -544,6 +546,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     .bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType, now, now)
     .run();
 
+  let storageBytesWritten = 0;
   try {
     // ── G-BD01: Sanitize content — strip HTML, detect injection patterns ────
     const originalBytes = contentType === "pdf"
@@ -551,6 +554,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       : new TextEncoder().encode(body.content);
     const originalKey = `kb/${spaceId}/${projectId ?? "_space"}/${docId}/original`;
     await c.env.KB_BUCKET.put(originalKey, originalBytes, { httpMetadata: { contentType: contentType === "pdf" ? "application/pdf" : "text/plain; charset=utf-8" } });
+    storageBytesWritten += originalBytes.byteLength;
     const parsedContent = contentType === "pdf" ? await createParseV5Request(originalBytes, "application/pdf", c.env) : body.content;
     const { sanitized: sanitizedContent, injectionDetected } = sanitizeKbContent(parsedContent);
     if (injectionDetected) {
@@ -608,13 +612,13 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         headingPath: structuralChunks[i]?.headingPath ?? [],
         ...coordinate,
       };
-      await c.env.KB_BUCKET.put(
-        chunkR2Key(spaceId, projectId, docId, i),
-        JSON.stringify(chunkRecord),
-      );
+      const serializedChunk = JSON.stringify(chunkRecord);
+      await c.env.KB_BUCKET.put(chunkR2Key(spaceId, projectId, docId, i), serializedChunk);
+      storageBytesWritten += new TextEncoder().encode(serializedChunk).byteLength;
       await c.env.KB_BUCKET.put(citationR2Key(spaceId, projectId, docId, i), chunk, {
         customMetadata: { contentHash, tenantId, spaceId, projectId: projectId ?? SPACE_WIDE_PROJECT_SENTINEL },
       });
+      storageBytesWritten += new TextEncoder().encode(chunk).byteLength;
 
       // Prepare Vectorize vector. project_id always set (never omitted) — Vectorize's flat
       // $eq filter can't distinguish "field absent" from "field present," so the space-wide
@@ -670,6 +674,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     if (c.env.AUTORAG_KB_INSTANCE) {
       try {
         await c.env.KB_BUCKET.put(autoragKbKey(spaceId, projectId, docId), sanitizedContent);
+        storageBytesWritten += new TextEncoder().encode(sanitizedContent).byteLength;
       } catch {
         /* best-effort — legacy retrieval is unaffected */
       }
@@ -690,6 +695,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       .bind(docId)
       .first();
 
+    await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, true);
     return c.json(doc, 201);
   } catch (err) {
     // Mark document as failed on any error during processing
@@ -699,6 +705,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       .bind(docId)
       .run()
       .catch(() => {/* best-effort */});
+    await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, false);
 
     if (err && typeof err === "object" && "status" in err) throw err;
     throw internalError(`Document ingestion failed: ${err instanceof Error ? err.message : String(err)}`);

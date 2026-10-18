@@ -69,4 +69,26 @@ describe("usage events v2 migration", () => {
     expect(metered).toHaveLength(1);
     db.db.close();
   });
+
+  it("stores measured Knowledge R2 bytes as usage while leaving storage cost unpriced", async () => {
+    const db = createFakeD1([
+      `CREATE TABLE usage_events(id TEXT PRIMARY KEY,org_id TEXT NOT NULL,space_id TEXT,event_type TEXT NOT NULL,quantity INTEGER NOT NULL DEFAULT 1,recorded_at TEXT NOT NULL,event_hash TEXT UNIQUE);`,
+      readFileSync(join(__dirname, "../../infra/migrations/0109_usage_events_v2.sql"), "utf8"),
+    ]);
+    const metered: unknown[] = [];
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const response = await billingWorker.fetch(new Request("https://billing.naelao.com/billing/usage", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ schema_version: 2, event_type: "storage_bytes_written", quantity: 1536, unit: "bytes",
+        space_id: "space-a", project_id: "project-a", payer_kind: "unknown", decision: "allowed", idempotency_key: "knowledge-storage:doc-a" }),
+    }), { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, PLATFORM_DB: db,
+      QUOTA_CACHE: { async get() { return null; }, async put() {}, async delete() {} },
+      BILLING_EVENTS: { async send(event: unknown) { metered.push(event); } } } as never, ctx);
+    expect(response.status).toBe(201);
+    expect(db.db.prepare("SELECT event_type,unit,quantity,cost_credits,project_id,payer_kind,decision FROM usage_events").get())
+      .toEqual({ event_type: "storage_bytes_written", unit: "bytes", quantity: 1536, cost_credits: null,
+        project_id: "project-a", payer_kind: "unknown", decision: "allowed" });
+    expect(metered).toHaveLength(1);
+    db.db.close();
+  });
 });
