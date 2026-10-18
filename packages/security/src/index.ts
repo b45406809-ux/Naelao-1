@@ -1,8 +1,26 @@
-export { detectSqlInjection, detectXss, detectPathTraversal, scanRequestBody, wafMiddleware } from "./waf.js";
+export {
+  detectSqlInjection,
+  detectXss,
+  detectPathTraversal,
+  scanRequestBody,
+  wafMiddleware,
+} from "./waf.js";
 export { writeAudit, readAuditLog } from "./audit.js";
 export type { AuditEntry } from "./audit.js";
-export { generateApiKey, hashApiKey, verifyApiKey, validatePasswordStrength, generateCsrfToken, verifyCsrfToken } from "./secrets.js";
+export {
+  generateApiKey,
+  hashApiKey,
+  verifyApiKey,
+  validatePasswordStrength,
+  generateCsrfToken,
+  verifyCsrfToken,
+} from "./secrets.js";
 export { securityHeaders } from "./headers.js";
+export {
+  isValidRateLimitRequest,
+  MAX_RATE_LIMIT,
+  MAX_RATE_WINDOW_MS,
+} from "./rate-limit-policy.js";
 export { checkSsrf, resolveHostnameIps } from "./ssrf-guard.js";
 export type { SsrfCheckResult } from "./ssrf-guard.js";
 export { isPrivateNetworkAddress } from "./ssrf.js";
@@ -20,4 +38,7 @@ export * from "./air-gap.js";
 export * from "./egress-policy.js";
 export * from "./capability-policy.js";
 export * from "./marketplace-conformance.js";
-export { certifyStateDeltaArtifact, type StateDeltaConformanceReport } from "./marketplace-conformance.js";
+export {
+  certifyStateDeltaArtifact,
+  type StateDeltaConformanceReport,
+} from "./marketplace-conformance.js";

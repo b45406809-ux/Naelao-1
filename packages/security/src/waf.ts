@@ -55,12 +55,17 @@ export function scanRequestBody(
   body: unknown,
   depth = 0
 ): { detected: boolean; pattern?: string } {
-  if (depth > 5) return { detected: false };
+  if (depth > 5) return { detected: true, pattern: "body_depth_exceeded" };
 
   if (typeof body === "string") {
-    if (detectSqlInjection(body)) return { detected: true, pattern: "sql_injection" };
+    if (body.length > 1_000_000) {
+      return { detected: true, pattern: "body_value_too_large" };
+    }
+    if (detectSqlInjection(body))
+      return { detected: true, pattern: "sql_injection" };
     if (detectXss(body)) return { detected: true, pattern: "xss" };
-    if (detectPathTraversal(body)) return { detected: true, pattern: "path_traversal" };
+    if (detectPathTraversal(body))
+      return { detected: true, pattern: "path_traversal" };
     return { detected: false };
   }
 
@@ -91,16 +96,29 @@ export function wafMiddleware() {
     const url = new URL(c.req.url);
     for (const [, value] of url.searchParams) {
       if (detectSqlInjection(value)) {
-        console.warn(`[WAF] SQL injection in query param — path=${c.req.path} ip=${c.req.header("cf-connecting-ip")}`);
-        return c.json({ error_code: "bad_request", message: "Request blocked by WAF" }, 400);
+        console.warn(
+          `[WAF] SQL injection in query param — path=${c.req.path} ip=${c.req.header("cf-connecting-ip")}`
+        );
+        return c.json(
+          { error_code: "bad_request", message: "Request blocked by WAF" },
+          400
+        );
       }
       if (detectXss(value)) {
         console.warn(`[WAF] XSS in query param — path=${c.req.path}`);
-        return c.json({ error_code: "bad_request", message: "Request blocked by WAF" }, 400);
+        return c.json(
+          { error_code: "bad_request", message: "Request blocked by WAF" },
+          400
+        );
       }
       if (detectPathTraversal(value)) {
-        console.warn(`[WAF] Path traversal in query param — path=${c.req.path}`);
-        return c.json({ error_code: "bad_request", message: "Request blocked by WAF" }, 400);
+        console.warn(
+          `[WAF] Path traversal in query param — path=${c.req.path}`
+        );
+        return c.json(
+          { error_code: "bad_request", message: "Request blocked by WAF" },
+          400
+        );
       }
     }
 
@@ -111,8 +129,13 @@ export function wafMiddleware() {
         const body = await c.req.json<unknown>();
         const scan = scanRequestBody(body);
         if (scan.detected) {
-          console.warn(`[WAF] ${scan.pattern} in request body — path=${c.req.path}`);
-          return c.json({ error_code: "bad_request", message: "Request blocked by WAF" }, 400);
+          console.warn(
+            `[WAF] ${scan.pattern} in request body — path=${c.req.path}`
+          );
+          return c.json(
+            { error_code: "bad_request", message: "Request blocked by WAF" },
+            400
+          );
         }
         // Re-attach body so downstream handlers can read it
         // Hono caches the parsed body so this is safe

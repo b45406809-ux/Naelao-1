@@ -738,36 +738,40 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/security`
 
-- [ ] `packages/security/package.json`
-- [ ] `packages/security/src/air-gap.test.ts`
+- [x] `packages/security/package.json`
+- [x] `packages/security/src/air-gap.test.ts`
 - [ ] `packages/security/src/air-gap.ts`
 - [ ] `packages/security/src/audit.ts`
 - [ ] `packages/security/src/blueprint-scrubber.ts`
-- [ ] `packages/security/src/blueprint-security.test.ts`
+- [x] `packages/security/src/blueprint-security.test.ts`
 - [ ] `packages/security/src/blueprint-validator.ts`
 - [ ] `packages/security/src/capability-policy.ts`
-- [ ] `packages/security/src/circuit-breaker.test.ts`
+- [x] `packages/security/src/circuit-breaker.test.ts`
 - [ ] `packages/security/src/circuit-breaker.ts`
-- [ ] `packages/security/src/data-residency.test.ts`
+- [x] `packages/security/src/data-residency.test.ts`
 - [ ] `packages/security/src/data-residency.ts`
 - [ ] `packages/security/src/delegation.ts`
 - [ ] `packages/security/src/dlp.ts`
 - [ ] `packages/security/src/egress-policy.ts`
 - [ ] `packages/security/src/ephemeral-grant.ts`
 - [ ] `packages/security/src/headers.ts`
-- [ ] `packages/security/src/index.ts`
-- [ ] `packages/security/src/knowledge-permissions.test.ts`
+- [x] `packages/security/src/index.ts`
+- [x] `packages/security/src/knowledge-permissions.test.ts`
 - [ ] `packages/security/src/knowledge-permissions.ts`
-- [ ] `packages/security/src/marketplace-conformance.test.ts`
+- [x] `packages/security/src/marketplace-conformance.test.ts`
 - [ ] `packages/security/src/marketplace-conformance.ts`
-- [ ] `packages/security/src/rate-limit-do.ts`
+- [x] `packages/security/src/rate-limit-do.ts`
+- [x] `packages/security/src/rate-limit-policy.ts`
+- [x] `packages/security/src/rate-limit-policy.test.ts`
+- [x] `packages/security/src/waf-stress.test.ts`
+- [x] `packages/security/vitest.config.ts`
 - [ ] `packages/security/src/secrets.ts`
-- [ ] `packages/security/src/security-phase4.test.ts`
+- [x] `packages/security/src/security-phase4.test.ts`
 - [ ] `packages/security/src/ssrf-guard.ts`
 - [ ] `packages/security/src/ssrf.ts`
-- [ ] `packages/security/src/waf.ts`
+- [x] `packages/security/src/waf.ts`
 - [ ] `packages/security/src/write-guard.ts`
-- [ ] `packages/security/tsconfig.json`
+- [x] `packages/security/tsconfig.json`
 
 ### `packages/testing`
 
@@ -1174,7 +1178,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `tests/unit/packages/moderation.test.ts` (included in moderation package project)
 - [ ] `tests/unit/packages/rag.test.ts`
 - [ ] `tests/unit/packages/realtime-broadcast.test.ts`
-- [ ] `tests/unit/packages/security.test.ts`
+- [x] `tests/unit/packages/security.test.ts` (included in security package project)
 - [x] `tests/unit/packages/webhooks.test.ts`
 - [ ] `tests/unit/personal-plan-whop-checkout.test.ts`
 - [ ] `tests/unit/pipedream-connector-connect.test.ts`

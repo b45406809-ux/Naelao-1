@@ -1,12 +1,7 @@
 // G-J01: Sliding window rate limiter using Durable Objects
 // KV is eventually consistent (~60s) — DO NOT use KV for rate limiting
 import { DurableObject } from "cloudflare:workers";
-
-interface RateLimitRequest {
-  key: string;
-  limit: number;
-  windowMs: number;
-}
+import { isValidRateLimitRequest } from "./rate-limit-policy.js";
 
 interface RateLimitResponse {
   allowed: boolean;
@@ -34,10 +29,40 @@ export class RateLimiterDO extends DurableObject {
   }
 
   override async fetch(request: Request): Promise<Response> {
-    this.ensureInit();
-
-    const body = await request.json<RateLimitRequest>();
+    if (request.method !== "POST") {
+      return Response.json(
+        { error_code: "method_not_allowed" },
+        { status: 405 }
+      );
+    }
+    const contentLength = Number(request.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > 4096) {
+      return Response.json(
+        { error_code: "request_too_large" },
+        { status: 413 }
+      );
+    }
+    let body: unknown;
+    try {
+      const rawBody = await request.text();
+      if (new TextEncoder().encode(rawBody).byteLength > 4096) {
+        return Response.json(
+          { error_code: "request_too_large" },
+          { status: 413 }
+        );
+      }
+      body = JSON.parse(rawBody);
+    } catch {
+      return Response.json({ error_code: "invalid_request" }, { status: 400 });
+    }
+    if (!isValidRateLimitRequest(body)) {
+      return Response.json(
+        { error_code: "invalid_rate_limit" },
+        { status: 400 }
+      );
+    }
     const { limit, windowMs } = body;
+    this.ensureInit();
 
     const now = Date.now();
     const windowStart = now - windowMs;
@@ -46,7 +71,9 @@ export class RateLimiterDO extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM hits WHERE ts < ?", windowStart);
 
     // Count remaining hits in window
-    const countResult = this.ctx.storage.sql.exec("SELECT COUNT(*) AS cnt FROM hits");
+    const countResult = this.ctx.storage.sql.exec(
+      "SELECT COUNT(*) AS cnt FROM hits"
+    );
     const rows = [...countResult];
     const count = (rows[0] as { cnt: number } | undefined)?.cnt ?? 0;
 
@@ -61,24 +88,25 @@ export class RateLimiterDO extends DurableObject {
       return new Response(JSON.stringify(response), {
         headers: { "Content-Type": "application/json" },
       });
-    } else {
-      // Find the oldest hit to calculate retry-after
-      const oldestResult = this.ctx.storage.sql.exec(
-        "SELECT MIN(ts) AS oldest FROM hits"
-      );
-      const oldestRows = [...oldestResult];
-      const oldestTs = (oldestRows[0] as { oldest: number | null } | undefined)?.oldest ?? now;
-      const retryAfterMs = Math.max(0, oldestTs + windowMs - now);
-
-      const response: RateLimitResponse = {
-        allowed: false,
-        remaining: 0,
-        retryAfterMs,
-      };
-      return new Response(JSON.stringify(response), {
-        status: 429,
-        headers: { "Content-Type": "application/json" },
-      });
     }
+
+    // Find the oldest hit to calculate retry-after
+    const oldestResult = this.ctx.storage.sql.exec(
+      "SELECT MIN(ts) AS oldest FROM hits"
+    );
+    const oldestRows = [...oldestResult];
+    const oldestTs =
+      (oldestRows[0] as { oldest: number | null } | undefined)?.oldest ?? now;
+    const retryAfterMs = Math.max(0, oldestTs + windowMs - now);
+
+    const response: RateLimitResponse = {
+      allowed: false,
+      remaining: 0,
+      retryAfterMs,
+    };
+    return new Response(JSON.stringify(response), {
+      status: 429,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }
