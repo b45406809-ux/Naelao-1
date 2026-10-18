@@ -15,7 +15,10 @@ export interface PermissionedVectorFilter {
 type QueryableVectorIndex = Pick<VectorizeIndex, "query">;
 
 /** Numerically safe cosine similarity used by intent de-duplication callers. */
-export function cosineSimilarity(left: readonly number[], right: readonly number[]): number {
+export function cosineSimilarity(
+  left: readonly number[],
+  right: readonly number[]
+): number {
   if (left.length === 0 || left.length !== right.length) return 0;
   let dot = 0;
   let leftMagnitude = 0;
@@ -40,10 +43,24 @@ export async function searchPermissionedKnowledge(
   queryEmbedding: number[],
   options: PermissionedVectorFilter
 ): Promise<VectorizeMatches> {
+  const validRoles: KnowledgeRole[] = [
+    "owner",
+    "admin",
+    "editor",
+    "member",
+    "viewer",
+  ];
   if (
     !options.spaceId ||
     !options.userId ||
-    !Number.isInteger(options.roleMask)
+    !validRoles.includes(options.role) ||
+    !Number.isSafeInteger(options.roleMask) ||
+    options.roleMask < 0 ||
+    !Array.isArray(queryEmbedding) ||
+    queryEmbedding.length === 0 ||
+    !queryEmbedding.every(Number.isFinite) ||
+    (options.topK !== undefined &&
+      (!Number.isSafeInteger(options.topK) || options.topK < 1))
   ) {
     throw new Error("Complete knowledge clearance is required");
   }

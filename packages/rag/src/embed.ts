@@ -29,10 +29,17 @@ interface AiEmbeddingResponse {
 }
 
 /** Pull the vector out of one entry, whichever of the two shapes it is. */
-function vectorOf(item: number[] | { embedding: number[] } | undefined): number[] | null {
-  if (Array.isArray(item)) return item;
-  if (item && Array.isArray(item.embedding)) return item.embedding;
-  return null;
+function vectorOf(
+  item: number[] | { embedding: number[] } | undefined
+): number[] | null {
+  const vector = Array.isArray(item)
+    ? item
+    : item && Array.isArray(item.embedding)
+      ? item.embedding
+      : null;
+  return vector && vector.length > 0 && vector.every(Number.isFinite)
+    ? vector
+    : null;
 }
 
 const MODEL = "@cf/baai/bge-large-en-v1.5";
@@ -42,7 +49,9 @@ const MODEL = "@cf/baai/bge-large-en-v1.5";
  * Uses CF AI Workers binding `ai.run()`.
  */
 export async function embedText(ai: Ai, text: string): Promise<EmbedResult> {
-  const response = await ai.run(MODEL, { text }) as AiEmbeddingResponse;
+  if (typeof text !== "string")
+    throw new TypeError("embedText: text must be a string");
+  const response = (await ai.run(MODEL, { text })) as AiEmbeddingResponse;
 
   const first = vectorOf(response.data?.[0]);
   if (!first) {
@@ -59,16 +68,25 @@ export async function embedText(ai: Ai, text: string): Promise<EmbedResult> {
  * Embed multiple texts in one CF AI batch call (supports up to 100 texts at once).
  * Batches automatically if texts.length > 100.
  */
-export async function embedBatch(ai: Ai, texts: string[]): Promise<EmbedResult[]> {
+export async function embedBatch(
+  ai: Ai,
+  texts: string[]
+): Promise<EmbedResult[]> {
+  if (!Array.isArray(texts) || texts.some((text) => typeof text !== "string")) {
+    throw new TypeError("embedBatch: texts must be an array of strings");
+  }
   if (texts.length === 0) return [];
 
   const CF_AI_BATCH_LIMIT = 100;
   const results: EmbedResult[] = [];
+  let embeddingDimensions: number | undefined;
 
   // Process in batches of CF_AI_BATCH_LIMIT
   for (let i = 0; i < texts.length; i += CF_AI_BATCH_LIMIT) {
     const batch = texts.slice(i, i + CF_AI_BATCH_LIMIT);
-    const response = await ai.run(MODEL, { text: batch }) as AiEmbeddingResponse;
+    const response = (await ai.run(MODEL, {
+      text: batch,
+    })) as AiEmbeddingResponse;
 
     if (!response.data || response.data.length !== batch.length) {
       throw new Error(
@@ -82,8 +100,19 @@ export async function embedBatch(ai: Ai, texts: string[]): Promise<EmbedResult[]
       // Fail here, loudly, rather than passing an undefined vector down to Vectorize — that is
       // what turned a bad response into an opaque "undefined is not iterable" three layers away.
       if (!vector || text === undefined) {
-        throw new Error(`embedBatch: missing or malformed embedding at index ${i + j}`);
+        throw new Error(
+          `embedBatch: missing or malformed embedding at index ${i + j}`
+        );
       }
+      if (
+        embeddingDimensions !== undefined &&
+        vector.length !== embeddingDimensions
+      ) {
+        throw new Error(
+          `embedBatch: inconsistent embedding dimensions at index ${i + j}`
+        );
+      }
+      embeddingDimensions = vector.length;
       results.push({
         embedding: vector,
         tokenCount: Math.ceil(text.length / 4),

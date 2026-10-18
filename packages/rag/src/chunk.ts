@@ -23,8 +23,23 @@ const SENTENCE_BOUNDARIES = [". ", "! ", "? ", "\n\n"];
  * Returns an array of chunk strings.
  */
 export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
-  const chunkSize = (opts.chunkSize ?? 512) * CHARS_PER_TOKEN;
-  const overlap = (opts.overlap ?? 50) * CHARS_PER_TOKEN;
+  const tokenChunkSize = opts.chunkSize ?? 512;
+  const tokenOverlap = opts.overlap ?? 50;
+  if (
+    !Number.isSafeInteger(tokenChunkSize) ||
+    tokenChunkSize < 1 ||
+    tokenChunkSize > Math.floor(Number.MAX_SAFE_INTEGER / CHARS_PER_TOKEN) ||
+    !Number.isSafeInteger(tokenOverlap) ||
+    tokenOverlap < 0 ||
+    tokenOverlap > Math.floor(Number.MAX_SAFE_INTEGER / CHARS_PER_TOKEN) ||
+    tokenOverlap >= tokenChunkSize
+  ) {
+    throw new RangeError(
+      "chunk size must be positive and overlap must be smaller"
+    );
+  }
+  const chunkSize = tokenChunkSize * CHARS_PER_TOKEN;
+  const overlap = tokenOverlap * CHARS_PER_TOKEN;
 
   if (!text || text.trim().length === 0) return [];
 
@@ -36,7 +51,8 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
   let overlapBuffer = "";
 
   for (const sentence of sentences) {
-    const candidate = currentChunk.length === 0 ? sentence : currentChunk + sentence;
+    const candidate =
+      currentChunk.length === 0 ? sentence : currentChunk + sentence;
 
     if (candidate.length <= chunkSize) {
       currentChunk = candidate;
@@ -45,9 +61,10 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
       if (currentChunk.length >= MIN_CHUNK_CHARS) {
         chunks.push(currentChunk.trimEnd());
         // Compute overlap: take trailing `overlap` chars of the current chunk
-        overlapBuffer = currentChunk.length > overlap
-          ? currentChunk.slice(currentChunk.length - overlap)
-          : currentChunk;
+        overlapBuffer =
+          currentChunk.length > overlap
+            ? currentChunk.slice(currentChunk.length - overlap)
+            : currentChunk;
       }
       // Start a new chunk with the overlap buffer + this sentence
       currentChunk = overlapBuffer + sentence;
@@ -74,17 +91,27 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
     if (currentChunk.length < MIN_CHUNK_CHARS && chunks.length > 0) {
       // Merge tiny trailing chunk with the last chunk
       const prev = chunks[chunks.length - 1];
-      if (prev !== undefined) {
-        chunks[chunks.length - 1] = prev + " " + currentChunk.trim();
+      if (
+        prev !== undefined &&
+        prev.length + 1 + currentChunk.trim().length <= chunkSize
+      ) {
+        chunks[chunks.length - 1] = `${prev} ${currentChunk.trim()}`;
+      } else {
+        chunks.push(currentChunk.trimEnd());
       }
     } else {
       chunks.push(currentChunk.trimEnd());
     }
   }
 
-  const filtered = chunks.filter(c => c.trim().length >= MIN_CHUNK_CHARS);
-  // If everything was filtered (e.g. text shorter than MIN_CHUNK_CHARS), return all non-empty chunks
-  return filtered.length > 0 ? filtered : chunks.filter(c => c.trim().length > 0);
+  const filtered = chunks.filter(
+    (chunk, index) =>
+      chunk.trim().length >= MIN_CHUNK_CHARS || index === chunks.length - 1
+  );
+  // Keep a short final chunk so forced splits do not discard a document tail.
+  return filtered.length > 0
+    ? filtered
+    : chunks.filter((c) => c.trim().length > 0);
 }
 
 /**
@@ -128,14 +155,18 @@ function splitIntoSentences(text: string): string[] {
  * Force-split a string that exceeds chunkSize into character-based sub-chunks.
  * Used only when a sentence itself is too long.
  */
-function forceChunk(text: string, chunkSize: number, overlap: number): string[] {
+function forceChunk(
+  text: string,
+  chunkSize: number,
+  overlap: number
+): string[] {
   const chunks: string[] = [];
   let start = 0;
   while (start < text.length) {
     const end = Math.min(start + chunkSize, text.length);
     chunks.push(text.slice(start, end));
+    if (end === text.length) break;
     start = end - overlap;
-    if (start >= text.length) break;
   }
   return chunks;
 }

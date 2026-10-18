@@ -92,6 +92,18 @@ export async function googleModeSearch(
   } = {}
 ): Promise<GoogleModeSearchResult> {
   if (!query.trim()) throw new Error("query is required");
+  const threshold = options.confidenceThreshold ?? 0.85;
+  const cacheTtlMs = options.cacheTtlMs ?? 3_600_000;
+  const limit = options.limit ?? 10;
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+    throw new RangeError("confidence threshold must be between 0 and 1");
+  }
+  if (!Number.isFinite(cacheTtlMs) || cacheTtlMs < 0) {
+    throw new RangeError("cache TTL must be a finite non-negative number");
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new RangeError("search limit must be an integer between 1 and 100");
+  }
   if (
     !scope.tenantId ||
     !scope.spaceId ||
@@ -133,16 +145,10 @@ export async function googleModeSearch(
     }
   );
   const confidence = Math.max(dense[0]?.score ?? 0, sparse[0]?.score ?? 0);
-  const threshold = options.confidenceThreshold ?? 0.85;
   const liveGrounding = confidence < threshold;
   const web = liveGrounding ? await adapters.web(query, scope) : [];
-  const hits = [...fused, ...web].slice(0, options.limit ?? 10);
-  await adapters.cache.store(
-    query,
-    scope,
-    hits,
-    startedAt + (options.cacheTtlMs ?? 3_600_000)
-  );
+  const hits = [...fused, ...web].slice(0, limit);
+  await adapters.cache.store(query, scope, hits, startedAt + cacheTtlMs);
   const result = {
     hits,
     cacheHit: false,

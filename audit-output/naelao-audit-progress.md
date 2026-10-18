@@ -223,11 +223,29 @@ Focused moderation validation passed **23 tests across 2 files**. The configured
 - Since only a false-returning checker stub exists and there are no production callers, the `csam_hash` path is contract-tested with a fake checker but is not connected to a real hash database.
 - The image cap bounds bytes after they reach this function; upstream image downloads and decoded-image memory use require separate limits.
 
+## RAG package stress pass (2026-10-18)
+
+| File | Features and stress boundaries exercised | Evidence / disposition |
+|---|---|---|
+| `packages/rag/src/chunk.ts` | Sentence/forced chunking, overlap and minimum-size behavior | Found and fixed a non-terminating forced split when the final slice overlapped the end. The short final slice is now retained without exceeding configured chunk size. Invalid/non-progressing size and overlap settings throw before processing. |
+| `packages/rag/src/embed.ts` | Single/batch embedding response shape and model batch limit | Vectors must be non-empty and finite; batches reject malformed or inconsistent vectors. A 101-item batch test verifies 100+1 calls and no dropped values. |
+| `packages/rag/src/semantic-cache.ts` | Similarity threshold, expiry and KV access | NaN/missing scores and missing, malformed, or expired expiries fail closed before KV reads. Threshold remains strictly greater than 0.96. |
+| `packages/rag/src/vectorize.ts` | Permissioned query validation and bounded topK | Invalid vectors, role values/masks, and non-positive/non-integer topK are rejected before Vectorize calls; ACL filters are asserted by existing tests. |
+| `packages/rag/src/hybrid.ts` | Dense/sparse RRF, live-grounding threshold, scoped cache and telemetry orchestration | Invalid confidence threshold, TTL, and result limit are rejected before adapter calls. Existing tests cover RRF and low-confidence web fallback. |
+| `packages/rag/src/chunking.ts`, `citations.ts`, `envelope.ts`, `index.ts` | Markdown tables/headings, citation references/coordinates, XML escaping/hash, and exports | Existing focused tests cover table cohesion, citation numbering/forged coordinates, and retrieved-context boundary escaping; package TypeScript check passes. |
+| `packages/rag/package.json`, `tsconfig.json`, `vitest.config.ts`; `batch05-*.test.ts`; `tests/unit/packages/rag.test.ts` | Scripts, typecheck, test discovery, regression and contract coverage | Focused package suite passed **23 tests across 4 files**. TypeScript and focused Biome checks passed. The configured workspace passed **247 test files and 1,084 tests** with the RAG project registered. |
+
+### Remaining RAG risks
+
+- The knowledge worker's semantic answer cache still filters Vectorize entries by `space_id` only. The regular grounded-result cache uses tenant, project, role, user, mode, and policy scope, but semantic-cache hit scope is narrower. Worker callsites and cache write routes need an end-to-end authorization pass before this can be called safe for private/project-specific answers.
+- Embedding response shape and vector limits were tested with stubs; Cloudflare AI and Vectorize deployment behavior/model changes were not exercised live.
+- `roleMask` is validated as an input but the Vectorize filter is expressed using `role`, visibility, and allowed-user metadata; writers/index metadata and route authorization still need review together.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 243 test files, 1,061 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, and moderation projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 247 test files, 1,084 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, and RAG projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

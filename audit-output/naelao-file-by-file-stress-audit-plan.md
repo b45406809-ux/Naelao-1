@@ -706,19 +706,21 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/rag`
 
-- [ ] `packages/rag/package.json`
-- [ ] `packages/rag/src/batch05-permissions.test.ts`
-- [ ] `packages/rag/src/batch05-phase2.test.ts`
-- [ ] `packages/rag/src/chunk.ts`
-- [ ] `packages/rag/src/chunking.ts`
-- [ ] `packages/rag/src/citations.ts`
-- [ ] `packages/rag/src/embed.ts`
-- [ ] `packages/rag/src/envelope.ts`
-- [ ] `packages/rag/src/hybrid.ts`
-- [ ] `packages/rag/src/index.ts`
-- [ ] `packages/rag/src/semantic-cache.ts`
-- [ ] `packages/rag/src/vectorize.ts`
-- [ ] `packages/rag/tsconfig.json`
+- [x] `packages/rag/package.json`
+- [x] `packages/rag/src/batch05-permissions.test.ts`
+- [x] `packages/rag/src/batch05-phase2.test.ts`
+- [x] `packages/rag/src/batch05-stress.test.ts` (added stress coverage)
+- [x] `packages/rag/src/chunk.ts`
+- [x] `packages/rag/src/chunking.ts`
+- [x] `packages/rag/src/citations.ts`
+- [x] `packages/rag/src/embed.ts`
+- [x] `packages/rag/src/envelope.ts`
+- [x] `packages/rag/src/hybrid.ts`
+- [x] `packages/rag/src/index.ts`
+- [x] `packages/rag/src/semantic-cache.ts`
+- [x] `packages/rag/src/vectorize.ts`
+- [x] `packages/rag/vitest.config.ts` (includes package and existing unit tests)
+- [x] `packages/rag/tsconfig.json`
 
 ### `packages/sdk`
 
