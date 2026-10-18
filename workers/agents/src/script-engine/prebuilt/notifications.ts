@@ -81,14 +81,14 @@ export const notifications: PrebuiltScript = {
           reason: "no recipient: none was given and this space has no owner email on record",
         };
       }
-      return dispatch(c, "email", { to, subject: a["subject"], body: a["body"] });
+      return dispatch(c, "email", { to, subject: a["subject"], body: a["body"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] });
     },
-    "notify.slack": (a, c) => dispatch(c, "slack", { channel: a["channel"], message: a["message"] }),
-    "notify.discord": (a, c) => dispatch(c, "discord", { channel: a["channel"], message: a["message"] }),
-    "notify.whatsapp": (a, c) => dispatch(c, "whatsapp", { to: a["to"], message: a["message"] }),
+    "notify.slack": (a, c) => dispatch(c, "slack", { channel: a["channel"], message: a["message"], thread_ts: a["thread_ts"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
+    "notify.discord": (a, c) => dispatch(c, "discord", { channel: a["channel"], message: a["message"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
+    "notify.whatsapp": (a, c) => dispatch(c, "whatsapp", { to: a["to"], message: a["message"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
     // `to` is Telegram's chat id, not a username — a reply has to go back to the conversation
     // it came from, which in a group is not the sender (see telegramAdapter.normalizeInbound).
-    "notify.telegram": (a, c) => dispatch(c, "telegram", { to: a["to"], message: a["message"] }),
+    "notify.telegram": (a, c) => dispatch(c, "telegram", { to: a["to"], message: a["message"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
     "notify.apns": (a, c) => dispatch(c, "apns", { device_token: a["device_token"], payload: a["payload"] }),
     "notify.fcm": (a, c) => dispatch(c, "fcm", { token: a["token"], payload: a["payload"] }),
     "notify.web_push": (a, c) => dispatch(c, "web_push", {

@@ -220,6 +220,7 @@ export interface OAuthTicket {
   userId: string;
   returnUrl: string;
   platform: string;
+  extensionConnection?: { projectId: string; installationId: string; extensionId: string; connectionId: string };
 }
 
 const TICKET_TTL_SECONDS = 600;

@@ -17,8 +17,8 @@
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -115,6 +115,59 @@ function ExtensionSessionControls({ spaceId, projectId, session, installation }:
     <button type="button" className="btn-ghost" style={{ marginLeft: 8, fontSize: 11 }} disabled={busy || !summary?.activeConversations} onClick={() => void clear()}>
       {busy ? "Clearing…" : "Clear saved state"}
     </button>
+    {error && <span role="alert" style={{ display: "block", color: "var(--danger, #b42318)" }}>{error}</span>}
+    {notice && <span role="status" style={{ display: "block" }}>{notice}</span>}
+  </div>;
+}
+
+function ExtensionConnectionControls({ spaceId, projectId, session, installation, connection, canManage }: {
+  spaceId: string; projectId: string; session: SessionCredentials; installation: ChannelExtensionInstallation;
+  connection: NonNullable<ChannelExtensionInstallation["connections"]>[number]; canManage: boolean;
+}) {
+  const [status, setStatus] = React.useState<ExtensionProviderConnection | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<string | null>(null);
+  const refresh = React.useCallback(async () => {
+    const value = await getExtensionProviderConnection(spaceId, projectId, installation.instance_id, connection.id, session);
+    setStatus(value);
+  }, [spaceId, projectId, installation.instance_id, connection.id, session]);
+  React.useEffect(() => {
+    let cancelled = false;
+    getExtensionProviderConnection(spaceId, projectId, installation.instance_id, connection.id, session)
+      .then(value => { if (!cancelled) setStatus(value); })
+      .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load connection status."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [spaceId, projectId, installation.instance_id, connection.id, session]);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const query = new URLSearchParams(window.location.search);
+    if (query.has("extension_connection_error")) setError(`Slack setup did not finish (${query.get("extension_connection_error")}).`);
+    if (query.get("extension_connection_connected") === "slack") {
+      void refresh().then(() => setNotice("Slack workspace connected to this extension.")).catch(err => setError(err instanceof Error ? err.message : "Couldn't refresh connection status."));
+    }
+  }, [refresh]);
+  async function connect() {
+    setBusy(true); setError(null);
+    try {
+      const result = await startExtensionSlackOAuth(spaceId, projectId, installation.instance_id, connection.id, window.location.href, session);
+      window.location.assign(result.authorize_url);
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't start Slack setup."); setBusy(false); }
+  }
+  async function disconnect() {
+    if (!window.confirm(`Disconnect ${status?.account_label ?? "this Slack workspace"} from ${installation.name}?`)) return;
+    setBusy(true); setError(null);
+    try { await disconnectExtensionProvider(spaceId, projectId, installation.instance_id, connection.id, session); await refresh(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't disconnect this provider."); }
+    finally { setBusy(false); }
+  }
+  return <div style={{ margin: "6px 0 4px 12px", fontSize: 11.5, color: "var(--text2)" }}>
+    <span>{connection.id} · {connection.provider}: {loading ? "checking…" : status?.status === "active" ? `connected to ${status.account_label ?? status.account_id}` : "not connected"}</span>
+    {canManage && connection.provider === "slack" && <button type="button" className="btn-ghost" style={{ marginLeft: 8, fontSize: 11 }} disabled={busy || loading} onClick={() => void (status?.status === "active" ? disconnect() : connect())}>
+      {busy ? "Working…" : status?.status === "active" ? "Disconnect" : "Connect Slack workspace"}
+    </button>}
     {error && <span role="alert" style={{ display: "block", color: "var(--danger, #b42318)" }}>{error}</span>}
     {notice && <span role="status" style={{ display: "block" }}>{notice}</span>}
   </div>;
@@ -555,6 +608,7 @@ export function ChannelConnect({
                 {removingExtension === installation.instance_id ? "Uninstalling…" : "Uninstall"}
               </button>
             </div>
+            {installation.connections?.map(connection => <ExtensionConnectionControls key={connection.id} spaceId={spaceId} projectId={projectId} session={session} installation={installation} connection={connection} canManage={canManage} />)}
             <ExtensionSessionControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
             <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
             <ExtensionInbox spaceId={spaceId} projectId={projectId} session={session} installation={installation} />

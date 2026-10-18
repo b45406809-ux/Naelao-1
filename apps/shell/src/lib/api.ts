@@ -1883,6 +1883,29 @@ export interface ChannelExtensionInstallation {
   connections?: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
 }
 
+export interface ExtensionProviderConnection {
+  provider: string;
+  account_id: string;
+  account_label: string | null;
+  scopes: string[];
+  status: "active" | "expired" | "revoked" | "error";
+  connected_at: string;
+  last_verified_at: string | null;
+}
+
+export async function getExtensionProviderConnection(spaceId: string, projectId: string, installationId: string, connectionId: string, session: SessionCredentials): Promise<ExtensionProviderConnection | null> {
+  const result = await apiFetch<{ connection: ExtensionProviderConnection | null }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}`, { session });
+  return result.connection;
+}
+
+export async function startExtensionSlackOAuth(spaceId: string, projectId: string, installationId: string, connectionId: string, returnUrl: string, session: SessionCredentials): Promise<{ authorize_url: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}/oauth/slack/start`, { method: "POST", session, body: JSON.stringify({ return_url: returnUrl }) });
+}
+
+export async function disconnectExtensionProvider(spaceId: string, projectId: string, installationId: string, connectionId: string, session: SessionCredentials): Promise<{ removed: boolean }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}`, { method: "DELETE", session });
+}
+
 export interface ExtensionRelease { version: string; artifactSha256: string; hostSignature: string; signatureValid: boolean; createdAt: string }
 
 export interface ExtensionPublisherKey {

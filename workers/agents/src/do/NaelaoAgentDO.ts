@@ -1519,12 +1519,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         channel         TEXT NOT NULL,
         channel_user_id TEXT NOT NULL,
         project_id      TEXT, -- customer-bot project this channel is bound to (NULL = space default agent)
+        channel_extension_instance_id TEXT,
+        provider_connection_id TEXT,
         human_takeover  INTEGER NOT NULL DEFAULT 0, -- admin/rule silenced the bot for this thread
         created_at      INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
         last_seen       INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
     `);
-    this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_session_user ON channel_sessions(channel, channel_user_id)`);
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_sessions ADD COLUMN channel_extension_instance_id TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_sessions ADD COLUMN provider_connection_id TEXT`); } catch { /* exists */ }
+    this.ctx.storage.sql.exec(`DROP INDEX IF EXISTS idx_channel_session_user`);
+    this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_session_user_install ON channel_sessions(channel,channel_user_id,COALESCE(channel_extension_instance_id,''),COALESCE(provider_connection_id,''))`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_session_project ON channel_sessions(project_id) WHERE project_id IS NOT NULL`);
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS channel_messages (
@@ -1536,6 +1541,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         project_id TEXT,
         channel_extension_instance_id TEXT,
         channel_extension_sha256 TEXT,
+        provider_connection_id TEXT,
+        recipient_id TEXT,
+        thread_id TEXT,
         answered    INTEGER NOT NULL DEFAULT 0,
         created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
@@ -1543,6 +1551,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN project_id TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN channel_extension_instance_id TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN channel_extension_sha256 TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN provider_connection_id TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN recipient_id TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN thread_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS channel_extension_dispatches (
       message_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL, script_sha256 TEXT NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('running','delivering','sent','uncertain','failed')),
@@ -5386,7 +5397,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; providerConnectionId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
@@ -5513,21 +5524,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     const rows = this.ctx.storage.sql
-      .exec(`SELECT id FROM channel_sessions WHERE channel = ? AND channel_user_id = ?`, norm.channel, norm.channel_user_id)
+      .exec(`SELECT id FROM channel_sessions WHERE channel = ? AND channel_user_id = ? AND COALESCE(channel_extension_instance_id,'')=COALESCE(?,'') AND COALESCE(provider_connection_id,'')=COALESCE(?,'')`, norm.channel, norm.channel_user_id, body.extensionInstanceId ?? null, body.providerConnectionId ?? null)
       .toArray() as Array<{ id: string }>;
     let sessionId: string;
     const isNewSession = !rows[0];
     if (rows[0]) {
       sessionId = rows[0].id;
       this.ctx.storage.sql.exec(
-        `UPDATE channel_sessions SET last_seen = ?, project_id = ? WHERE id = ?`,
-        Date.now(), body.projectId ?? null, sessionId
+        `UPDATE channel_sessions SET last_seen = ?, project_id = ?,channel_extension_instance_id=?,provider_connection_id=? WHERE id = ?`,
+        Date.now(), body.projectId ?? null, body.extensionInstanceId ?? null, body.providerConnectionId ?? null, sessionId
       );
     } else {
       sessionId = crypto.randomUUID();
       this.ctx.storage.sql.exec(
-        `INSERT INTO channel_sessions (id, channel, channel_user_id, project_id, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)`,
-        sessionId, norm.channel, norm.channel_user_id, body.projectId ?? null, Date.now(), Date.now()
+        `INSERT INTO channel_sessions (id, channel, channel_user_id, project_id, created_at, last_seen,channel_extension_instance_id,provider_connection_id) VALUES (?, ?, ?, ?, ?, ?,?,?)`,
+        sessionId, norm.channel, norm.channel_user_id, body.projectId ?? null, Date.now(), Date.now(), body.extensionInstanceId ?? null, body.providerConnectionId ?? null
       );
     }
 
@@ -5593,10 +5604,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       : null;
     const mentionRoute = await routeMentionsWithSentry(envelope.payload.text, mentionDecisionEnv?.fastDecision);
     const insertResult = this.ctx.storage.sql.exec(
-      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, project_id, channel_extension_instance_id, channel_extension_sha256, answered, created_at, turn_holder, referents, task_id)
-       VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, project_id, channel_extension_instance_id, channel_extension_sha256, provider_connection_id, recipient_id, thread_id, answered, created_at, turn_holder, referents, task_id)
+       VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
       crypto.randomUUID(), sessionId, envelope.payload.text, norm.external_id, body.projectId ?? null,
-      body.extensionInstanceId ?? null, body.extensionScriptSha256 ?? null, norm.timestamp,
+      body.extensionInstanceId ?? null, body.extensionScriptSha256 ?? null, body.providerConnectionId ?? null, norm.recipient_id ?? norm.channel_user_id, norm.thread_id ?? null, norm.timestamp,
       mentionRoute.turnHolder, JSON.stringify(mentionRoute.referents), body.taskId ?? null
     );
     const isNewMessage = insertResult.rowsWritten > 0;
@@ -5812,12 +5823,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "channel_extension_reply_invalid" }, { status: 400 });
     if (!moderateText(text).allowed) return Response.json({ error_code: "channel_extension_reply_blocked" }, { status: 400 });
     const event = this.ctx.storage.sql.exec(
-      `SELECT m.session_id,m.answered,s.channel,s.channel_user_id,COALESCE(d.status,'queued') AS status
+      `SELECT m.session_id,m.answered,m.provider_connection_id,m.recipient_id,m.thread_id,s.channel,s.channel_user_id,COALESCE(d.status,'queued') AS status
        FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
        LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
        WHERE m.id=? AND m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=? LIMIT 1`,
       eventId, projectId, installationId,
-    ).toArray()[0] as { session_id: string; answered: number; channel: string; channel_user_id: string; status: string } | undefined;
+    ).toArray()[0] as { session_id: string; answered: number; provider_connection_id: string | null; recipient_id: string | null; thread_id: string | null; channel: string; channel_user_id: string; status: string } | undefined;
     if (!event) return Response.json({ error_code: "channel_extension_event_not_found" }, { status: 404 });
     if (event.status === "running" || event.status === "delivering" || event.status === "processing" || event.answered === 2)
       return Response.json({ error_code: "channel_extension_event_in_flight" }, { status: 409 });
@@ -5836,7 +5847,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     try {
       const delivery = await new ScriptToolSurface(engineEnv, ["notifications"]).run(`notify.${event.channel}`,
-        this.notifyParamsFor(event.channel, event.channel_user_id, text));
+        this.notifyParamsFor(event.channel, event.channel_user_id, text, { installationId, providerConnectionId: event.provider_connection_id,
+          recipientId: event.recipient_id, threadId: event.thread_id }));
       if (!delivery.ok) {
         this.ctx.storage.sql.exec("UPDATE channel_extension_human_replies SET status='uncertain',error_code='provider_delivery_uncertain' WHERE event_id=?", eventId);
         return Response.json({ status: "uncertain", error_code: "provider_delivery_uncertain" });
@@ -5887,10 +5899,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   /** Maps a channel + the matched channel_user_id to the notify.* op's expected params. */
-  private notifyParamsFor(channel: string, channelUserId: string, text: string): Record<string, unknown> {
-    if (channel === "email") return { to: channelUserId, subject: "Re: your message", body: text };
-    if (channel === "whatsapp") return { to: channelUserId, message: text };
-    return { channel: channelUserId, message: text }; // slack / discord
+  private notifyParamsFor(channel: string, channelUserId: string, text: string, scope?: { installationId: string; providerConnectionId: string | null; recipientId?: string | null; threadId?: string | null }): Record<string, unknown> {
+    const connection = scope?.installationId && scope.providerConnectionId ? { installation_id: scope.installationId, provider_connection_id: scope.providerConnectionId } : {};
+    if (channel === "email") return { to: scope?.recipientId ?? channelUserId, subject: "Re: your message", body: text, ...connection };
+    if (channel === "whatsapp" || channel === "telegram") return { to: scope?.recipientId ?? channelUserId, message: text, ...connection };
+    return { channel: scope?.recipientId ?? channelUserId, message: text, ...(channel === "slack" && scope?.threadId ? { thread_ts: scope.threadId } : {}), ...connection }; // slack / discord
   }
 
   // Drain the unanswered queue through the script-first loop: the goal asks for a grounded
@@ -7661,13 +7674,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   private async loadActiveChannelHandler(input: {
-    spaceId: string; tenantId: string; projectId: string; channel: string; messageId: string; instanceId: string; scriptSha256: string;
+    spaceId: string; tenantId: string; projectId: string; channel: string; messageId: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null;
   }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
       method: "POST", headers: await this.internalHeaders(input.tenantId, { "content-type": "application/json" }),
       body: JSON.stringify({ spaceId: input.spaceId, projectId: input.projectId, channel: input.channel,
-        instanceId: input.instanceId, scriptSha256: input.scriptSha256 }),
+        instanceId: input.instanceId, scriptSha256: input.scriptSha256, providerConnectionId: input.providerConnectionId ?? undefined }),
     }));
     if (!verifyBinding.ok || !(await verifyBinding.json<{ valid?: boolean }>().catch(() => ({} as { valid?: boolean }))).valid) return null;
     const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(
@@ -7739,13 +7752,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const pending = this.ctx.storage.sql
       .exec(
         `SELECT m.id, m.session_id, s.channel, s.channel_user_id, COALESCE(m.project_id,s.project_id) AS project_id,
-                m.channel_extension_instance_id, m.channel_extension_sha256, m.text, m.task_id, m.created_at
+                m.channel_extension_instance_id, m.channel_extension_sha256, m.provider_connection_id, m.recipient_id, m.thread_id, m.text, m.task_id, m.created_at
          FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
          WHERE m.direction = 'inbound' AND m.answered = 0 AND s.human_takeover = 0${channelFilter}
          ORDER BY m.created_at ASC LIMIT ?`,
         ...(body.channel ? [body.channel, limit] : [limit])
       )
-      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; project_id: string | null; channel_extension_instance_id: string | null; channel_extension_sha256: string | null; text: string; task_id: string | null; created_at: number }>;
+      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; project_id: string | null; channel_extension_instance_id: string | null; channel_extension_sha256: string | null; provider_connection_id: string | null; recipient_id: string | null; thread_id: string | null; text: string; task_id: string | null; created_at: number }>;
 
     if (pending.length === 0) return Response.json({ drained: 0, answered: 0, escalated: 0, rule_handled: 0, spend_capped: 0 });
 
@@ -7935,7 +7948,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ? (matchedRule.reply_text ?? "")
           : null;
         if (replyText) {
-          const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText));
+          const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText,
+            { installationId: msg.channel_extension_instance_id ?? "", providerConnectionId: msg.provider_connection_id, recipientId: msg.recipient_id, threadId: msg.thread_id }));
           if (deliver.ok) {
             this.markOutbound(msg.session_id, msg.id, replyText);
             ruleHandled++;
@@ -8063,7 +8077,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           escalated++; continue;
         }
         const handler = await this.loadActiveChannelHandler({ spaceId, tenantId, projectId: msg.project_id,
-          channel: msg.channel, messageId: msg.id, instanceId: msg.channel_extension_instance_id, scriptSha256: msg.channel_extension_sha256 });
+          channel: msg.channel, messageId: msg.id, instanceId: msg.channel_extension_instance_id, scriptSha256: msg.channel_extension_sha256,
+          providerConnectionId: msg.provider_connection_id });
         const channelRunner = engineEnv.codeRunner?.runChannel;
         if (!handler || !channelRunner) {
           this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code='handler_unavailable' WHERE message_id=?", msg.id);
@@ -8183,7 +8198,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           takeover("The extension did not produce one valid, moderated text reply. Review the conversation and handler before responding."); escalated++; continue;
         }
         this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='delivering',reply_text=? WHERE message_id=? AND status='running'", replyText, msg.id);
-        const delivery = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText));
+      const delivery = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText,
+        { installationId: msg.channel_extension_instance_id ?? "", providerConnectionId: msg.provider_connection_id, recipientId: msg.recipient_id, threadId: msg.thread_id }));
         if (msg.project_id) {
           try {
             const subjectHash = await opaqueExternalSubject(this.env.PLATFORM_SECRET,
@@ -8362,7 +8378,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         continue;
       }
       // The reasoner answered in text rather than calling notify.* itself — deliver it now.
-      const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, text));
+      const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, text,
+        { installationId: msg.channel_extension_instance_id ?? "", providerConnectionId: msg.provider_connection_id, recipientId: msg.recipient_id, threadId: msg.thread_id }));
       if (!deliver.ok) { escalated++; continue; }
       this.markOutbound(msg.session_id, msg.id, text);
       await this.persistTerminatedCustomerSession(spaceId, tenantId, msg.session_id, msg.channel, msg.channel_user_id, false, false);

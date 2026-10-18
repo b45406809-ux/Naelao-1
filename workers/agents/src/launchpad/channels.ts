@@ -27,6 +27,10 @@ export interface NormalizedInbound {
   /** Channel-native id used to dedupe re-delivered events. */
   external_id: string;
   timestamp: number;
+  /** Provider conversation to reply to; distinct from the sender identity. */
+  recipient_id?: string;
+  /** Provider thread/reply anchor, when the event belongs to a thread. */
+  thread_id?: string;
 }
 
 export interface OutboundMessage {
@@ -133,7 +137,10 @@ const slackAdapter: ChannelAdapter = {
     const ts = str(raw, "ts");
     const hasFiles = Array.isArray(raw["files"]) && raw["files"].length > 0;
     if (!user || (text === undefined && !hasFiles) || !ts) return null;
-    return { channel: "slack", channel_user_id: user, text: text ?? "", external_id: ts, timestamp: Math.floor(Number(ts) * 1000) || Date.now() };
+    const conversation = str(raw, "channel");
+    const thread = str(raw, "thread_ts");
+    return { channel: "slack", channel_user_id: user, text: text ?? "", external_id: ts, timestamp: Math.floor(Number(ts) * 1000) || Date.now(),
+      ...(conversation ? { recipient_id: conversation } : {}), ...(thread ? { thread_id: thread } : {}) };
   },
   formatOutbound(msg) {
     return { text: msg.text, blocks: [{ type: "section", text: { type: "mrkdwn", text: msg.text } }] };

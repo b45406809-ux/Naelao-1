@@ -3570,6 +3570,22 @@ async function storeConnectorCredential(
   );
 }
 
+async function deleteConnectorCredentialByName(
+  env: Pick<AgentsEnv, "CREDENTIALS_WORKER" | "PLATFORM_SECRET">,
+  tenantId: string,
+  spaceId: string,
+  name: string,
+): Promise<void> {
+  if (!env.CREDENTIALS_WORKER) return;
+  const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": "extension-system", "x-naelao-role": "admin",
+    "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) };
+  const list = await env.CREDENTIALS_WORKER.fetch(new Request(`http://credentials/spaces/${encodeURIComponent(spaceId)}/credentials`, { headers }));
+  if (!list.ok) return;
+  const body = await list.json<{ credentials?: Array<{ id?: string; name?: string }> }>().catch(() => ({} as { credentials?: Array<{ id?: string; name?: string }> }));
+  const credential = body.credentials?.find(item => item.name === name && item.id);
+  if (credential?.id) await env.CREDENTIALS_WORKER.fetch(new Request(`http://credentials/spaces/${encodeURIComponent(spaceId)}/credentials/${encodeURIComponent(credential.id)}`, { method: "DELETE", headers }));
+}
+
 async function resolveConnectorCredential(
   env: Pick<AgentsEnv, "CREDENTIALS_WORKER" | "PLATFORM_SECRET">,
   tenantId: string,
@@ -4236,6 +4252,147 @@ app.get("/connectors/custom-oauth/:connectorId/oauth/redirect-uri", async (c) =>
   if (!validTenantOAuthId(id)) throw badRequest("connectorId must be a lower-case identifier");
   if (!c.env.PUBLIC_AGENTS_URL) return c.json({ error_code: "oauth_unavailable" }, 503);
   return c.json({ redirect_uri: `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/connectors/custom-oauth/${encodeURIComponent(id)}/oauth/callback` });
+});
+
+type InstalledConnectionContext = {
+  instance: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; status?: string; scope?: string };
+  manifest: { id?: string; bundle?: { id?: string; version?: string; connections?: Array<{ id?: string; provider?: string; purpose?: string; required?: boolean }> };
+    channels?: Array<{ kind?: string; provider?: string; connectionId?: string; handlerScript?: string }> };
+  release?: { signatureValid?: boolean } | null;
+};
+
+async function fetchInstalledConnectionContext(env: AgentsEnv, tenantId: string, spaceId: string, projectId: string, installationId: string): Promise<InstalledConnectionContext | null> {
+  if (!env.SPACES_WORKER) return null;
+  const response = await env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/workflow-installations/${encodeURIComponent(installationId)}`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) } },
+  ));
+  if (!response.ok) return null;
+  const result = await response.json<InstalledConnectionContext>();
+  if (result.instance?.instance_id !== installationId || result.instance.tenant_id !== tenantId || result.instance.space_id !== spaceId
+    || result.instance.project_id !== projectId || result.instance.status !== "active"
+    || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(result.instance.scope ?? "") || result.release?.signatureValid !== true) return null;
+  return result;
+}
+
+function extensionConnectionCredentialName(installationId: string, connectionId: string, generation: string): string {
+  const digest = [...new TextEncoder().encode(`${installationId}:${connectionId}`)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  return `EXT_SLACK_${digest.slice(0, 32)}_${generation}`;
+}
+
+app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/oauth/slack/start", async c => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect a provider to an extension");
+  if (!c.env.SLACK_CLIENT_ID || !c.env.SLACK_CLIENT_SECRET || !c.env.PUBLIC_AGENTS_URL || !c.env.AGENT_CACHE) return c.json({ error_code: "extension_provider_oauth_unavailable" }, 503);
+  const body = await c.req.json<{ return_url?: unknown }>().catch(() => ({} as { return_url?: unknown }));
+  if (typeof body.return_url !== "string" || !isTrustedConnectorReturnUrl(body.return_url, c.env)) throw badRequest("return_url must use an approved Naelao app origin");
+  const installation = await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId);
+  const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === connectionId);
+  if (!installation || !declaration || declaration.provider !== "slack") return c.json({ error_code: "extension_connection_not_declared" }, 404);
+  const ticket = await issueOAuthTicket(c.env.AGENT_CACHE, { verifier: "", spaceId, tenantId, userId, returnUrl: body.return_url, platform: "extension-slack",
+    extensionConnection: { projectId, installationId, extensionId: installation.manifest.bundle?.id ?? "", connectionId } });
+  const redirectUri = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/extensions/oauth/slack/callback`;
+  const authorize = new URL("https://slack.com/oauth/v2/authorize");
+  authorize.searchParams.set("client_id", c.env.SLACK_CLIENT_ID);
+  authorize.searchParams.set("scope", "chat:write,channels:history,im:history,mpim:history,files:read");
+  authorize.searchParams.set("redirect_uri", redirectUri);
+  authorize.searchParams.set("state", ticket);
+  return c.json({ authorize_url: authorize.toString(), provider: "slack", requested_scopes: ["chat:write", "channels:history", "im:history", "mpim:history", "files:read"] });
+});
+
+app.get("/extensions/oauth/slack/callback", async c => {
+  const ticket = c.req.query("state") ? await consumeOAuthTicket(c.env.AGENT_CACHE, c.req.query("state")!) : null;
+  if (!ticket || ticket.platform !== "extension-slack" || !ticket.extensionConnection) return c.html(pairingPage("This connection link expired or was already used.", "Return to the extension settings and start again."), 400);
+  const connection = ticket.extensionConnection;
+  const fail = (reason: string) => { const target = new URL(ticket.returnUrl); target.searchParams.set("extension_connection_error", reason); return c.redirect(target.toString(), 302); };
+  if (c.req.query("error")) return fail("authorization_denied");
+  const code = c.req.query("code");
+  if (!code || !c.env.SLACK_CLIENT_ID || !c.env.SLACK_CLIENT_SECRET || !c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER) return fail("provider_oauth_unavailable");
+  const installation = await fetchInstalledConnectionContext(c.env, ticket.tenantId, ticket.spaceId, connection.projectId, connection.installationId);
+  const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === connection.connectionId);
+  const channel = installation?.manifest.channels?.find(item => item.kind === "channel" && item.provider === "slack" && item.connectionId === connection.connectionId);
+  if (!installation || installation.manifest.bundle?.id !== connection.extensionId || declaration?.provider !== "slack" || !channel?.handlerScript) return fail("extension_installation_changed");
+  const redirectUri = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/extensions/oauth/slack/callback`;
+  let teamId = "", teamName = "", botToken = "", scopes: string[] = [];
+  try {
+    const response = await fetch("https://slack.com/api/oauth.v2.access", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id: c.env.SLACK_CLIENT_ID, client_secret: c.env.SLACK_CLIENT_SECRET, code, redirect_uri: redirectUri }), signal: AbortSignal.timeout(15_000) });
+    const result = await response.json<{ ok?: boolean; error?: string; team?: { id?: string; name?: string }; access_token?: string; scope?: string }>().catch(() => ({} as { ok?: boolean; error?: string; team?: { id?: string; name?: string }; access_token?: string; scope?: string }));
+    if (!result.ok || !result.team?.id || !result.access_token) return fail("slack_install_rejected");
+    teamId = result.team.id; teamName = result.team.name ?? "Slack workspace"; botToken = result.access_token; scopes = (result.scope ?? "").split(",").filter(Boolean);
+  } catch { return fail("slack_token_exchange_failed"); }
+  const collision = await c.env.PLATFORM_DB.prepare(`SELECT installation_id FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND provider='slack' AND account_id=? AND status='active'
+      AND NOT (installation_id=? AND connection_id=?) LIMIT 1`).bind(ticket.tenantId, ticket.spaceId, teamId, connection.installationId, connection.connectionId).first();
+  if (collision) return fail("slack_workspace_already_routed");
+  const credentialName = extensionConnectionCredentialName(connection.installationId, connection.connectionId, crypto.randomUUID().replaceAll("-", "").slice(0, 12));
+  const prior = await c.env.PLATFORM_DB.prepare(`SELECT credential_name FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`).bind(ticket.tenantId, ticket.spaceId, connection.installationId, connection.connectionId).first<{ credential_name: string }>();
+  const handler = await c.env.SCRIPTS_R2?.get(`spaces/${ticket.spaceId}/extensions/${connection.extensionId}/${installation.manifest.bundle?.version}/${channel.handlerScript.replace(/^\.\//, "")}`);
+  if (!handler || handler.size > 262_144) return fail("extension_handler_unavailable");
+  const handlerSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await handler.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const stored = await storeConnectorCredential(c.env, { tenantId: ticket.tenantId, spaceId: ticket.spaceId, userId: ticket.userId,
+    name: credentialName, value: botToken, description: `Slack bot credential for extension ${connection.extensionId}/${connection.connectionId}` });
+  if (!stored.ok) return fail("credential_store_failed");
+  const now = new Date().toISOString();
+  try {
+    await c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,handler_sha256,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)
+      VALUES(?,?,?,?,?,'slack',?,?,?,?,?,'active',?,?,?,NULL,?) ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO UPDATE SET
+      project_id=excluded.project_id,account_id=excluded.account_id,account_label=excluded.account_label,credential_name=excluded.credential_name,
+      handler_sha256=excluded.handler_sha256,granted_scopes_json=excluded.granted_scopes_json,status='active',connected_by=excluded.connected_by,connected_at=excluded.connected_at,
+      last_verified_at=excluded.last_verified_at,revoked_at=NULL,updated_at=excluded.updated_at`).bind(ticket.tenantId, ticket.spaceId, connection.projectId,
+      connection.installationId, connection.connectionId, teamId, teamName.slice(0, 120), credentialName, handlerSha256, JSON.stringify(scopes), ticket.userId, now, now, now).run();
+  } catch {
+    await deleteConnectorCredentialByName(c.env, ticket.tenantId, ticket.spaceId, credentialName);
+    return fail("slack_workspace_connection_conflict");
+  }
+  if (prior?.credential_name && prior.credential_name !== credentialName) {
+    const priorToken = await resolveConnectorCredential(c.env, ticket.tenantId, ticket.spaceId, prior.credential_name);
+    if (priorToken) { try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${priorToken}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* new binding is already active */ } }
+    await deleteConnectorCredentialByName(c.env, ticket.tenantId, ticket.spaceId, prior.credential_name);
+  }
+  const target = new URL(ticket.returnUrl); target.searchParams.set("extension_connection_connected", "slack");
+  return c.redirect(target.toString(), 302);
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId", async c => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
+  const { role: callerRole } = getCallerIdentity(c);
+  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!role || !["owner", "admin"].includes(role)) throw forbidden("Only a Space owner or admin may view extension provider status");
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,account_id,account_label,granted_scopes_json,status,connected_at,last_verified_at
+    FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=?`)
+    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string; account_id: string; account_label: string | null; granted_scopes_json: string; status: string; connected_at: string; last_verified_at: string | null }>();
+  if (!row) return c.json({ connection: null });
+  return c.json({ connection: { provider: row.provider, account_id: row.account_id, account_label: row.account_label, scopes: JSON.parse(row.granted_scopes_json) as string[], status: row.status, connected_at: row.connected_at, last_verified_at: row.last_verified_at } });
+});
+
+app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId", async c => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may disconnect an extension provider");
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,account_id FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='active'`)
+    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string; credential_name: string; account_id: string }>();
+  if (!row) return c.json({ removed: false });
+  if (row.provider === "slack") {
+    const token = await resolveConnectorCredential(c.env, tenantId, spaceId, row.credential_name);
+    if (token) {
+      try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* local revocation remains authoritative */ }
+    }
+  }
+  const now = new Date().toISOString();
+  await c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='revoked',revoked_at=?,updated_at=?
+    WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='active'`)
+    .bind(now, now, tenantId, spaceId, projectId, installationId, connectionId).run();
+  await deleteConnectorCredentialByName(c.env, tenantId, spaceId, row.credential_name);
+  return c.json({ removed: true });
 });
 // Tenant BYO-OAuth: custom connector client configuration and tokens are space-scoped vault
 // values. The browser receives only the authorize URL; the client secret and tokens never appear
@@ -5835,12 +5992,13 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
       headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken },
     })
   );
-  if (!secretResp.ok) return c.json({ error_code: "no_channel_secret", message: "Channel signing secret not configured for this space" }, 400);
-  const { value: secret } = await secretResp.json<{ value: string }>();
+  const vaultedSecret = secretResp.ok ? await secretResp.json<{ value?: string }>().then(value => value.value) : undefined;
+  const secrets = [...new Set([vaultedSecret, channel === "slack" ? c.env.SLACK_SIGNING_SECRET : undefined].filter((value): value is string => !!value))];
+  if (!secrets.length) return c.json({ error_code: "no_channel_secret", message: "Channel signing secret not configured for this space or deployment" }, 400);
 
   const headers: Record<string, string> = {};
   c.req.raw.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
-  const valid = await adapter.verifySignature({ rawBody, headers, secret });
+  const valid = (await Promise.all(secrets.map(secret => adapter.verifySignature({ rawBody, headers, secret })))).some(Boolean);
   if (!valid) return c.json({ error_code: "invalid_signature" }, 401);
 
   let parsed: Record<string, unknown> = {};
@@ -5856,6 +6014,28 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
   // Slack's Events API verification handshake — answer once the signature has checked out.
   if (channel === "slack" && parsed["type"] === "url_verification") {
     return c.json({ challenge: parsed["challenge"] });
+  }
+  // An installed extension connection is selected by the signed Slack workspace ID. If the
+  // workspace is claimed by an extension but that installation is no longer valid, fail closed
+  // rather than falling through to a legacy Space channel binding.
+  type InstalledSlackConnectionRow = { project_id: string; installation_id: string; connection_id: string; credential_name: string; handler_sha256: string | null };
+  let installedSlackConnection: InstalledSlackConnectionRow | null = null;
+  if (channel === "slack" && typeof parsed["team_id"] === "string") {
+    installedSlackConnection = await c.env.PLATFORM_DB.prepare(`SELECT project_id,installation_id,connection_id,credential_name,handler_sha256
+      FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND provider='slack' AND account_id=? AND status='active' LIMIT 1`)
+      .bind(space.tenant_id, spaceId, parsed["team_id"]).first<InstalledSlackConnectionRow>();
+    if (installedSlackConnection) {
+      const installation = await fetchInstalledConnectionContext(c.env, space.tenant_id, spaceId, installedSlackConnection.project_id, installedSlackConnection.installation_id);
+      const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === installedSlackConnection!.connection_id);
+      const handler = installation?.manifest.channels?.find(item => item.kind === "channel" && item.provider === "slack" && item.connectionId === installedSlackConnection!.connection_id);
+      if (!installation || declaration?.provider !== "slack" || !handler?.handlerScript || !installedSlackConnection.handler_sha256 || !c.env.SCRIPTS_R2) {
+        return c.json({ ok: true, skipped: "extension_connection_unavailable" });
+      }
+      const artifact = await c.env.SCRIPTS_R2.get(`spaces/${spaceId}/extensions/${installation.manifest.bundle?.id}/${installation.manifest.bundle?.version}/${handler.handlerScript.replace(/^\.\//, "")}`);
+      if (!artifact || artifact.size > 262_144) return c.json({ ok: true, skipped: "extension_handler_unavailable" });
+      const artifactHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await artifact.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      if (artifactHash !== installedSlackConnection.handler_sha256) return c.json({ ok: true, skipped: "extension_handler_changed" });
+    }
   }
   // Slack wraps the actual message in `event`; Discord/email payloads are already top-level.
   const raw = channel === "slack" && parsed["event"] ? (parsed["event"] as Record<string, unknown>) : parsed;
@@ -5931,7 +6111,9 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
         return c.json({ error_code: rejected ? "unsupported_telegram_media" : "telegram_media_unavailable" }, rejected ? 422 : 503);
       }
     } else if (channel === "slack") {
-      const botToken = await resolveConnectorCredential(c.env, space.tenant_id, spaceId, "SLACK_BOT_OAUTH_TOKEN");
+      const botToken = installedSlackConnection
+        ? await resolveConnectorCredential(c.env, space.tenant_id, spaceId, installedSlackConnection.credential_name)
+        : await resolveConnectorCredential(c.env, space.tenant_id, spaceId, "SLACK_BOT_OAUTH_TOKEN");
       if (!botToken) return c.json({ error_code: "slack_media_credential_missing" }, 503);
       try {
         files = await downloadSlackAttachments(raw, { botToken });
@@ -5964,7 +6146,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
 
   // Resolve which project (if any) this channel is bound to — a customer-bot project runs
   // under a restricted execution ceiling + its own rules instead of the default agent.
-  const link = await c.env.PLATFORM_DB.prepare(
+  const link = installedSlackConnection ? null : await c.env.PLATFORM_DB.prepare(
     "SELECT project_id,extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id = ? AND channel = ? AND enabled=1"
   ).bind(spaceId, channel).first<{ project_id: string | null; extension_instance_id: string | null; extension_script_sha256: string | null }>();
 
@@ -5975,9 +6157,10 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         raw: normalizedRaw,
-        projectId: link?.project_id ?? undefined,
-        extensionInstanceId: link?.extension_instance_id ?? undefined,
-        extensionScriptSha256: link?.extension_script_sha256 ?? undefined,
+        projectId: installedSlackConnection?.project_id ?? link?.project_id ?? undefined,
+        extensionInstanceId: installedSlackConnection?.installation_id ?? link?.extension_instance_id ?? undefined,
+        extensionScriptSha256: installedSlackConnection?.handler_sha256 ?? link?.extension_script_sha256 ?? undefined,
+        providerConnectionId: installedSlackConnection?.connection_id,
         spaceId,
         tenantId: space.tenant_id,
         channel,
@@ -7149,9 +7332,17 @@ app.get("/spaces/:spaceId/assistant/channel-extensions", async c => {
 app.post("/internal/channel-extension-binding/verify", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
-  const body = await c.req.json<{ spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string }>()
-    .catch(() => ({} as { spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string }));
+  const body = await c.req.json<{ spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string; providerConnectionId?: string }>()
+    .catch(() => ({} as { spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string; providerConnectionId?: string }));
   if (!body.spaceId || !body.projectId || !body.channel || !body.instanceId || !body.scriptSha256) return c.json({ valid: false });
+  if (body.providerConnectionId) {
+    const connection = await c.env.PLATFORM_DB.prepare(`SELECT project_id,installation_id,provider,handler_sha256 FROM extension_provider_connections
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='active'`)
+      .bind(tenantId, body.spaceId, body.projectId, body.instanceId, body.providerConnectionId)
+      .first<{ project_id: string; installation_id: string; provider: string; handler_sha256: string | null }>();
+    return c.json({ valid: connection?.provider === body.channel && connection.installation_id === body.instanceId
+      && connection.handler_sha256 === body.scriptSha256 });
+  }
   const row = await c.env.PLATFORM_DB.prepare(
     "SELECT extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id=? AND tenant_id=? AND project_id=? AND channel=? AND enabled=1"
   ).bind(body.spaceId, tenantId, body.projectId, body.channel).first<{ extension_instance_id: string | null; extension_script_sha256: string | null }>();
@@ -7201,6 +7392,20 @@ app.post("/internal/channel-extensions/session-state", async c => {
   if (!instance || instance.status !== "active" || instance.tenant_id !== tenantId || instance.space_id !== body.spaceId || instance.project_id !== body.projectId)
     return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
   if (body.action === "uninstall") {
+    const connections = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name FROM extension_provider_connections
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND status='active'`)
+      .bind(tenantId, body.spaceId, body.projectId, body.installationId).all<{ provider: string; credential_name: string }>();
+    for (const connection of connections.results ?? []) {
+      if (connection.provider === "slack") {
+        const token = await resolveConnectorCredential(c.env, tenantId, body.spaceId, connection.credential_name);
+        if (token) { try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* the local connection is still revoked below */ } }
+      }
+    }
+    const revokedAt = new Date().toISOString();
+    await c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='revoked',revoked_at=?,updated_at=?
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND status='active'`)
+      .bind(revokedAt, revokedAt, tenantId, body.spaceId, body.projectId, body.installationId).run();
+    for (const connection of connections.results ?? []) await deleteConnectorCredentialByName(c.env, tenantId, body.spaceId, connection.credential_name);
     const result = await c.env.PLATFORM_DB.prepare(`UPDATE channel_links SET extension_instance_id=NULL,extension_script_sha256=NULL
       WHERE space_id=? AND tenant_id=? AND project_id=? AND extension_instance_id=?`)
       .bind(body.spaceId, tenantId, body.projectId, body.installationId).run();

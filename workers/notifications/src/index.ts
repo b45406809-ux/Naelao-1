@@ -98,10 +98,17 @@ async function resolveChannelCredential(
   }
 }
 
+async function resolveExtensionChannelCredential(env: NotificationsEnv, input: { tenantId: string; spaceId: string; channel: string; installationId: string; connectionId: string }): Promise<string | null> {
+  const row = await env.PLATFORM_DB.prepare(`SELECT credential_name FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND provider=? AND installation_id=? AND connection_id=? AND status='active'`)
+    .bind(input.tenantId, input.spaceId, input.channel, input.installationId, input.connectionId).first<{ credential_name: string }>();
+  return row ? resolveChannelCredential(env, input.tenantId, input.spaceId, row.credential_name) : null;
+}
+
 /** One reply, out to a chat channel. Returns why it didn't go rather than throwing. */
 async function sendChatMessage(
   env: NotificationsEnv,
-  opts: { channel: string; tenantId: string; spaceId: string; to: string; message: string; actions?: Array<{ id: string; label: string }> }
+  opts: { channel: string; tenantId: string; spaceId: string; to: string; message: string; actions?: Array<{ id: string; label: string }>; installationId?: string; providerConnectionId?: string; threadTs?: string }
 ): Promise<{ delivered: boolean; reason?: string; status?: number }> {
   const { channel, to, message } = opts;
   const actions = opts.actions?.filter(action => /^review:[a-zA-Z0-9_-]{1,48}$/.test(action.id) && typeof action.label === "string" && action.label.length > 0 && action.label.length <= 20).slice(0, 3) ?? [];
@@ -127,10 +134,12 @@ async function sendChatMessage(
   const viaTwilio = channel === "whatsapp" && whatsappTransport !== "meta" &&
     Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_WHATSAPP_NUMBER);
 
-  const credential =
-    (await resolveChannelCredential(env, opts.tenantId, opts.spaceId, credName)) ??
-    (env as unknown as Record<string, string | undefined>)[credName] ??
-    null;
+  const extensionConnectionRequested = Boolean(opts.installationId || opts.providerConnectionId);
+  const credential = extensionConnectionRequested
+    ? opts.installationId && opts.providerConnectionId
+      ? await resolveExtensionChannelCredential(env, { tenantId: opts.tenantId, spaceId: opts.spaceId, channel, installationId: opts.installationId, connectionId: opts.providerConnectionId })
+      : null
+    : (await resolveChannelCredential(env, opts.tenantId, opts.spaceId, credName)) ?? (env as unknown as Record<string, string | undefined>)[credName] ?? null;
   if (!credential && !viaTwilio) {
     return { delivered: false, reason: `${channel} is connected for receiving but has no ${credName} to reply with` };
   }
@@ -150,7 +159,7 @@ async function sendChatMessage(
       resp = await fetch("https://slack.com/api/chat.postMessage", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${cred}` },
-        body: JSON.stringify({ channel: to, text: message }),
+        body: JSON.stringify({ channel: to, text: message, ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}) }),
       });
       // Slack answers 200 with ok:false for real failures (bad token, not in channel), so the
       // HTTP status alone would report a silent drop as a success.
@@ -708,6 +717,9 @@ app.post("/internal/notify", async (c) => {
     message?: string;
     actions?: Array<{ id: string; label: string }>;
     user_id?: string;
+    installation_id?: string;
+    provider_connection_id?: string;
+    thread_ts?: string;
   }>();
 
   if (body.channel === "email") {
@@ -755,6 +767,9 @@ app.post("/internal/notify", async (c) => {
       to: String(body.to ?? ""),
       message: String(body.message ?? body.body ?? ""),
       ...(body.actions ? { actions: body.actions } : {}),
+      ...(typeof body.installation_id === "string" ? { installationId: body.installation_id } : {}),
+      ...(typeof body.provider_connection_id === "string" ? { providerConnectionId: body.provider_connection_id } : {}),
+      ...(typeof body.thread_ts === "string" && /^\d{1,20}\.\d{1,10}$/.test(body.thread_ts) ? { threadTs: body.thread_ts } : {}),
     });
     return c.json(
       { delivered: result.delivered, channel: chatChannel, ...(result.reason ? { reason: result.reason } : {}) },

@@ -3,7 +3,7 @@ import { downloadSlackAttachments, hasSlackFiles } from "./slack-media.js";
 import { getAdapter } from "./channels.js";
 import { buildPairing } from "./channel-pairing.js";
 
-const raw = { user: "U123", ts: "1.25", files: [{ id: "F123", name: "../invoice.pdf" }] };
+const raw = { user: "U123", channel: "D123", ts: "1.25", thread_ts: "1.20", files: [{ id: "F123", name: "../invoice.pdf" }] };
 
 describe("Slack attachment ingress", () => {
   it("requests the least additional Slack scope needed for private file downloads", () => {
@@ -14,7 +14,7 @@ describe("Slack attachment ingress", () => {
 
   it("allows media-only signed events and resolves the file via files.info", async () => {
     expect(hasSlackFiles(raw)).toBe(true);
-    expect(getAdapter("slack")?.normalizeInbound(raw)).toMatchObject({ channel: "slack", text: "", external_id: "1.25" });
+    expect(getAdapter("slack")?.normalizeInbound(raw)).toMatchObject({ channel: "slack", channel_user_id: "U123", recipient_id: "D123", thread_id: "1.20", text: "", external_id: "1.25" });
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json({ ok: true, file: { name: "../invoice.pdf", mimetype: "application/pdf", size: 4, url_private_download: "https://files.slack.com/files-pri/T1-F123/download/invoice.pdf" } }))
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3, 4])));
