@@ -1,5 +1,5 @@
 import { parseExtensionPrimitive, serializeExtensionPrimitive, type ExtensionPrimitiveManifest } from "@naelao/agent-sdk";
-import { compileWorkflowPlan, type WorkflowPlan } from "./workflow.js";
+import { compileWorkflowPlan, resolveWorkflowPlanReferences, type WorkflowPlan } from "./workflow.js";
 
 export function createContractTestHarness() {
   return Object.freeze({
@@ -19,9 +19,15 @@ export interface MockWorkflowTestInput {
  * composition check only: it never invokes Naelao, a provider, a worker, or a live project. */
 export function runMockWorkflowPlan(input: MockWorkflowTestInput) {
   const compiled = compileWorkflowPlan(input.plan, input.allowedCapabilities);
-  const requests = input.plan.steps.map(step => new TextEncoder().encode(JSON.stringify({ operation: step.operation, args: step.args })).byteLength);
+  let requestBytes = 0;
+  let maxRequestBytes = 0;
+  const calls: Array<{ stepId: string; operation: string; args: Record<string, unknown> }> = [];
   const results: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const step of input.plan.steps) {
+    const args = resolveWorkflowPlanReferences(step.args, results) as Record<string, unknown>;
+    const bytes = new TextEncoder().encode(JSON.stringify({ operation: step.operation, args })).byteLength;
+    requestBytes += bytes; maxRequestBytes = Math.max(maxRequestBytes, bytes);
+    calls.push({ stepId: step.id, operation: step.operation, args });
     results[step.id] = input.responses && Object.hasOwn(input.responses, step.id)
       ? JSON.parse(JSON.stringify(input.responses[step.id])) as unknown
       : { simulated: true, operation: step.operation };
@@ -30,13 +36,14 @@ export function runMockWorkflowPlan(input: MockWorkflowTestInput) {
   return Object.freeze({
     passed: true as const,
     result: results,
+    calls,
     profile: Object.freeze({
       mode: "offline_mock" as const,
       operations: input.plan.steps.length,
       uniqueCapabilities: compiled.capabilities.length,
-      requestBytes: requests.reduce((total, size) => total + size, 0),
+      requestBytes,
       responseBytes,
-      maxRequestBytes: Math.max(...requests),
+      maxRequestBytes,
       liveProviderCalls: 0 as const,
       liveWorkerRuns: 0 as const,
       creditsMeasured: false as const,

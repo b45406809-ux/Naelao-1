@@ -61,6 +61,7 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
   return <section aria-labelledby="workflow-plan-title" style={{ margin: "24px 0", padding: 20, border: "1px solid var(--border, #ddd)", borderRadius: 12 }}>
     <h2 id="workflow-plan-title">Compose a workflow plan</h2>
     <p>Arrange bounded tool steps and save the generated workflow draft to this project. Only project owners and admins can save. Saving does not grant a capability, execute a step, or schedule it.</p>
+    <p>To pass a prior result into a later step, use a JSON argument such as <code>{'{"$workflowRef":"step-id#/result/key"}'}</code>. References may point only to earlier steps; they use JSON Pointer paths and support no expressions.</p>
     <label htmlFor="workflow-plan-name">Workflow name</label>
     <input id="workflow-plan-name" className="form-input" value={name} maxLength={63} onChange={event => { setName(event.target.value); setSaved(null); }} style={{ display: "block", maxWidth: 480, margin: "6px 0 16px" }} />
     <ol style={{ display: "grid", gap: 12, paddingLeft: 24 }}>

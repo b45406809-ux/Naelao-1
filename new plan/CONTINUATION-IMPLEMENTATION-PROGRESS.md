@@ -1518,3 +1518,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The owner/admin Spaces route accepts only a declarative plan, generates source through the shared SDK compiler on the server, validates it through Agents, and stores it only under the selected project workspace's `workflows/` directory. Existing names are preserved: pre-check collisions return 409 and the R2 create condition handles a concurrent create race. The route cannot accept executable source or grant runtime capabilities.
 - Verification: SDK typecheck/build and full SDK tests passed (8 tests); Spaces and Router typechecks passed; workflow-authoring route tests passed (5 tests); Shell typecheck passed; frozen offline lockfile validation and `git diff --check` passed.
 - This remains a saved draft surface, not workflow package installation, output mapping, scheduling, live execution, measured-cost preview, approvals, or recovery. It does not complete Phase 7.
+
+### Phase 7 bounded workflow output mapping checkpoint (2026-10-18)
+
+- Workflow arguments now support the data-only `{"$workflowRef":"earlier-step#/json/pointer"}` form. The shared compiler rejects forward/missing step references and malformed JSON Pointer escapes; generated workflow source resolves only completed step results. No expression language or executable interpolation is accepted.
+- The offline mock harness resolves references from static fixtures and exposes the simulated call arguments for review. This makes output wiring testable without invoking a live provider or Worker.
+- Verification: SDK typecheck/build and full SDK tests passed (9 tests); Shell typecheck passed; `git diff --check` passed.
+- Schema-derived operation output types, field-level capability grants, visual editing of mappings, and runtime installation/scheduling remain open. The current editor accepts JSON references manually and saves drafts only.

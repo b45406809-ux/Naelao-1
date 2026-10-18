@@ -6,12 +6,15 @@ describe("offline extension test harness", () => {
     const result = runMockWorkflowPlan({
       plan: { schemaVersion: "1.0", steps: [
         { id: "find_notes", operation: "extension.gadget.list", args: { gadget_id: "journal", table: "notes" } },
-        { id: "send_summary", operation: "notifications.email", args: { to: "student@example.test" } },
+        { id: "send_summary", operation: "notifications.email", args: { to: "student@example.test", notes: { $workflowRef: "find_notes" } } },
       ] },
       allowedCapabilities: ["extension.gadget.list", "notifications.email"],
       responses: { find_notes: [{ id: "n1", title: "Lesson 1" }] },
     });
-    expect(result).toMatchObject({ passed: true, result: { find_notes: [{ id: "n1", title: "Lesson 1" }], send_summary: { simulated: true, operation: "notifications.email" } }, profile: {
+    expect(result).toMatchObject({ passed: true, result: { find_notes: [{ id: "n1", title: "Lesson 1" }], send_summary: { simulated: true, operation: "notifications.email" } }, calls: [
+      { stepId: "find_notes", operation: "extension.gadget.list", args: { gadget_id: "journal", table: "notes" } },
+      { stepId: "send_summary", operation: "notifications.email", args: { to: "student@example.test", notes: [{ id: "n1", title: "Lesson 1" }] } },
+    ], profile: {
       mode: "offline_mock", operations: 2, uniqueCapabilities: 2, liveProviderCalls: 0, liveWorkerRuns: 0, creditsMeasured: false, estimatedCredits: null, costConfidence: "not_measured",
     } });
   });

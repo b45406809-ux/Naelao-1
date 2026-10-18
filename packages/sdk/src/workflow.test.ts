@@ -19,4 +19,20 @@ describe("declarative workflow plan compiler", () => {
     expect(() => compileWorkflowPlan({ schemaVersion: "1.0", steps: [] }, [])).toThrow("workflow_plan_invalid");
     expect(() => compileWorkflowPlan({ schemaVersion: "1.0", steps: [{ id: "bad.id", operation: "tools.read", args: {} }] }, ["tools.read"])).toThrow("workflow_plan_step_invalid_or_ungranted");
   });
+
+  it("accepts only references to completed steps with bounded JSON pointers", () => {
+    const compiled = compileWorkflowPlan({ schemaVersion: "1.0", steps: [
+      { id: "lookup", operation: "records.read", args: {} },
+      { id: "notify", operation: "notifications.email", args: { to: { $workflowRef: "lookup#/owner/email" } } },
+    ] }, ["records.read", "notifications.email"]);
+    expect(compiled.source).toContain("workflow_plan_reference_path_missing");
+    expect(() => compileWorkflowPlan({ schemaVersion: "1.0", steps: [
+      { id: "notify", operation: "notifications.email", args: { to: { $workflowRef: "later#/owner/email" } } },
+      { id: "later", operation: "records.read", args: {} },
+    ] }, ["records.read", "notifications.email"])).toThrow("workflow_plan_reference_invalid");
+    expect(() => compileWorkflowPlan({ schemaVersion: "1.0", steps: [
+      { id: "lookup", operation: "records.read", args: {} },
+      { id: "notify", operation: "notifications.email", args: { to: { $workflowRef: "lookup#/owner/~2email" } } },
+    ] }, ["records.read", "notifications.email"])).toThrow("workflow_plan_reference_invalid");
+  });
 });
