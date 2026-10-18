@@ -9,6 +9,8 @@ export interface DelegationContract {
   model: string; role: string; callerRole: string; workspaceBranch?: string;
   /** Exact project files a task worker may access through the host VFS. [] means none. */
   filePaths?: string[];
+  /** Host-selected subset of the worker agent's configured tools and learned skills. */
+  workerCapabilities?: { enabledPrebuilts: string[]; selectedSkills: string[] };
   maxTier: number; localOnly: boolean; localModelMachine?: string;
 }
 function resource(contract: DelegationContract): string {
@@ -27,9 +29,17 @@ function resource(contract: DelegationContract): string {
     });
     if (new Set(paths).size !== paths.length) throw new Error("delegation_file_scope_invalid");
   }
+  if (contract.workerCapabilities !== undefined) {
+    const selection = contract.workerCapabilities as DelegationContract["workerCapabilities"] | null;
+    const validNames = (values: unknown): values is string[] => Array.isArray(values) && values.length <= 128
+      && values.every(value => typeof value === "string" && /^[a-zA-Z0-9._-]{1,128}$/.test(value))
+      && new Set(values).size === values.length;
+    if (!selection || !validNames(selection.enabledPrebuilts) || !validNames(selection.selectedSkills)) throw new Error("delegation_worker_capabilities_invalid");
+  }
   // Fixed order includes every field used to grant child execution permissions.
   return JSON.stringify([contract.agentId, contract.rootRunId, contract.parentRunId, contract.parentDoId, contract.workerId,
-    contract.depth, contract.planner, contract.maxTokens, contract.maxSteps, contract.model, contract.role, contract.callerRole, contract.workspaceBranch ?? null, contract.maxTier, contract.localOnly, contract.localModelMachine ?? null, contract.filePaths === undefined ? null : [...contract.filePaths].sort()]);
+    contract.depth, contract.planner, contract.maxTokens, contract.maxSteps, contract.model, contract.role, contract.callerRole, contract.workspaceBranch ?? null, contract.maxTier, contract.localOnly, contract.localModelMachine ?? null, contract.filePaths === undefined ? null : [...contract.filePaths].sort(),
+    contract.workerCapabilities === undefined ? null : [ [...contract.workerCapabilities.enabledPrebuilts].sort(), [...contract.workerCapabilities.selectedSkills].sort() ]]);
 }
 const context = (contract: DelegationContract) => ({ tenantId: contract.tenantId, spaceId: contract.spaceId,
   ...(contract.projectId ? { projectId: contract.projectId } : {}), actorId: contract.actorId,

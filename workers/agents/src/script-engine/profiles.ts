@@ -347,7 +347,7 @@ ${BASE_AGENTS_MD}`,
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
     },
-    skills: { skills: [] },
+    skills: { skills: [{ name: "conversation-research-routing", tier: "platform" }] },
   },
 };
 
@@ -759,7 +759,7 @@ ${BASE_AGENTS_MD}`,
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
     },
-    skills: { skills: [] },
+    skills: { skills: [{ name: "conversation-research-routing", tier: "platform" }] },
   },
 };
 

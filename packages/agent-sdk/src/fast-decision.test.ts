@@ -90,6 +90,30 @@ describe("typed fast decisions", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it("recommends a bounded task-specific subset of configured worker capabilities", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { state: { task: string }; questions: Record<string, { instructions: string }> };
+      expect(body.state.task).toContain("conversation");
+      const answers = Object.fromEntries(Object.keys(body.questions).map((key, index) => [key, { type: "noul", noul: index === 0 ? 0.94 : 0.06 }]));
+      return Response.json({ model: "jev-1.13.0", answers, usage: { input_tokens: 40, output_tokens: 4 } });
+    });
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyWorkerCapabilities!({
+      task: "Find the earlier decision in the conversation.",
+      capabilities: [
+        { capability: "conversation_research", description: "Search transcript and summarize evidence." },
+        { capability: "code_and_runtime", description: "Run shell and build commands." },
+      ],
+    })).resolves.toMatchObject({ capabilities: ["conversation_research"], provider: "jev", model: "jev-1.13.0" });
+    const sent = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body));
+    expect(JSON.stringify(sent)).not.toContain("conversation content");
+  });
+
+  it("fails closed on malformed worker capability recommendations", async () => {
+    const client = new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: "jev", answers: { capability_0: { type: "noul", noul: 1.1 } }, usage: { input_tokens: 1, output_tokens: 1 } })) as typeof fetch, maxRetries: 0 });
+    await expect(client.classifyWorkerCapabilities!({ task: "read history", capabilities: [{ capability: "conversation_research", description: "Search transcript." }] })).rejects.toThrow("system_one_invalid_noul");
+  });
+
   it("classifies attachment intent in one metadata-only decision and recommends a bounded skill", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { state: { message: string; attachments: Array<{ id: string }> } };

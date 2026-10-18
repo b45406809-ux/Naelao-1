@@ -59,6 +59,13 @@ export interface WorkPlanRuntimeClassification {
   provider: FastDecisionProvider;
   model?: string;
 }
+export interface WorkerCapabilityOption { capability: string; description: string }
+export interface WorkerCapabilityClassification {
+  capabilities: string[];
+  provider: FastDecisionProvider;
+  confidence: number;
+  model?: string;
+}
 
 export type FastDecision<T extends string = string> = ChoiceDecision<T> | ScoreDecision | NoulDecision;
 
@@ -86,6 +93,8 @@ export interface FastDecisionGateway {
   classifyAttachments?(input: { message: string; attachments: readonly AttachmentDescriptor[]; availableTools?: readonly AttachmentClassification["candidateTool"][] }): Promise<AttachmentClassification | undefined>;
   /** Classify every worker-board item in one System One request; output is advisory metadata. */
   classifyWorkPlan?(input: { items: readonly WorkPlanItemForClassification[]; availableTools: readonly string[]; runtimes: readonly WorkRuntimeOption[] }): Promise<WorkPlanRuntimeClassification[]>;
+  /** Recommend a task-specific subset of already-authorized worker capabilities. Never grants access. */
+  classifyWorkerCapabilities?(input: { task: string; capabilities: readonly WorkerCapabilityOption[] }): Promise<WorkerCapabilityClassification>;
   /** Coarse advisory prediction only. Never use it to choose an image or authorize/prewarm a runtime. */
   preflightRuntime?(state: SystemOneState): Promise<{ needsContainer: boolean; needsBrowser: boolean; confidence: number } | undefined>;
 }
@@ -339,6 +348,37 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       confidence: action !== "uncertain" ? decision.confidence ?? 0 : 0, policyCode: "attachment_intent_v1", provider: decision.provider,
       ...(decision.model ? { model: decision.model } : {}),
     });
+  }
+
+  async classifyWorkerCapabilities(input: { task: string; capabilities: readonly WorkerCapabilityOption[] }): Promise<WorkerCapabilityClassification> {
+    if (typeof input.task !== "string" || input.task.length > 4_000 || !Array.isArray(input.capabilities)
+      || input.capabilities.length > 40) throw new Error("system_one_worker_capabilities_invalid");
+    const allowed = new Set<string>();
+    for (const item of input.capabilities) {
+      if (!item || !/^[a-z][a-z0-9_.:-]{0,127}$/.test(item.capability) || allowed.has(item.capability)
+        || typeof item.description !== "string" || item.description.length > 500) throw new Error("system_one_worker_capabilities_invalid");
+      allowed.add(item.capability);
+    }
+    if (allowed.size === 0) return { capabilities: [], provider: "deterministic", confidence: 1 };
+    const questions = Object.fromEntries(input.capabilities.map((item, index) => [`capability_${index}`, {
+      type: "noul",
+      instructions: `Does completing the delegated task require this capability? Select yes only when the task clearly needs it; the worker will receive only a union of validated capability groups. Candidate: ${item.capability}. ${item.description}`,
+    }]));
+    const { answers, meta } = await this.requestMany(questions, {
+      task: input.task.slice(0, 4_000),
+      candidates: input.capabilities.map(item => ({ capability: item.capability, description: item.description })),
+    });
+    const capabilities: string[] = [];
+    const confidence: number[] = [];
+    for (const [index, item] of input.capabilities.entries()) {
+      const answer = answers[`capability_${index}`];
+      if (!answer || answer.type !== "noul") throw new Error("system_one_invalid_worker_capability_answer");
+      const probability = boundedProbability(answer.noul, "noul");
+      confidence.push(Math.max(probability, 1 - probability));
+      if (probability >= 0.8 && allowed.has(item.capability)) capabilities.push(item.capability);
+    }
+    this.observe("worker_task_capability_selection_v1", meta);
+    return { capabilities, provider: meta.provider, confidence: confidence.length ? Math.min(...confidence) : 1, ...(meta.model ? { model: meta.model } : {}) };
   }
 
   async classifyWorkPlan(input: { items: readonly WorkPlanItemForClassification[]; availableTools: readonly string[]; runtimes: readonly WorkRuntimeOption[] }): Promise<WorkPlanRuntimeClassification[]> {

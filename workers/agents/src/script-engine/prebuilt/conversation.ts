@@ -18,8 +18,8 @@
  * contract does not change.
  */
 
-import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { mintInternalToken } from "@naelao/http";
+import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 
 interface StoredMessage {
   id?: string;
@@ -37,9 +37,10 @@ const STOP_WORDS = new Set([
 
 function tokenize(text: string): string[] {
   return text
+    .normalize("NFKC")
     .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 2 && !STOP_WORDS.has(t));
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((t) => [...t].length > 1 && !STOP_WORDS.has(t));
 }
 
 /** Score a message against the query. Exported for tests — the ranking is the whole product
@@ -49,7 +50,7 @@ export function scoreMessage(message: StoredMessage, queryTokens: string[]): num
   // match should hold for any caller, not only one that remembered to tokenize first. Without
   // this, a query like "what did we say about the thing" scores against every message in the
   // conversation and the ranking becomes meaningless.
-  const tokens = queryTokens.filter((t) => t.length > 2 && !STOP_WORDS.has(t.toLowerCase()));
+  const tokens = queryTokens.filter((t) => [...t].length > 1 && !STOP_WORDS.has(t.toLowerCase()));
   if (tokens.length === 0) return 0;
   const haystack = message.content.toLowerCase();
   const bodyTokens = new Set(tokenize(message.content));
@@ -78,18 +79,91 @@ function snippet(content: string, queryTokens: string[], radius = 160): string {
   return `${start > 0 ? "…" : ""}${content.slice(start, end)}${end < content.length ? "…" : ""}`;
 }
 
-async function loadMessages(ctx: PrebuiltOpContext, sessionId: string): Promise<StoredMessage[]> {
-  if (!ctx.env.spacesWorker) return [];
+const SEARCH_PAGE_SIZE = 50;
+const SEARCH_MAX_MESSAGES = 10_000;
+const SEARCH_MAX_BYTES = 16 * 1024 * 1024;
+
+async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBeforeId?: string, maxMessages = SEARCH_MAX_MESSAGES): Promise<{ messages: StoredMessage[]; incomplete: boolean; unavailable: boolean; nextCursor?: string }> {
+  if (!ctx.env.spacesWorker) return { messages: [], incomplete: false, unavailable: true };
   const token = await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId);
-  const resp = await ctx.env.spacesWorker.fetch(
-    new Request(
-      `http://spaces-worker/spaces/${encodeURIComponent(ctx.env.spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
-      { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } }
-    )
-  );
-  if (!resp.ok) return [];
-  const body = (await resp.json()) as { data?: StoredMessage[]; messages?: StoredMessage[] };
-  return body.data ?? body.messages ?? [];
+  const messages: StoredMessage[] = [];
+  let beforeId: string | undefined = startBeforeId;
+  let bytes = 0;
+  let incomplete = false;
+  const seenCursors = new Set<string>();
+  try {
+    while (messages.length < maxMessages && bytes < SEARCH_MAX_BYTES) {
+      const url = new URL(`http://spaces-worker/spaces/${encodeURIComponent(ctx.env.spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`);
+      url.searchParams.set("limit", String(SEARCH_PAGE_SIZE));
+      if (beforeId) url.searchParams.set("before_id", beforeId);
+      const resp = await ctx.env.spacesWorker.fetch(
+        new Request(url, { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } })
+      );
+      if (!resp.ok) return { messages, incomplete: messages.length > 0, unavailable: messages.length === 0, ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
+      const body = (await resp.json()) as { data?: StoredMessage[]; messages?: StoredMessage[] };
+      const page = body.data ?? body.messages ?? [];
+      if (page.length === 0) break;
+      const remainingMessages = maxMessages - messages.length;
+      const acceptedPage = page.length > remainingMessages ? page.slice(page.length - remainingMessages) : page;
+      for (const message of acceptedPage) bytes += new TextEncoder().encode(message.content ?? "").length;
+      messages.unshift(...acceptedPage);
+      if (messages.length >= maxMessages || bytes >= SEARCH_MAX_BYTES) {
+        incomplete = page.length === SEARCH_PAGE_SIZE || acceptedPage.length < page.length;
+        break;
+      }
+      if (page.length < SEARCH_PAGE_SIZE) break;
+      const oldestId = page[0]?.id;
+      if (!oldestId) {
+        incomplete = true;
+        break;
+      }
+      if (seenCursors.has(oldestId) || oldestId === beforeId) {
+        incomplete = true;
+        break;
+      }
+      seenCursors.add(oldestId);
+      beforeId = oldestId;
+    }
+  } catch {
+    return { messages, incomplete: messages.length > 0, unavailable: messages.length === 0, ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
+  }
+  const nextCursor = incomplete ? messages[0]?.id : undefined;
+  return { messages, incomplete, unavailable: false, ...(nextCursor ? { nextCursor } : {}) };
+}
+
+function queryText(args: Record<string, unknown>): string {
+  return String(args["query"] ?? args["text"] ?? "").trim().slice(0, 2_000);
+}
+
+async function search(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
+  const query = queryText(args);
+  if (!query) throw new Error("conversation.search requires 'query' — what are you looking for?");
+  const sessionId = String(args["session_id"] ?? "").trim();
+  if (!sessionId) return { ok: false, reason: "conversation.search needs 'session_id' — pass the active thread id." };
+  const requestedLimit = Number(args["limit"] ?? 5);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 20) : 5;
+  const requestedScanLimit = Number(args["scan_limit"] ?? SEARCH_MAX_MESSAGES);
+  const scanLimit = Number.isFinite(requestedScanLimit) ? Math.min(Math.max(Math.floor(requestedScanLimit), SEARCH_PAGE_SIZE), SEARCH_MAX_MESSAGES) : SEARCH_MAX_MESSAGES;
+  const beforeId = typeof args["before_id"] === "string" ? args["before_id"].trim().slice(0, 160) : undefined;
+  const { messages, incomplete, unavailable, nextCursor } = await loadMessages(ctx, sessionId, beforeId || undefined, scanLimit);
+  if (messages.length === 0) return unavailable
+    ? { ok: false, query, results: [], searched_messages: 0, note: "History search is unavailable. An empty result does not mean this was never discussed." }
+    : { ok: true, query, results: [], searched_messages: 0, exhausted: true, note: "No stored messages to search." };
+  const queryTokens = tokenize(query);
+  const scored = messages.map((m, i) => ({ m, i, score: scoreMessage(m, queryTokens) }))
+    .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.i - a.i).slice(0, limit);
+  return {
+    ok: true, query, searched_messages: messages.length,
+    results: scored.map((r) => ({ role: r.m.role, position: incomplete ? `${r.i + 1} of scanned page (${messages.length} messages)` : `${r.i + 1} of ${messages.length}`, created_at: r.m.created_at ?? null, message_id: r.m.id ?? null, excerpt: snippet(r.m.content, queryTokens), relevance: Number(r.score.toFixed(3)) })),
+    exhausted: !incomplete,
+    ...(nextCursor ? { next_cursor: nextCursor } : {}),
+    ...(incomplete ? { note: nextCursor
+      ? `Search covered ${messages.length} messages in this page. Search older history by passing before_id=${nextCursor}.`
+      : `Search covered ${messages.length} messages but could not continue because a stable message cursor was unavailable. The search is incomplete.` }
+      : scored.length === 0 ? { note: beforeId
+        ? `Nothing in this older conversation page matches "${query}".`
+        : `Nothing in this conversation matches "${query}". It was not discussed here.` } : {}),
+  };
 }
 
 export const conversation: PrebuiltScript = {
@@ -98,51 +172,32 @@ export const conversation: PrebuiltScript = {
     "Search the full, uncompacted transcript of the current conversation. Use this whenever the user refers to something that isn't in your recent messages or summary — the earlier part of a long conversation is compacted away, and this is how you look it up instead of guessing.",
   domain: "knowledge",
   requires_tier: 1,
+  paramHints: {
+    "conversation.search": "{query, session_id, limit?:1..20, scan_limit?:50..10000, before_id?:next_cursor} — scans a bounded transcript page; pass next_cursor as before_id to continue into older messages.",
+    "conversation.research": "{query, session_id, limit?:1..20, scan_limit?:50..10000, before_id?, process?:'summarize'|'extract'|'compress', entities?} — search one bounded page, then optionally send only matched excerpts to document processing; extract requires entity descriptions.",
+  },
   operations: {
     async "conversation.search"(args, ctx) {
-      const query = String(args["query"] ?? args["text"] ?? "").trim();
-      if (!query) throw new Error("conversation.search requires 'query' — what are you looking for?");
-      const sessionId = String(args["session_id"] ?? "").trim();
-      if (!sessionId) {
-        return {
-          ok: false,
-          reason:
-            "conversation.search needs 'session_id' — the id of the thread to search. It is in your goal context; pass it through.",
-        };
+      return search(args, ctx);
+    },
+    async "conversation.research"(args, ctx) {
+      const result = await search(args, ctx) as { ok?: boolean; results?: Array<{ message_id?: string | null; role: string; created_at: string | null; excerpt: string; relevance: number }>; [key: string]: unknown };
+      const process = String(args["process"] ?? "");
+      if (!process || !result.ok || !result.results?.length) return result;
+      if (!["summarize", "extract", "compress"].includes(process)) throw new Error("conversation.research process must be summarize, extract, or compress");
+      const evidence = result.results.map((r, i) => `[${i + 1}] message_id=${r.message_id ?? "unknown"} role=${r.role} at=${r.created_at ?? "unknown"} relevance=${r.relevance}\n${r.excerpt}`).join("\n\n").slice(0, 24_000);
+      const sourceId = `conversation:${String(args["session_id"]).slice(0, 160)}:${String(args["before_id"] ?? "latest").slice(0, 160)}`;
+      let derived: unknown;
+      if (process === "extract") {
+        const entities = args["entities"];
+        if (!entities || typeof entities !== "object" || Array.isArray(entities)) throw new Error("conversation.research extract requires entities: {field: description}");
+        derived = await ctx.run("document.extract", { text: evidence, sourceId, entities });
+      } else if (process === "compress") {
+        derived = await ctx.run("document.compress", { text: evidence, query: queryText(args), sourceId });
+      } else {
+        derived = await ctx.run("document.summarize", { text: evidence, sourceId, instructions: `Summarize only evidence relevant to: ${queryText(args)}. Preserve decisions, exact values, uncertainty, and message ids. Do not invent missing facts.`, maxOutputTokens: 700 });
       }
-      const limit = Math.min(Number(args["limit"] ?? 5) || 5, 20);
-
-      const messages = await loadMessages(ctx, sessionId);
-      if (messages.length === 0) {
-        return { ok: true, query, results: [], searched_messages: 0, note: "No stored messages to search." };
-      }
-
-      const queryTokens = tokenize(query);
-      const scored = messages
-        .map((m, i) => ({ m, i, score: scoreMessage(m, queryTokens) }))
-        .filter((r) => r.score > 0)
-        .sort((a, b) => b.score - a.score || b.i - a.i)
-        .slice(0, limit);
-
-      return {
-        ok: true,
-        query,
-        searched_messages: messages.length,
-        results: scored.map((r) => ({
-          role: r.m.role,
-          // Position lets the model say "early in the conversation" rather than pretending to a
-          // precision it does not have.
-          position: `${r.i + 1} of ${messages.length}`,
-          created_at: r.m.created_at ?? null,
-          excerpt: snippet(r.m.content, queryTokens),
-          relevance: Number(r.score.toFixed(3)),
-        })),
-        // An empty result is a real answer — it means the thing genuinely is not in this
-        // conversation — and saying so is what stops the model inventing a memory of it.
-        ...(scored.length === 0
-          ? { note: `Nothing in this conversation matches "${query}". It was not discussed here.` }
-          : {}),
-      };
+      return { ...result, derived, derivation: { kind: process, source_message_ids: result.results.map((r) => r.message_id).filter(Boolean) } };
     },
   },
 };

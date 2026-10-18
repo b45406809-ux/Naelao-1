@@ -26,11 +26,15 @@ function memoryBucket() {
 describe("role-targeted skill discovery", () => {
   it("provides progressive attachment manuals to their matching roles only", async () => {
     const env: ScriptEngineEnv = { scriptsBucket: memoryBucket(), spaceId: "space", agentId: "agent", tenantId: "tenant" };
-    const planner = new ScriptToolSurface(env, [], { plannerScope: "space" });
+    const planner = new ScriptToolSurface(env, [], { plannerScope: "space", defaultSkills: ["conversation-research-routing"] });
     const worker = new ScriptToolSurface(env, []);
     await expect(planner.run("Bash", { commands: "skill list" })).resolves.toMatchObject({
       ok: true, output: { skills: expect.arrayContaining([expect.objectContaining({ name: "attachment-routing", role_target: "PLANNER_ORCHESTRATION" })]) },
     });
+    await expect(planner.run("Bash", { commands: "skill read conversation-research-routing --section \"Keep the planner's context bounded\"" })).resolves.toMatchObject({
+      ok: true, output: { source: "builtin_manual", content: expect.stringContaining("next_cursor") },
+    });
+    expect(await planner.activeCatalog()).toContain("The planner coordinates and synthesizes");
     await expect(planner.run("Bash", { commands: "skill list" })).resolves.toMatchObject({
       output: { skills: expect.not.arrayContaining([expect.objectContaining({ name: "attachment-readers" })]) },
     });
@@ -42,6 +46,9 @@ describe("role-targeted skill discovery", () => {
     });
     await expect(planner.run("Bash", { commands: "skill read attachment-readers" })).resolves.toMatchObject({
       ok: false, error: expect.stringContaining("skill_not_available_for_role"),
+    });
+    await expect(worker.run("Bash", { commands: "skill read conversation-research-worker --lines 1-6" })).resolves.toMatchObject({
+      ok: true, output: { source: "builtin_manual", content: expect.stringContaining("next_cursor") },
     });
     await expect(worker.run("Bash", { commands: "skill read attachment-readers --lines 1-4" })).resolves.toMatchObject({
       ok: true, output: { source: "builtin_manual", content: expect.stringContaining("Scoped operations") },
@@ -60,6 +67,18 @@ describe("role-targeted skill discovery", () => {
       description: "Reconcile invoice rows and validate payment data", domain: "finance", requires_tier: 1,
       manual_markdown: "# Invoice Reconciliation\n\n## Payment terms\nCheck dates and totals.\n\n## Carveouts\nKeep approved exceptions.\n\n```md\n## Not a real section\n```\n\n## Escalation\nAsk an owner.",
     }, code: "export async function run() { return 'reconciled'; }" });
+
+    const narrowed = new ScriptToolSurface(env, ["conversation", "document-processing"], {
+      skillAllowlist: ["conversation-research-worker"], defaultSkills: ["conversation-research-worker"],
+    });
+    expect(narrowed.availableOperations()).toContain("conversation.search");
+    expect(narrowed.availableOperations()).not.toContain("knowledge.search");
+    await expect(narrowed.run("invoice-reconcile", {})).resolves.toMatchObject({
+      ok: false, error: expect.stringContaining("worker_skill_not_selected_for_task"),
+    });
+    await expect(narrowed.run("Bash", { commands: "skill list" })).resolves.toMatchObject({
+      output: { skills: [expect.objectContaining({ name: "conversation-research-worker" })] },
+    });
 
     const planner = new ScriptToolSurface(env, ["code-exec"], { plannerScope: "project" });
     const worker = new ScriptToolSurface(env, []);

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
 import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
@@ -103,6 +103,18 @@ describe("GET /messages returns the TAIL of a long transcript, not the head", ()
 
     const got = contentsOf((await call(doInstance, `/sessions/${sessionId}/messages?limit=3`, "GET")).json);
     expect(got).toEqual(["msg-18", "msg-19", "msg-20"]);
+  });
+
+  it("clamps negative and malformed limits so SQLite never receives an unbounded LIMIT -1", async () => {
+    const doInstance = makeSpaceDO();
+    const sessionId = await seedSession(doInstance);
+    await seedMessages(doInstance, sessionId, 20);
+
+    const negative = await call(doInstance, `/sessions/${sessionId}/messages?limit=-1`, "GET");
+    expect(contentsOf(negative.json)).toEqual(["msg-20"]);
+    const malformed = await call(doInstance, `/sessions/${sessionId}/messages?limit=not-a-number`, "GET");
+    expect(contentsOf(malformed.json)).toHaveLength(20);
+    expect(contentsOf(malformed.json).at(-1)).toBe("msg-20");
   });
 
   it("the `before_id` cursor pages BACKWARDS with no gap, even when messages share a millisecond", async () => {

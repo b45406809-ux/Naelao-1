@@ -4762,7 +4762,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // instead of being silently clamped: that caller sums every message's length to report "% of
     // context used", and clamping made it UNDER-report on exactly the long conversations where the
     // number matters, which in turn suppressed the auto-compaction it drives.
-    const limit = Math.min(Number.parseInt(params.get("limit") ?? "50"), 500);
+    const requestedLimit = Number(params.get("limit") ?? "50");
+    // SQLite treats LIMIT -1 as unlimited. Clamp both ends and fall back for malformed values so
+    // an extreme or invalid query cannot turn a bounded transcript page into an unbounded read.
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.floor(requestedLimit), 1), 500)
+      : 50;
     const before = params.get("before");
     // `before` is a created_at timestamp, which is only millisecond-granular — several messages
     // written in the same millisecond share one value, so `created_at < before` drops every one of

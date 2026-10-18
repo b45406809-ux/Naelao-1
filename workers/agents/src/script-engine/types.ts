@@ -1091,6 +1091,8 @@ export interface ScriptEngineEnv {
   classifyPlanRuntimes?: (input: { steps: readonly PlanStep[]; availableTools: readonly string[] }) => Promise<Array<{ stepId: string; capability?: string; confidence: number }>>;
   /** Names/descriptions of this worker's installed domain skills; never sent to its parent planner. */
   planWorkerCapabilities?: string[];
+  /** The current agent's configured prebuilt set; leaf workers may only receive a signed subset. */
+  workerPrebuiltCapabilities?: string[];
   /** Host resolves advisory capability labels to the current authorized installation. */
   activatePlanRuntime?: (capability?: string) => Promise<void>;
   /** Best-effort exact prewarm for the next planned worker step; never authorizes execution. */

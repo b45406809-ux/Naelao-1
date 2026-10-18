@@ -1,0 +1,1209 @@
+# Naelao platform surface inventory
+
+Generated from the current source/config tree using Wrangler worker manifests, exported DurableObject declarations, and literal route-registration calls. This is a discovery index, not a proof that every runtime route or indirect dispatch has been found. Review dynamic route assembly and bindings during the audit.
+
+Workers with Wrangler manifests: 32
+Exported DurableObject declarations: 22
+Literal route-registration matches: 1079
+
+## Worker services
+
+- `workers/admin` — manifest `workers/admin/wrangler.toml`; entrypoint `workers/admin/src/index.ts`
+- `workers/agents` — manifest `workers/agents/wrangler.toml`; entrypoint `workers/agents/src/index.ts`
+- `workers/analytics` — manifest `workers/analytics/wrangler.toml`; entrypoint `workers/analytics/src/index.ts`
+- `workers/artifact` — manifest `workers/artifact/wrangler.toml`; entrypoint `workers/artifact/src/index.ts`
+- `workers/assistant` — manifest `workers/assistant/wrangler.toml`; entrypoint `workers/assistant/src/index.ts`
+- `workers/auth` — manifest `workers/auth/wrangler.toml`; entrypoint `workers/auth/src/index.ts`
+- `workers/billing` — manifest `workers/billing/wrangler.toml`; entrypoint `workers/billing/src/index.ts`
+- `workers/browser` — manifest `workers/browser/wrangler.toml`; entrypoint `workers/browser/src/index.ts`
+- `workers/channels` — manifest `workers/channels/wrangler.toml`; entrypoint `workers/channels/src/index.ts`
+- `workers/connector-gumroad` — manifest `workers/connector-gumroad/wrangler.toml`; entrypoint `workers/connector-gumroad/src/index.ts`
+- `workers/connector-whop` — manifest `workers/connector-whop/wrangler.toml`; entrypoint `workers/connector-whop/src/index.ts`
+- `workers/credentials` — manifest `workers/credentials/wrangler.toml`; entrypoint `workers/credentials/src/index.ts`
+- `workers/eval` — manifest `workers/eval/wrangler.toml`; entrypoint `workers/eval/src/index.ts`
+- `workers/feedback` — manifest `workers/feedback/wrangler.toml`; entrypoint `workers/feedback/src/index.ts`
+- `workers/knowledge` — manifest `workers/knowledge/wrangler.toml`; entrypoint `workers/knowledge/src/index.ts`
+- `workers/marketplace` — manifest `workers/marketplace/wrangler.toml`; entrypoint `workers/marketplace/src/index.ts`
+- `workers/mcp-hub` — manifest `workers/mcp-hub/wrangler.toml`; entrypoint `workers/mcp-hub/src/index.ts`
+- `workers/mini-agi` — manifest `workers/mini-agi/wrangler.toml`; entrypoint `workers/mini-agi/src/index.ts`
+- `workers/notifications` — manifest `workers/notifications/wrangler.toml`; entrypoint `workers/notifications/src/index.ts`
+- `workers/portal-router` — manifest `workers/portal-router/wrangler.toml`; entrypoint `workers/portal-router/src/index.ts`
+- `workers/provisioner` — manifest `workers/provisioner/wrangler.toml`; entrypoint `workers/provisioner/src/index.ts`
+- `workers/router` — manifest `workers/router/wrangler.toml`; entrypoint `workers/router/src/index.ts`
+- `workers/search` — manifest `workers/search/wrangler.toml`; entrypoint `workers/search/src/index.ts`
+- `workers/security-gateway` — manifest `workers/security-gateway/wrangler.toml`; entrypoint `workers/security-gateway/src/index.ts`
+- `workers/spaces` — manifest `workers/spaces/wrangler.toml`; entrypoint `workers/spaces/src/index.ts`
+- `workers/sweeper` — manifest `workers/sweeper/wrangler.toml`; entrypoint `workers/sweeper/src/index.ts`
+- `workers/synthetics` — manifest `workers/synthetics/wrangler.toml`; entrypoint `workers/synthetics/src/index.ts`
+- `workers/threads` — manifest `workers/threads/wrangler.toml`; entrypoint `workers/threads/src/index.ts`
+- `workers/together-ai` — manifest `workers/together-ai/wrangler.toml`; entrypoint `workers/together-ai/src/index.ts`
+- `workers/triggers` — manifest `workers/triggers/wrangler.toml`; entrypoint `workers/triggers/src/index.ts`
+- `workers/workflows` — manifest `workers/workflows/wrangler.toml`; entrypoint `workers/workflows/src/index.ts`
+- `workers/ws-gateway` — manifest `workers/ws-gateway/wrangler.toml`; entrypoint `workers/ws-gateway/src/index.ts`
+
+## Durable Object classes
+
+- `workers/agents/src/do/ConcurrencyDO.ts:44` — `export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {`
+- `workers/agents/src/do/HITLApprovalDO.ts:59` — `export class HITLApprovalDO extends DurableObject {`
+- `workers/agents/src/do/LocalTunnelDO.ts:11` — `export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {`
+- `workers/agents/src/do/NaelaoAgentDO.ts:1143` — `export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {`
+- `workers/agents/src/do/RiskGuardDO.ts:41` — `export class RiskGuardDO extends DurableObject<RiskGuardEnv> {`
+- `workers/agents/src/do/TaskDO.ts:48` — `export class TaskDO extends DurableObject {`
+- `workers/agents/src/do/ToolSandboxDO.ts:170` — `export class ToolSandboxDO extends DurableObject {`
+- `workers/agents/src/do/WorkflowRunDO.ts:10` — `export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {`
+- `workers/artifact/src/RepositoryDO.ts:46` — `export class RepositoryDO extends DurableObject<Env> {`
+- `workers/browser/src/BrowserSessionDO.ts:24` — `export class BrowserSessionDO extends DurableObject<BrowserEnv> {`
+- `workers/router/src/RateLimitDO.ts:33` — `export class RateLimitDO extends DurableObject {`
+- `workers/spaces/src/conformance-state.ts:16` — `export class ConformanceSandboxDO extends DurableObject<Environment> {`
+- `workers/spaces/src/do/BuilderAccountDO.ts:37` — `export class BuilderAccountDO extends DurableObject {`
+- `workers/spaces/src/do/FeatureFlagDO.ts:61` — `export class FeatureFlagDO extends DurableObject {`
+- `workers/spaces/src/do/LockDO.ts:16` — `export class LockDO extends DurableObject {`
+- `workers/spaces/src/do/MicroAppDO.ts:77` — `export class MicroAppDO extends DurableObject<MicroAppDOEnv> {`
+- `workers/spaces/src/do/ProductUserDO.ts:154` — `export class ProductUserDO extends DurableObject {`
+- `workers/spaces/src/do/SpaceDO.ts:2273` — `export class SpaceDO extends DurableObject<SpaceDOEnv> {`
+- `workers/spaces/src/do/SpaceTypeRegistryDO.ts:513` — `export class SpaceTypeRegistryDO extends DurableObject {`
+- `workers/spaces/src/do/TransactionCoordinatorDO.ts:49` — `export class TransactionCoordinatorDO extends DurableObject {`
+- `workers/ws-gateway/src/index.ts:68` — `export class WsHubDO extends DurableObject<Env> {`
+- `packages/security/src/rate-limit-do.ts:20` — `export class RateLimiterDO extends DurableObject {`
+
+## Cloudflare container declarations
+
+- `workers/agents/wrangler.toml:125` — class_name = "ToolSandboxDO"; image = "./Dockerfile.toolsandbox"; max_instances = 5; instance_type = "basic"
+- `workers/agents/wrangler.toml:134` — class_name = "DocumentSandboxDO"; image = "./Dockerfile.documents"; max_instances = 3; instance_type = "standard-1"; [[containers]]
+- `workers/agents/wrangler.toml:140` — class_name = "MediaSandboxDO"; image = "./Dockerfile.media"; max_instances = 3; instance_type = "standard-1"
+
+## Files with literal API route registrations
+
+- `workers/admin/src/index.ts` — 16 route/middleware registration calls
+- `workers/agents/src/index.ts` — 157 route/middleware registration calls
+- `workers/analytics/src/index.ts` — 7 route/middleware registration calls
+- `workers/artifact/src/index.ts` — 13 route/middleware registration calls
+- `workers/assistant/src/index.ts` — 6 route/middleware registration calls
+- `workers/auth/src/index.ts` — 10 route/middleware registration calls
+- `workers/billing/src/index.ts` — 46 route/middleware registration calls
+- `workers/billing/src/marketplace-licenses.ts` — 2 route/middleware registration calls
+- `workers/billing/src/partner-portal.ts` — 4 route/middleware registration calls
+- `workers/billing/src/whop-wallet.ts` — 8 route/middleware registration calls
+- `workers/browser/src/index.ts` — 4 route/middleware registration calls
+- `workers/channels/src/index.ts` — 8 route/middleware registration calls
+- `workers/connector-gumroad/src/index.ts` — 5 route/middleware registration calls
+- `workers/connector-whop/src/index.ts` — 5 route/middleware registration calls
+- `workers/credentials/src/index.ts` — 10 route/middleware registration calls
+- `workers/eval/src/index.ts` — 7 route/middleware registration calls
+- `workers/feedback/src/index.ts` — 5 route/middleware registration calls
+- `workers/knowledge/src/index.ts` — 27 route/middleware registration calls
+- `workers/marketplace/src/index.ts` — 10 route/middleware registration calls
+- `workers/mcp-hub/src/index.ts` — 16 route/middleware registration calls
+- `workers/mini-agi/src/index.ts` — 6 route/middleware registration calls
+- `workers/notifications/src/index.ts` — 9 route/middleware registration calls
+- `workers/portal-router/src/index.ts` — 11 route/middleware registration calls
+- `workers/provisioner/src/index.ts` — 3 route/middleware registration calls
+- `workers/router/src/index.ts` — 84 route/middleware registration calls
+- `workers/search/src/index.ts` — 4 route/middleware registration calls
+- `workers/security-gateway/src/index.ts` — 4 route/middleware registration calls
+- `workers/spaces/src/builder-routes.ts` — 28 route/middleware registration calls
+- `workers/spaces/src/business-routes.ts` — 7 route/middleware registration calls
+- `workers/spaces/src/index.ts` — 493 route/middleware registration calls
+- `workers/spaces/src/product-end-user-routes.ts` — 8 route/middleware registration calls
+- `workers/spaces/src/routes/desk-drop.ts` — 7 route/middleware registration calls
+- `workers/spaces/src/routes/dynamic-pages.ts` — 3 route/middleware registration calls
+- `workers/spaces/src/routes/extension-gadget.ts` — 1 route/middleware registration calls
+- `workers/spaces/src/routes/gadget-mcp.ts` — 17 route/middleware registration calls
+- `workers/spaces/src/routes/graduation.ts` — 1 route/middleware registration calls
+- `workers/spaces/src/routes/market-radar.ts` — 4 route/middleware registration calls
+- `workers/spaces/src/routes/marketplace.ts` — 2 route/middleware registration calls
+- `workers/spaces/src/routes/mcp.ts` — 1 route/middleware registration calls
+- `workers/spaces/src/routes/recipes.ts` — 2 route/middleware registration calls
+- `workers/threads/src/index.ts` — 9 route/middleware registration calls
+- `workers/together-ai/src/index.ts` — 3 route/middleware registration calls
+- `workers/triggers/src/index.ts` — 6 route/middleware registration calls
+
+## Literal route registrations
+
+- `workers/admin/src/index.ts:72` — `app.use("*", requestId);`
+- `workers/admin/src/index.ts:73` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/admin/src/index.ts:76` — `app.use("*", async (c, next) => {`
+- `workers/admin/src/index.ts:86` — `app.get("/admin/tenants", async (c) => {`
+- `workers/admin/src/index.ts:99` — `app.get("/admin/tenants/:tenantId", async (c) => {`
+- `workers/admin/src/index.ts:114` — `app.patch("/admin/tenants/:tenantId", async (c) => {`
+- `workers/admin/src/index.ts:134` — `app.get("/admin/users", async (c) => {`
+- `workers/admin/src/index.ts:157` — `app.post("/admin/feature-flags", async (c) => {`
+- `workers/admin/src/index.ts:197` — `app.get("/admin/feature-flags", async (c) => {`
+- `workers/admin/src/index.ts:215` — `app.get("/admin/stats", async (c) => {`
+- `workers/admin/src/index.ts:239` — `app.get("/admin/failures", async (c) => {`
+- `workers/admin/src/index.ts:256` — `app.patch("/admin/failures/:id/reviewed", async (c) => {`
+- `workers/admin/src/index.ts:275` — `app.get("/admin/audit", async (c) => {`
+- `workers/admin/src/index.ts:321` — `app.get("/admin/products/search", async (c) => {`
+- `workers/admin/src/index.ts:331` — `app.post("/admin/products/:spaceId/suspend", async (c) => {`
+- `workers/admin/src/index.ts:349` — `app.post("/admin/products/:spaceId/restore", async (c) => {`
+- `workers/agents/src/index.ts:440` — `app.use("*", requestId);`
+- `workers/agents/src/index.ts:441` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/agents/src/index.ts:477` — `app.put("/spaces/:spaceId/customer-voice/twilio-credentials", async (c) => {`
+- `workers/agents/src/index.ts:492` — `app.put("/spaces/:spaceId/customer-voice/policy", async (c) => {`
+- `workers/agents/src/index.ts:506` — `app.get("/spaces/:spaceId/customer-voice/available-numbers", async (c) => {`
+- `workers/agents/src/index.ts:524` — `app.post("/spaces/:spaceId/customer-voice/numbers/purchase/quote", async (c) => {`
+- `workers/agents/src/index.ts:561` — `app.post("/spaces/:spaceId/customer-voice/numbers/purchase", async (c) => {`
+- `workers/agents/src/index.ts:663` — `app.post("/spaces/:spaceId/customer-voice/numbers/purchase/quotes/:quoteId/resolve", async (c) => {`
+- `workers/agents/src/index.ts:689` — `app.post("/spaces/:spaceId/customer-voice/numbers/import", async (c) => {`
+- `workers/agents/src/index.ts:741` — `app.get("/spaces/:spaceId/customer-voice/numbers", async (c) => {`
+- `workers/agents/src/index.ts:748` — `app.post("/spaces/:spaceId/customer-voice/numbers/:bindingId/disable", async (c) => {`
+- `workers/agents/src/index.ts:764` — `app.delete("/spaces/:spaceId/customer-voice/numbers/:bindingId", async (c) => {`
+- `workers/agents/src/index.ts:782` — `app.post("/customer-voice/twilio/answer/:bindingId", async (c) => {`
+- `workers/agents/src/index.ts:833` — `app.post("/customer-voice/twilio/status/:bindingId", async (c) => {`
+- `workers/agents/src/index.ts:860` — `app.post("/customer-voice/twilio/consent/:token", async (c) => {`
+- `workers/agents/src/index.ts:883` — `app.get("/customer-voice/twilio/stream/:token", async (c) => {`
+- `workers/agents/src/index.ts:900` — `app.all("/agents/*", async (c) => {`
+- `workers/agents/src/index.ts:923` — `app.post("/spaces/:spaceId/sessions/:sessionId/voice-ticket", async (c) => {`
+- `workers/agents/src/index.ts:1099` — `app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {`
+- `workers/agents/src/index.ts:1656` — `app.post("/spaces/:spaceId/sessions/:sessionId/agent/mention-run", async (c) => {`
+- `workers/agents/src/index.ts:1736` — `app.post("/agents/:agentId/script/run", async (c) => {`
+- `workers/agents/src/index.ts:2255` — `app.post("/internal/agent-ticks/run", async (c) => {`
+- `workers/agents/src/index.ts:2268` — `app.post("/internal/agent-config-lock/:operation", async (c) => {`
+- `workers/agents/src/index.ts:2288` — `app.get("/internal/agent-config-lock/status", async (c) => {`
+- `workers/agents/src/index.ts:2301` — `app.post("/internal/document-node-lease/:operation", async (c) => {`
+- `workers/agents/src/index.ts:2335` — `app.post("/internal/triggers/fire", async (c) => {`
+- `workers/agents/src/index.ts:2376` — `app.post("/internal/workflows/effect", async (c) => {`
+- `workers/agents/src/index.ts:2389` — `app.post("/internal/scripts/run-durable", async (c) => {`
+- `workers/agents/src/index.ts:2526` — `app.get("/spaces/:spaceId/sessions/:sessionId/agent/interrupted", async (c) => {`
+- `workers/agents/src/index.ts:2536` — `app.post("/spaces/:spaceId/sessions/:sessionId/agent/interrupted", async (c) => {`
+- `workers/agents/src/index.ts:2556` — `app.get(`
+- `workers/agents/src/index.ts:2590` — `app.get("/spaces/:spaceId/sessions/:sessionId/agent/active-run", async (c) => {`
+- `workers/agents/src/index.ts:2611` — `app.post(`
+- `workers/agents/src/index.ts:2650` — `app.get(`
+- `workers/agents/src/index.ts:2708` — `app.get(`
+- `workers/agents/src/index.ts:2866` — `app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {`
+- `workers/agents/src/index.ts:2952` — `app.post("/spaces/:spaceId/sessions/:sessionId/compact", async (c) => {`
+- `workers/agents/src/index.ts:2985` — `app.get("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) => {`
+- `workers/agents/src/index.ts:2995` — `app.patch("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) => {`
+- `workers/agents/src/index.ts:3016` — `app.get("/spaces/:spaceId/tasks", async (c) => {`
+- `workers/agents/src/index.ts:3029` — `app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {`
+- `workers/agents/src/index.ts:3051` — `app.post("/internal/tasks/:taskId/run", async (c) => {`
+- `workers/agents/src/index.ts:3180` — `app.get("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) => {`
+- `workers/agents/src/index.ts:3203` — `app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/approve", async (c) => {`
+- `workers/agents/src/index.ts:3262` — `app.get("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId", async (c) => {`
+- `workers/agents/src/index.ts:3286` — `app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", async (c) => {`
+- `workers/agents/src/index.ts:3307` — `app.post("/internal/agent-approvals", async (c) => {`
+- `workers/agents/src/index.ts:3329` — `app.post("/internal/agent-approvals/consume", async (c) => {`
+- `workers/agents/src/index.ts:3356` — `app.get("/connectors", async (c) => {`
+- `workers/agents/src/index.ts:3369` — `app.get("/connectors/directory", async (c) => {`
+- `workers/agents/src/index.ts:3421` — `app.get("/connectors/status", async (c) => {`
+- `workers/agents/src/index.ts:3504` — `app.get("/spaces/:spaceId/connector-aliases", async (c) => {`
+- `workers/agents/src/index.ts:3510` — `app.post("/spaces/:spaceId/connector-aliases", async (c) => {`
+- `workers/agents/src/index.ts:3526` — `app.delete("/spaces/:spaceId/connector-aliases/:aliasId", async (c) => {`
+- `workers/agents/src/index.ts:3765` — `app.get("/spaces/:spaceId/llm-byok", async (c) => {`
+- `workers/agents/src/index.ts:3774` — `app.get("/spaces/:spaceId/llm-byok/models", async (c) => {`
+- `workers/agents/src/index.ts:3810` — `app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {`
+- `workers/agents/src/index.ts:3892` — `app.post("/internal/projects/hibernate", async (c) => {`
+- `workers/agents/src/index.ts:3923` — `app.post("/spaces/:spaceId/projects/:projectId/daemons/:daemonId/mcp", async (c) => {`
+- `workers/agents/src/index.ts:3975` — `app.post("/spaces/:spaceId/projects/:projectId/pull-request-cards/:cardId/decision", async c => {`
+- `workers/agents/src/index.ts:4027` — `app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/answer", async (c) => {`
+- `workers/agents/src/index.ts:4041` — `app.put("/spaces/:spaceId/llm-byok", async (c) => {`
+- `workers/agents/src/index.ts:4079` — `app.post("/spaces/:spaceId/llm-byok/select", async (c) => {`
+- `workers/agents/src/index.ts:4093` — `app.post("/spaces/:spaceId/llm-byok/remove", async (c) => {`
+- `workers/agents/src/index.ts:4115` — `app.delete("/spaces/:spaceId/llm-byok/:provider", async (c) => {`
+- `workers/agents/src/index.ts:4140` — `app.post("/connectors/:platform/connect", async (c) => {`
+- `workers/agents/src/index.ts:4253` — `app.get("/connectors/custom-oauth/:connectorId/oauth/redirect-uri", async (c) => {`
+- `workers/agents/src/index.ts:4298` — `app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/oauth/slack/start", async c => {`
+- `workers/agents/src/index.ts:4321` — `app.get("/extensions/oauth/slack/callback", async c => {`
+- `workers/agents/src/index.ts:4374` — `app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId", async c => {`
+- `workers/agents/src/index.ts:4387` — `app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/routes/available", async c => {`
+- `workers/agents/src/index.ts:4415` — `app.put("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/routes", async c => {`
+- `workers/agents/src/index.ts:4448` — `app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/telegram/connect", async c => {`
+- `workers/agents/src/index.ts:4518` — `app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/whatsapp/connect", async c => {`
+- `workers/agents/src/index.ts:4577` — `app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId", async c => {`
+- `workers/agents/src/index.ts:4616` — `app.post("/connectors/custom-oauth/:connectorId/oauth/start", async (c) => {`
+- `workers/agents/src/index.ts:4644` — `app.get("/connectors/custom-oauth/:connectorId/oauth/callback", async (c) => {`
+- `workers/agents/src/index.ts:4681` — `app.post("/connectors/:platform/oauth/start", async (c) => {`
+- `workers/agents/src/index.ts:4727` — `app.get("/connectors/:platform/oauth/callback", async (c) => {`
+- `workers/agents/src/index.ts:4902` — `app.post("/connectors/:platform/provider-connect/start", async (c) => {`
+- `workers/agents/src/index.ts:5049` — `app.get("/connectors/:platform/provider-connect/callback", async (c) => {`
+- `workers/agents/src/index.ts:5095` — `app.post("/internal/connectors/oauth/refresh", async (c) => {`
+- `workers/agents/src/index.ts:5155` — `app.post("/connectors/:platform/webhook/:spaceId", async (c) => {`
+- `workers/agents/src/index.ts:5236` — `app.post("/channels/:channel/connect", async (c) => {`
+- `workers/agents/src/index.ts:5298` — `app.get("/project-templates", (c) => {`
+- `workers/agents/src/index.ts:5416` — `app.post("/spaces/:spaceId/projects/from-template", async (c) => {`
+- `workers/agents/src/index.ts:5445` — `app.get("/agent-templates", async (c) => {`
+- `workers/agents/src/index.ts:5453` — `app.get("/archetypes", async (c) => {`
+- `workers/agents/src/index.ts:5699` — `app.post("/agents/custom", async (c) => {`
+- `workers/agents/src/index.ts:5721` — `app.post("/agent-templates/instantiate", async (c) => {`
+- `workers/agents/src/index.ts:5826` — `app.post("/channels/platform-inbound/:channel", async (c) => {`
+- `workers/agents/src/index.ts:6035` — `app.get("/channels/pair-callback/:channel", async (c) => {`
+- `workers/agents/src/index.ts:6185` — `app.post("/channels/:channel/inbound/:spaceId", async (c) => {`
+- `workers/agents/src/index.ts:6409` — `app.get("/channels/whatsapp/extensions", c => {`
+- `workers/agents/src/index.ts:6423` — `app.post("/channels/whatsapp/extensions", async c => {`
+- `workers/agents/src/index.ts:6477` — `app.post("/channels/telegram/extensions/:spaceId/:installationId/:connectionId", async c => {`
+- `workers/agents/src/index.ts:6566` — `app.post("/internal/business-email/provision", async (c) => {`
+- `workers/agents/src/index.ts:6659` — `app.post("/internal/business-email/reply-address", async (c) => {`
+- `workers/agents/src/index.ts:6704` — `app.post("/internal/attachments/list", async (c) => {`
+- `workers/agents/src/index.ts:6721` — `app.post("/internal/attachments/inspect", async (c) => {`
+- `workers/agents/src/index.ts:6740` — `app.post("/internal/attachments/transcribe", async (c) => {`
+- `workers/agents/src/index.ts:6814` — `app.post("/internal/attachments/describe-image", async (c) => {`
+- `workers/agents/src/index.ts:6858` — `app.post("/internal/attachments/copy", async (c) => {`
+- `workers/agents/src/index.ts:6920` — `app.post("/internal/business-email/attachment/read-text", async (c) => {`
+- `workers/agents/src/index.ts:7001` — `app.post("/internal/business-email/attachment/ocr", async (c) => {`
+- `workers/agents/src/index.ts:7104` — `app.post("/internal/business-email/send", async (c) => {`
+- `workers/agents/src/index.ts:7216` — `app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {`
+- `workers/agents/src/index.ts:7282` — `app.get("/spaces/:spaceId/channels/sessions", async (c) => {`
+- `workers/agents/src/index.ts:7291` — `app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox", async c => {`
+- `workers/agents/src/index.ts:7307` — `app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/sla", async c => {`
+- `workers/agents/src/index.ts:7316` — `app.put("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/sla", async c => {`
+- `workers/agents/src/index.ts:7328` — `app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/notes", async c => {`
+- `workers/agents/src/index.ts:7338` — `app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/notes", async c => {`
+- `workers/agents/src/index.ts:7357` — `app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/assign", async c => {`
+- `workers/agents/src/index.ts:7396` — `app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/takeover", async c => {`
+- `workers/agents/src/index.ts:7423` — `app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/delete-conversation", async c => {`
+- `workers/agents/src/index.ts:7450` — `app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/reply", async c => {`
+- `workers/agents/src/index.ts:7479` — `app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/export", async c => {`
+- `workers/agents/src/index.ts:7504` — `app.get("/spaces/:spaceId/channels/unanswered", async (c) => {`
+- `workers/agents/src/index.ts:7608` — `app.get("/spaces/:spaceId/assistant/memory", async (c) => {`
+- `workers/agents/src/index.ts:7662` — `app.get("/spaces/:spaceId/assistant/attachment-ocr", async (c) => {`
+- `workers/agents/src/index.ts:7674` — `app.patch("/spaces/:spaceId/assistant/attachment-ocr", async (c) => {`
+- `workers/agents/src/index.ts:7694` — `app.get("/spaces/:spaceId/assistant/channels", async (c) => {`
+- `workers/agents/src/index.ts:7714` — `app.get("/spaces/:spaceId/assistant/channel-extensions", async c => {`
+- `workers/agents/src/index.ts:7727` — `app.post("/internal/channel-extension-binding/verify", async c => {`
+- `workers/agents/src/index.ts:7747` — `app.post("/internal/channel-extensions/validate-handler", async c => {`
+- `workers/agents/src/index.ts:7760` — `app.post("/internal/workflow-extensions/compile", async c => {`
+- `workers/agents/src/index.ts:7773` — `app.post("/internal/channel-extensions/session-state", async c => {`
+- `workers/agents/src/index.ts:7838` — `app.post("/spaces/:spaceId/assistant/channels", async (c) => {`
+- `workers/agents/src/index.ts:8055` — `app.get("/spaces/:spaceId/assistant/sub-agents", async (c) => {`
+- `workers/agents/src/index.ts:8073` — `app.get("/spaces/:spaceId/assistant/files", async (c) => {`
+- `workers/agents/src/index.ts:8107` — `app.get("/spaces/:spaceId/assistant/files/*", async (c) => {`
+- `workers/agents/src/index.ts:8136` — `app.get("/spaces/:spaceId/assistant/artifacts", async (c) => {`
+- `workers/agents/src/index.ts:8158` — `app.get("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {`
+- `workers/agents/src/index.ts:8187` — `app.delete("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {`
+- `workers/agents/src/index.ts:8209` — `app.get("/spaces/:spaceId/assistant/capabilities", async (c) => {`
+- `workers/agents/src/index.ts:8291` — `app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {`
+- `workers/agents/src/index.ts:8333` — `app.get("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {`
+- `workers/agents/src/index.ts:8351` — `app.delete("/spaces/:spaceId/sessions/:sessionId/uploads/:filename", async (c) => {`
+- `workers/agents/src/index.ts:8366` — `app.post("/spaces/:spaceId/channels/sessions/:sessionId/resume", async (c) => {`
+- `workers/agents/src/index.ts:8373` — `app.post("/spaces/:spaceId/channels/sessions/:sessionId/takeover", async (c) => {`
+- `workers/agents/src/index.ts:8501` — `app.get("/spaces/:spaceId/bootstrap", async (c) => {`
+- `workers/agents/src/index.ts:8545` — `app.post("/spaces/:spaceId/bootstrap/save", async (c) => {`
+- `workers/agents/src/index.ts:8578` — `app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {`
+- `workers/agents/src/index.ts:8780` — `app.post("/skills/promote", async (c) => {`
+- `workers/agents/src/index.ts:8797` — `app.get("/templates", async (c) => {`
+- `workers/agents/src/index.ts:8818` — `app.get("/catalog/shell", (c) => {`
+- `workers/agents/src/index.ts:8836` — `app.get("/catalog/product", (c) => {`
+- `workers/agents/src/index.ts:8860` — `app.get("/catalog/dev", (c) => {`
+- `workers/agents/src/index.ts:8887` — `app.get("/container-images", async (c) => {`
+- `workers/agents/src/index.ts:8903` — `app.get("/local-tunnel/connect", async (c) => {`
+- `workers/agents/src/index.ts:8909` — `app.post("/tunnel/enroll", async c => {`
+- `workers/agents/src/index.ts:8923` — `app.post("/tunnel/authenticate", async c => {`
+- `workers/agents/src/index.ts:8934` — `app.get("/tunnel/:tenantId/:spaceId/:machineId/connect", async c => {`
+- `workers/agents/src/index.ts:8941` — `app.get("/templates/:templateId/skills", async (c) => {`
+- `workers/agents/src/index.ts:8959` — `app.get("/skills/directory", async (c) => {`
+- `workers/agents/src/index.ts:8991` — `app.post("/skills/inherit", async (c) => {`
+- `workers/analytics/src/index.ts:106` — `app.use("*", requestId);`
+- `workers/analytics/src/index.ts:107` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/analytics/src/index.ts:113` — `app.post("/events", async (c) => {`
+- `workers/analytics/src/index.ts:146` — `app.get("/metrics/space/:spaceId", requireInternalHmac((c) => (c.env as unknown as AnalyticsEnv).PLATFORM_SECRET), async (c) => {`
+- `workers/analytics/src/index.ts:209` — `app.get("/metrics/tenant", async (c) => {`
+- `workers/analytics/src/index.ts:261` — `app.get("/metrics/platform", requireInternalHmac((c) => (c.env as unknown as AnalyticsEnv).PLATFORM_SECRET), async (c) => {`
+- `workers/analytics/src/index.ts:291` — `app.get("/metrics/runtime-economics", requireInternalHmac((c) => (c.env as unknown as AnalyticsEnv).PLATFORM_SECRET), async (c) => {`
+- `workers/artifact/src/index.ts:83` — `app.use("*", requestId);`
+- `workers/artifact/src/index.ts:84` — `app.use("*", async (c, next) => {`
+- `workers/artifact/src/index.ts:89` — `app.use(`
+- `workers/artifact/src/index.ts:95` — `app.use(`
+- `workers/artifact/src/index.ts:106` — `app.use(`
+- `workers/artifact/src/index.ts:112` — `app.post(`
+- `workers/artifact/src/index.ts:134` — `app.all(`
+- `workers/artifact/src/index.ts:178` — `app.get("/repos/:id/tree", async (c) => {`
+- `workers/artifact/src/index.ts:190` — `app.get("/repos/:id/objects/:oid", async (c) => {`
+- `workers/artifact/src/index.ts:207` — `app.post("/spaces/:spaceId/artifacts", async (c) => {`
+- `workers/artifact/src/index.ts:280` — `app.get("/spaces/:spaceId/artifacts", async (c) => {`
+- `workers/artifact/src/index.ts:320` — `app.get("/spaces/:spaceId/artifacts/:artifactId", async (c) => {`
+- `workers/artifact/src/index.ts:349` — `app.delete("/spaces/:spaceId/artifacts/:artifactId", async (c) => {`
+- `workers/assistant/src/index.ts:47` — `app.use("*", requestId);`
+- `workers/assistant/src/index.ts:48` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/assistant/src/index.ts:51` — `app.get("/v1/assistant/sessions", async (c) => {`
+- `workers/assistant/src/index.ts:61` — `app.get("/v1/assistant/sessions/:id", async (c) => {`
+- `workers/assistant/src/index.ts:75` — `app.post("/v1/assistant/chat", async (c) => {`
+- `workers/assistant/src/index.ts:138` — `app.delete("/v1/assistant/sessions/:id", async (c) => {`
+- `workers/auth/src/index.ts:159` — `app.use("*", cors(["*"]));`
+- `workers/auth/src/index.ts:160` — `app.use("*", requestId);`
+- `workers/auth/src/index.ts:161` — `app.use("*", async (c, next) => {`
+- `workers/auth/src/index.ts:166` — `app.get("/health", (c) => c.json({ ok: true, service: "auth", env: c.env.ENVIRONMENT }));`
+- `workers/auth/src/index.ts:169` — `app.post("/login", async (c) => {`
+- `workers/auth/src/index.ts:236` — `app.post("/register", async (c) => {`
+- `workers/auth/src/index.ts:319` — `app.post("/request-password-reset", async (c) => {`
+- `workers/auth/src/index.ts:346` — `app.post("/reset-password", async (c) => {`
+- `workers/auth/src/index.ts:374` — `app.post("/revoke", async (c) => {`
+- `workers/auth/src/index.ts:392` — `app.post("/verify", async (c) => {`
+- `workers/billing/src/index.ts:131` — `app.use("*", requestId);`
+- `workers/billing/src/index.ts:132` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/billing/src/index.ts:136` — `app.post("/billing/business-wallet/settle", async (c) => {`
+- `workers/billing/src/index.ts:142` — `app.post("/billing/business-wallet/withdraw", async (c) => {`
+- `workers/billing/src/index.ts:150` — `app.get("/billing/subscription", async (c) => {`
+- `workers/billing/src/index.ts:212` — `app.post("/billing/checkout", async (c) => {`
+- `workers/billing/src/index.ts:304` — `app.post("/billing/portal", async (c) => {`
+- `workers/billing/src/index.ts:362` — `app.use("/billing/usage", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:363` — `app.post("/billing/usage", async (c) => {`
+- `workers/billing/src/index.ts:515` — `app.use("/internal/workflows/budget/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:520` — `app.use("/internal/usage/llm-tokens/reservations/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:521` — `app.post("/internal/usage/llm-tokens/reservations/reserve", async (c) => {`
+- `workers/billing/src/index.ts:541` — `app.post("/internal/usage/llm-tokens/reservations/release", async (c) => {`
+- `workers/billing/src/index.ts:548` — `app.post("/internal/usage/llm-tokens/reservations/settle", async (c) => {`
+- `workers/billing/src/index.ts:591` — `app.post("/internal/workflows/budget/reserve", async (c) => {`
+- `workers/billing/src/index.ts:637` — `app.post("/internal/workflows/budget/release", async (c) => {`
+- `workers/billing/src/index.ts:647` — `app.post("/internal/workflows/budget/settle", async (c) => {`
+- `workers/billing/src/index.ts:736` — `app.use("/internal/usage/llm-tokens/check", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:737` — `app.get("/internal/usage/llm-tokens/check", async (c) => {`
+- `workers/billing/src/index.ts:754` — `app.use("/internal/usage/infra-credits/check", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:755` — `app.get("/internal/usage/infra-credits/check", async (c) => {`
+- `workers/billing/src/index.ts:771` — `app.use("/internal/usage/llm-tokens/summary", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:772` — `app.get("/internal/usage/llm-tokens/summary", async (c) => {`
+- `workers/billing/src/index.ts:784` — `app.use("/internal/usage/project-summary", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:785` — `app.get("/internal/usage/project-summary", async (c) => {`
+- `workers/billing/src/index.ts:832` — `app.use("/internal/commerce/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:833` — `app.post("/internal/commerce/checkout", async (c) => {`
+- `workers/billing/src/index.ts:926` — `app.use("/internal/seats/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:927` — `app.post("/internal/seats/checkout", async (c) => {`
+- `workers/billing/src/index.ts:978` — `app.use("/internal/products/ls-variant", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:979` — `app.post("/internal/products/ls-variant", async (c) => {`
+- `workers/billing/src/index.ts:1022` — `app.use("/internal/business-subscriptions/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:1023` — `app.post("/internal/business-subscriptions/checkout", async (c) => {`
+- `workers/billing/src/index.ts:1110` — `app.use("/internal/credit-packs/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:1111` — `app.post("/internal/credit-packs/checkout", async (c) => {`
+- `workers/billing/src/index.ts:1203` — `app.use("/internal/personal-plan/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:1204` — `app.post("/internal/personal-plan/checkout", async (c) => {`
+- `workers/billing/src/index.ts:1297` — `app.use("/internal/wallet-topups/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:1298` — `app.post("/internal/wallet-topups/checkout", async (c) => {`
+- `workers/billing/src/index.ts:1365` — `app.use("/internal/revenue-cut-surcharge/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/index.ts:1366` — `app.post("/internal/revenue-cut-surcharge/checkout", async (c) => {`
+- `workers/billing/src/index.ts:1470` — `app.post("/webhooks/lemon-squeezy", async (c) => {`
+- `workers/billing/src/index.ts:1495` — `app.post("/webhooks/whop", async (c) => handleWhopWebhook(c.req.raw, c.env));`
+- `workers/billing/src/index.ts:1502` — `app.post("/webhooks/whop-platform-plan", async (c) => {`
+- `workers/billing/src/index.ts:1548` — `app.get("/webhooks/whop-wallet/payouts/:id/approve", async (c) =>`
+- `workers/billing/src/index.ts:1557` — `app.post("/webhooks/whop-wallet/payouts/:id/approve", async (c) => {`
+- `workers/billing/src/marketplace-licenses.ts:17` — `app.use("/internal/marketplace/license-checkout", requireInternalHmac(c => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/marketplace-licenses.ts:18` — `app.post("/internal/marketplace/license-checkout", async c => {`
+- `workers/billing/src/partner-portal.ts:51` — `app.post("/billing/template-subscriptions", async (c) => {`
+- `workers/billing/src/partner-portal.ts:159` — `app.get("/billing/partner/portfolio", async (c) => {`
+- `workers/billing/src/partner-portal.ts:202` — `app.post("/billing/partner/withdrawals", async (c) => {`
+- `workers/billing/src/partner-portal.ts:224` — `app.put("/billing/partner/auto-payout", async c => {`
+- `workers/billing/src/whop-wallet.ts:283` — `app.use("/billing/whop-wallet/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));`
+- `workers/billing/src/whop-wallet.ts:311` — `app.post("/billing/whop-wallet/provision", async (c) => {`
+- `workers/billing/src/whop-wallet.ts:328` — `app.get("/billing/whop-wallet/balance", async (c) => {`
+- `workers/billing/src/whop-wallet.ts:348` — `app.get("/billing/whop-wallet/transactions", async (c) => {`
+- `workers/billing/src/whop-wallet.ts:361` — `app.get("/billing/whop-wallet/destinations", async (c) => {`
+- `workers/billing/src/whop-wallet.ts:373` — `app.post("/billing/whop-wallet/destinations", async (c) => {`
+- `workers/billing/src/whop-wallet.ts:408` — `app.post("/billing/whop-wallet/payouts", async (c) => {`
+- `workers/billing/src/whop-wallet.ts:506` — `app.get("/billing/whop-wallet/payouts", async (c) => {`
+- `workers/browser/src/index.ts:9` — `app.use("*", requestId);`
+- `workers/browser/src/index.ts:10` — `app.use("/v1/*", async (c, next) => {`
+- `workers/browser/src/index.ts:18` — `app.post("/v1/browser/:operation", async c => {`
+- `workers/browser/src/index.ts:36` — `app.get("/health", c => c.json({ ok: true, service: "browser",`
+- `workers/channels/src/index.ts:40` — `app.use("*", requestId);`
+- `workers/channels/src/index.ts:41` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/channels/src/index.ts:45` — `app.get("/v1/channels", async (c) => {`
+- `workers/channels/src/index.ts:54` — `app.post("/v1/channels", async (c) => {`
+- `workers/channels/src/index.ts:96` — `app.delete("/v1/channels/:id", async (c) => {`
+- `workers/channels/src/index.ts:111` — `app.post("/inbound/email/:routingKey", async (c) => {`
+- `workers/channels/src/index.ts:145` — `app.post("/inbound/slack/:routingKey", async (c) => {`
+- `workers/channels/src/index.ts:191` — `app.post("/inbound/webhook/:routingKey", async (c) => {`
+- `workers/connector-gumroad/src/index.ts:102` — `app.use("/mcp", requireManagedConnectorContext, requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/connector-gumroad/src/index.ts:103` — `app.use("/connectors/gumroad/mcp", requireManagedConnectorContext, requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/connector-gumroad/src/index.ts:131` — `app.post("/mcp", handleMcp);`
+- `workers/connector-gumroad/src/index.ts:132` — `app.post("/connectors/gumroad/mcp", handleMcp);`
+- `workers/connector-gumroad/src/index.ts:133` — `app.get("/health", (c) => c.json({ ok: true, service: "connector-gumroad", tools: Object.keys(TOOLS) }));`
+- `workers/connector-whop/src/index.ts:133` — `app.use("/mcp", requireManagedConnectorContext, requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/connector-whop/src/index.ts:134` — `app.use("/connectors/whop/mcp", requireManagedConnectorContext, requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/connector-whop/src/index.ts:167` — `app.post("/mcp", handleMcp);`
+- `workers/connector-whop/src/index.ts:168` — `app.post("/connectors/whop/mcp", handleMcp);`
+- `workers/connector-whop/src/index.ts:169` — `app.get("/health", (c) => c.json({ ok: true, service: "connector-whop", tools: Object.keys(TOOLS) }));`
+- `workers/credentials/src/index.ts:605` — `app.use("*", requestId);`
+- `workers/credentials/src/index.ts:606` — `app.use("*", async (c, next) => {`
+- `workers/credentials/src/index.ts:617` — `app.use("/spaces/:spaceId/credentials", requireInternalHmac((c) => (c as unknown as { env: CredentialsEnv }).env.PLATFORM_SECRET));`
+- `workers/credentials/src/index.ts:618` — `app.use("/spaces/:spaceId/credentials/:credId", requireInternalHmac((c) => (c as unknown as { env: CredentialsEnv }).env.PLATFORM_SECRET));`
+- `workers/credentials/src/index.ts:632` — `app.post("/spaces/:spaceId/credentials", async (c) => {`
+- `workers/credentials/src/index.ts:759` — `app.get("/spaces/:spaceId/credentials", async (c) => {`
+- `workers/credentials/src/index.ts:807` — `app.delete("/spaces/:spaceId/credentials/:credId", async (c) => {`
+- `workers/credentials/src/index.ts:843` — `app.patch("/spaces/:spaceId/credentials/:credId", async (c) => {`
+- `workers/credentials/src/index.ts:886` — `app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) => {`
+- `workers/credentials/src/index.ts:967` — `app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {`
+- `workers/eval/src/index.ts:368` — `app.use("*", requestId);`
+- `workers/eval/src/index.ts:369` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/eval/src/index.ts:373` — `app.post("/evals/fixtures/generate", async (c) => {`
+- `workers/eval/src/index.ts:427` — `app.post("/evals", async (c) => {`
+- `workers/eval/src/index.ts:457` — `app.get("/evals", async (c) => {`
+- `workers/eval/src/index.ts:484` — `app.post("/evals/:id/run", async (c) => {`
+- `workers/eval/src/index.ts:697` — `app.get("/evals/:id/results", async (c) => {`
+- `workers/feedback/src/index.ts:17` — `app.use("*", requestId);`
+- `workers/feedback/src/index.ts:18` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/feedback/src/index.ts:28` — `app.post("/v1/sessions/:sessionId/messages/:messageId/feedback", async (c) => {`
+- `workers/feedback/src/index.ts:78` — `app.get("/v1/sessions/:sessionId/feedback", async (c) => {`
+- `workers/feedback/src/index.ts:91` — `app.get("/v1/spaces/:spaceId/feedback/summary", async (c) => {`
+- `workers/knowledge/src/index.ts:93` — `app.use("*", requestId);`
+- `workers/knowledge/src/index.ts:94` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/knowledge/src/index.ts:170` — `app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications", async (c) => {`
+- `workers/knowledge/src/index.ts:185` — `app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId", async (c) => {`
+- `workers/knowledge/src/index.ts:225` — `app.delete("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicationId", async (c) => {`
+- `workers/knowledge/src/index.ts:238` — `app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", async (c) => {`
+- `workers/knowledge/src/index.ts:360` — `app.use("/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));`
+- `workers/knowledge/src/index.ts:361` — `app.use("/spaces/:spaceId/projects/:projectId/citations/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));`
+- `workers/knowledge/src/index.ts:369` — `app.use("/spaces/:spaceId/kb/*", async (c, next) => {`
+- `workers/knowledge/src/index.ts:380` — `app.use("/internal/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));`
+- `workers/knowledge/src/index.ts:381` — `app.post("/internal/spaces/:spaceId/kb/references/resolve", async (c) => {`
+- `workers/knowledge/src/index.ts:402` — `app.get("/internal/spaces/:spaceId/kb/documents/:documentId/shared", async (c) => {`
+- `workers/knowledge/src/index.ts:421` — `app.get("/spaces/:spaceId/kb/documents", async (c) => {`
+- `workers/knowledge/src/index.ts:454` — `app.post("/spaces/:spaceId/kb/documents", async (c) => {`
+- `workers/knowledge/src/index.ts:718` — `app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {`
+- `workers/knowledge/src/index.ts:899` — `app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {`
+- `workers/knowledge/src/index.ts:968` — `app.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", async (c) => {`
+- `workers/knowledge/src/index.ts:1003` — `app.get("/spaces/:spaceId/kb/search", async (c) => {`
+- `workers/knowledge/src/index.ts:1205` — `app.use("/internal/semantic-cache/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));`
+- `workers/knowledge/src/index.ts:1207` — `app.post("/internal/semantic-cache/lookup", async (c) => {`
+- `workers/knowledge/src/index.ts:1258` — `app.post("/internal/semantic-cache/store", async (c) => {`
+- `workers/knowledge/src/index.ts:1296` — `app.delete("/internal/semantic-cache", async (c) => {`
+- `workers/knowledge/src/index.ts:1352` — `app.use("/internal/web-search/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));`
+- `workers/knowledge/src/index.ts:1372` — `app.post("/internal/web-search/search", async (c) => {`
+- `workers/knowledge/src/index.ts:1413` — `app.post("/internal/web-search/fetch", async (c) => {`
+- `workers/knowledge/src/index.ts:1498` — `app.post("/internal/web-search/extract", async (c) => {`
+- `workers/knowledge/src/index.ts:1578` — `app.post("/internal/web-search/download", async (c) => {`
+- `workers/marketplace/src/index.ts:44` — `app.use("*", requestId);`
+- `workers/marketplace/src/index.ts:45` — `app.use("*", async (c, next) => { if (!c.env.PLATFORM_SECRET) throw new Error("Missing PLATFORM_SECRET"); await next(); });`
+- `workers/marketplace/src/index.ts:48` — `app.get("/v1/marketplace", async (c) => {`
+- `workers/marketplace/src/index.ts:66` — `app.get("/v1/marketplace/:id", async (c) => {`
+- `workers/marketplace/src/index.ts:70` — `app.post("/v1/marketplace", async (c) => {`
+- `workers/marketplace/src/index.ts:95` — `app.patch("/v1/marketplace/:id/review", async (c) => {`
+- `workers/marketplace/src/index.ts:111` — `app.post("/v1/marketplace/:id/reviews", async (c) => {`
+- `workers/marketplace/src/index.ts:128` — `app.get("/v1/marketplace/:id/reviews", async (c) => {`
+- `workers/marketplace/src/index.ts:133` — `app.post("/v1/marketplace/:id/license-checkout", async c => {`
+- `workers/marketplace/src/index.ts:151` — `app.post("/v1/marketplace/:id/fork", async (c) => {`
+- `workers/mcp-hub/src/index.ts:224` — `app.use("*", requestId);`
+- `workers/mcp-hub/src/index.ts:225` — `app.use("*", async (c, next) => {`
+- `workers/mcp-hub/src/index.ts:235` — `app.use("/v1/spaces/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/mcp-hub/src/index.ts:236` — `app.use("/connectors/composio/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/mcp-hub/src/index.ts:238` — `app.post("/connectors/composio/connect", async (c) => {`
+- `workers/mcp-hub/src/index.ts:253` — `app.post("/connectors/composio/execute", async (c) => {`
+- `workers/mcp-hub/src/index.ts:462` — `app.get("/v1/spaces/:spaceId/mcp-servers", async (c) => {`
+- `workers/mcp-hub/src/index.ts:477` — `app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {`
+- `workers/mcp-hub/src/index.ts:560` — `app.patch("/v1/spaces/:spaceId/mcp-servers/:serverId", async (c) => {`
+- `workers/mcp-hub/src/index.ts:585` — `app.delete("/v1/spaces/:spaceId/mcp-servers/:serverId", async (c) => {`
+- `workers/mcp-hub/src/index.ts:604` — `app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {`
+- `workers/mcp-hub/src/index.ts:700` — `app.get("/v1/spaces/:spaceId/connector-aliases", async (c) => {`
+- `workers/mcp-hub/src/index.ts:710` — `app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {`
+- `workers/mcp-hub/src/index.ts:756` — `app.delete("/v1/spaces/:spaceId/connector-aliases/:aliasId", async (c) => {`
+- `workers/mcp-hub/src/index.ts:767` — `app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) => {`
+- `workers/mcp-hub/src/index.ts:822` — `app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {`
+- `workers/mini-agi/src/index.ts:60` — `app.use("*", requestId);`
+- `workers/mini-agi/src/index.ts:61` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/mini-agi/src/index.ts:64` — `app.post("/v1/agi/runs", async (c) => {`
+- `workers/mini-agi/src/index.ts:102` — `app.get("/v1/agi/runs/:id", async (c) => {`
+- `workers/mini-agi/src/index.ts:117` — `app.get("/v1/agi/runs", async (c) => {`
+- `workers/mini-agi/src/index.ts:135` — `app.post("/v1/agi/runs/:id/cancel", async (c) => {`
+- `workers/notifications/src/index.ts:723` — `app.use("*", requestId);`
+- `workers/notifications/src/index.ts:724` — `app.use("*", async (c, next) => {`
+- `workers/notifications/src/index.ts:736` — `app.post("/internal/notify", async (c) => {`
+- `workers/notifications/src/index.ts:819` — `app.use("/internal/push/*", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/notifications/src/index.ts:820` — `app.get("/internal/push/config", (c) => {`
+- `workers/notifications/src/index.ts:824` — `app.put("/internal/push/subscription", async (c) => {`
+- `workers/notifications/src/index.ts:845` — `app.delete("/internal/push/subscription", async (c) => {`
+- `workers/notifications/src/index.ts:859` — `app.get("/notifications", async (c) => {`
+- `workers/notifications/src/index.ts:889` — `app.patch("/notifications/:id/read", async (c) => {`
+- `workers/portal-router/src/index.ts:33` — `app.use("*", requestId);`
+- `workers/portal-router/src/index.ts:34` — `app.use("*", async (c, next) => {`
+- `workers/portal-router/src/index.ts:40` — `app.post("/v1/domains", async (c) => {`
+- `workers/portal-router/src/index.ts:61` — `app.post("/v1/subdomains", async (c) => {`
+- `workers/portal-router/src/index.ts:90` — `app.get("/v1/domains", async (c) => {`
+- `workers/portal-router/src/index.ts:104` — `app.delete("/v1/domains/:domain", async (c) => {`
+- `workers/portal-router/src/index.ts:131` — `app.delete("/v1/subdomains/:subdomain", async (c) => {`
+- `workers/portal-router/src/index.ts:281` — `app.get("/storefront", async (c) => {`
+- `workers/portal-router/src/index.ts:290` — `app.post("/storefront/checkout", async (c) => {`
+- `workers/portal-router/src/index.ts:364` — `app.get("/", async (c) => {`
+- `workers/portal-router/src/index.ts:377` — `app.all("/proxy", async (c) => {`
+- `workers/provisioner/src/index.ts:1200` — `app.use("*", requestId);`
+- `workers/provisioner/src/index.ts:1201` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/provisioner/src/index.ts:1203` — `app.get("/health", (c) => c.json({ ok: true, service: "provisioner" }));`
+- `workers/router/src/index.ts:188` — `app.use("*", async (c, next) => {`
+- `workers/router/src/index.ts:231` — `app.use("*", requestId);`
+- `workers/router/src/index.ts:232` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/router/src/index.ts:235` — `app.get("/health", (c) =>`
+- `workers/router/src/index.ts:241` — `app.get("/health/dependencies", async (c) => {`
+- `workers/router/src/index.ts:261` — `for (const path of ["/v1/marketplace", "/v1/marketplace/:id", "/v1/marketplace/:id/reviews"]) app.get(path, async c => {`
+- `workers/router/src/index.ts:266` — `app.all("/v1/desk-drop/:action", async c => {`
+- `workers/router/src/index.ts:282` — `app.post("/api/voice/transcribe", async (c) => {`
+- `workers/router/src/index.ts:300` — `app.all("/v1/auth/*", async (c) => {`
+- `workers/router/src/index.ts:328` — `app.all("/v1/connectors/:platform/webhook/:spaceId", async (c) => {`
+- `workers/router/src/index.ts:340` — `app.all("/v1/connectors/:platform/oauth/callback", async (c) => {`
+- `workers/router/src/index.ts:349` — `app.all("/v1/extensions/oauth/slack/callback", async (c) => {`
+- `workers/router/src/index.ts:358` — `app.all("/v1/connectors/:platform/provider-connect/callback", async (c) => {`
+- `workers/router/src/index.ts:370` — `app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {`
+- `workers/router/src/index.ts:380` — `app.all("/v1/channels/telegram/extensions/:spaceId/:installationId/:connectionId", async (c) => {`
+- `workers/router/src/index.ts:388` — `app.all("/v1/channels/whatsapp/extensions", async c => {`
+- `workers/router/src/index.ts:399` — `app.all("/v1/channels/platform-inbound/:channel", async (c) => {`
+- `workers/router/src/index.ts:406` — `app.all("/v1/channels/pair-callback/:channel", async (c) => {`
+- `workers/router/src/index.ts:421` — `app.all("/v1/webhooks/lemon-squeezy", async (c) => {`
+- `workers/router/src/index.ts:443` — `app.all("/v1/webhooks/whop", proxyBillingWebhook);`
+- `workers/router/src/index.ts:444` — `app.all("/v1/webhooks/whop-wallet/payouts/:id/approve", proxyBillingWebhook);`
+- `workers/router/src/index.ts:451` — `app.all("/v1/webhooks/whop-platform-plan", proxyBillingWebhook);`
+- `workers/router/src/index.ts:512` — `app.all("/v1/spaces/:spaceId/end-users/*", async (c) => {`
+- `workers/router/src/index.ts:535` — `app.get("/v1/products/by-slug/:slug", async (c) => {`
+- `workers/router/src/index.ts:566` — `app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {`
+- `workers/router/src/index.ts:914` — `api.use("*", async (c, next) => {`
+- `workers/router/src/index.ts:994` — `api.use("*", async (c, next) => {`
+- `workers/router/src/index.ts:1006` — `api.use("*", async (c, next) => {`
+- `workers/router/src/index.ts:1049` — `api.use("*", async (c, next) => {`
+- `workers/router/src/index.ts:1062` — `api.use("*", async (c, next) => {`
+- `workers/router/src/index.ts:1101` — `api.use("*", async (c, next) => {`
+- `workers/router/src/index.ts:1127` — `api.use("*", async (c, next) => {`
+- `workers/router/src/index.ts:1198` — `for (const path of ["/marketplace", "/marketplace/*"]) api.all(path, async c => {`
+- `workers/router/src/index.ts:1202` — `for (const path of ["/billing/partner/*", "/billing/template-subscriptions"]) api.all(path, async c => {`
+- `workers/router/src/index.ts:1215` — `api.all("/evals", async (c) => proxyTo(c.env.EVAL_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1216` — `api.all("/evals/*", async (c) => proxyTo(c.env.EVAL_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1220` — `api.all("/spaces/:spaceId/kb/*", async (c) => {`
+- `workers/router/src/index.ts:1241` — `api.get("/spaces/:spaceId/projects/:projectId/citations/:documentId/:chunkId", async (c) =>`
+- `workers/router/src/index.ts:1247` — `api.all("/spaces/:spaceId/credentials", async (c) =>`
+- `workers/router/src/index.ts:1250` — `api.all("/spaces/:spaceId/credentials/:credId", async (c) =>`
+- `workers/router/src/index.ts:1263` — `api.post("/spaces/:spaceId/sessions/:sessionId/voice-ticket", async (c) =>`
+- `workers/router/src/index.ts:1266` — `api.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {`
+- `workers/router/src/index.ts:1274` — `api.all("/spaces/:spaceId/sessions/:sessionId/agent/*", async (c) =>`
+- `workers/router/src/index.ts:1277` — `api.all("/spaces/:spaceId/sessions/:sessionId/approvals/*", async (c) =>`
+- `workers/router/src/index.ts:1280` — `api.all("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) =>`
+- `workers/router/src/index.ts:1287` — `api.all("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) =>`
+- `workers/router/src/index.ts:1290` — `api.all("/spaces/:spaceId/sessions/:sessionId/compact", async (c) =>`
+- `workers/router/src/index.ts:1296` — `api.all("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) =>`
+- `workers/router/src/index.ts:1299` — `api.all("/spaces/:spaceId/connector-aliases/*", async (c) =>`
+- `workers/router/src/index.ts:1302` — `api.all("/spaces/:spaceId/connector-aliases", async (c) =>`
+- `workers/router/src/index.ts:1308` — `api.all("/spaces/:spaceId/sessions/:sessionId/uploads/*", async (c) =>`
+- `workers/router/src/index.ts:1311` — `api.all("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) =>`
+- `workers/router/src/index.ts:1319` — `api.all("/spaces/:spaceId/sessions/*", async (c) =>`
+- `workers/router/src/index.ts:1322` — `api.all("/spaces/:spaceId/sessions", async (c) =>`
+- `workers/router/src/index.ts:1327` — `api.all("/spaces/:spaceId/bootstrap/*", async (c) =>`
+- `workers/router/src/index.ts:1333` — `api.all("/spaces/:spaceId/projects/from-template", async (c) =>`
+- `workers/router/src/index.ts:1339` — `api.all("/spaces/:spaceId/channels/*", async (c) =>`
+- `workers/router/src/index.ts:1345` — `api.all("/spaces/:spaceId/customer-voice/*", async (c) =>`
+- `workers/router/src/index.ts:1351` — `api.all("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/*", async (c) =>`
+- `workers/router/src/index.ts:1356` — `api.all("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/*", async (c) =>`
+- `workers/router/src/index.ts:1359` — `api.all("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox", async (c) =>`
+- `workers/router/src/index.ts:1365` — `api.all("/spaces/:spaceId/assistant/*", async (c) =>`
+- `workers/router/src/index.ts:1375` — `api.all("/me/preferences", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1376` — `api.all("/spaces/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1377` — `api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1380` — `api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1381` — `api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1388` — `api.all("/builder/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1389` — `api.all("/builder", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1406` — `api.all("/billing/subscription", proxyBilling);`
+- `workers/router/src/index.ts:1407` — `api.all("/billing/checkout", proxyBilling);`
+- `workers/router/src/index.ts:1408` — `api.all("/billing/portal", proxyBilling);`
+- `workers/router/src/index.ts:1414` — `api.all("/billing/whop-wallet/balance", proxyBilling);`
+- `workers/router/src/index.ts:1415` — `api.all("/billing/whop-wallet/transactions", proxyBilling);`
+- `workers/router/src/index.ts:1416` — `api.all("/billing/whop-wallet/destinations", proxyBilling);`
+- `workers/router/src/index.ts:1417` — `api.all("/billing/whop-wallet/payouts", proxyBilling);`
+- `workers/router/src/index.ts:1421` — `api.get("/analytics/runtime-economics", async (c) => {`
+- `workers/router/src/index.ts:1438` — `api.all("/catalog/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1441` — `api.all("/connectors/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1442` — `api.all("/connectors", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1445` — `api.all("/skills/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1446` — `api.all("/templates/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1450` — `api.all("/channels/:channel/connect", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/router/src/index.ts:1453` — `api.all("/project-templates", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
+- `workers/search/src/index.ts:19` — `app.use("*", requestId);`
+- `workers/search/src/index.ts:20` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/search/src/index.ts:31` — `app.get("/search/spacetypes", async (c) => {`
+- `workers/search/src/index.ts:95` — `app.post("/search/spacetypes/:id/index", async (c) => {`
+- `workers/security-gateway/src/index.ts:60` — `app.use("*", securityHeaders());`
+- `workers/security-gateway/src/index.ts:61` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/security-gateway/src/index.ts:64` — `app.use("*", wafMiddleware());`
+- `workers/security-gateway/src/index.ts:67` — `app.all("*", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:142` — `app.post("/builder/api-keys", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:162` — `app.get("/builder/api-keys", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:171` — `app.delete("/builder/api-keys/:id", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:188` — `app.post("/builder/products", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:240` — `app.get("/builder/products", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:251` — `app.get("/builder/products/:id", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:261` — `app.patch("/builder/products/:id", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:338` — `app.patch("/builder/products/:id/pricing", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:465` — `app.patch("/builder/products/:id/reseller", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:522` — `app.delete("/builder/products/:id", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:554` — `app.get("/builder/space-types", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:569` — `app.get("/builder/products/:id/wallet", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:611` — `app.post("/builder/products/:id/domain", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:651` — `app.get("/builder/products/:id/domain", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:677` — `app.get("/builder/products/:id/users", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:691` — `app.post("/builder/products/:id/users/:userId/suspend", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:707` — `app.delete("/builder/products/:id/users/:userId", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:733` — `app.get("/builder/products/:id/users/:userId/conversations", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:778` — `app.get("/builder/products/:id/analytics", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:807` — `app.get("/builder/products/:id/analytics/revenue", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:839` — `app.put("/builder/products/:id/feature-flags", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:859` — `app.post("/builder/products/:id/webhooks", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:875` — `app.get("/builder/products/:id/webhooks", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:889` — `app.get("/builder/billing", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:905` — `app.get("/builder/billing/history", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:946` — `app.get("/builder/payouts/balance", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:954` — `app.post("/builder/payouts/request", async (c) => {`
+- `workers/spaces/src/builder-routes.ts:987` — `app.get("/builder/payouts", async (c) => {`
+- `workers/spaces/src/business-routes.ts:94` — `app.post("/spaces/:productSpaceId/businesses", async (c) => {`
+- `workers/spaces/src/business-routes.ts:140` — `app.get("/spaces/:productSpaceId/my-businesses", async (c) => {`
+- `workers/spaces/src/business-routes.ts:173` — `app.get("/spaces/:productSpaceId/directory", async (c) => {`
+- `workers/spaces/src/business-routes.ts:198` — `app.post("/spaces/:businessSpaceId/invites", async (c) => {`
+- `workers/spaces/src/business-routes.ts:280` — `app.post("/spaces/:businessSpaceId/invites/:token/accept", async (c) => {`
+- `workers/spaces/src/business-routes.ts:321` — `app.get("/spaces/:businessSpaceId/business-members", async (c) => {`
+- `workers/spaces/src/business-routes.ts:341` — `app.delete("/spaces/:businessSpaceId/business-members/:endUserId", async (c) => {`
+- `workers/spaces/src/index.ts:117` — `app.use("*", requestId);`
+- `workers/spaces/src/index.ts:118` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/spaces/src/index.ts:119` — `app.get("/health", (c) => c.json({ ok: true, service: "spaces", env: c.env.ENVIRONMENT }));`
+- `workers/spaces/src/index.ts:191` — `app.get("/spaces", async (c) => {`
+- `workers/spaces/src/index.ts:204` — `app.post("/spaces", async (c) => {`
+- `workers/spaces/src/index.ts:254` — `app.get("/spaces/:id", async (c) => {`
+- `workers/spaces/src/index.ts:269` — `app.post("/spaces/:spaceId/export-template", async (c) => {`
+- `workers/spaces/src/index.ts:305` — `app.get("/spaces/:spaceId/export-template-artifact/:jobId", async c => {`
+- `workers/spaces/src/index.ts:316` — `app.get("/spaces/:spaceId/export-template/:jobId", async c => {`
+- `workers/spaces/src/index.ts:326` — `app.post("/internal/conformance/fixture", async c => {`
+- `workers/spaces/src/index.ts:336` — `app.post("/internal/spaces/:spaceId/artifact-validation/:action", async c => {`
+- `workers/spaces/src/index.ts:351` — `app.use("/internal/spaces/:spaceId/foundry/requests", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:352` — `app.post("/internal/spaces/:spaceId/foundry/requests", async c => {`
+- `workers/spaces/src/index.ts:374` — `app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {`
+- `workers/spaces/src/index.ts:425` — `app.patch("/spaces/:id", async (c) => {`
+- `workers/spaces/src/index.ts:467` — `app.delete("/spaces/:id", async (c) => {`
+- `workers/spaces/src/index.ts:486` — `app.get("/spaces/:spaceId/me/export", async (c) => {`
+- `workers/spaces/src/index.ts:533` — `app.get("/spaces/:spaceId/me/export/download", async (c) => {`
+- `workers/spaces/src/index.ts:562` — `app.delete("/spaces/:spaceId/me/data", async (c) => {`
+- `workers/spaces/src/index.ts:585` — `app.post("/spaces/:spaceId/me/injection", async (c) => {`
+- `workers/spaces/src/index.ts:616` — `// Gated inline (not via a separate app.use(...)) — see the /internal/space-types-record-install/`
+- `workers/spaces/src/index.ts:617` — `// :id route's comment for the full root-cause writeup: a separate app.use(...) on an overlapping`
+- `workers/spaces/src/index.ts:626` — `app.all("/spaces/:spaceId/agent-definitions", async (c) => {`
+- `workers/spaces/src/index.ts:670` — `app.all("/spaces/:spaceId/members*", async (c) => {`
+- `workers/spaces/src/index.ts:704` — `app.use("/internal/spaces/:spaceId/owner-contact", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:705` — `app.get("/internal/spaces/:spaceId/owner-contact", async (c) => {`
+- `workers/spaces/src/index.ts:721` — `app.use("/internal/spaces/:spaceId/executive/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:722` — `app.all("/internal/spaces/:spaceId/executive/*", async (c) => {`
+- `workers/spaces/src/index.ts:732` — `app.use("/internal/spaces/:spaceId/customer-conversations*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:733` — `app.all("/internal/spaces/:spaceId/customer-conversations*", async (c) => {`
+- `workers/spaces/src/index.ts:749` — `app.use("/internal/business-role", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:750` — `app.get("/internal/business-role", async (c) => {`
+- `workers/spaces/src/index.ts:766` — `// path on its JWT-gated `api` sub-app (api.use("*", jwtAuth(...)) with no exceptions), so a`
+- `workers/spaces/src/index.ts:916` — `app.all("/spaces/:spaceId/sessions", handleSpaceSessions);`
+- `workers/spaces/src/index.ts:917` — `app.all("/spaces/:spaceId/sessions/*", handleSpaceSessions);`
+- `workers/spaces/src/index.ts:939` — `app.post("/spaces/:spaceId/internal/voice/calls/:action", async (c) => {`
+- `workers/spaces/src/index.ts:958` — `app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {`
+- `workers/spaces/src/index.ts:975` — `app.get("/spaces/:spaceId/internal/channel-installations", async c => {`
+- `workers/spaces/src/index.ts:996` — `app.get("/spaces/:spaceId/container-installations", async (c) => {`
+- `workers/spaces/src/index.ts:1004` — `app.use("/spaces/:spaceId/runtime-catalog", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1005` — `app.use("/spaces/:spaceId/runtime-catalog", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:1006` — `app.get("/spaces/:spaceId/runtime-catalog", async c => {`
+- `workers/spaces/src/index.ts:1016` — `app.use("/spaces/:spaceId/runtime-installations", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1017` — `app.use("/spaces/:spaceId/runtime-installations", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:1018` — `app.post("/spaces/:spaceId/runtime-installations", async c => {`
+- `workers/spaces/src/index.ts:1081` — `app.post("/spaces/:spaceId/project-crons", async (c) => {`
+- `workers/spaces/src/index.ts:1111` — `app.get("/spaces/:spaceId/domain-glossary", async (c) => {`
+- `workers/spaces/src/index.ts:1117` — `app.post("/spaces/:spaceId/domain-glossary", async (c) => {`
+- `workers/spaces/src/index.ts:1127` — `app.delete("/spaces/:spaceId/domain-glossary", async (c) => {`
+- `workers/spaces/src/index.ts:1135` — `app.use("/internal/spaces/:spaceId/domain-glossary/lookup", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1136` — `app.post("/internal/spaces/:spaceId/domain-glossary/lookup", async (c) => {`
+- `workers/spaces/src/index.ts:1162` — `app.get("/custom-models/:modelId", async (c) => {`
+- `workers/spaces/src/index.ts:1174` — `app.put("/custom-models/:modelId", async (c) => {`
+- `workers/spaces/src/index.ts:1177` — `app.use("/internal/spaces/:spaceId/custom-models/:modelId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1178` — `app.get("/internal/spaces/:spaceId/custom-models/:modelId", async (c) => {`
+- `workers/spaces/src/index.ts:1188` — `app.get("/spaces/:spaceId/custom-models/:modelId/lifecycle", async (c) => {`
+- `workers/spaces/src/index.ts:1197` — `app.get("/spaces/:spaceId/custom-models/:modelId/test-sets", async c => {`
+- `workers/spaces/src/index.ts:1207` — `app.post("/spaces/:spaceId/custom-models/:modelId/test-sets", async c => {`
+- `workers/spaces/src/index.ts:1221` — `app.use("/spaces/:spaceId/data-ops", requireBusinessMembership({ GET: "admin", POST: "admin" }));`
+- `workers/spaces/src/index.ts:1222` — `app.get("/spaces/:spaceId/data-ops", async c => {`
+- `workers/spaces/src/index.ts:1230` — `app.post("/spaces/:spaceId/data-ops", async c => {`
+- `workers/spaces/src/index.ts:1240` — `app.post("/spaces/:spaceId/custom-models/:modelId/lifecycle", async (c) => {`
+- `workers/spaces/src/index.ts:1361` — `app.use("/internal/spaces/:spaceId/projects/:projectId/automation-access", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1362` — `app.get("/internal/spaces/:spaceId/projects/:projectId/automation-access", async (c) => {`
+- `workers/spaces/src/index.ts:1371` — `app.use("/spaces/:spaceId/registry", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1372` — `app.post("/spaces/:spaceId/registry", async (c) => {`
+- `workers/spaces/src/index.ts:1387` — `app.use("/internal/spaces/:spaceId/events/fire", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1388` — `app.post("/internal/spaces/:spaceId/events/fire", async (c) => {`
+- `workers/spaces/src/index.ts:1398` — `app.use("/internal/spaces/:spaceId/action-receipts", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1399` — `app.post("/internal/spaces/:spaceId/action-receipts", async (c) => {`
+- `workers/spaces/src/index.ts:1406` — `app.use("/internal/spaces/:spaceId/action-receipts/verify", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1407` — `app.get("/internal/spaces/:spaceId/action-receipts/verify", async (c) => {`
+- `workers/spaces/src/index.ts:1423` — `app.use("/spaces/:spaceId/projects", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1424` — `app.use("/spaces/:spaceId/projects", requireBusinessMembership({ GET: "member", POST: "member" }));`
+- `workers/spaces/src/index.ts:1425` — `app.use("/spaces/:spaceId/projects/:projectId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1426` — `app.use("/spaces/:spaceId/projects/:projectId", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:1431` — `app.post("/spaces/:spaceId/projects/:projectId/extensions/lsp-indexer", async (c) => {`
+- `workers/spaces/src/index.ts:1453` — `app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1454` — `app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:1455` — `app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {`
+- `workers/spaces/src/index.ts:1554` — `app.use("/spaces/:spaceId/extension-publishers", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1555` — `app.use("/spaces/:spaceId/extension-publishers", requireBusinessMembership({ GET: "admin", POST: "admin" }));`
+- `workers/spaces/src/index.ts:1556` — `app.get("/spaces/:spaceId/extension-publishers", async c => {`
+- `workers/spaces/src/index.ts:1562` — `app.post("/spaces/:spaceId/extension-publishers", async c => {`
+- `workers/spaces/src/index.ts:1582` — `app.use("/spaces/:spaceId/extension-publishers/:keyId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1583` — `app.use("/spaces/:spaceId/extension-publishers/:keyId", requireBusinessMembership({ DELETE: "admin" }));`
+- `workers/spaces/src/index.ts:1584` — `app.delete("/spaces/:spaceId/extension-publishers/:keyId", async c => {`
+- `workers/spaces/src/index.ts:1597` — `app.use("/spaces/:spaceId/projects/:projectId/extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1598` — `app.use("/spaces/:spaceId/projects/:projectId/extensions", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:1599` — `app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {`
+- `workers/spaces/src/index.ts:1775` — `app.use("/spaces/:spaceId/extension-releases/rollback", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1776` — `app.use("/spaces/:spaceId/extension-releases/rollback", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:1777` — `app.post("/spaces/:spaceId/extension-releases/rollback", async c => {`
+- `workers/spaces/src/index.ts:1793` — `app.use("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1794` — `app.use("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", requireBusinessMembership({ GET: "admin" }));`
+- `workers/spaces/src/index.ts:1795` — `app.get("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", async c => {`
+- `workers/spaces/src/index.ts:1809` — `app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1810` — `app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireBusinessMembership({ GET: "admin", DELETE: "admin" }));`
+- `workers/spaces/src/index.ts:1827` — `app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1828` — `app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", requireBusinessMembership({ DELETE: "admin" }));`
+- `workers/spaces/src/index.ts:1829` — `app.delete("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", async c => {`
+- `workers/spaces/src/index.ts:1850` — `app.use("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:1851` — `app.get("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", async (c) => {`
+- `workers/spaces/src/index.ts:1872` — `app.use("/spaces/:spaceId/projects/:projectId/rules", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1873` — `app.use("/spaces/:spaceId/projects/:projectId/rules", requireBusinessMembership({ GET: "member", POST: "admin" }));`
+- `workers/spaces/src/index.ts:1874` — `app.use("/spaces/:spaceId/projects/:projectId/rules/:ruleId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1875` — `app.use("/spaces/:spaceId/projects/:projectId/rules/:ruleId", requireBusinessMembership({ DELETE: "admin" }));`
+- `workers/spaces/src/index.ts:1876` — `app.use("/spaces/:spaceId/projects/:projectId/spend", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1878` — `app.use("/spaces/:spaceId/projects/:projectId/usage", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1879` — `app.use("/spaces/:spaceId/projects/:projectId/usage", requireBusinessMembership({ GET: "admin" }));`
+- `workers/spaces/src/index.ts:1880` — `app.get("/spaces/:spaceId/projects/:projectId/usage", async (c) => {`
+- `workers/spaces/src/index.ts:1903` — `app.use("/spaces/:spaceId/projects/:projectId/wallet/balance", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1904` — `app.use("/spaces/:spaceId/projects/:projectId/wallet/balance", requireBusinessMembershipForWallet({ GET: "member" }));`
+- `workers/spaces/src/index.ts:1905` — `app.use("/spaces/:spaceId/projects/:projectId/wallet/history", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1906` — `app.use("/spaces/:spaceId/projects/:projectId/wallet/history", requireBusinessMembershipForWallet({ GET: "member" }));`
+- `workers/spaces/src/index.ts:1907` — `app.use("/spaces/:spaceId/projects/:projectId/wallet/credit", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1908` — `app.use("/spaces/:spaceId/projects/:projectId/wallet/debit", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1913` — `app.get("/spaces/:spaceId/projects", async (c) => {`
+- `workers/spaces/src/index.ts:1926` — `app.post("/spaces/:spaceId/projects", async (c) => {`
+- `workers/spaces/src/index.ts:1947` — `app.use("/spaces/:spaceId/project-templates/:templateId/stamp", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1948` — `app.use("/spaces/:spaceId/project-templates/:templateId/stamp", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:1949` — `app.post("/spaces/:spaceId/project-templates/:templateId/stamp", async (c) => {`
+- `workers/spaces/src/index.ts:1965` — `app.use("/spaces/:spaceId/projects/:projectId/members", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1966` — `app.use("/spaces/:spaceId/projects/:projectId/members", requireBusinessMembership({ GET: "member", POST: "admin" }));`
+- `workers/spaces/src/index.ts:1967` — `app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1968` — `app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireBusinessMembership({ DELETE: "admin" }));`
+- `workers/spaces/src/index.ts:1969` — `app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1970` — `app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:1971` — `app.use("/spaces/:spaceId/projects/:projectId/mode", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1972` — `app.use("/spaces/:spaceId/projects/:projectId/mode", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:1973` — `app.use("/spaces/:spaceId/projects/:projectId/subspace-migration-preflight", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1974` — `app.use("/spaces/:spaceId/projects/:projectId/subspace-migration-preflight", requireBusinessMembership({ GET: "admin" }));`
+- `workers/spaces/src/index.ts:1975` — `app.use("/spaces/:spaceId/projects/:projectId/graduate-to-subspace", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1976` — `app.use("/spaces/:spaceId/projects/:projectId/graduate-to-subspace", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:1977` — `app.use("/spaces/:spaceId/projects/:projectId/return-to-parent", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1978` — `app.use("/spaces/:spaceId/projects/:projectId/return-to-parent", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:1980` — `app.use(route, requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1981` — `app.use(route, requireBusinessMembership({ GET: "member", POST: "member" }));`
+- `workers/spaces/src/index.ts:1984` — `app.use(route, requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1985` — `app.use(route, requireBusinessMembership({ GET: "member", POST: "member", DELETE: "member" }));`
+- `workers/spaces/src/index.ts:1987` — `app.use("/spaces/:spaceId/projects/:projectId/promote", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:1988` — `app.use("/spaces/:spaceId/projects/:projectId/promote", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:1990` — `app.get("/spaces/:spaceId/projects/:projectId/members", async (c) => {`
+- `workers/spaces/src/index.ts:1999` — `app.post("/spaces/:spaceId/projects/:projectId/members", async (c) => {`
+- `workers/spaces/src/index.ts:2009` — `app.delete("/spaces/:spaceId/projects/:projectId/members/:userId", async (c) => {`
+- `workers/spaces/src/index.ts:2063` — `app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2064` — `app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:2065` — `app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {`
+- `workers/spaces/src/index.ts:2090` — `app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2091` — `app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:2092` — `app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {`
+- `workers/spaces/src/index.ts:2113` — `app.use("/spaces/:spaceId/projects/:projectId/workflows/plan", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2114` — `app.use("/spaces/:spaceId/projects/:projectId/workflows/plan", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:2115` — `app.post("/spaces/:spaceId/projects/:projectId/workflows/plan", async c => {`
+- `workers/spaces/src/index.ts:2158` — `app.use("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2159` — `app.use("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:2160` — `app.post("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", async (c) => {`
+- `workers/spaces/src/index.ts:2172` — `app.use("/spaces/:spaceId/projects/:projectId/assistant-access", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2173` — `app.use("/spaces/:spaceId/projects/:projectId/assistant-access", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:2174` — `app.get("/spaces/:spaceId/projects/:projectId/assistant-access", async (c) => {`
+- `workers/spaces/src/index.ts:2184` — `app.post("/spaces/:spaceId/projects/:projectId/activate-thread", async (c) => {`
+- `workers/spaces/src/index.ts:2201` — `app.use("/spaces/:spaceId/projects/:projectId/memory/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2203` — `app.all("/spaces/:spaceId/projects/:projectId/memory/*", async (c) => {`
+- `workers/spaces/src/index.ts:2218` — `app.get("/spaces/:spaceId/projects/:projectId", async (c) => {`
+- `workers/spaces/src/index.ts:2233` — `app.patch("/spaces/:spaceId/projects/:projectId", async (c) => {`
+- `workers/spaces/src/index.ts:2246` — `app.get("/spaces/:spaceId/projects/:projectId/rules", async (c) => {`
+- `workers/spaces/src/index.ts:2255` — `app.post("/spaces/:spaceId/projects/:projectId/rules", async (c) => {`
+- `workers/spaces/src/index.ts:2264` — `app.delete("/spaces/:spaceId/projects/:projectId/rules/:ruleId", async (c) => {`
+- `workers/spaces/src/index.ts:2277` — `app.get("/spaces/:spaceId/projects/:projectId/spend", async (c) => {`
+- `workers/spaces/src/index.ts:2286` — `app.post("/spaces/:spaceId/projects/:projectId/spend", async (c) => {`
+- `workers/spaces/src/index.ts:2297` — `app.use("/spaces/:spaceId/projects/:projectId/external-message-usage", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:2298` — `app.post("/spaces/:spaceId/projects/:projectId/external-message-usage", async (c) => {`
+- `workers/spaces/src/index.ts:2309` — `app.get("/spaces/:spaceId/projects/:projectId/wallet/balance", async (c) => {`
+- `workers/spaces/src/index.ts:2318` — `app.get("/spaces/:spaceId/projects/:projectId/wallet/history", async (c) => {`
+- `workers/spaces/src/index.ts:2341` — `app.use("/spaces/:spaceId/wallet", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2342` — `app.use("/spaces/:spaceId/wallet", requireBusinessMembershipForWallet({ GET: "member" }));`
+- `workers/spaces/src/index.ts:2343` — `app.get("/spaces/:spaceId/wallet", async (c) => {`
+- `workers/spaces/src/index.ts:2397` — `app.post("/spaces/:spaceId/projects/:projectId/wallet/credit", async (c) => {`
+- `workers/spaces/src/index.ts:2408` — `app.post("/spaces/:spaceId/projects/:projectId/wallet/debit", async (c) => {`
+- `workers/spaces/src/index.ts:2431` — `app.use("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2432` — `app.use("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:2433` — `app.post("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits", async (c) => {`
+- `workers/spaces/src/index.ts:2486` — `app.use("/spaces/:spaceId/wallet-project", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2487` — `app.get("/spaces/:spaceId/wallet-project", async (c) => {`
+- `workers/spaces/src/index.ts:2500` — `app.use("/spaces/:spaceId/revenue-tracking", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2501` — `app.post("/spaces/:spaceId/revenue-tracking", async (c) => {`
+- `workers/spaces/src/index.ts:2510` — `app.get("/spaces/:spaceId/revenue-tracking", async (c) => {`
+- `workers/spaces/src/index.ts:2520` — `app.use("/spaces/:spaceId/revenue-tracking/mark-billed", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2521` — `app.post("/spaces/:spaceId/revenue-tracking/mark-billed", async (c) => {`
+- `workers/spaces/src/index.ts:2530` — `app.use("/spaces/:spaceId/revenue-tracking/unmark-billed", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2531` — `app.post("/spaces/:spaceId/revenue-tracking/unmark-billed", async (c) => {`
+- `workers/spaces/src/index.ts:2542` — `app.use("/spaces/:spaceId/revenue-tracking/mark-pending", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2543` — `app.post("/spaces/:spaceId/revenue-tracking/mark-pending", async (c) => {`
+- `workers/spaces/src/index.ts:2557` — `app.use("/spaces/:spaceId/projects/:projectId/container-slots", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2558` — `app.use("/spaces/:spaceId/projects/:projectId/container-slots/:slotId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2560` — `app.get("/spaces/:spaceId/projects/:projectId/container-slots", async (c) => {`
+- `workers/spaces/src/index.ts:2573` — `app.post("/spaces/:spaceId/projects/:projectId/container-slots", async (c) => {`
+- `workers/spaces/src/index.ts:2609` — `app.delete("/spaces/:spaceId/projects/:projectId/container-slots/:slotId", async (c) => {`
+- `workers/spaces/src/index.ts:2627` — `app.use("/spaces/:spaceId/local-grants", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2628` — `app.use("/spaces/:spaceId/local-grants/:grantId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2629` — `app.use("/spaces/:spaceId/local-tunnel/connect-token", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2630` — `app.use("/spaces/:spaceId/local-grants", requireBusinessMembership({ GET: "member", POST: "admin" }));`
+- `workers/spaces/src/index.ts:2631` — `app.use("/spaces/:spaceId/local-grants/:grantId", requireBusinessMembership({ DELETE: "admin" }));`
+- `workers/spaces/src/index.ts:2632` — `app.use("/spaces/:spaceId/local-tunnel/connect-token", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:2634` — `app.get("/spaces/:spaceId/local-grants", async (c) => {`
+- `workers/spaces/src/index.ts:2653` — `app.post("/spaces/:spaceId/local-grants", async (c) => {`
+- `workers/spaces/src/index.ts:2689` — `app.delete("/spaces/:spaceId/local-grants/:grantId", async (c) => {`
+- `workers/spaces/src/index.ts:2703` — `app.post("/spaces/:spaceId/local-tunnel/connect-token", async (c) => {`
+- `workers/spaces/src/index.ts:2719` — `app.use("/spaces/:spaceId/tunnels", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2720` — `app.use("/spaces/:spaceId/tunnels/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2721` — `app.use("/spaces/:spaceId/tunnels", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:2722` — `app.use("/spaces/:spaceId/tunnels/*", requireBusinessMembership({ GET: "member", POST: "admin", DELETE: "admin" }));`
+- `workers/spaces/src/index.ts:2723` — `app.get("/spaces/:spaceId/tunnels", async c => {`
+- `workers/spaces/src/index.ts:2729` — `app.post("/spaces/:spaceId/tunnels/enrollment", async c => {`
+- `workers/spaces/src/index.ts:2736` — `app.post("/spaces/:spaceId/tunnels/:machineId/:action", async c => {`
+- `workers/spaces/src/index.ts:2745` — `app.post("/spaces/:spaceId/tunnel-authority", async c => {`
+- `workers/spaces/src/index.ts:2764` — `app.use("/spaces/:spaceId/business-wallet/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2765` — `app.use(`
+- `workers/spaces/src/index.ts:2769` — `app.use(`
+- `workers/spaces/src/index.ts:2773` — `app.use(`
+- `workers/spaces/src/index.ts:2777` — `app.use(`
+- `workers/spaces/src/index.ts:2811` — `app.get("/spaces/:spaceId/business-wallet/balance", async (c) =>`
+- `workers/spaces/src/index.ts:2815` — `app.get("/spaces/:spaceId/business-wallet/transactions", async (c) =>`
+- `workers/spaces/src/index.ts:2825` — `app.get("/spaces/:spaceId/business-wallet/destinations", async (c) =>`
+- `workers/spaces/src/index.ts:2829` — `app.post("/spaces/:spaceId/business-wallet/destinations", async (c) => {`
+- `workers/spaces/src/index.ts:2839` — `app.get("/spaces/:spaceId/business-wallet/payouts", async (c) =>`
+- `workers/spaces/src/index.ts:2862` — `// than add a second `app.use(dynamicPattern, ...)` registration. `platform` moves to the request`
+- `workers/spaces/src/index.ts:2864` — `app.use("/spaces/:spaceId/connectors/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2865` — `app.use("/spaces/:spaceId/connectors/status", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:2874` — `app.use("/spaces/:spaceId/connectors/connect", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:2911` — `app.get("/spaces/:spaceId/connectors/status", async (c) =>`
+- `workers/spaces/src/index.ts:2920` — `app.use("/spaces/:spaceId/connectors/directory", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:2921` — `app.get("/spaces/:spaceId/connectors/directory", async (c) => {`
+- `workers/spaces/src/index.ts:2943` — `app.use("/spaces/:spaceId/llm-byok", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2944` — `app.use("/spaces/:spaceId/llm-byok", requireBusinessMembership({ GET: "member", PUT: "admin" }));`
+- `workers/spaces/src/index.ts:2945` — `app.use("/spaces/:spaceId/llm-byok/models", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2946` — `app.use("/spaces/:spaceId/llm-byok/models", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:2947` — `app.use("/spaces/:spaceId/llm-byok/select", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2948` — `app.use("/spaces/:spaceId/llm-byok/select", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:2949` — `app.use("/spaces/:spaceId/llm-byok/remove", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2950` — `app.use("/spaces/:spaceId/llm-byok/remove", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:2951` — `app.use("/spaces/:spaceId/llm-byok/:provider", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:2952` — `app.use("/spaces/:spaceId/llm-byok/:provider", requireBusinessMembership({ DELETE: "admin" }));`
+- `workers/spaces/src/index.ts:2954` — `app.get("/spaces/:spaceId/llm-byok", async (c) =>`
+- `workers/spaces/src/index.ts:2957` — `app.get("/spaces/:spaceId/llm-byok/models", async (c) =>`
+- `workers/spaces/src/index.ts:2960` — `app.put("/spaces/:spaceId/llm-byok", async (c) => {`
+- `workers/spaces/src/index.ts:2965` — `app.get("/spaces/:spaceId/projects/:projectId/mode", async (c) => {`
+- `workers/spaces/src/index.ts:2974` — `app.get("/spaces/:spaceId/projects/:projectId/subspace-migration-preflight", async (c) => {`
+- `workers/spaces/src/index.ts:2993` — `app.post(`/spaces/:spaceId/projects/:projectId/${action}`, async (c) => {`
+- `workers/spaces/src/index.ts:3007` — `app.get("/spaces/:spaceId/projects/:projectId/sub-spaces", async (c) => {`
+- `workers/spaces/src/index.ts:3017` — `app.post("/spaces/:spaceId/projects/:projectId/sub-spaces", async (c) => {`
+- `workers/spaces/src/index.ts:3032` — `app.delete("/spaces/:spaceId/projects/:projectId/sub-spaces/:subId", async (c) => {`
+- `workers/spaces/src/index.ts:3044` — `app.get("/spaces/:spaceId/sub-spaces/:subId/projects", async (c) => {`
+- `workers/spaces/src/index.ts:3056` — `app.post("/spaces/:spaceId/sub-spaces/:subId/projects", async (c) => {`
+- `workers/spaces/src/index.ts:3070` — `app.get("/spaces/:spaceId/sub-spaces/:subId/members", async (c) => {`
+- `workers/spaces/src/index.ts:3079` — `app.post("/spaces/:spaceId/sub-spaces/:subId/members", async (c) => {`
+- `workers/spaces/src/index.ts:3091` — `app.delete("/spaces/:spaceId/sub-spaces/:subId/members/:userId", async (c) => {`
+- `workers/spaces/src/index.ts:3101` — `app.post("/spaces/:spaceId/projects/:projectId/promote", async (c) => {`
+- `workers/spaces/src/index.ts:3111` — `app.post("/spaces/:spaceId/llm-byok/select", async (c) => {`
+- `workers/spaces/src/index.ts:3115` — `app.post("/spaces/:spaceId/llm-byok/remove", async (c) => {`
+- `workers/spaces/src/index.ts:3119` — `app.delete("/spaces/:spaceId/llm-byok/:provider", async (c) =>`
+- `workers/spaces/src/index.ts:3133` — `app.use("/spaces/:spaceId/feature-kinds", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:3147` — `app.get("/spaces/:spaceId/feature-kinds", async (c) => {`
+- `workers/spaces/src/index.ts:3164` — `app.post("/spaces/:spaceId/connectors/connect", async (c) => {`
+- `workers/spaces/src/index.ts:3192` — `app.use("/spaces/:spaceId/connectors/oauth-start", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:3193` — `app.post("/spaces/:spaceId/connectors/oauth-start", async (c) => {`
+- `workers/spaces/src/index.ts:3206` — `app.use("/spaces/:spaceId/connectors/custom-oauth-start", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:3207` — `app.use("/spaces/:spaceId/connectors/custom-oauth-redirect", requireBusinessMembership({ GET: "admin" }));`
+- `workers/spaces/src/index.ts:3208` — `app.get("/spaces/:spaceId/connectors/custom-oauth-redirect", async (c) => {`
+- `workers/spaces/src/index.ts:3213` — `app.post("/spaces/:spaceId/connectors/custom-oauth-start", async (c) => {`
+- `workers/spaces/src/index.ts:3227` — `app.use("/spaces/:spaceId/connectors/provider-connect-start", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:3228` — `app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {`
+- `workers/spaces/src/index.ts:3246` — `app.use("/spaces/:spaceId/agent-templates", requireBusinessMembership({ GET: "member", POST: "admin" }));`
+- `workers/spaces/src/index.ts:3247` — `app.get("/spaces/:spaceId/agent-templates", async (c) => proxyToAgentsWorker(c, "/agent-templates", "GET"));`
+- `workers/spaces/src/index.ts:3251` — `app.use("/spaces/:spaceId/archetypes", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:3252` — `app.get("/spaces/:spaceId/archetypes", async (c) => proxyToAgentsWorker(c, "/archetypes", "GET"));`
+- `workers/spaces/src/index.ts:3253` — `app.post("/spaces/:spaceId/agent-templates", async (c) => {`
+- `workers/spaces/src/index.ts:3306` — `app.use("/spaces/:spaceId/onboarding", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:3307` — `app.use("/spaces/:spaceId/onboarding", requireBusinessMembership({ GET: "member", POST: "admin" }));`
+- `workers/spaces/src/index.ts:3309` — `app.get("/spaces/:spaceId/onboarding", async (c) =>`
+- `workers/spaces/src/index.ts:3313` — `app.post("/spaces/:spaceId/onboarding", async (c) => {`
+- `workers/spaces/src/index.ts:3324` — `app.post("/spaces/:spaceId/business-wallet/payouts", async (c) => {`
+- `workers/spaces/src/index.ts:3340` — `app.use("/spaces/:spaceId/presence", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:3341` — `app.use("/spaces/:spaceId/presence", requireBusinessMembership({ GET: "member", POST: "member" }));`
+- `workers/spaces/src/index.ts:3342` — `app.post("/spaces/:spaceId/presence", async (c) => {`
+- `workers/spaces/src/index.ts:3354` — `app.get("/spaces/:spaceId/presence", async (c) => {`
+- `workers/spaces/src/index.ts:3370` — `app.use("/spaces/:spaceId/event-triggers", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:3371` — `app.use("/spaces/:spaceId/event-triggers", requireBusinessMembership({ GET: "member", POST: "admin" }));`
+- `workers/spaces/src/index.ts:3372` — `app.get("/spaces/:spaceId/event-triggers", async (c) => {`
+- `workers/spaces/src/index.ts:3384` — `app.post("/spaces/:spaceId/event-triggers", async (c) => {`
+- `workers/spaces/src/index.ts:3396` — `app.delete("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {`
+- `workers/spaces/src/index.ts:3476` — `app.use("/spaces/:spaceId/scheduled-jobs", requireBusinessMembership({ GET: "member", POST: "admin" }));`
+- `workers/spaces/src/index.ts:3477` — `app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {`
+- `workers/spaces/src/index.ts:3530` — `app.use("/spaces/:spaceId/project-steward/reviews", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:3531` — `app.use("/spaces/:spaceId/project-steward/reviews", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:3552` — `app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {`
+- `workers/spaces/src/index.ts:3619` — `app.use("/spaces/:spaceId/project-steward/reviews/decision", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:3620` — `app.use("/spaces/:spaceId/project-steward/reviews/decision", requireBusinessMembership({ POST: "admin" }));`
+- `workers/spaces/src/index.ts:3621` — `app.post("/spaces/:spaceId/project-steward/reviews/decision", async (c) => {`
+- `workers/spaces/src/index.ts:3652` — `app.use("/internal/spaces/:spaceId/project-steward/summary", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:3653` — `app.get("/internal/spaces/:spaceId/project-steward/summary", async (c) => {`
+- `workers/spaces/src/index.ts:3693` — `app.use("/internal/spaces/:spaceId/project-steward/installation", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:3694` — `app.post("/internal/spaces/:spaceId/project-steward/installation", async (c) => {`
+- `workers/spaces/src/index.ts:3717` — `app.use("/internal/project-lifecycle", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:3718` — `app.get("/internal/project-lifecycle", async (c) => {`
+- `workers/spaces/src/index.ts:3728` — `app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {`
+- `workers/spaces/src/index.ts:3788` — `app.use("/spaces/:spaceId/scheduled-jobs/:jobId", requireBusinessMembership({ PATCH: "admin", DELETE: "admin" }));`
+- `workers/spaces/src/index.ts:3789` — `app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {`
+- `workers/spaces/src/index.ts:3862` — `app.delete("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {`
+- `workers/spaces/src/index.ts:3888` — `app.get("/spaces/:spaceId/scheduled-job-runs", async (c) => {`
+- `workers/spaces/src/index.ts:3927` — `app.use("/spaces/:spaceId/assistant-policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:3928` — `app.use("/spaces/:spaceId/assistant-policy", requireBusinessMembership({ GET: "member", PATCH: "admin" }));`
+- `workers/spaces/src/index.ts:3929` — `app.get("/spaces/:spaceId/assistant-policy", async (c) => {`
+- `workers/spaces/src/index.ts:3938` — `app.patch("/spaces/:spaceId/assistant-policy", async (c) => {`
+- `workers/spaces/src/index.ts:3955` — `app.use("/spaces/:spaceId/model-config", requireBusinessMembership({ PATCH: "admin" }));`
+- `workers/spaces/src/index.ts:3956` — `app.patch("/spaces/:spaceId/model-config", async (c) => {`
+- `workers/spaces/src/index.ts:4000` — `app.use("/internal/spaces/:spaceId/model-policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4001` — `app.get("/internal/spaces/:spaceId/model-policy", async (c) => {`
+- `workers/spaces/src/index.ts:4040` — `app.use("/internal/spaces/:spaceId/agent-activity", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4041` — `app.post("/internal/spaces/:spaceId/agent-activity", async (c) => {`
+- `workers/spaces/src/index.ts:4049` — `app.use("/spaces/:spaceId/agent-activity", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4050` — `app.get("/spaces/:spaceId/agent-activity", async (c) => {`
+- `workers/spaces/src/index.ts:4067` — `app.use("/spaces/:spaceId/business-analytics", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4068` — `app.use("/spaces/:spaceId/business-analytics", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:4069` — `app.get("/spaces/:spaceId/business-analytics", async (c) => {`
+- `workers/spaces/src/index.ts:4087` — `app.use("/internal/spaces/:spaceId/notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4088` — `app.post("/internal/spaces/:spaceId/notifications", async (c) => {`
+- `workers/spaces/src/index.ts:4095` — `app.get("/internal/spaces/:spaceId/notifications", async (c) => {`
+- `workers/spaces/src/index.ts:4104` — `app.use("/spaces/:spaceId/notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4105` — `app.use("/spaces/:spaceId/notifications", requireBusinessMembership({ GET: "member", POST: "member" }));`
+- `workers/spaces/src/index.ts:4106` — `app.get("/spaces/:spaceId/notifications", async (c) => {`
+- `workers/spaces/src/index.ts:4118` — `app.post("/spaces/:spaceId/notifications", async (c) => {`
+- `workers/spaces/src/index.ts:4132` — `app.use("/spaces/:spaceId/push-notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4133` — `app.use("/spaces/:spaceId/push-notifications", requireBusinessMembership({ GET: "member", PUT: "member", DELETE: "member" }));`
+- `workers/spaces/src/index.ts:4134` — `app.all("/spaces/:spaceId/push-notifications", async (c) => {`
+- `workers/spaces/src/index.ts:4164` — `app.use("/spaces/:spaceId/agent-signals", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4165` — `app.get("/spaces/:spaceId/agent-signals", async (c) => {`
+- `workers/spaces/src/index.ts:4184` — `app.use("/spaces/:spaceId/agent-diagnostics", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4185` — `app.get("/spaces/:spaceId/agent-diagnostics", async (c) => {`
+- `workers/spaces/src/index.ts:4198` — `app.use("/internal/spaces/:spaceId/signal-events", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4199` — `app.post("/internal/spaces/:spaceId/signal-events", async (c) => {`
+- `workers/spaces/src/index.ts:4207` — `app.use("/spaces/:spaceId/signal-events", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4208` — `app.get("/spaces/:spaceId/signal-events", async (c) => {`
+- `workers/spaces/src/index.ts:4228` — `app.use("/internal/spaces/:spaceId/session-spend/:sessionId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4229` — `app.get("/internal/spaces/:spaceId/session-spend/:sessionId", async (c) => {`
+- `workers/spaces/src/index.ts:4237` — `app.post("/internal/spaces/:spaceId/session-spend/:sessionId", async (c) => {`
+- `workers/spaces/src/index.ts:4260` — `app.post("/spaces/:spaceId/agents/:agentId/api-keys", async (c) => {`
+- `workers/spaces/src/index.ts:4270` — `app.get("/spaces/:spaceId/agents/:agentId/api-keys", async (c) => {`
+- `workers/spaces/src/index.ts:4280` — `app.delete("/spaces/:spaceId/agents/:agentId/api-keys/:keyId", async (c) => {`
+- `workers/spaces/src/index.ts:4297` — `app.use("/spaces/:spaceId/agents/:agentId/policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4298` — `app.use("/spaces/:spaceId/agents/:agentId/policy", requireBusinessMembership({ GET: "member", PATCH: "admin" }));`
+- `workers/spaces/src/index.ts:4299` — `app.get("/spaces/:spaceId/agents/:agentId/policy", async (c) => {`
+- `workers/spaces/src/index.ts:4309` — `app.patch("/spaces/:spaceId/agents/:agentId/policy", async (c) => {`
+- `workers/spaces/src/index.ts:4323` — `app.post("/internal/agent-keys/verify", async (c) => {`
+- `workers/spaces/src/index.ts:4355` — `app.use("/spaces/:spaceId/threads", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4356` — `app.use("/spaces/:spaceId/threads", requireBusinessMembership({ GET: "member", POST: "member" }));`
+- `workers/spaces/src/index.ts:4357` — `app.use("/spaces/:spaceId/threads/:threadId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4358` — `app.use("/spaces/:spaceId/threads/:threadId", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:4359` — `app.get("/spaces/:spaceId/threads", async (c) => {`
+- `workers/spaces/src/index.ts:4380` — `app.post("/spaces/:spaceId/threads", async (c) => {`
+- `workers/spaces/src/index.ts:4393` — `app.get("/spaces/:spaceId/threads/:threadId", async (c) => {`
+- `workers/spaces/src/index.ts:4411` — `app.patch("/spaces/:spaceId/threads/:threadId", async (c) => {`
+- `workers/spaces/src/index.ts:4426` — `app.use("/spaces/:spaceId/tasks", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4427` — `app.use("/spaces/:spaceId/tasks", requireBusinessMembership({ GET: "member", POST: "member" }));`
+- `workers/spaces/src/index.ts:4428` — `app.use("/spaces/:spaceId/tasks/:taskId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4429` — `app.use("/spaces/:spaceId/tasks/:taskId", requireBusinessMembership({ PATCH: "member", DELETE: "member" }));`
+- `workers/spaces/src/index.ts:4431` — `app.get("/spaces/:spaceId/tasks", async (c) => {`
+- `workers/spaces/src/index.ts:4447` — `app.post("/spaces/:spaceId/tasks", async (c) => {`
+- `workers/spaces/src/index.ts:4457` — `app.patch("/spaces/:spaceId/tasks/:taskId", async (c) => {`
+- `workers/spaces/src/index.ts:4467` — `app.delete("/spaces/:spaceId/tasks/:taskId", async (c) => {`
+- `workers/spaces/src/index.ts:4477` — `app.use("/spaces/:spaceId/pull-request-cards", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:4478` — `app.use("/spaces/:spaceId/pull-request-cards", requireBusinessMembership({ GET: "member", POST: "member" }));`
+- `workers/spaces/src/index.ts:4479` — `app.get("/spaces/:spaceId/pull-request-cards", async c => {`
+- `workers/spaces/src/index.ts:4486` — `app.post("/spaces/:spaceId/pull-request-cards", async c => {`
+- `workers/spaces/src/index.ts:4497` — `app.post("/spaces/:spaceId/workspace-events", async c => {`
+- `workers/spaces/src/index.ts:4507` — `app.post("/spaces/:spaceId/pull-request-cards/:cardId/status", async c => {`
+- `workers/spaces/src/index.ts:4520` — `app.use("/spaces/:spaceId/tasks/:taskId/lease", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/spaces/src/index.ts:4521` — `app.use("/spaces/:spaceId/tasks/:taskId/lease", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:4522` — `app.post("/spaces/:spaceId/tasks/:taskId/lease", async c => {`
+- `workers/spaces/src/index.ts:4531` — `app.get("/spaces/:spaceId/sub-spaces", async (c) => {`
+- `workers/spaces/src/index.ts:4543` — `app.post("/spaces/:spaceId/sub-spaces", async (c) => {`
+- `workers/spaces/src/index.ts:4594` — `app.patch("/spaces/:spaceId/sub-spaces/:subId", async (c) => {`
+- `workers/spaces/src/index.ts:4607` — `app.use("/spaces/:spaceId/foundry/templates", requireBusinessMembership({ GET: "member", POST: "admin" }));`
+- `workers/spaces/src/index.ts:4608` — `app.use("/spaces/:spaceId/foundry/templates/*", requireBusinessMembership({ GET: "member", POST: "admin" }));`
+- `workers/spaces/src/index.ts:4609` — `app.use("/spaces/:spaceId/foundry/requests", requireBusinessMembership({ GET: "admin", POST: "member" }));`
+- `workers/spaces/src/index.ts:4610` — `app.use("/spaces/:spaceId/foundry/requests/*", requireBusinessMembership({ GET: "admin", POST: "admin", PATCH: "admin" }));`
+- `workers/spaces/src/index.ts:4619` — `app.get("/spaces/:spaceId/foundry/templates", async (c) => {`
+- `workers/spaces/src/index.ts:4627` — `app.post("/spaces/:spaceId/foundry/templates", async (c) => {`
+- `workers/spaces/src/index.ts:4637` — `app.put("/spaces/:spaceId/foundry/templates/:templateId", async (c) => {`
+- `workers/spaces/src/index.ts:4646` — `app.get("/spaces/:spaceId/foundry/templates/:templateId/export", async (c) => {`
+- `workers/spaces/src/index.ts:4662` — `app.post("/spaces/:spaceId/foundry/install-template", requireBusinessMembership({ POST: "admin" }), async (c) => {`
+- `workers/spaces/src/index.ts:4714` — `app.post("/spaces/:spaceId/foundry/invoke-worker", requireBusinessMembership({ POST: "member" }), async (c) => {`
+- `workers/spaces/src/index.ts:4745` — `app.post("/spaces/:spaceId/foundry/templates/:templateId/submit", async (c) => {`
+- `workers/spaces/src/index.ts:4753` — `app.post("/spaces/:spaceId/foundry/templates/:templateId/test", async (c) => {`
+- `workers/spaces/src/index.ts:4790` — `app.post("/spaces/:spaceId/foundry/templates/:templateId/review", async (c) => {`
+- `workers/spaces/src/index.ts:4799` — `app.get("/spaces/:spaceId/foundry/requests", async (c) => {`
+- `workers/spaces/src/index.ts:4807` — `app.post("/spaces/:spaceId/foundry/requests", async (c) => {`
+- `workers/spaces/src/index.ts:4816` — `app.post("/spaces/:spaceId/foundry/forward-request", async (c) => {`
+- `workers/spaces/src/index.ts:4833` — `app.post("/spaces/:spaceId/foundry/accept-document", async (c) => {`
+- `workers/spaces/src/index.ts:4850` — `app.delete("/spaces/:spaceId/foundry/accept-document", async (c) => {`
+- `workers/spaces/src/index.ts:4860` — `app.post("/spaces/:spaceId/foundry/accept-worker", async (c) => {`
+- `workers/spaces/src/index.ts:4876` — `app.delete("/spaces/:spaceId/foundry/accept-worker", async (c) => {`
+- `workers/spaces/src/index.ts:4886` — `app.use("/internal/spaces/:spaceId/foundry/shared-document", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4887` — `app.post("/internal/spaces/:spaceId/foundry/shared-document", async (c) => {`
+- `workers/spaces/src/index.ts:4915` — `app.use("/internal/spaces/:spaceId/foundry/channel-invoke", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:4916` — `app.post("/internal/spaces/:spaceId/foundry/channel-invoke", async (c) => {`
+- `workers/spaces/src/index.ts:4953` — `app.patch("/spaces/:spaceId/foundry/requests/:requestId", async (c) => {`
+- `workers/spaces/src/index.ts:4962` — `app.all("/spaces/:spaceId/cross-space-grants/:grantId?", async (c) => {`
+- `workers/spaces/src/index.ts:5005` — `app.get("/spaces/:spaceId/cross-space-check", async (c) => {`
+- `workers/spaces/src/index.ts:5047` — `app.use("/internal/builder-fee-bps", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5048` — `app.get("/internal/builder-fee-bps", async (c) => {`
+- `workers/spaces/src/index.ts:5072` — `app.use("/spaces/:spaceId/products", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5073` — `app.use("/spaces/:spaceId/products", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:5074` — `app.use("/spaces/:spaceId/products/:id", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5075` — `app.use("/spaces/:spaceId/products/:id", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:5076` — `app.use("/spaces/:spaceId/orders", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5077` — `app.use("/spaces/:spaceId/orders", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:5078` — `app.use("/spaces/:spaceId/revenue", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5079` — `app.use("/spaces/:spaceId/revenue", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:5082` — `app.get("/spaces/:spaceId/products", async (c) => {`
+- `workers/spaces/src/index.ts:5093` — `app.post("/spaces/:spaceId/products", async (c) => {`
+- `workers/spaces/src/index.ts:5121` — `app.patch("/spaces/:spaceId/products/:id", async (c) => {`
+- `workers/spaces/src/index.ts:5201` — `app.delete("/spaces/:spaceId/products/:id", async (c) => {`
+- `workers/spaces/src/index.ts:5214` — `app.get("/spaces/:spaceId/orders", async (c) => {`
+- `workers/spaces/src/index.ts:5227` — `app.get("/spaces/:spaceId/revenue", async (c) => {`
+- `workers/spaces/src/index.ts:5261` — `app.use("/internal/business-services", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5262` — `app.post("/internal/business-services", async (c) => {`
+- `workers/spaces/src/index.ts:5355` — `app.use("/internal/member-billing", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5356` — `app.get("/internal/member-billing", async (c) => {`
+- `workers/spaces/src/index.ts:5373` — `app.get("/internal/business-services", async (c) => {`
+- `workers/spaces/src/index.ts:5384` — `app.use("/internal/business-services/custom-domain-status", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5385` — `app.get("/internal/business-services/custom-domain-status", async (c) => {`
+- `workers/spaces/src/index.ts:5445` — `app.get("/spaces/:spaceId/member-billing", async (c) => {`
+- `workers/spaces/src/index.ts:5455` — `app.patch("/spaces/:spaceId/member-billing", async (c) => {`
+- `workers/spaces/src/index.ts:5592` — `app.use("/spaces/:spaceId/pricing", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5593` — `app.use("/spaces/:spaceId/pricing", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:5594` — `app.get("/spaces/:spaceId/pricing", async (c) => {`
+- `workers/spaces/src/index.ts:5609` — `app.use("/spaces/:spaceId/business-subscription/checkout", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5610` — `app.use("/spaces/:spaceId/business-subscription/checkout", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:5611` — `app.post("/spaces/:spaceId/business-subscription/checkout", async (c) => {`
+- `workers/spaces/src/index.ts:5635` — `app.use("/spaces/:spaceId/credit-packs/checkout", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5636` — `app.use("/spaces/:spaceId/credit-packs/checkout", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:5637` — `app.post("/spaces/:spaceId/credit-packs/checkout", async (c) => {`
+- `workers/spaces/src/index.ts:5667` — `app.use("/spaces/:spaceId/personal-plan", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5668` — `app.use("/spaces/:spaceId/personal-plan", requireBusinessMembership({ GET: "member" }));`
+- `workers/spaces/src/index.ts:5669` — `app.get("/spaces/:spaceId/personal-plan", async (c) => {`
+- `workers/spaces/src/index.ts:5685` — `app.use("/spaces/:spaceId/personal-plan/checkout", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5686` — `app.use("/spaces/:spaceId/personal-plan/checkout", requireBusinessMembership({ POST: "member" }));`
+- `workers/spaces/src/index.ts:5687` — `app.post("/spaces/:spaceId/personal-plan/checkout", async (c) => {`
+- `workers/spaces/src/index.ts:5719` — `app.use("/internal/personal-plan/grant", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5720` — `app.post("/internal/personal-plan/grant", async (c) => {`
+- `workers/spaces/src/index.ts:5740` — `app.use("/internal/pricing-catalog", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5741` — `app.get("/internal/pricing-catalog", async (c) => {`
+- `workers/spaces/src/index.ts:5803` — `app.use("/internal/business-subscription-status", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5804` — `app.get("/internal/business-subscription-status", async (c) => {`
+- `workers/spaces/src/index.ts:5816` — `app.use("/internal/credit-packs/grant", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5817` — `app.post("/internal/credit-packs/grant", async (c) => {`
+- `workers/spaces/src/index.ts:5839` — `app.use("/internal/credit-packs/clawback", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5840` — `app.post("/internal/credit-packs/clawback", async (c) => {`
+- `workers/spaces/src/index.ts:5864` — `app.use("/internal/wallet-topups/grant", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5865` — `app.post("/internal/wallet-topups/grant", async (c) => {`
+- `workers/spaces/src/index.ts:5889` — `app.use("/internal/product-users/:spaceId/:endUserId/credits/balance", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5890` — `app.get("/internal/product-users/:spaceId/:endUserId/credits/balance", async (c) => {`
+- `workers/spaces/src/index.ts:5908` — `app.use("/internal/product-users/:spaceId/:endUserId/credits/deduct", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5909` — `app.post("/internal/product-users/:spaceId/:endUserId/credits/deduct", async (c) => {`
+- `workers/spaces/src/index.ts:5929` — `app.use("/internal/product-users/:spaceId/:endUserId/credits/reservations", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5930` — `app.post("/internal/product-users/:spaceId/:endUserId/credits/reservations", async (c) => {`
+- `workers/spaces/src/index.ts:5955` — `app.use("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:5956` — `app.post("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", async (c) => {`
+- `workers/spaces/src/index.ts:6000` — `app.get("/internal/space-types/:id", async (c) => {`
+- `workers/spaces/src/index.ts:6033` — `// app.use(...) as belt-and-suspenders since that combination was verified to work together.`
+- `workers/spaces/src/index.ts:6034` — `app.post("/internal/space-types-record-install/:id", async (c) => {`
+- `workers/spaces/src/index.ts:6052` — `app.post("/internal/space-types/seed", async (c) => {`
+- `workers/spaces/src/index.ts:6089` — `app.post("/internal/product-sessions/verify", async (c) => {`
+- `workers/spaces/src/index.ts:6135` — `app.post("/internal/stream-tickets/issue", async (c) => {`
+- `workers/spaces/src/index.ts:6175` — `app.post("/internal/stream-tickets/consume", async (c) => {`
+- `workers/spaces/src/index.ts:6269` — `app.get("/products/by-slug/:slug", async (c) => {`
+- `workers/spaces/src/index.ts:6298` — `app.get("/spaces/:productSpaceId/template-activity", async (c) => {`
+- `workers/spaces/src/index.ts:6328` — `app.get("/spaces/:spaceId/shell/manifest", async (c) => {`
+- `workers/spaces/src/index.ts:6424` — `app.get("/spaces/:spaceId/product-users/me", async (c) => {`
+- `workers/spaces/src/index.ts:6455` — `app.patch("/spaces/:spaceId/product-users/me", async (c) => {`
+- `workers/spaces/src/index.ts:6490` — `app.delete("/spaces/:spaceId/product-users/me", async (c) => {`
+- `workers/spaces/src/index.ts:6516` — `app.get("/me/preferences", async (c) => {`
+- `workers/spaces/src/index.ts:6527` — `app.patch("/me/preferences", async (c) => {`
+- `workers/spaces/src/index.ts:6544` — `// (app.all("/spaces/:spaceId/sessions*", ...)) — see that handler's own comment for why the`
+- `workers/spaces/src/index.ts:6553` — `app.post("/reseller/spaces", async (c) => {`
+- `workers/spaces/src/index.ts:6580` — `app.get("/reseller/clients", async (c) => {`
+- `workers/spaces/src/index.ts:6618` — `app.get("/reseller/statement", async (c) => {`
+- `workers/spaces/src/index.ts:6667` — `app.use("/internal/payout-requests/:id/fulfill", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));`
+- `workers/spaces/src/index.ts:6668` — `app.post("/internal/payout-requests/:id/fulfill", async (c) => {`
+- `workers/spaces/src/index.ts:6695` — `app.get("/reseller/clients/:childTenantId", async (c) => {`
+- `workers/spaces/src/index.ts:6719` — `app.post("/reseller/clients/:childTenantId/status", async (c) => {`
+- `workers/spaces/src/index.ts:6749` — `app.post("/reseller/clients/:childTenantId/promote", async (c) => {`
+- `workers/spaces/src/product-end-user-routes.ts:181` — `app.post("/spaces/:spaceId/end-users/signup", async (c) => {`
+- `workers/spaces/src/product-end-user-routes.ts:244` — `app.post("/spaces/:spaceId/end-users/login", async (c) => {`
+- `workers/spaces/src/product-end-user-routes.ts:286` — `app.post("/spaces/:spaceId/end-users/request-whatsapp-login", async (c) => {`
+- `workers/spaces/src/product-end-user-routes.ts:340` — `app.post("/spaces/:spaceId/end-users/verify-whatsapp-login", async (c) => {`
+- `workers/spaces/src/product-end-user-routes.ts:409` — `app.post("/spaces/:spaceId/end-users/request-password-reset", async (c) => {`
+- `workers/spaces/src/product-end-user-routes.ts:445` — `app.post("/spaces/:spaceId/end-users/reset-password", async (c) => {`
+- `workers/spaces/src/product-end-user-routes.ts:488` — `app.post("/spaces/:spaceId/end-users/verify-email", async (c) => {`
+- `workers/spaces/src/product-end-user-routes.ts:528` — `app.post("/spaces/:spaceId/end-users/resend-verification", async (c) => {`
+- `workers/spaces/src/routes/desk-drop.ts:16` — `app.post("/desk-drop/challenge", async c => {`
+- `workers/spaces/src/routes/desk-drop.ts:32` — `app.get("/desk-drop/status", async c => {`
+- `workers/spaces/src/routes/desk-drop.ts:38` — `app.post("/internal/desk-drop/issue", async c => {`
+- `workers/spaces/src/routes/desk-drop.ts:60` — `app.get("/desk-drop/redeem", c => {`
+- `workers/spaces/src/routes/desk-drop.ts:70` — `app.post("/desk-drop/redeem", async c => {`
+- `workers/spaces/src/routes/desk-drop.ts:87` — `app.get("/desk-drop/session", async c => {`
+- `workers/spaces/src/routes/desk-drop.ts:93` — `app.post("/desk-drop/logout", async c => {`
+- `workers/spaces/src/routes/dynamic-pages.ts:35` — `app.post("/spaces/:spaceId/apps/:appId/pages", async c => {`
+- `workers/spaces/src/routes/dynamic-pages.ts:50` — `app.get("/p/:spaceId/:appId/:slug", async c => {`
+- `workers/spaces/src/routes/dynamic-pages.ts:60` — `app.post("/p/:spaceId/:appId/:slug/actions/:action", async c => {`
+- `workers/spaces/src/routes/extension-gadget.ts:9` — `app.post("/spaces/:spaceId/internal/extensions/:installationId/gadgets/:primitiveId/:operation", async c => {`
+- `workers/spaces/src/routes/gadget-mcp.ts:31` — `app.post("/spaces/:spaceId/apps/:appId/mcp", c => forward(c, "/mcp"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:32` — `app.get("/spaces/:spaceId/apps/:appId/app", c => forward(c, "/app", "GET"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:33` — `app.get("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, `/api/data${new URL(c.req.url).search}`, "GET"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:34` — `app.get("/spaces/:spaceId/apps/:appId/api/storage", c => forward(c, "/api/storage", "GET"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:35` — `app.post("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, "/api/data"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:36` — `app.delete("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:37` — `app.post("/spaces/:spaceId/apps/:appId/initialize", async c => {`
+- `workers/spaces/src/routes/gadget-mcp.ts:91` — `app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/initialize", async c => {`
+- `workers/spaces/src/routes/gadget-mcp.ts:100` — `app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/app", c => forwardProject(c, "/app"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:101` — `app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`));`
+- `workers/spaces/src/routes/gadget-mcp.ts:102` — `app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/api/storage", c => forwardProject(c, "/api/storage"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:103` — `app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, "/api/data"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:104` — `app.delete("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:105` — `app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/mcp", c => forwardProject(c, "/mcp"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:106` — `app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/collaboration", c => forwardProject(c, `/api/collaboration${new URL(c.req.url).search}`, "GET"));`
+- `workers/spaces/src/routes/gadget-mcp.ts:107` — `app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/action-audit", c => {`
+- `workers/spaces/src/routes/gadget-mcp.ts:111` — `app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/collaboration", async c => {`
+- `workers/spaces/src/routes/graduation.ts:11` — `app.post("/spaces/:spaceId/graduate", async c => {`
+- `workers/spaces/src/routes/market-radar.ts:213` — `app.get("/spaces/market-radar/top-trends", topTrends);`
+- `workers/spaces/src/routes/market-radar.ts:214` — `app.get("/spaces/:productSpaceId/market-radar/top-trends", topTrends);`
+- `workers/spaces/src/routes/market-radar.ts:298` — `app.post("/spaces/market-radar/:opportunityId/launch", launch);`
+- `workers/spaces/src/routes/market-radar.ts:299` — `app.post(`
+- `workers/spaces/src/routes/marketplace.ts:29` — `app.post("/marketplace/listings", async (c) => {`
+- `workers/spaces/src/routes/marketplace.ts:76` — `app.post("/marketplace/listings/:listingId/publish", async (c) => {`
+- `workers/spaces/src/routes/mcp.ts:35` — `app.post("/spaces/:spaceId/projects/:projectId/mcp", async (c) => {`
+- `workers/spaces/src/routes/recipes.ts:28` — `app.get("/recipes", (c) =>`
+- `workers/spaces/src/routes/recipes.ts:32` — `app.post(`
+- `workers/threads/src/index.ts:38` — `app.use("*", requestId);`
+- `workers/threads/src/index.ts:39` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/threads/src/index.ts:42` — `app.get("/v1/threads", async (c) => {`
+- `workers/threads/src/index.ts:65` — `app.get("/v1/threads/:id", async (c) => {`
+- `workers/threads/src/index.ts:80` — `app.post("/v1/threads", async (c) => {`
+- `workers/threads/src/index.ts:104` — `app.post("/v1/threads/:id/sessions", async (c) => {`
+- `workers/threads/src/index.ts:128` — `app.patch("/v1/threads/sessions/:sessionId", async (c) => {`
+- `workers/threads/src/index.ts:162` — `app.post("/v1/threads/:id/summarize", async (c) => {`
+- `workers/threads/src/index.ts:195` — `app.delete("/v1/threads/:id", async (c) => {`
+- `workers/together-ai/src/index.ts:78` — `app.use("*", requestId);`
+- `workers/together-ai/src/index.ts:79` — `app.use("*", async (c, next) => {`
+- `workers/together-ai/src/index.ts:85` — `app.post("/chat", async (c) => {`
+- `workers/triggers/src/index.ts:37` — `app.use("*", requestId);`
+- `workers/triggers/src/index.ts:38` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
+- `workers/triggers/src/index.ts:40` — `app.get("/v1/triggers", async (c) => {`
+- `workers/triggers/src/index.ts:54` — `app.post("/v1/triggers", async (c) => {`
+- `workers/triggers/src/index.ts:86` — `app.patch("/v1/triggers/:id", async (c) => {`
+- `workers/triggers/src/index.ts:105` — `app.delete("/v1/triggers/:id", async (c) => {`
+
+## Audit caveats
+
+- Worker manifest count is a deployment/config inventory, not proof each manifest is currently deployed.
+- Durable Object discovery above matches exported classes extending `DurableObject`; inspect bindings, namespace migrations, re-exports, factory registries, tests, and aliases to find non-matching or legacy declarations.
+- Route extraction is syntactic and limited to calls matching `app|router|api|route.(get|post|put|patch|delete|all|use)(...)` under workers. Inspect method aliases, Hono `route()`, generated routes, RPC/fetch dispatch, WebSocket upgrades, scheduled/queue/workflow handlers, and routes registered in helper modules.
+- Containers can be attached through wrangler bindings or runtime marketplace configuration rather than a TS `extends Container` declaration; trace every image, DO namespace, Dockerfile, install catalogue, and dynamic sidecar resolver.
+- Re-run this inventory after code changes and record the commit hash in the audit ledger.

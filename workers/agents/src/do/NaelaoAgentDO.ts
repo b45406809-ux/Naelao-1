@@ -86,12 +86,14 @@ import {
   type ConversationContext,
   type ConversationMessage,
 } from "../script-engine/conversation-context.js";
+import { loadTranscriptPages, TRANSCRIPT_PAGE_SIZE } from "../script-engine/transcript-loader.js";
 import { isChannelType, getAdapter, toNormalizedInboundMessage, type NormalizedInbound } from "../launchpad/channels.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
 import type { TemplateMode, UniversalAgentManifest, UniversalAgentRole } from "@naelao/agent-sdk";
 import { composeUniversalPrompt } from "../script-engine/index.js";
 import { framePlannerFirstGoal } from "../script-engine/planner-first.js";
 import { UNIVERSAL_AGENT_BASELINE_PREBUILTS, UNIVERSAL_PLANNER_PREBUILTS } from "../script-engine/agent-topology.js";
+import { selectDefaultWorkerCapabilities } from "../script-engine/worker-capabilities.js";
 import {
   sanitizeSubAgentOutput,
   safeJsonParse,
@@ -3510,12 +3512,37 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             leafSlotKey = key;
           }
           const workerAgentId = typeof t["agent_id"] === "string" ? t["agent_id"] : agentId;
+          let workerCapabilities: DelegationContract["workerCapabilities"];
+          let workerCapabilityReceipt: { bundles: string[]; provider: string; fallback: string; tool_count: number; skill_count: number } | undefined;
+          if (!planner && workerAgentId === agentId && runtimeEnv.workerPrebuiltCapabilities?.length) {
+            const workerPrebuilts = runtimeEnv.workerPrebuiltCapabilities.filter(name => !(UNIVERSAL_PLANNER_PREBUILTS as readonly string[]).includes(name));
+            const skillLibrary = new SkillLibrary(runtimeEnv.scriptsBucket, spaceId);
+            const skillNames = await skillLibrary.list().catch(() => [] as string[]);
+            const skillCandidates = (await Promise.all(skillNames.slice(0, 100).map(async name => {
+              const metadata = await skillLibrary.readMetadata(name).catch(() => null);
+              return metadata && metadata.role_target !== "PLANNER_ORCHESTRATION"
+                ? { name, description: metadata.description.slice(0, 500) }
+                : undefined;
+            }))).filter((skill): skill is { name: string; description: string } => Boolean(skill));
+            const selected = await selectDefaultWorkerCapabilities({
+              task: goal,
+              enabledPrebuilts: workerPrebuilts,
+              toolDescriptions: Object.fromEntries(workerPrebuilts.map(name => [name, PREBUILT_SCRIPTS[name]?.description ?? "Configured worker tool."])),
+              skills: skillCandidates,
+              ...(runtimeEnv.fastDecision ? { decision: runtimeEnv.fastDecision } : {}),
+              allowRemoteDecision: !runtimeEnv.airGappedOnly && !runtimeEnv.localModelMachine,
+            });
+            workerCapabilities = { enabledPrebuilts: selected.enabledPrebuilts, selectedSkills: selected.selectedSkills };
+            workerCapabilityReceipt = { bundles: selected.selectedBundles, provider: selected.provider, fallback: selected.fallback,
+              tool_count: selected.enabledPrebuilts.length, skill_count: selected.selectedSkills.length };
+          }
           const contract: DelegationContract = {
             tenantId, spaceId, ...(projectId ? { projectId } : {}), actorId: userId, agentId: workerAgentId,
             rootRunId: runtimeEnv.rootRunId ?? parentRunId, parentRunId, parentDoId: this.ctx.id.toString(), workerId: subId,
             depth, planner, maxTokens: budgetTokens, maxSteps, model: modelResolution.model,
             role: typeof t["role"] === "string" ? t["role"] : "worker", callerRole: runtimeEnv.callerRole ?? runtimeEnv.effectiveRole ?? "viewer",
             maxTier: runtimeEnv.maxTier ?? 6, localOnly: runtimeEnv.airGappedOnly === true,
+            ...(workerCapabilities ? { workerCapabilities } : {}),
             ...(runtimeEnv.localModelMachine ? { localModelMachine: runtimeEnv.localModelMachine } : {}),
             ...(typeof t["workspace_branch"] === "string" ? { workspaceBranch: t["workspace_branch"] } : {}),
             ...(t["file_paths"] !== undefined ? { filePaths: t["file_paths"] as string[] } : {}),
@@ -3558,6 +3585,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 delegation_token: delegationToken,
                 delegation_depth: contract.depth, delegation_planner: contract.planner, root_run_id: contract.rootRunId, delegation_max_tier: contract.maxTier,
                 ...(contract.filePaths !== undefined ? { file_paths: contract.filePaths } : {}),
+                ...(contract.workerCapabilities !== undefined ? { worker_capabilities: contract.workerCapabilities } : {}),
                 parent_run_id: parentRunId,
                 sub_agent_id: subId,
                 max_steps: maxSteps,
@@ -3587,6 +3615,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             ok,
             model_used: modelResolution.model,
             ...(modelResolution.downgraded ? { effort_downgraded: true, effort_downgrade_reason: modelResolution.reason } : {}),
+            ...(workerCapabilityReceipt ? { worker_capability_selection: workerCapabilityReceipt } : {}),
             modifiedFiles,
             ...(ok ? { output } : { error: body.result?.error ?? `HTTP ${resp.status}` }),
           };
@@ -4579,11 +4608,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         maxTokens: context["max_tokens"] as number, maxSteps: context["max_steps"] as number,
         model: requestedModel, role: body.functionalRole ?? "DEV_OPERATOR", callerRole: callerRole ?? "",
         maxTier: context["delegation_max_tier"] as number, localOnly: body.airGappedOnly === true,
+        ...(context["worker_capabilities"] && typeof context["worker_capabilities"] === "object"
+          ? { workerCapabilities: context["worker_capabilities"] as NonNullable<DelegationContract["workerCapabilities"]> }
+          : {}),
         ...(body.localMachineId ? { localModelMachine: body.localMachineId } : {}),
         ...(body.workspaceBranch ? { workspaceBranch: body.workspaceBranch } : {}),
         ...(Array.isArray(context["file_paths"]) ? { filePaths: context["file_paths"] as string[] } : {}),
       };
-      try { await verifyDelegationContract(delegation, context["delegation_token"] as string, this.env.PLATFORM_SECRET); }
+      try { await verifyDelegationContract(delegation as DelegationContract, context["delegation_token"] as string, this.env.PLATFORM_SECRET); }
       catch { return this.finishScriptFailure(runId, "delegation contract denied", 403, "delegation_contract_denied"); }
     }
     // A task id identifies shared work (unlike runId, which identifies one attempt). Claim it
@@ -4702,13 +4734,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const script = PREBUILT_SCRIPTS[name];
       return script ? `${name}: ${script.description}` : name;
     });
+    engineEnv.workerPrebuiltCapabilities = config.scripts.prebuilt.slice(0, 128);
     if (delegation) engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, delegation.maxTier) as ExecutionTier;
     if (body.localMachineId) engineEnv.localModelMachine = body.localMachineId;
     engineEnv.delegationDepth = delegation?.depth ?? 1;
     engineEnv.delegationPlanner = !isLeaf;
     engineEnv.rootRunId = delegation?.rootRunId ?? runId;
+    engineEnv.workerPrebuiltCapabilities = config.scripts.prebuilt.slice(0, 128);
     const enabledPrebuilts = isLeaf
-      ? config.scripts.prebuilt.filter((name) => !(UNIVERSAL_PLANNER_PREBUILTS as readonly string[]).includes(name))
+      ? config.scripts.prebuilt.filter((name) =>
+          !(UNIVERSAL_PLANNER_PREBUILTS as readonly string[]).includes(name)
+          && (delegation?.workerCapabilities === undefined || delegation.workerCapabilities.enabledPrebuilts.includes(name)))
       : config.scripts.prebuilt;
     const fallbackRole: UniversalAgentRole = body.functionalRole ?? "worker";
     const manifest: UniversalAgentManifest = body.manifest
@@ -4769,6 +4805,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const tools = new ScriptToolSurface(engineEnv, assembled.manifest.capabilities.enabledPrebuilts, {
       ...(body.roomType ? { roomType: body.roomType } : {}),
       role: assembled.manifest.role,
+      defaultSkills: isLeaf && delegation?.workerCapabilities !== undefined
+        ? delegation.workerCapabilities.selectedSkills
+        : config.skills.skills.filter(skill => skill.tier === "platform").map(skill => skill.name),
+      ...(isLeaf && delegation?.workerCapabilities !== undefined ? { skillAllowlist: delegation.workerCapabilities.selectedSkills } : {}),
       // Persistent Space and Project agents plan and coordinate. The workers they dispatch keep
       // the configured tool set and use the same execution ladder, but do not receive this
       // planner-only boundary.
@@ -9123,15 +9163,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!sessionId || !this.env.SPACES_WORKER) return undefined;
     try {
       const headers = await this.internalHeaders(tenantId);
-      const resp = await this.env.SPACES_WORKER.fetch(
-        new Request(
-          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages?limit=500&scope_space_id=${encodeURIComponent(spaceId)}&scope_project_id=${encodeURIComponent(projectId)}&scope_thread_id=${encodeURIComponent(sessionId)}`,
-          { headers }
-        )
-      );
-      if (!resp.ok) return undefined;
-      const body = (await resp.json()) as { data?: ConversationMessage[]; messages?: ConversationMessage[] };
-      return body.data ?? body.messages ?? [];
+      return await loadTranscriptPages<ConversationMessage & { id?: string }>((beforeId) => {
+        const url = new URL(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`);
+        url.searchParams.set("limit", String(TRANSCRIPT_PAGE_SIZE));
+        url.searchParams.set("scope_space_id", spaceId);
+        url.searchParams.set("scope_project_id", projectId);
+        url.searchParams.set("scope_thread_id", sessionId);
+        if (beforeId) url.searchParams.set("before_id", beforeId);
+        return this.env.SPACES_WORKER!.fetch(new Request(url, { headers }));
+      });
     } catch {
       return undefined;
     }
