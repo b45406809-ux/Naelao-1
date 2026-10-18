@@ -281,13 +281,19 @@ The package's registered source and existing unit tests now pass **98 tests acro
 - `wafMiddleware` parses JSON before the recursive scanner, with no streaming/body-byte limit at this middleware boundary. The scanner string limit protects regex work after parsing, not JSON allocation. Malformed JSON is passed downstream for endpoint validation.
 - Rate-limit parameter validation is directly unit-tested, but Durable Object SQL behavior was not exercised with a runtime storage harness, and no in-repository caller of `RateLimiterDO` was found.
 - DNS response bounds were tested with Fetch stubs, not live Cloudflare DNS-over-HTTPS. DNS verification and the later outbound `fetch()` remain separate resolutions, leaving the previously documented rebinding window.
+
+## Security gateway worker stress pass (2026-10-18)
+
+The security gateway previously skipped its global rate limiter when `CF-Connecting-IP` matched a short private-address regex. That created an avoidable bypass if a private-looking source address reached the gateway, and the regex did not cover all private IPv6 forms. The bypass is removed: all connecting IP values now receive the global limiter. The worker also rejects non-2xx, malformed JSON, invalid `allowed`, and invalid retry-delay responses from the limiter as denied requests.
+
+`workers/security-gateway/src/index.test.ts` has five tests covering private-looking IPs, limiter outages, malformed JSON, wrong response types, and invalid retry delay. The new security-gateway Vitest project passed **5/5 tests**; worker typecheck and focused Biome passed. The gateway's Cloudflare bindings and Wrangler deployment were not exercised live; `workers_dev = false` and the router-only reachability constraint still require deployment verification.
 - Other security package callers and deployment bindings still need end-to-end review; focused module tests do not prove production DO, D1, DNS, or browser-policy behavior.
 
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 271 test files, 1,199 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, and security projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 272 test files, 1,204 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, security, and security-gateway projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

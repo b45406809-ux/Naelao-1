@@ -1,7 +1,7 @@
-import { Hono } from "hono";
-import { RateLimiterDO } from "@naelao/security/src/rate-limit-do.js";
-import { wafMiddleware, securityHeaders } from "@naelao/security";
 import { errorResponse } from "@naelao/http";
+import { securityHeaders, wafMiddleware } from "@naelao/security";
+import { RateLimiterDO } from "@naelao/security/src/rate-limit-do.js";
+import { Hono } from "hono";
 
 export { RateLimiterDO };
 
@@ -14,22 +14,6 @@ interface SecurityEnv {
   RATE_LIMIT_GLOBAL: string;
   RATE_LIMIT_AUTH: string;
   RATE_LIMIT_TENANT: string;
-}
-
-// Private IP ranges that must not be fetched by tools
-const PRIVATE_RANGES = [
-  /^127\./,
-  /^10\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^192\.168\./,
-  /^169\.254\./,
-  /^::1$/,
-  /^fc00:/i,
-  /^fe80:/i,
-];
-
-function isPrivateIp(ip: string): boolean {
-  return PRIVATE_RANGES.some((r) => r.test(ip));
 }
 
 async function checkRateLimit(
@@ -45,20 +29,49 @@ async function checkRateLimit(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key, limit, windowMs }),
   });
-  const data = await res.json<{ allowed: boolean; retryAfterMs?: number }>();
-  return data;
+  if (!res.ok) return { allowed: false, retryAfterMs: windowMs };
+  try {
+    const data = await res.json<unknown>();
+    if (
+      !data ||
+      typeof data !== "object" ||
+      typeof (data as { allowed?: unknown }).allowed !== "boolean"
+    ) {
+      return { allowed: false, retryAfterMs: windowMs };
+    }
+    const retryAfterMs = (data as { retryAfterMs?: unknown }).retryAfterMs;
+    if (
+      retryAfterMs !== undefined &&
+      (typeof retryAfterMs !== "number" ||
+        !Number.isFinite(retryAfterMs) ||
+        retryAfterMs < 0 ||
+        retryAfterMs > 86_400_000)
+    ) {
+      return { allowed: false, retryAfterMs: windowMs };
+    }
+    return {
+      allowed: (data as { allowed: boolean }).allowed,
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    };
+  } catch {
+    return { allowed: false, retryAfterMs: windowMs };
+  }
 }
 
 // G-A11: Validate required secrets at startup
 function validateEnv(env: SecurityEnv): void {
-  if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
+  if (!env.PLATFORM_SECRET)
+    throw new Error("Missing required secret: PLATFORM_SECRET");
 }
 
 const app = new Hono<{ Bindings: SecurityEnv }>();
 
 // Security headers on all responses
 app.use("*", securityHeaders());
-app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+app.use("*", async (c, next) => {
+  validateEnv(c.env);
+  await next();
+});
 
 // WAF scan on all requests
 app.use("*", wafMiddleware());
@@ -75,24 +88,35 @@ app.all("*", async (c) => {
   const windowMs = 60_000; // 1 minute
 
   // 1. IP-level global rate limit
-  if (!isPrivateIp(ip)) {
-    const globalCheck = await checkRateLimit(c.env.RATE_LIMITER, `ip:${ip}`, globalLimit, windowMs);
-    if (!globalCheck.allowed) {
-      const retryAfter = Math.ceil((globalCheck.retryAfterMs ?? windowMs) / 1000);
-      return c.json(
-        { error_code: "rate_limited", message: "Too many requests" },
-        { status: 429, headers: { "Retry-After": String(retryAfter) } }
-      );
-    }
+  const globalCheck = await checkRateLimit(
+    c.env.RATE_LIMITER,
+    `ip:${ip}`,
+    globalLimit,
+    windowMs
+  );
+  if (!globalCheck.allowed) {
+    const retryAfter = Math.ceil((globalCheck.retryAfterMs ?? windowMs) / 1000);
+    return c.json(
+      { error_code: "rate_limited", message: "Too many requests" },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } }
+    );
   }
 
   // 2. Stricter limit for auth endpoints
   if (path.startsWith("/v1/auth/")) {
-    const authCheck = await checkRateLimit(c.env.RATE_LIMITER, `auth:${ip}`, authLimit, windowMs);
+    const authCheck = await checkRateLimit(
+      c.env.RATE_LIMITER,
+      `auth:${ip}`,
+      authLimit,
+      windowMs
+    );
     if (!authCheck.allowed) {
       const retryAfter = Math.ceil((authCheck.retryAfterMs ?? windowMs) / 1000);
       return c.json(
-        { error_code: "rate_limited", message: "Too many authentication attempts" },
+        {
+          error_code: "rate_limited",
+          message: "Too many authentication attempts",
+        },
         { status: 429, headers: { "Retry-After": String(retryAfter) } }
       );
     }
@@ -107,7 +131,9 @@ app.all("*", async (c) => {
       windowMs
     );
     if (!tenantCheck.allowed) {
-      const retryAfter = Math.ceil((tenantCheck.retryAfterMs ?? windowMs) / 1000);
+      const retryAfter = Math.ceil(
+        (tenantCheck.retryAfterMs ?? windowMs) / 1000
+      );
       return c.json(
         { error_code: "rate_limited", message: "Tenant rate limit exceeded" },
         { status: 429, headers: { "Retry-After": String(retryAfter) } }
@@ -119,7 +145,9 @@ app.all("*", async (c) => {
   return c.env.ROUTER_WORKER.fetch(c.req.raw);
 });
 
-app.onError((err, c) => errorResponse(err, c.req.header("x-request-id") ?? "unknown"));
+app.onError((err, c) =>
+  errorResponse(err, c.req.header("x-request-id") ?? "unknown")
+);
 
 export default {
   fetch: app.fetch,

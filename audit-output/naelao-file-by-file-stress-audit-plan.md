@@ -1888,10 +1888,12 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/security-gateway`
 
-- [ ] `workers/security-gateway/package.json`
-- [ ] `workers/security-gateway/src/index.ts`
-- [ ] `workers/security-gateway/tsconfig.json`
-- [ ] `workers/security-gateway/wrangler.toml`
+- [x] `workers/security-gateway/package.json`
+- [x] `workers/security-gateway/src/index.test.ts`
+- [x] `workers/security-gateway/src/index.ts`
+- [x] `workers/security-gateway/tsconfig.json`
+- [x] `workers/security-gateway/vitest.config.ts`
+- [x] `workers/security-gateway/wrangler.toml`
 
 ### `workers/spaces`
 
