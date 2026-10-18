@@ -1,5 +1,5 @@
-// DO SQLite helper — enforces ? placeholder-only pattern
-// this.ctx.storage.sql.exec() is the CF DO SQLite API
+// Helpers for the Cloudflare Durable Object SQLite API. Keep SQL text static and pass
+// untrusted values as separate positional parameters (`?` placeholders) to `exec`.
 
 export interface SqlStorage {
   exec(query: string, ...params: unknown[]): SqlStorageCursor;

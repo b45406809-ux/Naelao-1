@@ -630,8 +630,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/db/package.json`
 - [x] `packages/db/src/index.ts`
 - [x] `packages/db/src/migrate.ts`
-- [ ] `packages/db/src/sql.ts`
+- [x] `packages/db/src/sql.ts`
 - [x] `packages/db/src/migrate.test.ts` (added stress coverage)
+- [x] `packages/db/src/sql.test.ts` (added helper boundary coverage)
 - [x] `packages/db/vitest.config.ts` (added package test discovery)
 - [x] `packages/db/tsconfig.json`
 

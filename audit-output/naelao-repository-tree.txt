@@ -1,8 +1,8 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1850
-Files with source or executable-configuration extensions: 1644
+Files: 1851
+Files with source or executable-configuration extensions: 1645
 Inventory revision: DB migration stress batch in the current working tree
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
@@ -790,6 +790,7 @@ packages/
       index.ts
       migrate.test.ts
       migrate.ts
+      sql.test.ts
       sql.ts
     package.json
     tsconfig.json

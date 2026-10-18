@@ -130,23 +130,24 @@ This pass covered package exports, SQL helper consumers, and migration initializ
 |---|---|---|
 | `packages/db/src/migrate.ts` | Migration version validation, transaction rollback, replay behavior, statement splitting across comments/strings/trigger blocks, SQL execution diagnostics | Fixed a parser bug where `CASE ... END` inside a trigger was mistaken for the trigger terminator. The splitter now tracks CASE nesting and single/double/backtick/bracket quoting, including escaped closing delimiters, so semicolons in quoted identifiers are preserved. |
 | `packages/db/src/migrate.test.ts` | Real SQLite trigger with CASE and multiple statements; semicolon inside a quoted table identifier | 2 new regression tests pass against the in-memory SQLite DO storage shim. |
+| `packages/db/src/sql.ts`, `packages/db/src/sql.test.ts` | Bound positional argument forwarding, first-row and empty results, DB error propagation, write execution, sequential schema scripts and stop-on-error behavior | Corrected an inaccurate comment claiming the helpers enforced placeholder-only SQL. The helpers forward SQL and positional parameters unchanged; 5 tests cover the contract. |
 | `packages/db/package.json`, `packages/db/tsconfig.json`, `packages/db/vitest.config.ts` | Build/typecheck/test discovery and root test inclusion | Added package test script/config and Vitest dependency; tests are excluded from the package declaration build. Package TypeScript check passes. |
 | `tests/unit/db-migrations.test.ts`, `workers/spaces/src/do/SpaceDO-migrations.test.ts` | Atomic migration rollback, replay, migration table behavior, production SpaceDO migration application | Existing DB suite passes (6 tests); SpaceDO migrations pass in the full configured workspace. |
 
-Focused DB tests passed **8 tests across 2 files**. The configured workspace passed with **230 test files and 989 tests**. Focused Biome checks passed on the newly added test and Vitest config. The touched migration source retains pre-existing formatting/lint diagnostics; they were not mass-reformatted.
+Focused DB tests passed **13 tests across 3 files**. The configured workspace passed with **230 test files and 989 tests**. Focused Biome checks passed on the newly added test and Vitest config. The touched migration source retains pre-existing formatting/lint diagnostics; they were not mass-reformatted.
 
 ### Remaining DB risks and unverified behavior
 
 - Transaction semantics use the Node SQLite shim; Cloudflare's actual `transactionSync()` behavior and migration lock contention were not exercised in a live Worker runtime.
 - Existing migration versions are checked for duplicates and completeness, but the package has no persisted checksum to detect a historical migration body being edited after deployment.
-- `packages/db/src/sql.ts` helper behavior and all `queryAll`/`queryOne` callsites remain pending; package review is not complete.
+- The helpers are covered directly, but every `queryAll`/`queryOne` callsite in the large SpaceDO and knowledge worker modules remains pending caller-by-caller review.
 - The migration splitter covers SQLite's supported quote forms relevant to the tested statements; malformed unterminated quote/comment input relies on SQLite rejection and transaction rollback.
 
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 230 test files, 989 tests, with webhook, idempotency, sweeper, auth, crypto, and DB projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 231 test files, 994 tests, with webhook, idempotency, sweeper, auth, crypto, and DB projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |
