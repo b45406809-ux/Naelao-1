@@ -41,14 +41,16 @@ describe("project extension provider routing", () => {
     expect(env.SPACES_WORKER.fetch).not.toHaveBeenCalled();
   });
 
-  it("leaves the Slack callback and per-install Telegram webhook public for providers", async () => {
+  it("leaves provider callbacks and extension webhooks public for providers", async () => {
     const workerFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));
     const secret = "router-test-platform-secret";
     const env = { ENVIRONMENT: "test", JWT_SECRET: secret, PLATFORM_SECRET: secret, AGENTS_WORKER: { fetch: workerFetch } } as unknown as Env;
     const callback = await app.request("/v1/extensions/oauth/slack/callback?state=opaque", { method: "GET" }, env);
     const webhook = await app.request("/v1/channels/telegram/extensions/space-1/install-1/bot-main", { method: "POST", body: "{}" }, env);
+    const whatsapp = await app.request("/v1/channels/whatsapp/extensions", { method: "POST", body: "{}" }, env);
     expect(await callback.json()).toEqual({ path: "/extensions/oauth/slack/callback" });
     expect(await webhook.json()).toEqual({ path: "/channels/telegram/extensions/space-1/install-1/bot-main" });
-    expect(workerFetch).toHaveBeenCalledTimes(2);
+    expect(await whatsapp.json()).toEqual({ path: "/channels/whatsapp/extensions" });
+    expect(workerFetch).toHaveBeenCalledTimes(3);
   });
 });

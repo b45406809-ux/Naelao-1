@@ -301,7 +301,7 @@ The user’s standing delivery preference is to checkpoint successful work in fo
 
 ### Phase 6 — Credential lifecycle, channel routing, and inbox
 
-- Implement first chosen provider connection from auth start through token vault, webhook verification, refresh/reconnect, revoke and uninstall; choose Meta Embedded Signup or named BSP based on current deployment/provider account, not assumption.
+- Implement the chosen provider connection from setup through token vault, webhook verification, refresh/reconnect, revoke and uninstall. Slack OAuth and Telegram bot-token setup exist. WhatsApp now has verified Meta system-user-token setup, WABA app subscription, a shared signed webhook, per-phone-number installation routing, and local credential revocation; this is an interim admin setup path, not Meta OAuth. Confirm Meta Embedded Signup or an approved BSP against deployment credentials and provider account before replacing the manual setup path.
 - Add many-instance routing and opaque external subject identity with tests for contact collision, multiple bots, multiple sessions, expired authorization, duplicate event and revoked link.
 - Complete inbox assignment/escalation and event/send uncertainty reconciliation.
 

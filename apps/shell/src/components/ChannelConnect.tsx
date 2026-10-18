@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, getChannelExtensionInboxSla, setChannelExtensionInboxSla } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -132,6 +132,8 @@ function ExtensionConnectionControls({ spaceId, projectId, session, installation
   const [availableRoutes, setAvailableRoutes] = React.useState<Array<{ id: string; name: string; private: boolean }>>([]);
   const [routingKeys, setRoutingKeys] = React.useState<string[]>([]);
   const [telegramToken, setTelegramToken] = React.useState("");
+  const [whatsAppToken, setWhatsAppToken] = React.useState("");
+  const [whatsAppPhoneId, setWhatsAppPhoneId] = React.useState("");
   const refresh = React.useCallback(async () => {
     const value = await getExtensionProviderConnection(spaceId, projectId, installation.instance_id, connection.id, session);
     setStatus(value);
@@ -185,6 +187,12 @@ function ExtensionConnectionControls({ spaceId, projectId, session, installation
     catch (err) { setError(err instanceof Error ? err.message : "Couldn't connect this Telegram bot."); }
     finally { setBusy(false); }
   }
+  async function connectWhatsApp() {
+    setBusy(true); setError(null); setNotice(null);
+    try { const result = await connectExtensionWhatsApp(spaceId, projectId, installation.instance_id, connection.id, whatsAppToken, whatsAppPhoneId, session); setWhatsAppToken(""); await refresh(); setNotice(`WhatsApp ${result.account_label} connected. Configure Meta's app webhook at ${result.webhook_url} with the verify token supplied by your administrator.`); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't connect this WhatsApp number."); }
+    finally { setBusy(false); }
+  }
   return <div style={{ margin: "6px 0 4px 12px", fontSize: 11.5, color: "var(--text2)" }}>
     <span>{connection.id} · {connection.provider}: {loading ? "checking…" : status?.status === "active" ? `connected to ${status.account_label ?? status.account_id}` : status?.status === "error" || status?.status === "expired" ? "needs reconnect" : "not connected"}</span>
     {canManage && connection.provider === "slack" && <button type="button" className="btn-ghost" style={{ marginLeft: 8, fontSize: 11 }} disabled={busy || loading} onClick={() => void (status?.status === "active" ? disconnect() : connect())}>
@@ -197,6 +205,15 @@ function ExtensionConnectionControls({ spaceId, projectId, session, installation
           <button type="submit" className="btn-ghost" disabled={busy || !telegramToken.trim()}>{busy ? "Connecting…" : "Connect Telegram bot"}</button>
         </form>}
       {status?.status !== "active" && <div style={{ marginTop: 3, fontSize: 10.5, color: "var(--text3)" }}>Create a bot with BotFather. The token is sent directly to Naelao’s credential vault and is not shown again.</div>}
+    </>}
+    {canManage && connection.provider === "whatsapp" && <>
+      {status?.status === "active" ? <button type="button" className="btn-ghost" style={{ marginLeft: 8, fontSize: 11 }} disabled={busy || loading} onClick={() => void disconnect()}>{busy ? "Disconnecting…" : "Disconnect WhatsApp"}</button>
+        : <form onSubmit={event => { event.preventDefault(); void connectWhatsApp(); }} style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 5 }}>
+          <input type="password" autoComplete="new-password" aria-label={`Meta system-user token for ${connection.id}`} placeholder="Meta system-user access token" value={whatsAppToken} onChange={change => setWhatsAppToken(change.target.value)} style={{ minWidth: 220, flex: 1, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: 5 }} />
+          <input inputMode="numeric" autoComplete="off" aria-label={`WhatsApp phone-number ID for ${connection.id}`} placeholder="WhatsApp phone-number ID" value={whatsAppPhoneId} onChange={change => setWhatsAppPhoneId(change.target.value)} style={{ minWidth: 180, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: 5 }} />
+          <button type="submit" className="btn-ghost" disabled={busy || !whatsAppToken.trim() || !/^\d{5,32}$/.test(whatsAppPhoneId.trim())}>{busy ? "Connecting…" : "Connect WhatsApp"}</button>
+        </form>}
+      {status?.status !== "active" && <div style={{ marginTop: 3, fontSize: 10.5, color: "var(--text3)" }}>Use a Meta system-user token with WhatsApp Business Messaging access. It is verified against Meta and stored in Naelao’s credential vault. The shared Meta app webhook must also be configured by an administrator.</div>}
     </>}
     {canManage && connection.provider === "slack" && status?.status === "active" && <div style={{ marginTop: 6 }}>
       <div style={{ fontSize: 11, color: "var(--text3)" }}>Choose where this extension responds. Each Slack conversation can route to only one extension in this Space.</div>

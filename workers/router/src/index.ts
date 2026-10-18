@@ -383,6 +383,14 @@ app.all("/v1/channels/telegram/extensions/:spaceId/:installationId/:connectionId
   return c.env.AGENTS_WORKER.fetch(new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit));
 });
 
+// Meta sends WhatsApp Cloud API webhooks to one app-level callback, which is authenticated by
+// Meta's signature and then routed by the verified phone-number ID to one active installation.
+app.all("/v1/channels/whatsapp/extensions", async c => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit));
+});
+
 // Scan-to-connect (launchpad/channel-pairing.ts): the same public posture, for Naelao's OWN app on
 // each channel. There is no :spaceId here on purpose — a message arriving at the platform bot
 // carries only the channel's id for the conversation, and the agents worker resolves the business
@@ -656,7 +664,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/extension-releases\/rollback$/,
   /^\/spaces\/([^/]+)\/extension-publishers(\/[^/]+)?$/,
   // Composed provider connections are installation scoped and re-authorized by Agents.
-  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions\/([^/]+)\/connections\/([^/]+)(?:\/(?:oauth\/slack\/start|telegram\/connect|routes(?:\/available)?))?$/,
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions\/([^/]+)\/connections\/([^/]+)(?:\/(?:oauth\/slack\/start|telegram\/connect|whatsapp\/connect|routes(?:\/available)?))?$/,
   // Extension channel installation and operations queue; the downstream worker owns role checks.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions\/([^/]+)(?:\/(?:session-state|inbox(?:\/(?:sla|notes|assign|takeover|delete-conversation|reply|export))?))?$/,

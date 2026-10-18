@@ -12,6 +12,7 @@ describe("product session routes for composed project extensions", () => {
     "/spaces/s/projects/p/extensions/install-a/connections/slack/routes/available",
     "/spaces/s/projects/p/extensions/install-a/connections/slack/routes",
     "/spaces/s/projects/p/extensions/install-a/connections/slack/telegram/connect",
+    "/spaces/s/projects/p/extensions/install-a/connections/slack/whatsapp/connect",
     "/spaces/s/projects/p/channel-extensions",
     "/spaces/s/projects/p/channel-extensions/install-a/session-state",
     "/spaces/s/projects/p/channel-extensions/install-a/inbox",

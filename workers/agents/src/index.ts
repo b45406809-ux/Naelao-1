@@ -73,6 +73,7 @@ import {
 import { listDirectory, resolveConnectTarget, curatedLogos, type DirectoryApp } from "./connectors/directory.js";
 import { startPipedreamConnect, pipedreamConnectionActive } from "./connectors/pipedream.js";
 import { isChannelType, getAdapter, twilioWhatsappAdapter, type ChannelType } from "./launchpad/channels.js";
+import { splitWhatsAppExtensionWebhook } from "./launchpad/whatsapp-extension-webhook.js";
 import { downloadTwilioWhatsAppAttachments, downloadWhatsAppAttachments, hasWhatsAppVoiceNote, transcribeTwilioWhatsAppVoice, transcribeWhatsAppVoiceNote } from "./launchpad/whatsapp-media.js";
 import { downloadTelegramAttachments, hasTelegramMedia } from "./launchpad/telegram-media.js";
 import { downloadSlackAttachments, hasSlackFiles } from "./launchpad/slack-media.js";
@@ -372,7 +373,10 @@ export interface AgentsEnv extends Cloudflare.Env {
   TELEGRAM_WEBHOOK_SECRET?: string;
   SLACK_SIGNING_SECRET?: string;
   DISCORD_PUBLIC_KEY?: string;
+  /** Meta app secret and webhook verify token for the shared WhatsApp extension webhook. */
+  WHATSAPP_APP_ID?: string;
   WHATSAPP_APP_SECRET?: string;
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN?: string;
   /** §A1.27: already bound in wrangler.toml (naelao-billing); added here so the context-usage
    *  endpoint can read the day/week/month llm_tokens summary. */
   BILLING_WORKER?: Fetcher;
@@ -4275,7 +4279,7 @@ async function fetchInstalledConnectionContext(env: AgentsEnv, tenantId: string,
   return result;
 }
 
-function extensionConnectionCredentialName(installationId: string, connectionId: string, generation: string, provider: "slack" | "telegram" = "slack"): string {
+function extensionConnectionCredentialName(installationId: string, connectionId: string, generation: string, provider: "slack" | "telegram" | "whatsapp" = "slack"): string {
   const digest = [...new TextEncoder().encode(`${installationId}:${connectionId}`)].map(byte => byte.toString(16).padStart(2, "0")).join("");
   return `EXT_${provider.toUpperCase()}_${digest.slice(0, 32)}_${generation}`;
 }
@@ -4511,15 +4515,74 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   return c.json({ connected: true, account_label: `@${username}` }, 201);
 });
 
+app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/whatsapp/connect", async c => {
+  const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect WhatsApp to an extension");
+  if (!c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER || !c.env.WHATSAPP_APP_ID || !c.env.WHATSAPP_APP_SECRET || !c.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) return c.json({ error_code: "whatsapp_connection_unavailable" }, 503);
+  const body = await c.req.json<{ access_token?: unknown; phone_number_id?: unknown }>().catch(() => ({} as { access_token?: unknown; phone_number_id?: unknown }));
+  const accessToken = typeof body.access_token === "string" ? body.access_token.trim() : "", phoneNumberId = typeof body.phone_number_id === "string" ? body.phone_number_id.trim() : "";
+  if (accessToken.length < 32 || accessToken.length > 4096 || !/^\d{5,32}$/.test(phoneNumberId)) throw badRequest("Enter a Meta system-user access token and WhatsApp phone-number ID");
+  if (accessToken === c.env.WHATSAPP_ACCESS_TOKEN) return c.json({ error_code: "platform_credential_not_allowed" }, 400);
+  const installation = await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId);
+  const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === connectionId);
+  const channel = installation?.manifest.channels?.find(item => item.kind === "channel" && item.provider === "whatsapp" && item.connectionId === connectionId);
+  if (!installation || declaration?.provider !== "whatsapp" || !channel?.handlerScript) return c.json({ error_code: "extension_connection_not_declared" }, 404);
+  const version = c.env.WHATSAPP_GRAPH_API_VERSION ?? "v26.0";
+  if (!/^v\d+\.\d+$/.test(version)) return c.json({ error_code: "whatsapp_graph_configuration_invalid" }, 503);
+  let accountLabel = "WhatsApp Business number", scopes: string[] = [], wabaId = "";
+  try {
+    const appToken = `${c.env.WHATSAPP_APP_ID}|${c.env.WHATSAPP_APP_SECRET}`;
+    const debugUrl = new URL(`https://graph.facebook.com/${version}/debug_token`);
+    debugUrl.searchParams.set("input_token", accessToken);
+    debugUrl.searchParams.set("access_token", appToken);
+    const debugResponse = await fetch(debugUrl, { signal: AbortSignal.timeout(10_000) });
+    const debug = await debugResponse.json<{ data?: { is_valid?: boolean; app_id?: string; scopes?: string[]; expires_at?: number } }>().catch(() => ({} as { data?: { is_valid?: boolean; app_id?: string; scopes?: string[]; expires_at?: number } }));
+    const data = debug.data;
+    if (!debugResponse.ok || data?.is_valid !== true || data.app_id !== c.env.WHATSAPP_APP_ID || (data.expires_at && data.expires_at > 0 && data.expires_at <= Date.now() / 1000)) return c.json({ error_code: "whatsapp_access_token_rejected" }, 400);
+    scopes = Array.isArray(data.scopes) ? data.scopes.filter(scope => typeof scope === "string" && ["whatsapp_business_messaging", "whatsapp_business_management"].includes(scope)) : [];
+    if (!scopes.includes("whatsapp_business_messaging") || !scopes.includes("whatsapp_business_management")) return c.json({ error_code: "whatsapp_management_and_messaging_scopes_required" }, 400);
+    const phoneResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(phoneNumberId)}?fields=id,display_phone_number,verified_name,whatsapp_business_account`, { headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10_000) });
+    const phone = await phoneResponse.json<{ id?: string; display_phone_number?: string; verified_name?: string; whatsapp_business_account?: { id?: string }; error?: { code?: number } }>().catch(() => ({} as { id?: string; display_phone_number?: string; verified_name?: string; whatsapp_business_account?: { id?: string }; error?: { code?: number } }));
+    if (!phoneResponse.ok || phone.id !== phoneNumberId) return c.json({ error_code: "whatsapp_phone_number_unavailable" }, 400);
+    wabaId = phone.whatsapp_business_account?.id ?? "";
+    if (!/^\d{5,32}$/.test(wabaId)) return c.json({ error_code: "whatsapp_business_account_unavailable" }, 400);
+    const subscribeResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(wabaId)}/subscribed_apps`, { method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10_000) });
+    const subscription = await subscribeResponse.json<{ success?: boolean }>().catch(() => ({} as { success?: boolean }));
+    if (!subscribeResponse.ok || subscription.success !== true) return c.json({ error_code: "whatsapp_webhook_subscription_failed" }, 502);
+    accountLabel = `${phone.verified_name ?? "WhatsApp Business"}${phone.display_phone_number ? ` · ${phone.display_phone_number}` : ""}`.slice(0, 120);
+  } catch { return c.json({ error_code: "whatsapp_provider_verification_unavailable" }, 503); }
+  const handler = await c.env.SCRIPTS_R2?.get(`spaces/${spaceId}/extensions/${installation.manifest.bundle?.id}/${installation.manifest.bundle?.version}/${channel.handlerScript.replace(/^\.\//, "")}`);
+  if (!handler || handler.size > 262_144) return c.json({ error_code: "extension_handler_unavailable" }, 409);
+  const handlerSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await handler.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+  const credentialName = extensionConnectionCredentialName(installationId, connectionId, generation, "whatsapp");
+  const prior = await c.env.PLATFORM_DB.prepare(`SELECT credential_name FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`)
+    .bind(tenantId, spaceId, installationId, connectionId).first<{ credential_name: string }>();
+  const stored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: credentialName, value: accessToken, description: `WhatsApp access token for extension ${installationId}/${connectionId}` });
+  if (!stored.ok) return c.json({ error_code: "credential_store_failed" }, 502);
+  const now = new Date().toISOString();
+  try {
+    await c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,handler_sha256,routing_keys_json,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)
+      VALUES(?,?,?,?,?,'whatsapp',?,?,?, ?,?, ?, 'active',?,?,?,NULL,?) ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO UPDATE SET
+      project_id=excluded.project_id,account_id=excluded.account_id,account_label=excluded.account_label,credential_name=excluded.credential_name,handler_sha256=excluded.handler_sha256,
+      routing_keys_json=excluded.routing_keys_json,granted_scopes_json=excluded.granted_scopes_json,status='active',connected_by=excluded.connected_by,connected_at=excluded.connected_at,last_verified_at=excluded.last_verified_at,revoked_at=NULL,updated_at=excluded.updated_at`)
+      .bind(tenantId, spaceId, projectId, installationId, connectionId, phoneNumberId, accountLabel, credentialName, handlerSha256, JSON.stringify([wabaId]), JSON.stringify(scopes), userId, now, now, now).run();
+  } catch { await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName); return c.json({ error_code: "whatsapp_phone_number_already_connected" }, 409); }
+  if (prior?.credential_name && prior.credential_name !== credentialName) await deleteConnectorCredentialByName(c.env, tenantId, spaceId, prior.credential_name);
+  return c.json({ connected: true, account_label: accountLabel, webhook_url: `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/channels/whatsapp/extensions` }, 201);
+});
+
 app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId", async c => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
   const { userId, role: callerRole } = getCallerIdentity(c);
   const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may disconnect an extension provider");
-  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,account_id,webhook_secret_name FROM extension_provider_connections
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,account_id,webhook_secret_name,routing_keys_json FROM extension_provider_connections
     WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status IN ('active','error','expired')`)
-    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string; credential_name: string; account_id: string; webhook_secret_name: string | null }>();
+    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string; credential_name: string; account_id: string; webhook_secret_name: string | null; routing_keys_json: string }>();
   if (!row) return c.json({ removed: false });
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.batch([
@@ -4534,6 +4597,14 @@ app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/conn
     }
   } else if (row.provider === "telegram" && token) {
     try { await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ drop_pending_updates: false }), signal: AbortSignal.timeout(5_000) }); } catch { /* local revocation remains authoritative */ }
+  } else if (row.provider === "whatsapp" && token) {
+    let wabaId = "";
+    try { const saved = JSON.parse(row.routing_keys_json) as unknown; if (Array.isArray(saved) && typeof saved[0] === "string") wabaId = saved[0]; } catch { /* local revocation remains authoritative */ }
+    const activeRows = await c.env.PLATFORM_DB.prepare(`SELECT routing_keys_json FROM extension_provider_connections WHERE provider='whatsapp' AND status='active'`).all<{ routing_keys_json: string }>();
+    const stillUsed = (activeRows.results ?? []).some(active => { try { return (JSON.parse(active.routing_keys_json) as unknown[]).includes(wabaId); } catch { return false; } });
+    if (wabaId && !stillUsed && c.env.WHATSAPP_GRAPH_API_VERSION) try {
+      await fetch(`https://graph.facebook.com/${c.env.WHATSAPP_GRAPH_API_VERSION}/${encodeURIComponent(wabaId)}/subscribed_apps`, { method: "DELETE", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) });
+    } catch { /* local revocation remains authoritative */ }
   }
   await deleteConnectorCredentialByName(c.env, tenantId, spaceId, row.credential_name);
   if (row.webhook_secret_name) await deleteConnectorCredentialByName(c.env, tenantId, spaceId, row.webhook_secret_name);
@@ -6333,6 +6404,74 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     console.error(`[channels] inbound forward failed channel=${channel} space=${spaceId}:`, (err as Error).message);
   }
   return c.json({ ok: true });
+});
+
+app.get("/channels/whatsapp/extensions", c => {
+  if (!c.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) return c.text("WhatsApp webhook is not configured", 503);
+  const mode = c.req.query("hub.mode"), token = c.req.query("hub.verify_token"), challenge = c.req.query("hub.challenge");
+  if (mode !== "subscribe" || !token || !challenge || !constantTimeStringEqual(token, c.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN)) return c.text("Forbidden", 403);
+  return c.text(challenge);
+});
+
+function constantTimeStringEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < left.length; i++) mismatch |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  return mismatch === 0;
+}
+
+app.post("/channels/whatsapp/extensions", async c => {
+  if (!c.env.WHATSAPP_APP_SECRET) return c.json({ error_code: "whatsapp_webhook_unavailable" }, 503);
+  const declaredLength = Number(c.req.header("content-length") ?? 0);
+  if (declaredLength > 1_048_576) return c.json({ error_code: "payload_too_large" }, 413);
+  const rawBody = await c.req.text();
+  if (new TextEncoder().encode(rawBody).byteLength > 1_048_576) return c.json({ error_code: "payload_too_large" }, 413);
+  const headers: Record<string, string> = {};
+  c.req.raw.headers.forEach((value, key) => { headers[key.toLowerCase()] = value; });
+  if (!await getAdapter("whatsapp")!.verifySignature({ rawBody, headers, secret: c.env.WHATSAPP_APP_SECRET })) return c.json({ error_code: "invalid_signature" }, 401);
+  let root: unknown;
+  try { root = JSON.parse(rawBody); } catch { return c.json({ error_code: "invalid_payload" }, 400); }
+  const messages = splitWhatsAppExtensionWebhook(root);
+  if (!messages.length) return c.json({ ok: true, skipped: "no_messages" });
+  let forwarded = 0;
+  for (const item of messages) {
+    // Phone-number IDs have a global active uniqueness constraint because Meta's shared
+    // app-level webhook carries no Naelao tenant or installation identifier.
+    const candidates = await c.env.PLATFORM_DB.prepare(`SELECT c.project_id,c.installation_id,c.connection_id,c.credential_name,c.handler_sha256,c.tenant_id,c.space_id
+      FROM extension_provider_connections c JOIN spaces s ON s.id=c.space_id AND s.tenant_id=c.tenant_id
+      WHERE c.provider='whatsapp' AND c.account_id=? AND c.status='active' AND s.status='active' LIMIT 2`)
+      .bind(item.phoneNumberId).all<{ project_id: string; installation_id: string; connection_id: string; credential_name: string; handler_sha256: string | null; tenant_id: string; space_id: string }>();
+    if ((candidates.results ?? []).length !== 1) continue;
+    const connection = candidates.results![0]!;
+    if (!connection.handler_sha256) continue;
+    const installation = await fetchInstalledConnectionContext(c.env, connection.tenant_id, connection.space_id, connection.project_id, connection.installation_id);
+    const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === connection.connection_id);
+    const channel = installation?.manifest.channels?.find(item => item.kind === "channel" && item.provider === "whatsapp" && item.connectionId === connection.connection_id);
+    if (!installation || declaration?.provider !== "whatsapp" || !channel?.handlerScript || !c.env.SCRIPTS_R2) continue;
+    const artifact = await c.env.SCRIPTS_R2.get(`spaces/${connection.space_id}/extensions/${installation.manifest.bundle?.id}/${installation.manifest.bundle?.version}/${channel.handlerScript.replace(/^\.\//, "")}`);
+    if (!artifact || artifact.size > 262_144) continue;
+    const artifactHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await artifact.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    if (artifactHash !== connection.handler_sha256) continue;
+    const adapter = getAdapter("whatsapp")!;
+    const normalized = adapter.normalizeInbound(item.payload);
+    if (!normalized) continue;
+    const wakeContext = await resolveWakeContext(c.env, connection.space_id, connection.tenant_id, "whatsapp");
+    if (wakeContext.airGappedOnly) continue;
+    const accessToken = await resolveConnectorCredential(c.env, connection.tenant_id, connection.space_id, connection.credential_name);
+    if (!accessToken) continue;
+    try {
+      const files = await downloadWhatsAppAttachments(item.payload as Parameters<typeof downloadWhatsAppAttachments>[0], { accessToken,
+        ...(c.env.WHATSAPP_GRAPH_API_VERSION ? { graphApiVersion: c.env.WHATSAPP_GRAPH_API_VERSION } : {}) });
+      if (files.length) await storeChannelAttachments({ db: c.env.PLATFORM_DB, bucket: c.env.SCRIPTS_R2, platformSecret: c.env.PLATFORM_SECRET,
+        tenantId: connection.tenant_id, spaceId: connection.space_id, taskId: normalized.external_id, channel: "whatsapp", files });
+    } catch { continue; }
+    const stub = await getAgentDOForSpace(c.env, connection.tenant_id, connection.space_id, "naelao-agent", c.get("requestId"));
+    await stub.fetch(new Request("http://agent-do/channels/whatsapp/inbound", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ raw: item.payload, projectId: connection.project_id, extensionInstanceId: connection.installation_id, extensionScriptSha256: connection.handler_sha256,
+        providerConnectionId: connection.connection_id, taskId: normalized.external_id, spaceId: connection.space_id, tenantId: connection.tenant_id, model: wakeContext.model, apiKey: "" }) }));
+    forwarded++;
+  }
+  return c.json({ ok: true, forwarded });
 });
 
 app.post("/channels/telegram/extensions/:spaceId/:installationId/:connectionId", async c => {

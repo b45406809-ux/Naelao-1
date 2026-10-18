@@ -1914,6 +1914,10 @@ export async function connectExtensionTelegram(spaceId: string, projectId: strin
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}/telegram/connect`, { method: "POST", session, body: JSON.stringify({ bot_token: botToken }) });
 }
 
+export async function connectExtensionWhatsApp(spaceId: string, projectId: string, installationId: string, connectionId: string, accessToken: string, phoneNumberId: string, session: SessionCredentials): Promise<{ connected: boolean; account_label: string; webhook_url: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}/whatsapp/connect`, { method: "POST", session, body: JSON.stringify({ access_token: accessToken, phone_number_id: phoneNumberId }) });
+}
+
 export async function listExtensionSlackRoutes(spaceId: string, projectId: string, installationId: string, connectionId: string, session: SessionCredentials): Promise<Array<{ id: string; name: string; private: boolean }>> {
   const result = await apiFetch<{ channels: Array<{ id: string; name: string; private: boolean }> }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}/routes/available`, { session });
   return result.channels;
