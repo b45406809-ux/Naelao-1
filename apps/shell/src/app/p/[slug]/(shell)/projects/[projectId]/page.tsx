@@ -749,8 +749,8 @@ export default function ProjectDetailPage() {
         </div>
         <div className="settings-row">
           <div>
-            <div className="settings-row-label">Daily external messages per person</div>
-            <div className="settings-row-sub">Per project, extension, channel and sender; 0 = unlimited</div>
+            <div className="settings-row-label">Daily external messages per person and provider</div>
+            <div className="settings-row-sub">Shared across every extension instance in this project; 0 = unlimited</div>
           </div>
           <FormInput
             type="number"

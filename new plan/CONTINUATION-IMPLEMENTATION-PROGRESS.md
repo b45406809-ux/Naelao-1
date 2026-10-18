@@ -1315,3 +1315,4 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Owner exhaustion alerts deduplicate at the project/sender/provider/day level. All denied events still have their own decision and enter human takeover.
 - Verification: Agents and Spaces typechecks passed; quota and SpaceDO lifecycle tests passed (16 tests); `git diff --check` passed.
 - Remaining Phase 4 gaps: cost-rate versioning and unified usage events for inference, execution, storage, and connectors; install/run budgets beyond the shared external message cap; provider-level spend controls; owner off-topic thresholds and alert settings; payer/credit UI and failure reconciliation across all charged paths.
+- Updated the Project settings copy to say the cap is shared across every extension instance in that project and provider, matching the enforced scope.
