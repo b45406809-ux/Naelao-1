@@ -1354,6 +1354,13 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents and Billing Worker typechecks passed; real-SQLite budget reservation/settlement, reservation settlement, workflow reporting, and Spaces migration replay tests passed (6 tests); `git diff --check` passed. Full worker suites remain unrun.
 - Remaining Phase 4 work includes custom extension inference paths, storage bytes, connector calls, provider billing, installation/run/provider-specific ceilings, off-topic budgets/alerts, payer visibility and failure reconciliation.
 
+### Phase 4 customer connector-attempt ledger checkpoint (2026-10-18)
+
+- Public customer-channel reply delivery now writes an idempotent v2 `connector_calls` event for each attempted provider delivery, including provider, project, installation, run, and an opaque subject digest. Failed or uncertain sends are retained as failed attempts; they are not automatically retried or counted as successful delivery.
+- No connector price is invented. These events use `payer_kind=unknown` and no cost, so they support audit and later reconciliation while the current Billing queue remains log-only. Provider-specific charges and pricing evidence remain open.
+- Verification: Agents and Billing Worker typechecks passed; focused Agents usage/external-answer/workflow tests passed (9 tests) and real-SQLite usage/workflow ledger tests passed (4 tests); `git diff --check` passed.
+- Remaining Phase 4 work includes extension-owned inference and connector operations outside this public reply path, storage bytes, verified provider billing, installation/run/provider-specific ceilings, off-topic budgets/alerts, payer visibility and failed-charge reconciliation.
+
 ### Phase 3 direct scheduled-script budget checkpoint (2026-10-18)
 
 - Direct event/scheduled scripts with a Project scope now re-read the SpaceDO project policy, enforce the project's execution-tier ceiling, check the shared Space wallet before running, and reserve one credit against a configured daily Project cap. This covers the bounded single isolate/container infrastructure charge; Tier 1/no-cost executions settle the hold at zero.

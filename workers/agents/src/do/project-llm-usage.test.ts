@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { consumerLlmUsageEvent, projectLlmUsageEvent } from "./project-llm-usage";
+import { channelConnectorCallUsageEvent, consumerLlmUsageEvent, projectLlmUsageEvent } from "./project-llm-usage";
 
 describe("projectLlmUsageEvent", () => {
   it("attributes planner inference to its project, model, rate card, and prepaid payer", () => {
@@ -29,6 +29,17 @@ describe("projectLlmUsageEvent", () => {
     })).toMatchObject({
       event_type: "llm_tokens", idempotency_key: "run:r:consumer-llm",
       payer_kind: "consumer_credits", provider: "anthropic", cost_credits: 1,
+    });
+  });
+
+  it("records an external channel delivery attempt without inventing a provider price", () => {
+    expect(channelConnectorCallUsageEvent({
+      spaceId: "s", projectId: "p", installationId: "i", runId: "r", connectorProvider: "whatsapp",
+      subjectHash: "a".repeat(64), succeeded: false,
+    })).toMatchObject({
+      event_type: "connector_calls", quantity: 1, unit: "invocations", schema_version: 2,
+      idempotency_key: "channel-delivery:i:r", project_id: "p", installation_id: "i", run_id: "r",
+      connector_provider: "whatsapp", subject_hash: "a".repeat(64), payer_kind: "unknown", decision: "failed",
     });
   });
 });

@@ -37,3 +37,21 @@ export function consumerLlmUsageEvent(input: {
 }): Record<string, unknown> {
   return llmUsageEvent("llm_tokens", { ...input, payer: "consumer_credits" });
 }
+
+export function channelConnectorCallUsageEvent(input: {
+  spaceId: string;
+  projectId: string;
+  installationId: string;
+  runId: string;
+  connectorProvider: string;
+  subjectHash: string;
+  succeeded: boolean;
+}): Record<string, unknown> {
+  return {
+    event_type: "connector_calls", quantity: 1, unit: "invocations", schema_version: 2,
+    idempotency_key: `channel-delivery:${input.installationId}:${input.runId}`,
+    space_id: input.spaceId, project_id: input.projectId, installation_id: input.installationId,
+    run_id: input.runId, connector_provider: input.connectorProvider, subject_hash: input.subjectHash,
+    payer_kind: "unknown", decision: input.succeeded ? "allowed" : "failed",
+  };
+}

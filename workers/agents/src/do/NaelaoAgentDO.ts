@@ -29,7 +29,7 @@ import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, BILLING_CORE_RATE_CARD_VERSION, type EffortLevel } from "@naelao/billing-core";
 import { externalAnswerCredits, releaseExternalAnswerSpend, settleExternalAnswerSpend } from "./external-channel-spend.js";
-import { consumerLlmUsageEvent, projectLlmUsageEvent } from "./project-llm-usage.js";
+import { channelConnectorCallUsageEvent, consumerLlmUsageEvent, projectLlmUsageEvent } from "./project-llm-usage.js";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
@@ -8114,6 +8114,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
         this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='delivering',reply_text=? WHERE message_id=? AND status='running'", replyText, msg.id);
         const delivery = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText));
+        if (msg.project_id) {
+          try {
+            const subjectHash = await opaqueExternalSubject(this.env.PLATFORM_SECRET,
+              [tenantId, spaceId, msg.project_id, msg.channel, msg.channel_user_id]);
+            await this.recordCanonicalUsageEvent(tenantId, channelConnectorCallUsageEvent({
+              spaceId, projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+              runId: channelReservation.runId, connectorProvider: msg.channel, subjectHash, succeeded: delivery.ok,
+            }));
+          } catch {
+            /* usage/subject telemetry is best effort; never disrupt an already attempted delivery */
+          }
+        }
         if (delivery.ok) {
           this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='sent' WHERE message_id=? AND status='delivering'", msg.id);
           this.markOutbound(msg.session_id, msg.id, replyText);
