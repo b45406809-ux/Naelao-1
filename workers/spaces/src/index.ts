@@ -31,7 +31,8 @@ import { registerGraduationRoutes } from "./routes/graduation.js";
 import { registerMarketRadarRoutes } from "./routes/market-radar.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
 import { DOGFOOD_EXTENSION_BY_ID, validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
-import { rankProjectStewardReviews, type ProjectStewardFact } from "./project-steward.js";
+import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectStewardReview } from "./project-steward.js";
+import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -3364,6 +3365,26 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
 // SpaceDO; only those project IDs are used to read routine failure counts from PLATFORM_DB.
 app.use("/spaces/:spaceId/project-steward/reviews", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/project-steward/reviews", requireBusinessMembership({ GET: "member" }));
+async function applyProjectStewardDecisions(c: any, spaceId: string, tenantId: string, visibleIds: string[], reviews: ProjectStewardReview[]) {
+  const placeholders = visibleIds.map(() => "?").join(",");
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT project_id,review_key,action,actor_id,note,snoozed_until,created_at
+       FROM project_steward_decisions WHERE tenant_id=? AND space_id=? AND project_id IN (${placeholders})`
+  ).bind(tenantId, spaceId, ...visibleIds).all();
+  const byKey = new Map((results as Array<Record<string, unknown>>).map(row => [`${row.project_id}:${row.review_key}`, row]));
+  const now = Date.now();
+  const visible: Array<ProjectStewardReview & { review_key: string; decision?: { action: string; actor_id: string; note: string | null; created_at: number } }> = [];
+  for (const review of reviews) {
+    if (!review || !["inspect_routine", "review_blocked_work", "owner_check_in"].includes(review.recommendation)
+      || !Array.isArray(review.evidence)) continue;
+    const reviewKey = await projectStewardReviewKey(review);
+    const row = byKey.get(`${review.project_id}:${reviewKey}`);
+    if (row?.action === "dismiss" || row?.action === "snooze" && Number(row.snoozed_until) > now) continue;
+    visible.push({ ...review, review_key: reviewKey,
+      ...(row?.action === "acknowledge" ? { decision: { action: "acknowledge", actor_id: String(row.actor_id), note: row.note as string | null, created_at: Number(row.created_at) } } : {}) });
+  }
+  return visible;
+}
 app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
@@ -3390,7 +3411,8 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
     try {
       const report = JSON.parse(saved.report_json) as { run_day?: string; generated_at?: number; advisory_only?: boolean; data?: Array<{ project_id: string }> };
       if (report.advisory_only === true && Array.isArray(report.data)) {
-        const data = report.data.filter((item) => visibleIds.includes(item.project_id));
+        const data = await applyProjectStewardDecisions(c, spaceId, owned.tenantId, visibleIds,
+          report.data.filter((item) => visibleIds.includes(item.project_id)) as ProjectStewardReview[]);
         return c.json({ data, count: data.length, generated_at: report.generated_at ?? Date.now(), run_day: report.run_day ?? null, advisory_only: true });
       }
     } catch { /* corrupt historical report: return the live deterministic fallback below */ }
@@ -3419,8 +3441,38 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
     blocked_task_count: project.blocked_task_count,
     active_extension_count: project.active_extension_count,
   }));
-  const data = rankProjectStewardReviews(facts);
+  const data = await applyProjectStewardDecisions(c, spaceId, owned.tenantId, visibleIds, rankProjectStewardReviews(facts));
   return c.json({ data, count: data.length, generated_at: Date.now(), advisory_only: true });
+});
+
+app.use("/spaces/:spaceId/project-steward/reviews/decision", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/project-steward/reviews/decision", requireBusinessMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/project-steward/reviews/decision", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
+  if (!await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  const body = await c.req.json<{ project_id?: string; review_key?: string; recommendation?: string; action?: string; note?: string }>().catch(() => null);
+  if (!body) return c.json({ error_code: "invalid_project_review_decision" }, 400);
+  if (!body.project_id || !/^[a-f0-9]{64}$/.test(body.review_key ?? "")
+    || !["inspect_routine", "review_blocked_work", "owner_check_in"].includes(body.recommendation ?? "")
+    || !isProjectStewardDecisionAction(body.action)
+    || (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 240))) {
+    return c.json({ error_code: "invalid_project_review_decision" }, 400);
+  }
+  const visibleIds = await visibleAutomationProjectIds(c, spaceId);
+  if (visibleIds instanceof Response) return visibleIds;
+  if (!visibleIds.includes(body.project_id)) return c.json({ error_code: "project_not_visible" }, 404);
+  const now = Date.now();
+  const decisionId = crypto.randomUUID();
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO project_steward_decisions(decision_id,tenant_id,space_id,project_id,review_key,recommendation,action,actor_id,note,snoozed_until,created_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(space_id,project_id,review_key) DO UPDATE SET recommendation=excluded.recommendation,action=excluded.action,
+       actor_id=excluded.actor_id,note=excluded.note,snoozed_until=excluded.snoozed_until,created_at=excluded.created_at`
+  ).bind(decisionId, identity.tenantId, spaceId, body.project_id, body.review_key, body.recommendation, body.action, identity.userId,
+    body.note?.trim() || null, body.action === "snooze" ? now + 7 * 24 * 60 * 60 * 1000 : null, now).run();
+  return c.json({ decision_id: decisionId, project_id: body.project_id, review_key: body.review_key, action: body.action, actor_id: identity.userId, created_at: now });
 });
 
 // Typed, read-only grant for the platform-managed Space Project Steward extension. It carries

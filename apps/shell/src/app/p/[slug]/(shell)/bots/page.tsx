@@ -6,12 +6,13 @@ import { Button, Card, CardDesc, CardTitle } from "@naelao/ui";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProduct } from "@/lib/product-context";
 import { useSessionCredentials } from "@/lib/auth-provider";
-import { createThread, listAgentDefinitions, listProjectStewardReviews, listProjects, listScheduledJobs, listThreads, type AgentDefinitionSummary, type Project, type ProjectStewardReview, type ScheduledJob, type ThreadSummary } from "@/lib/api";
+import { createThread, listAgentDefinitions, listMyBusinesses, listProjectStewardReviews, listProjects, listScheduledJobs, listThreads, recordProjectStewardDecision, type AgentDefinitionSummary, type Project, type ProjectStewardReview, type ScheduledJob, type ThreadSummary } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
+import { canManageSpaceSettings } from "@/lib/roles";
 
 export default function ProjectBotsPage() {
   const product = useProduct();
-  const { activeSpaceId } = useActiveSpace();
+  const { activeSpaceId, isBusinessSpace } = useActiveSpace();
   const session = useSessionCredentials();
   const router = useRouter();
   const [projects, setProjects] = React.useState<Project[]>([]);
@@ -22,6 +23,9 @@ export default function ProjectBotsPage() {
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState(false);
   const [creatingProjectId, setCreatingProjectId] = React.useState<string | null>(null);
+  const [canDecideReviews, setCanDecideReviews] = React.useState(false);
+  const [savingReviewKey, setSavingReviewKey] = React.useState<string | null>(null);
+  const [decisionError, setDecisionError] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     if (!session) return;
@@ -32,25 +36,29 @@ export default function ProjectBotsPage() {
     setThreads([]);
       setScheduledJobs([]);
       setStewardReviews([]);
+    setCanDecideReviews(false);
     try {
-      const [nextProjects, nextAgents, nextThreads, nextJobs, nextReviews] = await Promise.all([
+      const [nextProjects, nextAgents, nextThreads, nextJobs, nextReviews, businesses] = await Promise.all([
         listProjects(activeSpaceId, session),
         listAgentDefinitions(activeSpaceId, session),
         listThreads(activeSpaceId, session),
         listScheduledJobs(activeSpaceId, session, { projectId: null, visibleProjects: true }),
         listProjectStewardReviews(activeSpaceId, session),
+        isBusinessSpace ? listMyBusinesses(product.space_id, session) : Promise.resolve([]),
       ]);
       setProjects(nextProjects.filter((project) => project.status === "active"));
       setAgents(nextAgents);
       setThreads(nextThreads.filter((thread) => thread.project_id && !thread.parent_thread_id && thread.thread_kind === "primary"));
       setScheduledJobs(nextJobs);
       setStewardReviews(nextReviews);
+      const business = businesses.find((item) => item.id === activeSpaceId);
+      setCanDecideReviews(canManageSpaceSettings(isBusinessSpace, business?.role));
     } catch {
       setLoadError(true);
     } finally {
       setLoading(false);
     }
-  }, [activeSpaceId, session]);
+  }, [activeSpaceId, session, isBusinessSpace, product.space_id]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
 
@@ -80,6 +88,21 @@ export default function ProjectBotsPage() {
 
   const openThread = (threadId: string, panel?: "crons") => router.push(`/p/${product.slug}/threads/${threadId}${panel ? `?panel=${panel}` : ""}`);
 
+  async function decideReview(review: ProjectStewardReview, action: "acknowledge" | "snooze" | "dismiss") {
+    if (!session || !canDecideReviews || savingReviewKey) return;
+    setSavingReviewKey(review.review_key);
+    setDecisionError(false);
+    try {
+      await recordProjectStewardDecision(activeSpaceId, session, { projectId: review.project_id, reviewKey: review.review_key,
+        recommendation: review.recommendation, action });
+      await refresh();
+    } catch {
+      setDecisionError(true);
+    } finally {
+      setSavingReviewKey(null);
+    }
+  }
+
   return (
     <div className="page-view">
       <div className="page-header">
@@ -94,8 +117,9 @@ export default function ProjectBotsPage() {
         <section aria-labelledby="portfolio-review-title" className="settings-block" style={{ padding: 14, marginBottom: 16 }}>
           <div id="portfolio-review-title" style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Project review signals</div>
           <p style={{ margin: "0 0 10px", color: "var(--text3)", fontSize: 12 }}>
-            Deterministic signals from project activity and routine failures. They are advisory only; no Bot or extension is paused and no project is archived or deleted.
+            Deterministic signals from project activity and routine failures. They are advisory only. Owner/admin review choices are recorded against the current evidence; no Bot or extension is paused and no project is archived or deleted.
           </p>
+          {decisionError && <p role="alert" style={{ color: "#dc2626", fontSize: 12 }}>Couldn’t save that review decision. Refresh and try again.</p>}
           <ul style={{ display: "grid", gap: 8, listStyle: "none", padding: 0, margin: 0 }}>
             {stewardReviews.map((review) => (
               <li key={`${review.project_id}:${review.recommendation}`} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
@@ -106,7 +130,15 @@ export default function ProjectBotsPage() {
                       ? `${review.evidence.find((item) => item.kind === "blocked_tasks")?.count ?? 0} blocked task(s)`
                       : `No activity for ${review.evidence.find((item) => item.kind === "inactivity")?.days ?? 0} days${review.evidence.find((item) => item.kind === "active_extensions") ? ` · ${review.evidence.find((item) => item.kind === "active_extensions")?.count} active extension(s)` : ""}`} · {review.confidence} confidence
                 </span>
-                <Button variant="secondary" onClick={() => router.push(`/p/${product.slug}/projects/${review.project_id}`)}>Review project</Button>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {review.decision && <span style={{ fontSize: 11, color: "var(--text3)" }}>Reviewed by {review.decision.actor_id}</span>}
+                  {canDecideReviews && <>
+                    <Button variant="ghost" disabled={savingReviewKey !== null} onClick={() => void decideReview(review, "acknowledge")}>{savingReviewKey === review.review_key ? "Saving…" : "Mark reviewed"}</Button>
+                    <Button variant="ghost" disabled={savingReviewKey !== null} onClick={() => void decideReview(review, "snooze")}>Snooze 7 days</Button>
+                    <Button variant="ghost" disabled={savingReviewKey !== null} onClick={() => void decideReview(review, "dismiss")}>Dismiss</Button>
+                  </>}
+                  <Button variant="secondary" onClick={() => router.push(`/p/${product.slug}/projects/${review.project_id}`)}>Review project</Button>
+                </div>
               </li>
             ))}
           </ul>

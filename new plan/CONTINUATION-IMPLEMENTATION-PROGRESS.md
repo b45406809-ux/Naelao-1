@@ -1330,3 +1330,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - After execution, the host records infrastructure usage and settles the Project cap plus wallet using a run-scoped idempotency key. A thrown execution releases the held amount. Projectless Space-wide scripts preserve their existing behavior.
 - Verification: Agents Worker typecheck passed; scheduled dispatch and adjacent restricted-answer suites passed (14 tests); `git diff --check` passed.
 - This closes direct-script policy admission, not full routine economics: project goal runs reserve model inference through the normal planner entrypoint, while a unified per-run reservation covering both inference and every possible execution/storage/connector resource remains a Phase 4 requirement. Dispatch-to-DO at-most-once replay for ambiguous direct-script execution also remains open.
+
+### Phase 3 attributed Steward review checkpoint (2026-10-18)
+
+- Added evidence-keyed owner/admin review decisions for portfolio signals. A changed recommendation or evidence set gets a new key and cannot inherit a prior dismissal. Acknowledgement records actor and optional note; snooze hides that exact signal for seven days; dismissal hides it until its evidence changes.
+- Members may read current visible-project signals, but only an owner/admin can record decisions. The endpoint verifies current project visibility and accepts only the non-mutating actions; it has no archive, pause, delete, or shutdown operation. The Bots page exposes these controls only to owner/admin users.
+- Verification: Spaces and Shell typechecks passed; project-steward route/ranker/key tests passed (11 tests); `git diff --check` passed. Tests include member denial, actor attribution, acknowledgment display, and dismissal filtering.
+- The complete reversible retirement workflow is still open because project archive/restore lacks a coordinated routine fence, impact preview, restore ledger, and explicit owner confirmation. Steward recommendations remain advisory.

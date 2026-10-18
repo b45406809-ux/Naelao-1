@@ -17,6 +17,7 @@ function database() {
     readFileSync(join(__dirname, "../../infra/migrations/0042_scheduled_jobs_failures.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0043_scheduled_jobs_agent_goal.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0107_project_steward_daily_runs.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../infra/migrations/0108_project_steward_decisions.sql"), "utf8"),
   ]);
   db.db.exec(`INSERT INTO spaces (id,tenant_id,status,name,spacetype_id) VALUES ('${SPACE}','${TENANT}','active','Test Space','launchpad')`);
   db.db.exec(`INSERT INTO scheduled_jobs (id,space_id,tenant_id,project_id,name,cron_expression,script_name,consecutive_failures) VALUES
@@ -88,7 +89,7 @@ describe("project steward review route", () => {
   it("serves saved daily reports only for projects the caller can still see", async () => {
     const platformDb = database();
     platformDb.db.exec(`INSERT INTO project_steward_runs(space_id,tenant_id,last_successful_run_at,report_json,updated_at)
-      VALUES ('${SPACE}','${TENANT}',1792195200000,'{"run_day":"2026-10-17","generated_at":1792195200000,"advisory_only":true,"data":[{"project_id":"project-visible","recommendation":"owner_check_in"},{"project_id":"project-hidden","recommendation":"inspect_routine"}]}',1792195200000)`);
+      VALUES ('${SPACE}','${TENANT}',1792195200000,'{"run_day":"2026-10-17","generated_at":1792195200000,"advisory_only":true,"data":[{"project_id":"project-visible","project_name":"Visible project","recommendation":"owner_check_in","confidence":"low","priority":30,"evidence":[{"kind":"inactivity","days":30,"last_activity_at":null}]},{"project_id":"project-hidden","project_name":"Hidden project","recommendation":"inspect_routine","confidence":"high","priority":100,"evidence":[{"kind":"routine_failures","count":2}]}]}',1792195200000)`);
     const env = {
       PLATFORM_SECRET: SECRET, ENVIRONMENT: "test", PLATFORM_DB: platformDb,
       SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => request.url.includes("project-steward-facts")
@@ -104,6 +105,39 @@ describe("project steward review route", () => {
     expect(body.run_day).toBe("2026-10-17");
     expect(body.advisory_only).toBe(true);
     expect(body.data.map((row) => row.project_id)).toEqual(["project-visible"]);
+    platformDb.db.close();
+  });
+
+  it("records owner-attributed review decisions and hides only the matching snoozed or dismissed evidence", async () => {
+    const platformDb = database();
+    const env = {
+      PLATFORM_SECRET: SECRET, ENVIRONMENT: "test", PLATFORM_DB: platformDb,
+      SPACE_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => request.url.includes("project-steward-facts")
+        ? Response.json({ data: [{ project_id: "project-visible", project_name: "Visible project", created_at: "2025-01-01T00:00:00Z", last_activity_at: null, pending_task_count: 0, in_progress_task_count: 0, blocked_task_count: 0, active_extension_count: 0 }] })
+        : Response.json({ data: [{ id: "project-visible", name: "Visible project", status: "active", created_at: "2025-01-01T00:00:00Z", last_activity_at: null }] }) }) },
+    };
+    const token = await mintInternalToken(SECRET, TENANT);
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": TENANT, "x-naelao-user-id": "owner-1", "x-naelao-role": "owner", "x-naelao-internal-token": token };
+    const reviewsUrl = `https://spaces.naelao.com/spaces/${SPACE}/project-steward/reviews`;
+    const initial = await spacesWorker.fetch(new Request(reviewsUrl, { headers }), env as never, ctx);
+    const initialBody = await initial.json() as { data: Array<{ project_id: string; review_key: string; recommendation: string }> };
+    expect(initialBody.data).toHaveLength(1);
+    const review = initialBody.data[0]!;
+    const decisionUrl = `${reviewsUrl}/decision`;
+    const denied = await spacesWorker.fetch(new Request(decisionUrl, { method: "POST", headers: { ...headers, "x-naelao-role": "member" },
+      body: JSON.stringify({ project_id: review.project_id, review_key: review.review_key, recommendation: review.recommendation, action: "dismiss" }) }), env as never, ctx);
+    expect(denied.status).toBe(403);
+    const saved = await spacesWorker.fetch(new Request(decisionUrl, { method: "POST", headers,
+      body: JSON.stringify({ project_id: review.project_id, review_key: review.review_key, recommendation: review.recommendation, action: "acknowledge", note: "Checked with the project lead" }) }), env as never, ctx);
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({ action: "acknowledge", actor_id: "owner-1" });
+    const after = await spacesWorker.fetch(new Request(reviewsUrl, { headers }), env as never, ctx);
+    expect(await after.json()).toMatchObject({ data: [{ decision: { action: "acknowledge", actor_id: "owner-1", note: "Checked with the project lead" } }] });
+    const dismissed = await spacesWorker.fetch(new Request(decisionUrl, { method: "POST", headers,
+      body: JSON.stringify({ project_id: review.project_id, review_key: review.review_key, recommendation: review.recommendation, action: "dismiss" }) }), env as never, ctx);
+    expect(dismissed.status).toBe(200);
+    const hiddenAuthorized = await spacesWorker.fetch(new Request(reviewsUrl, { headers: { ...headers, "x-naelao-internal-token": token } }), env as never, ctx);
+    expect(await hiddenAuthorized.json()).toMatchObject({ data: [], count: 0 });
     platformDb.db.close();
   });
 

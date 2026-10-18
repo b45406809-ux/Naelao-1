@@ -1033,12 +1033,23 @@ export interface ProjectStewardReview {
   confidence: "low" | "high";
   priority: number;
   evidence: Array<{ kind: "routine_failures" | "blocked_tasks" | "inactivity" | "pending_tasks" | "active_extensions"; count?: number; days?: number; last_activity_at?: string | null }>;
+  review_key: string;
+  decision?: { action: "acknowledge"; actor_id: string; note: string | null; created_at: number };
 }
 
 /** Advisory-only, deterministic portfolio signals. No lifecycle changes are performed. */
 export async function listProjectStewardReviews(spaceId: string, session: SessionCredentials): Promise<ProjectStewardReview[]> {
   const res = await apiFetch<{ data: ProjectStewardReview[] }>(`/v1/spaces/${spaceId}/project-steward/reviews`, { session });
   return res.data;
+}
+
+export async function recordProjectStewardDecision(spaceId: string, session: SessionCredentials, input: {
+  projectId: string; reviewKey: string; recommendation: ProjectStewardReview["recommendation"];
+  action: "acknowledge" | "snooze" | "dismiss"; note?: string;
+}): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/project-steward/reviews/decision`, { method: "POST", session,
+    body: JSON.stringify({ project_id: input.projectId, review_key: input.reviewKey, recommendation: input.recommendation,
+      action: input.action, ...(input.note ? { note: input.note } : {}) }) });
 }
 
 export interface ProjectDepartment {
