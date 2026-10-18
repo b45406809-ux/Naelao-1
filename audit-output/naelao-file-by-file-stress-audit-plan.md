@@ -745,7 +745,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/security/src/blueprint-scrubber.ts`
 - [x] `packages/security/src/blueprint-security.test.ts`
 - [ ] `packages/security/src/blueprint-validator.ts`
-- [ ] `packages/security/src/capability-policy.ts`
+- [x] `packages/security/src/capability-policy.ts` (capability boundary suites registered and passed)
 - [x] `packages/security/src/circuit-breaker.test.ts`
 - [ ] `packages/security/src/circuit-breaker.ts`
 - [x] `packages/security/src/data-residency.test.ts`
@@ -947,7 +947,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/plan/01-baseline.test.ts`
 - [ ] `tests/plan/02-contracts.test.ts`
 - [ ] `tests/plan/03-tenancy.test.ts`
-- [ ] `tests/plan/04-authorization.test.ts`
+- [x] `tests/plan/04-authorization.test.ts` (included in security package project)
 - [ ] `tests/plan/05-vault.test.ts`
 - [ ] `tests/plan/06-egress-receipts.test.ts`
 - [ ] `tests/plan/07-git-mesh.test.ts`
@@ -1037,7 +1037,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/business-subscription-status.test.ts`
 - [ ] `tests/unit/business-subscriptions-billing.test.ts`
 - [ ] `tests/unit/canvas-extension-security.test.ts`
-- [ ] `tests/unit/capability-scope-boundary.test.ts`
+- [x] `tests/unit/capability-scope-boundary.test.ts` (included in security package project)
 - [ ] `tests/unit/channel-connect-business-gate.test.ts`
 - [ ] `tests/unit/channel-external-quota.test.ts`
 - [ ] `tests/unit/channel-heartbeat-wallet-gate.test.ts`
