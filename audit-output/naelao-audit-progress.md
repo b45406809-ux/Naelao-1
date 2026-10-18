@@ -257,7 +257,7 @@ Focused moderation validation passed **23 tests across 2 files**. The configured
 
 ## Security package partial stress pass (2026-10-18)
 
-The package's registered source and existing unit tests passed **90 tests across 17 files**, including existing capability-scope boundary and authorization-plan coverage. This pass addressed two boundary gaps and registered the package in the workspace; most security package source files remain open for source-level review.
+The package's registered source and existing unit tests passed **93 tests across 18 files**, including existing capability-scope boundary and authorization-plan coverage. This pass addressed two boundary gaps and registered the package in the workspace; most security package source files remain open for source-level review.
 
 | File | Features and stress boundaries exercised | Evidence / disposition |
 |---|---|---|
@@ -268,7 +268,8 @@ The package's registered source and existing unit tests passed **90 tests across
 | `packages/security/src/dlp.ts`, `blueprint-scrubber.ts`, `ephemeral-grant.ts` | Recursive egress scanning, credential scrubbing, and canonical parameter signing | Each recursive walk rejects cycles, nesting above 64, and over 1,000,000 input characters. DLP now scrubs sensitive strings in object keys as well as values. Three stress tests cover cyclic, deep, oversized values and invalid grant time. |
 | `packages/security/src/write-guard.ts` | SQL/shell mutation inspection and Gatekeeper token signing/verification | Mutation strings above 1,000,000 characters fail closed; token and claim sizes are bounded before verification/signing. Tests cover quoted destructive keywords, oversize input, claim bounds, valid action/resource binding, and expiry. |
 | `packages/security/src/audit.ts`, `blueprint-validator.ts` | Audit metadata/pagination and blueprint structure/security scoring | Audit pages are limited to 500 rows and 1,000,000 offset; metadata is capped at 64 KiB before D1 use. Blueprint validation rejects malformed structure, oversized project/file counts, non-finite tiers, and more than 1,000,000 scanned characters. Tests cover pagination, metadata, and malformed/oversized blueprints. |
-| `packages/security/src/capability-policy.ts`, `index.ts`, `package.json`, `vitest.config.ts`, `tsconfig.json` | Scoped capability token and retrieval fences, public exports, project test discovery and typecheck | Existing security, capability-scope boundary, and plan authorization tests plus new stress cases are registered. Focused package tests passed 90/90; package TypeScript check and focused Biome checks pass. |
+| `packages/security/src/circuit-breaker.ts`, `knowledge-permissions.ts`, `secrets.ts` | Automation recursion headers, caller clearance, API key/password/CSRF checks | Hop counts must be canonical decimal and causal IDs are capped at 256 characters; circuit trip still blocks if logging/KV fails. Clearance validates role and bounded membership arrays. CSRF requires canonical timestamps/signatures and rejects tokens more than 30 seconds in the future; credential inputs are capped. |
+| `packages/security/src/capability-policy.ts`, `index.ts`, `package.json`, `vitest.config.ts`, `tsconfig.json` | Scoped capability token and retrieval fences, public exports, project test discovery and typecheck | Existing security, capability-scope boundary, and plan authorization tests plus new stress cases are registered. Focused package tests passed 93/93; package TypeScript check and focused Biome checks pass. |
 
 ### Remaining security package risks
 
@@ -281,7 +282,7 @@ The package's registered source and existing unit tests passed **90 tests across
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 268 test files, 1,191 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, and security projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 269 test files, 1,194 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, and security projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1877
-Files with source or executable-configuration extensions: 1671
-Inventory revision: audit and blueprint validation stress batch in the current working tree
+Files: 1878
+Files with source or executable-configuration extensions: 1672
+Inventory revision: security control stress batch in the current working tree
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -899,6 +899,7 @@ packages/
       capability-policy.ts
       circuit-breaker.test.ts
       circuit-breaker.ts
+      control-boundaries.test.ts
       data-residency.test.ts
       data-residency.ts
       delegation.ts

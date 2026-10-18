@@ -35,10 +35,38 @@ export function resolveKnowledgeClearance(
   spaceId: string,
   projectId?: string
 ): KnowledgeClearance {
-  if (!claims.userId || !spaceId || !claims.spaceIds.includes(spaceId)) {
+  const validRoles = Object.hasOwn(KNOWLEDGE_ROLE_MASK, claims?.role);
+  if (
+    !claims ||
+    typeof claims.userId !== "string" ||
+    !claims.userId ||
+    claims.userId.length > 256 ||
+    !validRoles ||
+    !Array.isArray(claims.spaceIds) ||
+    claims.spaceIds.length > 1000 ||
+    !claims.spaceIds.every(
+      (id) => typeof id === "string" && id.length <= 256
+    ) ||
+    typeof spaceId !== "string" ||
+    !spaceId ||
+    spaceId.length > 256 ||
+    !claims.spaceIds.includes(spaceId)
+  ) {
     throw new Error("Knowledge access is not authorized for this space");
   }
-  if (projectId && !claims.projectIds?.includes(projectId)) {
+  if (
+    claims.projectIds !== undefined &&
+    (!Array.isArray(claims.projectIds) ||
+      claims.projectIds.length > 1000 ||
+      !claims.projectIds.every(
+        (id) => typeof id === "string" && id.length <= 256
+      ))
+  )
+    throw new Error("Knowledge access is not authorized for this project");
+  if (
+    projectId &&
+    (projectId.length > 256 || !claims.projectIds?.includes(projectId))
+  ) {
     throw new Error("Knowledge access is not authorized for this project");
   }
   return {

@@ -747,7 +747,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/blueprint-validator.ts`
 - [x] `packages/security/src/capability-policy.ts` (capability boundary suites registered and passed)
 - [x] `packages/security/src/circuit-breaker.test.ts`
-- [ ] `packages/security/src/circuit-breaker.ts`
+- [x] `packages/security/src/circuit-breaker.ts`
 - [x] `packages/security/src/data-residency.test.ts`
 - [ ] `packages/security/src/data-residency.ts`
 - [ ] `packages/security/src/delegation.ts`
@@ -757,7 +757,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/security/src/headers.ts`
 - [x] `packages/security/src/index.ts`
 - [x] `packages/security/src/knowledge-permissions.test.ts`
-- [ ] `packages/security/src/knowledge-permissions.ts`
+- [x] `packages/security/src/knowledge-permissions.ts`
 - [x] `packages/security/src/marketplace-conformance.test.ts`
 - [ ] `packages/security/src/marketplace-conformance.ts`
 - [x] `packages/security/src/rate-limit-do.ts`
@@ -769,8 +769,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/bounded-recursion.test.ts`
 - [x] `packages/security/src/write-guard-stress.test.ts`
 - [x] `packages/security/src/audit-blueprint-bounds.test.ts`
+- [x] `packages/security/src/control-boundaries.test.ts`
 - [x] `packages/security/vitest.config.ts`
-- [ ] `packages/security/src/secrets.ts`
+- [x] `packages/security/src/secrets.ts`
 - [x] `packages/security/src/security-phase4.test.ts`
 - [x] `packages/security/src/ssrf-guard.ts`
 - [x] `packages/security/src/ssrf.ts`
