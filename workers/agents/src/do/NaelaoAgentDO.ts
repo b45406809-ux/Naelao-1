@@ -1072,6 +1072,8 @@ export interface AgentDOEnv {
    *  holds the Anthropic/OpenAI key itself (BYOK / stored keys), so no ANTHROPIC_API_KEY is needed
    *  on the worker. Set via `wrangler secret put NAELAO_AIG_TOKEN`. */
   NAELAO_AIG_TOKEN?: string;
+  SCALEDOWN_API_KEY?: string;
+  SCALEDOWN_INPUT_USD_PER_MILLION?: string;
   /** Optional since the vendor cutover — see NAELAO_AIG_TOKEN. */
   ANTHROPIC_API_KEY?: string;
   /** A real Google AI Studio (Gemini) API key, BYOK — lets the model switcher offer Gemini models
@@ -4805,29 +4807,41 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let llmQuotaReserved = false;
     if (!engineEnv.airGappedOnly && !engineEnv.localModelMachine && !requestedModel.startsWith("local/") && !requestedModel.startsWith("custom/")) {
       let documentCalls = 0;
-      const processDocument = async <K extends "summarize" | "extract">(operation: K, input: Parameters<DocumentProcessingGateway[K]>[0]) => {
+      const processDocument = async <K extends keyof DocumentProcessingGateway>(operation: K, input: Parameters<DocumentProcessingGateway[K]>[0]) => {
         if (++documentCalls > 12) throw new Error("document_processing_run_limit");
         const model = DOCUMENT_MODELS[operation];
-        // The Space's own OpenRouter route is explicit: never substitute the platform key.
-        const credentials = await this.resolveBusinessLlmOverride(spaceId, tenantId, model);
-        if (!credentials.openRouterApiKey) throw new Error("document_processing_space_openrouter_key_required");
         const policyResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/model-policy`, { headers: await this.internalHeaders(tenantId) }));
         if (!policyResponse.ok) throw new Error("document_processing_model_policy_unavailable");
         const policy = await policyResponse.json<{ policy?: SpaceModelPolicy | null }>();
         if (!validateModelForSpacePolicy(model, policy.policy).ok) throw new Error("document_processing_model_policy_denied");
-        const catalog = await fetchOpenRouterCatalog(credentials.openRouterApiKey);
-        const candidate = catalog.find(candidate => candidate.model === model);
-        if (!candidate?.inputModalities?.includes("text") || !candidate.outputModalities?.includes("text")
-          || candidate.promptPriceUsdPerToken === undefined || candidate.completionPriceUsdPerToken !== 0 || !candidate.contextLength) throw new Error("document_processing_catalog_evidence_unavailable");
-        const pricing = { inputUsdPerToken: candidate.promptPriceUsdPerToken, outputUsdPerToken: candidate.completionPriceUsdPerToken,
-          rateCardVersion: `openrouter:${candidate.catalogObservedAt}` };
+        let credentials: Partial<Pick<GatewayOpts, "openRouterApiKey">> = {};
+        let pricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion: string };
+        let contextLength: number | undefined;
+        if (operation === "compress") {
+          const millionRate = Number(this.env.SCALEDOWN_INPUT_USD_PER_MILLION);
+          if (!this.env.SCALEDOWN_API_KEY || !Number.isFinite(millionRate) || millionRate <= 0 || millionRate > 1000)
+            throw new Error("native_compression_provider_or_rate_unconfigured");
+          pricing = { inputUsdPerToken: millionRate / 1_000_000, outputUsdPerToken: 0,
+            rateCardVersion: `scaledown-native-input-usd-per-million:${millionRate}` };
+        } else {
+          // The Space's own OpenRouter route is explicit: never substitute the platform key.
+          credentials = await this.resolveBusinessLlmOverride(spaceId, tenantId, model);
+          if (!credentials.openRouterApiKey) throw new Error("document_processing_space_openrouter_key_required");
+          const catalog = await fetchOpenRouterCatalog(credentials.openRouterApiKey);
+          const candidate = catalog.find(candidate => candidate.model === model);
+          if (!candidate?.inputModalities?.includes("text") || !candidate.outputModalities?.includes("text")
+            || candidate.promptPriceUsdPerToken === undefined || candidate.completionPriceUsdPerToken !== 0 || !candidate.contextLength) throw new Error("document_processing_catalog_evidence_unavailable");
+          contextLength = candidate.contextLength;
+          pricing = { inputUsdPerToken: candidate.promptPriceUsdPerToken, outputUsdPerToken: candidate.completionPriceUsdPerToken,
+            rateCardVersion: `openrouter:${candidate.catalogObservedAt}` };
+        }
         const processingRunId = `document:${runId}:${crypto.randomUUID()}`;
         let reserved = false;
         const processor = createScaleDownProcessor({ gateway: {
           accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
           ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...credentials,
-        }, authorize: async request => {
-          if (request.requestBytes + request.maxOutputTokens > candidate.contextLength!) throw new Error("document_processing_context_limit");
+        }, ...(this.env.SCALEDOWN_API_KEY ? { nativeApiKey: this.env.SCALEDOWN_API_KEY } : {}), authorize: async request => {
+          if (contextLength && request.requestBytes + request.maxOutputTokens > contextLength) throw new Error("document_processing_context_limit");
           const allowed = await this.reserveRunInferenceCost({ spaceId, tenantId, projectId, userId, callerRole, hasSpendCap,
             runId: processingRunId, model, serializedRequestBytes: request.requestBytes, maxOutputTokens: request.maxOutputTokens,
             sequence: 1, modelPricing: pricing, onReserved: () => { reserved = true; } });
@@ -4842,13 +4856,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         } });
         // The specialized operation settles its own model usage above; the enclosing planner
         // must not reprice these tokens using the planner's model or charge them twice.
-        return operation === "summarize" ? processor.summarize(input as Parameters<DocumentProcessingGateway["summarize"]>[0])
-          : processor.extract(input as Parameters<DocumentProcessingGateway["extract"]>[0]);
+        return processor[operation](input as never);
       };
       engineEnv.documentProcessor = {
         summarize: input => processDocument("summarize", input) as ReturnType<DocumentProcessingGateway["summarize"]>,
         extract: input => processDocument("extract", input) as ReturnType<DocumentProcessingGateway["extract"]>,
-        compress: async () => { throw new Error("native_compression_requires_host_credential_and_budget_configuration"); },
+        compress: input => processDocument("compress", input) as ReturnType<DocumentProcessingGateway["compress"]>,
       };
     }
     const reasoner = new GatewayReasoner({
@@ -7415,7 +7428,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }): Promise<boolean> {
     if (args.projectId && args.hasSpendCap) {
       if (!this.env.SPACES_WORKER) throw new Error("spaces_worker_unavailable");
-      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.model.startsWith("openrouter/") ? args.modelPricing : undefined);
+      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.modelPricing);
       const response = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/spaces/${encodeURIComponent(args.spaceId)}/projects/${encodeURIComponent(args.projectId)}/spend`,
         { method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
@@ -7428,7 +7441,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     if (!args.projectId && args.userId && args.callerRole === "product_end_user") {
       if (!this.env.SPACES_WORKER) throw new Error("spaces_worker_unavailable");
-      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.model.startsWith("openrouter/") ? args.modelPricing : undefined);
+      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.modelPricing);
       const response = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/internal/product-users/${encodeURIComponent(args.spaceId)}/${encodeURIComponent(args.userId)}/credits/reservations`,
         { method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
@@ -7441,7 +7454,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     if (!args.projectId && BUILDER_CALLER_ROLES.has(args.callerRole ?? "")) {
       if (!this.env.BILLING_WORKER) throw new Error("monthly_llm_quota_reservation_unavailable");
-      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.model.startsWith("openrouter/") ? args.modelPricing : undefined);
+      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.modelPricing);
       const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/llm-tokens/reservations/reserve", {
         method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
         body: JSON.stringify({ reservation_id: `${args.runId}:${args.sequence}`, run_id: args.runId, space_id: args.spaceId, estimated_tokens: estimate.estimatedInputTokens + estimate.reservedOutputTokens }),
