@@ -21,6 +21,8 @@
  * mutually consistent (same set of known model strings).
  */
 export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  // Published OpenRouter snapshot, 2026-10-18. Runtime still validates the Space key/catalog.
+  "openrouter/deepseek/deepseek-v4.1-flash-1017": 1_000_000,
   "claude-sonnet-4-6": 200_000,
   "claude-haiku-4-5-20251001": 200_000,
   "claude-opus-4-8": 200_000,
@@ -108,6 +110,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
  * and the Workers AI entries are the real choice set.
  */
 export const ALLOWED_MODELS = [
+  "openrouter/deepseek/deepseek-v4.1-flash-1017",
   "claude-haiku-4-5-20251001",
   "claude-sonnet-4-6",
   "claude-opus-4-8",
@@ -213,6 +216,9 @@ export function suggestModels(guess: string, max = 3): AllowedModel[] {
  * builder who never opens Configuration gets a different default than the one shown as selected.
  */
 export const DEFAULT_WORKING_MODEL: AllowedModel = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
+/** Economy worker candidate on an authorized OpenRouter route; never implies key entitlement. */
+export const OPENROUTER_WORKING_MODEL: AllowedModel = "openrouter/deepseek/deepseek-v4.1-flash-1017";
 
 /**
  * The cheapest capable model, for BACKGROUND / non-reasoning UTILITY work — the "junior dev" tier

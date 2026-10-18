@@ -1,8 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
-import { resolveWorkerModel } from "./worker-model-routing.js";
+import { DEFAULT_WORKING_MODEL, OPENROUTER_WORKING_MODEL } from "@naelao/billing-core";
+import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed } from "./worker-model-routing.js";
 
 describe("automatic worker model routing", () => {
+  it("rejects missing or increased live prices for the pinned economy worker", () => {
+    expect(isWorkerPriceAllowed(OPENROUTER_WORKING_MODEL, undefined)).toBe(false);
+    expect(isWorkerPriceAllowed(OPENROUTER_WORKING_MODEL, { inputUsdPerToken: 0.05 / 1_000_000, outputUsdPerToken: 0.6 / 1_000_000 })).toBe(true);
+    expect(isWorkerPriceAllowed(OPENROUTER_WORKING_MODEL, { inputUsdPerToken: 1 / 1_000_000, outputUsdPerToken: 3 / 1_000_000 })).toBe(false);
+  });
+  it("chooses the economy DeepSeek snapshot for an OpenRouter worker without switching payer/provider", () => {
+    expect(resolveWorkerModel({ plannerModel: "openrouter/vendor/expensive-planner", effort: "low", contextAffinity: "shared" }).model).toBe(OPENROUTER_WORKING_MODEL);
+  });
+  it("rejects a System One suggestion outside its host-filtered effort candidates", async () => {
+    const result = await selectWorkerModel({ plannerModel: "claude-sonnet-4-6", effort: "medium", contextAffinity: "isolated", goal: "simple lookup" }, {
+      choice: async () => ({ kind: "choice", value: "claude-opus-4-8", provider: "clef", policyCode: "test" }) as never,
+    });
+    expect(result.model).toBe(DEFAULT_WORKING_MODEL);
+  });
   it("keeps state-tethered work on the planner's verified model within the effort ceiling", () => {
     expect(resolveWorkerModel({
       plannerModel: DEFAULT_WORKING_MODEL,

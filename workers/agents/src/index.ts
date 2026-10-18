@@ -1247,7 +1247,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // space's stored configuration between runs — which would be both racy and a real change to a
   // live product. Rejected rather than ignored on an unknown string: silently running a different
   // model than the caller named would make every number the eval produces a lie.
-  if (!policyModel.startsWith("custom/") && !policyModel.startsWith("local/") && !isAllowedModel(policyModel)) {
+  if (!policyModel.startsWith("custom/") && !policyModel.startsWith("local/") && (!isAllowedModel(policyModel) || policyModel.startsWith("openrouter/"))) {
     if (!policyModel.startsWith("openrouter/")) throw badRequest(`model must be one of ${ALLOWED_MODELS.join(", ")}`);
     try {
       dynamicModelCandidate = await validateDynamicOpenRouterPlannerModel(c.env, tenantId, spaceId, policyModel);

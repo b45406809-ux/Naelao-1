@@ -164,6 +164,7 @@ export function createSpaceSDK(
 export * from "./launchpad-runtime.js";
 export * from "./canvas-runtime.js";
 export * from "./document-node.js";
+export * from "./document-processing.js";
 export * from "./workflow-taxonomy.js";
 export * from "./browser-runtime.js";
 export * from "./extensions.js";

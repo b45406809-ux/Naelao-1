@@ -147,7 +147,7 @@ export * from "./models.js";
 
 // Compute token cost in USD micros (cost * 1,000,000 for integer storage)
 /** Bump whenever the curated provider model pricing values or infra conversion rates change. */
-export const BILLING_CORE_RATE_CARD_VERSION = "core-model-rates-v1";
+export const BILLING_CORE_RATE_CARD_VERSION = "core-model-rates-v2-2026-10-18";
 
 export function computeTokenCostMicro(
   inputTokens: number,
@@ -166,6 +166,7 @@ export function computeTokenCostMicro(
     // models: cheaper input than Haiku, but pricier output — a long-answer workload is NOT
     // automatically cheaper here.
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { input: 0.293, output: 2.253 },
+    "openrouter/deepseek/deepseek-v4.1-flash-1017": { input: 0.05, output: 0.60 },
     // Google AI Studio (Gemini) — Google's own published per-1M-token pricing for the CURRENT
     // (3.x) generation these "-latest" aliases resolve to (see models.ts's MODEL_CONTEXT_WINDOWS
     // comment for why aliases, not pinned ids — the 2.5 generation was cut off from new-user

@@ -39,11 +39,28 @@ export const knowledgeBase: PrebuiltScript = {
   // 133's own convention) name the actual required fields since the op names alone don't.
   paramHints: {
     "knowledge.search": "{query: string, top_k?: number}",
+    "knowledge.search_brief": "{query: string, top_k?:1..5} — explicitly summarize authorized retrieved chunks; preserves source citations and labels derived text. Use ordinary search for exact quotations.",
     "knowledge.index": "{title: string, content: string, content_type?: 'text'|'url'|'code'|'pdf', source_url?: string} — title and content are BOTH required, or the write is rejected.",
     "knowledge.delete": "{id: string} — the kb_documents row id returned by knowledge.index (its own 'id' field), not a raw filename.",
     "knowledge.shared_document": "{source_space_id: string, document_id: string} — read one source document after its owner grants it and a member of this Space accepts that exact-document grant. Reads are audited and remain subject to source revocation.",
   },
   operations: {
+    async "knowledge.search_brief"(args, ctx) {
+      if (!ctx.env.documentProcessor || ctx.env.airGappedOnly || ctx.env.localModelMachine) throw new Error("document_processing_unavailable_for_retrieval");
+      const topK = args["top_k"] ?? 3;
+      if (!Number.isSafeInteger(topK) || Number(topK) < 1 || Number(topK) > 5) throw new Error("knowledge.search_brief top_k must be 1..5");
+      const response = await knowledgeBase.operations["knowledge.search"]!({ query: args["query"], top_k: topK }, ctx) as { data?: Array<Record<string, unknown>>; [key: string]: unknown };
+      if (!Array.isArray(response.data)) throw new Error("knowledge_search_response_invalid");
+      const data: Array<Record<string, unknown>> = [];
+      for (const hit of response.data) {
+        if (typeof hit.content !== "string") throw new Error("knowledge_search_content_invalid");
+        const result = await ctx.env.documentProcessor.summarize({ text: hit.content, sourceId: String(hit.chunk_id ?? hit.doc_id ?? "retrieved_chunk"),
+          instructions: `Summarize this retrieved source for the question: ${String(args["query"] ?? "").slice(0, 2000)}. Keep relevant names, exact numbers, exclusions, conflicting claims and uncertainty. Never invent an answer absent from the source.`, maxOutputTokens: 500 });
+        data.push({ ...hit, content: await wrapContextChunk({ content: `Derived summary, not a verbatim quotation:\n${result.text}` }),
+          derivation: { kind: "summary", model: result.usage.model, source_chunk_id: hit.chunk_id, source_citation: hit.citation, processing_usage: result.usage } });
+      }
+      return { ...response, data, derived: true };
+    },
     async "knowledge.search"(args, ctx) {
       const query = String(args["query"] ?? "");
       const topK = typeof args["top_k"] === "number" ? (args["top_k"] as number) : 5;

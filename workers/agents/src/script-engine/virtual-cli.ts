@@ -116,6 +116,26 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
 export function interceptPlatformWords(words: string[], command?: string): CliDispatch | null {
   const plannerCommand = plannerCoordinationCli(words, command);
   if (plannerCommand) return plannerCommand;
+  if (words[0] === "document") {
+    const action = words[1];
+    if (!["summarize", "extract", "compress"].includes(action ?? "")) throw new Error("usage: document summarize|extract|compress --path <workspace-file> [--entities <json>] [--query <question>]");
+    const { body } = bodyAndFlags(words.slice(2));
+    const input = words.includes("--json") ? rawJsonFlag(command, "--json") : body;
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("document --json requires an object");
+    const params = { ...input } as Record<string, unknown>;
+    if (typeof params.entities === "string") {
+      try { params.entities = rawJsonFlag(command, "--entities") ?? JSON.parse(params.entities); }
+      catch { throw new Error("document --entities requires a JSON object"); }
+    }
+    if (typeof params.max_output_tokens === "string") { params.maxOutputTokens = Number(params.max_output_tokens); delete params.max_output_tokens; }
+    if (typeof params.threshold === "string") params.threshold = Number(params.threshold);
+    if (typeof params.rate === "string" && params.rate !== "auto") params.rate = Number(params.rate);
+    return { operation: `document.${action}`, params };
+  }
+  if (words[0] === "knowledge" && words[1] === "brief") {
+    const { body } = bodyAndFlags(words.slice(2));
+    return { operation: "knowledge.search_brief", params: { query: body.query, ...(body.top_k !== undefined ? { top_k: Number(body.top_k) } : {}) } };
+  }
   if (words[0] === "attachment") {
     const action = words[1] ?? "list";
     if (action === "list" && words.length === 2) return { operation: "attachment.list", params: {} };

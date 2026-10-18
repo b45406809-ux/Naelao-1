@@ -67,6 +67,10 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   "extract_content",
   // knowledge-base
   "knowledge.search",
+  "knowledge.search_brief",
+  "document.summarize",
+  "document.extract",
+  "document.compress",
   // memory / fabric / wiki recall (remember/forget/record/upsert mutate)
   "memory.recall",
   "fabric.recall",

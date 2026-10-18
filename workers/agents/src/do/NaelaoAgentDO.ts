@@ -6,6 +6,8 @@ import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
 import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
 import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
+import { createScaleDownProcessor } from "../shared/scaledown.js";
+import { DOCUMENT_MODELS, summarizeDocumentInChunks, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
@@ -103,7 +105,7 @@ import { claimFoundryChannelEvent, parseFoundryChannelCommand, releaseFoundryCha
 import { persistCustomerConversation } from "../telemetry/customer-telemetry.js";
 import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
 import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
-import { resolveWorkerModel } from "../script-engine/worker-model-routing.js";
+import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed } from "../script-engine/worker-model-routing.js";
 import { DurableDaemon } from "../script-engine/daemons/durable-daemon.js";
 import { validateModelForSpacePolicy } from "../model-policy.js";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
@@ -1083,6 +1085,8 @@ export interface AgentDOEnv {
   GROQ_API_KEY?: string;
   /** Optional OpenRouter developer fallback; customer keys are stored in the Space Vault. */
   OPENROUTER_API_KEY?: string;
+  /** Opt-in pilot; enable only after quality, billing granularity and provider readiness checks. */
+  SCALEDOWN_AUTO_COMPACTION_ENABLED?: string;
   /** CF API token — enables the Universal Endpoint's Workers AI fallback provider (spec §15
    *  cross-provider failover). Required for Workers AI via the universal endpoint (distinct from
    *  the AI binding, which is for direct binding calls). Set via `wrangler secret put
@@ -2082,6 +2086,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       agentId,
       tenantId,
       airGappedOnly,
+      specialistCompactionEnabled: this.env.SCALEDOWN_AUTO_COMPACTION_ENABLED === "true",
       ...(templateMode ? { templateMode: resolveOperatingMode({ templateMode }).templateMode } : {}),
       platformSecret: this.env.PLATFORM_SECRET,
       ...(userId ? { userId } : {}),
@@ -2277,7 +2282,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // notices its own conversation growing shouldn't need the shell UI to trigger this on its
       // behalf. Bound to this specific spaceId/DO instance, matching runMemoryMaintenanceForSpace's
       // own scoping (memory maintenance is per-space, not per-session).
-      env.compactMemory = () => this.runMemoryMaintenanceForSpace(spaceId, tenantId, memoryScope);
+      env.compactMemory = async () => {
+        const maintenance = await this.runMemoryMaintenanceForSpace(spaceId, tenantId, memoryScope);
+        const conversation = !airGappedOnly && !env.localModelMachine && commitContext?.threadId && env.documentProcessor
+          ? await this.compactConversationForSession(spaceId, projectId ?? "", commitContext.threadId, tenantId, env.documentProcessor)
+          : undefined;
+        return { ...maintenance, ...(conversation ? { conversation } : {}) };
+      };
     }
     // §A1.25: lets web-search's grounded_answer op make its own direct LLM call (native
     // web-search tool) — degrades to unavailable (never a silent no-op) when neither credential
@@ -3481,10 +3492,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // Space-BYOK routes remain in place so the worker cannot escape their placement policy.
         const contextAffinity = t["context_affinity"] === "isolated" ? "isolated" : "shared";
         const plannerModel = currentModel ?? DEFAULT_WORKING_MODEL;
-        const privateRoute = runtimeEnv?.airGappedOnly === true || Boolean(runtimeEnv?.localModelMachine) || byokProviderForModel(plannerModel) !== null;
+        const privateRoute = runtimeEnv?.airGappedOnly === true || Boolean(runtimeEnv?.localModelMachine)
+          || (byokProviderForModel(plannerModel) !== null && !plannerModel.startsWith("openrouter/"));
         const modelResolution = t["planner"] === true
-          ? resolveWorkerModel({ plannerModel, contextAffinity: "shared", effort: effortLevel, privateRoute })
-          : resolveWorkerModel({ plannerModel, contextAffinity, effort: effortLevel, privateRoute });
+          ? resolveWorkerModel({ plannerModel, contextAffinity: "shared", effort: effortLevel, privateRoute: true })
+          : await selectWorkerModel({ plannerModel, contextAffinity, effort: effortLevel, privateRoute, goal }, runtimeEnv?.fastDecision);
         let leafSlotKey: string | undefined;
         try {
           if (!userId || !runtimeEnv) throw new Error("delegation_authorized_parent_required");
@@ -4780,7 +4792,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, body.model ?? DEFAULT_WORKING_MODEL);
     let modelPricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string } | undefined;
     try {
-      modelPricing = await this.resolveDynamicModelPricing(body.model ?? DEFAULT_WORKING_MODEL, byokOverride.openRouterApiKey);
+      const resolvedPricing = await this.resolveDynamicModelPricing(body.model ?? DEFAULT_WORKING_MODEL, byokOverride.openRouterApiKey);
+      modelPricing = resolvedPricing;
+      if (resolvedPricing?.capabilityEvidence) body.openRouterCapabilityEvidence = resolvedPricing.capabilityEvidence;
+      if (isLeaf && !isWorkerPriceAllowed(requestedModel, resolvedPricing)) return this.finishScriptFailure(runId, "The economy worker's live price exceeds its pinned price ceiling; model policy needs review", 503, "worker_model_price_ceiling");
     } catch (error) {
       return this.finishScriptFailure(runId, error instanceof Error ? error.message : "model price evidence unavailable", 503, "model_price_unavailable");
     }
@@ -4788,6 +4803,54 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let projectSpendReserved = false;
     let endUserCreditReserved = false;
     let llmQuotaReserved = false;
+    if (!engineEnv.airGappedOnly && !engineEnv.localModelMachine && !requestedModel.startsWith("local/") && !requestedModel.startsWith("custom/")) {
+      let documentCalls = 0;
+      const processDocument = async <K extends "summarize" | "extract">(operation: K, input: Parameters<DocumentProcessingGateway[K]>[0]) => {
+        if (++documentCalls > 12) throw new Error("document_processing_run_limit");
+        const model = DOCUMENT_MODELS[operation];
+        // The Space's own OpenRouter route is explicit: never substitute the platform key.
+        const credentials = await this.resolveBusinessLlmOverride(spaceId, tenantId, model);
+        if (!credentials.openRouterApiKey) throw new Error("document_processing_space_openrouter_key_required");
+        const policyResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/model-policy`, { headers: await this.internalHeaders(tenantId) }));
+        if (!policyResponse.ok) throw new Error("document_processing_model_policy_unavailable");
+        const policy = await policyResponse.json<{ policy?: SpaceModelPolicy | null }>();
+        if (!validateModelForSpacePolicy(model, policy.policy).ok) throw new Error("document_processing_model_policy_denied");
+        const catalog = await fetchOpenRouterCatalog(credentials.openRouterApiKey);
+        const candidate = catalog.find(candidate => candidate.model === model);
+        if (!candidate?.inputModalities?.includes("text") || !candidate.outputModalities?.includes("text")
+          || candidate.promptPriceUsdPerToken === undefined || candidate.completionPriceUsdPerToken !== 0 || !candidate.contextLength) throw new Error("document_processing_catalog_evidence_unavailable");
+        const pricing = { inputUsdPerToken: candidate.promptPriceUsdPerToken, outputUsdPerToken: candidate.completionPriceUsdPerToken,
+          rateCardVersion: `openrouter:${candidate.catalogObservedAt}` };
+        const processingRunId = `document:${runId}:${crypto.randomUUID()}`;
+        let reserved = false;
+        const processor = createScaleDownProcessor({ gateway: {
+          accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
+          ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...credentials,
+        }, authorize: async request => {
+          if (request.requestBytes + request.maxOutputTokens > candidate.contextLength!) throw new Error("document_processing_context_limit");
+          const allowed = await this.reserveRunInferenceCost({ spaceId, tenantId, projectId, userId, callerRole, hasSpendCap,
+            runId: processingRunId, model, serializedRequestBytes: request.requestBytes, maxOutputTokens: request.maxOutputTokens,
+            sequence: 1, modelPricing: pricing, onReserved: () => { reserved = true; } });
+          if (!allowed) throw new Error("document_processing_budget_exhausted");
+        }, recordUsage: async usage => {
+          await this.settleRunBilling({ spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId,
+            runId: processingRunId, model, modelPricing: pricing, tokensUsed: usage.inputTokens + (usage.outputTokens ?? 0),
+            inputTokens: usage.inputTokens, outputTokens: usage.outputTokens ?? 0, notes: [],
+            projectSpendReserved: Boolean(projectId && hasSpendCap && reserved),
+            endUserCreditReserved: Boolean(!projectId && callerRole === "product_end_user" && reserved),
+            llmQuotaReserved: Boolean(!projectId && BUILDER_CALLER_ROLES.has(callerRole ?? "") && reserved) });
+        } });
+        // The specialized operation settles its own model usage above; the enclosing planner
+        // must not reprice these tokens using the planner's model or charge them twice.
+        return operation === "summarize" ? processor.summarize(input as Parameters<DocumentProcessingGateway["summarize"]>[0])
+          : processor.extract(input as Parameters<DocumentProcessingGateway["extract"]>[0]);
+      };
+      engineEnv.documentProcessor = {
+        summarize: input => processDocument("summarize", input) as ReturnType<DocumentProcessingGateway["summarize"]>,
+        extract: input => processDocument("extract", input) as ReturnType<DocumentProcessingGateway["extract"]>,
+        compress: async () => { throw new Error("native_compression_requires_host_credential_and_budget_configuration"); },
+      };
+    }
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       localDevelopment: this.env.ENVIRONMENT === "development",
@@ -4914,7 +4977,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // engine. Never query a thread transcript for an autonomous scheduled run.
       const conversation = isDecoupledScheduledRun || isSubAgent
         ? { recent: [], summary: "", compacted: false, totalMessages: 0, omittedMessages: 0 }
-        : await this.loadConversationContext(spaceId, projectId ?? "", sessionId, tenantId);
+        : await this.loadConversationContext(spaceId, projectId ?? "", sessionId, tenantId, engineEnv.specialistCompactionEnabled ? engineEnv.documentProcessor : undefined, contextWindowForModel(requestedModel));
       // Recall once at ingress so every planner decision sees the same bounded, relevance-gated
       // project/space context. A failed memory read must never block the actual run.
       let memoryContext: string | undefined;
@@ -5300,7 +5363,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     spaceId: string,
     projectId: string,
     sessionId: string,
-    tenantId: string
+    tenantId: string,
+    documentProcessor?: DocumentProcessingGateway,
   ): Promise<{ summarized_messages: number; summary_chars: number; already_current: boolean } | undefined> {
     try {
       const messages = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
@@ -5330,7 +5394,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return { summarized_messages: covered, summary_chars: existing.length, already_current: true };
       }
 
-      const regenerated = await this.summarizeConversation(toSummarize, existing);
+      const regenerated = await this.summarizeConversation(documentProcessor && existing ? toSummarize.slice(covered) : toSummarize, existing, documentProcessor);
       if (!regenerated) return undefined; // summariser unavailable — never claim it compacted
       try {
         this.ctx.storage.sql.exec(
@@ -9077,7 +9141,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     spaceId: string,
     projectId: string,
     sessionId: string,
-    tenantId: string
+    tenantId: string,
+    documentProcessor?: DocumentProcessingGateway,
+    modelContextTokens = MODEL_CONTEXT_LIMIT_TOKENS,
   ): Promise<ConversationContext | undefined> {
     if (!sessionId || !this.env.SPACES_WORKER) return undefined;
     const workingKey = `${spaceId}\0${projectId}\0${sessionId}`;
@@ -9089,9 +9155,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
 
       const threadTurns = messages.filter((message) => message.role === "user").length;
-      const tokenUsageRatio = messages.reduce((sum, message) => sum + estimateTokens(message.content), 0) / MODEL_CONTEXT_LIMIT_TOKENS;
+      const tokenUsageRatio = messages.reduce((sum, message) => sum + estimateTokens(message.content), 0) / modelContextTokens;
+      const attemptedSpecialistCompaction = Boolean(documentProcessor && shouldCompactContext(threadTurns, tokenUsageRatio));
       if (shouldCompactContext(threadTurns, tokenUsageRatio)) {
-        await this.compactConversationForSession(spaceId, projectId, sessionId, tenantId);
+        await this.compactConversationForSession(spaceId, projectId, sessionId, tenantId, documentProcessor);
       }
 
       // The stored summary covers the oldest `covered_messages`; reuse it unless the conversation
@@ -9111,8 +9178,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
 
       const toSummarize = messagesToSummarize(messages);
-      if (toSummarize.length > covered) {
-        const regenerated = await this.summarizeConversation(toSummarize, summary);
+      if (toSummarize.length > covered && !attemptedSpecialistCompaction) {
+        const regenerated = await this.summarizeConversation(documentProcessor && summary ? toSummarize.slice(covered) : toSummarize, summary, documentProcessor);
         if (regenerated) {
           summary = regenerated;
           try {
@@ -9179,8 +9246,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    *  better than no history at all. */
   private async summarizeConversation(
     older: ConversationMessage[],
-    existingSummary: string
+    existingSummary: string,
+    documentProcessor?: DocumentProcessingGateway,
   ): Promise<string | null> {
+    if (documentProcessor) {
+      try {
+        return await summarizeDocumentInChunks(documentProcessor, {
+          text: `Existing derived summary:\n${existingSummary || "(none)"}\n\nNewly archived messages:\n${older.map(message => `[${message.role}]\n${message.content}`).join("\n\n")}`,
+          instructions: "Compact working history so the assistant can continue. Preserve user goals, later corrections, decisions and reasons, exact file paths, IDs, dates, amounts, failed attempts and unresolved work. Keep uncertainty explicit. Never treat a summary as proof of authorization or a completed side effect.",
+          maxOutputTokens: 1200,
+        });
+      } catch { return null; } // keep the last summary and unadvanced archive coverage on failure
+    }
     try {
       const gatewayConfig = this.aiGatewayConfig();
       if (!gatewayConfig.accountId) return null;
@@ -9303,7 +9380,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private async resolveDynamicModelPricing(
     model: string,
     apiKey: string | undefined,
-  ): Promise<{ inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string } | undefined> {
+  ): Promise<{ inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string; capabilityEvidence: OpenRouterModelCandidate } | undefined> {
     if (!model.startsWith("openrouter/")) return undefined;
     if (!apiKey) throw new Error("The selected Space OpenRouter key is unavailable; no platform key fallback is allowed");
     const catalog = await fetchOpenRouterCatalog(apiKey);
@@ -9315,6 +9392,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       inputUsdPerToken: candidate.promptPriceUsdPerToken!,
       outputUsdPerToken: candidate.completionPriceUsdPerToken!,
       rateCardVersion: `openrouter:${candidate.catalogObservedAt}`,
+      capabilityEvidence: candidate,
     };
   }
 

@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { interceptPlatformCli, VirtualCliDispatcher } from "./virtual-cli.js";
 
 describe("VirtualCliDispatcher", () => {
+  it("routes document tasks through authorized operations without executing a shell/provider command", () => {
+    expect(interceptPlatformCli("document summarize --path /workspace/report.txt --max-output-tokens 300")).toEqual({ operation: "document.summarize", params: { path: "/workspace/report.txt", maxOutputTokens: 300 } });
+    expect(interceptPlatformCli(`document extract --path /workspace/report.txt --entities '{"vendor":"vendor name"}'`)).toEqual({ operation: "document.extract", params: { path: "/workspace/report.txt", entities: { vendor: "vendor name" } } });
+    expect(interceptPlatformCli('knowledge brief --query "renewal date" --top-k 2')).toEqual({ operation: "knowledge.search_brief", params: { query: "renewal date", top_k: 2 } });
+    expect(() => interceptPlatformCli("document classify --path /workspace/report.txt")).toThrow("usage: document");
+  });
   it("routes task-scoped attachment commands to typed operations", () => {
     expect(interceptPlatformCli("attachment list")).toEqual({ operation: "attachment.list", params: {} });
     expect(interceptPlatformCli("attachment inspect a1b2")).toEqual({ operation: "attachment.inspect", params: { id: "a1b2" } });

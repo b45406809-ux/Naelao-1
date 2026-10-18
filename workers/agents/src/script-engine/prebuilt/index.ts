@@ -59,6 +59,7 @@ import { languageGlossary } from "./language-glossary.js";
 import { languageTranslation } from "./language-translation.js";
 import { attachments } from "./attachments.js";
 import { customerAttachments } from "./customer-attachments.js";
+import { documentProcessing } from "./document-processing.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -100,6 +101,7 @@ export interface PrebuiltScript {
 
 /** The full catalogue shipped in this build, keyed by prebuilt script name. */
 export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
+  [documentProcessing.name]: documentProcessing,
   [languageDetection.name]: languageDetection,
   [languageGlossary.name]: languageGlossary,
   [languageTranslation.name]: languageTranslation,

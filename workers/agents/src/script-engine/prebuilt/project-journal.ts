@@ -62,7 +62,7 @@ async function saveJournal(ctx: PrebuiltOpContext, spaceId: string, projectId: s
  *  deterministic rollup. Never throws — compaction treats a failure as "no summary". */
 function summarizerFor(ctx: PrebuiltOpContext): JournalSummarizer | undefined {
   const caller = ctx.env.llmCaller;
-  if (!caller?.complete) return undefined;
+  if (!caller?.complete && !ctx.env.documentProcessor) return undefined;
   return async (entries, existingArchive) => {
     const lines = entries.map((e) => `- ${e.at} [${e.actor}] ${e.summary}`).join("\n");
     const prompt = [
@@ -76,7 +76,12 @@ function summarizerFor(ctx: PrebuiltOpContext): JournalSummarizer | undefined {
       "",
       `NEW ENTRIES:\n${lines}`,
     ].join("\n");
-    const out = await caller.complete!({
+    if (ctx.env.specialistCompactionEnabled && ctx.env.documentProcessor) {
+      try { return (await ctx.env.documentProcessor.summarize({ text: prompt, instructions: "Maintain the project's historical archive, under 200 words. Preserve exact identifiers and decisions.", maxOutputTokens: 400 })).text.trim() || null; }
+      catch { /* preserve the existing deterministic journal fallback if the specialist is unavailable */ }
+    }
+    if (!caller?.complete) return null;
+    const out = await caller.complete({
       // Compaction is a background maintenance task, not user-facing reasoning — cascaded-routing
       // trick 4: route it to the shared cheap UTILITY_MODEL (one tuned constant, not a drifting
       // hardcoded string), not the agent's reasoning model.

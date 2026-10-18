@@ -127,6 +127,12 @@ const M = (
 const TOOL_USE_DATASET = "tool-use-policy.jsonl (this platform's own agent loop, 2026-07-25)";
 
 export const MODEL_BENCHMARKS: Record<AllowedModel, ModelBenchmark> = {
+  "openrouter/deepseek/deepseek-v4.1-flash-1017": M(
+    "openrouter/deepseek/deepseek-v4.1-flash-1017", "DeepSeek", "economy", "estimated",
+    "OpenRouter published $0.05 input / $0.60 output per 1M tokens on 2026-10-18; live catalog pricing is authoritative. No Naelao agent-loop evaluation yet.",
+    ["Published 1M context", "Coding and agent workloads", "Native image understanding (provider-declared)"],
+    ["Economy OpenRouter worker candidate", "User-selected planner; requires an authorized Space OpenRouter key"]
+  ),
   "claude-haiku-4-5-20251001": M(
     "claude-haiku-4-5-20251001", "Claude", "economy", "measured",
     "$0.25 / $1.25 per 1M tokens in / out — Anthropic's own published pricing.",

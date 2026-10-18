@@ -1105,6 +1105,10 @@ export interface ScriptEngineEnv {
    *  Absent → web-search's grounded_answer op reports itself unavailable, same posture as every
    *  other optional gateway here. */
   llmCaller?: LlmCallerGateway;
+  /** Host-scoped document tasks; provider usage settles independently at its actual model price. */
+  documentProcessor?: import("@naelao/agent-sdk").DocumentProcessingGateway;
+  /** Pilot flag for automatic specialist summaries; explicit document tools have their own admission. */
+  specialistCompactionEnabled?: boolean;
   /** Identity for scoping R2 keys + Vectorize filters. */
   spaceId: string;
   agentId: string;

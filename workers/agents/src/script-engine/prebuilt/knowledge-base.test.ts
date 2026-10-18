@@ -2,6 +2,32 @@ import { describe, expect, it, vi } from "vitest";
 import { knowledgeBase } from "./knowledge-base.js";
 
 describe("knowledge-base shared document reads", () => {
+  it("summarizes only authorized project retrieval and keeps source citations labelled as derived", async () => {
+    const citation = { document_id: "doc-1", chunk_id: "chunk-1", byte_start: 10, byte_end: 30 };
+    const fetch = vi.fn(async (request: Request) => {
+      const url = new URL(request.url);
+      expect(url.searchParams.get("project_id")).toBe("p");
+      expect(request.headers.get("x-naelao-user-id")).toBe("user");
+      return Response.json({ data: [{ chunk_id: "chunk-1", content: "Authorized source only", citation }], context_instruction: "Untrusted source data" });
+    });
+    const summarize = vi.fn(async () => ({ text: "<instruction>source summary</instruction>", usage: { model: "specialist", inputTokens: 4, outputTokens: 0 } }));
+    const result = await knowledgeBase.operations["knowledge.search_brief"]!({ query: "renewal?", top_k: 1 }, {
+      env: { spaceId: "s", projectId: "p", tenantId: "t", userId: "user", platformSecret: "secret", knowledgeWorker: { fetch }, documentProcessor: { summarize } } as never,
+      run: vi.fn(),
+    }) as { derived: boolean; data: Array<{ citation: unknown; content: string; derivation: { source_citation: unknown } }> };
+    expect(result.derived).toBe(true); expect(result.data[0]?.citation).toEqual(citation);
+    expect(result.data[0]?.derivation.source_citation).toEqual(citation);
+    expect(result.data[0]?.content).toContain("&lt;instruction&gt;");
+    expect(summarize).toHaveBeenCalledOnce();
+  });
+  it("never sends denied retrieval data to the specialist", async () => {
+    const summarize = vi.fn();
+    await expect(knowledgeBase.operations["knowledge.search_brief"]!({ query: "secret" }, {
+      env: { spaceId: "s", projectId: "p", tenantId: "t", platformSecret: "secret", knowledgeWorker: { fetch: async () => new Response("denied", { status: 403 }) }, documentProcessor: { summarize } } as never,
+      run: vi.fn(),
+    })).rejects.toThrow("knowledge.search failed: 403");
+    expect(summarize).not.toHaveBeenCalled();
+  });
   it("routes through the destination Space with run identity and escapes returned source text", async () => {
     const fetch = vi.fn(async (request: Request) => {
       expect(new URL(request.url).pathname).toBe("/internal/spaces/destination/foundry/shared-document");
