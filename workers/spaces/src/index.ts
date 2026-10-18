@@ -36,6 +36,7 @@ import { decodeExtensionPublisherPublicKey, extensionPublisherKeyId, extensionPu
 import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectStewardReview } from "./project-steward.js";
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
+import { reportExtensionArtifactWrite } from "./extension-storage-usage.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -1529,7 +1530,11 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
     for (const [path, code] of sourceEntries) {
       const filename = path.slice(2);
       const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${filename}`;
-      if (!await c.env.SCRIPTS_R2.head(key)) await c.env.SCRIPTS_R2.put(key, code, { httpMetadata: { contentType: path.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
+      if (!await c.env.SCRIPTS_R2.head(key)) {
+        await c.env.SCRIPTS_R2.put(key, code, { httpMetadata: { contentType: path.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
+        await reportExtensionArtifactWrite(c.env, { tenantId: identity.tenantId, spaceId, projectId, bundleId: bundle.id, version: bundle.version,
+          path, bytes: new TextEncoder().encode(code).byteLength });
+      }
     }
   }
   const artifactPayload = JSON.stringify(sourceEntries.sort(([a], [b]) => a.localeCompare(b)));
@@ -1719,7 +1724,11 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   // Persist immutable files before exposing any mounted app. Repeated installs are idempotent.
   for (const [path, source] of sourceEntries) {
     const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${path.slice(2)}`;
-    if (!await c.env.SCRIPTS_R2.head(key)) await c.env.SCRIPTS_R2.put(key, source, { httpMetadata: { contentType: path.endsWith(".html") ? "text/html; charset=utf-8" : path.endsWith(".js") || workflowPaths.has(path) ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
+    if (!await c.env.SCRIPTS_R2.head(key)) {
+      await c.env.SCRIPTS_R2.put(key, source, { httpMetadata: { contentType: path.endsWith(".html") ? "text/html; charset=utf-8" : path.endsWith(".js") || workflowPaths.has(path) ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
+      await reportExtensionArtifactWrite(c.env, { tenantId: identity.tenantId, spaceId, projectId, bundleId: bundle.id, version: bundle.version,
+        path, bytes: new TextEncoder().encode(source).byteLength });
+    }
   }
   const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))].map(x => x.toString(16).padStart(2, "0")).join("");
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);

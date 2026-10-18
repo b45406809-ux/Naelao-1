@@ -58,6 +58,7 @@ function packageManifest(overrides: Record<string, unknown> = {}) {
 describe("project channel-only extension install route", () => {
   function setup(role: string, handlerValid = true) {
     const forwarded: Request[] = [];
+    const usageEvents: Record<string, unknown>[] = [];
     const artifacts = new Map<string, string>();
     const bucket = {
       get: async (key: string) => {
@@ -79,6 +80,10 @@ describe("project channel-only extension install route", () => {
             )
       ),
     };
+    const billing = { fetch: vi.fn(async (request: Request) => {
+      usageEvents.push(await request.json() as Record<string, unknown>);
+      return Response.json({ recorded: true });
+    }) };
     const stub = {
       fetch: vi.fn(async (request: Request) => {
         forwarded.push(request);
@@ -103,9 +108,10 @@ describe("project channel-only extension install route", () => {
       PLATFORM_SECRET: secret,
       SCRIPTS_R2: bucket,
       AGENTS_WORKER: agents,
+      BILLING_WORKER: billing,
       SPACE_DO: { idFromName: (name: string) => name, get: () => stub },
     } as never;
-    return { env, forwarded, stub, artifacts, agents };
+    return { env, forwarded, stub, artifacts, agents, usageEvents, billing };
   }
 
   async function post(
@@ -242,6 +248,18 @@ describe("project channel-only extension install route", () => {
       )
     ).toBe(source);
     expect(h.agents.fetch).toHaveBeenCalledTimes(1);
+    expect(h.usageEvents).toEqual([expect.objectContaining({ event_type: "storage_bytes_written", quantity: new TextEncoder().encode(source).byteLength,
+      project_id: "project-a", payer_kind: "unknown", idempotency_key: "extension-artifact:space-a:ext_trading_mentor:1.0.0:./student-answer.ts" })]);
+  });
+
+  it("does not meter immutable artifacts again when the same release is reinstalled", async () => {
+    const h = setup("owner");
+    const source = "export async function run(_args, ctx) { return await ctx.channel.answer({ question: 'help' }); }";
+    const first = await post(h.env, "owner", packageManifest(), { handlerSources: { "./student-answer.ts": source } });
+    const second = await post(h.env, "owner", packageManifest(), { handlerSources: { "./student-answer.ts": source } });
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(h.usageEvents).toHaveLength(1);
   });
 
   it("rejects source paths outside the package channel declarations", async () => {

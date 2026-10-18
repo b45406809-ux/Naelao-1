@@ -1568,3 +1568,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The deterministic ranker emits a high-confidence `inspect_extension_health` review when a project has such connections. It ranks behind blocked work and routine failures and includes the count as evidence. Owner/admin decision validation accepts this new recommendation, and the Project Bots roster labels it clearly.
 - Verification: Spaces, Agents, and Shell typechecks passed; Steward ranker/decision suites passed (7 tests); `git diff --check` passed.
 - Remaining Phase 3: provider connection `error`/`expired` state is only as fresh as the provider lifecycle writer; include exact run/spend context, and implement the reviewed reversible retirement workflow with a routine fence and extension/channel quiescence. No automatic pause/archive was introduced.
+
+### Phase 4 immutable extension artifact storage events (2026-10-18)
+
+- Both the channel-only installer and composed project-bundle installer now record `storage_bytes_written` for each immutable artifact actually added to R2. Events include tenant-authenticated delivery, project ID, artifact/version/path identity, stable idempotency, byte quantity, `payer_kind=unknown`, and no invented price.
+- Existing immutable objects and repeat installs are not counted again. Usage reporting is best-effort after the successful R2 write; install succeeds if Billing is unavailable, so a durable Spaces-side retry/outbox is still needed for lossless reconciliation.
+- Verification: Spaces typecheck passed; channel extension route plus storage-usage tests passed (12 tests), including payload and duplicate-install behavior; `git diff --check` passed.
+- This measures newly written artifact bytes, not retained byte-months, deletions, deduplicated shared storage, or the older artifacts already in R2. Phase 4 still needs storage reconciliation for session, attachment, and archive data plus install/run/provider ceilings and cross-payer settlement recovery.
