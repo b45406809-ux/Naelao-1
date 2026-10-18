@@ -1461,3 +1461,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added authenticated project routes and SDK methods to publish/poll collaboration events. Existing project visibility and signed package checks still run before the actor is reached. Members may publish these collaboration-only records; this endpoint cannot invoke tools or mutate Gadget tables. `operation` entries are audit traces, not executable actions.
 - Verification: Spaces and SDK typechecks passed; Gadget route/DO suites passed (11 tests); Canvas SDK tests passed (3 tests). `git diff --check` passed.
 - Remaining Phase 7 work: live websocket/presence transport, Canvas action audit for real Gadget mutations, explicit per-role action grants, and visual workflow authoring/test/dry-run/recovery UX. The current SDK supports polling and actor cursors.
+
+### Phase 7 declarative workflow plan compiler checkpoint (2026-10-18)
+
+- Added `compileWorkflowPlan` to the SDK and exported it at both the root and `@naelao/sdk/workflow` entrypoint. It accepts a bounded JSON step plan plus the caller's granted capability list, rejects duplicate/malformed steps and ungranted operations, and emits durable `step.do` calls through the existing `ctx.tools.call` host boundary. Arguments are serialized as data, never interpolated as executable source.
+- The result includes step IDs, deduplicated capability requirements, and emitted source size for editor previews. It does not grant capabilities or replace the host compile/install checks.
+- Verification: SDK typecheck passed; Canvas and workflow SDK tests passed (5 tests); `git diff --check` passed.
+- This supplies a safe structured editor/compiler core, not a finished visual editor. Human-friendly node editing, schemas and output mapping between steps, preview/dry-run, cost estimates, approvals, and recovery remain open Phase 7 work.
