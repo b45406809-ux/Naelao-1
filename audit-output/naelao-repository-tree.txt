@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1840
-Files with source or executable-configuration extensions: 1634
-Inventory revision: e54b1b83 plus the webhook audit batch files in this working tree
+Files: 1844
+Files with source or executable-configuration extensions: 1638
+Inventory revision: 8e581d15 plus the idempotency/sweeper audit batch files in this working tree
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -813,9 +813,11 @@ packages/
     tsconfig.json
   idempotency/
     src/
+      index.test.ts
       index.ts
     package.json
     tsconfig.json
+    vitest.config.ts
   llm-gateway/
     src/
       gateway.ts
@@ -2060,9 +2062,11 @@ workers/
     wrangler.toml
   sweeper/
     src/
+      index.test.ts
       index.ts
     package.json
     tsconfig.json
+    vitest.config.ts
     wrangler.toml
   synthetics/
     src/

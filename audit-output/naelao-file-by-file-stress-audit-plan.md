@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1840` tracked/non-ignored files; `1634` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`).
+Inventory basis: `1844` tracked/non-ignored files; `1638` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`).
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -342,7 +342,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/migrations/0014_eval.sql`
 - [ ] `infra/migrations/0015_artifacts.sql`
 - [x] `infra/migrations/0016_webhook_subscriptions.sql`
-- [ ] `infra/migrations/0017_idempotency_keys.sql`
+- [x] `infra/migrations/0017_idempotency_keys.sql`
 - [ ] `infra/migrations/0018_active_sessions.sql`
 - [ ] `infra/migrations/0019_oauth_providers.sql`
 - [ ] `infra/migrations/0020_service_accounts.sql`
@@ -657,9 +657,11 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/idempotency`
 
-- [ ] `packages/idempotency/package.json`
-- [ ] `packages/idempotency/src/index.ts`
-- [ ] `packages/idempotency/tsconfig.json`
+- [x] `packages/idempotency/vitest.config.ts`
+- [x] `packages/idempotency/src/index.test.ts`
+- [x] `packages/idempotency/package.json`
+- [x] `packages/idempotency/src/index.ts`
+- [x] `packages/idempotency/tsconfig.json`
 
 ### `packages/llm-gateway`
 
@@ -1140,7 +1142,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/packages/events-cron.test.ts`
 - [ ] `tests/unit/packages/events.test.ts`
 - [ ] `tests/unit/packages/http-internal-hmac.test.ts`
-- [ ] `tests/unit/packages/idempotency.test.ts`
+- [x] `tests/unit/packages/idempotency.test.ts`
 - [ ] `tests/unit/packages/llm-gateway-native-web-search.test.ts`
 - [ ] `tests/unit/packages/llm-gateway.test.ts`
 - [ ] `tests/unit/packages/mentions.test.ts`
@@ -1955,7 +1957,9 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/sweeper`
 
-- [ ] `workers/sweeper/package.json`
+- [x] `workers/sweeper/vitest.config.ts`
+- [x] `workers/sweeper/src/index.test.ts`
+- [x] `workers/sweeper/package.json`
 - [ ] `workers/sweeper/src/index.ts`
 - [ ] `workers/sweeper/tsconfig.json`
 - [ ] `workers/sweeper/wrangler.toml`

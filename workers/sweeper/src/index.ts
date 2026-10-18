@@ -131,9 +131,9 @@ async function cleanExpiredApiKeys(db: D1Database): Promise<number> {
   return result.meta.changes ?? 0;
 }
 
-async function cleanExpiredIdempotencyKeys(db: D1Database): Promise<number> {
+export async function cleanExpiredIdempotencyKeys(db: D1Database): Promise<number> {
   const result = await db.prepare(
-    "DELETE FROM idempotency_keys WHERE expires_at < datetime('now') LIMIT 1000"
+    "DELETE FROM idempotency_keys WHERE julianday(expires_at) < julianday('now') LIMIT 1000"
   ).run();
   return result.meta.changes ?? 0;
 }

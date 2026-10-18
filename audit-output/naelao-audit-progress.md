@@ -64,11 +64,35 @@ The webhook package suite passed **39 tests across five files**; the separate le
 - Tests use stubs; live D1 constraints, R2 retention/permissions, queue redelivery, concurrent duplicate delivery, and provider network behavior were not exercised.
 - `packages/webhooks` includes existing source with no internal production callsites; external package consumers and deployment wiring remain unverified.
 
+## Idempotency D1 and expiry stress pass (2026-10-18)
+
+The batch covers the `@naelao/idempotency` adapter, its table migration, package tests, and the sweeper's idempotency cleanup function. Repository references show no production caller of `D1IdempotencyStore` or `withIdempotency`; the available legacy test uses an in-memory mock. The table is referenced by the daily sweeper. No external consumers are known.
+
+| File | Features and stress boundaries exercised | Evidence / disposition |
+|---|---|---|
+| `packages/idempotency/src/index.ts` | Tenant/key identity, TTL bounds, migration column names/status mapping, atomic insert/expired-key replacement, cached response serialization, request-hash reuse, DB failure propagation, check/lock race, result status/body validity | Reworked the D1 adapter to match migration 0017 (`id`, `locked`, `response_json`, `request_hash`); tenant/key tuples map to hashed IDs; expiry uses `julianday`; only an expired record can be atomically replaced; a lost check/lock race rechecks for a completed result. Errors now remain errors instead of being treated as uniqueness conflicts. |
+| `infra/migrations/0017_idempotency_keys.sql` | Compared the actual schema and constraints with every adapter query | Confirmed the old adapter referred to columns/statuses absent from this table; the adapter now uses the declared schema. No migration change was needed. |
+| `packages/idempotency/package.json`, `tsconfig.json`, `vitest.config.ts` | Package build/typecheck and test discovery | Added package test script/config and registered the source tests in the workspace; the package previously had no test project. Typecheck passed. |
+| `packages/idempotency/src/index.test.ts` | D1 SQL/schema contract, tenant-separated storage IDs, expired duplicate upsert condition, TTL bounds, response mapping, request hash mismatch, race-to-cache, unserializable result | 12 focused tests pass. These use D1 stubs; they do not replace a live SQLite/D1 integration test. |
+| `tests/unit/packages/idempotency.test.ts` | Existing execute/cache/pending/failure/tenant behavior using the in-memory implementation | 9 tests pass after the adapter/API changes. |
+| `workers/sweeper/src/index.ts` (partial function review) | Expired ISO timestamp comparison in the daily cleanup query | Replaced lexicographic comparison against SQLite's space-separated datetime with `julianday` comparison. The rest of this worker file remains pending review. |
+| `workers/sweeper/src/index.test.ts`, `workers/sweeper/package.json`, `workers/sweeper/vitest.config.ts` | Cleanup query shape/affected-row count and package test discovery | Added one cleanup regression test and registered the worker test project. The worker TypeScript check passed. |
+
+This batch's focused tests passed **24 tests** (14 package D1 tests, 9 legacy unit tests, 1 sweeper cleanup test). Focused Biome checks passed on the idempotency package and test/config files. The touched sweeper source still has pre-existing Biome diagnostics elsewhere in the file; it was kept to the one-line expiry fix rather than reformatted wholesale. The configured workspace suite passed with both projects registered: **224 test files, 938 tests**.
+
+### Remaining idempotency risks
+
+- No real D1/SQLite integration or concurrent transaction test has run; the new SQL contract tests use a stub.
+- An execution lasting beyond its TTL can overlap a second execution after its expired lock is replaced; a fencing token/heartbeat or downstream idempotency is needed to guarantee at-most-once side effects.
+- The optional `requestHash` must be supplied by callers to detect same-key/different-request reuse; no in-repository runtime caller was found to verify this wiring.
+- The sweeper cron runs daily, so physical deletion can lag expiry by nearly a day even though reads and lock replacement enforce expiry directly.
+- Full worker sweeper behavior, other cleanup functions, deployment bindings, and route-to-store wiring remain unreviewed.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 222 test files, 923 tests, with webhook project registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 224 test files, 938 tests, with webhook, idempotency, and sweeper projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |
