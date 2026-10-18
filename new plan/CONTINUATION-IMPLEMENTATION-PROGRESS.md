@@ -1533,3 +1533,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The Trading Mentor sample now demonstrates a single-table insert grant instead of treating a workflow-wide operation name as enough authorization.
 - Verification: Agent SDK suite passed (101 tests); Spaces Gadget bridge suite passed (2 tests) and typecheck passed; Agents workflow scope suite passed (5 tests) and typecheck passed; `git diff --check` passed.
 - This closes only project workflow Gadget table authorization. Canvas actor/operation grants, per-row rules, live WebSocket transport, and the remaining workflow installation/approval/recovery features remain open.
+
+### Phase 7 visual workflow mock fixtures checkpoint (2026-10-18)
+
+- The visual editor now accepts an explicit static JSON mock output for each step, applies those outputs through earlier-step references, and shows the simulated calls/results. Fixtures are capped at 16 KB per step and 64 KB total. They are local-only and are not included in the saved plan.
+- Verification: SDK typecheck and full SDK tests passed (9 tests); Shell typecheck passed; `git diff --check` passed.
+- This remains an offline composition check. It does not validate live tool output schemas, execute provider/Worker calls, or estimate credits.

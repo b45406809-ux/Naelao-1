@@ -6,8 +6,8 @@ import { runMockWorkflowPlan } from "@naelao/sdk/testing";
 import { Button } from "@naelao/ui";
 import { saveWorkflowPlanDraft, type SessionCredentials } from "@/lib/api";
 
-type DraftStep = { id: string; operation: string; args: string };
-const newStep = (index: number): DraftStep => ({ id: `step-${index}`, operation: "", args: "{}" });
+type DraftStep = { id: string; operation: string; args: string; mockResponse: string };
+const newStep = (index: number): DraftStep => ({ id: `step-${index}`, operation: "", args: "{}", mockResponse: JSON.stringify({ simulated: true, step: `step-${index}` }, null, 2) });
 
 /** A bounded editor for a declarative plan. It writes a validated draft; scheduling and runtime
  * grants remain in the existing workflow installation path. */
@@ -52,7 +52,18 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
     setError(null); setSaved(null); setOfflineRun(null);
     try {
       const { plan } = build();
-      setOfflineRun(runMockWorkflowPlan({ plan, allowedCapabilities: plan.steps.map(step => step.operation) }));
+      const responses: Record<string, unknown> = {};
+      let totalFixtureBytes = 0;
+      for (const step of steps) {
+        if (!step.mockResponse.trim()) continue;
+        const bytes = new TextEncoder().encode(step.mockResponse).byteLength;
+        if (bytes > 16_384) throw new Error(`Step “${step.id || "?"}” mock output exceeds 16 KB.`);
+        totalFixtureBytes += bytes;
+        if (totalFixtureBytes > 65_536) throw new Error("Combined offline mock outputs exceed 64 KB.");
+        try { responses[step.id] = JSON.parse(step.mockResponse); }
+        catch { throw new Error(`Step “${step.id || "?"}” has invalid mock output JSON.`); }
+      }
+      setOfflineRun(runMockWorkflowPlan({ plan, allowedCapabilities: plan.steps.map(step => step.operation), responses }));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Couldn't run the offline workflow check."); }
   };
 
@@ -71,12 +82,13 @@ export function WorkflowPlanComposer({ spaceId, projectId, session }: { spaceId:
           <label>Step ID<input className="form-input" value={step.id} maxLength={48} onChange={event => update(index, { id: event.target.value })} /></label>
           <label>Capability operation<input className="form-input" value={step.operation} maxLength={96} placeholder="for example, documents.summarize" onChange={event => update(index, { operation: event.target.value })} /></label>
           <label>Arguments (JSON object)<textarea className="form-input" rows={4} value={step.args} onChange={event => update(index, { args: event.target.value })} spellCheck={false} /></label>
+          <label>Offline mock output (JSON)<textarea className="form-input" rows={3} value={step.mockResponse} onChange={event => update(index, { mockResponse: event.target.value })} spellCheck={false} /><span>This static result is used only by “Run offline mock”. It is never sent to a provider.</span></label>
           <Button type="button" disabled={steps.length <= 1} onClick={() => { setSteps(previous => previous.filter((_, i) => i !== index)); setSaved(null); setOfflineRun(null); }}>Remove step</Button>
         </fieldset>
       </li>)}
     </ol>
     <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-      <Button type="button" disabled={steps.length >= 64} onClick={() => { setSteps(previous => [...previous, newStep(previous.length + 1)]); setSaved(null); setOfflineRun(null); }}>Add step</Button>
+      <Button type="button" disabled={steps.length >= 64} onClick={() => { setSteps(previous => { let index = 1; while (previous.some(step => step.id === `step-${index}`)) index++; return [...previous, newStep(index)]; }); setSaved(null); setOfflineRun(null); }}>Add step</Button>
       <Button type="button" disabled={!preview} onClick={runOffline}>Run offline mock</Button>
       <Button type="button" disabled={busy || !preview} onClick={save}>{busy ? "Validating and saving…" : "Validate and save draft"}</Button>
     </div>
