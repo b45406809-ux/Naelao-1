@@ -1,0 +1,56 @@
+import { describe, expect, it } from "vitest";
+import type { DurableWorkflowIdentity, WorkflowCheckpointPointer } from "@naelao/agent-sdk";
+import { readWorkflowGrant } from "../workflows/workflow-host.js";
+import { WorkflowRunDO } from "./WorkflowRunDO.js";
+
+function harness() {
+  const values = new Map<string, unknown>();
+  const alarms: number[] = [];
+  let member = true;
+  const storage = {
+    async get<T>(key: string) { return values.get(key) as T | undefined; },
+    async put<T>(key: string, value: T) { values.set(key, value); },
+    async transaction<T>(callback: (storage: typeof storage) => Promise<T>) { return callback(storage); },
+    async setAlarm(value: number) { alarms.push(value); },
+    async deleteAlarm() { alarms.push(0); },
+  };
+  const bucket = {
+    async get(key: string) {
+      if (!key.startsWith("spaces/space-a/agents/agent-a/")) return null;
+      return { async text() { return "fixture"; } };
+    },
+  };
+  const env = {
+    PLATFORM_SECRET: "workflow-run-test-secret",
+    SCRIPTS_R2: bucket,
+    SPACES_WORKER: { async fetch() { return Response.json({ data: member ? [{ user_id: "actor-a", role: "owner" }] : [] }); } },
+  };
+  return {
+    instance: new WorkflowRunDO({ storage } as never, env as never),
+    env,
+    values,
+    alarms,
+    revoke() { member = false; },
+  };
+}
+
+describe("WorkflowRunDO persisted authorization", () => {
+  it("persists initialization and rejects resumed work after its membership grant is revoked", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-a", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-a",
+      startKey: "start-a", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    const input: WorkflowCheckpointPointer = {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-a/input.json", sha256: "b".repeat(64), bytes: 2,
+    };
+    await h.instance.initialize(identity, input, {});
+    expect((await h.instance.existing())?.status).toBe("queued");
+    expect(h.alarms).toEqual([identity.expiresAt]);
+    h.revoke();
+    await expect(h.instance.authorize("run-a")).rejects.toThrow("workflow_membership_revoked");
+    await expect(h.instance.authorize("another-run")).rejects.toThrow("workflow_run_scope_mismatch");
+  });
+});
