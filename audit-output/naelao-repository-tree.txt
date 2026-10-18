@@ -1,8 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1835
-Inventory revision: 4e4be8cf before this audit follow-up (no paths added or removed)
+Files: 1840
+Files with source or executable-configuration extensions: 1634
+Inventory revision: e54b1b83 plus the webhook audit batch files in this working tree
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -938,14 +939,19 @@ packages/
     tsconfig.json
   webhooks/
     src/
+      index.test.ts
       index.ts
       ingress.test.ts
       ingress.ts
+      lenient-zod.test.ts
       lenient-zod.ts
+      replay-lake.test.ts
       replay-lake.ts
+      schema-repair.test.ts
       schema-repair.ts
     package.json
     tsconfig.json
+    vitest.config.ts
 patches/
   @eshaz__web-worker@1.2.2.patch
 repomix/

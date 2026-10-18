@@ -1,8 +1,8 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1835` tracked/non-ignored files; `1629` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`).
-Status: every checklist item below is pending. This plan and inventory are not evidence that the listed files have already been reviewed.
+Inventory basis: `1840` tracked/non-ignored files; `1634` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`).
+Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
 
@@ -341,7 +341,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/migrations/0013_space_type_tools.sql`
 - [ ] `infra/migrations/0014_eval.sql`
 - [ ] `infra/migrations/0015_artifacts.sql`
-- [ ] `infra/migrations/0016_webhook_subscriptions.sql`
+- [x] `infra/migrations/0016_webhook_subscriptions.sql`
 - [ ] `infra/migrations/0017_idempotency_keys.sql`
 - [ ] `infra/migrations/0018_active_sessions.sql`
 - [ ] `infra/migrations/0019_oauth_providers.sql`
@@ -794,14 +794,19 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/webhooks`
 
-- [ ] `packages/webhooks/package.json`
-- [ ] `packages/webhooks/src/index.ts`
-- [ ] `packages/webhooks/src/ingress.test.ts`
-- [ ] `packages/webhooks/src/ingress.ts`
-- [ ] `packages/webhooks/src/lenient-zod.ts`
-- [ ] `packages/webhooks/src/replay-lake.ts`
-- [ ] `packages/webhooks/src/schema-repair.ts`
-- [ ] `packages/webhooks/tsconfig.json`
+- [x] `packages/webhooks/vitest.config.ts`
+- [x] `packages/webhooks/src/index.test.ts`
+- [x] `packages/webhooks/src/lenient-zod.test.ts`
+- [x] `packages/webhooks/src/replay-lake.test.ts`
+- [x] `packages/webhooks/src/schema-repair.test.ts`
+- [x] `packages/webhooks/package.json`
+- [x] `packages/webhooks/src/index.ts`
+- [x] `packages/webhooks/src/ingress.test.ts`
+- [x] `packages/webhooks/src/ingress.ts`
+- [x] `packages/webhooks/src/lenient-zod.ts`
+- [x] `packages/webhooks/src/replay-lake.ts`
+- [x] `packages/webhooks/src/schema-repair.ts`
+- [x] `packages/webhooks/tsconfig.json`
 
 ### `repomix/apply-batch-patch.mjs`
 
@@ -1144,7 +1149,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/packages/rag.test.ts`
 - [ ] `tests/unit/packages/realtime-broadcast.test.ts`
 - [ ] `tests/unit/packages/security.test.ts`
-- [ ] `tests/unit/packages/webhooks.test.ts`
+- [x] `tests/unit/packages/webhooks.test.ts`
 - [ ] `tests/unit/personal-plan-whop-checkout.test.ts`
 - [ ] `tests/unit/pipedream-connector-connect.test.ts`
 - [ ] `tests/unit/plan-tool.test.ts`

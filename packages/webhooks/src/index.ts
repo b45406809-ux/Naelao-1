@@ -1,4 +1,5 @@
 // Outbound webhook signing (HMAC-SHA256), delivery queue publishing, retry state
+import { checkSsrf } from "@naelao/security";
 
 export interface WebhookSubscription {
   id: string;
@@ -24,7 +25,10 @@ export interface WebhookDelivery {
 }
 
 export interface WebhookQueue {
-  send(msg: WebhookQueueMessage): Promise<void>;
+  send(
+    msg: WebhookQueueMessage,
+    options?: { delaySeconds: number }
+  ): Promise<void>;
 }
 
 export interface WebhookQueueMessage {
@@ -40,7 +44,11 @@ export interface WebhookQueueMessage {
 }
 
 // Sign a webhook payload with HMAC-SHA256
-export async function signWebhookPayload(payload: string, secret: string, timestamp: number): Promise<string> {
+export async function signWebhookPayload(
+  payload: string,
+  secret: string,
+  timestamp: number
+): Promise<string> {
   const signingInput = `${timestamp}.${payload}`;
   const key = await crypto.subtle.importKey(
     "raw",
@@ -49,8 +57,14 @@ export async function signWebhookPayload(payload: string, secret: string, timest
     false,
     ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput));
-  const hexSig = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const sig = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(signingInput)
+  );
+  const hexSig = Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
   return `t=${timestamp},v1=${hexSig}`;
 }
 
@@ -61,17 +75,23 @@ export async function verifyWebhookSignature(
   secret: string,
   toleranceSeconds = 300
 ): Promise<boolean> {
-  const parts = Object.fromEntries(signatureHeader.split(",").map((p) => p.split("=")));
-  const timestamp = parseInt(parts["t"] ?? "0", 10);
-  if (Math.abs(Date.now() / 1000 - timestamp) > toleranceSeconds) return false;
+  if (!Number.isFinite(toleranceSeconds) || toleranceSeconds < 0) return false;
+  const match = /^t=(\d{1,12}),v1=([0-9a-f]{64})$/i.exec(signatureHeader);
+  if (!match?.[1] || !match[2]) return false;
+  const timestamp = Number(match[1]);
+  if (
+    !Number.isSafeInteger(timestamp) ||
+    Math.abs(Date.now() / 1000 - timestamp) > toleranceSeconds
+  )
+    return false;
   const expectedSig = await signWebhookPayload(payload, secret, timestamp);
   const expected = expectedSig.split(",v1=")[1] ?? "";
-  const received = parts["v1"] ?? "";
-  if (expected.length !== received.length) return false;
+  const received = match[2];
   const expBuf = hexToBuf(expected);
   const recBuf = hexToBuf(received);
   let diff = 0;
-  for (let i = 0; i < expBuf.length; i++) diff |= (expBuf[i] ?? 0) ^ (recBuf[i] ?? 0);
+  for (let i = 0; i < expBuf.length; i++)
+    diff |= (expBuf[i] ?? 0) ^ (recBuf[i] ?? 0);
   return diff === 0;
 }
 
@@ -87,10 +107,13 @@ export async function enqueueWebhook(
   const now = new Date().toISOString();
   const payloadStr = JSON.stringify(payload);
 
-  await db.prepare(
-    `INSERT INTO webhook_deliveries (id, subscription_id, tenant_id, event_type, payload, status, attempt_count, next_attempt_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`
-  ).bind(deliveryId, subscription.id, subscription.tenant_id, eventType, payloadStr, now, now, now).run();
+  await db
+    .prepare(
+      `INSERT INTO webhook_deliveries (id, subscription_id, event_type, payload_json, status, attempt_count, next_attempt_at, created_at)
+     VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)`
+    )
+    .bind(deliveryId, subscription.id, eventType, payloadStr, now, now)
+    .run();
 
   await queue.send({
     type: "webhook_delivery",
@@ -108,17 +131,54 @@ export async function enqueueWebhook(
 }
 
 // Deliver a webhook with retry backoff
-const RETRY_DELAYS_SECONDS = [0, 30, 60, 300, 1800]; // 5 attempts
+const RETRY_DELAYS_SECONDS = [30, 60, 300, 1800]; // Initial attempt plus four retries
+const MAX_WEBHOOK_REDIRECTS = 5;
+
+class WebhookPolicyError extends Error {}
+
+async function fetchWebhook(url: string, init: RequestInit): Promise<Response> {
+  let target = url;
+  for (let redirects = 0; redirects <= MAX_WEBHOOK_REDIRECTS; redirects++) {
+    const check = await checkSsrf(target);
+    if (check.blocked)
+      throw new WebhookPolicyError("webhook_destination_blocked");
+    const response = await fetch(target, { ...init, redirect: "manual" });
+    if (response.status < 300 || response.status >= 400) return response;
+    const location = response.headers.get("location");
+    await response.body?.cancel().catch(() => undefined);
+    if (!location || redirects === MAX_WEBHOOK_REDIRECTS) {
+      throw new WebhookPolicyError("webhook_redirect_limit_exceeded");
+    }
+    try {
+      target = new URL(location, target).toString();
+    } catch {
+      throw new WebhookPolicyError("webhook_redirect_invalid");
+    }
+  }
+  throw new WebhookPolicyError("webhook_redirect_limit_exceeded");
+}
 
 export async function deliverWebhook(
   msg: WebhookQueueMessage,
   queue: WebhookQueue,
   db: D1Database
 ): Promise<void> {
+  if (
+    !Number.isSafeInteger(msg.attempt) ||
+    msg.attempt < 1 ||
+    msg.attempt > 5
+  ) {
+    throw new Error("invalid_webhook_attempt");
+  }
   const timestamp = Math.floor(Date.now() / 1000);
-  const signature = await signWebhookPayload(msg.payload, msg.secret, timestamp);
+  const signature = await signWebhookPayload(
+    msg.payload,
+    msg.secret,
+    timestamp
+  );
+  let response: Response;
   try {
-    const resp = await fetch(msg.url, {
+    response = await fetchWebhook(msg.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -129,36 +189,69 @@ export async function deliverWebhook(
       body: msg.payload,
       signal: AbortSignal.timeout(30_000),
     });
-    if (resp.ok) {
-      await db.prepare(
-        "UPDATE webhook_deliveries SET status = 'delivered', attempt_count = ?, updated_at = ? WHERE id = ?"
-      ).bind(msg.attempt, new Date().toISOString(), msg.delivery_id).run();
+  } catch (error) {
+    if (error instanceof WebhookPolicyError) {
+      await db
+        .prepare(
+          "UPDATE webhook_deliveries SET status = 'failed', attempt_count = ?, next_attempt_at = NULL, last_response_status = NULL WHERE id = ?"
+        )
+        .bind(msg.attempt, msg.delivery_id)
+        .run();
       return;
     }
-    throw new Error(`HTTP ${resp.status}`);
-  } catch (err) {
-    const nextAttempt = msg.attempt + 1;
-    const delaySeconds = RETRY_DELAYS_SECONDS[nextAttempt] ?? null;
-    const now = new Date().toISOString();
-    if (delaySeconds !== null) {
-      const nextAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
-      await db.prepare(
-        "UPDATE webhook_deliveries SET attempt_count = ?, next_attempt_at = ?, last_error = ?, updated_at = ? WHERE id = ?"
-      ).bind(nextAttempt, nextAt, String(err), now, msg.delivery_id).run();
-      // Re-enqueue with delay
-      await queue.send({ ...msg, attempt: nextAttempt });
-    } else {
-      await db.prepare(
-        "UPDATE webhook_deliveries SET status = 'failed', attempt_count = ?, last_error = ?, updated_at = ? WHERE id = ?"
-      ).bind(nextAttempt, String(err), now, msg.delivery_id).run();
-    }
+    await scheduleRetry(msg, queue, db, null);
+    return;
   }
+  if (response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    await db
+      .prepare(
+        "UPDATE webhook_deliveries SET status = 'delivered', attempt_count = ?, next_attempt_at = NULL, last_response_status = ?, delivered_at = ? WHERE id = ?"
+      )
+      .bind(
+        msg.attempt,
+        response.status,
+        new Date().toISOString(),
+        msg.delivery_id
+      )
+      .run();
+    return;
+  }
+  await response.body?.cancel().catch(() => undefined);
+  await scheduleRetry(msg, queue, db, response.status);
+}
+
+async function scheduleRetry(
+  msg: WebhookQueueMessage,
+  queue: WebhookQueue,
+  db: D1Database,
+  responseStatus: number | null
+): Promise<void> {
+  const nextAttempt = msg.attempt + 1;
+  const delaySeconds = RETRY_DELAYS_SECONDS[msg.attempt - 1];
+  if (delaySeconds !== undefined) {
+    const nextAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
+    await db
+      .prepare(
+        "UPDATE webhook_deliveries SET attempt_count = ?, next_attempt_at = ?, last_response_status = ? WHERE id = ?"
+      )
+      .bind(nextAttempt, nextAt, responseStatus, msg.delivery_id)
+      .run();
+    await queue.send({ ...msg, attempt: nextAttempt }, { delaySeconds });
+    return;
+  }
+  await db
+    .prepare(
+      "UPDATE webhook_deliveries SET status = 'failed', attempt_count = ?, next_attempt_at = NULL, last_response_status = ? WHERE id = ?"
+    )
+    .bind(nextAttempt, responseStatus, msg.delivery_id)
+    .run();
 }
 
 function hexToBuf(hex: string): Uint8Array {
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
+    bytes[i / 2] = Number.parseInt(hex.slice(i, i + 2), 16);
   }
   return bytes;
 }

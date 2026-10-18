@@ -542,6 +542,9 @@ importers:
 
   packages/webhooks:
     dependencies:
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../security
       '@naelao/types':
         specifier: workspace:*
         version: link:../types
