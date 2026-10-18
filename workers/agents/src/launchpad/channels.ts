@@ -298,7 +298,7 @@ const telegramAdapter: ChannelAdapter = {
       const data = callback["data"];
       // Executive controls require a private human conversation, never a shared group identity.
       if (!from || chat?.["type"] !== "private" || chat["id"] !== from["id"] || typeof data !== "string" || !/^review:[a-zA-Z0-9_-]{1,48}$/.test(data)) return null;
-      return { channel: "telegram", channel_user_id: String(from["id"]), text: data, external_id: `callback:${String(callback["id"])}`, timestamp: Date.now() };
+      return { channel: "telegram", channel_user_id: String(from["id"]), recipient_id: String(chat["id"]), text: data, external_id: `callback:${String(callback["id"])}`, timestamp: Date.now() };
     }
     const message = raw["message"] as Record<string, unknown> | undefined;
     if (!message) return null;
@@ -309,17 +309,19 @@ const telegramAdapter: ChannelAdapter = {
 
     const from = message["from"] as Record<string, unknown> | undefined;
     const chat = message["chat"] as Record<string, unknown> | undefined;
-    // Prefer the CHAT id, not the user id: it is what a reply has to be addressed to, and in a
-    // group the two differ. Falling back to the sender keeps a malformed update from being
-    // silently dropped.
+    // Keep external subject identity and the reply destination separate. Group chats share a
+    // destination but each participant gets a distinct extension session.
     const conversationId = chat?.["id"] ?? from?.["id"];
     if (conversationId === undefined || conversationId === null) return null;
+    const subjectId = from?.["id"] ?? conversationId;
 
     const messageId = message["message_id"];
     const date = message["date"];
     return {
       channel: "telegram",
-      channel_user_id: String(conversationId),
+      channel_user_id: String(subjectId),
+      recipient_id: String(conversationId),
+      ...(typeof message["message_thread_id"] === "number" ? { thread_id: String(message["message_thread_id"]) } : {}),
       text,
       // message_id is only unique per chat, so the dedupe key has to carry both.
       external_id: `${String(conversationId)}:${String(messageId ?? "")}`,

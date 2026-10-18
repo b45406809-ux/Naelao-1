@@ -1887,6 +1887,7 @@ export interface ExtensionProviderConnection {
   provider: string;
   account_id: string;
   account_label: string | null;
+  routing_keys: string[];
   scopes: string[];
   status: "active" | "expired" | "revoked" | "error";
   connected_at: string;
@@ -1900,6 +1901,19 @@ export async function getExtensionProviderConnection(spaceId: string, projectId:
 
 export async function startExtensionSlackOAuth(spaceId: string, projectId: string, installationId: string, connectionId: string, returnUrl: string, session: SessionCredentials): Promise<{ authorize_url: string }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}/oauth/slack/start`, { method: "POST", session, body: JSON.stringify({ return_url: returnUrl }) });
+}
+
+export async function connectExtensionTelegram(spaceId: string, projectId: string, installationId: string, connectionId: string, botToken: string, session: SessionCredentials): Promise<{ connected: boolean; account_label: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}/telegram/connect`, { method: "POST", session, body: JSON.stringify({ bot_token: botToken }) });
+}
+
+export async function listExtensionSlackRoutes(spaceId: string, projectId: string, installationId: string, connectionId: string, session: SessionCredentials): Promise<Array<{ id: string; name: string; private: boolean }>> {
+  const result = await apiFetch<{ channels: Array<{ id: string; name: string; private: boolean }> }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}/routes/available`, { session });
+  return result.channels;
+}
+
+export async function saveExtensionSlackRoutes(spaceId: string, projectId: string, installationId: string, connectionId: string, channelIds: string[], session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/connections/${encodeURIComponent(connectionId)}/routes`, { method: "PUT", session, body: JSON.stringify({ channel_ids: channelIds }) });
 }
 
 export async function disconnectExtensionProvider(spaceId: string, projectId: string, installationId: string, connectionId: string, session: SessionCredentials): Promise<{ removed: boolean }> {
@@ -1961,6 +1975,23 @@ export interface ChannelExtensionInboxEvent {
   assigned_by?: string | null;
   assigned_at?: number | null;
   created_at: number;
+}
+
+export interface ChannelExtensionInboxNote { note_id: string; actor_id: string; note_text: string; created_at: number }
+
+export async function listChannelExtensionInboxNotes(spaceId: string, projectId: string, installationId: string, eventId: string, session: SessionCredentials): Promise<ChannelExtensionInboxNote[]> {
+  const result = await apiFetch<{ notes: ChannelExtensionInboxNote[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(installationId)}/inbox/notes?${new URLSearchParams({ event_id: eventId })}`, { session });
+  return result.notes;
+}
+
+export async function addChannelExtensionInboxNote(spaceId: string, projectId: string, installationId: string, eventId: string, noteText: string, session: SessionCredentials): Promise<ChannelExtensionInboxNote> {
+  const result = await apiFetch<{ note: ChannelExtensionInboxNote }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(installationId)}/inbox/notes`, { method: "POST", session, body: JSON.stringify({ event_id: eventId, note_text: noteText }) });
+  return result.note;
+}
+
+export async function listProjectMembers(spaceId: string, projectId: string, session: SessionCredentials): Promise<Array<{ user_id: string; role: string }>> {
+  const result = await apiFetch<{ data?: Array<{ user_id: string; role: string }> }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/members`, { session });
+  return result.data ?? [];
 }
 
 export interface ChannelExtensionInboxPage {

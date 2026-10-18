@@ -105,10 +105,17 @@ async function resolveExtensionChannelCredential(env: NotificationsEnv, input: {
   return row ? resolveChannelCredential(env, input.tenantId, input.spaceId, row.credential_name) : null;
 }
 
+async function markExtensionConnectionError(env: NotificationsEnv, input: { tenantId: string; spaceId: string; installationId: string; connectionId: string }): Promise<void> {
+  const now = new Date().toISOString();
+  await env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='error',updated_at=?
+    WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=? AND status='active'`)
+    .bind(now, input.tenantId, input.spaceId, input.installationId, input.connectionId).run();
+}
+
 /** One reply, out to a chat channel. Returns why it didn't go rather than throwing. */
 async function sendChatMessage(
   env: NotificationsEnv,
-  opts: { channel: string; tenantId: string; spaceId: string; to: string; message: string; actions?: Array<{ id: string; label: string }>; installationId?: string; providerConnectionId?: string; threadTs?: string }
+  opts: { channel: string; tenantId: string; spaceId: string; to: string; message: string; actions?: Array<{ id: string; label: string }>; installationId?: string; providerConnectionId?: string; threadTs?: string; messageThreadId?: number }
 ): Promise<{ delivered: boolean; reason?: string; status?: number }> {
   const { channel, to, message } = opts;
   const actions = opts.actions?.filter(action => /^review:[a-zA-Z0-9_-]{1,48}$/.test(action.id) && typeof action.label === "string" && action.label.length > 0 && action.label.length <= 20).slice(0, 3) ?? [];
@@ -152,9 +159,12 @@ async function sendChatMessage(
       resp = await fetch(`https://api.telegram.org/bot${cred}/sendMessage`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: to, text: message, ...(actions.length ? { reply_markup: { inline_keyboard: [actions.map(action => ({ text: action.label, callback_data: action.id }))] } } : {}) }),
+        body: JSON.stringify({ chat_id: to, text: message, ...(opts.messageThreadId ? { message_thread_id: opts.messageThreadId } : {}), ...(actions.length ? { reply_markup: { inline_keyboard: [actions.map(action => ({ text: action.label, callback_data: action.id }))] } } : {}) }),
         signal: AbortSignal.timeout(8_000),
       });
+      if (resp.status === 401 && opts.installationId && opts.providerConnectionId) {
+        await markExtensionConnectionError(env, { tenantId: opts.tenantId, spaceId: opts.spaceId, installationId: opts.installationId, connectionId: opts.providerConnectionId });
+      }
     } else if (channel === "slack") {
       resp = await fetch("https://slack.com/api/chat.postMessage", {
         method: "POST",
@@ -165,7 +175,12 @@ async function sendChatMessage(
       // HTTP status alone would report a silent drop as a success.
       const payload = await resp.clone().json<{ ok?: boolean; error?: string }>()
         .catch(() => ({ ok: false }) as { ok?: boolean; error?: string });
-      if (!payload.ok) return { delivered: false, reason: `slack: ${payload.error ?? "rejected"}`, status: resp.status };
+      if (!payload.ok) {
+        if (opts.installationId && opts.providerConnectionId && ["invalid_auth", "token_revoked", "account_inactive", "missing_scope"].includes(payload.error ?? "")) {
+          await markExtensionConnectionError(env, { tenantId: opts.tenantId, spaceId: opts.spaceId, installationId: opts.installationId, connectionId: opts.providerConnectionId });
+        }
+        return { delivered: false, reason: `slack: ${payload.error ?? "rejected"}`, status: resp.status };
+      }
     } else if (channel === "discord") {
       resp = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(to)}/messages`, {
         method: "POST",
@@ -215,7 +230,7 @@ async function sendChatMessage(
     }
 
     if (!resp.ok) return { delivered: false, reason: `${channel} returned ${resp.status}`, status: resp.status };
-    if (channel === "telegram" && !(await resp.clone().json<{ ok?: boolean }>().catch(() => ({ ok: false }))).ok) return { delivered: false, reason: "telegram rejected the message", status: resp.status };
+    if (channel === "telegram" && !(await resp.clone().json<{ ok?: boolean; description?: string }>().catch(() => ({ ok: false }))).ok) return { delivered: false, reason: "telegram rejected the message", status: resp.status };
     return { delivered: true };
   } catch (err) {
     return { delivered: false, reason: `${channel} send failed: ${(err as Error).message}` };
@@ -720,6 +735,7 @@ app.post("/internal/notify", async (c) => {
     installation_id?: string;
     provider_connection_id?: string;
     thread_ts?: string;
+    message_thread_id?: string;
   }>();
 
   if (body.channel === "email") {
@@ -770,6 +786,7 @@ app.post("/internal/notify", async (c) => {
       ...(typeof body.installation_id === "string" ? { installationId: body.installation_id } : {}),
       ...(typeof body.provider_connection_id === "string" ? { providerConnectionId: body.provider_connection_id } : {}),
       ...(typeof body.thread_ts === "string" && /^\d{1,20}\.\d{1,10}$/.test(body.thread_ts) ? { threadTs: body.thread_ts } : {}),
+      ...(typeof body.message_thread_id === "string" && /^\d{1,20}$/.test(body.message_thread_id) ? { messageThreadId: Number(body.message_thread_id) } : {}),
     });
     return c.json(
       { delivered: result.delivered, channel: chatChannel, ...(result.reason ? { reason: result.reason } : {}) },

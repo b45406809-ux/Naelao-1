@@ -8,6 +8,13 @@ describe("mobile review ingress identity", () => {
     expect(adapter.normalizeInbound({ callback_query: { ...callback, message: { chat: { id: -7, type: "group" } } } })).toBeNull();
     expect(adapter.normalizeInbound({ callback_query: { ...callback, data: "approve:approval" } })).toBeNull();
   });
+  it("verifies Telegram webhook bearer secrets and keeps group replies addressed to the chat", async () => {
+    const adapter = getAdapter("telegram")!;
+    expect(await adapter.verifySignature({ rawBody: "{}", headers: { "x-telegram-bot-api-secret-token": "secret-a" }, secret: "secret-a" })).toBe(true);
+    expect(await adapter.verifySignature({ rawBody: "{}", headers: { "x-telegram-bot-api-secret-token": "secret-b" }, secret: "secret-a" })).toBe(false);
+    expect(adapter.normalizeInbound({ message: { message_id: 12, date: 1, text: "hello", chat: { id: -123, type: "group" }, from: { id: 42 } } }))
+      .toMatchObject({ channel_user_id: "42", recipient_id: "-123", external_id: "-123:12" });
+  });
   it("keeps WhatsApp review-button replies as controls without accepting arbitrary button commands", () => {
     const adapter = getAdapter("whatsapp")!;
     const payload = (id: string) => ({ entry: [{ changes: [{ value: { messages: [{ from: "123", id: "event", timestamp: "1", interactive: { button_reply: { id } } }] } }] }] });

@@ -345,6 +345,13 @@ app.all("/v1/connectors/:platform/oauth/callback", async (c) => {
   );
 });
 
+// Project extension provider callbacks use a short-lived single-use state ticket as their auth.
+app.all("/v1/extensions/oauth/slack/callback", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit));
+});
+
 // ── Public Composio "click Install" connect callback (unauthenticated; the single-use `ticket`
 // query param is the auth) ── same posture/registration as the OAuth callback above — Composio
 // redirects the raw browser here with no Naelao credential attached.
@@ -366,6 +373,14 @@ app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
   return c.env.AGENTS_WORKER.fetch(
     new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
   );
+});
+
+// Telegram bots installed for project extensions have their own secret-verified, installation-
+// scoped webhook path. It must stay outside the JWT-gated API group like the shared ingress.
+app.all("/v1/channels/telegram/extensions/:spaceId/:installationId/:connectionId", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit));
 });
 
 // Scan-to-connect (launchpad/channel-pairing.ts): the same public posture, for Naelao's OWN app on
@@ -1305,6 +1320,12 @@ api.all("/spaces/:spaceId/channels/*", async (c) =>
 // Customer PSTN number credentials, policy, and lifecycle are owned by the Agents worker.
 // Keep this specific route before the general /spaces/* proxy below.
 api.all("/spaces/:spaceId/customer-voice/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Provider OAuth, credential vaulting, and connection lifecycle for a specific composed project
+// extension are Agents-owned. Keep this before `/spaces/*` so it does not land in Spaces Worker.
+api.all("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 

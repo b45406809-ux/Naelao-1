@@ -17,8 +17,8 @@
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -129,14 +129,18 @@ function ExtensionConnectionControls({ spaceId, projectId, session, installation
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [availableRoutes, setAvailableRoutes] = React.useState<Array<{ id: string; name: string; private: boolean }>>([]);
+  const [routingKeys, setRoutingKeys] = React.useState<string[]>([]);
+  const [telegramToken, setTelegramToken] = React.useState("");
   const refresh = React.useCallback(async () => {
     const value = await getExtensionProviderConnection(spaceId, projectId, installation.instance_id, connection.id, session);
     setStatus(value);
+    setRoutingKeys(value?.routing_keys ?? []);
   }, [spaceId, projectId, installation.instance_id, connection.id, session]);
   React.useEffect(() => {
     let cancelled = false;
     getExtensionProviderConnection(spaceId, projectId, installation.instance_id, connection.id, session)
-      .then(value => { if (!cancelled) setStatus(value); })
+      .then(value => { if (!cancelled) { setStatus(value); setRoutingKeys(value?.routing_keys ?? []); } })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load connection status."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -163,18 +167,88 @@ function ExtensionConnectionControls({ spaceId, projectId, session, installation
     catch (err) { setError(err instanceof Error ? err.message : "Couldn't disconnect this provider."); }
     finally { setBusy(false); }
   }
+  async function loadRoutes() {
+    setBusy(true); setError(null);
+    try { setAvailableRoutes(await listExtensionSlackRoutes(spaceId, projectId, installation.instance_id, connection.id, session)); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't load Slack conversations."); }
+    finally { setBusy(false); }
+  }
+  async function saveRoutes() {
+    setBusy(true); setError(null); setNotice(null);
+    try { await saveExtensionSlackRoutes(spaceId, projectId, installation.instance_id, connection.id, routingKeys, session); await refresh(); setNotice("Slack conversation routing saved."); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't save Slack routing."); }
+    finally { setBusy(false); }
+  }
+  async function connectTelegram() {
+    setBusy(true); setError(null); setNotice(null);
+    try { const result = await connectExtensionTelegram(spaceId, projectId, installation.instance_id, connection.id, telegramToken, session); setTelegramToken(""); await refresh(); setNotice(`Telegram ${result.account_label} connected to this extension.`); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't connect this Telegram bot."); }
+    finally { setBusy(false); }
+  }
   return <div style={{ margin: "6px 0 4px 12px", fontSize: 11.5, color: "var(--text2)" }}>
-    <span>{connection.id} · {connection.provider}: {loading ? "checking…" : status?.status === "active" ? `connected to ${status.account_label ?? status.account_id}` : "not connected"}</span>
+    <span>{connection.id} · {connection.provider}: {loading ? "checking…" : status?.status === "active" ? `connected to ${status.account_label ?? status.account_id}` : status?.status === "error" || status?.status === "expired" ? "needs reconnect" : "not connected"}</span>
     {canManage && connection.provider === "slack" && <button type="button" className="btn-ghost" style={{ marginLeft: 8, fontSize: 11 }} disabled={busy || loading} onClick={() => void (status?.status === "active" ? disconnect() : connect())}>
       {busy ? "Working…" : status?.status === "active" ? "Disconnect" : "Connect Slack workspace"}
     </button>}
+    {canManage && connection.provider === "telegram" && <>
+      {status?.status === "active" ? <button type="button" className="btn-ghost" style={{ marginLeft: 8, fontSize: 11 }} disabled={busy || loading} onClick={() => void disconnect()}>{busy ? "Disconnecting…" : "Disconnect Telegram bot"}</button>
+        : <form onSubmit={event => { event.preventDefault(); void connectTelegram(); }} style={{ display: "flex", gap: 5, marginTop: 5 }}>
+          <input type="password" autoComplete="new-password" aria-label={`Telegram bot token for ${connection.id}`} placeholder="Paste the token from BotFather" value={telegramToken} onChange={change => setTelegramToken(change.target.value)} style={{ minWidth: 220, flex: 1, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: 5 }} />
+          <button type="submit" className="btn-ghost" disabled={busy || !telegramToken.trim()}>{busy ? "Connecting…" : "Connect Telegram bot"}</button>
+        </form>}
+      {status?.status !== "active" && <div style={{ marginTop: 3, fontSize: 10.5, color: "var(--text3)" }}>Create a bot with BotFather. The token is sent directly to Naelao’s credential vault and is not shown again.</div>}
+    </>}
+    {canManage && connection.provider === "slack" && status?.status === "active" && <div style={{ marginTop: 6 }}>
+      <div style={{ fontSize: 11, color: "var(--text3)" }}>Choose where this extension responds. Each Slack conversation can route to only one extension in this Space.</div>
+      <button type="button" className="btn-ghost" style={{ marginTop: 4, fontSize: 10.5 }} disabled={busy} onClick={() => void loadRoutes()}>{busy ? "Loading…" : availableRoutes.length ? "Refresh Slack conversations" : "Load Slack conversations"}</button>
+      {availableRoutes.length > 0 && <><select multiple aria-label={`Slack conversation routing for ${connection.id}`} value={routingKeys} onChange={change => setRoutingKeys(Array.from(change.target.selectedOptions, option => option.value))} style={{ display: "block", width: "100%", maxWidth: 360, minHeight: 84, marginTop: 5, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: 5 }}>
+        {availableRoutes.map(item => <option key={item.id} value={item.id}>{item.name}{item.private ? " · private" : ""}</option>)}
+      </select><button type="button" className="btn-ghost" style={{ marginTop: 5, fontSize: 10.5 }} disabled={busy || !routingKeys.length} onClick={() => void saveRoutes()}>{busy ? "Saving…" : `Route ${routingKeys.length} conversation${routingKeys.length === 1 ? "" : "s"}`}</button></>}
+      {availableRoutes.length === 0 && !busy && <span style={{ display: "block", marginTop: 3 }}>Select a conversation the bot has joined before routing messages to this extension.</span>}
+    </div>}
     {error && <span role="alert" style={{ display: "block", color: "var(--danger, #b42318)" }}>{error}</span>}
     {notice && <span role="status" style={{ display: "block" }}>{notice}</span>}
   </div>;
 }
 
+function ExtensionInboxNotes({ spaceId, projectId, installationId, eventId, session }: { spaceId: string; projectId: string; installationId: string; eventId: string; session: SessionCredentials }) {
+  const [notes, setNotes] = React.useState<ChannelExtensionInboxNote[]>([]);
+  const [draft, setDraft] = React.useState("");
+  const [loaded, setLoaded] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  async function load() {
+    setBusy(true); setError(null);
+    try { setNotes(await listChannelExtensionInboxNotes(spaceId, projectId, installationId, eventId, session)); setLoaded(true); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't load team notes."); }
+    finally { setBusy(false); }
+  }
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!text || busy) return;
+    setBusy(true); setError(null);
+    try { const note = await addChannelExtensionInboxNote(spaceId, projectId, installationId, eventId, text, session); setNotes(current => [...current, note]); setLoaded(true); setDraft(""); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't save team note."); }
+    finally { setBusy(false); }
+  }
+  return <details style={{ marginTop: 6 }} onToggle={event => { if (event.currentTarget.open && !loaded && !busy) void load(); }}>
+    <summary style={{ cursor: "pointer", color: "var(--text2)" }}>Team-only notes ({loaded ? notes.length : "view"})</summary>
+    {notes.map(note => <div key={note.note_id} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", padding: "5px 0", borderBottom: "1px solid var(--border)" }}>
+      <span style={{ color: "var(--text3)" }}>{note.actor_id} · {new Date(note.created_at).toLocaleString()}</span><br />{note.note_text}
+    </div>)}
+    {busy && <div role="status">Loading or saving…</div>}
+    {error && <div role="alert" style={{ color: "var(--danger, #b42318)" }}>{error}<button type="button" className="btn-ghost" onClick={() => void load()}>Retry</button></div>}
+    <form onSubmit={submit} style={{ display: "flex", gap: 5, marginTop: 6 }}>
+      <input aria-label="Internal team note" value={draft} onChange={change => setDraft(change.target.value)} maxLength={2000} placeholder="Add a private note for your team" style={{ flex: 1, minWidth: 0, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: 5 }} />
+      <button type="submit" className="btn-ghost" disabled={busy || !draft.trim()}>Add note</button>
+    </form>
+  </details>;
+}
+
 function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId: string; projectId: string; session: SessionCredentials; installation: ChannelExtensionInstallation }) {
   const [events, setEvents] = React.useState<ChannelExtensionInboxEvent[]>([]);
+  const [projectMembers, setProjectMembers] = React.useState<Array<{ user_id: string; role: string }>>([]);
   const [pausedEvents, setPausedEvents] = React.useState<Set<string>>(() => new Set());
   const [cursor, setCursor] = React.useState<{ before: number; beforeId: string } | null>(null);
   const [loadingMore, setLoadingMore] = React.useState(false);
@@ -187,8 +261,8 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
   const [error, setError] = React.useState<string | null>(null);
   React.useEffect(() => {
     let cancelled = false;
-    listChannelExtensionInbox(spaceId, projectId, installation.instance_id, session)
-      .then(page => { if (!cancelled) { setEvents(page.events); setCursor(page.next_before !== null && page.next_before_id ? { before: page.next_before, beforeId: page.next_before_id } : null); } })
+    Promise.all([listChannelExtensionInbox(spaceId, projectId, installation.instance_id, session), listProjectMembers(spaceId, projectId, session)])
+      .then(([page, members]) => { if (!cancelled) { setEvents(page.events); setProjectMembers(members); setCursor(page.next_before !== null && page.next_before_id ? { before: page.next_before, beforeId: page.next_before_id } : null); } })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load extension inbox events."); });
     return () => { cancelled = true; };
   }, [spaceId, projectId, installation.instance_id, session]);
@@ -212,12 +286,11 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't pause this conversation."); }
     finally { setTakingOver(null); }
   }
-  async function toggleAssignment(event: ChannelExtensionInboxEvent) {
+  async function setAssignment(event: ChannelExtensionInboxEvent, nextAssignee: string | null) {
     if (assigning) return;
-    if (event.assigned_to && event.assigned_to !== session.endUserId) { setError("This event is assigned to another project member."); return; }
+    if (event.assigned_to === nextAssignee) return;
     setAssigning(event.event_id); setError(null);
     try {
-      const nextAssignee = event.assigned_to === session.endUserId ? null : session.endUserId;
       await assignChannelExtensionInboxEvent(spaceId, projectId, installation.instance_id, event.event_id, nextAssignee, event.assigned_to ?? null, session);
       setEvents(current => current.map(item => item.event_id === event.event_id ? { ...item, assigned_to: nextAssignee, assigned_by: session.endUserId, assigned_at: nextAssignee ? Date.now() : null } : item));
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't update inbox assignment."); }
@@ -263,14 +336,19 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
     {!error && events.length === 0 && <div style={{ color: "var(--text3)", fontSize: 11, marginTop: 6 }}>No events for this installation yet.</div>}
     {events.map(event => <article key={event.event_id} style={{ marginTop: 7, padding: 8, border: "1px solid var(--border)", borderRadius: 6, fontSize: 11 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><span>{event.channel} · {event.status}</span><time>{new Date(event.created_at).toLocaleString()}</time></div>
-      <div style={{ marginTop: 4, color: "var(--text2)" }}>{event.assigned_to ? `Assigned to ${event.assigned_to}` : "Unassigned"}
-        <button type="button" className="btn-ghost" style={{ marginLeft: 6, fontSize: 10.5 }} disabled={!!assigning || !!event.assigned_to && event.assigned_to !== session.endUserId}
-          onClick={() => void toggleAssignment(event)}>{assigning === event.event_id ? "Saving…" : event.assigned_to === session.endUserId ? "Unassign me" : "Assign to me"}</button>
+      <div style={{ marginTop: 4, color: "var(--text2)" }}>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>Assignee
+          <select aria-label={`Assign inbox event ${event.event_id}`} value={event.assigned_to ?? ""} disabled={!!assigning} onChange={change => void setAssignment(event, change.target.value || null)} style={{ maxWidth: 180, marginLeft: 4, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: "3px 5px" }}>
+            <option value="">Unassigned</option>
+            {projectMembers.map(member => <option key={member.user_id} value={member.user_id}>{member.user_id}{member.role === "owner" ? " · owner" : ""}</option>)}
+          </select>
+        </label>
       </div>
       <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginTop: 5 }}>{event.text}</div>
       {event.reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Reply: {event.reply_text}</div>}
       {event.human_reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Team reply ({event.human_reply_status}): {event.human_reply_text}</div>}
       {event.error_code && <div role="status" style={{ color: "var(--danger, #b42318)", marginTop: 5 }}>Issue: {event.error_code}</div>}
+      <ExtensionInboxNotes spaceId={spaceId} projectId={projectId} installationId={installation.instance_id} eventId={event.event_id} session={session} />
       <button type="button" className="btn-ghost" style={{ marginTop: 6, fontSize: 10.5 }} disabled={!!exportingConversation} onClick={() => void exportConversation(event.event_id)}>
         {exportingConversation === event.event_id ? "Exporting…" : "Export stored conversation"}
       </button>

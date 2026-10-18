@@ -4275,9 +4275,20 @@ async function fetchInstalledConnectionContext(env: AgentsEnv, tenantId: string,
   return result;
 }
 
-function extensionConnectionCredentialName(installationId: string, connectionId: string, generation: string): string {
+function extensionConnectionCredentialName(installationId: string, connectionId: string, generation: string, provider: "slack" | "telegram" = "slack"): string {
   const digest = [...new TextEncoder().encode(`${installationId}:${connectionId}`)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-  return `EXT_SLACK_${digest.slice(0, 32)}_${generation}`;
+  return `EXT_${provider.toUpperCase()}_${digest.slice(0, 32)}_${generation}`;
+}
+
+function extensionTelegramWebhookCredentialName(installationId: string, connectionId: string, generation: string): string {
+  const digest = [...new TextEncoder().encode(`${installationId}:${connectionId}`)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  return `EXT_TG_WEBHOOK_${digest.slice(0, 32)}_${generation}`;
+}
+
+function randomTelegramWebhookSecret(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = ""; for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/oauth/slack/start", async c => {
@@ -4297,10 +4308,10 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   const redirectUri = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/extensions/oauth/slack/callback`;
   const authorize = new URL("https://slack.com/oauth/v2/authorize");
   authorize.searchParams.set("client_id", c.env.SLACK_CLIENT_ID);
-  authorize.searchParams.set("scope", "chat:write,channels:history,im:history,mpim:history,files:read");
+  authorize.searchParams.set("scope", "chat:write,channels:read,channels:history,groups:read,im:history,mpim:history,files:read");
   authorize.searchParams.set("redirect_uri", redirectUri);
   authorize.searchParams.set("state", ticket);
-  return c.json({ authorize_url: authorize.toString(), provider: "slack", requested_scopes: ["chat:write", "channels:history", "im:history", "mpim:history", "files:read"] });
+  return c.json({ authorize_url: authorize.toString(), provider: "slack", requested_scopes: ["chat:write", "channels:read", "channels:history", "groups:read", "im:history", "mpim:history", "files:read"] });
 });
 
 app.get("/extensions/oauth/slack/callback", async c => {
@@ -4324,10 +4335,6 @@ app.get("/extensions/oauth/slack/callback", async c => {
     if (!result.ok || !result.team?.id || !result.access_token) return fail("slack_install_rejected");
     teamId = result.team.id; teamName = result.team.name ?? "Slack workspace"; botToken = result.access_token; scopes = (result.scope ?? "").split(",").filter(Boolean);
   } catch { return fail("slack_token_exchange_failed"); }
-  const collision = await c.env.PLATFORM_DB.prepare(`SELECT installation_id FROM extension_provider_connections
-    WHERE tenant_id=? AND space_id=? AND provider='slack' AND account_id=? AND status='active'
-      AND NOT (installation_id=? AND connection_id=?) LIMIT 1`).bind(ticket.tenantId, ticket.spaceId, teamId, connection.installationId, connection.connectionId).first();
-  if (collision) return fail("slack_workspace_already_routed");
   const credentialName = extensionConnectionCredentialName(connection.installationId, connection.connectionId, crypto.randomUUID().replaceAll("-", "").slice(0, 12));
   const prior = await c.env.PLATFORM_DB.prepare(`SELECT credential_name FROM extension_provider_connections
     WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`).bind(ticket.tenantId, ticket.spaceId, connection.installationId, connection.connectionId).first<{ credential_name: string }>();
@@ -4339,19 +4346,21 @@ app.get("/extensions/oauth/slack/callback", async c => {
   if (!stored.ok) return fail("credential_store_failed");
   const now = new Date().toISOString();
   try {
-    await c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,handler_sha256,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)
-      VALUES(?,?,?,?,?,'slack',?,?,?,?,?,'active',?,?,?,NULL,?) ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO UPDATE SET
+    await c.env.PLATFORM_DB.batch([c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,handler_sha256,routing_keys_json,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)
+      VALUES(?,?,?,?,?,'slack',?,?,?,?,'[]',?,'active',?,?,?,NULL,?) ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO UPDATE SET
       project_id=excluded.project_id,account_id=excluded.account_id,account_label=excluded.account_label,credential_name=excluded.credential_name,
-      handler_sha256=excluded.handler_sha256,granted_scopes_json=excluded.granted_scopes_json,status='active',connected_by=excluded.connected_by,connected_at=excluded.connected_at,
+      handler_sha256=excluded.handler_sha256,routing_keys_json='[]',granted_scopes_json=excluded.granted_scopes_json,status='active',connected_by=excluded.connected_by,connected_at=excluded.connected_at,
       last_verified_at=excluded.last_verified_at,revoked_at=NULL,updated_at=excluded.updated_at`).bind(ticket.tenantId, ticket.spaceId, connection.projectId,
-      connection.installationId, connection.connectionId, teamId, teamName.slice(0, 120), credentialName, handlerSha256, JSON.stringify(scopes), ticket.userId, now, now, now).run();
+      connection.installationId, connection.connectionId, teamId, teamName.slice(0, 120), credentialName, handlerSha256, JSON.stringify(scopes), ticket.userId, now, now, now),
+      c.env.PLATFORM_DB.prepare(`DELETE FROM extension_provider_routes WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`)
+        .bind(ticket.tenantId, ticket.spaceId, connection.installationId, connection.connectionId)]);
   } catch {
     await deleteConnectorCredentialByName(c.env, ticket.tenantId, ticket.spaceId, credentialName);
     return fail("slack_workspace_connection_conflict");
   }
   if (prior?.credential_name && prior.credential_name !== credentialName) {
     const priorToken = await resolveConnectorCredential(c.env, ticket.tenantId, ticket.spaceId, prior.credential_name);
-    if (priorToken) { try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${priorToken}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* new binding is already active */ } }
+    if (priorToken && priorToken !== botToken) { try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${priorToken}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* new binding is already active */ } }
     await deleteConnectorCredentialByName(c.env, ticket.tenantId, ticket.spaceId, prior.credential_name);
   }
   const target = new URL(ticket.returnUrl); target.searchParams.set("extension_connection_connected", "slack");
@@ -4364,11 +4373,142 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connect
   const { role: callerRole } = getCallerIdentity(c);
   const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
   if (!role || !["owner", "admin"].includes(role)) throw forbidden("Only a Space owner or admin may view extension provider status");
-  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,account_id,account_label,granted_scopes_json,status,connected_at,last_verified_at
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,account_id,account_label,routing_keys_json,granted_scopes_json,status,connected_at,last_verified_at
     FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=?`)
-    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string; account_id: string; account_label: string | null; granted_scopes_json: string; status: string; connected_at: string; last_verified_at: string | null }>();
+    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string; account_id: string; account_label: string | null; routing_keys_json: string; granted_scopes_json: string; status: string; connected_at: string; last_verified_at: string | null }>();
   if (!row) return c.json({ connection: null });
-  return c.json({ connection: { provider: row.provider, account_id: row.account_id, account_label: row.account_label, scopes: JSON.parse(row.granted_scopes_json) as string[], status: row.status, connected_at: row.connected_at, last_verified_at: row.last_verified_at } });
+  return c.json({ connection: { provider: row.provider, account_id: row.account_id, account_label: row.account_label, routing_keys: JSON.parse(row.routing_keys_json) as string[], scopes: JSON.parse(row.granted_scopes_json) as string[], status: row.status, connected_at: row.connected_at, last_verified_at: row.last_verified_at } });
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/routes/available", async c => {
+  const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
+  const { role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!role || !["owner", "admin"].includes(role)) throw forbidden("Only a Space owner or admin may view provider routing targets");
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT credential_name FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND provider='slack' AND status='active'`)
+    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ credential_name: string }>();
+  if (!row) return c.json({ error_code: "active_slack_connection_required" }, 404);
+  const token = await resolveConnectorCredential(c.env, tenantId, spaceId, row.credential_name);
+  if (!token) return c.json({ error_code: "slack_credential_unavailable" }, 503);
+  const channels: Array<{ id: string; name: string; private: boolean }> = [];
+  let cursor = "";
+  for (let page = 0; page < 5; page++) {
+    const url = new URL("https://slack.com/api/conversations.list");
+    url.searchParams.set("types", "public_channel,private_channel"); url.searchParams.set("limit", "200");
+    if (cursor) url.searchParams.set("cursor", cursor);
+    try {
+      const response = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8_000) });
+      const result = await response.json<{ ok?: boolean; error?: string; channels?: Array<{ id?: string; name?: string; is_member?: boolean; is_private?: boolean }>; response_metadata?: { next_cursor?: string } }>();
+      if (!result.ok) return c.json({ error_code: result.error === "missing_scope" ? "slack_channel_list_scope_missing" : "slack_channel_list_failed" }, 502);
+      for (const item of result.channels ?? []) if (item.id && item.name && item.is_member) channels.push({ id: item.id, name: item.name.slice(0, 120), private: item.is_private === true });
+      cursor = result.response_metadata?.next_cursor ?? "";
+      if (!cursor) break;
+    } catch { return c.json({ error_code: "slack_channel_list_unavailable" }, 503); }
+  }
+  return c.json({ channels: channels.slice(0, 1_000) });
+});
+
+app.put("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/routes", async c => {
+  const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may set extension routing");
+  if (!await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId)) return c.json({ error_code: "extension_installation_unavailable" }, 404);
+  const body = await c.req.json<{ channel_ids?: unknown }>().catch(() => ({} as { channel_ids?: unknown }));
+  if (!Array.isArray(body.channel_ids) || body.channel_ids.length > 80 || body.channel_ids.some(id => typeof id !== "string" || !/^[CDG][A-Z0-9]{5,31}$/.test(id))) throw badRequest("channel_ids must contain up to 80 valid Slack conversation IDs");
+  const channelIds = [...new Set(body.channel_ids as string[])];
+  const current = await c.env.PLATFORM_DB.prepare(`SELECT account_id,provider,status FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=?`)
+    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ account_id: string; provider: string; status: string }>();
+  if (!current || current.provider !== "slack" || current.status !== "active") return c.json({ error_code: "active_slack_connection_required" }, 409);
+  const siblings = await c.env.PLATFORM_DB.prepare(`SELECT installation_id,connection_id,routing_keys_json FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND provider='slack' AND account_id=? AND status='active' AND NOT (installation_id=? AND connection_id=?)`)
+    .bind(tenantId, spaceId, current.account_id, installationId, connectionId).all<{ installation_id: string; connection_id: string; routing_keys_json: string }>();
+  const occupied = new Set((siblings.results ?? []).flatMap(row => {
+    try { return JSON.parse(row.routing_keys_json) as string[]; } catch { return channelIds; }
+  }));
+  const overlap = channelIds.filter(id => occupied.has(id));
+  if (overlap.length) return c.json({ error_code: "slack_conversation_already_routed", conversation_ids: overlap }, 409);
+  const updatedAt = new Date().toISOString();
+  try {
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`DELETE FROM extension_provider_routes WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`).bind(tenantId, spaceId, installationId, connectionId),
+      ...channelIds.map(channelId => c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_routes(tenant_id,space_id,provider,account_id,channel_id,installation_id,connection_id,created_at) VALUES(?,?,'slack',?,?,?,?,?)`)
+        .bind(tenantId, spaceId, current.account_id, channelId, installationId, connectionId, updatedAt)),
+      c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET routing_keys_json=?,updated_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='active'`)
+        .bind(JSON.stringify(channelIds), updatedAt, tenantId, spaceId, projectId, installationId, connectionId),
+    ]);
+  } catch { return c.json({ error_code: "slack_conversation_already_routed" }, 409); }
+  return c.json({ saved: true, channel_ids: channelIds });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/telegram/connect", async c => {
+  const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect a Telegram bot");
+  if (!c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER) return c.json({ error_code: "telegram_connection_unavailable" }, 503);
+  const body = await c.req.json<{ bot_token?: unknown }>().catch(() => ({} as { bot_token?: unknown }));
+  const botToken = typeof body.bot_token === "string" ? body.bot_token.trim() : "";
+  if (!/^[0-9]{5,20}:[A-Za-z0-9_-]{20,128}$/.test(botToken)) throw badRequest("Enter the bot token from BotFather");
+  if (botToken === c.env.TELEGRAM_BOT_TOKEN) return c.json({ error_code: "platform_bot_token_not_allowed" }, 400);
+  const installation = await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId);
+  const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === connectionId);
+  const channel = installation?.manifest.channels?.find(item => item.kind === "channel" && item.provider === "telegram" && item.connectionId === connectionId);
+  if (!installation || declaration?.provider !== "telegram" || !channel?.handlerScript) return c.json({ error_code: "extension_connection_not_declared" }, 404);
+  let botId = "", username = "";
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${botToken}/getMe`, { signal: AbortSignal.timeout(8_000) });
+    const result = await response.json<{ ok?: boolean; result?: { id?: number; username?: string } }>();
+    if (!result.ok || !result.result?.id) return c.json({ error_code: "telegram_bot_token_rejected" }, 400);
+    botId = String(result.result.id); username = result.result.username ?? botId;
+  } catch { return c.json({ error_code: "telegram_bot_verification_unavailable" }, 503); }
+  const webhookUrl = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/channels/telegram/extensions/${encodeURIComponent(spaceId)}/${encodeURIComponent(installationId)}/${encodeURIComponent(connectionId)}`;
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${botToken}/getWebhookInfo`, { signal: AbortSignal.timeout(8_000) });
+    const result = await response.json<{ ok?: boolean; result?: { url?: string } }>();
+    if (!result.ok) return c.json({ error_code: "telegram_webhook_status_unavailable" }, 503);
+    if (result.result?.url && result.result.url !== webhookUrl) return c.json({ error_code: "telegram_webhook_already_configured" }, 409);
+  } catch { return c.json({ error_code: "telegram_webhook_status_unavailable" }, 503); }
+  const collision = await c.env.PLATFORM_DB.prepare(`SELECT installation_id FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND provider='telegram' AND account_id=? AND status='active' AND NOT (installation_id=? AND connection_id=?) LIMIT 1`)
+    .bind(tenantId, spaceId, botId, installationId, connectionId).first();
+  if (collision) return c.json({ error_code: "telegram_bot_already_connected" }, 409);
+  const handler = await c.env.SCRIPTS_R2?.get(`spaces/${spaceId}/extensions/${installation.manifest.bundle?.id}/${installation.manifest.bundle?.version}/${channel.handlerScript.replace(/^\.\//, "")}`);
+  if (!handler || handler.size > 262_144) return c.json({ error_code: "extension_handler_unavailable" }, 409);
+  const handlerSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await handler.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const generation = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+  const credentialName = extensionConnectionCredentialName(installationId, connectionId, generation, "telegram");
+  const secretName = extensionTelegramWebhookCredentialName(installationId, connectionId, generation);
+  const webhookSecret = randomTelegramWebhookSecret();
+  const prior = await c.env.PLATFORM_DB.prepare(`SELECT credential_name,webhook_secret_name FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`).bind(tenantId, spaceId, installationId, connectionId)
+    .first<{ credential_name: string; webhook_secret_name: string | null }>();
+  const tokenStored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: credentialName, value: botToken, description: `Telegram bot credential for extension ${installationId}/${connectionId}` });
+  if (!tokenStored.ok) return c.json({ error_code: "credential_store_failed" }, 502);
+  const secretStored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: secretName, value: webhookSecret, description: `Telegram webhook secret for extension ${installationId}/${connectionId}` });
+  if (!secretStored.ok) { await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName); return c.json({ error_code: "credential_store_failed" }, 502); }
+  const now = new Date().toISOString();
+  try {
+    await c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,webhook_secret_name,handler_sha256,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)
+      VALUES(?,?,?,?,?,'telegram',?,?,?,?,?,'[]','active',?,?,?,NULL,?) ON CONFLICT(tenant_id,space_id,installation_id,connection_id) DO UPDATE SET
+      project_id=excluded.project_id,account_id=excluded.account_id,account_label=excluded.account_label,credential_name=excluded.credential_name,
+      webhook_secret_name=excluded.webhook_secret_name,handler_sha256=excluded.handler_sha256,granted_scopes_json='[]',status='active',connected_by=excluded.connected_by,
+      connected_at=excluded.connected_at,last_verified_at=excluded.last_verified_at,revoked_at=NULL,updated_at=excluded.updated_at`)
+      .bind(tenantId, spaceId, projectId, installationId, connectionId, botId, `@${username}`.slice(0, 120), credentialName, secretName, handlerSha256, userId, now, now, now).run();
+  } catch { await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName); await deleteConnectorCredentialByName(c.env, tenantId, spaceId, secretName); return c.json({ error_code: "telegram_bot_already_connected" }, 409); }
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: webhookUrl, secret_token: webhookSecret, allowed_updates: ["message"], drop_pending_updates: false }), signal: AbortSignal.timeout(10_000) });
+    const result = await response.json<{ ok?: boolean; description?: string }>();
+    if (!result.ok) throw new Error("set_webhook_rejected");
+  } catch {
+    await c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='error',updated_at=? WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`)
+      .bind(new Date().toISOString(), tenantId, spaceId, installationId, connectionId).run();
+    await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName); await deleteConnectorCredentialByName(c.env, tenantId, spaceId, secretName);
+    return c.json({ error_code: "telegram_webhook_registration_failed" }, 502);
+  }
+  if (prior?.credential_name && prior.credential_name !== credentialName) await deleteConnectorCredentialByName(c.env, tenantId, spaceId, prior.credential_name);
+  if (prior?.webhook_secret_name && prior.webhook_secret_name !== secretName) await deleteConnectorCredentialByName(c.env, tenantId, spaceId, prior.webhook_secret_name);
+  return c.json({ connected: true, account_label: `@${username}` }, 201);
 });
 
 app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId", async c => {
@@ -4377,21 +4517,26 @@ app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/conn
   const { userId, role: callerRole } = getCallerIdentity(c);
   const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may disconnect an extension provider");
-  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,account_id FROM extension_provider_connections
-    WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='active'`)
-    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string; credential_name: string; account_id: string }>();
+  const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,account_id,webhook_secret_name FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status IN ('active','error','expired')`)
+    .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ provider: string; credential_name: string; account_id: string; webhook_secret_name: string | null }>();
   if (!row) return c.json({ removed: false });
+  const now = new Date().toISOString();
+  await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(`DELETE FROM extension_provider_routes WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`).bind(tenantId, spaceId, installationId, connectionId),
+    c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='revoked',revoked_at=?,updated_at=?
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status IN ('active','error','expired')`).bind(now, now, tenantId, spaceId, projectId, installationId, connectionId),
+  ]);
+  const token = await resolveConnectorCredential(c.env, tenantId, spaceId, row.credential_name);
   if (row.provider === "slack") {
-    const token = await resolveConnectorCredential(c.env, tenantId, spaceId, row.credential_name);
     if (token) {
       try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* local revocation remains authoritative */ }
     }
+  } else if (row.provider === "telegram" && token) {
+    try { await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ drop_pending_updates: false }), signal: AbortSignal.timeout(5_000) }); } catch { /* local revocation remains authoritative */ }
   }
-  const now = new Date().toISOString();
-  await c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='revoked',revoked_at=?,updated_at=?
-    WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='active'`)
-    .bind(now, now, tenantId, spaceId, projectId, installationId, connectionId).run();
   await deleteConnectorCredentialByName(c.env, tenantId, spaceId, row.credential_name);
+  if (row.webhook_secret_name) await deleteConnectorCredentialByName(c.env, tenantId, spaceId, row.webhook_secret_name);
   return c.json({ removed: true });
 });
 // Tenant BYO-OAuth: custom connector client configuration and tokens are space-scoped vault
@@ -6020,10 +6165,21 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
   // rather than falling through to a legacy Space channel binding.
   type InstalledSlackConnectionRow = { project_id: string; installation_id: string; connection_id: string; credential_name: string; handler_sha256: string | null };
   let installedSlackConnection: InstalledSlackConnectionRow | null = null;
+  let slackWorkspaceHasExtensionConnections = false;
   if (channel === "slack" && typeof parsed["team_id"] === "string") {
-    installedSlackConnection = await c.env.PLATFORM_DB.prepare(`SELECT project_id,installation_id,connection_id,credential_name,handler_sha256
-      FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND provider='slack' AND account_id=? AND status='active' LIMIT 1`)
-      .bind(space.tenant_id, spaceId, parsed["team_id"]).first<InstalledSlackConnectionRow>();
+    const knownWorkspaceConnection = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS found FROM extension_provider_connections
+      WHERE tenant_id=? AND space_id=? AND provider='slack' AND account_id=? LIMIT 1`)
+      .bind(space.tenant_id, spaceId, parsed["team_id"]).first();
+    slackWorkspaceHasExtensionConnections = !!knownWorkspaceConnection;
+    const eventChannel = typeof (parsed["event"] as Record<string, unknown> | undefined)?.["channel"] === "string" ? (parsed["event"] as Record<string, unknown>)["channel"] as string : "";
+    const matching = await c.env.PLATFORM_DB.prepare(`SELECT c.project_id,c.installation_id,c.connection_id,c.credential_name,c.handler_sha256
+      FROM extension_provider_routes r JOIN extension_provider_connections c
+        ON c.tenant_id=r.tenant_id AND c.space_id=r.space_id AND c.installation_id=r.installation_id AND c.connection_id=r.connection_id
+      WHERE r.tenant_id=? AND r.space_id=? AND r.provider='slack' AND r.account_id=? AND r.channel_id=? AND c.status='active'`)
+      .bind(space.tenant_id, spaceId, parsed["team_id"], eventChannel).all<InstalledSlackConnectionRow>();
+    if (matching.results?.length === 1) installedSlackConnection = matching.results[0]!;
+    else if (matching.results && matching.results.length > 1) return c.json({ ok: true, skipped: "extension_route_ambiguous" });
+    else if (slackWorkspaceHasExtensionConnections) return c.json({ ok: true, skipped: "extension_route_not_configured" });
     if (installedSlackConnection) {
       const installation = await fetchInstalledConnectionContext(c.env, space.tenant_id, spaceId, installedSlackConnection.project_id, installedSlackConnection.installation_id);
       const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === installedSlackConnection!.connection_id);
@@ -6146,7 +6302,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
 
   // Resolve which project (if any) this channel is bound to — a customer-bot project runs
   // under a restricted execution ceiling + its own rules instead of the default agent.
-  const link = installedSlackConnection ? null : await c.env.PLATFORM_DB.prepare(
+  const link = installedSlackConnection || slackWorkspaceHasExtensionConnections ? null : await c.env.PLATFORM_DB.prepare(
     "SELECT project_id,extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id = ? AND channel = ? AND enabled=1"
   ).bind(spaceId, channel).first<{ project_id: string | null; extension_instance_id: string | null; extension_script_sha256: string | null }>();
 
@@ -6176,6 +6332,56 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
   } catch (err) {
     console.error(`[channels] inbound forward failed channel=${channel} space=${spaceId}:`, (err as Error).message);
   }
+  return c.json({ ok: true });
+});
+
+app.post("/channels/telegram/extensions/:spaceId/:installationId/:connectionId", async c => {
+  const spaceId = c.req.param("spaceId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
+  const space = await c.env.PLATFORM_DB.prepare("SELECT tenant_id,status FROM spaces WHERE id=?").bind(spaceId).first<{ tenant_id: string; status: string }>();
+  if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
+  const connection = await c.env.PLATFORM_DB.prepare(`SELECT project_id,credential_name,webhook_secret_name,handler_sha256
+    FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=? AND provider='telegram' AND status='active'`)
+    .bind(space.tenant_id, spaceId, installationId, connectionId).first<{ project_id: string; credential_name: string; webhook_secret_name: string | null; handler_sha256: string | null }>();
+  if (!connection?.webhook_secret_name || !connection.handler_sha256) return c.json({ ok: true, skipped: "connection_inactive" });
+  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "credential_service_unavailable" }, 503);
+  const credentialToken = await generateCredentialToken(c.env.PLATFORM_SECRET, space.tenant_id, spaceId, "naelao-agent");
+  const secretResponse = await c.env.CREDENTIALS_WORKER.fetch(new Request(`http://credentials/v1/internal/spaces/${encodeURIComponent(spaceId)}/credentials/${encodeURIComponent(connection.webhook_secret_name)}/plaintext`, {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credentialToken },
+  }));
+  if (!secretResponse.ok) return c.json({ error_code: "webhook_secret_unavailable" }, 503);
+  const { value: secret } = await secretResponse.json<{ value?: string }>();
+  const rawBody = await c.req.text();
+  const headers: Record<string, string> = {}; c.req.raw.headers.forEach((value, key) => { headers[key.toLowerCase()] = value; });
+  const adapter = getAdapter("telegram")!;
+  if (!secret || !await adapter.verifySignature({ rawBody, headers, secret })) return c.json({ error_code: "invalid_signature" }, 401);
+  const installation = await fetchInstalledConnectionContext(c.env, space.tenant_id, spaceId, connection.project_id, installationId);
+  const declaration = installation?.manifest.bundle?.connections?.find(item => item.id === connectionId);
+  const channel = installation?.manifest.channels?.find(item => item.kind === "channel" && item.provider === "telegram" && item.connectionId === connectionId);
+  if (!installation || declaration?.provider !== "telegram" || !channel?.handlerScript || !c.env.SCRIPTS_R2) return c.json({ ok: true, skipped: "extension_installation_unavailable" });
+  const artifact = await c.env.SCRIPTS_R2.get(`spaces/${spaceId}/extensions/${installation.manifest.bundle?.id}/${installation.manifest.bundle?.version}/${channel.handlerScript.replace(/^\.\//, "")}`);
+  if (!artifact || artifact.size > 262_144) return c.json({ ok: true, skipped: "extension_handler_unavailable" });
+  const artifactHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await artifact.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  if (artifactHash !== connection.handler_sha256) return c.json({ ok: true, skipped: "extension_handler_changed" });
+  let raw: Record<string, unknown>;
+  try { raw = JSON.parse(rawBody) as Record<string, unknown>; } catch { return c.json({ ok: true, skipped: "unparseable" }); }
+  const normalized = adapter.normalizeInbound(raw);
+  if (!normalized) return c.json({ ok: true, skipped: "not_a_message" });
+  const wakeContext = await resolveWakeContext(c.env, spaceId, space.tenant_id, "telegram");
+  if (wakeContext.airGappedOnly) return c.json({ ok: true, skipped: "air_gapped" });
+  if (hasTelegramMedia(raw)) {
+    const botToken = await resolveConnectorCredential(c.env, space.tenant_id, spaceId, connection.credential_name);
+    if (!botToken || !c.env.SCRIPTS_R2) return c.json({ error_code: "telegram_media_unavailable" }, 503);
+    try {
+      const files = await downloadTelegramAttachments(raw, { botToken });
+      if (!files.length) return c.json({ error_code: "channel_media_missing" }, 422);
+      await storeChannelAttachments({ db: c.env.PLATFORM_DB, bucket: c.env.SCRIPTS_R2, platformSecret: c.env.PLATFORM_SECRET,
+        tenantId: space.tenant_id, spaceId, taskId: normalized.external_id, channel: "telegram", files });
+    } catch { return c.json({ error_code: "telegram_media_unavailable" }, 503); }
+  }
+  const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
+  await stub.fetch(new Request("http://agent-do/channels/telegram/inbound", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ raw, projectId: connection.project_id, extensionInstanceId: installationId, extensionScriptSha256: connection.handler_sha256,
+      providerConnectionId: connectionId, taskId: normalized.external_id, spaceId, tenantId: space.tenant_id, model: wakeContext.model, apiKey: "" }) }));
   return c.json({ ok: true });
 });
 
@@ -6959,6 +7165,35 @@ app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
   return stub.fetch(new Request(`http://agent-do/channels/extensions/inbox?${query}`));
 });
 
+app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/notes", async c => {
+  const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Inbox notes require Space owner or admin access");
+  const eventId = c.req.query("event_id") ?? "";
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(eventId)) throw badRequest("Invalid inbox event id");
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId") ?? "");
+  return stub.fetch(new Request(`http://agent-do/channels/extensions/inbox/notes?${new URLSearchParams({ project_id: projectId, installation_id: installationId, event_id: eventId })}`));
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/notes", async c => {
+  const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Inbox notes require Space owner or admin access");
+  const body = await c.req.json<{ event_id?: unknown; note_text?: unknown }>().catch(() => ({} as { event_id?: unknown; note_text?: unknown }));
+  const eventId = typeof body.event_id === "string" ? body.event_id : "", noteText = typeof body.note_text === "string" ? body.note_text : "";
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(installationId)
+    || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId) || !noteText.trim() || new TextEncoder().encode(noteText).byteLength > 2_000) throw badRequest("Invalid inbox note");
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "extension_installation_unavailable" }, 503);
+  const installationResponse = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/workflow-installations/${encodeURIComponent(installationId)}`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
+  if (!installationResponse.ok) return c.json({ error_code: "extension_installation_unavailable" }, 404);
+  const installation = await installationResponse.json<{ instance?: { tenant_id?: string; space_id?: string; project_id?: string | null; status?: string } }>();
+  if (installation.instance?.tenant_id !== tenantId || installation.instance.space_id !== spaceId || installation.instance.project_id !== projectId || installation.instance.status !== "active") return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId") ?? "");
+  return stub.fetch(new Request("http://agent-do/channels/extensions/inbox/notes", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, installation_id: installationId, event_id: eventId, actor_id: userId, note_text: noteText }) }));
+});
+
 app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/assign", async c => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
@@ -7392,20 +7627,25 @@ app.post("/internal/channel-extensions/session-state", async c => {
   if (!instance || instance.status !== "active" || instance.tenant_id !== tenantId || instance.space_id !== body.spaceId || instance.project_id !== body.projectId)
     return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
   if (body.action === "uninstall") {
-    const connections = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name FROM extension_provider_connections
-      WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND status='active'`)
-      .bind(tenantId, body.spaceId, body.projectId, body.installationId).all<{ provider: string; credential_name: string }>();
-    for (const connection of connections.results ?? []) {
-      if (connection.provider === "slack") {
-        const token = await resolveConnectorCredential(c.env, tenantId, body.spaceId, connection.credential_name);
-        if (token) { try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* the local connection is still revoked below */ } }
-      }
-    }
+    const connections = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,webhook_secret_name FROM extension_provider_connections
+      WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND status IN ('active','error','expired')`)
+      .bind(tenantId, body.spaceId, body.projectId, body.installationId).all<{ provider: string; credential_name: string; webhook_secret_name: string | null }>();
     const revokedAt = new Date().toISOString();
-    await c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='revoked',revoked_at=?,updated_at=?
-      WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND status='active'`)
-      .bind(revokedAt, revokedAt, tenantId, body.spaceId, body.projectId, body.installationId).run();
-    for (const connection of connections.results ?? []) await deleteConnectorCredentialByName(c.env, tenantId, body.spaceId, connection.credential_name);
+    await c.env.PLATFORM_DB.batch([
+      c.env.PLATFORM_DB.prepare(`DELETE FROM extension_provider_routes WHERE tenant_id=? AND space_id=? AND installation_id=?`).bind(tenantId, body.spaceId, body.installationId),
+      c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='revoked',revoked_at=?,updated_at=?
+        WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND status IN ('active','error','expired')`).bind(revokedAt, revokedAt, tenantId, body.spaceId, body.projectId, body.installationId),
+    ]);
+    for (const connection of connections.results ?? []) {
+      const token = await resolveConnectorCredential(c.env, tenantId, body.spaceId, connection.credential_name);
+      if (connection.provider === "slack" && token) {
+        try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* local connection is already revoked */ }
+      } else if (connection.provider === "telegram" && token) {
+        try { await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ drop_pending_updates: false }), signal: AbortSignal.timeout(5_000) }); } catch { /* local connection is already revoked */ }
+      }
+      await deleteConnectorCredentialByName(c.env, tenantId, body.spaceId, connection.credential_name);
+      if (connection.webhook_secret_name) await deleteConnectorCredentialByName(c.env, tenantId, body.spaceId, connection.webhook_secret_name);
+    }
     const result = await c.env.PLATFORM_DB.prepare(`UPDATE channel_links SET extension_instance_id=NULL,extension_script_sha256=NULL
       WHERE space_id=? AND tenant_id=? AND project_id=? AND extension_instance_id=?`)
       .bind(body.spaceId, tenantId, body.projectId, body.installationId).run();

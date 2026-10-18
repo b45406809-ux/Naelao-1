@@ -21,6 +21,22 @@ describe("channel extension inbox projection", () => {
     expect(await list.json()).toMatchObject({ events: [{ event_id: "event-a", assigned_to: null, assigned_by: "owner-a" }] });
   });
 
+  it("stores team-only notes within the exact event, project, and installation and deletes them with the conversation", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
+    await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    storage.sql.exec("INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES('session-a','slack','subject','project-a')");
+    storage.sql.exec("INSERT INTO channel_messages(id,session_id,direction,text,project_id,channel_extension_instance_id,created_at) VALUES('event-a','session-a','inbound','question','project-a','install-a',20),('event-b','session-a','inbound','other install','project-a','install-b',30)");
+    const add = (eventId: string, note: string) => agent.fetch(new Request("http://agent/channels/extensions/inbox/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: "project-a", installation_id: "install-a", event_id: eventId, actor_id: "owner-a", note_text: note }) }));
+    expect((await add("event-a", "Private handoff detail")).status).toBe(201);
+    expect((await add("event-b", "cross install")).status).toBe(404);
+    expect(await (await agent.fetch(new Request("http://agent/channels/extensions/inbox/notes?project_id=project-a&installation_id=install-a&event_id=event-a"))).json()).toMatchObject({ notes: [{ actor_id: "owner-a", note_text: "Private handoff detail" }] });
+    expect(JSON.stringify(await (await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"))).json())).not.toContain("Private handoff detail");
+    const remove = await agent.fetch(new Request("http://agent/channels/extensions/inbox/delete-conversation", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: "project-a", installation_id: "install-a", event_id: "event-a" }) }));
+    expect(remove.status).toBe(200);
+    expect(storage.sql.exec("SELECT note_id FROM channel_extension_inbox_notes").toArray()).toEqual([]);
+  });
+
   it("lists only events for the exact project and installation with dispatch outcomes", async () => {
     const storage = createDOStorage();
     const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);

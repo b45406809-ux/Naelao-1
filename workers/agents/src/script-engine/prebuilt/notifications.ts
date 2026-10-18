@@ -88,7 +88,7 @@ export const notifications: PrebuiltScript = {
     "notify.whatsapp": (a, c) => dispatch(c, "whatsapp", { to: a["to"], message: a["message"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
     // `to` is Telegram's chat id, not a username — a reply has to go back to the conversation
     // it came from, which in a group is not the sender (see telegramAdapter.normalizeInbound).
-    "notify.telegram": (a, c) => dispatch(c, "telegram", { to: a["to"], message: a["message"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
+    "notify.telegram": (a, c) => dispatch(c, "telegram", { to: a["to"], message: a["message"], message_thread_id: a["message_thread_id"], installation_id: a["installation_id"], provider_connection_id: a["provider_connection_id"] }),
     "notify.apns": (a, c) => dispatch(c, "apns", { device_token: a["device_token"], payload: a["payload"] }),
     "notify.fcm": (a, c) => dispatch(c, "fcm", { token: a["token"], payload: a["payload"] }),
     "notify.web_push": (a, c) => dispatch(c, "web_push", {

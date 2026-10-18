@@ -1568,6 +1568,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       event_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, installation_id TEXT NOT NULL, assigned_to TEXT,
       assigned_by TEXT NOT NULL, assigned_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
     )`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS channel_extension_inbox_notes (
+      note_id TEXT PRIMARY KEY, event_id TEXT NOT NULL, project_id TEXT NOT NULL, installation_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL, note_text TEXT NOT NULL CHECK(length(note_text)<=2000), created_at INTEGER NOT NULL
+    )`);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_extension_inbox_notes ON channel_extension_inbox_notes(project_id,installation_id,event_id,created_at)`);
     initChannelExtensionSessionStore(this.ctx.storage.sql);
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN task_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
@@ -1824,6 +1829,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if (method === "GET" && url.pathname === "/channels/extensions/inbox") return this.handleChannelExtensionInbox(url.searchParams);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/assign") return this.handleChannelExtensionInboxAssign(request);
+      if (method === "GET" && url.pathname === "/channels/extensions/inbox/notes") return this.handleChannelExtensionInboxNotes(url.searchParams);
+      if (method === "POST" && url.pathname === "/channels/extensions/inbox/notes") return this.handleChannelExtensionInboxAddNote(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/takeover") return this.handleChannelExtensionInboxTakeover(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/delete-conversation") return this.handleChannelExtensionInboxDeleteConversation(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/reply") return this.handleChannelExtensionInboxReply(request);
@@ -5589,7 +5596,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           : "I couldn't complete that response just now. Please continue in the Naelao app or try again shortly.";
         await this.env.NOTIFICATIONS_WORKER!.fetch(new Request("http://notifications-worker/internal/notify", {
           method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
-          body: JSON.stringify({ channel: norm.channel, space_id: spaceId, to: norm.channel_user_id, body: reply }),
+          body: JSON.stringify({ channel: norm.channel, space_id: spaceId, to: norm.recipient_id ?? norm.channel_user_id, body: reply,
+            ...(norm.thread_id && /^\d{1,20}$/.test(norm.thread_id) ? { message_thread_id: norm.thread_id } : {}) }),
         }));
       })().catch(error => console.error(`[channels] internal planner dispatch failed channel=${norm.channel}:`, error instanceof Error ? error.message : String(error))));
       return Response.json({ session_id: sessionId, queued: true, internal: true });
@@ -5732,6 +5740,34 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return Response.json({ events, next_before: nextBefore, next_before_id: nextBeforeId });
   }
 
+  private handleChannelExtensionInboxNotes(params: URLSearchParams): Response {
+    const projectId = params.get("project_id") ?? "", installationId = params.get("installation_id") ?? "", eventId = params.get("event_id") ?? "";
+    if (!projectId || !installationId || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId)) return Response.json({ error_code: "channel_extension_note_scope_required" }, { status: 400 });
+    const event = this.ctx.storage.sql.exec(`SELECT 1 AS found FROM channel_messages WHERE id=? AND direction='inbound' AND project_id=? AND channel_extension_instance_id=? LIMIT 1`, eventId, projectId, installationId).toArray()[0];
+    if (!event) return Response.json({ error_code: "channel_extension_event_not_found" }, { status: 404 });
+    const notes = this.ctx.storage.sql.exec(`SELECT note_id,actor_id,note_text,created_at FROM channel_extension_inbox_notes
+      WHERE event_id=? AND project_id=? AND installation_id=? ORDER BY created_at,note_id LIMIT 100`, eventId, projectId, installationId).toArray();
+    return Response.json({ notes });
+  }
+
+  private async handleChannelExtensionInboxAddNote(request: Request): Promise<Response> {
+    const body = await request.json<{ project_id?: unknown; installation_id?: unknown; event_id?: unknown; actor_id?: unknown; note_text?: unknown }>()
+      .catch(() => ({} as { project_id?: unknown; installation_id?: unknown; event_id?: unknown; actor_id?: unknown; note_text?: unknown }));
+    const projectId = typeof body.project_id === "string" ? body.project_id : "", installationId = typeof body.installation_id === "string" ? body.installation_id : "";
+    const eventId = typeof body.event_id === "string" ? body.event_id : "", actorId = typeof body.actor_id === "string" ? body.actor_id : "";
+    const noteText = typeof body.note_text === "string" ? body.note_text.trim() : "";
+    if (!projectId || !installationId || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId) || !/^[A-Za-z0-9._:@-]{1,128}$/.test(actorId)
+      || !noteText || new TextEncoder().encode(noteText).byteLength > 2_000) return Response.json({ error_code: "channel_extension_note_invalid" }, { status: 400 });
+    const event = this.ctx.storage.sql.exec(`SELECT 1 AS found FROM channel_messages WHERE id=? AND direction='inbound' AND project_id=? AND channel_extension_instance_id=? LIMIT 1`, eventId, projectId, installationId).toArray()[0];
+    if (!event) return Response.json({ error_code: "channel_extension_event_not_found" }, { status: 404 });
+    const count = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS count FROM channel_extension_inbox_notes WHERE event_id=? AND project_id=? AND installation_id=?`, eventId, projectId, installationId).toArray()[0] as { count?: number } | undefined;
+    if (Number(count?.count ?? 0) >= 100) return Response.json({ error_code: "channel_extension_note_limit" }, { status: 409 });
+    const note = { note_id: crypto.randomUUID(), actor_id: actorId, note_text: noteText, created_at: Date.now() };
+    this.ctx.storage.sql.exec(`INSERT INTO channel_extension_inbox_notes(note_id,event_id,project_id,installation_id,actor_id,note_text,created_at) VALUES(?,?,?,?,?,?,?)`,
+      note.note_id, eventId, projectId, installationId, actorId, noteText, note.created_at);
+    return Response.json({ note }, { status: 201 });
+  }
+
   private async handleChannelExtensionInboxAssign(request: Request): Promise<Response> {
     const body = await request.json<{ project_id?: unknown; installation_id?: unknown; event_id?: unknown; actor_id?: unknown;
       assigned_to?: unknown; expected_assigned_to?: unknown }>().catch(() => ({} as { project_id?: unknown; installation_id?: unknown; event_id?: unknown; actor_id?: unknown;
@@ -5806,6 +5842,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "channel_extension_event_in_flight" }, { status: 409 });
     this.ctx.storage.sql.exec("DELETE FROM channel_extension_dispatches WHERE message_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_extension_human_replies WHERE event_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
+    this.ctx.storage.sql.exec("DELETE FROM channel_extension_inbox_notes WHERE event_id IN (SELECT id FROM channel_messages WHERE session_id=?)", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_messages WHERE session_id=?", event.session_id);
     this.ctx.storage.sql.exec("DELETE FROM channel_sessions WHERE id=?", event.session_id);
     clearChannelExtensionConversationSessions(this.ctx.storage.sql, { projectId, installationId, conversationId: event.session_id });
@@ -5902,7 +5939,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private notifyParamsFor(channel: string, channelUserId: string, text: string, scope?: { installationId: string; providerConnectionId: string | null; recipientId?: string | null; threadId?: string | null }): Record<string, unknown> {
     const connection = scope?.installationId && scope.providerConnectionId ? { installation_id: scope.installationId, provider_connection_id: scope.providerConnectionId } : {};
     if (channel === "email") return { to: scope?.recipientId ?? channelUserId, subject: "Re: your message", body: text, ...connection };
-    if (channel === "whatsapp" || channel === "telegram") return { to: scope?.recipientId ?? channelUserId, message: text, ...connection };
+    if (channel === "telegram") return { to: scope?.recipientId ?? channelUserId, message: text, ...(scope?.threadId && /^\d{1,20}$/.test(scope.threadId) ? { message_thread_id: scope.threadId } : {}), ...connection };
+    if (channel === "whatsapp") return { to: scope?.recipientId ?? channelUserId, message: text, ...connection };
     return { channel: scope?.recipientId ?? channelUserId, message: text, ...(channel === "slack" && scope?.threadId ? { thread_ts: scope.threadId } : {}), ...connection }; // slack / discord
   }
 
@@ -7914,7 +7952,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // engineEnv before every path that can touch Memory OS for this message, the same way
       // maxTier is mutated per message below — memory.remember/recall and the surgical-recall
       // pre-flight then scope to THIS customer, not the space at large, across visits.
-      engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}`;
+      engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}`;
       // Project-scoped workspace — every customer thread in this customer-bot project shares
       // the SAME R2 filesystem (e.g. a project-wide ledger.csv a no-code rule's run_script
       // writes a row into per customer). Mutated per message like maxTier, since one heartbeat
@@ -7933,7 +7971,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { goal: msg.text, taskId: msg.task_id ?? msg.id, threadId: msg.session_id },
       );
       if (messageEnv) Object.assign(engineEnv, messageEnv);
-      engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}`;
+      engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}`;
 
       // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
       //    any reasoning at all. Zero token cost, deterministic, admin-authored.

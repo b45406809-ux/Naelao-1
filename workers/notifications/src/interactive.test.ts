@@ -64,4 +64,22 @@ describe("interactive mobile approval delivery", () => {
     expect(outbound.mock.calls[0]?.[0]).toBe("https://graph.facebook.com/v26.0/123456789012345/messages");
     expect(new Headers(outbound.mock.calls[0]?.[1]?.headers).get("authorization")).toBe("Bearer space-meta-token");
   });
+
+  it("marks an installation-scoped Slack credential for reconnect after provider revocation", async () => {
+    const updates: Array<{ sql: string; args: unknown[] }> = [];
+    const db = { prepare(sql: string) { return { bind(...args: unknown[]) { return {
+      async first() { return { credential_name: "EXT_SLACK_install_conn_generation" }; },
+      async run() { updates.push({ sql, args }); return { success: true }; },
+    }; } }; } };
+    const credentials = { async fetch() { return Response.json({ value: "xoxb-install-token" }); } };
+    const outbound = vi.fn(async () => Response.json({ ok: false, error: "token_revoked" })); vi.stubGlobal("fetch", outbound);
+    const response = await worker.fetch!(new Request("https://notifications/internal/notify", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ channel: "slack", space_id: "space", to: "D123", message: "Reply", installation_id: "install", provider_connection_id: "slack-main" }) }),
+      { ...env(), PLATFORM_DB: db as unknown as D1Database, PLATFORM_SECRET: "platform-secret", CREDENTIALS_WORKER: credentials as unknown as Fetcher }, {} as ExecutionContext);
+    expect(response.status).toBe(502);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.sql).toContain("status='error'");
+    expect(updates[0]?.args).toContain("install");
+    expect(outbound).toHaveBeenCalledOnce();
+  });
 });
