@@ -6,6 +6,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./canvas": { "types": "./dist/canvas.d.ts", "default": "./dist/canvas.js" },
     "./channel": { "types": "./dist/channel.d.ts", "default": "./dist/channel.js" },
     "./testing": { "types": "./dist/testing.d.ts", "default": "./dist/testing.js" }
   },

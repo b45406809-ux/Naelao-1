@@ -1447,3 +1447,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added per-project and per-installation first-response targets (1 minute to 7 days), editable through an owner/admin API. Inbox events calculate a due timestamp only while neither the extension nor a team member has confirmed a reply; team replies remove them from the due queue.
 - The Shell inbox shows due/overdue status and exposes a bounded target selector. The target is a visible operational queue signal; automated paging, escalation policies, and scheduled reminders are still open and are not implied by this setting.
 - Verification: Agents and Shell typechecks passed; inbox projection tests passed (10 tests), including target validation, installation scoping, and reply closure; `git diff --check` passed. No deployed API was exercised.
+
+### Phase 7 authenticated Canvas-to-Gadget SDK checkpoint (2026-10-18)
+
+- Added `@naelao/sdk/canvas`, a browser-side typed client for list/get/insert/update/delete against a project Gadget. It requires a host-provided short-lived authorization callback and exact Space/project/Gadget scope; every operation goes through the existing project Gadget host route, which checks membership, active signed package state, publisher revocation, and write-role policy.
+- Added SDK tests for scoped request construction, authenticated calls, host-returned data, and fail-closed host authorization. No provider or publisher secrets are embedded in Canvas artifacts.
+- Verification: SDK typecheck and focused Canvas SDK tests passed (2 tests); `git diff --check` passed.
+- This is the direct Canvas data-action foundation only. Shared worker cursors/presence/event streaming, an audit history for Canvas actions, dynamic role/action grants, and visual workflow authoring/compiler/recovery remain open Phase 7 work.
