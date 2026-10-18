@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1875
-Files with source or executable-configuration extensions: 1669
-Inventory revision: recursive security input stress batch in the current working tree
+Files: 1876
+Files with source or executable-configuration extensions: 1670
+Inventory revision: write-guard security stress batch in the current working tree
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -921,6 +921,7 @@ packages/
       ssrf.ts
       waf-stress.test.ts
       waf.ts
+      write-guard-stress.test.ts
       write-guard.ts
     package.json
     tsconfig.json

@@ -767,13 +767,14 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/ssrf-stress.test.ts`
 - [x] `packages/security/src/egress-policy.test.ts`
 - [x] `packages/security/src/bounded-recursion.test.ts`
+- [x] `packages/security/src/write-guard-stress.test.ts`
 - [x] `packages/security/vitest.config.ts`
 - [ ] `packages/security/src/secrets.ts`
 - [x] `packages/security/src/security-phase4.test.ts`
 - [x] `packages/security/src/ssrf-guard.ts`
 - [x] `packages/security/src/ssrf.ts`
 - [x] `packages/security/src/waf.ts`
-- [ ] `packages/security/src/write-guard.ts`
+- [x] `packages/security/src/write-guard.ts`
 - [x] `packages/security/tsconfig.json`
 
 ### `packages/testing`
