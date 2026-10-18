@@ -9,6 +9,7 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import { listProjects, type Project } from "@/lib/api";
 import { AssistantSidePanelBody } from "@/components/AssistantSidePanels";
 import { CustomerBotAutomation } from "@/components/CustomerBotAutomation";
+import { WorkflowPlanComposer } from "@/components/WorkflowPlanComposer";
 
 export default function WorkflowsPage() {
   const product = useProduct();
@@ -40,6 +41,7 @@ export default function WorkflowsPage() {
         {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
       </select>
       {selected && session && <div key={`${activeSpaceId}:${selected.id}`} className="card" style={{ cursor: "default" }}>
+        <WorkflowPlanComposer spaceId={activeSpaceId} projectId={selected.id} session={session} />
         <AssistantSidePanelBody tab="crons" spaceId={activeSpaceId} projectId={selected.id} session={session} isBusinessSpace={activeSpaceId !== product.space_id} />
         {Boolean(selected.external_channel_profile) && <CustomerBotAutomation spaceId={activeSpaceId} projectId={selected.id} creds={session} />}
       </div>}

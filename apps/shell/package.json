@@ -12,6 +12,7 @@
     "@naelao/agent-sdk": "workspace:*",
     "@naelao/billing-core": "workspace:*",
     "@naelao/events": "workspace:*",
+    "@naelao/sdk": "workspace:*",
     "@naelao/types": "workspace:*",
     "@naelao/ui": "workspace:*",
     "agents": "0.28.1",

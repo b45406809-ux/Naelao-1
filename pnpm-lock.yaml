@@ -166,6 +166,9 @@ importers:
       '@naelao/events':
         specifier: workspace:*
         version: link:../../packages/events
+      '@naelao/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -1329,6 +1332,9 @@ importers:
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@naelao/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@naelao/security':
         specifier: workspace:*
         version: link:../../packages/security

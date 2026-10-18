@@ -1511,3 +1511,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 
 - Added focused tests for the short-lived provider OAuth ticket lifecycle: extension connection scope survives issuance, tickets have the bounded 600-second TTL, replay fails after the first consume, and malformed payloads are deleted before rejection.
 - Verification: OAuth ticket suite passed (2 tests). This does not cover a provider token exchange, webhook setup, or credential-vault integration.
+
+### Phase 7 visual workflow draft authoring checkpoint (2026-10-18)
+
+- Added a project workflow composer in Shell with bounded steps, operation IDs, JSON-object arguments, a plan preview, and a local offline mock run. The mock profile explicitly reports zero live provider/Worker calls and unmeasured credits; it never executes a configured tool.
+- The owner/admin Spaces route accepts only a declarative plan, generates source through the shared SDK compiler on the server, validates it through Agents, and stores it only under the selected project workspace's `workflows/` directory. Existing names are preserved: pre-check collisions return 409 and the R2 create condition handles a concurrent create race. The route cannot accept executable source or grant runtime capabilities.
+- Verification: SDK typecheck/build and full SDK tests passed (8 tests); Spaces and Router typechecks passed; workflow-authoring route tests passed (5 tests); Shell typecheck passed; frozen offline lockfile validation and `git diff --check` passed.
+- This remains a saved draft surface, not workflow package installation, output mapping, scheduling, live execution, measured-cost preview, approvals, or recovery. It does not complete Phase 7.

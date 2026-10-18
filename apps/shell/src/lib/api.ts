@@ -1026,6 +1026,13 @@ export async function listProjects(spaceId: string, session: SessionCredentials)
   return res.data;
 }
 
+export async function saveWorkflowPlanDraft(spaceId: string, projectId: string, session: SessionCredentials, input: { path: string; plan: { schemaVersion: "1.0"; steps: Array<{ id: string; operation: string; args: Record<string, unknown> }> } }) {
+  return apiFetch<{ saved: boolean; path: string; digest: string; bytes: number }>(
+    `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/workflows/plan`,
+    { method: "POST", session, body: JSON.stringify(input) },
+  );
+}
+
 export interface ProjectStewardReview {
   project_id: string;
   project_name: string;

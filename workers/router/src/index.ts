@@ -646,6 +646,8 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // agent wrote to R2. Identity here, real per-project ACL (requireBusinessMembership) on the
   // spaces worker. Read-only GET only; the write side is the agent's, never end-user-reachable.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/workspace\/files(\/.*)?$/,
+  // Visual workflow plan drafts are owner/admin writes; Spaces validates and compiles them.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/workflows\/plan$/,
   // F-WALLET-7: the consolidated per-business wallet view (balance + lifetime cut summary +
   // recent transactions) the shell's business Wallet section reads. Gated by
   // requireBusinessMembership (member GET) on the spaces worker — identity here, authorization there.

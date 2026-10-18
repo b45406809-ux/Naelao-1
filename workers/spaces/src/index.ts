@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import { normalizePreferredLanguage, validateScheduledQuietHours } from "@naelao/types";
+import { compileWorkflowPlan } from "@naelao/sdk/workflow";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
@@ -2096,6 +2097,51 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   const obj = await c.env.SCRIPTS_R2.get(prefix + relative);
   if (!obj || obj.customMetadata?.deleted === "true") return c.json({ error_code: "not_found", message: "File not found" }, 404);
   return readWorkspaceObject(obj, relative);
+});
+
+// The visual workflow authoring surface can save only validated workflow source paths. It cannot
+// overwrite arbitrary project artifacts or add capabilities; runtime grants remain authoritative.
+app.use("/spaces/:spaceId/projects/:projectId/workflows/plan", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/workflows/plan", requireBusinessMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/projects/:projectId/workflows/plan", async c => {
+  const { spaceId, projectId } = c.req.param(), identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
+  const role = identity.role === "product_end_user" ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
+  if (!role || !["owner", "admin"].includes(role)) return c.json({ error_code: "forbidden" }, 403);
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return c.json({ error_code: "invalid_project_id" }, 400);
+  const body = await c.req.json<{ path?: unknown; plan?: unknown }>().catch(() => ({} as { path?: unknown; plan?: unknown }));
+  const relative = typeof body.path === "string" ? body.path : "";
+  if (!/^workflows\/[a-z0-9][a-z0-9_-]{0,62}\.ts$/.test(relative)) {
+    return c.json({ error_code: "workflow_plan_path_invalid" }, 400);
+  }
+  let source: string;
+  try {
+    const plan = body.plan as Parameters<typeof compileWorkflowPlan>[0];
+    source = compileWorkflowPlan(plan, Array.isArray(plan?.steps) ? plan.steps.map(step => step.operation) : []).source;
+  } catch (error) {
+    return c.json({ error_code: "workflow_plan_invalid", message: error instanceof Error ? error.message : "Workflow plan invalid" }, 400);
+  }
+  if (new TextEncoder().encode(source).byteLength > 65_536) return c.json({ error_code: "workflow_plan_too_large" }, 400);
+  if (!c.env.SCRIPTS_R2 || !c.env.AGENTS_WORKER) return c.json({ error_code: "workflow_authoring_unavailable" }, 503);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT 1 AS found FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, identity.tenantId).first();
+  if (!space) return c.notFound();
+  const spaceStub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const project = await forwardToSpaceDO(spaceStub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
+  if (!project.ok) return c.json({ error_code: project.status === 404 ? "project_not_found" : "project_forbidden" }, project.status === 404 ? 404 : 403);
+  const key = workspaceKeyPrefix(spaceId, projectId) + relative;
+  if (await c.env.SCRIPTS_R2.head(key)) return c.json({ error_code: "workflow_plan_draft_exists", message: "Choose a new workflow name to preserve the existing draft." }, 409);
+  const compilation = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/workflow-extensions/compile", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) }, body: JSON.stringify({ source }),
+  }));
+  if (!compilation.ok) {
+    const detail = await compilation.json<{ error_code?: string; message?: string }>().catch((): { error_code?: string; message?: string } => ({}));
+    return c.json({ error_code: detail.error_code ?? "workflow_plan_compile_failed", message: detail.message }, 400);
+  }
+  const compiled = await compilation.json<{ digest?: string; bytes?: number }>();
+  const saved = await c.env.SCRIPTS_R2.put(key, source, { onlyIf: { etagDoesNotMatch: "*" }, httpMetadata: { contentType: "text/typescript; charset=utf-8" }, customMetadata: { authorId: identity.userId, kind: "compiled_workflow_plan" } });
+  if (!saved) return c.json({ error_code: "workflow_plan_draft_exists", message: "Choose a new workflow name to preserve the existing draft." }, 409);
+  return c.json({ saved: true, path: relative, digest: compiled.digest, bytes: compiled.bytes });
 });
 
 // The space worker authorizes node-level document editing; lease owner identity always comes
