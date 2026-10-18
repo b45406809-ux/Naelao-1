@@ -88,6 +88,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
         id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS canvas_presence (actor_id TEXT PRIMARY KEY, cursor_json TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS gadget_action_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL, operation TEXT NOT NULL, table_name TEXT NOT NULL, target_hash TEXT, created_at INTEGER NOT NULL
+    );`);
     this.initialized = true;
   }
 
@@ -106,6 +109,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "DELETE" && url.pathname === "/api/data") return this.deleteData(url);
       if (request.method === "GET" && url.pathname === "/api/collaboration") return this.readCollaboration(url);
       if (request.method === "POST" && url.pathname === "/api/collaboration") return await this.writeCollaboration(request);
+      if (request.method === "GET" && url.pathname === "/api/actions/audit") return this.readActionAudit(url);
       if (request.method === "POST" && url.pathname === "/mcp") return await this.handleMcp(request);
       return Response.json({ error: "not_found" }, { status: 404 });
     } catch (error) {
@@ -214,7 +218,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if (rpc.method !== "tools/call") return Response.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } }, { status: 404 });
     const name = String(rpc.params?.name ?? ""), args = (rpc.params?.arguments ?? {}) as Record<string, unknown>, table = String(args.table ?? "");
     const columns = this.columns(table), quoted = `"${table.replaceAll('"', '""')}"`;
-    let data: unknown;
+    let data: unknown, auditTarget: unknown = args.id;
     if (name === `app_${appId}_list`) {
       const filter = args.filter && typeof args.filter === "object" && !Array.isArray(args.filter) ? args.filter as Record<string, unknown> : {};
       const allowed = new Set(columns.map(c => c.name)); const pairs = Object.entries(filter).filter(([key]) => allowed.has(key));
@@ -227,6 +231,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       const storageError = this.storageLimitExceeded(new TextEncoder().encode(JSON.stringify(record)).byteLength + 512);
       if (storageError) return Response.json({ jsonrpc: "2.0", id, error: { code: -32013, message: "storage_limit_exceeded", data: storageError } }, { status: 413 });
       this.ctx.storage.sql.exec(`INSERT INTO ${quoted} (${entries.map(([key]) => `"${key.replaceAll('"','""')}"`).join(",")}) VALUES (${entries.map(() => "?").join(",")})`, ...entries.map(([,v]) => v as SqlStorageValue));
+      auditTarget = record[columns.find(column => column.pk)?.name ?? "id"];
       data = { inserted: true };
     } else if (name === `app_${appId}_get`) {
       const pk = columns.find(c => c.pk)?.name ?? columns[0]?.name; if (!pk) throw new Error("table_has_no_columns");
@@ -249,6 +254,11 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       this.ctx.storage.sql.exec(`DELETE FROM ${quoted} WHERE "${pk.replaceAll('"','""')}" = ?`, args.id as SqlStorageValue);
       data = { deleted: true };
     } else throw new Error("unknown_tool");
+    const operation = name.slice(`app_${appId}_`.length);
+    const actorId = request.headers.get("x-naelao-user-id") ?? "unknown";
+    const targetHash = auditTarget === undefined || auditTarget === null ? null : [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(auditTarget))))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    this.ctx.storage.sql.exec("INSERT INTO gadget_action_audit(actor_id,operation,table_name,target_hash,created_at) VALUES(?,?,?,?,?)", actorId, operation, table, targetHash, Date.now());
+    this.ctx.storage.sql.exec("DELETE FROM gadget_action_audit WHERE id <= (SELECT COALESCE(MAX(id),0)-1000 FROM gadget_action_audit)");
     return result({ content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data });
   }
 
@@ -264,6 +274,14 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       "SELECT actor_id,cursor_json,updated_at FROM canvas_presence WHERE updated_at>=? ORDER BY updated_at DESC LIMIT 100", now - 30_000).toArray()
       .map(item => ({ actor_id: item.actor_id, cursor: JSON.parse(item.cursor_json), updated_at: item.updated_at }));
     return Response.json({ events, presence, next_after: events[events.length - 1]?.id ?? after });
+  }
+
+  private readActionAudit(url: URL): Response {
+    const after = Number(url.searchParams.get("after") ?? 0);
+    if (!Number.isSafeInteger(after) || after < 0) return Response.json({ error: "invalid_audit_cursor" }, { status: 400 });
+    const items = this.ctx.storage.sql.exec<{ id: number; actor_id: string; operation: string; table_name: string; target_hash: string | null; created_at: number }>(
+      "SELECT id,actor_id,operation,table_name,target_hash,created_at FROM gadget_action_audit WHERE id>? ORDER BY id LIMIT 100", after).toArray();
+    return Response.json({ items, next_after: items[items.length - 1]?.id ?? after });
   }
 
   private async writeCollaboration(request: Request): Promise<Response> {

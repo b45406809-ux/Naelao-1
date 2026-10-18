@@ -38,7 +38,7 @@ describe("Gadget MCP record operations", () => {
     const initialized = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST", body: JSON.stringify({ appId: "journal", scope: "PROJECT_BOUND", gadgetTier: 2,
       defaultSchemaSql: "CREATE TABLE journal(id TEXT PRIMARY KEY, status TEXT NOT NULL, quantity REAL NOT NULL)" }) }));
     expect(initialized.status).toBe(201);
-    const call = async (name: string, args: Record<string, unknown>) => gadget.fetch(new Request("http://gadget/mcp", { method: "POST", headers: { "content-type": "application/json" },
+    const call = async (name: string, args: Record<string, unknown>) => gadget.fetch(new Request("http://gadget/mcp", { method: "POST", headers: { "content-type": "application/json", "x-naelao-user-id": "owner-a" },
       body: JSON.stringify({ jsonrpc: "2.0", id: "test", method: "tools/call", params: { name: `app_journal_${name}`, arguments: args } }) }));
     const inserted = await call("insert", { table: "journal", record: { id: "trade-1", status: "open", quantity: 2 } });
     const insertBody = await inserted.json() as { result?: { structuredContent?: unknown }; error?: unknown };
@@ -51,5 +51,9 @@ describe("Gadget MCP record operations", () => {
     expect((await call("delete", { table: "journal", id: "trade-1" })).status).toBe(200);
     const missing = await call("get", { table: "journal", id: "trade-1" });
     expect((await missing.json() as { result: { structuredContent: unknown } }).result.structuredContent).toBeNull();
+    const audit = await gadget.fetch(new Request("http://gadget/api/actions/audit?after=0"));
+    const auditBody = await audit.json() as { items: Array<Record<string, unknown>> };
+    expect(auditBody.items.map(item => [item.actor_id, item.operation, item.table_name])).toEqual([["owner-a", "insert", "journal"], ["owner-a", "update", "journal"], ["owner-a", "get", "journal"], ["owner-a", "delete", "journal"], ["owner-a", "get", "journal"]]);
+    expect(JSON.stringify(auditBody)).not.toContain("trade-1");
   });
 });

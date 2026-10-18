@@ -21,12 +21,17 @@ export interface CanvasGadgetClient {
   moveCursor(x: number, y: number, label?: string): Promise<void>;
   postCanvasEvent(kind: "comment" | "operation", payload: Record<string, unknown>): Promise<{ id: number; created_at: number }>;
   pollCanvas(after?: number): Promise<CanvasCollaborationPage>;
+  readActionAudit(after?: number): Promise<CanvasGadgetActionAuditPage>;
 }
 
 export interface CanvasCollaborationEvent { id: number; actor_id: string; kind: "comment" | "operation"; payload: Record<string, unknown>; created_at: number }
 export interface CanvasCollaborationPage {
   events: CanvasCollaborationEvent[];
   presence: Array<{ actor_id: string; cursor: { x: number; y: number; label?: string }; updated_at: number }>;
+  next_after: number;
+}
+export interface CanvasGadgetActionAuditPage {
+  items: Array<{ id: number; actor_id: string; operation: string; table_name: string; target_hash: string | null; created_at: number }>;
   next_after: number;
 }
 
@@ -42,6 +47,7 @@ export function createCanvasGadgetClient(options: CanvasGadgetClientOptions): Ca
   const fetcher = options.fetch ?? fetch;
   const url = `${options.apiBaseUrl.replace(/\/$/, "")}/v1/spaces/${encodeURIComponent(options.spaceId)}/projects/${encodeURIComponent(options.projectId)}/apps/${encodeURIComponent(options.gadgetAppId)}/mcp`;
   const collaborationUrl = url.replace(/\/mcp$/, "/collaboration");
+  const actionAuditUrl = url.replace(/\/mcp$/, "/action-audit");
   async function collaborationRequest<T>(method: "GET" | "POST", body?: unknown, after = 0): Promise<T> {
     const headers = new Headers(await options.authorize());
     if (method === "POST") headers.set("content-type", "application/json");
@@ -75,5 +81,12 @@ export function createCanvasGadgetClient(options: CanvasGadgetClientOptions): Ca
     moveCursor: async (x: number, y: number, label?: string) => { await collaborationRequest("POST", { kind: "cursor", payload: { x, y, ...(label ? { label } : {}) } }); },
     postCanvasEvent: async (kind: "comment" | "operation", payload: Record<string, unknown>) => collaborationRequest<{ id: number; created_at: number }>("POST", { kind, payload }),
     pollCanvas: (after = 0) => collaborationRequest<CanvasCollaborationPage>("GET", undefined, after),
+    readActionAudit: async (after = 0) => {
+      const headers = new Headers(await options.authorize());
+      const response = await fetcher(`${actionAuditUrl}?after=${after}`, { method: "GET", headers });
+      const payload = await response.json() as CanvasGadgetActionAuditPage & { error_code?: string };
+      if (!response.ok) throw new Error(payload.error_code ?? `canvas_action_audit_failed_${response.status}`);
+      return payload;
+    },
   });
 }

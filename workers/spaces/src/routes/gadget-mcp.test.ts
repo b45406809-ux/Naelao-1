@@ -100,6 +100,19 @@ describe("gadget MCP host adapter", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it("limits Gadget action audit reads to owner and admin roles", async () => {
+    const fetch = vi.fn(async () => Response.json({ items: [], next_after: 0 }));
+    const app = new Hono(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async (request: Request) => new URL(request.url).pathname === "/project-extension-runtime" ? Response.json({ managed: false }) : Response.json({ id: "project-a" }) }) },
+      MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch }) } } as never;
+    const member = await app.request("/spaces/s/projects/p/apps/journal/action-audit", { headers: { "x-naelao-tenant-id": "t", "x-naelao-user-id": "member", "x-naelao-role": "member" } }, env);
+    expect(member.status).toBe(403);
+    const admin = await app.request("/spaces/s/projects/p/apps/journal/action-audit", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    expect(admin.status).toBe(200);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("rejects project Gadget initialization from a non-admin and rejects space-level Gadget scopes", async () => {
     const app = new Hono(); registerGadgetMcpRoutes(app as never);
     const env = { PLATFORM_SECRET: "secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) }, SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async () => Response.json({ id: "p" }) }) }, MICRO_APP_DO: { idFromName: vi.fn(), get: vi.fn() } } as never;

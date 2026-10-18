@@ -34,4 +34,13 @@ describe("Canvas Gadget bridge", () => {
     await client.moveCursor(0.5, 0.2);
     await expect(client.pollCanvas(4)).resolves.toMatchObject({ next_after: 4, presence: [{ actor_id: "member-a" }] });
   });
+
+  it("reads the owner-visible action audit separately from collaboration traces", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toContain("/apps/mentor_journal/action-audit?after=3");
+      return Response.json({ items: [{ id: 4, actor_id: "owner-a", operation: "update", table_name: "notes", target_hash: "a".repeat(64), created_at: 10 }], next_after: 4 });
+    });
+    const client = createCanvasGadgetClient({ apiBaseUrl: "https://api.example", spaceId: "s", projectId: "p", gadgetAppId: "mentor_journal", authorize: () => ({ authorization: "Bearer owner" }), fetch: fetcher });
+    await expect(client.readActionAudit(3)).resolves.toMatchObject({ next_after: 4, items: [{ actor_id: "owner-a", operation: "update" }] });
+  });
 });

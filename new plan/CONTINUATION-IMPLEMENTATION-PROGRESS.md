@@ -1468,3 +1468,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The result includes step IDs, deduplicated capability requirements, and emitted source size for editor previews. It does not grant capabilities or replace the host compile/install checks.
 - Verification: SDK typecheck passed; Canvas and workflow SDK tests passed (5 tests); `git diff --check` passed.
 - This supplies a safe structured editor/compiler core, not a finished visual editor. Human-friendly node editing, schemas and output mapping between steps, preview/dry-run, cost estimates, approvals, and recovery remain open Phase 7 work.
+
+### Phase 7 Gadget action audit checkpoint (2026-10-18)
+
+- Successful Gadget MCP reads and mutations now append a bounded audit record with actor ID from the authenticated host request, operation, table, timestamp, and a one-way digest of a record key where present. Record contents, filters, and credentials are not copied into the audit log. The latest 1,000 actions are retained.
+- Added a signed-package-checked project route for the audit feed, restricted to Space owners/admins, with paginated access through the Canvas SDK. Collaboration traces remain a separate member-visible feed.
+- Verification: Spaces and SDK typechecks passed; Gadget route/DO suites passed (12 tests); Canvas SDK tests passed (4 tests). `git diff --check` passed.
+- Remaining Phase 7 work includes realtime WebSocket transport, finer manifest-declared per-role Canvas action permissions, visual node editing and output mapping, dry-run/cost preview, explicit approval workflow, and recovery UI.

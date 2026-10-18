@@ -104,6 +104,10 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   app.delete("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/mcp", c => forwardProject(c, "/mcp"));
   app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/collaboration", c => forwardProject(c, `/api/collaboration${new URL(c.req.url).search}`, "GET"));
+  app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/action-audit", c => {
+    if (!["owner", "admin"].includes(c.req.header("x-naelao-role") ?? "")) return c.json({ error_code: "forbidden", message: "Gadget action audit requires project administration" }, 403);
+    return forwardProject(c, `/api/actions/audit${new URL(c.req.url).search}`, "GET");
+  });
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/collaboration", async c => {
     let body: { kind?: unknown; payload?: unknown };
     try { body = await c.req.json(); } catch { return c.json({ error_code: "canvas_collaboration_event_invalid" }, 400); }
