@@ -43,7 +43,7 @@ export function registerExtensionGadgetRoutes(app: Hono<{ Bindings: Env }>): voi
     if (!actionAllowed) return c.json({ error_code: "extension_gadget_action_not_granted" }, 403);
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/mcp", {
-      method: "POST", headers: { "content-type": "application/json" },
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-user-id": `workflow:${workflowId}` },
       body: JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name: `app_${appId}_${operation}`, arguments: args } }),
     }));
     return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });

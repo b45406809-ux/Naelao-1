@@ -6,6 +6,7 @@ import { registerExtensionGadgetRoutes } from "./extension-gadget.js";
 describe("extension workflow Gadget bridge", () => {
   it("forwards only a declared Gadget operation to the exact named project install", async () => {
     let rpc: Record<string, unknown> | null = null;
+    let auditActor: string | null = null;
     const spaceStub = { fetch: vi.fn(async () => new Response(JSON.stringify({
       instance: { instance_id: "install-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", instance_key: "mentor2", status: "active", scope: "PROJECT_BOUND" },
       manifest: { id: "ext_mentor", bundle: { id: "ext_mentor", version: "1.0.0", primitives: [
@@ -17,6 +18,7 @@ describe("extension workflow Gadget bridge", () => {
       PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "space-a" }) }) }) },
       SPACE_DO: { idFromName: () => "space-do", get: () => spaceStub },
       MICRO_APP_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) => {
+        auditActor = request.headers.get("x-naelao-user-id");
         rpc = await request.json() as Record<string, unknown>;
         return Response.json({ jsonrpc: "2.0", id: "1", result: { structuredContent: { inserted: true } } });
       } }) },
@@ -28,6 +30,7 @@ describe("extension workflow Gadget bridge", () => {
       body: JSON.stringify({ project_id: "project-a", workflow_id: "record_order", arguments: { table: "orders", record: { id: "one" } } }),
     }, env as never);
     expect(response.status).toBe(200);
+    expect(auditActor).toBe("workflow:record_order");
     expect(rpc).toMatchObject({ method: "tools/call", params: { name: "app_mentor2_journal_insert", arguments: { table: "orders", record: { id: "one" } } } });
     const updated = await app.request("/spaces/space-a/internal/extensions/install-a/gadgets/journal/update", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },

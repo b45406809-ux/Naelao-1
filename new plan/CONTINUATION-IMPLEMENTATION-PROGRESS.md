@@ -1530,6 +1530,7 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 
 - Extension worker roles may declare exact Gadget IDs, operations, and table names. The bundle parser rejects grants for undeclared Gadgets/tables, operations not listed by the bound workflow, invalid principals, and ambiguous project-member roles for Gadget-capable workflows.
 - Agents validates the active workflow role and requested table before forwarding an action. The Spaces internal bridge independently resolves the signed active installation, workflow, unique project-member role, operation and table grant before reaching the Gadget Durable Object. External channel handlers still have no route into this member workflow bridge.
+- The Gadget action audit now attributes those writes to a host-derived `workflow:<primitive-id>` actor instead of recording `unknown`.
 - The Trading Mentor sample now demonstrates a single-table insert grant instead of treating a workflow-wide operation name as enough authorization.
 - Verification: Agent SDK suite passed (101 tests); Spaces Gadget bridge suite passed (2 tests) and typecheck passed; Agents workflow scope suite passed (5 tests) and typecheck passed; `git diff --check` passed.
 - This closes only project workflow Gadget table authorization. Canvas actor/operation grants, per-row rules, live WebSocket transport, and the remaining workflow installation/approval/recovery features remain open.
