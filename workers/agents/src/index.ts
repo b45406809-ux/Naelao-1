@@ -8729,6 +8729,20 @@ async function sweepUndeliveredNotifications(env: AgentsEnv, spaceId: string, te
   }
 }
 
+async function isProjectRoutineEligible(env: AgentsEnv, row: { space_id: string; tenant_id: string; project_id: string | null }): Promise<boolean> {
+  if (!row.project_id) return true;
+  if (!env.SPACES_WORKER) throw new Error("project_lifecycle_check_unavailable");
+  const query = new URLSearchParams({ space_id: row.space_id, project_id: row.project_id });
+  const response = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/project-lifecycle?${query}`, {
+    headers: { "x-naelao-tenant-id": row.tenant_id, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, row.tenant_id) },
+  }));
+  if (response.status === 404) return false;
+  if (!response.ok) throw new Error(`project_lifecycle_check_failed:${response.status}`);
+  const lifecycle = await response.json<{ active?: boolean }>();
+  if (typeof lifecycle.active !== "boolean") throw new Error("project_lifecycle_response_invalid");
+  return lifecycle.active;
+}
+
 async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<void> {
   if (msg.kind === "scheduled_job" && !msg.jobId) return;
   if (msg.kind === "project_steward_review") {
@@ -8967,6 +8981,10 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const lastRunAt = row.last_run_at ?? parseTimestampMs(row.created_at) ?? now;
       if (!isCronDue(row.cron_expression, lastRunAt, now)) return; // stale or duplicate queue delivery.
       if (isWithinScheduledQuietHours({ start: row.quiet_hours_start, end: row.quiet_hours_end, timeZone: row.quiet_hours_timezone }, now)) return;
+      // Project state lives in the owning SpaceDO, not PLATFORM_DB. Recheck at consumption so a
+      // queued routine cannot keep invoking a planner/script after the project was archived or
+      // hibernated. An unavailable authority check retries the queue and fails closed.
+      if (!await isProjectRoutineEligible(env, row)) return;
       const sweepKey = msg.sweepKey ?? Math.floor(now / 3_600_000);
       const claimToken = await claimScheduledJobDispatch(env.PLATFORM_DB, { jobId: row.id, sweepKey, now });
       if (!claimToken) return; // duplicate this sweep, paused during enqueue, or another active run.

@@ -3481,6 +3481,20 @@ app.post("/internal/spaces/:spaceId/project-steward/installation", async (c) => 
   return c.json({ extension_id: manifest.id, installation_id: result.installationId, scope: "SPACE_SHARED", platform_managed: true });
 });
 
+// Scheduler fence for queued project routines: SpaceDO remains the authority for project
+// lifecycle, and this narrowly scoped internal lookup lets a redelivered job re-check it before
+// invoking either a planner or direct script.
+app.use("/internal/project-lifecycle", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));
+app.get("/internal/project-lifecycle", async (c) => {
+  const spaceId = c.req.query("space_id") ?? "";
+  const projectId = c.req.query("project_id") ?? "";
+  if (!spaceId || !projectId) return c.json({ error_code: "project_scope_required" }, 400);
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  return forwardToSpaceDO(stub, `/project-lifecycle?${new URLSearchParams({ space_id: spaceId, project_id: projectId })}`, "GET");
+});
+
 app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);

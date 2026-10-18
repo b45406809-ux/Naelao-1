@@ -2771,6 +2771,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/business-wallet/withdraw") return this.withdrawBusinessWallet(request);
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
       if (url.pathname === "/project-steward-facts" && method === "GET") return this.projectStewardFacts(url.searchParams);
+      if (url.pathname === "/project-lifecycle" && method === "GET") return this.projectLifecycle(url.searchParams);
       if (url.pathname === "/machine-authority" && method === "POST") return this.machineAuthority(request);
       if (url.pathname === "/container-installations" && method === "GET") {
         const rows = queryAll<{ manifest_json: string }>(this.ctx.storage.sql as never,
@@ -11924,6 +11925,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         active_extension_count: extensionsByProject.get(project.project_id) ?? 0,
       };
     }) });
+  }
+
+  private projectLifecycle(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id") ?? "";
+    if (!spaceId || !projectId) return Response.json({ error_code: "project_scope_required" }, { status: 400 });
+    const project = queryOne<{ id: string; status: string; lifecycle: string | null }>(this.ctx.storage.sql as never,
+      "SELECT id,status,lifecycle FROM projects WHERE id=? AND space_id=?", projectId, spaceId);
+    if (!project) return Response.json({ error_code: "project_not_found" }, { status: 404 });
+    return Response.json({ project_id: project.id, status: project.status, lifecycle: project.lifecycle, active: project.status === "active" });
   }
 
   private async installExtension(request: Request): Promise<Response> {

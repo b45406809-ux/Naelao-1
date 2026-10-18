@@ -642,6 +642,7 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
   function makeConsumerEnv(opts: {
     jobRow?: ScheduledJobFullRow | null;
     agentDoStatus?: number;
+    projectActive?: boolean;
   }): {
     env: AgentsEnv;
     fireCalls: Array<{ url: string; body: unknown }>;
@@ -693,6 +694,7 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
         const req2 = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
         const body = await req2.clone().json().catch(() => null);
         eventFireCalls.push({ url: req2.url, body });
+        if (req2.url.includes("/internal/project-lifecycle")) return Response.json({ active: opts.projectActive ?? true });
         if (req2.url.endsWith("/threads")) return Response.json({ id: "project-thread-1" }, { status: 201 });
         if (req2.url.endsWith("/sessions")) return Response.json({ id: "project-session-1" }, { status: 201 });
         return new Response(JSON.stringify({ fired: true }), { status: 200 });
@@ -781,6 +783,20 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
     expect(sessionCreate?.body).toMatchObject({ thread_id: "project-thread-1", metadata: { session_kind: "heartbeat", project_id: "proj-1" } });
     const run = fireCalls.find((call) => call.url === "http://agent-do/script/run");
     expect(run?.body).toMatchObject({ projectId: "proj-1", sessionId: "project-session-1", goal: "Review open project priorities" });
+    expect(acked).toHaveLength(1);
+    expect(retried).toHaveLength(0);
+  });
+
+  it("does not invoke queued project routines after the owning project is archived", async () => {
+    const jobRow: ScheduledJobFullRow = {
+      id: "archived-goal", space_id: "space-1", tenant_id: "tenant-1", project_id: "proj-archived",
+      cron_expression: "* * * * *", script_name: "", goal: "Review project",
+      params: "{}", last_run_at: null, created_at: "2020-01-01 00:00:00", consecutive_failures: 0,
+    };
+    const { env, fireCalls } = makeConsumerEnv({ jobRow, projectActive: false });
+    const { batch, acked, retried } = makeBatch([{ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: jobRow.id }]);
+    await handleAgentTicksQueue(batch as never, env);
+    expect(fireCalls).toHaveLength(0);
     expect(acked).toHaveLength(1);
     expect(retried).toHaveLength(0);
   });

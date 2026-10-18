@@ -114,6 +114,14 @@ describe("SpaceDO — customer-bot project config", () => {
     expect(JSON.stringify(facts.json)).not.toContain("Pending");
   });
 
+  it("reports the authoritative project lifecycle state for scheduler fences", async () => {
+    const project = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Lifecycle" });
+    const path = `/project-lifecycle?space_id=space1&project_id=${project.json.id}`;
+    expect(await call(spaceDO, path, "GET")).toMatchObject({ status: 200, json: { active: true, status: "active" } });
+    await call(spaceDO, `/projects/${project.json.id}`, "PATCH", { status: "archived" });
+    expect(await call(spaceDO, path, "GET")).toMatchObject({ status: 200, json: { active: false, status: "archived" } });
+  });
+
   it("rejects an unknown project kind", async () => {
     const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "X" });
     const bad = await call(spaceDO, `/projects/${created.json.id}`, "PATCH", { kind: "evil_kind" });

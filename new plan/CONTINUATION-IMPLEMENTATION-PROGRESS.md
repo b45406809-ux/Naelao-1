@@ -1284,6 +1284,12 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents, Spaces, and Shell typechecks passed; project-steward review/report and SpaceDO fact suites passed (25 tests); `git diff --check` passed.
 - Still open in Phase 3: journal summaries, extension run/connection health and spend evidence, typed decision records with actor attribution, and the reversible owner-confirmed retirement review flow. No project lifecycle action was added.
 
+### Phase 3 project lifecycle scheduler fence (2026-10-18)
+
+- Added a typed SpaceDO lifecycle lookup and an HMAC-only Spaces Worker proxy. Before claiming or invoking a queued project routine, Agents rechecks the authoritative project state. Archived, hibernated, missing, and otherwise inactive projects are acknowledged without planner/script execution; an unavailable lifecycle check retries the queue and fails closed. Space-wide jobs are unchanged.
+- Verification: Agents and Spaces typechecks passed; scheduled-job, project lifecycle, and Steward route tests passed (61 tests); `git diff --check` passed.
+- The check and subsequent invocation are separate service calls, so this does not provide a transactionally atomic fence against a project being archived in the few milliseconds after the check. Lifecycle archive/restore still needs a coordinated routine pause/restore record and full impact confirmation flow.
+
 ### Phase 4 external usage controls checkpoint (2026-10-17)
 
 - Added project setting `external_daily_message_cap` (0 = unlimited, maximum 10,000) and exposed it in Project settings as a per-person daily limit for external channel traffic.
