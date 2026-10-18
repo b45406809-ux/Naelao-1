@@ -1164,7 +1164,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId || !identity.capabilities.includes(body.operation))
         return Response.json({ error: "workflow_gadget_grant_invalid" }, { status: 403 });
       const gadgetId = typeof body.params?.gadget_id === "string" ? body.params.gadget_id : "";
-      if (!resolveExtensionGadgetAppId({ ...(grant.installation ? { installation: grant.installation } : {}), workflowId: identity.definitionId, operation: body.operation, gadgetId }))
+      const table = typeof body.params?.table === "string" ? body.params.table : "";
+      if (!resolveExtensionGadgetAppId({ ...(grant.installation ? { installation: grant.installation } : {}), workflowId: identity.definitionId, operation: body.operation, gadgetId, table }))
         return Response.json({ error: "workflow_gadget_not_in_extension" }, { status: 403 });
       const operationName = body.operation.slice("extension.gadget.".length);
       const args = { ...body.params };
@@ -1173,7 +1174,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         `http://spaces-worker/spaces/${encodeURIComponent(identity.spaceId)}/internal/extensions/${encodeURIComponent(identity.installationId)}/gadgets/${encodeURIComponent(gadgetId)}/${operationName}`,
         { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
           "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, identity.tenantId) },
-          body: JSON.stringify({ project_id: identity.projectId, arguments: args }) },
+          body: JSON.stringify({ project_id: identity.projectId, workflow_id: identity.definitionId, arguments: args }) },
       ));
       return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
     }

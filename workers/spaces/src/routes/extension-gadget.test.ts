@@ -8,7 +8,9 @@ describe("extension workflow Gadget bridge", () => {
     let rpc: Record<string, unknown> | null = null;
     const spaceStub = { fetch: vi.fn(async () => new Response(JSON.stringify({
       instance: { instance_id: "install-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", instance_key: "mentor2", status: "active", scope: "PROJECT_BOUND" },
-      manifest: { id: "ext_mentor", bundle: { id: "ext_mentor", version: "1.0.0", primitives: [{ id: "journal", kind: "gadget" }] } },
+      manifest: { id: "ext_mentor", bundle: { id: "ext_mentor", version: "1.0.0", primitives: [
+        { id: "journal", kind: "gadget" }, { id: "record_order", kind: "workflow", entry: "./record-order.ts", toolNames: ["extension.gadget.insert", "extension.gadget.update"] },
+      ], workerRoles: [{ principal: "project_member", execution: "worker", invocation: "workflow_step", entry: "./record-order.ts", primitiveIds: ["record_order"], gadgetActions: [{ gadgetId: "journal", operations: ["extension.gadget.insert", "extension.gadget.update"], tables: ["orders"] }] }] } },
     }), { headers: { "content-type": "application/json" } })) };
     const env = {
       PLATFORM_SECRET: "test-secret",
@@ -23,17 +25,22 @@ describe("extension workflow Gadget bridge", () => {
     const token = await mintInternalToken(env.PLATFORM_SECRET, "tenant-a");
     const response = await app.request("/spaces/space-a/internal/extensions/install-a/gadgets/journal/insert", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
-      body: JSON.stringify({ project_id: "project-a", arguments: { table: "orders", record: { id: "one" } } }),
+      body: JSON.stringify({ project_id: "project-a", workflow_id: "record_order", arguments: { table: "orders", record: { id: "one" } } }),
     }, env as never);
     expect(response.status).toBe(200);
     expect(rpc).toMatchObject({ method: "tools/call", params: { name: "app_mentor2_journal_insert", arguments: { table: "orders", record: { id: "one" } } } });
     const updated = await app.request("/spaces/space-a/internal/extensions/install-a/gadgets/journal/update", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
-      body: JSON.stringify({ project_id: "project-a", arguments: { table: "orders", id: "one", record: { status: "closed" } } }),
+      body: JSON.stringify({ project_id: "project-a", workflow_id: "record_order", arguments: { table: "orders", id: "one", record: { status: "closed" } } }),
     }, env as never);
     expect(updated.status).toBe(200);
     expect(rpc).toMatchObject({ method: "tools/call", params: { name: "app_mentor2_journal_update", arguments: { table: "orders", id: "one", record: { status: "closed" } } } });
-    expect(spaceStub.fetch).toHaveBeenCalledTimes(2);
+    const deniedTable = await app.request("/spaces/space-a/internal/extensions/install-a/gadgets/journal/insert", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ project_id: "project-a", workflow_id: "record_order", arguments: { table: "private_notes", record: { id: "secret" } } }),
+    }, env as never);
+    expect(deniedTable.status).toBe(403);
+    expect(spaceStub.fetch).toHaveBeenCalledTimes(3);
   });
 
   it("rejects wrong-project and undeclared Gadget requests without touching the actor", async () => {

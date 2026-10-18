@@ -1525,3 +1525,11 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The offline mock harness resolves references from static fixtures and exposes the simulated call arguments for review. This makes output wiring testable without invoking a live provider or Worker.
 - Verification: SDK typecheck/build and full SDK tests passed (9 tests); Shell typecheck passed; `git diff --check` passed.
 - Schema-derived operation output types, field-level capability grants, visual editing of mappings, and runtime installation/scheduling remain open. The current editor accepts JSON references manually and saves drafts only.
+
+### Phase 7 role- and table-bound Gadget actions checkpoint (2026-10-18)
+
+- Extension worker roles may declare exact Gadget IDs, operations, and table names. The bundle parser rejects grants for undeclared Gadgets/tables, operations not listed by the bound workflow, invalid principals, and ambiguous project-member roles for Gadget-capable workflows.
+- Agents validates the active workflow role and requested table before forwarding an action. The Spaces internal bridge independently resolves the signed active installation, workflow, unique project-member role, operation and table grant before reaching the Gadget Durable Object. External channel handlers still have no route into this member workflow bridge.
+- The Trading Mentor sample now demonstrates a single-table insert grant instead of treating a workflow-wide operation name as enough authorization.
+- Verification: Agent SDK suite passed (101 tests); Spaces Gadget bridge suite passed (2 tests) and typecheck passed; Agents workflow scope suite passed (5 tests) and typecheck passed; `git diff --check` passed.
+- This closes only project workflow Gadget table authorization. Canvas actor/operation grants, per-row rules, live WebSocket transport, and the remaining workflow installation/approval/recovery features remain open.

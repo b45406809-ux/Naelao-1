@@ -261,8 +261,9 @@ export interface ContainerContract extends ExtensionContractBase {
 export interface LinterContract extends ExtensionContractBase { kind: "linter"; mode: "deterministic" | "semantic"; entry: string; failureMode: "warn" | "block"; }
 export interface WorkflowContract extends ExtensionContractBase { kind: "workflow"; executionMode: ExecutionMode; entry: string; steps: readonly string[]; toolNames: readonly string[]; }
 /** Narrow API available only to an internal project-member Durable Workflow role.
- * Gadget writes are owner-approved by listing `extension.gadget.insert` in that workflow's
- * `toolNames`; external channel handlers never receive this context. */
+ * `toolNames` declares the workflow capability; the worker role's `gadgetActions` further limits
+ * each operation to specific Gadget IDs and schema-declared tables. External channel handlers
+ * never receive this context. */
 export interface ExtensionWorkflowGadgets {
   list<T = unknown>(stepKey: string, gadgetId: string, table: string, options?: { filter?: Record<string, unknown>; limit?: number }): Promise<T>;
   get<T = unknown>(stepKey: string, gadgetId: string, table: string, id: string | number): Promise<T>;
@@ -288,6 +289,8 @@ export interface ExtensionWorkerRole {
   execution: "worker" | "container" | "web_container";
   entry: string;
   primitiveIds: readonly string[];
+  /** Exact Gadget operations and tables this worker role may invoke from a workflow. */
+  gadgetActions?: readonly { gadgetId: string; operations: readonly string[]; tables: readonly string[] }[];
 }
 /** Host-managed provider dependency. Secrets and transport always remain host-owned. */
 export interface ExtensionConnectionRequirement {
@@ -465,7 +468,7 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
     for (const item of workerRoles as unknown[]) {
       contractAssert(item !== null && typeof item === "object" && !Array.isArray(item), "invalid_worker_role");
       const role = item as Record<string, unknown>;
-      rejectUnknownContractKeys(role, new Set(["id", "principal", "invocation", "execution", "entry", "primitiveIds"]));
+      rejectUnknownContractKeys(role, new Set(["id", "principal", "invocation", "execution", "entry", "primitiveIds", "gadgetActions"]));
       contractAssert(typeof role.id === "string" && CONTRACT_ID.test(role.id) && !ids.has(role.id), "invalid_worker_role_id");
       ids.add(role.id);
       contractAssert(["project_member", "space_owner", "external_channel_subject", "service"].includes(String(role.principal)), "invalid_worker_principal");
@@ -473,6 +476,26 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
       contractAssert(["worker", "container", "web_container"].includes(String(role.execution)), "invalid_worker_execution");
       contractAssert(typeof role.entry === "string" && CONTRACT_PATH.test(role.entry), "invalid_worker_entry");
       contractAssert(Array.isArray(role.primitiveIds) && new Set(role.primitiveIds).size === role.primitiveIds.length && (role.primitiveIds as unknown[]).every(id => typeof id === "string" && primitiveIds.has(id)), "invalid_worker_primitive_reference");
+      if (role.gadgetActions !== undefined) {
+        contractAssert(role.principal === "project_member" && ["workflow_step", "tool"].includes(String(role.invocation)), "invalid_worker_gadget_action_principal");
+        contractAssert(Array.isArray(role.gadgetActions) && role.gadgetActions.length <= 32, "invalid_worker_gadget_actions");
+        const grants = new Set<string>();
+        for (const item of role.gadgetActions as unknown[]) {
+          contractAssert(item !== null && typeof item === "object" && !Array.isArray(item), "invalid_worker_gadget_action");
+          const grant = item as Record<string, unknown>;
+          rejectUnknownContractKeys(grant, new Set(["gadgetId", "operations", "tables"]));
+          contractAssert(typeof grant.gadgetId === "string" && CONTRACT_ID.test(grant.gadgetId), "invalid_worker_gadget_id");
+          contractAssert(Array.isArray(grant.operations) && grant.operations.length > 0 && grant.operations.length <= 5
+            && new Set(grant.operations).size === grant.operations.length
+            && grant.operations.every(operation => typeof operation === "string" && ["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(operation)), "invalid_worker_gadget_operations");
+          contractAssert(Array.isArray(grant.tables) && grant.tables.length > 0 && grant.tables.length <= 64
+            && new Set(grant.tables).size === grant.tables.length && grant.tables.every(table => typeof table === "string" && /^[a-z][a-z0-9_-]{0,62}$/.test(table)), "invalid_worker_gadget_tables");
+          for (const operation of grant.operations as string[]) for (const table of grant.tables as string[]) {
+            const key = `${grant.gadgetId}:${operation}:${table}`;
+            contractAssert(!grants.has(key), "duplicate_worker_gadget_action"); grants.add(key);
+          }
+        }
+      }
     }
   }
   for (const workflow of primitives.filter((item): item is WorkflowContract => item.kind === "workflow")) {
@@ -481,6 +504,27 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
     const gadgetOperations = workflow.toolNames.filter(name => name.startsWith("extension.gadget."));
     contractAssert(gadgetOperations.every(name => ["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(name))
       && (!gadgetOperations.length || primitives.some(item => item.kind === "gadget")), "invalid_workflow_gadget_capability");
+    if (gadgetOperations.length) {
+      const roles = (workerRoles as ExtensionWorkerRole[]).filter(role => role.principal === "project_member" && role.entry === workflow.entry && role.primitiveIds.includes(workflow.id)
+        && ["workflow_step", "tool"].includes(role.invocation));
+      contractAssert(roles.length === 1, "workflow_gadget_role_ambiguous");
+      const role = roles[0]!;
+      for (const grant of role.gadgetActions ?? []) {
+        const gadget = primitives.find((item): item is GadgetContract => item.kind === "gadget" && item.id === grant.gadgetId);
+        contractAssert(gadget, "worker_gadget_not_declared");
+        contractAssert(grant.operations.every(operation => workflow.toolNames.includes(operation)), "worker_gadget_operation_not_declared");
+        const schema = [gadget.schemaSql ?? "", ...(gadget.migrations ?? []).map(migration => migration.up)].join("\n");
+        const declaredTables = new Set<string>();
+        const createTable = /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^\"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z][A-Za-z0-9_]*))/gi;
+        for (const match of schema.matchAll(createTable)) declaredTables.add((match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").toLowerCase());
+        contractAssert(grant.tables.every(table => declaredTables.has(table.toLowerCase())), "worker_gadget_table_not_declared");
+      }
+      for (const operation of gadgetOperations) contractAssert((role.gadgetActions ?? []).some(grant => grant.operations.includes(operation)), "workflow_gadget_action_grant_required");
+    }
+  }
+  for (const role of (workerRoles ?? []) as ExtensionWorkerRole[]) for (const grant of role.gadgetActions ?? []) {
+    contractAssert(primitives.some(item => item.kind === "workflow" && item.entry === role.entry && role.primitiveIds.includes(item.id)
+      && grant.operations.every(operation => item.toolNames.includes(operation))), "worker_gadget_grant_workflow_mismatch");
   }
   for (const [field, max] of [["connections", 32], ["knowledge", 64]] as const) {
     const entries = raw[field];

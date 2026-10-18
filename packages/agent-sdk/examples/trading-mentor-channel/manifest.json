@@ -36,7 +36,8 @@
       }
     ],
     "workerRoles": [
-      { "id": "order_worker", "principal": "project_member", "invocation": "workflow_step", "execution": "worker", "entry": "./place-order.ts", "primitiveIds": ["place_order"] }
+      { "id": "order_worker", "principal": "project_member", "invocation": "workflow_step", "execution": "worker", "entry": "./place-order.ts", "primitiveIds": ["place_order"],
+        "gadgetActions": [{ "gadgetId": "trade_journal", "operations": ["extension.gadget.insert"], "tables": ["trade_journal"] }] }
     ],
     "connections": [
       { "id": "student_whatsapp_connection", "provider": "whatsapp", "purpose": "Receive student questions and send grounded replies", "required": true }
