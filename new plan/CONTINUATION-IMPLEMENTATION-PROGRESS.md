@@ -1488,3 +1488,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Re-ran the previously reported 16-test groups on the current branch: planner plan tool passed (13/13), container policy plan passed (11/11), and workflow compilation/orchestration passed (4/4). These expectations had already been aligned to the current transaction, explicit container scope, and async compiler contracts; this rerun confirms they remain green.
 - Re-ran new provider and Canvas boundaries: Router provider routing/customer voice (3), Agents channel/inbox (18), Notifications interactive/air-gap (8), Spaces migrations/Gadget routes/DO (13), and SDK Canvas/workflow/mock harness (8) all passed.
 - This is targeted regression evidence, not the full workspace suite or a deployed runtime exercise. Phase 9 still needs the broader failure/restart, concurrency, secret rotation, migration rollback, fuzz/property, threat-model, and staged-release checks.
+
+### Phase 9 authenticated provider setup boundary checkpoint (2026-10-18)
+
+- Added Agents-route tests proving provider connection setup requires a router-minted tenant token, denies a regular member before resolving provider state, and rejects a connection ID that is not declared by the active publisher-verified extension bundle.
+- Verification: Agents typecheck passed; the focused route authorization suite passed (3 tests). This exercises authorization and declaration checks without Slack credentials or live provider calls.
+- OAuth callback token exchange, ticket replay, secret-vault cleanup under provider failures, and real provider timeout scenarios still need isolated integration tests.
