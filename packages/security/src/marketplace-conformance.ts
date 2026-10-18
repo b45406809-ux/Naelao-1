@@ -7,8 +7,15 @@ export interface ConformanceRule {
   match: string;
   flags?: "i";
 }
-export interface ConformanceFixture { id: string; text: string; expected: "compliant" | "violation" }
-export interface ConformanceSuite { rules: ConformanceRule[]; fixtures: ConformanceFixture[] }
+export interface ConformanceFixture {
+  id: string;
+  text: string;
+  expected: "compliant" | "violation";
+}
+export interface ConformanceSuite {
+  rules: ConformanceRule[];
+  fixtures: ConformanceFixture[];
+}
 export interface ConformanceReport {
   runner: string;
   passed: number;
@@ -28,26 +35,47 @@ export interface ConformanceCertificate {
 }
 export interface StateDeltaConformanceReport {
   runner: "naelao-state-delta-v1";
-  passed: number; total: number; securityViolations: number;
-  tokensUsed: number; maximumCostUpperBoundUsd: number;
+  passed: number;
+  total: number;
+  securityViolations: number;
+  tokensUsed: number;
+  maximumCostUpperBoundUsd: number;
   diagnostics: Array<{ fixtureId: string; error: string }>;
 }
 
 const ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_TEXT = 16_384;
+const MAX_CANONICAL_CHARS = 1_000_000;
+const MAX_CANONICAL_DEPTH = 64;
 
-export function validateConformanceSuite(value: unknown): value is ConformanceSuite {
+export function validateConformanceSuite(
+  value: unknown
+): value is ConformanceSuite {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const suite = value as Record<string, unknown>;
-  if (!Array.isArray(suite.rules) || suite.rules.length < 1 || suite.rules.length > 64 ||
-      !Array.isArray(suite.fixtures) || suite.fixtures.length < MIN_MARKETPLACE_FIXTURES || suite.fixtures.length > 500) return false;
+  if (
+    !Array.isArray(suite.rules) ||
+    suite.rules.length < 1 ||
+    suite.rules.length > 64 ||
+    !Array.isArray(suite.fixtures) ||
+    suite.fixtures.length < MIN_MARKETPLACE_FIXTURES ||
+    suite.fixtures.length > 500
+  )
+    return false;
   const rules = new Set<string>();
   for (const raw of suite.rules) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
     const rule = raw as Record<string, unknown>;
-    if (typeof rule.id !== "string" || !ID.test(rule.id) || rules.has(rule.id) ||
-        typeof rule.match !== "string" || rule.match.length < 1 || rule.match.length > 256 ||
-        (rule.flags !== undefined && rule.flags !== "i")) return false;
+    if (
+      typeof rule.id !== "string" ||
+      !ID.test(rule.id) ||
+      rules.has(rule.id) ||
+      typeof rule.match !== "string" ||
+      rule.match.length < 1 ||
+      rule.match.length > 256 ||
+      (rule.flags !== undefined && rule.flags !== "i")
+    )
+      return false;
     rules.add(rule.id);
   }
   const fixtures = new Set<string>();
@@ -56,9 +84,15 @@ export function validateConformanceSuite(value: unknown): value is ConformanceSu
   for (const raw of suite.fixtures) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
     const fixture = raw as Record<string, unknown>;
-    if (typeof fixture.id !== "string" || !ID.test(fixture.id) || fixtures.has(fixture.id) ||
-        typeof fixture.text !== "string" || fixture.text.length > MAX_TEXT ||
-        (fixture.expected !== "compliant" && fixture.expected !== "violation")) return false;
+    if (
+      typeof fixture.id !== "string" ||
+      !ID.test(fixture.id) ||
+      fixtures.has(fixture.id) ||
+      typeof fixture.text !== "string" ||
+      fixture.text.length > MAX_TEXT ||
+      (fixture.expected !== "compliant" && fixture.expected !== "violation")
+    )
+      return false;
     fixtures.add(fixture.id);
     if (fixture.expected === "compliant") compliant++;
     else violations++;
@@ -67,38 +101,122 @@ export function validateConformanceSuite(value: unknown): value is ConformanceSu
 }
 
 /** All rules declared for a finding must match; no code execution or model judgment is involved. */
-export function runConformanceSuite(suite: ConformanceSuite): ConformanceReport {
-  if (!validateConformanceSuite(suite)) throw new Error("invalid_conformance_suite");
+export function runConformanceSuite(
+  suite: ConformanceSuite
+): ConformanceReport {
+  if (!validateConformanceSuite(suite))
+    throw new Error("invalid_conformance_suite");
   const diagnostics: ConformanceReport["diagnostics"] = [];
   for (const fixture of suite.fixtures) {
     const text = fixture.text.normalize("NFKC");
-    const matches = suite.rules.filter((rule) => (rule.flags === "i" ? text.toLocaleLowerCase("en-US") : text)
-      .includes((rule.flags === "i" ? rule.match.normalize("NFKC").toLocaleLowerCase("en-US") : rule.match.normalize("NFKC"))));
+    const matches = suite.rules.filter((rule) =>
+      (rule.flags === "i" ? text.toLocaleLowerCase("en-US") : text).includes(
+        rule.flags === "i"
+          ? rule.match.normalize("NFKC").toLocaleLowerCase("en-US")
+          : rule.match.normalize("NFKC")
+      )
+    );
     const actual = matches.length ? "violation" : "compliant";
-    if (actual !== fixture.expected) diagnostics.push({ fixtureId: fixture.id, expected: fixture.expected, actual });
+    if (actual !== fixture.expected)
+      diagnostics.push({
+        fixtureId: fixture.id,
+        expected: fixture.expected,
+        actual,
+      });
   }
-  return { runner: CONFORMANCE_RUNNER_VERSION, passed: suite.fixtures.length - diagnostics.length, total: suite.fixtures.length, diagnostics };
+  return {
+    runner: CONFORMANCE_RUNNER_VERSION,
+    passed: suite.fixtures.length - diagnostics.length,
+    total: suite.fixtures.length,
+    diagnostics,
+  };
 }
 
 async function sha256(value: string): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const bytes = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value)
+  );
+  return [...new Uint8Array(bytes)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value as object).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`;
+function stable(
+  value: unknown,
+  active = new WeakSet<object>(),
+  depth = 0,
+  budget = { chars: 0 }
+): string {
+  if (depth > MAX_CANONICAL_DEPTH)
+    throw new RangeError("conformance_input_too_deep");
+  let result: string;
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    result = JSON.stringify(value);
+  } else if (typeof value === "number" && Number.isFinite(value)) {
+    result = JSON.stringify(value);
+  } else if (Array.isArray(value) || (value && typeof value === "object")) {
+    if (active.has(value)) throw new TypeError("conformance_input_circular");
+    active.add(value);
+    try {
+      if (Array.isArray(value)) {
+        result = `[${value.map((item) => stable(item, active, depth + 1, budget)).join(",")}]`;
+      } else {
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype !== Object.prototype && prototype !== null)
+          throw new TypeError("conformance_input_not_json");
+        result = `{${Object.keys(value)
+          .sort()
+          .map(
+            (key) =>
+              `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key], active, depth + 1, budget)}`
+          )
+          .join(",")}}`;
+      }
+    } finally {
+      active.delete(value);
+    }
+  } else {
+    throw new TypeError("conformance_input_not_json");
   }
-  return JSON.stringify(value);
+  budget.chars += result.length;
+  if (budget.chars > MAX_CANONICAL_CHARS)
+    throw new RangeError("conformance_input_too_large");
+  return result;
 }
 async function hmac(secret: string, data: string): Promise<string> {
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const bytes = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
-  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const bytes = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(data)
+  );
+  return [...new Uint8Array(bytes)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
-function payload(cert: Omit<ConformanceCertificate, "signature">): string { return stable(cert); }
+function payload(cert: Omit<ConformanceCertificate, "signature">): string {
+  return stable(cert);
+}
 
-export async function certifyArtifact(artifact: unknown, suite: ConformanceSuite, secret: string, issuedAt = new Date().toISOString()): Promise<{ report: ConformanceReport; certificate?: ConformanceCertificate }> {
+export async function certifyArtifact(
+  artifact: unknown,
+  suite: ConformanceSuite,
+  secret: string,
+  issuedAt = new Date().toISOString()
+): Promise<{
+  report: ConformanceReport;
+  certificate?: ConformanceCertificate;
+}> {
   const report = runConformanceSuite(suite);
   if (!secret || report.passed !== report.total) return { report };
   const unsigned = {
@@ -107,21 +225,80 @@ export async function certifyArtifact(artifact: unknown, suite: ConformanceSuite
     suiteSha256: await sha256(stable(suite)),
     passed: report.passed,
     total: report.total,
-    issuedAt, evidence: "literal-lint" as const,
+    issuedAt,
+    evidence: "literal-lint" as const,
   };
-  return { report, certificate: { ...unsigned, signature: await hmac(secret, payload(unsigned)) } };
+  return {
+    report,
+    certificate: {
+      ...unsigned,
+      signature: await hmac(secret, payload(unsigned)),
+    },
+  };
 }
 
 /** Called only after the host-owned SQL/file oracle has independently assessed the worker. */
-export async function certifyStateDeltaArtifact(artifact: unknown, suite: unknown, report: StateDeltaConformanceReport, secret: string, issuerTenantId: string): Promise<ConformanceCertificate | undefined> {
-  if (!secret || !issuerTenantId || report.runner !== "naelao-state-delta-v1" || report.passed !== report.total || report.total < MIN_MARKETPLACE_FIXTURES || report.securityViolations !== 0 || report.maximumCostUpperBoundUsd > 0.05 || report.tokensUsed !== 0 || report.diagnostics.length) return undefined;
-  const unsigned = { runner: report.runner, artifactSha256: await sha256(stable(artifact)), suiteSha256: await sha256(stable(suite)), passed: report.passed, total: report.total, issuedAt: new Date().toISOString(), evidence: "state-delta" as const, issuerTenantId };
+export async function certifyStateDeltaArtifact(
+  artifact: unknown,
+  suite: unknown,
+  report: StateDeltaConformanceReport,
+  secret: string,
+  issuerTenantId: string
+): Promise<ConformanceCertificate | undefined> {
+  if (
+    !secret ||
+    !issuerTenantId ||
+    report.runner !== "naelao-state-delta-v1" ||
+    report.passed !== report.total ||
+    report.total < MIN_MARKETPLACE_FIXTURES ||
+    report.securityViolations !== 0 ||
+    report.maximumCostUpperBoundUsd > 0.05 ||
+    report.tokensUsed !== 0 ||
+    report.diagnostics.length
+  )
+    return undefined;
+  const unsigned = {
+    runner: report.runner,
+    artifactSha256: await sha256(stable(artifact)),
+    suiteSha256: await sha256(stable(suite)),
+    passed: report.passed,
+    total: report.total,
+    issuedAt: new Date().toISOString(),
+    evidence: "state-delta" as const,
+    issuerTenantId,
+  };
   return { ...unsigned, signature: await hmac(secret, payload(unsigned)) };
 }
 
-export async function verifyArtifactCertificate(artifact: unknown, certificate: ConformanceCertificate | undefined, secret: string, requiredEvidence?: "state-delta"): Promise<boolean> {
-  if (!certificate || !secret || ![CONFORMANCE_RUNNER_VERSION,"naelao-state-delta-v1"].includes(certificate.runner) || certificate.passed !== certificate.total || !Number.isInteger(certificate.total) || certificate.total < MIN_MARKETPLACE_FIXTURES || certificate.total > 500 || (requiredEvidence && (certificate.evidence !== requiredEvidence || certificate.runner !== "naelao-state-delta-v1" || !certificate.issuerTenantId))) return false;
-  const { signature, ...unsigned } = certificate;
-  return certificate.artifactSha256 === await sha256(stable(artifact)) &&
-    signature === await hmac(secret, payload(unsigned));
+export async function verifyArtifactCertificate(
+  artifact: unknown,
+  certificate: ConformanceCertificate | undefined,
+  secret: string,
+  requiredEvidence?: "state-delta"
+): Promise<boolean> {
+  if (
+    !certificate ||
+    !secret ||
+    ![CONFORMANCE_RUNNER_VERSION, "naelao-state-delta-v1"].includes(
+      certificate.runner
+    ) ||
+    certificate.passed !== certificate.total ||
+    !Number.isInteger(certificate.total) ||
+    certificate.total < MIN_MARKETPLACE_FIXTURES ||
+    certificate.total > 500 ||
+    (requiredEvidence &&
+      (certificate.evidence !== requiredEvidence ||
+        certificate.runner !== "naelao-state-delta-v1" ||
+        !certificate.issuerTenantId))
+  )
+    return false;
+  try {
+    const { signature, ...unsigned } = certificate;
+    return (
+      certificate.artifactSha256 === (await sha256(stable(artifact))) &&
+      signature === (await hmac(secret, payload(unsigned)))
+    );
+  } catch {
+    return false;
+  }
 }

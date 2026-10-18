@@ -257,10 +257,15 @@ Focused moderation validation passed **23 tests across 2 files**. The configured
 
 ## Security package partial stress pass (2026-10-18)
 
-The package's registered source and existing unit tests passed **93 tests across 18 files**, including existing capability-scope boundary and authorization-plan coverage. This pass addressed two boundary gaps and registered the package in the workspace; most security package source files remain open for source-level review.
+The package's registered source and existing unit tests now pass **98 tests across 20 files**, including existing capability-scope boundary and authorization-plan coverage. This partial pass has exercised bounded inputs across the modules listed below; the repository audit remains open.
 
 | File | Features and stress boundaries exercised | Evidence / disposition |
 |---|---|---|
+| `packages/security/src/marketplace-conformance.ts` | Deterministic fixture validation and signed certificate canonicalization | Canonical serialization rejects cycles, depth above 64, non-JSON objects, and over 1,000,000 serialized characters. Certificate verification catches malformed artifact data and fails closed. Tests cover cycle, deep, oversized, signature, and fixture cases. |
+| `packages/security/src/delegation.ts` | Cross-space capability and agent delegation token signing/verification | Claim identifiers cap at 256 characters, permissions at 64, signing secrets at 4,096 characters, and encoded tokens at 16,384 characters. Invalid/oversized tokens return null; boundary tests pass. |
+| `packages/security/src/air-gap.ts` | Central network egress policy parsing and D1 lookup | Oversized policy JSON above 1,000,000 characters denies egress before JSON parsing; malformed, missing, or unavailable policy continues to fail closed. |
+| `packages/security/src/data-residency.ts` | Durable Object namespace jurisdiction binding | Tests cover unset/global behavior, EU namespace wrapping, idempotence, optional bindings, and unsupported jurisdiction rejection. |
+| `packages/security/src/headers.ts` | Browser response security headers middleware | Hono response test verifies HSTS, nosniff, frame, referrer, and CSP headers on successful response. CSP still allows inline scripts/styles and HTTPS images. |
 | `packages/security/src/waf.ts` | Recursive JSON body scanning | Nested values beyond the depth cap now fail closed with `body_depth_exceeded`; strings above 1,000,000 characters fail closed before regex checks. Three new tests cover deep nesting, oversized values, and normal shallow inputs. |
 | `packages/security/src/rate-limit-do.ts`, `rate-limit-policy.ts` | Rate-limit DO request parsing and policy bounds | Non-POST, malformed/oversized body, invalid limit, and invalid window requests return before DO SQL initialization. Limit is 1–100,000 and window is 1 second–24 hours; request bodies are capped at 4 KiB. Pure policy tests cover boundaries. |
 | `packages/security/src/ssrf.ts` | DNS-over-HTTPS resolution and SSRF network checks | Hostnames above 253 characters, DNS responses above 64 KiB, and responses with more than 256 answers fail closed. Three tests cover oversized body, excessive answers, and invalid host length. DNS was stubbed. |
@@ -269,20 +274,20 @@ The package's registered source and existing unit tests passed **93 tests across
 | `packages/security/src/write-guard.ts` | SQL/shell mutation inspection and Gatekeeper token signing/verification | Mutation strings above 1,000,000 characters fail closed; token and claim sizes are bounded before verification/signing. Tests cover quoted destructive keywords, oversize input, claim bounds, valid action/resource binding, and expiry. |
 | `packages/security/src/audit.ts`, `blueprint-validator.ts` | Audit metadata/pagination and blueprint structure/security scoring | Audit pages are limited to 500 rows and 1,000,000 offset; metadata is capped at 64 KiB before D1 use. Blueprint validation rejects malformed structure, oversized project/file counts, non-finite tiers, and more than 1,000,000 scanned characters. Tests cover pagination, metadata, and malformed/oversized blueprints. |
 | `packages/security/src/circuit-breaker.ts`, `knowledge-permissions.ts`, `secrets.ts` | Automation recursion headers, caller clearance, API key/password/CSRF checks | Hop counts must be canonical decimal and causal IDs are capped at 256 characters; circuit trip still blocks if logging/KV fails. Clearance validates role and bounded membership arrays. CSRF requires canonical timestamps/signatures and rejects tokens more than 30 seconds in the future; credential inputs are capped. |
-| `packages/security/src/capability-policy.ts`, `index.ts`, `package.json`, `vitest.config.ts`, `tsconfig.json` | Scoped capability token and retrieval fences, public exports, project test discovery and typecheck | Existing security, capability-scope boundary, and plan authorization tests plus new stress cases are registered. Focused package tests passed 93/93; package TypeScript check and focused Biome checks pass. |
+| `packages/security/src/capability-policy.ts`, `index.ts`, `package.json`, `vitest.config.ts`, `tsconfig.json` | Scoped capability token and retrieval fences, public exports, project test discovery and typecheck | Existing security, capability-scope boundary, and plan authorization tests plus new stress cases are registered. Focused package tests passed 98/98 across 20 files; package TypeScript check and focused Biome checks pass. |
 
 ### Remaining security package risks
 
 - `wafMiddleware` parses JSON before the recursive scanner, with no streaming/body-byte limit at this middleware boundary. The scanner string limit protects regex work after parsing, not JSON allocation. Malformed JSON is passed downstream for endpoint validation.
 - Rate-limit parameter validation is directly unit-tested, but Durable Object SQL behavior was not exercised with a runtime storage harness, and no in-repository caller of `RateLimiterDO` was found.
 - DNS response bounds were tested with Fetch stubs, not live Cloudflare DNS-over-HTTPS. DNS verification and the later outbound `fetch()` remain separate resolutions, leaving the previously documented rebinding window.
-- Remaining security modules—including audit storage, blueprint validation, circuit breaker behavior, data residency, delegation token verification, headers, knowledge permissions, secrets, and write-guard parsing—are still unchecked in the file-by-file plan.
+- Other security package callers and deployment bindings still need end-to-end review; focused module tests do not prove production DO, D1, DNS, or browser-policy behavior.
 
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 269 test files, 1,194 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, and security projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 271 test files, 1,199 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, and security projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

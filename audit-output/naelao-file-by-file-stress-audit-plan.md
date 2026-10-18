@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1846` tracked/non-ignored files; `1640` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`).
+Inventory basis: `1880` tracked/non-ignored files; `1674` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -740,7 +740,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [x] `packages/security/package.json`
 - [x] `packages/security/src/air-gap.test.ts`
-- [ ] `packages/security/src/air-gap.ts`
+- [x] `packages/security/src/air-gap.ts`
 - [x] `packages/security/src/audit.ts`
 - [x] `packages/security/src/blueprint-scrubber.ts`
 - [x] `packages/security/src/blueprint-security.test.ts`
@@ -749,17 +749,19 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/circuit-breaker.test.ts`
 - [x] `packages/security/src/circuit-breaker.ts`
 - [x] `packages/security/src/data-residency.test.ts`
-- [ ] `packages/security/src/data-residency.ts`
-- [ ] `packages/security/src/delegation.ts`
+- [x] `packages/security/src/data-residency.ts`
+- [x] `packages/security/src/delegation.test.ts`
+- [x] `packages/security/src/delegation.ts`
 - [x] `packages/security/src/dlp.ts`
 - [x] `packages/security/src/egress-policy.ts`
 - [x] `packages/security/src/ephemeral-grant.ts`
-- [ ] `packages/security/src/headers.ts`
+- [x] `packages/security/src/headers.test.ts`
+- [x] `packages/security/src/headers.ts`
 - [x] `packages/security/src/index.ts`
 - [x] `packages/security/src/knowledge-permissions.test.ts`
 - [x] `packages/security/src/knowledge-permissions.ts`
 - [x] `packages/security/src/marketplace-conformance.test.ts`
-- [ ] `packages/security/src/marketplace-conformance.ts`
+- [x] `packages/security/src/marketplace-conformance.ts`
 - [x] `packages/security/src/rate-limit-do.ts`
 - [x] `packages/security/src/rate-limit-policy.ts`
 - [x] `packages/security/src/rate-limit-policy.test.ts`
