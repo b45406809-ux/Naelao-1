@@ -71,6 +71,13 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
     const { spaceId = "", projectId = "", appId = "" } = c.req.param();
     if (!appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "bad_request" }, 400);
+    const spaceDoId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
+    const runtime = await c.env.SPACE_DO.get(spaceDoId).fetch(new Request(`http://space-do/project-extension-runtime?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, project_id: projectId, app_id: appId })}`));
+    if (!runtime.ok) return c.json({ error_code: "extension_runtime_status_unavailable" }, 503);
+    const runtimeState = await runtime.json<{ managed?: boolean; active?: boolean; releaseValid?: boolean }>().catch((): { managed?: boolean; active?: boolean; releaseValid?: boolean } => ({}));
+    if (runtimeState.managed && !runtimeState.active) return c.json({ error_code: "project_extension_inactive" }, 404);
+    if (runtimeState.managed && !runtimeState.releaseValid) return c.json({ error_code: "project_extension_release_invalid" }, 503);
+    if (path === "/initialize" && runtimeState.managed) return c.json({ error_code: "project_extension_install_route_required" }, 409);
     const id = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const request = new Request(`http://micro-app${path}`, { method, headers: c.req.raw.headers,
       ...(method === "POST" ? { body: override ?? await c.req.arrayBuffer() } : {}) });

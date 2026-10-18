@@ -141,6 +141,33 @@ describe("runtime extension installation", () => {
     expect((await install("../shared")).status).toBe(400);
   });
 
+  it("attests active Canvas runtimes by project install and revokes their route on uninstall", async () => {
+    const storage = createDOStorage(), state = { storage };
+    const space = new SpaceDO(state as never, { PLATFORM_SECRET: "canvas-runtime-secret" } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const canvasManifest = (version: string, canvasId: string) => ({ id: "ext_canvas_runtime", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_canvas_runtime", version, primitives: [
+        { schemaVersion: "1.0", kind: "canvas", id: canvasId, version, permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./index.html", dynamicPage: false },
+      ] } });
+    const installedResponse = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: canvasManifest("1.0.0", "mentor_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "a".repeat(64) }) }));
+    expect(installedResponse.status).toBe(201);
+    const installed = await installedResponse.json() as { installationId: string };
+    const check = (appId: string) => space.fetch(new Request("http://space/project-extension-runtime?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", app_id: appId })));
+    const upgrade = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: canvasManifest("2.0.0", "renamed_canvas"), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256: "b".repeat(64), upgrade: true }) }));
+    expect(upgrade.status).toBe(201);
+    expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false });
+    expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: true, releaseValid: true });
+    const removed = await space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ instance_id: installed.installationId, tenant_id: "tenant", space_id: "space", project_id: "project-a" }), { method: "DELETE" }));
+    expect(removed.status).toBe(200);
+    expect(await (await check("mentor_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false });
+    expect(await (await check("renamed_canvas")).json()).toEqual({ managed: true, active: false, releaseValid: false });
+    expect(await (await space.fetch(new Request("http://space/project-extension-runtime?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", app_id: "not_a_canvas" })))).json())
+      .toEqual({ managed: false, active: false, releaseValid: false });
+  });
+
   it("preserves existing unscoped extension revision updates when no scoped grant exists", async () => {
     const storage = createDOStorage(), state = { storage };
     const space = new SpaceDO(state as never, {} as never);

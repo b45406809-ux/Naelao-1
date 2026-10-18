@@ -2785,6 +2785,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), url.searchParams.get("extension_id"));
         return Response.json({ installations: rows });
       }
+      if (url.pathname === "/project-extension-runtime" && method === "GET") {
+        const tenantId = url.searchParams.get("tenant_id") ?? "";
+        const spaceId = url.searchParams.get("space_id") ?? "";
+        const projectId = url.searchParams.get("project_id") ?? "";
+        const appId = url.searchParams.get("app_id") ?? "";
+        if (!tenantId || !spaceId || !projectId || !appId) return Response.json({ error_code: "extension_runtime_scope_required" }, { status: 400 });
+        const rows = queryAll<{ instance_id: string; instance_key: string | null; status: string; extension_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
+          `SELECT i.instance_id,i.instance_key,i.status,i.extension_id,e.manifest_json FROM extension_instances i
+           JOIN installed_extensions e ON e.extension_id=i.extension_id
+           WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')`,
+          tenantId, spaceId, projectId);
+        let managed = false, active = false, releaseValid = false;
+        for (const row of rows) {
+          let manifest: ExtensionManifest;
+          try { manifest = JSON.parse(row.manifest_json) as ExtensionManifest; } catch { continue; }
+          const appMatches = (candidate: ExtensionManifest) => (candidate.bundle?.primitives ?? []).some(part => (part.kind === "canvas" || part.kind === "gadget")
+            && (row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_${part.id}` : part.id) === appId);
+          const currentMatches = appMatches(manifest);
+          const historicalManifests = queryAll<{ manifest_json: string }>(this.ctx.storage.sql as never,
+            "SELECT manifest_json FROM extension_releases WHERE extension_id=?", row.extension_id);
+          const historicallyManaged = historicalManifests.some(release => {
+            try { return appMatches(JSON.parse(release.manifest_json) as ExtensionManifest); } catch { return false; }
+          });
+          if (!currentMatches && !historicallyManaged) continue;
+          managed = true;
+          if (row.status !== "active" || !currentMatches || !manifest.bundle) continue;
+          const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
+            "SELECT manifest_json,artifact_sha256,host_signature FROM extension_releases WHERE extension_id=? AND version=?",
+            manifest.bundle.id, manifest.bundle.version);
+          if (!release) continue;
+          const expected = await this.signExtensionRelease(manifest.bundle.id, manifest.bundle.version, release.manifest_json, release.artifact_sha256);
+          if (release.manifest_json === row.manifest_json && expected === release.host_signature) {
+            active = true;
+            releaseValid = true;
+          }
+        }
+        return Response.json({ managed, active, releaseValid });
+      }
       if (url.pathname === "/workflow-installation" && method === "GET") {
         const rows = queryAll<{ instance_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
           "SELECT i.*, e.manifest_json, e.updated_at AS manifest_updated_at FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active'",

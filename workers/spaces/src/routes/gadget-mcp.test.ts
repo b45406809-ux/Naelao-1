@@ -91,4 +91,36 @@ describe("gadget MCP host adapter", () => {
     const denied = await app.request("/spaces/s/projects/p/apps/a/initialize", { method: "POST", headers: { ...headers, "x-naelao-role": "member", "x-naelao-user-id": "u" }, body: JSON.stringify({ appId: "a", scope: "PROJECT_BOUND", gadgetTier: 2 }) }, env);
     expect(denied.status).toBe(403);
   });
+
+  it("does not serve an extension-owned project Canvas after its installation is removed", async () => {
+    const actorFetch = vi.fn(async () => Response.json({ html: true }));
+    const spaceStub = { fetch: async (request: Request) => {
+      if (new URL(request.url).pathname === "/project-extension-runtime") return Response.json({ managed: true, active: false, releaseValid: false });
+      return Response.json({ id: "project-a" });
+    } };
+    const env = {
+      PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => spaceStub },
+      MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: actorFetch }) },
+    } as never;
+    const app = new Hono(); registerGadgetMcpRoutes(app as never);
+    const response = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/app", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error_code: "project_extension_inactive" });
+    expect(actorFetch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the active extension release attestation is invalid", async () => {
+    const actorFetch = vi.fn(async () => Response.json({ html: true }));
+    const spaceStub = { fetch: async (request: Request) => new URL(request.url).pathname === "/project-extension-runtime"
+      ? Response.json({ managed: true, active: true, releaseValid: false }) : Response.json({ id: "project-a" }) };
+    const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => spaceStub }, MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: actorFetch }) } } as never;
+    const app = new Hono(); registerGadgetMcpRoutes(app as never);
+    const response = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/app", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error_code: "project_extension_release_invalid" });
+    expect(actorFetch).not.toHaveBeenCalled();
+  });
 });
