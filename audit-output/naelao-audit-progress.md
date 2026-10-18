@@ -241,11 +241,25 @@ Focused moderation validation passed **23 tests across 2 files**. The configured
 - Embedding response shape and vector limits were tested with stubs; Cloudflare AI and Vectorize deployment behavior/model changes were not exercised live.
 - `roleMask` is validated as an input but the Vectorize filter is expressed using `role`, visibility, and allowed-user metadata; writers/index metadata and route authorization still need review together.
 
+## SDK package stress pass (2026-10-18)
+
+| File | Features and stress boundaries exercised | Evidence / disposition |
+|---|---|---|
+| `packages/sdk/src/canvas.ts` | Authenticated Gadget RPC, collaboration polling/events, audit polling, list pagination, JSON input/output | List limits are restricted to integers 1–100, cursors to non-negative safe integers, request bodies to 64 KiB, and response bodies to 1 MiB. Rejects happen before network requests for invalid inputs. |
+| `packages/sdk/src/workflow.ts`, `testing.ts`, `channel.ts`, `index.ts` | Declarative workflow compilation, capability/reference validation, test harness, channel contract validation, and public exports | Existing workflow, offline-harness, and plan-contract tests run in the package project; TypeScript check passes. |
+| `packages/sdk/package.json`, `tsconfig.json`, `vitest.config.ts`, tests | Package scripts, typecheck and test discovery | Focused SDK suite passed **17 tests across 4 files**, including 2 new boundary tests. Focused Biome check passes. |
+
+### Remaining SDK risks
+
+- `apiBaseUrl` is caller-configured and the client sends the result of `authorize()` to that URL. The host integrating this SDK must provide a trusted Naelao API origin; this package does not maintain a deployment-origin allowlist.
+- Canvas response bodies are bounded by bytes but decoded as JSON before domain-level shape validation; malformed server payloads can still fail with JSON/type errors.
+- Workflow compilation and mock-plan simulation are local synchronous helpers; very large caller-owned objects can consume memory before the generated 64 KiB source limit is evaluated.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 247 test files, 1,084 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, and RAG projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 251 test files, 1,101 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, and SDK projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

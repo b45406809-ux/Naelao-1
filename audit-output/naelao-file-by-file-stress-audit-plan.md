@@ -724,16 +724,17 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/sdk`
 
-- [ ] `packages/sdk/package.json`
-- [ ] `packages/sdk/src/canvas.test.ts`
-- [ ] `packages/sdk/src/canvas.ts`
-- [ ] `packages/sdk/src/channel.ts`
-- [ ] `packages/sdk/src/index.ts`
-- [ ] `packages/sdk/src/testing.test.ts`
-- [ ] `packages/sdk/src/testing.ts`
-- [ ] `packages/sdk/src/workflow.test.ts`
-- [ ] `packages/sdk/src/workflow.ts`
-- [ ] `packages/sdk/tsconfig.json`
+- [x] `packages/sdk/package.json`
+- [x] `packages/sdk/src/canvas.test.ts` (added pagination/body stress cases)
+- [x] `packages/sdk/src/canvas.ts`
+- [x] `packages/sdk/src/channel.ts`
+- [x] `packages/sdk/src/index.ts`
+- [x] `packages/sdk/src/testing.test.ts`
+- [x] `packages/sdk/src/testing.ts`
+- [x] `packages/sdk/src/workflow.test.ts`
+- [x] `packages/sdk/src/workflow.ts`
+- [x] `packages/sdk/vitest.config.ts` (includes SDK and plan contract tests)
+- [x] `packages/sdk/tsconfig.json`
 
 ### `packages/security`
 
