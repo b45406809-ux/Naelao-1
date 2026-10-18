@@ -1482,3 +1482,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The profile explicitly reports zero live provider/Worker calls and `creditsMeasured=false`, `estimatedCredits=null`, `costConfidence=not_measured`; mock byte counts are not presented as production price estimates.
 - Verification: SDK typecheck passed; workflow plan and offline test harness suites passed (4 tests); `git diff --check` passed.
 - Phase 8 remains open for capped sandbox/live test runs, measured cost profiles and confidence from actual runs, plan/tier recommendations based on evidence, productized templates, and first-party packages. This offline harness is only the safe default test layer.
+
+### Phase 9 regression matrix checkpoint (2026-10-18)
+
+- Re-ran the previously reported 16-test groups on the current branch: planner plan tool passed (13/13), container policy plan passed (11/11), and workflow compilation/orchestration passed (4/4). These expectations had already been aligned to the current transaction, explicit container scope, and async compiler contracts; this rerun confirms they remain green.
+- Re-ran new provider and Canvas boundaries: Router provider routing/customer voice (3), Agents channel/inbox (18), Notifications interactive/air-gap (8), Spaces migrations/Gadget routes/DO (13), and SDK Canvas/workflow/mock harness (8) all passed.
+- This is targeted regression evidence, not the full workspace suite or a deployed runtime exercise. Phase 9 still needs the broader failure/restart, concurrency, secret rotation, migration rollback, fuzz/property, threat-model, and staged-release checks.
