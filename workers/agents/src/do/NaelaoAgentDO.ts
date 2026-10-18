@@ -7874,11 +7874,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (claim.rowsWritten !== 1) { takeover("The handler event was already claimed and its delivery state could not be confirmed. Review the conversation before replying."); escalated++; continue; }
         try {
           const subjectHash = await opaqueExternalSubject(this.env.PLATFORM_SECRET,
+            [tenantId, spaceId, msg.project_id, msg.channel, msg.channel_user_id]);
+          const legacySubjectHash = await opaqueExternalSubject(this.env.PLATFORM_SECRET,
             [tenantId, spaceId, msg.project_id, msg.channel_extension_instance_id, msg.channel, msg.channel_user_id]);
           const quota = await this.env.SPACES_WORKER.fetch(new Request(
             `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(msg.project_id)}/external-message-usage`,
             { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-              body: JSON.stringify({ event_id: msg.id, installation_id: msg.channel_extension_instance_id, provider: msg.channel, subject_hash: subjectHash }) },
+              body: JSON.stringify({ event_id: msg.id, installation_id: msg.channel_extension_instance_id, provider: msg.channel, subject_hash: subjectHash, legacy_subject_hash: legacySubjectHash }) },
           ));
           const quotaResult = quota.ok ? await quota.json<{ allowed?: boolean; daily_cap?: number; notifyOwner?: boolean }>() : null;
           if (quotaResult?.allowed !== true) {

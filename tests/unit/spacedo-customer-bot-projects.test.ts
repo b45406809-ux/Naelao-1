@@ -82,7 +82,7 @@ describe("SpaceDO — customer-bot project config", () => {
     expect(invalid.status).toBe(400);
   });
 
-  it("enforces external sender usage in the shared SpaceDO across independent conversations", async () => {
+  it("enforces external sender usage in the shared SpaceDO across conversations and installations", async () => {
     const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "WhatsApp" });
     const projectId = created.json.id;
     await call(spaceDO, `/projects/${projectId}`, "PATCH", { external_daily_message_cap: 1 });
@@ -97,7 +97,7 @@ describe("SpaceDO — customer-bot project config", () => {
     const otherConversationOtherPerson = await call(spaceDO, path, "POST", { ...body, event_id: "event-c", subject_hash: "b".repeat(64) });
     expect(otherConversationOtherPerson.json.allowed).toBe(true);
     const otherInstallation = await call(spaceDO, path, "POST", { ...body, event_id: "event-d", installation_id: "install-b" });
-    expect(otherInstallation.json.allowed).toBe(true);
+    expect(otherInstallation.json).toMatchObject({ allowed: false, count: 1 });
   });
 
   it("rejects an unknown project kind", async () => {
