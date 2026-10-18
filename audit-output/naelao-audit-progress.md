@@ -204,11 +204,30 @@ Focused gateway tests passed **16 tests across 2 files**. The configured workspa
 - Token budgeting still uses the documented rough four-characters-per-token estimate; it is a planning heuristic, not a hard context-window guarantee.
 - Input moderation remains a limited pattern filter and is not an authorization or prompt-injection proof.
 
+## Moderation package stress pass (2026-10-18)
+
+The package has no production callsites for `moderateImageHash` in this repository. The only implementation of `CsamHashChecker` is `StubCsamHashChecker`, which always returns false; no PhotoDNA/NCMEC integration is present, so image hash matching is not active moderation coverage.
+
+| File | Features and stress boundaries exercised | Evidence / disposition |
+|---|---|---|
+| `packages/moderation/src/index.ts` | PHI, prompt-injection, policy regex checks; full text pipeline; image SHA-256 checker contract | Text is capped at 1,000,000 UTF-16 code units. The aggregate pipeline rejects invalid or oversized input. Detector helpers skip malformed or oversized runtime values. Image hashing rejects non-byte inputs, inputs above 20 MiB, and missing checker implementations before hashing. Matching hashes are no longer copied into returned moderation details. |
+| `packages/moderation/src/index.test.ts` | Boundary and result contract stress cases | 5 added tests cover classification/blocking, oversized text, hash privacy, oversized image rejection, and stub behavior. |
+| `tests/unit/packages/moderation.test.ts` | Existing package contract cases | 18 existing tests registered in the package project; all pass. |
+| `packages/moderation/package.json`, `tsconfig.json`, `vitest.config.ts` | Package scripts, typecheck, Vitest discovery | `tsc --noEmit` passes; focused Biome check passes. The workspace project now includes both package and existing unit tests. |
+
+Focused moderation validation passed **23 tests across 2 files**. The configured workspace passed **243 test files and 1,061 tests**, including both moderation suites.
+
+### Remaining moderation risks
+
+- `detectPhi`, `detectPromptInjection`, and `detectPolicyViolations` are limited regex indicators, not comprehensive content screening. PHI flags remain medium confidence and do not block by themselves.
+- Since only a false-returning checker stub exists and there are no production callers, the `csam_hash` path is contract-tested with a fake checker but is not connected to a real hash database.
+- The image cap bounds bytes after they reach this function; upstream image downloads and decoded-image memory use require separate limits.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 241 test files, 1,038 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, and LLM gateway projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 243 test files, 1,061 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, and moderation projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

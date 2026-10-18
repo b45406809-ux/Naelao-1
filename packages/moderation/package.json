@@ -12,7 +12,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@naelao/types": "workspace:*",
@@ -20,6 +21,7 @@
   },
   "devDependencies": {
     "typescript": "*",
-    "@cloudflare/workers-types": "*"
+    "@cloudflare/workers-types": "*",
+    "vitest": "^2.1.8"
   }
 }

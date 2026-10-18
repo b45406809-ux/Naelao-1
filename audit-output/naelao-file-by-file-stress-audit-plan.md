@@ -698,9 +698,11 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/moderation`
 
-- [ ] `packages/moderation/package.json`
-- [ ] `packages/moderation/src/index.ts`
-- [ ] `packages/moderation/tsconfig.json`
+- [x] `packages/moderation/package.json`
+- [x] `packages/moderation/src/index.ts`
+- [x] `packages/moderation/src/index.test.ts` (added stress coverage)
+- [x] `packages/moderation/vitest.config.ts` (includes package and existing unit tests)
+- [x] `packages/moderation/tsconfig.json`
 
 ### `packages/rag`
 
@@ -1166,7 +1168,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `tests/unit/packages/llm-gateway.test.ts` (included in the LLM gateway package project)
 - [ ] `tests/unit/packages/mentions.test.ts`
 - [ ] `tests/unit/packages/model-benchmarks-and-effort.test.ts`
-- [ ] `tests/unit/packages/moderation.test.ts`
+- [x] `tests/unit/packages/moderation.test.ts` (included in moderation package project)
 - [ ] `tests/unit/packages/rag.test.ts`
 - [ ] `tests/unit/packages/realtime-broadcast.test.ts`
 - [ ] `tests/unit/packages/security.test.ts`
