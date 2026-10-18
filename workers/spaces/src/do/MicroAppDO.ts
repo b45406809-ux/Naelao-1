@@ -4,6 +4,17 @@ import { signHmac, verifyHmac } from "@naelao/crypto";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
 
+interface CanvasReleaseProof {
+  extensionId: string;
+  version: string;
+  manifestJson: string;
+  artifactSha256: string;
+  hostSignature: string;
+  canvasPath: string;
+  canvasSha256: string;
+  bindingSignature: string;
+}
+
 export const TIER_ONE_STORAGE_LIMIT_BYTES = 25 * 1024 * 1024;
 /** Hard logical allocation ceilings for each gadget tier. These are platform safety limits,
  * not provider billing estimates. They bound user-written SQLite pages without promising an
@@ -236,7 +247,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   }
 
   private async initialize(request: Request): Promise<Response> {
-    const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string; migrations?: Array<{ version: number; description: string; up: string }>; html?: string }>();
+    const body = await request.json<{ appId?: string; scope?: GadgetScope; gadgetTier?: GadgetTier; defaultSchemaSql?: string; migrations?: Array<{ version: number; description: string; up: string }>; html?: string; releaseProof?: CanvasReleaseProof }>();
     if (!body.appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(body.appId) || !body.scope || !body.gadgetTier) return Response.json({ error: "valid appId, scope and gadgetTier are required" }, { status: 400 });
     if ((body.gadgetTier === 1 && !["USER_PRIVATE", "PROJECT_USER", "SPACE_USER"].includes(body.scope)) ||
       (body.gadgetTier === 2 && !["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope)) ||
@@ -260,6 +271,12 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const html = body.html ?? `<main id="app" data-naelao-gadget="${body.appId}"></main>`;
     if (typeof html !== "string" || new TextEncoder().encode(html).byteLength > 512_000) throw new Error("gadget_bundle_too_large");
     const htmlSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const existingReleaseProof = this.metadata("release_proof");
+    if (existingReleaseProof && !body.releaseProof) return Response.json({ error: "extension_canvas_install_route_required" }, { status: 409 });
+    if (body.releaseProof && !await this.verifyCanvasReleaseProof(body.releaseProof, html)) return Response.json({ error: "extension_canvas_release_proof_invalid" }, { status: 403 });
+    if (existingReleaseProof && body.releaseProof && JSON.parse(existingReleaseProof).extensionId !== body.releaseProof.extensionId) {
+      return Response.json({ error: "extension_canvas_identity_immutable" }, { status: 409 });
+    }
     const apply = () => {
       for (const statement of validDdl(body.defaultSchemaSql ?? "")) this.ctx.storage.sql.exec(statement);
       for (const migration of migrations) {
@@ -273,6 +290,7 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     if ((body.defaultSchemaSql || migrations.length) && typeof this.ctx.storage.transactionSync === "function") this.ctx.storage.transactionSync(apply);
     else if (body.defaultSchemaSql || migrations.length) throw new Error("atomic_gadget_migration_unavailable");
     else apply();
+    if (body.releaseProof) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO gadget_metadata(key,value) VALUES('release_proof',?)", JSON.stringify(body.releaseProof));
     return Response.json({ initialized: true, appId: body.appId, scope: body.scope, gadgetTier: body.gadgetTier }, { status: 201 });
   }
 
@@ -283,6 +301,12 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
     const actual = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(row.value)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
     if (!expected || !/^[a-f0-9]{64}$/.test(expected) || expected !== actual)
       return Response.json({ error: "gadget_artifact_integrity_failed" }, { status: 503 });
+    const releaseProofJson = this.metadata("release_proof");
+    if (releaseProofJson) {
+      let releaseProof: CanvasReleaseProof;
+      try { releaseProof = JSON.parse(releaseProofJson) as CanvasReleaseProof; } catch { return Response.json({ error: "gadget_release_proof_invalid" }, { status: 503 }); }
+      if (!await this.verifyCanvasReleaseProof(releaseProof, row.value)) return Response.json({ error: "gadget_release_proof_invalid" }, { status: 503 });
+    }
     return new Response(row.value, { headers: {
       "content-type": "text/html; charset=utf-8",
       "content-security-policy": "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
@@ -290,6 +314,23 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       "referrer-policy": "no-referrer",
       "cache-control": "private, no-store",
     } });
+  }
+
+  private async verifyCanvasReleaseProof(proof: CanvasReleaseProof, html: string): Promise<boolean> {
+    if (!proof || !/^ext_[a-z0-9_-]{2,62}$/.test(proof.extensionId) || !proof.version || proof.version.length > 64
+      || !/^\.[/][A-Za-z0-9._-]{1,128}\.html$/.test(proof.canvasPath) || !/^[a-f0-9]{64}$/.test(proof.artifactSha256)
+      || !/^[a-f0-9]{64}$/.test(proof.canvasSha256) || !/^[a-f0-9]{64}$/.test(proof.hostSignature)
+      || !/^[a-f0-9]{64}$/.test(proof.bindingSignature) || proof.manifestJson.length > 128_000) return false;
+    const actualCanvasHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    if (actualCanvasHash !== proof.canvasSha256) return false;
+    let manifest: { id?: unknown; bundle?: { id?: unknown; version?: unknown; primitives?: Array<{ kind?: unknown; component?: unknown }> } };
+    try { manifest = JSON.parse(proof.manifestJson) as typeof manifest; } catch { return false; }
+    if (manifest.id !== proof.extensionId || manifest.bundle?.id !== proof.extensionId || manifest.bundle.version !== proof.version
+      || !manifest.bundle.primitives?.some(part => part.kind === "canvas" && part.component === proof.canvasPath)) return false;
+    const releasePayload = JSON.stringify([proof.extensionId, proof.version, proof.manifestJson, proof.artifactSha256]);
+    if (!await verifyHmac(releasePayload, proof.hostSignature, this.env.PLATFORM_SECRET)) return false;
+    const bindingPayload = JSON.stringify([proof.extensionId, proof.version, proof.manifestJson, proof.artifactSha256, proof.hostSignature, proof.canvasPath, proof.canvasSha256]);
+    return verifyHmac(bindingPayload, proof.bindingSignature, this.env.PLATFORM_SECRET);
   }
 
   private async publishPage(request: Request): Promise<Response> {

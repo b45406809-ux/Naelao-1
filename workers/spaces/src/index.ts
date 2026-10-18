@@ -1643,6 +1643,10 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: [...requiredCapabilities], artifactSha256: digest, instanceKey, ...(body.upgrade ? { upgrade: true } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
+  const installedResult = await installed.clone().json() as { release?: { version?: string; artifactSha256?: string; hostSignature?: string } };
+  if (canvases.length && (installedResult.release?.version !== bundle.version || installedResult.release.artifactSha256 !== digest
+    || !/^[a-f0-9]{64}$/.test(installedResult.release.hostSignature ?? ""))) return c.json({ error_code: "extension_canvas_release_attestation_unavailable" }, 503);
+  const manifestJson = JSON.stringify(manifest);
   const runtimeAppId = (primitiveId: string) => {
     const appId = instanceKey === "default" ? primitiveId : `${instanceKey}_${primitiveId}`;
     if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) throw new Error("extension_runtime_app_id_invalid");
@@ -1650,9 +1654,15 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   };
   for (const canvas of canvases) {
     const appId = runtimeAppId(canvas.id);
+    const canvasHtml = artifacts[canvas.component] as string;
+    const canvasSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canvasHtml)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const hostSignature = installedResult.release!.hostSignature!;
+    const bindingPayload = JSON.stringify([bundle.id, bundle.version, manifestJson, digest, hostSignature, canvas.component, canvasSha256]);
+    const releaseProof = { extensionId: bundle.id, version: bundle.version, manifestJson, artifactSha256: digest,
+      hostSignature, canvasPath: canvas.component, canvasSha256, bindingSignature: await signHmac(bindingPayload, c.env.PLATFORM_SECRET) };
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 3, html: artifacts[canvas.component] }) }));
+      body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 3, html: canvasHtml, releaseProof }) }));
     if (!init.ok) return c.json({ error_code: "extension_canvas_initialize_failed", message: await init.text().then(value => value.slice(0, 300)) }, init.status as 400 | 409 | 500);
   }
   for (const gadget of gadgets) {

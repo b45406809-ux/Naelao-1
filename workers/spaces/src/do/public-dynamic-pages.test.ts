@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { signHmac } from "@naelao/crypto";
 import { MicroAppDO } from "./MicroAppDO.js";
 
 const cursor = <T>(rows: T[] = []) => ({
@@ -12,9 +13,10 @@ describe("isolated public dynamic pages", () => {
   it("verifies the stored Canvas artifact before serving it", async () => {
     const metadata = new Map<string, string>();
     const sql = { exec(query: string, ...args: unknown[]) {
-      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata")) {
+      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata") && args.length === 5) {
         ["app_id", "scope", "gadget_tier", "html", "html_sha256"].forEach((key, index) => metadata.set(key, String(args[index])));
       }
+      if (query.includes("VALUES('release_proof',?)")) metadata.set("release_proof", String(args[0]));
       if (query.includes("SELECT value FROM gadget_metadata WHERE key = 'html'")) return cursor(metadata.has("html") ? [{ value: metadata.get("html")! }] : []);
       if (query.includes("SELECT value FROM gadget_metadata WHERE key = ?")) return cursor(metadata.has(String(args[0])) ? [{ value: metadata.get(String(args[0]))! }] : []);
       return cursor();
@@ -23,6 +25,36 @@ describe("isolated public dynamic pages", () => {
     await instance.fetch(new Request("https://do/initialize", { method: "POST", body: JSON.stringify({ appId: "canvas", scope: "PROJECT_BOUND", gadgetTier: 3, html: "<main>trusted</main>" }) }));
     expect((await instance.fetch(new Request("https://do/app"))).status).toBe(200);
     metadata.set("html", "<main>changed</main>");
+    expect((await instance.fetch(new Request("https://do/app"))).status).toBe(503);
+  });
+
+  it("binds a project Canvas artifact to its host-attested package release on initialize and render", async () => {
+    const metadata = new Map<string, string>();
+    const sql = { exec(query: string, ...args: unknown[]) {
+      if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata") && args.length === 5) {
+        ["app_id", "scope", "gadget_tier", "html", "html_sha256"].forEach((key, index) => metadata.set(key, String(args[index])));
+      }
+      if (query.includes("VALUES('release_proof',?)")) metadata.set("release_proof", String(args[0]));
+      if (query.includes("SELECT value FROM gadget_metadata WHERE key = 'html'")) return cursor(metadata.has("html") ? [{ value: metadata.get("html")! }] : []);
+      if (query.includes("SELECT value FROM gadget_metadata WHERE key = ?")) return cursor(metadata.has(String(args[0])) ? [{ value: metadata.get(String(args[0]))! }] : []);
+      return cursor();
+    } };
+    const secret = "canvas-release-test-secret", extensionId = "ext_course_canvas", version = "1.0.0", path = "./index.html";
+    const manifestJson = JSON.stringify({ id: extensionId, bundle: { id: extensionId, version, primitives: [{ kind: "canvas", component: path }] } });
+    const html = "<main>signed package canvas</main>";
+    const hash = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const artifactSha256 = "a".repeat(64), canvasSha256 = await hash(html);
+    const hostSignature = await signHmac(JSON.stringify([extensionId, version, manifestJson, artifactSha256]), secret);
+    const bindingPayload = JSON.stringify([extensionId, version, manifestJson, artifactSha256, hostSignature, path, canvasSha256]);
+    const releaseProof = { extensionId, version, manifestJson, artifactSha256, hostSignature, canvasPath: path, canvasSha256, bindingSignature: await signHmac(bindingPayload, secret) };
+    const instance = new MicroAppDO({ storage: { sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: secret });
+    const initialized = await instance.fetch(new Request("https://do/initialize", { method: "POST", body: JSON.stringify({ appId: "course_canvas", scope: "PROJECT_BOUND", gadgetTier: 3, html, releaseProof }) }));
+    expect(initialized.status).toBe(201);
+    expect((await instance.fetch(new Request("https://do/app"))).status).toBe(200);
+    const directOverwrite = await instance.fetch(new Request("https://do/initialize", { method: "POST", body: JSON.stringify({ appId: "course_canvas", scope: "PROJECT_BOUND", gadgetTier: 3, html: "<main>overwrite</main>" }) }));
+    expect(directOverwrite.status).toBe(409);
+    const tampered = { ...releaseProof, canvasSha256: await hash("<main>tampered</main>") };
+    metadata.set("release_proof", JSON.stringify(tampered));
     expect((await instance.fetch(new Request("https://do/app"))).status).toBe(503);
   });
 
