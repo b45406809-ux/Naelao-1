@@ -183,11 +183,32 @@ The focused logger suite passed **4 tests**. The configured workspace passed **2
 - The free-text scrubber covers email, common phone, credit-card, and US SSN patterns; it is not a general secret detector and cannot guarantee removal of arbitrary credentials embedded in prose.
 - No in-repository production callsites were found, so expected production field shapes and downstream log retention/redaction behavior remain unverified.
 
+## LLM gateway package stress pass (2026-10-18)
+
+Consumers found in `workers/agents/src/do/NaelaoAgentDO.ts`, `workers/knowledge/src/index.ts`, and `workers/agents/src/script-engine/sub-agent-output.ts`. The package now runs both its new source stress tests and the existing root unit suite in the configured workspace.
+
+| File | Features and stress boundaries exercised | Evidence / disposition |
+|---|---|---|
+| `packages/llm-gateway/src/gateway.ts` | Anthropic/CF Gateway endpoint construction, request validation/serialization, gateway-held credentials, retry and circuit behavior, non-streaming response size, SSE parsing/size/error paths, cache-control mutation, token budget, input/output moderation | Fixed gateway path component injection by encoding account/gateway IDs; streams now send `stream: true`; circuit state is isolated per endpoint; retries include 429 and remove abort listeners; request/response bodies are bounded; SSE supports CRLF, tracks thinking deltas, and surfaces provider error events; malformed budget values and moderation payloads fail closed. |
+| `packages/llm-gateway/src/gateway.test.ts` | Gateway key/header behavior, invalid token limits, circuit isolation across gateway endpoints, split CRLF events, thinking token usage, SSE provider errors, cyclic budget payloads, oversized moderation input/output | 7 stress tests pass. |
+| `packages/llm-gateway/src/types.ts`, `src/index.ts`, `package.json`, `tsconfig.json`, `vitest.config.ts` | Request/response contracts, public exports, package typecheck and test discovery | Typecheck and focused Biome checks pass; added package test script/config. |
+| `tests/unit/packages/llm-gateway.test.ts` | Existing prompt-jailbreak filters, system prompt leak checks, token budget estimates | 9 existing tests pass in the package project. |
+
+Focused gateway tests passed **16 tests across 2 files**. The configured workspace passed **241 test files and 1,038 tests**.
+
+### Remaining LLM gateway risks
+
+- Provider retries use a fixed exponential schedule and do not honor `Retry-After`; circuit failure counts include individual attempts, not only failed logical calls.
+- The circuit breaker key is the configured endpoint; direct Anthropic callers using that shared endpoint still share failure state.
+- Streaming and body limits were exercised with native Fetch streams and stubs, not live Anthropic or Cloudflare AI Gateway traffic. Model-specific token ceilings, provider schema drift, and real prompt-cache billing behavior remain unverified.
+- Token budgeting still uses the documented rough four-characters-per-token estimate; it is a planning heuristic, not a hard context-window guarantee.
+- Input moderation remains a limited pattern filter and is not an authorization or prompt-injection proof.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 239 test files, 1,022 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, and logger projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 241 test files, 1,038 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, and LLM gateway projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

@@ -680,11 +680,13 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/llm-gateway`
 
-- [ ] `packages/llm-gateway/package.json`
-- [ ] `packages/llm-gateway/src/gateway.ts`
-- [ ] `packages/llm-gateway/src/index.ts`
-- [ ] `packages/llm-gateway/src/types.ts`
-- [ ] `packages/llm-gateway/tsconfig.json`
+- [x] `packages/llm-gateway/package.json`
+- [x] `packages/llm-gateway/src/gateway.ts`
+- [x] `packages/llm-gateway/src/gateway.test.ts` (added)
+- [x] `packages/llm-gateway/src/index.ts`
+- [x] `packages/llm-gateway/src/types.ts`
+- [x] `packages/llm-gateway/vitest.config.ts` (added test discovery)
+- [x] `packages/llm-gateway/tsconfig.json`
 
 ### `packages/logger`
 
@@ -1161,7 +1163,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/packages/http-internal-hmac.test.ts`
 - [x] `tests/unit/packages/idempotency.test.ts`
 - [ ] `tests/unit/packages/llm-gateway-native-web-search.test.ts`
-- [ ] `tests/unit/packages/llm-gateway.test.ts`
+- [x] `tests/unit/packages/llm-gateway.test.ts` (included in the LLM gateway package project)
 - [ ] `tests/unit/packages/mentions.test.ts`
 - [ ] `tests/unit/packages/model-benchmarks-and-effort.test.ts`
 - [ ] `tests/unit/packages/moderation.test.ts`

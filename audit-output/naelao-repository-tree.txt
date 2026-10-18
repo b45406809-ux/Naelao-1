@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1861
-Files with source or executable-configuration extensions: 1655
-Inventory revision: logger stress batch in the current working tree
+Files: 1863
+Files with source or executable-configuration extensions: 1657
+Inventory revision: LLM gateway stress batch in the current working tree
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -835,11 +835,13 @@ packages/
     vitest.config.ts
   llm-gateway/
     src/
+      gateway.test.ts
       gateway.ts
       index.ts
       types.ts
     package.json
     tsconfig.json
+    vitest.config.ts
   logger/
     src/
       index.test.ts

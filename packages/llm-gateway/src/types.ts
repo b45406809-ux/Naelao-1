@@ -11,7 +11,12 @@ export interface ContentBlock {
   // own block types (the model calls the tool server-side; Anthropic executes it and returns the
   // result inline) — distinct from "tool_use", which is Naelao's own custom function-calling
   // surface where the CALLER executes the tool and replies with a "tool_result" block.
-  type: "text" | "tool_use" | "tool_result" | "server_tool_use" | "web_search_tool_result";
+  type:
+    | "text"
+    | "tool_use"
+    | "tool_result"
+    | "server_tool_use"
+    | "web_search_tool_result";
   text?: string;
   id?: string;
   name?: string;
@@ -20,7 +25,12 @@ export interface ContentBlock {
   content?: string;
   /** "web_search_tool_result" carries the search results Anthropic's server executed, not a
    *  string — one entry per result the model's native web_search tool call returned. */
-  web_search_results?: Array<{ title?: string; url?: string; encrypted_content?: string; page_age?: string }>;
+  web_search_results?: Array<{
+    title?: string;
+    url?: string;
+    encrypted_content?: string;
+    page_age?: string;
+  }>;
   // Prompt caching support (G-C05)
   cache_control?: { type: "ephemeral" };
 }
@@ -48,7 +58,13 @@ export interface LlmNativeWebSearchTool {
   max_uses?: number;
   allowed_domains?: string[];
   blocked_domains?: string[];
-  user_location?: { type: "approximate"; city?: string; region?: string; country?: string; timezone?: string };
+  user_location?: {
+    type: "approximate";
+    city?: string;
+    region?: string;
+    country?: string;
+    timezone?: string;
+  };
   cache_control?: { type: "ephemeral" };
 }
 
