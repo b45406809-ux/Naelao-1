@@ -12,6 +12,8 @@ interface DnsJson {
   Status?: number;
   Answer?: DnsAnswer[];
 }
+const MAX_DOH_RESPONSE_BYTES = 64 * 1024;
+const MAX_DNS_ANSWERS = 256;
 type IPv6Words = [
   number,
   number,
@@ -148,6 +150,13 @@ export async function resolveHostnameIps(
   hostname: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<string[]> {
+  if (
+    typeof hostname !== "string" ||
+    hostname.length < 1 ||
+    hostname.length > 253
+  ) {
+    throw new Error("DNS hostname is invalid");
+  }
   const resolve = async (type: "A" | "AAAA") => {
     const response = await fetchImpl(
       `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=${type}`,
@@ -157,10 +166,41 @@ export async function resolveHostnameIps(
       }
     );
     if (!response.ok) throw new Error(`DoH returned ${response.status}`);
-    const result = await response.json<DnsJson>();
+    const contentLength = Number(response.headers.get("content-length"));
+    if (
+      Number.isFinite(contentLength) &&
+      contentLength > MAX_DOH_RESPONSE_BYTES
+    ) {
+      throw new Error("DoH response is too large");
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("DoH response body is missing");
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      totalBytes += part.value.byteLength;
+      if (totalBytes > MAX_DOH_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error("DoH response is too large");
+      }
+      chunks.push(part.value);
+    }
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const result = JSON.parse(new TextDecoder().decode(bytes)) as DnsJson;
     if (result.Status !== undefined && result.Status !== 0)
       throw new Error(`DoH status ${result.Status}`);
-    return (result.Answer ?? [])
+    const answers = result.Answer ?? [];
+    if (!Array.isArray(answers) || answers.length > MAX_DNS_ANSWERS) {
+      throw new Error("DoH answer count is invalid");
+    }
+    return answers
       .map((answer) => answer.data)
       .filter((value): value is string => {
         if (!value) return false;

@@ -257,25 +257,27 @@ Focused moderation validation passed **23 tests across 2 files**. The configured
 
 ## Security package partial stress pass (2026-10-18)
 
-The package's registered source and existing unit tests passed **75 tests across 12 files**, including existing capability-scope boundary and authorization-plan coverage. This pass addressed two boundary gaps and registered the package in the workspace; most security package source files remain open for source-level review.
+The package's registered source and existing unit tests passed **78 tests across 13 files**, including existing capability-scope boundary and authorization-plan coverage. This pass addressed two boundary gaps and registered the package in the workspace; most security package source files remain open for source-level review.
 
 | File | Features and stress boundaries exercised | Evidence / disposition |
 |---|---|---|
 | `packages/security/src/waf.ts` | Recursive JSON body scanning | Nested values beyond the depth cap now fail closed with `body_depth_exceeded`; strings above 1,000,000 characters fail closed before regex checks. Three new tests cover deep nesting, oversized values, and normal shallow inputs. |
 | `packages/security/src/rate-limit-do.ts`, `rate-limit-policy.ts` | Rate-limit DO request parsing and policy bounds | Non-POST, malformed/oversized body, invalid limit, and invalid window requests return before DO SQL initialization. Limit is 1–100,000 and window is 1 second–24 hours; request bodies are capped at 4 KiB. Pure policy tests cover boundaries. |
-| `packages/security/src/capability-policy.ts`, `index.ts`, `package.json`, `vitest.config.ts`, `tsconfig.json` | Scoped capability token and retrieval fences, public exports, project test discovery and typecheck | Existing security, capability-scope boundary, and plan authorization tests plus new stress cases are registered. Focused package tests passed 75/75; package TypeScript check and focused Biome checks pass. |
+| `packages/security/src/ssrf.ts` | DNS-over-HTTPS resolution and SSRF network checks | Hostnames above 253 characters, DNS responses above 64 KiB, and responses with more than 256 answers fail closed. Three tests cover oversized body, excessive answers, and invalid host length. DNS was stubbed. |
+| `packages/security/src/capability-policy.ts`, `index.ts`, `package.json`, `vitest.config.ts`, `tsconfig.json` | Scoped capability token and retrieval fences, public exports, project test discovery and typecheck | Existing security, capability-scope boundary, and plan authorization tests plus new stress cases are registered. Focused package tests passed 78/78; package TypeScript check and focused Biome checks pass. |
 
 ### Remaining security package risks
 
 - `wafMiddleware` parses JSON before the recursive scanner, with no streaming/body-byte limit at this middleware boundary. The scanner string limit protects regex work after parsing, not JSON allocation. Malformed JSON is passed downstream for endpoint validation.
 - Rate-limit parameter validation is directly unit-tested, but Durable Object SQL behavior was not exercised with a runtime storage harness, and no in-repository caller of `RateLimiterDO` was found.
+- DNS response bounds were tested with Fetch stubs, not live Cloudflare DNS-over-HTTPS. DNS verification and the later outbound `fetch()` remain separate resolutions, leaving the previously documented rebinding window.
 - Remaining security modules—including capability/delegation token verification, DLP, audit storage, blueprint validation/scrubbing, SSRF/egress, knowledge permissions, and write-guard parsing—are still unchecked in the file-by-file plan.
 
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 263 test files, 1,176 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, and security projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 264 test files, 1,179 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, and security projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |
