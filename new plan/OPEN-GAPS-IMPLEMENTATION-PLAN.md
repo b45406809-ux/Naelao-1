@@ -108,7 +108,7 @@ The earlier `@naelao/sdk/channel` `receive/send` API mismatch was corrected in t
 
 Run only after code and local integration checks are complete. No secret belongs in this file or Git.
 
-- Apply deployed D1 migrations 0093 through 0101 in order and verify replay-safe schema state; verify the current SpaceDO and ProductUserDO migration versions after deployment.
+- Apply deployed D1 migrations 0093 through 0110 in order and verify replay-safe schema state; verify the current SpaceDO and ProductUserDO migration versions after deployment.
 - Configure an owned Cloudflare Email Routing ingress domain and verified sending domain, then test inbound task replies and outbound delivery.
 - Configure Web Push VAPID public/private/subject values on Notifications Worker environments; test subscription, delivery, unsubscribe, and expired endpoint cleanup.
 - Configure any selected voice/model/LoRA provider bindings only after the corresponding implementation gates pass; validate Twilio credentials, verify/import a controlled number, test signed call/consent/status callbacks, verify spend caps and release cleanup, and deliberately omit a completion callback to verify scheduled provider reconciliation.
@@ -156,3 +156,9 @@ Official sources checked: Twilio [Phone Numbers Pricing](https://www.twilio.com/
 - OCR remains the task-scoped email PNG/JPEG prebuilt operation described in the progress log, not a generic tool available to all workers. Scanned-PDF OCR remains open pending a bounded Worker-compatible page renderer.
 
 Official docs reviewed: [Cloudflare Realtime SFU overview](https://developers.cloudflare.com/realtime/sfu/index.md), [SFU setup](https://developers.cloudflare.com/realtime/sfu/get-started/index.md), [SFU pricing](https://developers.cloudflare.com/realtime/sfu/platform/pricing/index.md), [Cloudflare AI audio example](https://developers.cloudflare.com/realtime/sfu/examples/ai-audio/index.md), [Meta WhatsApp send messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/send-messages), and [Meta WhatsApp pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing).
+
+## Cross-surface usage accounting update (2026-10-18)
+
+Planner inference now records v2 usage for project-wallet, consumer-credit, and organization plan-quota payers. Restricted customer-channel answers include installation and opaque subject dimensions. Direct runtime infrastructure, workflow steps, and settled durable workflow/container budgets now record cost, rate card, payer, stable run identity, and available project/installation/tier dimensions. Migration 0110 persists workflow budget scope, and replaying a reservation with changed scope fails closed. Real-SQLite reservation/settlement tests and focused worker typechecks pass; the changes are committed and pushed.
+
+This closes accounting attribution for the covered paths, not all extension economics. Custom extension inference paths, persistent storage bytes, connector/provider charges, installation/run-specific budgets, owner abuse thresholds/UI, and failed-charge reconciliation remain open Phase 4 work. No live provider billing or deployment acceptance is claimed.

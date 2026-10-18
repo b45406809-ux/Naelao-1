@@ -7,8 +7,15 @@
  * Best-effort throughout — a reporting failure never fails the workflow step it's timing.
  */
 import { mintInternalToken } from "@naelao/http";
-import { infraTimeToCredits } from "@naelao/billing-core";
+import { infraTimeToCredits, BILLING_CORE_RATE_CARD_VERSION } from "@naelao/billing-core";
 import type { Env } from "../env.js";
+
+export interface WorkflowUsageDimensions {
+  projectId?: string;
+  installationId?: string;
+  runtimeTier?: number;
+  runId?: string;
+}
 
 export async function reportWorkflowStepInfraUsage(
   env: Env,
@@ -17,6 +24,7 @@ export async function reportWorkflowStepInfraUsage(
   durationMs: number,
   idempotencyKey: string,
   recordUsage = true,
+  dimensions: WorkflowUsageDimensions = {},
 ): Promise<number> {
   if (!env.BILLING_WORKER) return 0;
   const credits = infraTimeToCredits("workflow_step", durationMs);
@@ -27,7 +35,13 @@ export async function reportWorkflowStepInfraUsage(
     await env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
-      body: JSON.stringify({ event_type: "infra_credits", quantity: credits, space_id: spaceId, idempotency_key: idempotencyKey }),
+      body: JSON.stringify({ event_type: "infra_credits", quantity: credits, unit: "credits", schema_version: 2,
+        cost_credits: credits, rate_card_version: BILLING_CORE_RATE_CARD_VERSION, space_id: spaceId,
+        ...(dimensions.projectId ? { project_id: dimensions.projectId } : {}),
+        ...(dimensions.installationId ? { installation_id: dimensions.installationId } : {}),
+        ...(dimensions.runtimeTier ? { runtime_tier: dimensions.runtimeTier } : {}),
+        ...(dimensions.runId ? { run_id: dimensions.runId } : {}),
+        payer_kind: "plan_quota", decision: "charged", idempotency_key: idempotencyKey }),
     }));
   } catch {
     /* best-effort — never fails the workflow step */
@@ -43,6 +57,7 @@ export async function reserveWorkflowBudget(
   budgetKey: string | undefined,
   credits: number | undefined,
   expiresAt?: number,
+  dimensions: WorkflowUsageDimensions = {},
 ): Promise<string | null> {
   if (!credits || credits <= 0) return null;
   if (!env.BILLING_WORKER) throw new Error("workflow_budget_service_unavailable");
@@ -50,7 +65,11 @@ export async function reserveWorkflowBudget(
   const response = await env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/workflows/budget/reserve", {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
-    body: JSON.stringify({ reservation_id: workflowId, workflow_id: workflowId, space_id: spaceId, budget_key: budgetKey ?? `workflow:${workflowId}`, credits: Math.ceil(credits), ...(expiresAt ? { expires_at: new Date(expiresAt).toISOString() } : {}) }),
+    body: JSON.stringify({ reservation_id: workflowId, workflow_id: workflowId, space_id: spaceId, budget_key: budgetKey ?? `workflow:${workflowId}`, credits: Math.ceil(credits),
+      ...(dimensions.projectId ? { project_id: dimensions.projectId } : {}),
+      ...(dimensions.installationId ? { installation_id: dimensions.installationId } : {}),
+      ...(dimensions.runtimeTier ? { runtime_tier: dimensions.runtimeTier } : {}),
+      ...(expiresAt ? { expires_at: new Date(expiresAt).toISOString() } : {}) }),
   }));
   if (!response.ok) throw new Error(`workflow budget reservation failed (${response.status})`);
   const body = await response.json<{ reservation_id?: string }>();

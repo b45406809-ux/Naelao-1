@@ -1347,6 +1347,13 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Agents and Billing Worker typechecks passed; focused route, helper and existing usage tests passed (33 tests); `git diff --check` passed. Broader Agents suite not rerun.
 - Remaining Phase 4 work includes custom extension inference paths, storage bytes, connector calls, workflow execution, provider billing, install/run/provider-specific ceilings, off-topic budgets/alerts, owner payer visibility and failure reconciliation.
 
+### Phase 4 workflow execution usage checkpoint (2026-10-18)
+
+- Workflow step reporting now emits v2 `infra_credits` with cost, rate card, plan-quota payer, stable run/idempotency identity, and optional project/install/runtime-tier scope.
+- Added migration 0110 to persist project, installation, and runtime tier on workflow budget reservations. Workflow and container callers pass these dimensions at reservation time; mismatched dimensions on a reservation replay fail with `reservation_scope_conflict`. Settlement writes one plan-quota v2 infra event and forwards the same scoped dimensions once to the metering queue.
+- Verification: Agents and Billing Worker typechecks passed; real-SQLite budget reservation/settlement, reservation settlement, workflow reporting, and Spaces migration replay tests passed (6 tests); `git diff --check` passed. Full worker suites remain unrun.
+- Remaining Phase 4 work includes custom extension inference paths, storage bytes, connector calls, provider billing, installation/run/provider-specific ceilings, off-topic budgets/alerts, payer visibility and failure reconciliation.
+
 ### Phase 3 direct scheduled-script budget checkpoint (2026-10-18)
 
 - Direct event/scheduled scripts with a Project scope now re-read the SpaceDO project policy, enforce the project's execution-tier ceiling, check the shared Space wallet before running, and reserve one credit against a configured daily Project cap. This covers the bounded single isolate/container infrastructure charge; Tier 1/no-cost executions settle the hold at zero.

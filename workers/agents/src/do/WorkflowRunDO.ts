@@ -42,7 +42,8 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     if (isTerminalWorkflow(record.status) || record.launched) return;
     await this.authorize(record.identity.runId);
     if (!this.env.AGENT_SCRIPT_WORKFLOW) throw new Error("workflow_provider_unavailable");
-    await reserveWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.spaceId, record.identity.runId, record.budgetKey, record.budgetCredits, record.identity.expiresAt);
+    await reserveWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.spaceId, record.identity.runId, record.budgetKey, record.budgetCredits, record.identity.expiresAt,
+      { ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}), ...(record.identity.installationId ? { installationId: record.identity.installationId } : {}) });
     const binding = wrapWorkflowBinding({ tenantId: record.identity.tenantId, spaceId: record.identity.spaceId, runId: record.identity.runId }, { bindingName: "AGENT_SCRIPT_WORKFLOW" });
     try {
       await binding.create({ id: record.identity.runId, params: { runId: record.identity.runId } });
@@ -90,7 +91,8 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       const result = await response.json();
       const pointer = await putWorkflowArtifact(this.env, identity, result);
       await this.journal.commitEffect(effect, pointer);
-      const credits = await reportWorkflowStepInfraUsage(this.env as Env, identity.tenantId, identity.spaceId, Date.now() - started, runId + ":" + key, false);
+      const credits = await reportWorkflowStepInfraUsage(this.env as Env, identity.tenantId, identity.spaceId, Date.now() - started, runId + ":" + key, false,
+        { ...(identity.projectId ? { projectId: identity.projectId } : {}), ...(identity.installationId ? { installationId: identity.installationId } : {}), runId });
       const latest = await this.journal.read();
       await this.journal.patch({ usedCredits: latest.usedCredits + credits });
       await this.authorize(runId);
@@ -134,7 +136,8 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     const record = await this.assertOwner(actorId);
     await this.authorize(record.identity.runId);
     await this.journal.retry(WORKFLOW_CLASS_POLICIES[record.identity.workflowClass].maxAttempts);
-    await reserveWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.spaceId, record.identity.runId, record.budgetKey, record.budgetCredits, record.identity.expiresAt);
+    await reserveWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.spaceId, record.identity.runId, record.budgetKey, record.budgetCredits, record.identity.expiresAt,
+      { ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}), ...(record.identity.installationId ? { installationId: record.identity.installationId } : {}) });
     if (!this.env.AGENT_SCRIPT_WORKFLOW) throw new Error("workflow_provider_unavailable");
     await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).restart();
     await this.journal.patch({ launched: true });

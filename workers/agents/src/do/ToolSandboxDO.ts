@@ -243,7 +243,8 @@ export class ToolSandboxDO extends DurableObject {
     await this.ctx.storage.put("container_reservation_pending", pending);
     await this.ctx.storage.setAlarm(pending.expiresAt);
     await reserveWorkflowBudget(this.env as Env, pending.tenantId, pending.spaceId, pending.reservationId,
-      "container:" + scope.spaceId + ":" + (scope.projectId ?? "assistant"), infraTimeToCredits("container", 360000), pending.expiresAt);
+      "container:" + scope.spaceId + ":" + (scope.projectId ?? "assistant"), infraTimeToCredits("container", 360000), pending.expiresAt,
+      { ...(scope.projectId ? { projectId: scope.projectId } : {}), ...(scope.installationId ? { installationId: scope.installationId } : {}), runtimeTier: 5 });
     await this.ctx.storage.put("container_meter", pending);
     await this.ctx.storage.delete("container_reservation_pending");
   }

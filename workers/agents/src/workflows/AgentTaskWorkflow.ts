@@ -217,7 +217,8 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
 
         // §A1.26: this step's own async-dispatch orchestration overhead (distinct from the run's
         // own isolate/container/LLM billing, which settleRunBilling handles inside the agent DO).
-        await reportWorkflowStepInfraUsage(this.env, p.tenantId, p.spaceId, Date.now() - stepStarted, `workflow:${event.instanceId}:run-agent`);
+        await reportWorkflowStepInfraUsage(this.env, p.tenantId, p.spaceId, Date.now() - stepStarted, `workflow:${event.instanceId}:run-agent`, true,
+          { ...(p.projectId ? { projectId: p.projectId } : {}), runId: event.instanceId });
 
         if (!resp.ok) {
           // Return an error RESULT rather than throwing here — /internal/tasks/:taskId/run passes
