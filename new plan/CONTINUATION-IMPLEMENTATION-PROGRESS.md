@@ -1475,3 +1475,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added a signed-package-checked project route for the audit feed, restricted to Space owners/admins, with paginated access through the Canvas SDK. Collaboration traces remain a separate member-visible feed.
 - Verification: Spaces and SDK typechecks passed; Gadget route/DO suites passed (12 tests); Canvas SDK tests passed (4 tests). `git diff --check` passed.
 - Remaining Phase 7 work includes realtime WebSocket transport, finer manifest-declared per-role Canvas action permissions, visual node editing and output mapping, dry-run/cost preview, explicit approval workflow, and recovery UI.
+
+### Phase 8 offline workflow test harness checkpoint (2026-10-18)
+
+- Added an SDK mock harness for declarative workflow plans. It verifies the plan against an explicit capability fixture, supplies static responses by step ID, and reports operation count and serialized request/response bytes without calling a live provider, project, or Worker.
+- The profile explicitly reports zero live provider/Worker calls and `creditsMeasured=false`, `estimatedCredits=null`, `costConfidence=not_measured`; mock byte counts are not presented as production price estimates.
+- Verification: SDK typecheck passed; workflow plan and offline test harness suites passed (4 tests); `git diff --check` passed.
+- Phase 8 remains open for capped sandbox/live test runs, measured cost profiles and confidence from actual runs, plan/tier recommendations based on evidence, productized templates, and first-party packages. This offline harness is only the safe default test layer.

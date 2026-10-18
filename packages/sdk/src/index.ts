@@ -7,6 +7,8 @@ export { createCanvasGadgetClient } from "./canvas.js";
 export type { CanvasGadgetClient, CanvasGadgetClientOptions, CanvasCollaborationPage, CanvasCollaborationEvent, CanvasGadgetActionAuditPage } from "./canvas.js";
 export { compileWorkflowPlan } from "./workflow.js";
 export type { WorkflowPlan, WorkflowPlanStep, CompiledWorkflowPlan } from "./workflow.js";
+export { createContractTestHarness, runMockWorkflowPlan } from "./testing.js";
+export type { MockWorkflowTestInput } from "./testing.js";
 
 export interface SdkContext {
   readonly spaceId: string;
