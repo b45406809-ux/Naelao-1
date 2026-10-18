@@ -91,4 +91,24 @@ describe("usage events v2 migration", () => {
     expect(metered).toHaveLength(1);
     db.db.close();
   });
+
+  it("scopes caller-supplied idempotency keys to the verified tenant", async () => {
+    const db = createFakeD1([
+      `CREATE TABLE usage_events(id TEXT PRIMARY KEY,org_id TEXT NOT NULL,space_id TEXT,event_type TEXT NOT NULL,quantity INTEGER NOT NULL DEFAULT 1,recorded_at TEXT NOT NULL,event_hash TEXT UNIQUE);`,
+      readFileSync(join(__dirname, "../../infra/migrations/0109_usage_events_v2.sql"), "utf8"),
+    ]);
+    const env = { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, PLATFORM_DB: db,
+      QUOTA_CACHE: { async get() { return null; }, async put() {}, async delete() {} }, BILLING_EVENTS: { async send() {} } } as never;
+    for (const tenant of ["tenant-a", "tenant-b"]) {
+      const token = await mintInternalToken(SECRET, tenant);
+      const response = await billingWorker.fetch(new Request("https://billing.naelao.com/billing/usage", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenant, "x-naelao-internal-token": token },
+        body: JSON.stringify({ schema_version: 2, event_type: "connector_calls", quantity: 1, unit: "invocations",
+          payer_kind: "unknown", decision: "allowed", idempotency_key: "same-event-id" }),
+      }), env, ctx);
+      expect(response.status).toBe(201);
+    }
+    expect(db.db.prepare("SELECT org_id FROM usage_events ORDER BY org_id").all()).toEqual([{ org_id: "tenant-a" }, { org_id: "tenant-b" }]);
+    db.db.close();
+  });
 });

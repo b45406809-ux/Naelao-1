@@ -30,6 +30,7 @@ import { moderateText } from "@naelao/moderation";
 import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, BILLING_CORE_RATE_CARD_VERSION, type EffortLevel } from "@naelao/billing-core";
 import { externalAnswerCredits, releaseExternalAnswerSpend, settleExternalAnswerSpend } from "./external-channel-spend.js";
 import { channelConnectorCallUsageEvent, consumerLlmUsageEvent, projectLlmUsageEvent } from "./project-llm-usage.js";
+import { enqueueUsageEvent, flushUsageEventOutbox, initUsageEventOutbox, type UsageEventOutboxSql } from "./usage-event-outbox.js";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
@@ -1556,6 +1557,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN task_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_msg_unanswered ON channel_messages(direction, answered, created_at)`);
+    initUsageEventOutbox(this.ctx.storage.sql as unknown as UsageEventOutboxSql);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS foundry_channel_events (
       space_id TEXT NOT NULL, channel TEXT NOT NULL, sender_id TEXT NOT NULL, external_id TEXT NOT NULL,
       claimed_at INTEGER NOT NULL, PRIMARY KEY(space_id,channel,sender_id,external_id)
@@ -2009,6 +2011,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   override async alarm(): Promise<void> {
     this.ensureInit();
 
+    await this.flushCanonicalUsageOutbox();
+
     // Find all running runs that are older than TIMEOUT_QUERY_THRESHOLD_S
     const cutoff = new Date(
       Date.now() - TIMEOUT_QUERY_THRESHOLD_S * 1000
@@ -2032,6 +2036,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         row.id
       );
     }
+    await this.rescheduleAgentAlarm();
   }
 
   // ── POST /script/run ────────────────────────────────────────────────────────
@@ -4736,7 +4741,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // worker actually invokes a command. Prewarming here would make the model think first and
     // often let the short lease expire, charging idle time without reducing command latency.
     // Every template has a proactive assistant/REPL; product taxonomy never clamps the engine.
-    await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    await this.rescheduleAgentAlarm();
     const reasoningRequest = NaelaoAgentDO.resolveReasoningRequest(body.model, body.reasoningEffort);
     // Step 28: a business's OWN Gemini/Groq key wins over the platform key for its own runs. Spread
     // AFTER the env keys so it overrides; a business with none (or a default @cf/ model) gets the
@@ -7172,17 +7177,44 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   /** Best-effort append to the versioned cross-surface usage ledger. Wallet and project cap
    * ledgers remain authoritative for admission/settlement; this event carries dimensions needed
-   * to reconcile their decisions across retries and resource types. */
+   * to reconcile their decisions across retries and resource types. The durable local outbox
+   * retries non-2xx/network failures with the same idempotency key; the billing event hash makes
+   * ambiguous acknowledgements safe to replay. */
   private async recordCanonicalUsageEvent(tenantId: string, event: Record<string, unknown>): Promise<void> {
-    if (!this.env.BILLING_WORKER) return;
     try {
-      await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
+      enqueueUsageEvent(this.ctx.storage.sql as unknown as UsageEventOutboxSql, tenantId, event);
+    } catch {
+      /* invalid or oversized accounting telemetry must never fail the completed user operation */
+      return;
+    }
+    await this.flushCanonicalUsageOutbox(1);
+    await this.rescheduleAgentAlarm();
+  }
+
+  private async flushCanonicalUsageOutbox(limit = 20): Promise<void> {
+    await flushUsageEventOutbox(this.ctx.storage.sql as unknown as UsageEventOutboxSql, async (event, tenantId) => {
+      if (!this.env.BILLING_WORKER) throw new Error("billing_worker_unavailable");
+      const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
         method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
         body: JSON.stringify(event),
       }));
-    } catch {
-      /* usage telemetry is best effort; payer ledgers are settled independently */
+      if (!response.ok) throw new Error(`billing_usage_http_${response.status}`);
+    }, Date.now(), limit);
+  }
+
+  private async rescheduleAgentAlarm(): Promise<void> {
+    const now = Date.now();
+    const sql = this.ctx.storage.sql;
+    const candidates: number[] = [];
+    const runRow = sql.exec("SELECT MIN(created_at) AS created_at FROM agent_runs WHERE status='running'").toArray()[0] as { created_at?: string | null } | undefined;
+    if (runRow?.created_at) {
+      const runStartedAt = Date.parse(runRow.created_at);
+      if (Number.isFinite(runStartedAt)) candidates.push(Math.max(now + 1000, runStartedAt + TIMEOUT_MS));
     }
+    const retryRow = sql.exec("SELECT MIN(next_attempt_at) AS next_at FROM billing_usage_event_outbox WHERE status='pending'").toArray()[0] as { next_at?: number | null } | undefined;
+    if (typeof retryRow?.next_at === "number") candidates.push(Math.max(now + 1000, retryRow.next_at));
+    if (candidates.length) await this.ctx.storage.setAlarm(Math.min(...candidates));
+    else await this.ctx.storage.deleteAlarm();
   }
 
   private async reserveRunInferenceCost(args: {
@@ -8395,7 +8427,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     );
 
     // Set 30s timeout watchdog alarm (G-D14)
-    await this.ctx.storage.setAlarm(Date.now() + TIMEOUT_MS);
+    await this.rescheduleAgentAlarm();
 
     // Run the ReAct loop
     const model = body.model ?? "claude-sonnet-4-6";

@@ -417,8 +417,10 @@ app.post("/billing/usage", async (c) => {
   // Format: sha256(org_id:space_id:user_id:event_type:YYYY-MM-DDTHH:MM)
   let eventHash: string | null = null;
   if (body.idempotency_key) {
-    // Caller-supplied key takes precedence
-    const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body.idempotency_key));
+    // Caller-supplied key takes precedence, but uniqueness is tenant-scoped: the same run or
+    // event identifier in two organizations must never cause one tenant's usage row to suppress
+    // the other's.
+    const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${orgId}:${body.idempotency_key}`));
     eventHash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
   } else {
     const minuteBucket = now.slice(0, 16); // "YYYY-MM-DDTHH:MM"

@@ -1368,6 +1368,13 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Knowledge typecheck and Wrangler dry-run passed with the new service binding; storage-report helper tests (2), real-SQLite usage-event tests (4), and `git diff --check` passed.
 - Remaining: storage accounting for extension artifacts, conversation sessions, attachments and archives; overwrite/delete reconciliation, retained-byte snapshots, pricing attribution, and workspace/install storage ceilings.
 
+### Phase 4 usage delivery reconciliation checkpoint (2026-10-18)
+
+- `NaelaoAgentDO` now persists canonical billing events to a local SQLite outbox before sending. Failed/non-2xx delivery records an error and uses bounded exponential retry; the DO alarm coordinates outbox retries with active-run watchdog deadlines. Successful but ambiguously acknowledged requests are safe to replay through the stable event idempotency key.
+- The outbox is tenant-scoped, rejects missing idempotency keys and oversized payloads, and removes delivered entries after 30 days. Billing event hashes now include the verified tenant, so equal idempotency strings from different tenants cannot suppress each other.
+- Verification: Agents and Billing Worker typechecks passed; outbox retry/backoff and builder helper tests passed (6 tests); real-SQLite usage, project budget, and reservation ledger tests passed (7 tests); `git diff --check` passed.
+- This reconciles event transport, not all payer outcomes: wallet debit failures are still surfaced as run notes, but durable reconciliation between provider charge, project/user wallet, plan queue, and event ledger remains open.
+
 ### Phase 3 direct scheduled-script budget checkpoint (2026-10-18)
 
 - Direct event/scheduled scripts with a Project scope now re-read the SpaceDO project policy, enforce the project's execution-tier ceiling, check the shared Space wallet before running, and reserve one credit against a configured daily Project cap. This covers the bounded single isolate/container infrastructure charge; Tier 1/no-cost executions settle the hold at zero.
