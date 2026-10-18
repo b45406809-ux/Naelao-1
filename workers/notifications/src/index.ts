@@ -105,6 +105,13 @@ async function resolveExtensionChannelCredential(env: NotificationsEnv, input: {
   return row ? resolveChannelCredential(env, input.tenantId, input.spaceId, row.credential_name) : null;
 }
 
+async function resolveExtensionWhatsAppPhoneId(env: NotificationsEnv, input: { tenantId: string; spaceId: string; installationId: string; connectionId: string }): Promise<string | null> {
+  const row = await env.PLATFORM_DB.prepare(`SELECT account_id FROM extension_provider_connections
+    WHERE tenant_id=? AND space_id=? AND provider='whatsapp' AND installation_id=? AND connection_id=? AND status='active'`)
+    .bind(input.tenantId, input.spaceId, input.installationId, input.connectionId).first<{ account_id: string }>();
+  return row?.account_id ?? null;
+}
+
 async function markExtensionConnectionError(env: NotificationsEnv, input: { tenantId: string; spaceId: string; installationId: string; connectionId: string }): Promise<void> {
   const now = new Date().toISOString();
   await env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='error',updated_at=?
@@ -210,7 +217,12 @@ async function sendChatMessage(
       const colon = cred.indexOf(":");
       const legacyPair = colon > 0 && /^\d{5,32}$/.test(cred.slice(0, colon));
       const accessToken = legacyPair ? cred.slice(colon + 1) : cred;
-      const phoneNumberId = legacyPair
+      const extensionScope = Boolean(opts.installationId || opts.providerConnectionId);
+      const phoneNumberId = extensionScope
+        ? opts.installationId && opts.providerConnectionId
+          ? await resolveExtensionWhatsAppPhoneId(env, { tenantId: opts.tenantId, spaceId: opts.spaceId, installationId: opts.installationId, connectionId: opts.providerConnectionId })
+          : null
+        : legacyPair
         ? cred.slice(0, colon)
         : (await resolveChannelCredential(env, opts.tenantId, opts.spaceId, "WHATSAPP_PHONE_NUMBER_ID")) ?? env.WHATSAPP_PHONE_NUMBER_ID ?? null;
       const graphVersion = env.WHATSAPP_GRAPH_API_VERSION ?? "v26.0";
@@ -225,6 +237,9 @@ async function sendChatMessage(
         } } : { messaging_product: "whatsapp", to, type: "text", text: { body: message } }),
         signal: AbortSignal.timeout(8_000),
       });
+      if ((resp.status === 401 || resp.status === 403) && opts.installationId && opts.providerConnectionId) {
+        await markExtensionConnectionError(env, { tenantId: opts.tenantId, spaceId: opts.spaceId, installationId: opts.installationId, connectionId: opts.providerConnectionId });
+      }
     } else {
       return { delivered: false, reason: `no send path for channel '${channel}'` };
     }

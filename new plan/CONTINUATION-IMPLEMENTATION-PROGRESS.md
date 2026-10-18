@@ -1582,3 +1582,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The named-session quota calculation now subtracts bytes when an owner extension explicitly deletes a named session, so deleting data cannot be rejected due to stale pre-delete size accounting.
 - Verification: Agents typecheck passed; session-store and usage-event suites passed (8 tests), including UTF-8 deltas, overwrite no-op, deletion, and event idempotency identity; `git diff --check` passed.
 - This records write-time deltas only. Expiry cleanup, conversation deletion, uninstall/retention cleanup, SQLite page allocation, and exact retained byte-time are not yet reconciled. Telemetry failure after a sent reply is queued through the DO outbox where possible and never converts the sent reply into a session failure.
+
+### Phase 6 WhatsApp per-install outbound routing correction (2026-10-18)
+
+- Fixed the Notifications Worker so an external extension's WhatsApp reply resolves the phone-number ID from the exact active `(tenant, Space, installation, connection)` record, alongside that installation's vault token. Extension-scoped sends can no longer fall back to the Space/platform phone-number ID. Provider `401/403` marks that exact connection as needing attention.
+- Verification: Notifications typecheck passed; interactive/outbound tests passed (7 tests), including a fixture where the extension's phone ID and credential differ from global Space settings; `git diff --check` passed.
+- This fixes send routing only. There is still no per-install Meta OAuth/connect flow or Meta webhook ingress and subscription lifecycle, so a WhatsApp extension connection cannot yet be provisioned end to end.

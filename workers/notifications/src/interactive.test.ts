@@ -82,4 +82,30 @@ describe("interactive mobile approval delivery", () => {
     expect(updates[0]?.args).toContain("install");
     expect(outbound).toHaveBeenCalledOnce();
   });
+
+  it("sends WhatsApp extension replies with that installation's phone-number ID and token", async () => {
+    const updates: Array<{ sql: string; args: unknown[] }> = [];
+    const db = { prepare(sql: string) { return { bind(...args: unknown[]) { return {
+      async first() {
+        if (sql.includes("SELECT credential_name")) return { credential_name: "EXT_WHATSAPP_install_connection_generation" };
+        if (sql.includes("SELECT account_id")) return { account_id: "987654321012345" };
+        return { config_json: "{}" };
+      },
+      async run() { updates.push({ sql, args }); return { success: true }; },
+    }; } }; } };
+    const credentials = { async fetch(request: Request) {
+      expect(new URL(request.url).pathname).toContain("EXT_WHATSAPP_install_connection_generation");
+      return Response.json({ value: "installation-meta-token" });
+    } };
+    const outbound = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ messages: [{ id: "wamid.1" }] })); vi.stubGlobal("fetch", outbound);
+    const response = await worker.fetch!(new Request("https://notifications/internal/notify", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ channel: "whatsapp", space_id: "space", to: "+15551234567", message: "Reply", installation_id: "install", provider_connection_id: "wa-main" }) }),
+      { ...env(), PLATFORM_DB: db as unknown as D1Database, PLATFORM_SECRET: "platform-secret", CREDENTIALS_WORKER: credentials as unknown as Fetcher }, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ delivered: true });
+    expect(outbound).toHaveBeenCalledOnce();
+    expect(outbound.mock.calls[0]?.[0]).toBe("https://graph.facebook.com/v26.0/987654321012345/messages");
+    expect(new Headers(outbound.mock.calls[0]?.[1]?.headers).get("authorization")).toBe("Bearer installation-meta-token");
+    expect(JSON.parse(outbound.mock.calls[0]?.[1]?.body as string)).toMatchObject({ messaging_product: "whatsapp", to: "+15551234567" });
+  });
 });
