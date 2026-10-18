@@ -1332,6 +1332,13 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: Billing Worker, Agents Worker, and billing-core typechecks passed; billing route, real migration/runtime insertion, quota reservation, restricted-answer and billing settlement tests passed (34 tests); `git diff --check` passed.
 - Phase 4 remains open: other planner/user inference paths, storage bytes, connector calls, workflow execution, and provider billing events are not yet all emitted through v2; installation/run/provider-specific ceilings, off-topic budgets/alerts, owner payer visibility, and failed charge/usage reconciliation are still required.
 
+### Phase 4 project planner usage checkpoint (2026-10-18)
+
+- Normal project planner runs now append one idempotent v2 `project_llm_tokens` event per run, with project/space/run IDs, model/provider, actual token quantity, priced credits, rate-card version and payer. Existing cap and wallet settlement remains authoritative; prepaid wallet usage is not sent to the platform subscription meter.
+- Added focused event-construction tests. The adjacent infrastructure metering suite exposed stale expectations about the current resource table and helper return values; updated those assertions to the established contract (negative quantities reject, container allocation is charged by the canonical resource unit, and reporting returns its documented credit result).
+- Verification: Agents Worker typecheck passed; 4 focused Agents tests and 27 focused ledger/migration/metering tests passed; `git diff --check` passed. The broader Agents and unit suites have not been rerun.
+- Phase 4 remains open for inference paths outside project planner/external-answer, storage bytes, connector calls, workflow execution, provider billing, broader install/run/provider-specific ceilings, off-topic budgets/alerts, owner payer visibility and failed charge/usage reconciliation.
+
 ### Phase 3 direct scheduled-script budget checkpoint (2026-10-18)
 
 - Direct event/scheduled scripts with a Project scope now re-read the SpaceDO project policy, enforce the project's execution-tier ceiling, check the shared Space wallet before running, and reserve one credit against a configured daily Project cap. This covers the bounded single isolate/container infrastructure charge; Tier 1/no-cost executions settle the hold at zero.

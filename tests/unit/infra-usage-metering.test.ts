@@ -9,9 +9,9 @@ import type { Env } from "../../workers/agents/src/env.js";
 // LLM tokens.
 
 describe("infraTimeToCredits", () => {
-  it("returns 0 for zero or negative duration", () => {
+  it("returns 0 for zero duration and rejects negative duration", () => {
     expect(infraTimeToCredits("isolate", 0)).toBe(0);
-    expect(infraTimeToCredits("isolate", -5)).toBe(0);
+    expect(() => infraTimeToCredits("isolate", -5)).toThrow(RangeError);
   });
 
   it("rounds up to a minimum of 1 credit for any nonzero isolate duration", () => {
@@ -19,9 +19,9 @@ describe("infraTimeToCredits", () => {
     expect(infraTimeToCredits("isolate", 500)).toBeGreaterThanOrEqual(1);
   });
 
-  it("container time costs more per-ms than isolate time", () => {
-    const isolateCredits = infraTimeToCredits("isolate", 100_000);
-    const containerCredits = infraTimeToCredits("container", 100_000);
+  it("a long container allocation costs more than an isolate invocation", () => {
+    const isolateCredits = infraTimeToCredits("isolate", 3_600_000);
+    const containerCredits = infraTimeToCredits("container", 3_600_000);
     expect(containerCredits).toBeGreaterThan(isolateCredits);
   });
 
@@ -58,14 +58,14 @@ describe("reportWorkflowStepInfraUsage — Workflow step timing reaches the bill
     expect(body.quantity).toBeGreaterThanOrEqual(1);
   });
 
-  it("degrades silently (never throws) when BILLING_WORKER is unbound", async () => {
+  it("returns zero when BILLING_WORKER is unbound", async () => {
     const env = makeEnv(undefined);
-    await expect(reportWorkflowStepInfraUsage(env, "tenant-1", "space-1", 5000, "k")).resolves.toBeUndefined();
+    await expect(reportWorkflowStepInfraUsage(env, "tenant-1", "space-1", 5000, "k")).resolves.toBe(0);
   });
 
-  it("degrades silently (never throws) when the billing worker call itself fails", async () => {
+  it("returns the computed credits when the billing worker call itself fails", async () => {
     const fetchFn = vi.fn().mockRejectedValue(new Error("network down"));
     const env = makeEnv(fetchFn);
-    await expect(reportWorkflowStepInfraUsage(env, "tenant-1", "space-1", 5000, "k")).resolves.toBeUndefined();
+    await expect(reportWorkflowStepInfraUsage(env, "tenant-1", "space-1", 5000, "k")).resolves.toBe(1);
   });
 });

@@ -29,6 +29,7 @@ import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, BILLING_CORE_RATE_CARD_VERSION, type EffortLevel } from "@naelao/billing-core";
 import { externalAnswerCredits, releaseExternalAnswerSpend, settleExternalAnswerSpend } from "./external-channel-spend.js";
+import { projectLlmUsageEvent } from "./project-llm-usage.js";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
@@ -6980,7 +6981,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     hasSpendCap: boolean; walletProjectId: string | null;
     tokensUsed: number; inputTokens: number; outputTokens: number;
     model?: string | undefined; notes: string[]; runId: string;
-    modelPricing?: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    modelPricing?: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string } | undefined;
     projectSpendReserved?: boolean | undefined;
     endUserCreditReserved?: boolean | undefined;
     llmQuotaReserved?: boolean | undefined;
@@ -7079,6 +7080,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       this.addProjectSpend(projectId, projectCredits);
       if (projectSpendReserved && hasSpendCap) await this.settleProjectSpendReservation(spaceId, tenantId, projectId, runId, projectCredits);
       else if (hasSpendCap) await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, projectCredits);
+      // Project planner inference shares the same versioned usage ledger as restricted external
+      // answers. The project wallet/cap remain authoritative; a wallet-paid event must not also
+      // enter the platform subscription meter.
+      if (tokensUsed > 0) {
+        const modelId = model ?? DEFAULT_WORKING_MODEL;
+        await this.recordCanonicalUsageEvent(tenantId, projectLlmUsageEvent({
+          spaceId, projectId, runId, modelId, tokens: tokensUsed, costCredits: tokenCredits,
+          rateCardVersion: modelPricing?.rateCardVersion ?? BILLING_CORE_RATE_CARD_VERSION,
+          payer: walletProjectId ? "space_wallet" : "unknown",
+        }));
+      }
       // Metering enforcement follow-up: debit the space's own wallet for this run's real cost.
       // credits and wallet cents are the SAME unit by construction (packages/billing-core's
       // CREDITS_PER_USD = 100, i.e. 1 credit == 1 cent) — no conversion needed. Best-effort,
