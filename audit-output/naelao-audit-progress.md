@@ -143,11 +143,34 @@ Focused DB tests passed **13 tests across 3 files**. The configured workspace pa
 - The helpers are covered directly, but every `queryAll`/`queryOne` callsite in the large SpaceDO and knowledge worker modules remains pending caller-by-caller review.
 - The migration splitter covers SQLite's supported quote forms relevant to the tested statements; malformed unterminated quote/comment input relies on SQLite rejection and transaction rollback.
 
+## HTTP shared package stress pass (2026-10-18)
+
+The package is used by many workers for request IDs, CORS, internal HMAC authentication, JWT auth, cookie sessions, KV helpers, errors, and realtime events. Added a package Vitest project so these shared tests participate in the configured workspace.
+
+| File | Feature and stress boundaries exercised | Evidence / disposition |
+|---|---|---|
+| `packages/http/src/kv.ts` | Values around Cloudflare KV size thresholds, chunk assembly, UTF-8 boundaries, malformed/missing chunks, empty values, storage read failures | Fixed corruption when a 20 MiB chunk split a multibyte code point. Manifest keys/count/byte lengths are checked, missing chunks return a cache miss, empty values remain valid, and KV read errors propagate. Corrected the stale truncation comment. |
+| `packages/http/src/cors.ts` | Allowed/disallowed origins, preflight, cache variation, immutable upstream response headers | Adds `Vary: Origin`; clones response headers before applying CORS to preserve proxied responses with immutable headers. |
+| `packages/http/src/desk-drop-cookie.ts` | Cookie grammar/size, base64/JSON shape, token prefix, empty identity fields, invalid/expired timestamps | Requires canonical base64, nonempty identity fields, valid future expiry, and a bounded cookie value. |
+| `packages/http/src/middleware.ts` | Internal and tunnel HMAC scope/freshness, duplicate/malformed token fields, request ID header safety | Strict timestamp/signature grammar is shared by both token verifiers; request IDs are bounded and restricted to safe characters before response reflection. Explicit 5xx `HttpError` messages and details are now logged server-side and masked from clients. |
+| `packages/http/src/errors.ts` | Known error serialization and status/code factories; unexpected exception redaction | Confirms request IDs/details are preserved for `HttpError`; unexpected messages are masked in responses. |
+| `packages/http/src/realtime.ts` | Scoped outbound request fields, missing binding/scope, upstream 503, network exception | Confirms this side effect remains best effort for HTTP and network failures. |
+| `packages/http/src/index.ts`, `packages/http/package.json`, `packages/http/tsconfig.json`, `packages/http/vitest.config.ts` | Public exports, test discovery, package typecheck | Public export test passes; typecheck passes; seven source test files are registered. |
+
+Focused HTTP tests passed **24 tests across 7 files**; package TypeScript and focused Biome checks passed. The configured workspace passed **238 test files and 1,017 tests**.
+
+### Remaining HTTP risks and unverified behavior
+
+- KV chunk operations are multi-write and not transactional; a failed write can leave orphan chunk keys. Existing data stored by older chunk writes may already contain replacement characters and cannot be reconstructed by this fix.
+- Stress tests use an in-memory KV double and native Hono/Response behavior; Cloudflare KV quotas/TTL/consistency and Workers service-binding header immutability were not exercised in a deployed runtime.
+- `jwtAuth` and `requireInternalHmac` have broad worker integration coverage but were not directly remounted in this package suite; route-by-route auth placement and every worker's secret binding remain pending.
+- Realtime broadcast response bodies are intentionally ignored; retries/delivery guarantees and gateway auth configuration remain runtime concerns.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 231 test files, 994 tests, with webhook, idempotency, sweeper, auth, crypto, and DB projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 238 test files, 1,018 tests, with webhook, idempotency, sweeper, auth, crypto, DB, and HTTP projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

@@ -652,15 +652,23 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/http`
 
-- [ ] `packages/http/package.json`
-- [ ] `packages/http/src/cors.ts`
-- [ ] `packages/http/src/desk-drop-cookie.ts`
-- [ ] `packages/http/src/errors.ts`
-- [ ] `packages/http/src/index.ts`
-- [ ] `packages/http/src/kv.ts`
-- [ ] `packages/http/src/middleware.ts`
-- [ ] `packages/http/src/realtime.ts`
-- [ ] `packages/http/tsconfig.json`
+- [x] `packages/http/package.json`
+- [x] `packages/http/src/cors.ts`
+- [x] `packages/http/src/desk-drop-cookie.ts`
+- [x] `packages/http/src/errors.ts`
+- [x] `packages/http/src/index.ts`
+- [x] `packages/http/src/kv.ts`
+- [x] `packages/http/src/middleware.ts`
+- [x] `packages/http/src/realtime.ts`
+- [x] `packages/http/src/cors.test.ts` (added)
+- [x] `packages/http/src/desk-drop-cookie.test.ts` (added)
+- [x] `packages/http/src/errors.test.ts` (added)
+- [x] `packages/http/src/index.test.ts` (added)
+- [x] `packages/http/src/kv.test.ts` (added)
+- [x] `packages/http/src/middleware.test.ts` (added)
+- [x] `packages/http/src/realtime.test.ts` (added)
+- [x] `packages/http/vitest.config.ts` (added test discovery)
+- [x] `packages/http/tsconfig.json`
 
 ### `packages/idempotency`
 

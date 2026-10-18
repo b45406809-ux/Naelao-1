@@ -12,7 +12,10 @@ export class HttpError extends Error {
   }
 }
 
-export function badRequest(message: string, details?: Record<string, unknown>): HttpError {
+export function badRequest(
+  message: string,
+  details?: Record<string, unknown>
+): HttpError {
   return new HttpError(400, "bad_request", message, details);
 }
 
@@ -40,11 +43,15 @@ export function internalError(message = "Internal server error"): HttpError {
 
 export function errorResponse(err: unknown, requestId: string): Response {
   if (err instanceof HttpError) {
+    const isServerError = err.status >= 500;
+    if (isServerError) console.error("HTTP server error:", err);
     const body: ApiError = {
-      error_code: err.code,
-      message: err.message,
+      error_code: isServerError ? "internal_error" : err.code,
+      message: isServerError ? "An unexpected error occurred" : err.message,
       request_id: requestId,
-      ...(err.details !== undefined ? { details: err.details } : {}),
+      ...(!isServerError && err.details !== undefined
+        ? { details: err.details }
+        : {}),
     };
     return Response.json(body, { status: err.status });
   }

@@ -17,7 +17,9 @@ export interface RealtimeBroadcastEnv {
    *  same posture as every other optional binding in this platform. Named to match this
    *  codebase's CF-binding convention (ALL_CAPS), so a host Env/SpaceDOEnv satisfies this
    *  interface structurally with no adapter needed at call sites. */
-  WS_GATEWAY?: { fetch: (input: Request | string, init?: RequestInit) => Promise<Response> };
+  WS_GATEWAY?: {
+    fetch: (input: Request | string, init?: RequestInit) => Promise<Response>;
+  };
   PLATFORM_SECRET: string;
 }
 
