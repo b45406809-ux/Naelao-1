@@ -1337,7 +1337,15 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Normal project planner runs now append one idempotent v2 `project_llm_tokens` event per run, with project/space/run IDs, model/provider, actual token quantity, priced credits, rate-card version and payer. Existing cap and wallet settlement remains authoritative; prepaid wallet usage is not sent to the platform subscription meter.
 - Added focused event-construction tests. The adjacent infrastructure metering suite exposed stale expectations about the current resource table and helper return values; updated those assertions to the established contract (negative quantities reject, container allocation is charged by the canonical resource unit, and reporting returns its documented credit result).
 - Verification: Agents Worker typecheck passed; 4 focused Agents tests and 27 focused ledger/migration/metering tests passed; `git diff --check` passed. The broader Agents and unit suites have not been rerun.
-- Phase 4 remains open for inference paths outside project planner/external-answer, storage bytes, connector calls, workflow execution, provider billing, broader install/run/provider-specific ceilings, off-topic budgets/alerts, owner payer visibility and failed charge/usage reconciliation.
+- Phase 4 remains open for inference-producing extension paths outside the main planner and restricted-answer flows, storage bytes, connector calls, workflow execution, provider billing, broader install/run/provider-specific ceilings, off-topic budgets/alerts, owner payer visibility and failed charge/usage reconciliation.
+
+### Phase 4 non-project planner payer accounting checkpoint (2026-10-18)
+
+- Space Assistant builder inference reservation settlement now writes its existing `llm_tokens` row as schema v2 with model/provider, cost, rate-card version and explicit `plan_quota` payer. It continues to settle the reservation atomically and emit the plan meter only once; the non-reserved fallback now uses the same versioned contract.
+- Product end-user assistant inference now records a v2 `consumer_credits` event after its existing user credit settlement. This retains usage and model cost in the ledger without entering the organization plan quota or subscription meter.
+- Added real-SQLite settlement-route coverage proving a builder hold becomes one dimensioned v2 event and one platform meter event.
+- Verification: Agents and Billing Worker typechecks passed; focused route, helper and existing usage tests passed (33 tests); `git diff --check` passed. Broader Agents suite not rerun.
+- Remaining Phase 4 work includes custom extension inference paths, storage bytes, connector calls, workflow execution, provider billing, install/run/provider-specific ceilings, off-topic budgets/alerts, owner payer visibility and failure reconciliation.
 
 ### Phase 3 direct scheduled-script budget checkpoint (2026-10-18)
 

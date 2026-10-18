@@ -545,8 +545,13 @@ app.post("/internal/usage/llm-tokens/reservations/release", async (c) => {
 });
 app.post("/internal/usage/llm-tokens/reservations/settle", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
-  const body = await c.req.json<{ run_id?: string; actual_tokens?: number }>().catch(() => null);
-  if (!orgId || !body?.run_id || !Number.isSafeInteger(body.actual_tokens) || (body.actual_tokens ?? -1) < 0) return c.json({ error_code: "bad_request" }, 400);
+  const body = await c.req.json<{
+    run_id?: string; actual_tokens?: number; model_id?: string; cost_credits?: number; rate_card_version?: string;
+  }>().catch(() => null);
+  if (!orgId || !body?.run_id || !Number.isSafeInteger(body.actual_tokens) || (body.actual_tokens ?? -1) < 0
+    || (body.model_id !== undefined && (typeof body.model_id !== "string" || body.model_id.length < 1 || body.model_id.length > 160))
+    || (body.cost_credits !== undefined && (!Number.isSafeInteger(body.cost_credits) || body.cost_credits < 0))
+    || (body.rate_card_version !== undefined && (typeof body.rate_card_version !== "string" || body.rate_card_version.length < 1 || body.rate_card_version.length > 80))) return c.json({ error_code: "bad_request" }, 400);
   const prior = await c.env.PLATFORM_DB.prepare("SELECT actual_tokens FROM llm_token_run_settlements WHERE org_id=? AND run_id=?").bind(orgId, body.run_id).first<{ actual_tokens: number }>();
   if (prior) return c.json({ settled: true, deduplicated: true, actual_tokens: prior.actual_tokens });
   const held = await c.env.PLATFORM_DB.prepare("SELECT space_id FROM llm_token_reservations WHERE org_id=? AND run_id=? AND status='held' LIMIT 1").bind(orgId, body.run_id).first<{ space_id: string }>();
@@ -555,14 +560,28 @@ app.post("/internal/usage/llm-tokens/reservations/settle", async (c) => {
   const hashBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`llm-token-reservation:${orgId}:${body.run_id}`));
   const eventHash = Array.from(new Uint8Array(hashBytes)).map(byte => byte.toString(16).padStart(2, "0")).join("");
   const eventId = `llm-run:${body.run_id}`;
+  const provider = body.model_id?.startsWith("@cf/") ? "cloudflare"
+    : body.model_id?.startsWith("claude-") ? "anthropic" : body.model_id?.startsWith("gemini") ? "google"
+      : body.model_id?.includes("/") ? body.model_id.split("/")[0] ?? "unknown" : "unknown";
   const batch = await c.env.PLATFORM_DB.batch([
     c.env.PLATFORM_DB.prepare("UPDATE llm_token_reservations SET status='settled',updated_at=? WHERE org_id=? AND run_id=? AND status='held'").bind(now, orgId, body.run_id),
     c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO llm_token_run_settlements(org_id,run_id,actual_tokens,settled_at) VALUES(?,?,?,?)").bind(orgId, body.run_id, body.actual_tokens, now),
-    c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO usage_events(id,org_id,space_id,event_type,quantity,recorded_at,event_hash) VALUES(?,?,?,'llm_tokens',?,?,?)").bind(eventId, orgId, held.space_id, body.actual_tokens, now, eventHash),
+    c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO usage_events
+      (id,org_id,space_id,event_type,quantity,recorded_at,event_hash,schema_version,unit,rate_card_version,cost_credits,provider,model_id,payer_kind,decision)
+      VALUES(?,?,?,'llm_tokens',?,?,?,2,'tokens',?,?,?,?,'plan_quota','charged')`)
+      .bind(eventId, orgId, held.space_id, body.actual_tokens, now, eventHash,
+        body.rate_card_version ?? null, body.cost_credits ?? null, body.model_id ? provider : null, body.model_id ?? null),
   ]);
   if ((batch[2]?.meta.changes ?? 0) > 0 && (body.actual_tokens ?? 0) > 0) {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");
-    await c.env.BILLING_EVENTS.send({ type: "meter", org_id: orgId, space_id: held.space_id, event_type: "llm_tokens", quantity: body.actual_tokens!, event_id: eventId, event_hash: eventHash, recorded_at: now });
+    await c.env.BILLING_EVENTS.send({
+      type: "meter", org_id: orgId, space_id: held.space_id, event_type: "llm_tokens", quantity: body.actual_tokens!,
+      event_id: eventId, event_hash: eventHash, recorded_at: now, schema_version: 2, unit: "tokens",
+      payer_kind: "plan_quota", decision: "charged",
+      ...(body.rate_card_version ? { rate_card_version: body.rate_card_version } : {}),
+      ...(body.cost_credits !== undefined ? { cost_credits: body.cost_credits } : {}),
+      ...(body.model_id ? { model_id: body.model_id, provider } : {}),
+    });
   }
   return c.json({ settled: true, actual_tokens: body.actual_tokens, deduplicated: (batch[2]?.meta.changes ?? 0) === 0 });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectLlmUsageEvent } from "./project-llm-usage";
+import { consumerLlmUsageEvent, projectLlmUsageEvent } from "./project-llm-usage";
 
 describe("projectLlmUsageEvent", () => {
   it("attributes planner inference to its project, model, rate card, and prepaid payer", () => {
@@ -20,5 +20,15 @@ describe("projectLlmUsageEvent", () => {
       spaceId: "s", projectId: "p", runId: "r", modelId: "@cf/meta/llama", tokens: 1,
       costCredits: 0, rateCardVersion: "core-model-rates-v1", payer: "unknown",
     }).provider).toBe("cloudflare");
+  });
+
+  it("marks personal assistant inference as consumer-prepaid usage", () => {
+    expect(consumerLlmUsageEvent({
+      spaceId: "s", runId: "r", modelId: "claude-sonnet-4-6", tokens: 20,
+      costCredits: 1, rateCardVersion: "core-model-rates-v1",
+    })).toMatchObject({
+      event_type: "llm_tokens", idempotency_key: "run:r:consumer-llm",
+      payer_kind: "consumer_credits", provider: "anthropic", cost_credits: 1,
+    });
   });
 });

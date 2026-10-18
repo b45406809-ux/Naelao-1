@@ -29,7 +29,7 @@ import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, BILLING_CORE_RATE_CARD_VERSION, type EffortLevel } from "@naelao/billing-core";
 import { externalAnswerCredits, releaseExternalAnswerSpend, settleExternalAnswerSpend } from "./external-channel-spend.js";
-import { projectLlmUsageEvent } from "./project-llm-usage.js";
+import { consumerLlmUsageEvent, projectLlmUsageEvent } from "./project-llm-usage.js";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
 import { authorizedFailoversForModel, byokProviderForModel, BYOK_PROVIDER_KEY_FIELD } from "../shared/ai-client.js";
@@ -7106,6 +7106,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // in the result notes so it's visible, not silently swallowed.
       if (endUserCreditReserved) await this.settleEndUserCreditReservation(spaceId, tenantId, userId, runId, tokenCredits, notes);
       else await this.debitEndUserCredits(spaceId, tenantId, userId, tokenCredits, model, notes, runId);
+      if (tokensUsed > 0) {
+        await this.recordCanonicalUsageEvent(tenantId, consumerLlmUsageEvent({
+          spaceId, runId, modelId: model ?? DEFAULT_WORKING_MODEL, tokens: tokensUsed,
+          costCredits: tokenCredits, rateCardVersion: modelPricing?.rateCardVersion ?? BILLING_CORE_RATE_CARD_VERSION,
+        }));
+      }
     } else if (BUILDER_CALLER_ROLES.has(callerRole ?? "")) {
       // P0-3: record this builder's own real token usage against their org's monthly quota —
       // mutually exclusive with both branches above (a project-scoped run and a product-end-user
@@ -7114,17 +7120,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // wallet/credit ledgers above. Best-effort: never fails an already-completed run's
       // response over a billing-side hiccup.
       if (llmQuotaReserved) {
-        await this.settleLlmTokenReservation(tenantId, runId, tokensUsed, notes);
+        await this.settleLlmTokenReservation(tenantId, runId, tokensUsed, notes, {
+          model_id: model ?? DEFAULT_WORKING_MODEL, cost_credits: tokenCredits,
+          rate_card_version: modelPricing?.rateCardVersion ?? BILLING_CORE_RATE_CARD_VERSION,
+        });
       } else if (tokensUsed && this.env.BILLING_WORKER) {
-        try {
-          await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
-            method: "POST",
-            headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-            body: JSON.stringify({ event_type: "llm_tokens", quantity: tokensUsed, idempotency_key: `run:${runId}` }),
-          }));
-        } catch {
-          // Billing service unreachable — best-effort usage recording, never fails the run.
-        }
+        const modelId = model ?? DEFAULT_WORKING_MODEL;
+        const provider = modelId.startsWith("@cf/") ? "cloudflare"
+          : modelId.startsWith("claude-") ? "anthropic" : modelId.startsWith("gemini") ? "google"
+            : modelId.includes("/") ? modelId.split("/")[0] ?? "unknown" : "unknown";
+        await this.recordCanonicalUsageEvent(tenantId, {
+          event_type: "llm_tokens", quantity: tokensUsed, unit: "tokens", schema_version: 2,
+          idempotency_key: `run:${runId}:plan-llm`, space_id: spaceId, run_id: runId,
+          model_id: modelId, provider, cost_credits: tokenCredits,
+          rate_card_version: modelPricing?.rateCardVersion ?? BILLING_CORE_RATE_CARD_VERSION,
+          payer_kind: "plan_quota", decision: "charged",
+        });
       }
     }
   }
@@ -7412,12 +7423,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch (error) { notes.push(`Billing: unable to settle personal credit reservation (${(error as Error).message}).`); }
   }
 
-  private async settleLlmTokenReservation(tenantId: string, runId: string, actualTokens: number, notes: string[]): Promise<void> {
+  private async settleLlmTokenReservation(
+    tenantId: string, runId: string, actualTokens: number, notes: string[],
+    usage?: { model_id: string; cost_credits: number; rate_card_version: string },
+  ): Promise<void> {
     if (!this.env.BILLING_WORKER) { notes.push("Billing: monthly LLM quota reservation service is unavailable."); return; }
     try {
       const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/llm-tokens/reservations/settle", {
         method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-        body: JSON.stringify({ run_id: runId, actual_tokens: actualTokens }),
+        body: JSON.stringify({ run_id: runId, actual_tokens: actualTokens, ...(usage ?? {}) }),
       }));
       if (!response.ok) notes.push(`Billing: monthly LLM quota settlement failed (${response.status}).`);
     } catch (error) { notes.push(`Billing: monthly LLM quota settlement failed (${(error as Error).message}).`); }
