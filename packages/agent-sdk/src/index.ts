@@ -167,6 +167,7 @@ export * from "./document-node.js";
 export * from "./workflow-taxonomy.js";
 export * from "./browser-runtime.js";
 export * from "./extensions.js";
+export * from "./extension-publisher-signatures.js";
 export * from "./types.js";
 export * from "./display-mode.js";
 export * from "./mode-dispatch.js";

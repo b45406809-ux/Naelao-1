@@ -17,8 +17,8 @@
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -276,6 +276,9 @@ export function ChannelConnect({
   const [error, setError] = React.useState<string | null>(null);
   const [webhookUrl, setWebhookUrl] = React.useState<{ channel: string; url: string } | null>(null);
   const [extensionInstallations, setExtensionInstallations] = React.useState<ChannelExtensionInstallation[]>([]);
+  const [publisherKeys, setPublisherKeys] = React.useState<ExtensionPublisherKey[]>([]);
+  const [newPublisherId, setNewPublisherId] = React.useState("pub_my_team");
+  const [newPublisherPublicKey, setNewPublisherPublicKey] = React.useState("");
   const [otherProjectInstallations, setOtherProjectInstallations] = React.useState<ContainerInstallation[]>([]);
   const [extensionLoadError, setExtensionLoadError] = React.useState<string | null>(null);
   const [extensionsLoading, setExtensionsLoading] = React.useState(false);
@@ -290,6 +293,8 @@ export function ChannelConnect({
   const [canvasArtifactsDraft, setCanvasArtifactsDraft] = React.useState("");
   const [canvasInstallConfirmed, setCanvasInstallConfirmed] = React.useState(false);
   const [canvasInstanceKey, setCanvasInstanceKey] = React.useState("default");
+  const [canvasPublisherKeyId, setCanvasPublisherKeyId] = React.useState("");
+  const [canvasPublisherSignature, setCanvasPublisherSignature] = React.useState("");
 
   // Give the installer a readable map of the package graph before the owner approves raw JSON.
   // Deliberately project only public manifest fields; never echo arbitrary manifest values here.
@@ -325,15 +330,16 @@ export function ChannelConnect({
     setExtensionInstallations([]); setOtherProjectInstallations([]);
     setExtensionsLoading(true);
     setExtensionLoadError(null);
-    Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId)])
-      .then(([items, installed]) => {
+    Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId), listExtensionPublisherKeys(spaceId, session)])
+      .then(([items, installed, publishers]) => {
         if (cancelled) return;
         setExtensionInstallations(items);
+        setPublisherKeys(publishers.publishers);
         const channelInstances = new Set(items.map(item => item.instance_id));
         setOtherProjectInstallations(installed.installations.filter(item => item.instance.project_id === projectId
           && item.instance.status === "active" && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       })
-      .catch((err) => { if (!cancelled) { setExtensionInstallations([]); setOtherProjectInstallations([]); setExtensionLoadError(err instanceof Error ? err.message : "Couldn't load project extensions."); } })
+      .catch((err) => { if (!cancelled) { setExtensionInstallations([]); setOtherProjectInstallations([]); setPublisherKeys([]); setExtensionLoadError(err instanceof Error ? err.message : "Couldn't load project extensions."); } })
       .finally(() => { if (!cancelled) setExtensionsLoading(false); });
     return () => { cancelled = true; };
   }, [spaceId, projectId, session, canManage]);
@@ -437,23 +443,48 @@ export function ChannelConnect({
 
   async function installCanvasBundle(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!projectId || installingExtension || !canvasManifestDraft.trim() || !canvasInstallConfirmed) return;
+    if (!projectId || installingExtension || !canvasManifestDraft.trim() || !canvasInstallConfirmed || !canvasPublisherKeyId || !canvasPublisherSignature.trim()) return;
     setInstallingExtension(true); setError(null);
     try {
       const manifest = JSON.parse(canvasManifestDraft) as unknown;
       const artifacts = JSON.parse(canvasArtifactsDraft) as Record<string, string>;
-      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim());
+      const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim(), { key_id: canvasPublisherKeyId, signature: canvasPublisherSignature.trim() });
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Canvas/Gadget package installation failed");
       const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId)]);
       setExtensionInstallations(channels);
       const channelInstances = new Set(channels.map(item => item.instance_id));
       setOtherProjectInstallations(all.installations.filter(item => item.instance.project_id === projectId
         && item.instance.status === "active" && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
-      setCanvasManifestDraft(""); setCanvasArtifactsDraft(""); setCanvasInstallConfirmed(false); setConfirmUpgrade(false); setCanvasInstanceKey("default");
+      setCanvasManifestDraft(""); setCanvasArtifactsDraft(""); setCanvasPublisherSignature(""); setCanvasInstallConfirmed(false); setConfirmUpgrade(false); setCanvasInstanceKey("default");
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't install this Canvas/Gadget package.");
     } finally { setInstallingExtension(false); }
+  }
+
+  async function registerPublisherKey(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!newPublisherId.trim() || !newPublisherPublicKey.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      await registerExtensionPublisherKey(spaceId, session, newPublisherId.trim(), newPublisherPublicKey.trim());
+      const result = await listExtensionPublisherKeys(spaceId, session);
+      setPublisherKeys(result.publishers);
+      setNewPublisherPublicKey("");
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't trust this publisher key."); }
+    finally { setBusy(false); }
+  }
+
+  async function revokePublisherKey(keyId: string) {
+    if (busy || !window.confirm("Revoke this publisher key? Releases signed by it will stop running in this Space.")) return;
+    setBusy(true); setError(null);
+    try {
+      await revokeExtensionPublisherKey(spaceId, session, keyId);
+      const result = await listExtensionPublisherKeys(spaceId, session);
+      setPublisherKeys(result.publishers);
+      if (canvasPublisherKeyId === keyId) { setCanvasPublisherKeyId(""); setCanvasPublisherSignature(""); }
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't revoke this publisher key."); }
+    finally { setBusy(false); }
   }
 
   async function uninstallChannelExtension(instanceId: string) {
@@ -517,6 +548,20 @@ export function ChannelConnect({
       {projectId && canManage && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
         <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install a project Canvas/Gadget extension</summary>
         <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>This release can combine CanvasMount HTML, project-bound Gadget databases, external channel handlers, and Durable Workflow worker steps under one versioned extension ID. Canvas parts appear in the project Canvas selector and keep their own installed-instance scope. Channel handlers receive only the restricted external channel context. Workflow steps can call only the operation names declared in the bundle and enabled for the acting user by the host. Provider credentials are not package-bound here; connect channels through the existing provider controls. Review the manifest and every artifact before installing.</p>
+        <section aria-label="Trusted extension publishers" style={{ margin: "10px 0", padding: 10, border: "1px solid var(--border)", borderRadius: 7 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600 }}>Trusted publishers for this Space</div>
+          <p style={{ fontSize: 11, color: "var(--text3)", margin: "4px 0 8px" }}>Register a publisher public key separately from its packages. Private signing keys stay with the publisher; a revoked key blocks its releases and is not automatically restored.</p>
+          <form onSubmit={registerPublisherKey} style={{ display: "grid", gap: 6, marginBottom: 8 }}>
+            <input aria-label="Publisher ID" value={newPublisherId} onChange={event => setNewPublisherId(event.target.value)} pattern="pub_[a-z0-9_-]{1,48}" maxLength={52} required placeholder="pub_my_team" />
+            <input aria-label="Publisher P-256 public key" value={newPublisherPublicKey} onChange={event => setNewPublisherPublicKey(event.target.value)} required placeholder="Base64url uncompressed P-256 public key" />
+            <button type="submit" className="btn-ghost" disabled={busy || !newPublisherPublicKey.trim()}>{busy ? "Saving…" : "Trust publisher key"}</button>
+          </form>
+          {publisherKeys.map(key => <div key={key.key_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 10.5, borderTop: "1px solid var(--border)", padding: "5px 0" }}>
+            <span>{key.publisher_id} · {key.key_id.slice(0, 12)}… · {key.status}</span>
+            {key.status === "active" && <button type="button" className="btn-ghost" disabled={busy} onClick={() => void revokePublisherKey(key.key_id)}>Revoke</button>}
+          </div>)}
+          {publisherKeys.length === 0 && <div style={{ fontSize: 10.5, color: "var(--text3)" }}>No trusted publisher keys.</div>}
+        </section>
         <form onSubmit={installCanvasBundle} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-extension-instance">Independent instance key
             <input id="canvas-extension-instance" value={canvasInstanceKey} onChange={event => setCanvasInstanceKey(event.target.value)} pattern="[a-z][a-z0-9_-]{1,31}" maxLength={32} required style={{ display: "block", marginTop: 4, width: "100%", boxSizing: "border-box", background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 7 }} />
@@ -535,9 +580,19 @@ export function ChannelConnect({
           </section>}
           <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-extension-artifacts">HTML artifacts as JSON path-to-source map</label>
           <textarea id="canvas-extension-artifacts" value={canvasArtifactsDraft} onChange={event => setCanvasArtifactsDraft(event.target.value)} rows={8} spellCheck={false} placeholder={'{"./index.html":"<main>...</main>"}'} style={{ width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "monospace", fontSize: 11, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: 8 }} />
+          <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-publisher-key">Publisher signing key
+            <select id="canvas-publisher-key" value={canvasPublisherKeyId} onChange={event => { setCanvasPublisherKeyId(event.target.value); setCanvasPublisherSignature(""); }} required style={{ display: "block", width: "100%", marginTop: 4 }}>
+              <option value="">Choose a trusted active key</option>
+              {publisherKeys.filter(key => key.status === "active").map(key => <option key={key.key_id} value={key.key_id}>{key.publisher_id} · {key.key_id.slice(0, 12)}…</option>)}
+            </select>
+          </label>
+          <label style={{ fontSize: 11.5, color: "var(--text2)" }} htmlFor="canvas-publisher-signature">Release signature (base64url)
+            <input id="canvas-publisher-signature" value={canvasPublisherSignature} onChange={event => setCanvasPublisherSignature(event.target.value)} required placeholder="Sign the canonical manifest and original artifact map with @naelao/agent-sdk" />
+          </label>
+          <div style={{ fontSize: 10.5, color: "var(--text3)" }}>Create and retain your P-256 private key outside Naelao. Sign the host-canonical manifest and exact original path-to-source map, then paste the returned signature. Example: <code>const manifestJson = canonicalExtensionManifestForPublisher(manifest); const signed = await signExtensionPublisherRelease(signingInput); signed.signature</code>. These helpers are exported by <code>@naelao/agent-sdk</code>. Only the signature is sent to Naelao.</div>
           <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={canvasInstallConfirmed} onChange={event => setCanvasInstallConfirmed(event.target.checked)} />I reviewed the bundle declarations, every artifact, and each workflow toolNames grant. Gadgets are project-bound; external channel handlers cannot access planner/member tools or credentials.</label>
           <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 11.5 }}><input type="checkbox" checked={confirmUpgrade} onChange={event => setConfirmUpgrade(event.target.checked)} />Approve a forward version upgrade for this extension ID</label>
-          <div><button type="submit" className="btn-ghost" disabled={installingExtension || !canvasManifestDraft.trim() || !canvasInstallConfirmed}>{installingExtension ? "Installing…" : "Review and install Canvas bundle"}</button></div>
+          <div><button type="submit" className="btn-ghost" disabled={installingExtension || !canvasManifestDraft.trim() || !canvasInstallConfirmed || !canvasPublisherKeyId || !canvasPublisherSignature.trim()}>{installingExtension ? "Installing…" : "Review and install Canvas bundle"}</button></div>
         </form>
       </details>}
       {projectId && canManage && otherProjectInstallations.length > 0 && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>

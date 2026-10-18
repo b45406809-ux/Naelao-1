@@ -74,9 +74,14 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     const spaceDoId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
     const runtime = await c.env.SPACE_DO.get(spaceDoId).fetch(new Request(`http://space-do/project-extension-runtime?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, project_id: projectId, app_id: appId })}`));
     if (!runtime.ok) return c.json({ error_code: "extension_runtime_status_unavailable" }, 503);
-    const runtimeState = await runtime.json<{ managed?: boolean; active?: boolean; releaseValid?: boolean }>().catch((): { managed?: boolean; active?: boolean; releaseValid?: boolean } => ({}));
+    const runtimeState = await runtime.json<{ managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string }>().catch((): { managed?: boolean; active?: boolean; releaseValid?: boolean; publisherKeyId?: string } => ({}));
     if (runtimeState.managed && !runtimeState.active) return c.json({ error_code: "project_extension_inactive" }, 404);
     if (runtimeState.managed && !runtimeState.releaseValid) return c.json({ error_code: "project_extension_release_invalid" }, 503);
+    if (runtimeState.managed && runtimeState.publisherKeyId) {
+      const trustedPublisher = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
+        WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, spaceId, runtimeState.publisherKeyId).first();
+      if (!trustedPublisher) return c.json({ error_code: "project_extension_publisher_revoked" }, 503);
+    }
     if (path === "/initialize" && runtimeState.managed) return c.json({ error_code: "project_extension_install_route_required" }, 409);
     const id = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const request = new Request(`http://micro-app${path}`, { method, headers: c.req.raw.headers,

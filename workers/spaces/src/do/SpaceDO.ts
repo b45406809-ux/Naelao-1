@@ -2149,6 +2149,16 @@ const MIGRATIONS: Migration[] = [
     DROP TABLE project_external_quota_decisions_v90;
     CREATE INDEX idx_project_external_quota_decisions_day ON project_external_quota_decisions(day);`,
   },
+  {
+    version: 92,
+    description: "publisher signatures and revocation state for extension releases",
+    up: `ALTER TABLE extension_releases ADD COLUMN publisher_id TEXT;
+      ALTER TABLE extension_releases ADD COLUMN publisher_key_id TEXT;
+      ALTER TABLE extension_releases ADD COLUMN publisher_signature TEXT;
+      ALTER TABLE extension_releases ADD COLUMN publisher_payload_sha256 TEXT;
+      ALTER TABLE extension_releases ADD COLUMN publisher_revoked_at TEXT;
+      CREATE INDEX idx_extension_releases_publisher_key ON extension_releases(publisher_key_id,publisher_revoked_at);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2796,7 +2806,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
            JOIN installed_extensions e ON e.extension_id=i.extension_id
            WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')`,
           tenantId, spaceId, projectId);
-        let managed = false, active = false, releaseValid = false;
+        let managed = false, active = false, releaseValid = false, publisherKeyId: string | undefined;
         for (const row of rows) {
           let manifest: ExtensionManifest;
           try { manifest = JSON.parse(row.manifest_json) as ExtensionManifest; } catch { continue; }
@@ -2811,17 +2821,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           if (!currentMatches && !historicallyManaged) continue;
           managed = true;
           if (row.status !== "active" || !currentMatches || !manifest.bundle) continue;
-          const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
-            "SELECT manifest_json,artifact_sha256,host_signature FROM extension_releases WHERE extension_id=? AND version=?",
+          const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_key_id: string | null; publisher_signature: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+            "SELECT manifest_json,artifact_sha256,host_signature,publisher_key_id,publisher_signature,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?",
             manifest.bundle.id, manifest.bundle.version);
           if (!release) continue;
           const expected = await this.signExtensionRelease(manifest.bundle.id, manifest.bundle.version, release.manifest_json, release.artifact_sha256);
-          if (release.manifest_json === row.manifest_json && expected === release.host_signature) {
+          if (release.manifest_json === row.manifest_json && expected === release.host_signature
+            && (!release.publisher_signature || !release.publisher_revoked_at)) {
             active = true;
             releaseValid = true;
+            if (release.publisher_key_id) publisherKeyId = release.publisher_key_id;
           }
         }
-        return Response.json({ managed, active, releaseValid });
+        return Response.json({ managed, active, releaseValid, ...(publisherKeyId ? { publisherKeyId } : {}) });
       }
       if (url.pathname === "/workflow-installation" && method === "GET") {
         const rows = queryAll<{ instance_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
@@ -2833,11 +2845,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const manifest = JSON.parse(manifest_json) as ExtensionManifest;
         const bundle = manifest.bundle;
         if (!bundle) return Response.json({ instance, manifest });
-        const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
-          "SELECT manifest_json,artifact_sha256,host_signature FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, bundle.version);
+        const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_id: string | null; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+          "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, bundle.version);
         const expected = release ? await this.signExtensionRelease(manifest.id, bundle.version, manifest_json, release.artifact_sha256) : "";
         return Response.json({ instance, manifest, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
-          signatureValid: release.manifest_json === manifest_json && expected === release.host_signature, signer: "naelao-host" } : null });
+          signatureValid: release.manifest_json === manifest_json && expected === release.host_signature && (!release.publisher_signature || !release.publisher_revoked_at), signer: "naelao-host",
+          ...(release.publisher_key_id ? { publisher: { id: release.publisher_id, keyId: release.publisher_key_id, signature: release.publisher_signature,
+            payloadSha256: release.publisher_payload_sha256, revoked: Boolean(release.publisher_revoked_at) } } : {}) } : null });
       }
       if (url.pathname === "/extension-installation" && method === "DELETE") {
         const instanceId = url.searchParams.get("instance_id") ?? "";
@@ -2864,7 +2878,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const installations = rows.flatMap(row => {
           const manifest = JSON.parse(row.manifest_json) as { id?: string; bundle?: { version?: string; connections?: Array<{ id?: string; provider?: string; purpose?: string; required?: boolean }> }; channels?: Array<{ kind?: string; id?: string; provider?: string; connectionId?: string; handlerScript?: string; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number } }> };
           const channels = (manifest.channels ?? []).filter(channel => channel.kind === "channel");
+          const publisherKeyId = manifest.bundle?.version ? queryOne<{ publisher_key_id: string | null }>(this.ctx.storage.sql as never,
+            "SELECT publisher_key_id FROM extension_releases WHERE extension_id=? AND version=?", row.extension_id, manifest.bundle.version)?.publisher_key_id : null;
           return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, scope: row.scope, version: manifest.bundle?.version ?? "legacy",
+            ...(publisherKeyId ? { publisher_key_id: publisherKeyId } : {}),
             name: manifest.id ?? row.extension_id,
             channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}), ...(channel.session?.enabled ? { session: { enabled: true, max_bytes: channel.session.maxBytes ?? 1_024, ttl_days: channel.session.ttlDays ?? 30 } } : {}) })),
             connections: (manifest.bundle?.connections ?? []).map(connection => ({ id: connection.id ?? "", provider: connection.provider ?? "", purpose: connection.purpose ?? "", required: connection.required === true })) }] : [];
@@ -2886,6 +2903,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extensions" && method === "POST") return await this.installExtension(request);
       if (url.pathname === "/extension-releases/rollback" && method === "POST") return this.rollbackExtensionRelease(request);
       if (url.pathname === "/extension-releases" && method === "GET") return await this.listExtensionReleases(url.searchParams.get("extension_id") ?? "");
+      if (url.pathname === "/extension-publisher-revoke" && method === "POST") return this.revokeExtensionPublisher(url.searchParams.get("key_id") ?? "");
       const extensionMatch = url.pathname.match(/^\/extensions\/(ext_[a-z0-9_-]+)$/);
       if (extensionMatch?.[1] && method === "DELETE") return this.uninstallExtension(extensionMatch[1]);
       if (method === "POST" && url.pathname === "/ephemeral-grants/mint") {
@@ -11976,7 +11994,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; artifactSha256?: string }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; artifactSha256?: string; publisherId?: string; publisherKeyId?: string; publisherSignature?: string; publisherPayloadSha256?: string }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
     if (body.scope && (!body.tenantId || !body.spaceId)) return Response.json({ error: "tenantId and spaceId are required for scoped installations" }, { status: 400 });
     let manifest: ExtensionManifest;
@@ -12039,13 +12057,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
            VALUES (?,?,?,?,?) ON CONFLICT(extension_id) DO NOTHING`, manifest.id, manifestJson, body.installedBy, now, now);
         }
         if (manifest.bundle) {
-          const release = queryOne<{ manifest_json: string; artifact_sha256: string }>(this.ctx.storage.sql as never,
-            "SELECT manifest_json,artifact_sha256 FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, manifest.bundle.version);
-          if (release && (release.manifest_json !== manifestJson || release.artifact_sha256 !== artifactSha256)) throw new Error("extension_release_version_is_immutable");
+          const release = queryOne<{ manifest_json: string; artifact_sha256: string; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null }>(this.ctx.storage.sql as never,
+            "SELECT manifest_json,artifact_sha256,publisher_key_id,publisher_signature,publisher_payload_sha256 FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, manifest.bundle.version);
+          if (release && (release.manifest_json !== manifestJson || release.artifact_sha256 !== artifactSha256
+            || release.publisher_key_id !== (body.publisherKeyId ?? null) || release.publisher_signature !== (body.publisherSignature ?? null)
+            || release.publisher_payload_sha256 !== (body.publisherPayloadSha256 ?? null))) throw new Error("extension_release_version_is_immutable");
           execute(this.ctx.storage.sql as never,
-            `INSERT INTO extension_releases(extension_id,version,manifest_json,artifact_sha256,host_signature,created_by,created_at)
-             VALUES(?,?,?,?,?,?,?) ON CONFLICT(extension_id,version) DO NOTHING`,
-            manifest.id, manifest.bundle.version, manifestJson, artifactSha256, releaseSignature, body.installedBy, now);
+            `INSERT INTO extension_releases(extension_id,version,manifest_json,artifact_sha256,host_signature,created_by,created_at,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(extension_id,version) DO NOTHING`,
+            manifest.id, manifest.bundle.version, manifestJson, artifactSha256, releaseSignature, body.installedBy, now,
+            body.publisherId ?? null, body.publisherKeyId ?? null, body.publisherSignature ?? null, body.publisherPayloadSha256 ?? null);
         }
         if (body.scope && body.tenantId && body.spaceId && ownerKey && instanceId) {
           const existingInstance = queryOne<{ extension_id: string; tenant_id: string; space_id: string; project_id: string | null; user_id: string | null; scope: string; instance_key: string }>(
@@ -12072,12 +12093,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "extension_install_failed";
-      const conflict = message.includes("conflict");
+      const conflict = message.includes("conflict") || message.includes("immutable");
       return Response.json({ error: message }, { status: conflict ? 409 : 400 });
     }
     const signature = manifest.bundle ? queryOne<{ host_signature: string }>(this.ctx.storage.sql as never,
       "SELECT host_signature FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, manifest.bundle.version)?.host_signature : undefined;
-    return Response.json({ installed: true, manifest, installedAt: now, ...(signature ? { release: { version: manifest.bundle!.version, artifactSha256, hostSignature: signature, signer: "naelao-host" } } : {}), ...(instanceId ? { installationId: instanceId } : {}) }, { status: 201 });
+    const publisher = manifest.bundle ? queryOne<{ publisher_id: string | null; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+      "SELECT publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, manifest.bundle.version) : null;
+    return Response.json({ installed: true, manifest, installedAt: now, ...(signature ? { release: { version: manifest.bundle!.version, artifactSha256, hostSignature: signature, signer: "naelao-host", manifestJson,
+      ...(publisher?.publisher_key_id ? { publisher: { id: publisher.publisher_id, keyId: publisher.publisher_key_id, signature: publisher.publisher_signature,
+        payloadSha256: publisher.publisher_payload_sha256, revoked: Boolean(publisher.publisher_revoked_at) } } : {}) } } : {}), ...(instanceId ? { installationId: instanceId } : {}) }, { status: 201 });
   }
 
   private isNewerExtensionVersion(currentJson: string, nextVersion: string): boolean {
@@ -12106,9 +12131,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private async rollbackExtensionRelease(request: Request): Promise<Response> {
     const body = await request.json<{ extensionId?: string; version?: string }>().catch(() => ({} as { extensionId?: string; version?: string }));
     if (!body.extensionId || !body.version) return Response.json({ error: "rollback_request_invalid" }, { status: 400 });
-    const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string }>(this.ctx.storage.sql as never,
-      "SELECT manifest_json,artifact_sha256,host_signature FROM extension_releases WHERE extension_id=? AND version=?", body.extensionId, body.version);
+    const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+      "SELECT manifest_json,artifact_sha256,host_signature,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", body.extensionId, body.version);
     if (!release) return Response.json({ error: "extension_release_not_found" }, { status: 404 });
+    if (release.publisher_revoked_at) return Response.json({ error: "extension_publisher_release_revoked" }, { status: 409 });
     const expected = await this.signExtensionRelease(body.extensionId, body.version, release.manifest_json, release.artifact_sha256);
     if (expected !== release.host_signature) return Response.json({ error: "extension_release_signature_invalid" }, { status: 409 });
     const manifest = JSON.parse(release.manifest_json) as ExtensionManifest;
@@ -12116,12 +12142,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ rolledBack: true, manifest, release: { version: body.version, artifactSha256: release.artifact_sha256, hostSignature: release.host_signature, signer: "naelao-host" } });
   }
 
+  private revokeExtensionPublisher(keyId: string): Response {
+    if (!/^[a-f0-9]{64}$/.test(keyId)) return Response.json({ error_code: "publisher_key_id_invalid" }, { status: 400 });
+    const result = this.ctx.storage.sql.exec("UPDATE extension_releases SET publisher_revoked_at=COALESCE(publisher_revoked_at,datetime('now')) WHERE publisher_key_id=?", keyId);
+    return Response.json({ revoked: true, key_id: keyId, release_count: result.rowsWritten });
+  }
+
   private async listExtensionReleases(extensionId: string): Promise<Response> {
     if (!/^ext_[a-z0-9_-]{2,62}$/.test(extensionId)) return Response.json({ error: "extension_id_invalid" }, { status: 400 });
-    const rows = queryAll<{ version: string; manifest_json: string; artifact_sha256: string; host_signature: string; created_at: string }>(this.ctx.storage.sql as never,
-      "SELECT version,manifest_json,artifact_sha256,host_signature,created_at FROM extension_releases WHERE extension_id=? ORDER BY created_at DESC", extensionId);
+    const rows = queryAll<{ version: string; manifest_json: string; artifact_sha256: string; host_signature: string; created_at: string; publisher_id: string | null; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+      "SELECT version,manifest_json,artifact_sha256,host_signature,created_at,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? ORDER BY created_at DESC", extensionId);
     const releases = await Promise.all(rows.map(async row => ({ version: row.version, artifactSha256: row.artifact_sha256, hostSignature: row.host_signature,
-      signatureValid: await this.signExtensionRelease(extensionId, row.version, row.manifest_json, row.artifact_sha256) === row.host_signature, createdAt: row.created_at })));
+      signatureValid: await this.signExtensionRelease(extensionId, row.version, row.manifest_json, row.artifact_sha256) === row.host_signature && (!row.publisher_signature || !row.publisher_revoked_at),
+      createdAt: row.created_at, ...(row.publisher_key_id ? { publisher: { id: row.publisher_id, keyId: row.publisher_key_id, signature: row.publisher_signature,
+        payloadSha256: row.publisher_payload_sha256, revoked: Boolean(row.publisher_revoked_at) } } : {}) })));
     return Response.json({ releases });
   }
 

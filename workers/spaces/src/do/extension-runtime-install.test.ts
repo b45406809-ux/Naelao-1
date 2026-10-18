@@ -34,6 +34,35 @@ describe("runtime extension installation", () => {
     expect(await rollback.json()).toMatchObject({ rolledBack: true, manifest: { bundle: { version: "1.0.0" } } });
   });
 
+  it("binds publisher identity to immutable releases and blocks a revoked publisher release", async () => {
+    const storage = createDOStorage(), state = { storage };
+    const space = new SpaceDO(state as never, { PLATFORM_SECRET: "publisher-test-secret" } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const manifest = { id: "ext_publisher_lifecycle", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"], gadgets: [], daemons: [], commands: [],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_publisher_lifecycle", version: "1.0.0", primitives: [
+        { schemaVersion: "1.0", kind: "channel", id: "handler", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "telegram", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] },
+      ] } };
+    const publisher = { publisherId: "pub_example", publisherKeyId: "a".repeat(64), publisherSignature: "signature", publisherPayloadSha256: "b".repeat(64) };
+    const install = (overrides = {}) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND",
+        gatekeeperCapabilities: ["channel.invoke"], artifactSha256: "c".repeat(64), ...publisher, ...overrides }) }));
+    expect((await install()).status).toBe(201);
+    const changedRelease = await install({ publisherSignature: "different-signature" });
+    expect(changedRelease.status, await changedRelease.text()).toBe(409);
+    const instances = storage.sql.exec("SELECT instance_id FROM extension_instances WHERE extension_id='ext_publisher_lifecycle'").toArray();
+    expect(instances).toHaveLength(1);
+    const instanceId = String(instances[0]?.instance_id);
+    const lookup = () => space.fetch(new Request("http://space/workflow-installation?" + new URLSearchParams({ instance_id: instanceId, tenant_id: "tenant", space_id: "space" })));
+    expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: true, publisher: { id: "pub_example", keyId: "a".repeat(64), revoked: false } } });
+    const revoke = await space.fetch(new Request("http://space/extension-publisher-revoke?key_id=" + "a".repeat(64), { method: "POST" }));
+    expect(revoke.status).toBe(200);
+    expect(await (await lookup()).json()).toMatchObject({ release: { signatureValid: false, publisher: { revoked: true } } });
+    const rollback = await space.fetch(new Request("http://space/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ extensionId: "ext_publisher_lifecycle", version: "1.0.0" }) }));
+    expect(rollback.status).toBe(409);
+  });
+
   it("installs a project-bound code indexer only for the selected project and preserves scope through restart", async () => {
     const storage = createDOStorage(), state = { storage };
     let space = new SpaceDO(state as never, {} as never);

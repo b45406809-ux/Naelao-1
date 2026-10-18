@@ -17,6 +17,24 @@ describe("atomic versioned DO migrations", () => {
     expect([...storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('records')").toArray()].map((column) => column.name)).toContain("status");
   });
 
+  it("stores publisher trust keys under tenant and Space scope and keeps revocation terminal", () => {
+    const storage = createDOStorage();
+    const migration = readFileSync(join(__dirname, "../../infra/migrations/0111_extension_publisher_keys.sql"), "utf8");
+    storage.sql.exec(migration);
+    storage.sql.exec(migration);
+    storage.sql.exec(`INSERT INTO extension_publisher_keys(tenant_id,space_id,publisher_id,key_id,public_key_b64url,created_by)
+      VALUES('tenant-a','space-a','pub_team','${"a".repeat(64)}','public-key','owner-a')`);
+    expect(() => storage.sql.exec(`INSERT INTO extension_publisher_keys(tenant_id,space_id,publisher_id,key_id,public_key_b64url,created_by)
+      VALUES('tenant-b','space-a','pub_team','${"a".repeat(64)}','public-key','owner-b')`)).not.toThrow();
+    expect(storage.sql.exec("SELECT tenant_id,space_id,status FROM extension_publisher_keys ORDER BY tenant_id").toArray()).toEqual([
+      { tenant_id: "tenant-a", space_id: "space-a", status: "active" },
+      { tenant_id: "tenant-b", space_id: "space-a", status: "active" },
+    ]);
+    storage.sql.exec(`UPDATE extension_publisher_keys SET status='revoked',revoked_at=datetime('now') WHERE tenant_id='tenant-a' AND space_id='space-a'`);
+    expect(() => storage.sql.exec(`INSERT INTO extension_publisher_keys(tenant_id,space_id,publisher_id,key_id,public_key_b64url,created_by)
+      VALUES('tenant-a','space-a','pub_team','${"a".repeat(64)}','public-key','owner-a')`)).toThrow();
+  });
+
   it("rolls back the whole pending batch on a failed statement and rejects duplicate versions before execution", () => {
     const storage = createDOStorage();
     const migrations: Migration[] = [

@@ -30,7 +30,8 @@ import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-ru
 import { registerGraduationRoutes } from "./routes/graduation.js";
 import { registerMarketRadarRoutes } from "./routes/market-radar.js";
 import { airGappedOnlyFromConfig, applyDurableObjectJurisdiction, certifyArtifact, evaluateBlueprintSecurity, sanitizeAndScrubBlueprint, verifyArtifactCertificate, type ConformanceSuite, type ConformanceCertificate } from "@naelao/security";
-import { DOGFOOD_EXTENSION_BY_ID, validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
+import { decodeExtensionPublisherPublicKey, extensionPublisherKeyId, extensionPublisherSigningPayload, verifyExtensionPublisherRelease,
+  DOGFOOD_EXTENSION_BY_ID, validateExtensionManifest, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectStewardReview } from "./project-steward.js";
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
@@ -956,7 +957,17 @@ app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
-  return stub.fetch(new Request("http://space-do/workflow-installation?" + new URLSearchParams({ instance_id: c.req.param("instanceId"), tenant_id: tenantId, space_id: c.req.param("spaceId") })));
+  const response = await stub.fetch(new Request("http://space-do/workflow-installation?" + new URLSearchParams({ instance_id: c.req.param("instanceId"), tenant_id: tenantId, space_id: c.req.param("spaceId") })));
+  if (!response.ok) return response;
+  const result = await response.json<Record<string, unknown>>();
+  const release = result.release as { signatureValid?: unknown; publisher?: { keyId?: unknown } } | null | undefined;
+  const keyId = release?.publisher?.keyId;
+  if (release && typeof keyId === "string") {
+    const trusted = await c.env.PLATFORM_DB.prepare(`SELECT 1 AS active FROM extension_publisher_keys
+      WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(tenantId, c.req.param("spaceId"), keyId).first();
+    if (!trusted) release.signatureValid = false;
+  }
+  return c.json(result);
 });
 
 app.get("/spaces/:spaceId/internal/channel-installations", async c => {
@@ -968,7 +979,16 @@ app.get("/spaces/:spaceId/internal/channel-installations", async c => {
   const space = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first();
   if (!space) throw notFound("Space");
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  return stub.fetch(new Request("http://space-do/channel-installations?" + new URLSearchParams({ project_id: projectId, tenant_id: tenantId, space_id: spaceId })));
+  const response = await stub.fetch(new Request("http://space-do/channel-installations?" + new URLSearchParams({ project_id: projectId, tenant_id: tenantId, space_id: spaceId })));
+  if (!response.ok) return response;
+  const result = await response.json<{ installations?: Array<{ publisher_key_id?: string }> }>();
+  const keyIds = [...new Set((result.installations ?? []).flatMap(item => item.publisher_key_id ? [item.publisher_key_id] : []))];
+  if (!keyIds.length) return c.json(result);
+  const placeholders = keyIds.map(() => "?").join(",");
+  const trusted = await c.env.PLATFORM_DB.prepare(`SELECT key_id FROM extension_publisher_keys
+    WHERE tenant_id=? AND space_id=? AND status='active' AND key_id IN (${placeholders})`).bind(tenantId, spaceId, ...keyIds).all<{ key_id: string }>();
+  const activeKeys = new Set((trusted.results ?? []).map(row => row.key_id));
+  return c.json({ ...result, installations: (result.installations ?? []).filter(item => !item.publisher_key_id || activeKeys.has(item.publisher_key_id)) });
 });
 
 app.get("/spaces/:spaceId/container-installations", async (c) => {
@@ -1524,6 +1544,48 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
+// Publisher trust is configured independently from package uploads so a package cannot trust its own key.
+app.use("/spaces/:spaceId/extension-publishers", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/extension-publishers", requireBusinessMembership({ GET: "admin", POST: "admin" }));
+app.get("/spaces/:spaceId/extension-publishers", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "", spaceId = c.req.param("spaceId");
+  const result = await c.env.PLATFORM_DB.prepare(`SELECT publisher_id,key_id,algorithm,public_key_b64url,status,created_by,created_at,revoked_by,revoked_at
+    FROM extension_publisher_keys WHERE tenant_id=? AND space_id=? ORDER BY publisher_id,key_id`).bind(tenantId, spaceId).all();
+  return c.json({ publishers: result.results });
+});
+app.post("/spaces/:spaceId/extension-publishers", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "", spaceId = c.req.param("spaceId"), identity = getCallerIdentity(c);
+  const body = await c.req.json<{ publisher_id?: unknown; public_key_b64url?: unknown }>().catch(() => ({} as { publisher_id?: unknown; public_key_b64url?: unknown }));
+  if (!tenantId || !identity.userId || typeof body.publisher_id !== "string" || !/^pub_[a-z0-9_-]{1,48}$/.test(body.publisher_id)
+    || typeof body.public_key_b64url !== "string" || body.public_key_b64url.length > 256) return c.json({ error_code: "publisher_key_request_invalid" }, 400);
+  let publicKey: ArrayBuffer, keyId: string;
+  try {
+    publicKey = decodeExtensionPublisherPublicKey(body.public_key_b64url);
+    await crypto.subtle.importKey("raw", publicKey, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    keyId = await extensionPublisherKeyId(publicKey);
+  } catch { return c.json({ error_code: "publisher_public_key_invalid" }, 400); }
+  const existing = await c.env.PLATFORM_DB.prepare(`SELECT publisher_id,public_key_b64url,status FROM extension_publisher_keys
+    WHERE tenant_id=? AND space_id=? AND key_id=?`).bind(tenantId, spaceId, keyId).first<{ publisher_id: string; public_key_b64url: string; status: string }>();
+  if (existing?.status === "revoked") return c.json({ error_code: "publisher_key_revoked" }, 409);
+  if (existing && existing.publisher_id !== body.publisher_id) return c.json({ error_code: "publisher_key_owner_conflict" }, 409);
+  if (existing && existing.public_key_b64url !== body.public_key_b64url) return c.json({ error_code: "publisher_key_id_conflict" }, 409);
+  await c.env.PLATFORM_DB.prepare(`INSERT INTO extension_publisher_keys(tenant_id,space_id,publisher_id,key_id,public_key_b64url,created_by)
+    VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,key_id) DO NOTHING`).bind(tenantId, spaceId, body.publisher_id, keyId, body.public_key_b64url, identity.userId).run();
+  return c.json({ registered: true, publisher_id: body.publisher_id, key_id: keyId, algorithm: "ECDSA_P256_SHA256" }, { status: 201 });
+});
+app.use("/spaces/:spaceId/extension-publishers/:keyId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/extension-publishers/:keyId", requireBusinessMembership({ DELETE: "admin" }));
+app.delete("/spaces/:spaceId/extension-publishers/:keyId", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "", spaceId = c.req.param("spaceId"), keyId = c.req.param("keyId"), identity = getCallerIdentity(c);
+  if (!/^[a-f0-9]{64}$/.test(keyId) || !tenantId || !identity.userId) return c.json({ error_code: "publisher_key_id_invalid" }, 400);
+  const result = await c.env.PLATFORM_DB.prepare(`UPDATE extension_publisher_keys SET status='revoked',revoked_by=?,revoked_at=datetime('now')
+    WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(identity.userId, tenantId, spaceId, keyId).run();
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const invalidated = await stub.fetch(new Request(`http://space-do/extension-publisher-revoke?key_id=${encodeURIComponent(keyId)}`, { method: "POST" }));
+  if (!invalidated.ok) return c.json({ error_code: "publisher_revocation_invalidation_unavailable" }, 503);
+  return c.json({ revoked: true, key_id: keyId, changed: (result.meta?.changes ?? 0) > 0 });
+});
+
 // Project bundle installation for Canvas + Gadget + external channel + Durable Workflow
 // compositions. Workflow code uses the host's restricted execute(step,ctx) ABI.
 app.use("/spaces/:spaceId/projects/:projectId/extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
@@ -1536,7 +1598,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const role = identity.role === "product_end_user" && identity.userId
     ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
-  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean }>().catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean }));
+  const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }>().catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }));
   const instanceKey = body.instanceKey ?? "default";
   if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
@@ -1583,6 +1645,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     return c.json({ error_code: "extension_bundle_invalid", message: error instanceof Error ? error.message : "invalid_manifest" }, 400);
   }
   const bundle = manifest.bundle!;
+  const manifestJson = JSON.stringify(manifest);
   const canvases = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "canvas" }> => item.kind === "canvas");
   const gadgets = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "gadget" }> => item.kind === "gadget");
   const channels = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "channel" }> => item.kind === "channel");
@@ -1601,6 +1664,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "extension_artifact_storage_unavailable" }, 503);
   if ((channels.length || workflows.length) && !c.env.AGENTS_WORKER) return c.json({ error_code: "extension_source_validator_unavailable" }, 503);
   const sourceEntries: Array<[string, string]> = [];
+  const publisherArtifacts: Record<string, string> = {};
   let total = 0;
   for (const path of [...required].sort()) {
     let source = artifacts[path];
@@ -1608,6 +1672,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     let size = new TextEncoder().encode(source).byteLength; total += size;
     const isHandler = /\.(?:ts|js)$/.test(path);
     if (!size || size > (isHandler ? 262_144 : 512_000) || total > 2_000_000) return c.json({ error_code: "extension_artifact_size_limit" }, 413);
+    publisherArtifacts[path] = source;
     if (workflowPaths.has(path)) {
       const validation = await c.env.AGENTS_WORKER!.fetch(new Request("http://agents-worker/internal/workflow-extensions/compile", {
         method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
@@ -1633,6 +1698,23 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     if (previous && await previous.text() !== source) return c.json({ error_code: "extension_release_artifact_immutable" }, 409);
     sourceEntries.push([path, source]);
   }
+  const publisherKeyId = body.publisherSignature?.key_id;
+  const publisherSignature = body.publisherSignature?.signature;
+  if (typeof publisherKeyId !== "string" || !/^[a-f0-9]{64}$/.test(publisherKeyId)
+    || typeof publisherSignature !== "string" || publisherSignature.length > 256) return c.json({ error_code: "extension_publisher_signature_required" }, 400);
+  const trustedPublisher = await c.env.PLATFORM_DB.prepare(`SELECT publisher_id,public_key_b64url FROM extension_publisher_keys
+    WHERE tenant_id=? AND space_id=? AND key_id=? AND status='active'`).bind(identity.tenantId, spaceId, publisherKeyId)
+    .first<{ publisher_id: string; public_key_b64url: string }>();
+  if (!trustedPublisher) return c.json({ error_code: "extension_publisher_key_untrusted_or_revoked" }, 403);
+  let publisherPayload: string, publisherPayloadSha256: string, publisherSignatureValid: boolean;
+  try {
+    publisherPayload = extensionPublisherSigningPayload(manifestJson, publisherArtifacts);
+    const publicKey = decodeExtensionPublisherPublicKey(trustedPublisher.public_key_b64url);
+    if (await extensionPublisherKeyId(publicKey) !== publisherKeyId) return c.json({ error_code: "extension_publisher_key_id_mismatch" }, 403);
+    publisherSignatureValid = await verifyExtensionPublisherRelease({ publicKeyRaw: publicKey, signature: publisherSignature, manifestJson, artifacts: publisherArtifacts });
+    publisherPayloadSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(publisherPayload)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  } catch { return c.json({ error_code: "extension_publisher_signature_invalid" }, 403); }
+  if (!publisherSignatureValid) return c.json({ error_code: "extension_publisher_signature_invalid" }, 403);
   // Persist immutable files before exposing any mounted app. Repeated installs are idempotent.
   for (const [path, source] of sourceEntries) {
     const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${path.slice(2)}`;
@@ -1641,12 +1723,12 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))].map(x => x.toString(16).padStart(2, "0")).join("");
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: [...requiredCapabilities], artifactSha256: digest, instanceKey, ...(body.upgrade ? { upgrade: true } : {}) }) }));
+    body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: [...requiredCapabilities], artifactSha256: digest, instanceKey,
+      publisherId: trustedPublisher.publisher_id, publisherKeyId, publisherSignature, publisherPayloadSha256, ...(body.upgrade ? { upgrade: true } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
   const installedResult = await installed.clone().json() as { release?: { version?: string; artifactSha256?: string; hostSignature?: string } };
   if (canvases.length && (installedResult.release?.version !== bundle.version || installedResult.release.artifactSha256 !== digest
     || !/^[a-f0-9]{64}$/.test(installedResult.release.hostSignature ?? ""))) return c.json({ error_code: "extension_canvas_release_attestation_unavailable" }, 503);
-  const manifestJson = JSON.stringify(manifest);
   const runtimeAppId = (primitiveId: string) => {
     const appId = instanceKey === "default" ? primitiveId : `${instanceKey}_${primitiveId}`;
     if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) throw new Error("extension_runtime_app_id_invalid");

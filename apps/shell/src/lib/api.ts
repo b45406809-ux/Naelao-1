@@ -1885,6 +1885,30 @@ export interface ChannelExtensionInstallation {
 
 export interface ExtensionRelease { version: string; artifactSha256: string; hostSignature: string; signatureValid: boolean; createdAt: string }
 
+export interface ExtensionPublisherKey {
+  publisher_id: string;
+  key_id: string;
+  algorithm: "ECDSA_P256_SHA256";
+  public_key_b64url: string;
+  status: "active" | "revoked";
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export function listExtensionPublisherKeys(spaceId: string, session: SessionCredentials) {
+  return apiFetch<{ publishers: ExtensionPublisherKey[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-publishers`, { session, cache: "no-store" });
+}
+
+export function registerExtensionPublisherKey(spaceId: string, session: SessionCredentials, publisherId: string, publicKeyB64Url: string) {
+  return apiFetch<{ registered: boolean; publisher_id: string; key_id: string; algorithm: string }>(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-publishers`, {
+    method: "POST", session, body: JSON.stringify({ publisher_id: publisherId, public_key_b64url: publicKeyB64Url }),
+  });
+}
+
+export function revokeExtensionPublisherKey(spaceId: string, session: SessionCredentials, keyId: string) {
+  return apiFetch<{ revoked: boolean; key_id: string; changed: boolean }>(`/v1/spaces/${encodeURIComponent(spaceId)}/extension-publishers/${encodeURIComponent(keyId)}`, { method: "DELETE", session, body: "{}" });
+}
+
 export async function listProjectExtensionReleases(spaceId: string, projectId: string, extensionId: string, session: SessionCredentials): Promise<ExtensionRelease[]> {
   const result = await apiFetch<{ releases: ExtensionRelease[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(extensionId)}/releases`, { session });
   return result.releases;
@@ -1988,10 +2012,10 @@ export async function installProjectChannelExtension(
 
 export async function installProjectCanvasExtension(
   spaceId: string, projectId: string, session: SessionCredentials, manifest: unknown,
-  artifacts: Record<string, string>, upgrade = false, instanceKey = "default",
+  artifacts: Record<string, string>, upgrade = false, instanceKey = "default", publisherSignature?: { key_id: string; signature: string },
 ): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`, {
-    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(upgrade ? { upgrade: true } : {}) }), session,
+    method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}) }), session,
   });
 }
 
