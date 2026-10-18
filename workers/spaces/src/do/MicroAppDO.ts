@@ -83,7 +83,11 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       CREATE TABLE IF NOT EXISTS gadget_data (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS gadget_schema_migrations (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
       CREATE TABLE IF NOT EXISTS gadget_public_pages (slug TEXT PRIMARY KEY, html TEXT NOT NULL, actions_json TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS consumed_public_action_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS consumed_public_action_nonces (nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS canvas_collaboration_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS canvas_presence (actor_id TEXT PRIMARY KEY, cursor_json TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
     this.initialized = true;
   }
 
@@ -100,6 +104,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       if (request.method === "GET" && url.pathname === "/api/data") return this.readData(url);
       if (request.method === "POST" && url.pathname === "/api/data") return await this.writeData(request);
       if (request.method === "DELETE" && url.pathname === "/api/data") return this.deleteData(url);
+      if (request.method === "GET" && url.pathname === "/api/collaboration") return this.readCollaboration(url);
+      if (request.method === "POST" && url.pathname === "/api/collaboration") return await this.writeCollaboration(request);
       if (request.method === "POST" && url.pathname === "/mcp") return await this.handleMcp(request);
       return Response.json({ error: "not_found" }, { status: 404 });
     } catch (error) {
@@ -244,6 +250,44 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       data = { deleted: true };
     } else throw new Error("unknown_tool");
     return result({ content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data });
+  }
+
+  private readCollaboration(url: URL): Response {
+    const after = Number(url.searchParams.get("after") ?? 0);
+    if (!Number.isSafeInteger(after) || after < 0) return Response.json({ error: "invalid_event_cursor" }, { status: 400 });
+    const now = Date.now();
+    this.ctx.storage.sql.exec("DELETE FROM canvas_presence WHERE updated_at<?", now - 30_000);
+    const events = this.ctx.storage.sql.exec<{ id: number; actor_id: string; kind: string; payload_json: string; created_at: number }>(
+      "SELECT id,actor_id,kind,payload_json,created_at FROM canvas_collaboration_events WHERE id>? ORDER BY id LIMIT 100", after).toArray()
+      .map(event => ({ id: event.id, actor_id: event.actor_id, kind: event.kind, payload: JSON.parse(event.payload_json), created_at: event.created_at }));
+    const presence = this.ctx.storage.sql.exec<{ actor_id: string; cursor_json: string; updated_at: number }>(
+      "SELECT actor_id,cursor_json,updated_at FROM canvas_presence WHERE updated_at>=? ORDER BY updated_at DESC LIMIT 100", now - 30_000).toArray()
+      .map(item => ({ actor_id: item.actor_id, cursor: JSON.parse(item.cursor_json), updated_at: item.updated_at }));
+    return Response.json({ events, presence, next_after: events[events.length - 1]?.id ?? after });
+  }
+
+  private async writeCollaboration(request: Request): Promise<Response> {
+    const body = await request.json<{ kind?: unknown; payload?: unknown }>().catch(() => ({} as { kind?: unknown; payload?: unknown }));
+    const actorId = request.headers.get("x-naelao-user-id") ?? "";
+    if (!/^[A-Za-z0-9._:@-]{1,128}$/.test(actorId) || !["cursor", "comment", "operation"].includes(String(body.kind))
+      || !body.payload || typeof body.payload !== "object" || Array.isArray(body.payload)) return Response.json({ error: "canvas_collaboration_event_invalid" }, { status: 400 });
+    const payload = body.payload as Record<string, unknown>, bytes = new TextEncoder().encode(JSON.stringify(payload)).byteLength;
+    if (bytes > 4_096) return Response.json({ error: "canvas_collaboration_payload_too_large" }, { status: 413 });
+    const now = Date.now();
+    if (body.kind === "cursor") {
+      const { x, y } = payload;
+      if (typeof x !== "number" || !Number.isFinite(x) || x < 0 || x > 1 || typeof y !== "number" || !Number.isFinite(y) || y < 0 || y > 1
+        || Object.keys(payload).some(key => !["x", "y", "label"].includes(key)) || payload.label !== undefined && (typeof payload.label !== "string" || payload.label.length > 40)) return Response.json({ error: "canvas_cursor_invalid" }, { status: 400 });
+      this.ctx.storage.sql.exec(`INSERT INTO canvas_presence(actor_id,cursor_json,updated_at) VALUES(?,?,?) ON CONFLICT(actor_id) DO UPDATE SET cursor_json=excluded.cursor_json,updated_at=excluded.updated_at`, actorId, JSON.stringify(payload), now);
+      return Response.json({ saved: true, kind: "cursor", updated_at: now });
+    }
+    if (body.kind === "comment" && (typeof payload.text !== "string" || !payload.text.trim() || payload.text.length > 1_000)) return Response.json({ error: "canvas_comment_invalid" }, { status: 400 });
+    if (body.kind === "operation" && (typeof payload.operation !== "string" || !/^[a-z][a-z0-9_.:-]{0,63}$/.test(payload.operation)
+      || Object.keys(payload).some(key => !["operation", "detail"].includes(key)) || payload.detail !== undefined && (typeof payload.detail !== "string" || payload.detail.length > 256))) return Response.json({ error: "canvas_operation_invalid" }, { status: 400 });
+    this.ctx.storage.sql.exec("INSERT INTO canvas_collaboration_events(actor_id,kind,payload_json,created_at) VALUES(?,?,?,?)", actorId, body.kind as string, JSON.stringify(payload), now);
+    const id = Number(this.ctx.storage.sql.exec<{ id: number }>("SELECT last_insert_rowid() AS id").toArray()[0]?.id ?? 0);
+    this.ctx.storage.sql.exec("DELETE FROM canvas_collaboration_events WHERE id <= (SELECT COALESCE(MAX(id),0)-1000 FROM canvas_collaboration_events)");
+    return Response.json({ saved: true, id, kind: body.kind, created_at: now }, { status: 201 });
   }
 
   private async initialize(request: Request): Promise<Response> {

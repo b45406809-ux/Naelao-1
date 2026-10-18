@@ -19,4 +19,19 @@ describe("Canvas Gadget bridge", () => {
     const client = createCanvasGadgetClient({ apiBaseUrl: "https://api.example", spaceId: "s", projectId: "p", gadgetAppId: "mentor_journal", authorize: () => ({}), fetch: async () => Response.json({ error_code: "forbidden" }, { status: 403 }) });
     await expect(client.delete("notes", "n1")).rejects.toThrow("canvas_gadget_request_failed_403");
   });
+
+  it("publishes cursor presence and polls the collaboration event cursor", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "GET") {
+        expect(String(input)).toContain("/collaboration?after=4");
+        return Response.json({ events: [], presence: [{ actor_id: "member-a", cursor: { x: 0.5, y: 0.2 }, updated_at: 10 }], next_after: 4 });
+      }
+      expect(String(input)).toContain("/collaboration");
+      expect(JSON.parse(String(init?.body))).toEqual({ kind: "cursor", payload: { x: 0.5, y: 0.2 } });
+      return Response.json({ saved: true, kind: "cursor" });
+    });
+    const client = createCanvasGadgetClient({ apiBaseUrl: "https://api.example", spaceId: "s", projectId: "p", gadgetAppId: "mentor_journal", authorize: () => ({ authorization: "Bearer member" }), fetch: fetcher });
+    await client.moveCursor(0.5, 0.2);
+    await expect(client.pollCanvas(4)).resolves.toMatchObject({ next_after: 4, presence: [{ actor_id: "member-a" }] });
+  });
 });

@@ -3,6 +3,23 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.j
 import { MicroAppDO } from "./MicroAppDO.js";
 
 describe("Gadget MCP record operations", () => {
+  it("maintains bounded Canvas cursors and actor-attributed collaboration events", async () => {
+    const storage = createDOStorage();
+    const sql = { exec<T = unknown>(query: string, ...args: unknown[]) {
+      const result = storage.sql.exec<T>(query, ...args);
+      return { ...result, [Symbol.iterator]: () => result.toArray()[Symbol.iterator]() };
+    } };
+    const gadget = new MicroAppDO({ storage: { ...storage, sql, deleteAlarm: async () => undefined, setAlarm: async () => undefined } } as never, { PLATFORM_SECRET: "gadget-test-secret" } as never);
+    const write = (actor: string, body: unknown) => gadget.fetch(new Request("http://gadget/api/collaboration", { method: "POST", headers: { "content-type": "application/json", "x-naelao-user-id": actor }, body: JSON.stringify(body) }));
+    expect((await write("member-a", { kind: "cursor", payload: { x: 0.25, y: 0.75, label: "Planner" } })).status).toBe(200);
+    const comment = await write("member-b", { kind: "comment", payload: { text: "Review this panel" } });
+    expect(comment.status).toBe(201);
+    expect((await write("member-a", { kind: "cursor", payload: { x: 2, y: 0 } })).status).toBe(400);
+    expect((await write("member-a", { kind: "operation", payload: { operation: "javascript.eval", source: "secret" } })).status).toBe(400);
+    const page = await (await gadget.fetch(new Request("http://gadget/api/collaboration?after=0"))).json();
+    expect(page).toMatchObject({ next_after: 1, events: [{ id: 1, actor_id: "member-b", kind: "comment", payload: { text: "Review this panel" } }], presence: [{ actor_id: "member-a", cursor: { x: 0.25, y: 0.75, label: "Planner" } }] });
+  });
+
   it("lists, inserts, gets, updates, and deletes only schema columns", async () => {
     const storage = createDOStorage();
     const sql = { exec<T = unknown>(query: string, ...args: unknown[]) {

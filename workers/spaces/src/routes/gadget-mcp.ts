@@ -65,8 +65,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!project.ok) return c.json({ error_code: project.status === 404 ? "not_found" : "forbidden" }, project.status === 404 ? 404 : 403);
     return null;
   };
-  const forwardProject = async (c: Context<{ Bindings: Env }>, path: string, method = c.req.method, override?: ArrayBuffer) => {
-    const blocked = await projectAccess(c, method !== "GET");
+  const forwardProject = async (c: Context<{ Bindings: Env }>, path: string, method = c.req.method, override?: ArrayBuffer, memberWrite = false) => {
+    const blocked = await projectAccess(c, method !== "GET" && !memberWrite);
     if (blocked) return blocked;
     const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
     const { spaceId = "", projectId = "", appId = "" } = c.req.param();
@@ -103,4 +103,15 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, "/api/data"));
   app.delete("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/mcp", c => forwardProject(c, "/mcp"));
+  app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/collaboration", c => forwardProject(c, `/api/collaboration${new URL(c.req.url).search}`, "GET"));
+  app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/collaboration", async c => {
+    let body: { kind?: unknown; payload?: unknown };
+    try { body = await c.req.json(); } catch { return c.json({ error_code: "canvas_collaboration_event_invalid" }, 400); }
+    if (!["cursor", "comment", "operation"].includes(String(body.kind))) return c.json({ error_code: "canvas_collaboration_event_invalid" }, 400);
+    // All current project members may publish cursors, comments, and operation traces. This
+    // endpoint never mutates Gadget tables or invokes a tool; those retain owner/admin policy.
+    const bytes = new TextEncoder().encode(JSON.stringify(body)).byteLength;
+    if (bytes > 4_500) return c.json({ error_code: "canvas_collaboration_payload_too_large" }, 413);
+    return forwardProject(c, "/api/collaboration", "POST", new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer, true);
+  });
 }

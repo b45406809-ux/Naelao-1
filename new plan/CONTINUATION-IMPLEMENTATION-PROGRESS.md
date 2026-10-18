@@ -1454,3 +1454,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added SDK tests for scoped request construction, authenticated calls, host-returned data, and fail-closed host authorization. No provider or publisher secrets are embedded in Canvas artifacts.
 - Verification: SDK typecheck and focused Canvas SDK tests passed (2 tests); `git diff --check` passed.
 - This is the direct Canvas data-action foundation only. Shared worker cursors/presence/event streaming, an audit history for Canvas actions, dynamic role/action grants, and visual workflow authoring/compiler/recovery remain open Phase 7 work.
+
+### Phase 7 scoped Canvas collaboration events checkpoint (2026-10-18)
+
+- Added Canvas collaboration storage to the project Gadget Durable Object: actor-attributed comments and operation traces are retained to the latest 1,000 events, while cursor presence is coalesced by actor and expires after 30 seconds. Reads page at most 100 events; each payload is capped at 4 KiB, comments at 1,000 characters, and cursor coordinates are normalized to 0..1.
+- Added authenticated project routes and SDK methods to publish/poll collaboration events. Existing project visibility and signed package checks still run before the actor is reached. Members may publish these collaboration-only records; this endpoint cannot invoke tools or mutate Gadget tables. `operation` entries are audit traces, not executable actions.
+- Verification: Spaces and SDK typechecks passed; Gadget route/DO suites passed (11 tests); Canvas SDK tests passed (3 tests). `git diff --check` passed.
+- Remaining Phase 7 work: live websocket/presence transport, Canvas action audit for real Gadget mutations, explicit per-role action grants, and visual workflow authoring/test/dry-run/recovery UX. The current SDK supports polling and actor cursors.

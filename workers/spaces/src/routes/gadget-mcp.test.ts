@@ -82,6 +82,24 @@ describe("gadget MCP host adapter", () => {
     expect(await appPage.json()).toEqual({ path: "/app" });
   });
 
+  it("allows a project member to publish bounded collaboration events but never grants Gadget writes", async () => {
+    const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname, body: await request.json() }));
+    const app = new Hono(); registerGadgetMcpRoutes(app as never);
+    const env = {
+      PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
+      SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async (request: Request) => new URL(request.url).pathname === "/project-extension-runtime" ? Response.json({ managed: false }) : Response.json({ id: "project-a" }) }) },
+      MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch }) },
+    } as never;
+    const headers = { "x-naelao-tenant-id": "t", "x-naelao-user-id": "member-a", "x-naelao-role": "member", "content-type": "application/json" };
+    const event = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/collaboration", { method: "POST", headers, body: JSON.stringify({ kind: "operation", payload: { operation: "canvas.update", detail: "Added a note" } }) }, env);
+    expect(event.status).toBe(200);
+    expect(fetch).toHaveBeenCalledOnce();
+    const deniedGadgetWrite = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/mcp", { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", method: "tools/call" }) }, env);
+    expect(deniedGadgetWrite.status).toBe(403);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("rejects project Gadget initialization from a non-admin and rejects space-level Gadget scopes", async () => {
     const app = new Hono(); registerGadgetMcpRoutes(app as never);
     const env = { PLATFORM_SECRET: "secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) }, SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async () => Response.json({ id: "p" }) }) }, MICRO_APP_DO: { idFromName: vi.fn(), get: vi.fn() } } as never;
