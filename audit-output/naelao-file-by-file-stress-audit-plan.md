@@ -742,7 +742,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/air-gap.test.ts`
 - [ ] `packages/security/src/air-gap.ts`
 - [ ] `packages/security/src/audit.ts`
-- [ ] `packages/security/src/blueprint-scrubber.ts`
+- [x] `packages/security/src/blueprint-scrubber.ts`
 - [x] `packages/security/src/blueprint-security.test.ts`
 - [ ] `packages/security/src/blueprint-validator.ts`
 - [x] `packages/security/src/capability-policy.ts` (capability boundary suites registered and passed)
@@ -751,9 +751,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/data-residency.test.ts`
 - [ ] `packages/security/src/data-residency.ts`
 - [ ] `packages/security/src/delegation.ts`
-- [ ] `packages/security/src/dlp.ts`
+- [x] `packages/security/src/dlp.ts`
 - [x] `packages/security/src/egress-policy.ts`
-- [ ] `packages/security/src/ephemeral-grant.ts`
+- [x] `packages/security/src/ephemeral-grant.ts`
 - [ ] `packages/security/src/headers.ts`
 - [x] `packages/security/src/index.ts`
 - [x] `packages/security/src/knowledge-permissions.test.ts`
@@ -766,6 +766,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/waf-stress.test.ts`
 - [x] `packages/security/src/ssrf-stress.test.ts`
 - [x] `packages/security/src/egress-policy.test.ts`
+- [x] `packages/security/src/bounded-recursion.test.ts`
 - [x] `packages/security/vitest.config.ts`
 - [ ] `packages/security/src/secrets.ts`
 - [x] `packages/security/src/security-phase4.test.ts`
