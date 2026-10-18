@@ -1506,3 +1506,8 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Full Router suite passed (6 files / 13 tests); full Notifications suite passed (3 files / 12 tests); full SDK suite passed (3 files / 8 tests).
 - Shell, Router, and Spaces typechecks passed. Agents and Notifications typechecks had passed in the immediately preceding feature checkpoints/full-suite cycle.
 - No full monorepo suite, browser flow, deployed D1 migration, provider sandbox, Workers runtime integration, or production release exercise was run. These remain phase gate items.
+
+### Phase 9 single-use OAuth ticket checkpoint (2026-10-18)
+
+- Added focused tests for the short-lived provider OAuth ticket lifecycle: extension connection scope survives issuance, tickets have the bounded 600-second TTL, replay fails after the first consume, and malformed payloads are deleted before rejection.
+- Verification: OAuth ticket suite passed (2 tests). This does not cover a provider token exchange, webhook setup, or credential-vault integration.
