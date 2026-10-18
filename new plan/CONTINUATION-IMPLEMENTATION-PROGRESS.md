@@ -1575,3 +1575,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Existing immutable objects and repeat installs are not counted again. Usage reporting is best-effort after the successful R2 write; install succeeds if Billing is unavailable, so a durable Spaces-side retry/outbox is still needed for lossless reconciliation.
 - Verification: Spaces typecheck passed; channel extension route plus storage-usage tests passed (12 tests), including payload and duplicate-install behavior; `git diff --check` passed.
 - This measures newly written artifact bytes, not retained byte-months, deletions, deduplicated shared storage, or the older artifacts already in R2. Phase 4 still needs storage reconciliation for session, attachment, and archive data plus install/run/provider ceilings and cross-payer settlement recovery.
+
+### Phase 4 external extension session storage events (2026-10-18)
+
+- Default and named external-extension session writes now return their net UTF-8 byte delta. After confirmed provider delivery and successful state persistence, Agents emits a versioned usage event for bytes added or removed, scoped to project/installation and keyed to the inbound event. No conversation or provider identity is included.
+- The named-session quota calculation now subtracts bytes when an owner extension explicitly deletes a named session, so deleting data cannot be rejected due to stale pre-delete size accounting.
+- Verification: Agents typecheck passed; session-store and usage-event suites passed (8 tests), including UTF-8 deltas, overwrite no-op, deletion, and event idempotency identity; `git diff --check` passed.
+- This records write-time deltas only. Expiry cleanup, conversation deletion, uninstall/retention cleanup, SQLite page allocation, and exact retained byte-time are not yet reconciled. Telemetry failure after a sent reply is queued through the DO outbox where possible and never converts the sent reply into a session failure.

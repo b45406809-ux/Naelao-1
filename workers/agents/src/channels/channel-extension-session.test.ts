@@ -8,7 +8,9 @@ describe("external channel session storage", () => {
     initChannelExtensionSessionStore(sql);
     const now = 1_800_000_000_000;
     const scope = { projectId: "project-a", installationId: "install-a", conversationId: "conversation-a" };
-    writeChannelExtensionSession(sql, { ...scope, value: { lesson: 3 }, maxBytes: 100, ttlDays: 7 }, now);
+    expect(writeChannelExtensionSession(sql, { ...scope, value: { lesson: 3 }, maxBytes: 100, ttlDays: 7 }, now))
+      .toBe(new TextEncoder().encode('{"lesson":3}').byteLength);
+    expect(writeChannelExtensionSession(sql, { ...scope, value: { lesson: 3 }, maxBytes: 100, ttlDays: 7 }, now + 1)).toBe(0);
     expect(readChannelExtensionSession(sql, scope, now + 1)).toEqual({ lesson: 3 });
     expect(readChannelExtensionSession(sql, { ...scope, projectId: "project-b" }, now + 1)).toBeNull();
     expect(readChannelExtensionSession(sql, { ...scope, installationId: "install-b" }, now + 1)).toBeNull();
@@ -22,7 +24,8 @@ describe("external channel session storage", () => {
     writeChannelExtensionSession(sql, { ...scope, value: { stage: "intro" }, maxBytes: 100, ttlDays: 1 }, 1_800_000_000_000);
     expect(readChannelExtensionSession(sql, scope, 1_800_086_400_001)).toBeNull();
     writeChannelExtensionSession(sql, { ...scope, value: { stage: "intro" }, maxBytes: 100, ttlDays: 1 }, 1_800_000_000_000);
-    writeChannelExtensionSession(sql, { ...scope, value: null, maxBytes: 100, ttlDays: 1 }, 1_800_000_000_010);
+    expect(writeChannelExtensionSession(sql, { ...scope, value: null, maxBytes: 100, ttlDays: 1 }, 1_800_000_000_010))
+      .toBe(-new TextEncoder().encode('{"stage":"intro"}').byteLength);
     expect(readChannelExtensionSession(sql, scope, 1_800_000_000_011)).toBeNull();
   });
 
@@ -38,11 +41,13 @@ describe("external channel session storage", () => {
   it("stores multiple bounded named sessions per external conversation", () => {
     const sql = createDOStorage().sql; initChannelExtensionSessionStore(sql);
     const scope = { projectId: "project-a", installationId: "install-a", conversationId: "conversation-a" }, now = 1_800_000_000_000;
-    writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "live", value: { order: "buy" } }, { sessionId: "paper", value: { order: "sell" } }], maxBytes: 100, ttlDays: 2 }, now);
+    const initialBytes = new TextEncoder().encode('{"order":"buy"}').byteLength + new TextEncoder().encode('{"order":"sell"}').byteLength;
+    expect(writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "live", value: { order: "buy" } }, { sessionId: "paper", value: { order: "sell" } }], maxBytes: 100, ttlDays: 2 }, now)).toBe(initialBytes);
     expect(readChannelExtensionSessions(sql, scope, now + 1)).toEqual({ live: { order: "buy" }, paper: { order: "sell" } });
     expect(readChannelExtensionSessions(sql, { ...scope, installationId: "install-b" }, now + 1)).toEqual({});
     expect(() => writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "../other", value: 1 }], maxBytes: 100, ttlDays: 2 }, now)).toThrow("channel_session_id_invalid");
-    writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "live", value: null }], maxBytes: 100, ttlDays: 2 }, now + 2);
+    expect(writeChannelExtensionNamedSessions(sql, { ...scope, updates: [{ sessionId: "live", value: null }], maxBytes: 100, ttlDays: 2 }, now + 2))
+      .toBe(-new TextEncoder().encode('{"order":"buy"}').byteLength);
     expect(readChannelExtensionSessions(sql, scope, now + 3)).toEqual({ paper: { order: "sell" } });
   });
 

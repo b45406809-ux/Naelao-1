@@ -41,7 +41,7 @@ export function readChannelExtensionSessions(sql: ChannelExtensionSessionSql, sc
 
 export function writeChannelExtensionNamedSessions(sql: ChannelExtensionSessionSql, input: ChannelExtensionSessionScope & {
   updates: Array<{ sessionId: string; value: unknown }>; maxBytes: number; ttlDays: number;
-}, now = Date.now()): void {
+}, now = Date.now()): number {
   if (!Array.isArray(input.updates) || input.updates.length > MAX_NAMED_SESSIONS_PER_CONVERSATION
     || input.updates.some(update => !update || !SESSION_KEY.test(update.sessionId) || update.sessionId === "default")) throw new Error("channel_session_id_invalid");
   if (!Number.isInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 4_096) throw new Error("channel_session_size_limit");
@@ -49,16 +49,23 @@ export function writeChannelExtensionNamedSessions(sql: ChannelExtensionSessionS
   const unique = new Map(input.updates.map(update => [update.sessionId, update.value]));
   const currentRows = sql.exec("SELECT session_key,state_bytes FROM channel_extension_named_sessions WHERE project_id=? AND installation_id=? AND conversation_id=? AND expires_at>?", input.projectId, input.installationId, input.conversationId, now).toArray() as Array<{ session_key: string; state_bytes: number }>;
   const current = new Map(currentRows.map(row => [row.session_key, Number(row.state_bytes)]));
-  let count = current.size, totalBytes = currentRows.reduce((sum, row) => sum + Number(row.state_bytes), 0);
+  let count = current.size, totalBytes = currentRows.reduce((sum, row) => sum + Number(row.state_bytes), 0), bytesDelta = 0;
   const encodedUpdates = [...unique].map(([sessionId, value]) => {
-    if (value === null) return { sessionId, json: null as string | null, bytes: 0 };
+    if (value === null) {
+      const removedBytes = current.get(sessionId) ?? 0;
+      totalBytes -= removedBytes;
+      bytesDelta -= removedBytes;
+      return { sessionId, json: null as string | null, bytes: 0 };
+    }
     let json: string;
     try { const encoded = JSON.stringify(value); if (typeof encoded !== "string") throw new Error("not_json"); json = encoded; }
     catch { throw new Error("channel_session_value_not_json"); }
     const bytes = new TextEncoder().encode(json).byteLength;
     if (bytes > input.maxBytes) throw new Error("channel_session_size_limit");
     if (!current.has(sessionId)) count++;
-    totalBytes += bytes - (current.get(sessionId) ?? 0);
+    const delta = bytes - (current.get(sessionId) ?? 0);
+    totalBytes += delta;
+    bytesDelta += delta;
     return { sessionId, json, bytes };
   });
   if (count > MAX_NAMED_SESSIONS_PER_CONVERSATION) throw new Error("channel_session_count_limit");
@@ -74,6 +81,7 @@ export function writeChannelExtensionNamedSessions(sql: ChannelExtensionSessionS
       VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,installation_id,conversation_id,session_key) DO UPDATE SET state_json=excluded.state_json,state_bytes=excluded.state_bytes,expires_at=excluded.expires_at,updated_at=excluded.updated_at`,
     input.projectId, input.installationId, input.conversationId, update.sessionId, update.json, update.bytes, now + input.ttlDays * 86_400_000, now);
   }
+  return bytesDelta;
 }
 
 export function readChannelExtensionSession(sql: ChannelExtensionSessionSql, scope: ChannelExtensionSessionScope, now = Date.now()): unknown {
@@ -86,11 +94,12 @@ export function readChannelExtensionSession(sql: ChannelExtensionSessionSql, sco
 
 export function writeChannelExtensionSession(sql: ChannelExtensionSessionSql, input: ChannelExtensionSessionScope & {
   value: unknown; maxBytes: number; ttlDays: number;
-}, now = Date.now()): void {
+}, now = Date.now()): number {
   const key = [input.projectId, input.installationId, input.conversationId] as const;
+  const prior = sql.exec("SELECT state_bytes FROM channel_extension_sessions WHERE project_id=? AND installation_id=? AND conversation_id=?", ...key).toArray()[0] as { state_bytes?: number } | undefined;
   if (input.value === null) {
     sql.exec("DELETE FROM channel_extension_sessions WHERE project_id=? AND installation_id=? AND conversation_id=?", ...key);
-    return;
+    return -Number(prior?.state_bytes ?? 0);
   }
   let stateJson: string;
   try {
@@ -104,7 +113,7 @@ export function writeChannelExtensionSession(sql: ChannelExtensionSessionSql, in
   if (!Number.isInteger(input.ttlDays) || input.ttlDays < 1 || input.ttlDays > 90)
     throw new Error("channel_session_ttl_invalid");
   sql.exec("DELETE FROM channel_extension_sessions WHERE project_id=? AND expires_at<=?", input.projectId, now);
-  const existing = sql.exec("SELECT state_bytes FROM channel_extension_sessions WHERE project_id=? AND installation_id=? AND conversation_id=?", ...key).toArray()[0] as { state_bytes: number } | undefined;
+  const existing = prior ? { state_bytes: Number(prior.state_bytes ?? 0) } : undefined;
   const active = sql.exec("SELECT COUNT(*) AS count, COALESCE(SUM(state_bytes),0) AS bytes FROM channel_extension_sessions WHERE project_id=? AND expires_at>?",
     input.projectId, now).toArray()[0] as { count: number; bytes: number } | undefined;
   const named = sql.exec("SELECT COUNT(*) AS count,COALESCE(SUM(state_bytes),0) AS bytes FROM channel_extension_named_sessions WHERE project_id=? AND expires_at>?", input.projectId, now).toArray()[0] as { count: number; bytes: number } | undefined;
@@ -116,6 +125,7 @@ export function writeChannelExtensionSession(sql: ChannelExtensionSessionSql, in
     VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,installation_id,conversation_id) DO UPDATE SET state_json=excluded.state_json,
     state_bytes=excluded.state_bytes,expires_at=excluded.expires_at,updated_at=excluded.updated_at`,
   ...key, stateJson, stateBytes, now + input.ttlDays * 86_400_000, now);
+  return stateBytes - (existing?.state_bytes ?? 0);
 }
 
 /** Retention-only view for the project owner UI; never returns conversation IDs or state values. */

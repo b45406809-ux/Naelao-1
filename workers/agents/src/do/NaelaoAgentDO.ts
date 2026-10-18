@@ -5,6 +5,7 @@ import { publishCompletedTask, type TaskPublication } from "../script-engine/tas
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
 import { clearChannelExtensionConversationSessions, clearChannelExtensionSessions, initChannelExtensionSessionStore, readChannelExtensionSession, readChannelExtensionSessions, summarizeChannelExtensionSessions, writeChannelExtensionNamedSessions, writeChannelExtensionSession } from "../channels/channel-extension-session.js";
+import { channelSessionStorageUsageEvent } from "../channels/channel-session-usage.js";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
@@ -8291,8 +8292,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           this.markOutbound(msg.session_id, msg.id, replyText);
           if (handler.session && run.channel_session_update !== undefined) {
             try {
-              writeChannelExtensionSession(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+              const bytesDelta = writeChannelExtensionSession(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
                 conversationId: msg.session_id, value: run.channel_session_update, maxBytes: handler.session.maxBytes, ttlDays: handler.session.ttlDays });
+              const usage = channelSessionStorageUsageEvent({ spaceId, projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+                messageId: msg.id, kind: "default", bytesDelta });
+              if (usage) { try { await this.recordCanonicalUsageEvent(tenantId, usage); } catch { /* a sent reply must not be treated as an unsaved session */ } }
             } catch {
               this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET error_code='session_persist_failed' WHERE message_id=?", msg.id);
               void this.createSpaceNotification(spaceId, tenantId, {
@@ -8304,8 +8308,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           }
           if (handler.session && run.channel_session_updates?.length) {
             try {
-              writeChannelExtensionNamedSessions(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+              const bytesDelta = writeChannelExtensionNamedSessions(this.ctx.storage.sql, { projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
                 conversationId: msg.session_id, updates: run.channel_session_updates, maxBytes: handler.session.maxBytes, ttlDays: handler.session.ttlDays });
+              const usage = channelSessionStorageUsageEvent({ spaceId, projectId: msg.project_id, installationId: msg.channel_extension_instance_id,
+                messageId: msg.id, kind: "named", bytesDelta });
+              if (usage) { try { await this.recordCanonicalUsageEvent(tenantId, usage); } catch { /* a sent reply must not be treated as an unsaved session */ } }
             } catch {
               this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET error_code='session_persist_failed' WHERE message_id=?", msg.id);
               void this.createSpaceNotification(spaceId, tenantId, {
