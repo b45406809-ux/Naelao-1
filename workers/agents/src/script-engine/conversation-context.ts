@@ -74,7 +74,7 @@ export const COMPACTION_TURN_THRESHOLD = 25;
 export const COMPACTION_TOKEN_RATIO_THRESHOLD = 0.8;
 export const COMPACTION_RECENT_TURNS = 6;
 export const COMPACTION_NOTICE =
-  "Earlier conversation history was compacted into PROJECT.md. Use `conversation.search` to inspect archived messages.";
+  "Context COMPACTED: earlier conversation history was compacted into PROJECT.md. Missing details do not mean events never happened. Do not guess; use `conversation.search` to inspect archived messages.";
 
 export interface ConversationScope {
   spaceId: string;

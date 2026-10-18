@@ -32,6 +32,7 @@ function activity(n: number, actor = "agent-1", text = "did a thing"): JournalAc
 describe("project journal — round-trips through markdown", () => {
   it("renders and re-parses every field without loss", () => {
     const j: ProjectJournal = {
+      ...emptyJournal("Wallet"),
       name: "Wallet",
       goal: "Get the business paid reliably.",
       instructions: "Never move money without owner approval.",

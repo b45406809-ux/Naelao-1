@@ -11,15 +11,25 @@ import { parseJournal, journalKey, DEFAULT_JOURNAL_LIMITS } from "../../workers/
 
 function makeR2() {
   const store = new Map<string, string>();
+  const metadata = new Map<string, Record<string, string>>();
+  const etags = new Map<string, string>();
+  let revision = 0;
+  const head = (key: string) => store.has(key) ? { etag: etags.get(key) ?? `seed:${key}`, customMetadata: metadata.get(key) ?? {} } : null;
   const bucket = {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
+    async head(key: string) { return head(key); },
+    async put(key: string, value: unknown, options?: { customMetadata?: Record<string, string>; onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string } }) {
+      if (options?.onlyIf?.etagMatches && head(key)?.etag !== options.onlyIf.etagMatches) return null;
+      if (options?.onlyIf?.etagDoesNotMatch === "*" && store.has(key)) return null;
+      const text = typeof value === "string" ? value : value instanceof Uint8Array ? new TextDecoder().decode(value) : String(value);
+      store.set(key, text);
+      metadata.set(key, options?.customMetadata ?? {});
+      etags.set(key, `revision:${++revision}`);
+      return head(key) as R2Object;
     },
     async get(key: string) {
       const v = store.get(key);
       if (v === undefined) return null;
-      return { text: async () => v } as unknown as R2ObjectBody;
+      return { text: async () => v, arrayBuffer: async () => new TextEncoder().encode(v).buffer } as unknown as R2ObjectBody;
     },
     async delete(key: string) { store.delete(key); },
   } as unknown as R2Bucket;
