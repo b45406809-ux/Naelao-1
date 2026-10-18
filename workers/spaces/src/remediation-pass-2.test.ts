@@ -96,7 +96,7 @@ describe("three-tier gadget lifecycle", () => {
       }
       if (query.startsWith("INSERT OR REPLACE INTO gadget_metadata")) {
         metadata.set("app_id", String(params[0])); metadata.set("scope", String(params[1]));
-        metadata.set("gadget_tier", String(params[2])); metadata.set("html", String(params[3]));
+        metadata.set("gadget_tier", String(params[2])); metadata.set("html", String(params[3])); metadata.set("html_sha256", String(params[4]));
       }
       if (query.startsWith("INSERT INTO gadget_data")) data.set(String(params[0]), String(params[1]));
       return cursor();

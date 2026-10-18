@@ -37,7 +37,8 @@ function setup(projectId = "project-a") {
       get: () => agentStub,
     },
     PLATFORM_DB: {
-      prepare: vi.fn(() => ({ bind: vi.fn(() => ({ run: update })) })),
+      prepare: vi.fn(() => ({ bind: vi.fn(() => ({ run: update, all: async () => ({ results: [] }) })) })),
+      batch: vi.fn(async () => []),
     },
   } as never;
   return { env, spaces, forwarded, agentStub, update };

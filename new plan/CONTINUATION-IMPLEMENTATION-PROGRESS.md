@@ -1494,3 +1494,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added Agents-route tests proving provider connection setup requires a router-minted tenant token, denies a regular member before resolving provider state, and rejects a connection ID that is not declared by the active publisher-verified extension bundle.
 - Verification: Agents typecheck passed; the focused route authorization suite passed (3 tests). This exercises authorization and declaration checks without Slack credentials or live provider calls.
 - OAuth callback token exchange, ticket replay, secret-vault cleanup under provider failures, and real provider timeout scenarios still need isolated integration tests.
+
+### Phase 9 full Agents and Spaces worker suite checkpoint (2026-10-18)
+
+- Full Agents suite passed: 117 test files / 491 tests. Full Spaces suite passed: 48 test files / 166 tests.
+- Updated two test doubles exposed by the broader runs: the Canvas integrity fixture now retains the stored HTML digest; the provider-uninstall fixture now returns the connection query and batch results used by the current credential cleanup path. No product behavior changed in this checkpoint.
+- These suites include the new Phase 6/7 paths and the previously stale test groups. Router, Notifications, Shell, package-level checks, full deploy configuration, Workers-runtime integration, and staged release checks remain outstanding.
