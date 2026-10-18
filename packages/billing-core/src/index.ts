@@ -146,6 +146,9 @@ export async function updateSubscriptionPrice(
 export * from "./models.js";
 
 // Compute token cost in USD micros (cost * 1,000,000 for integer storage)
+/** Bump whenever the curated provider model pricing values or infra conversion rates change. */
+export const BILLING_CORE_RATE_CARD_VERSION = "core-model-rates-v1";
+
 export function computeTokenCostMicro(
   inputTokens: number,
   outputTokens: number,

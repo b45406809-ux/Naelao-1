@@ -17,7 +17,8 @@ const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as Ex
 
 function makeEnv(opts: { planTier?: string; orgPlanTier?: string; monthlyTokensUsed?: number; usageRows?: Array<{ org_id: string; quantity: number }>; allowOverage?: boolean } = {}) {
   const { planTier = "free", orgPlanTier, monthlyTokensUsed = 0, usageRows, allowOverage = false } = opts;
-  const inserts: Array<{ org_id: string; event_type: string; quantity: number }> = [];
+  const inserts: Array<Record<string, unknown>> = [];
+  const metered: Array<Record<string, unknown>> = [];
   const db = {
     prepare(sql: string) {
       const stmt = {
@@ -45,7 +46,8 @@ function makeEnv(opts: { planTier?: string; orgPlanTier?: string; monthlyTokensU
           const args = (stmt as unknown as { _args: unknown[] })._args ?? [];
           // INSERT OR IGNORE INTO usage_events (id, org_id, space_id, event_type, quantity, recorded_at, event_hash)
           if (/INSERT OR IGNORE INTO usage_events/.test(sql)) {
-            inserts.push({ org_id: args[1] as string, event_type: args[3] as string, quantity: args[4] as number });
+            inserts.push({ org_id: args[1] as string, event_type: args[3] as string, quantity: args[4] as number,
+              ...(args[7] === 2 ? { schema_version: args[7], unit: args[8], cost_credits: args[10], project_id: args[11], installation_id: args[12], run_id: args[13], provider: args[14], model_id: args[15], connector_provider: args[16], runtime_tier: args[17], subject_hash: args[18], payer_kind: args[19], decision: args[20] } : {}) });
           }
           return { meta: { changes: 1 } };
         },
@@ -64,9 +66,9 @@ function makeEnv(opts: { planTier?: string; orgPlanTier?: string; monthlyTokensU
 
     PLATFORM_DB: db,
     QUOTA_CACHE: kv,
-    BILLING_EVENTS: { send: async () => { /* no-op */ } },
+    BILLING_EVENTS: { send: async (event: Record<string, unknown>) => { metered.push(event); } },
   };
-  return { env, inserts };
+  return { env, inserts, metered };
 }
 
 describe("billing worker — POST /billing/usage requires a verified internal token", () => {
@@ -98,6 +100,34 @@ describe("billing worker — POST /billing/usage requires a verified internal to
     );
     expect(res.status).toBe(201);
     expect(inserts).toEqual([{ org_id: "tenant-1", event_type: "llm_tokens", quantity: 500 }]);
+  });
+
+  it("stores versioned usage dimensions and does not meter an already wallet-paid project run twice", async () => {
+    const { env, inserts, metered } = makeEnv();
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await billingWorker.fetch(new Request("https://billing.naelao.com/billing/usage", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      body: JSON.stringify({ schema_version: 2, event_type: "project_llm_tokens", quantity: 120, unit: "tokens", cost_credits: 3,
+        space_id: "space-a", project_id: "project-a", installation_id: "install-a", run_id: "channel:event-a", provider: "openrouter",
+        model_id: "openrouter/vendor/model", connector_provider: "whatsapp", runtime_tier: 2, subject_hash: "a".repeat(64),
+        payer_kind: "space_wallet", decision: "allowed", rate_card_version: "openrouter:2026-10-18T00:00:00.000Z", idempotency_key: "usage:event-a" }),
+    }), env as never, execCtx);
+    expect(res.status).toBe(201);
+    expect(inserts[0]).toMatchObject({ org_id: "tenant-1", schema_version: 2, unit: "tokens", cost_credits: 3,
+      project_id: "project-a", installation_id: "install-a", run_id: "channel:event-a", provider: "openrouter",
+      model_id: "openrouter/vendor/model", connector_provider: "whatsapp", runtime_tier: 2,
+      subject_hash: "a".repeat(64), payer_kind: "space_wallet", decision: "allowed" });
+    expect(metered).toHaveLength(0);
+  });
+
+  it("rejects malformed canonical usage quantities and raw subject identifiers", async () => {
+    const { env } = makeEnv();
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await billingWorker.fetch(new Request("https://billing.naelao.com/billing/usage", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      body: JSON.stringify({ schema_version: 2, event_type: "project_llm_tokens", quantity: -4, unit: "tokens", subject_hash: "raw-contact", idempotency_key: "bad-event" }),
+    }), env as never, execCtx);
+    expect(res.status).toBe(400);
   });
 
   it("a token minted for tenant-1 cannot be replayed against a different x-naelao-tenant-id header", async () => {

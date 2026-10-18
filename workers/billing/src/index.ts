@@ -369,15 +369,46 @@ app.post("/billing/usage", async (c) => {
     user_id?: string;
     event_type: string;
     quantity?: number;
+    schema_version?: number;
+    unit?: "tokens" | "credits" | "milliseconds" | "bytes" | "messages" | "invocations" | "units";
+    rate_card_version?: string;
+    cost_credits?: number;
+    project_id?: string;
+    installation_id?: string;
+    run_id?: string;
+    model_id?: string;
+    provider?: string;
+    connector_provider?: string;
+    runtime_tier?: number;
+    /** Opaque irreversible digest only; never send provider contact IDs to this ledger. */
+    subject_hash?: string;
+    payer_kind?: "space_wallet" | "consumer_credits" | "plan_quota" | "platform" | "unknown";
+    decision?: "allowed" | "denied" | "charged" | "released" | "failed" | "not_billable";
     // G-AN09: Caller may supply an idempotency key; if absent, one is computed
     idempotency_key?: string;
-  }>();
+  }>().catch(() => null);
 
-  if (!body.event_type) {
-    throw badRequest("event_type is required");
-  }
+  if (!body || typeof body.event_type !== "string" || !/^[a-z][a-z0-9_]{1,63}$/.test(body.event_type)) return c.json({ error_code: "invalid_usage_event" }, 400);
 
   const quantity = body.quantity ?? 1;
+  const schemaVersion = body.schema_version ?? 1;
+  const units = new Set(["tokens", "credits", "milliseconds", "bytes", "messages", "invocations", "units"]);
+  const unit = body.unit ?? (body.event_type === "llm_tokens" ? "tokens" : body.event_type === "infra_credits" ? "credits" : "units");
+  if (!Number.isSafeInteger(quantity) || quantity < 0 || ![1, 2].includes(schemaVersion)
+    || !units.has(unit) || (schemaVersion === 2 && (!body.unit || !body.idempotency_key))
+    || (body.idempotency_key !== undefined && (typeof body.idempotency_key !== "string" || body.idempotency_key.length < 1 || body.idempotency_key.length > 200))
+    || (body.cost_credits !== undefined && (!Number.isSafeInteger(body.cost_credits) || body.cost_credits < 0))
+    || (body.subject_hash !== undefined && !/^[a-f0-9]{64}$/.test(body.subject_hash))
+    || (body.rate_card_version !== undefined && (body.rate_card_version.length < 1 || body.rate_card_version.length > 80))
+    || (body.project_id !== undefined && body.project_id.length > 128)
+    || (body.installation_id !== undefined && body.installation_id.length > 128)
+    || (body.run_id !== undefined && body.run_id.length > 160)
+    || (body.provider !== undefined && (body.provider.length < 1 || body.provider.length > 80))
+    || (body.model_id !== undefined && (body.model_id.length < 1 || body.model_id.length > 160))
+    || (body.connector_provider !== undefined && (body.connector_provider.length < 1 || body.connector_provider.length > 80))
+    || (body.runtime_tier !== undefined && (!Number.isInteger(body.runtime_tier) || body.runtime_tier < 1 || body.runtime_tier > 6))) {
+    return c.json({ error_code: "invalid_usage_event" }, 400);
+  }
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -398,8 +429,9 @@ app.post("/billing/usage", async (c) => {
 
   // G-AN09: INSERT OR IGNORE on event_hash — if duplicate, silently skip (idempotent)
   const result = await c.env.PLATFORM_DB.prepare(
-    `INSERT OR IGNORE INTO usage_events (id, org_id, space_id, event_type, quantity, recorded_at, event_hash)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO usage_events (id, org_id, space_id, event_type, quantity, recorded_at, event_hash,
+       schema_version,unit,rate_card_version,cost_credits,project_id,installation_id,run_id,provider,model_id,connector_provider,runtime_tier,subject_hash,payer_kind,decision)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -408,7 +440,21 @@ app.post("/billing/usage", async (c) => {
       body.event_type,
       quantity,
       now,
-      eventHash
+      eventHash,
+      schemaVersion,
+      unit,
+      body.rate_card_version ?? null,
+      body.cost_credits ?? null,
+      body.project_id ?? null,
+      body.installation_id ?? null,
+      body.run_id ?? null,
+      body.provider ?? null,
+      body.model_id ?? null,
+      body.connector_provider ?? null,
+      body.runtime_tier ?? null,
+      body.subject_hash ?? null,
+      body.payer_kind ?? null,
+      body.decision ?? null,
     )
     .run();
 
@@ -424,14 +470,15 @@ app.post("/billing/usage", async (c) => {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "api_calls");
   } else if (body.event_type === "kb_doc") {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "kb_docs");
-  } else if (body.event_type === "llm_tokens") {
+  } else if (body.event_type === "llm_tokens" && (schemaVersion === 1 || body.payer_kind === "plan_quota")) {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");
-  } else if (body.event_type === "infra_credits") {
+  } else if (body.event_type === "infra_credits" && (schemaVersion === 1 || ["plan_quota", "platform", "unknown"].includes(body.payer_kind ?? ""))) {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "infra_credits");
   }
 
-  // Enqueue to BILLING_EVENTS for async usage metering
-  await c.env.BILLING_EVENTS.send({
+  // Wallet/consumer-prepaid v2 usage is already charged to that payer and must not become a
+  // second platform subscription meter event. Plan/platform events keep the existing async rail.
+  if (schemaVersion === 1 || body.payer_kind === "plan_quota" || body.payer_kind === "platform" || body.payer_kind === "unknown") await c.env.BILLING_EVENTS.send({
     type: "meter",
     org_id: orgId,
     space_id: body.space_id,
@@ -440,6 +487,20 @@ app.post("/billing/usage", async (c) => {
     event_id: id,
     event_hash: eventHash,
     recorded_at: now,
+    schema_version: schemaVersion,
+    unit,
+    ...(body.rate_card_version ? { rate_card_version: body.rate_card_version } : {}),
+    ...(body.cost_credits !== undefined ? { cost_credits: body.cost_credits } : {}),
+    ...(body.project_id ? { project_id: body.project_id } : {}),
+    ...(body.installation_id ? { installation_id: body.installation_id } : {}),
+    ...(body.run_id ? { run_id: body.run_id } : {}),
+    ...(body.provider ? { provider: body.provider } : {}),
+    ...(body.model_id ? { model_id: body.model_id } : {}),
+    ...(body.connector_provider ? { connector_provider: body.connector_provider } : {}),
+    ...(body.runtime_tier !== undefined ? { runtime_tier: body.runtime_tier } : {}),
+    ...(body.subject_hash ? { subject_hash: body.subject_hash } : {}),
+    ...(body.payer_kind ? { payer_kind: body.payer_kind } : {}),
+    ...(body.decision ? { decision: body.decision } : {}),
   });
 
   return c.json({ recorded: true, id }, 201);
@@ -525,7 +586,7 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);
   if (existing) {
     if (existing.status === "released") {
-      const renewed = await c.env.PLATFORM_DB.prepare("UPDATE workflow_budget_reservations SET status='held', credits=?, expires_at=?, updated_at=datetime('now') WHERE id=? AND org_id=? AND status='released' AND ? + (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month')) + (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND expires_at>datetime('now')) <= ?")
+      const renewed = await c.env.PLATFORM_DB.prepare("UPDATE workflow_budget_reservations SET status='held', credits=?, expires_at=?, updated_at=datetime('now') WHERE id=? AND org_id=? AND status='released' AND ? + (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) + (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND expires_at>datetime('now')) <= ?")
         .bind(credits, expiry, existing.id, orgId, credits, orgId, orgId, quota.limit).run();
       if (!renewed.meta.changes) return c.json({ error_code: "infra_quota_exceeded", message: "Workflow retry budget is unavailable" }, 402);
     }
@@ -536,7 +597,7 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
       (id,org_id,space_id,workflow_id,budget_key,credits,status,expires_at,created_at,updated_at)
     SELECT ?,?,?,?,?,?,'held',?,datetime('now'),datetime('now')
     WHERE ? +
-      (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id = ? AND event_type = 'infra_credits' AND recorded_at >= datetime('now','start of month')) +
+      (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id = ? AND event_type = 'infra_credits' AND recorded_at >= datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) +
       (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id = ? AND status = 'held' AND expires_at > datetime('now')) <= ?
   `).bind(id, orgId, body.space_id, workflowId, body.budget_key, credits, expiry, credits, orgId, orgId, quota.limit).run();
   if (inserted.meta.changes === 0) return c.json({ error_code: "infra_quota_exceeded", message: "Workflow budget is unavailable for this billing period", limit: quota.limit }, 402);

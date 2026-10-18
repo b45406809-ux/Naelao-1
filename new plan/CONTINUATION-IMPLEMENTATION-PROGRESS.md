@@ -1324,6 +1324,14 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Verification: focused restricted-answer and settlement tests passed (11 tests); Agents Worker typecheck and `git diff --check` passed. An initial typecheck caught an exact-optional-property typing issue in the optional usage evidence; corrected before the passing run.
 - Phase 4 remains open for unified, versioned usage events across inference/execution/storage/connectors, broader install/run and provider spend budgets, abuse policy settings, and usage reconciliation/UI.
 
+### Phase 4 versioned usage ledger checkpoint (2026-10-18)
+
+- Added migration 0109 for usage-event schema v2: unit, rate-card version, cost credits, project/install/run IDs, model/provider, connector provider, runtime tier, opaque subject digest, payer kind, and decision. Legacy records migrate as schema v1 and remain included in existing plan-quota aggregates.
+- Billing ingestion now validates v2 units, dimensions, payer/decision enums, idempotency, bounded values, and 64-hex subject digests. It records full dimensions in D1 and forwards them to the metering queue only for plan/platform/unknown payers; wallet-prepaid records are not charged again through the platform subscription rail. Plan quota aggregates explicitly exclude v2 events paid by project wallets.
+- Added `core-model-rates-v1`; OpenRouter usage records the exact observed catalog timestamp as its rate-card version. Restricted external answers now emit project/install/run scoped token and cost events, and runtime execution emits versioned infra-credit events. Existing project cap and wallet ledgers remain the admission/settlement authorities.
+- Verification: Billing Worker, Agents Worker, and billing-core typechecks passed; billing route, real migration/runtime insertion, quota reservation, restricted-answer and billing settlement tests passed (34 tests); `git diff --check` passed.
+- Phase 4 remains open: other planner/user inference paths, storage bytes, connector calls, workflow execution, and provider billing events are not yet all emitted through v2; installation/run/provider-specific ceilings, off-topic budgets/alerts, owner payer visibility, and failed charge/usage reconciliation are still required.
+
 ### Phase 3 direct scheduled-script budget checkpoint (2026-10-18)
 
 - Direct event/scheduled scripts with a Project scope now re-read the SpaceDO project policy, enforce the project's execution-tier ceiling, check the shared Space wallet before running, and reserve one credit against a configured daily Project cap. This covers the bounded single isolate/container infrastructure charge; Tier 1/no-cost executions settle the hold at zero.

@@ -27,7 +27,7 @@ import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
-import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
+import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, BILLING_CORE_RATE_CARD_VERSION, type EffortLevel } from "@naelao/billing-core";
 import { externalAnswerCredits, releaseExternalAnswerSpend, settleExternalAnswerSpend } from "./external-channel-spend.js";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest, GatewayOpts } from "../shared/ai-client.js";
@@ -4741,7 +4741,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // AFTER the env keys so it overrides; a business with none (or a default @cf/ model) gets the
     // platform key exactly as before — see resolveBusinessLlmOverride's own doc.
     const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, body.model ?? DEFAULT_WORKING_MODEL);
-    let modelPricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    let modelPricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string } | undefined;
     try {
       modelPricing = await this.resolveDynamicModelPricing(body.model ?? DEFAULT_WORKING_MODEL, byokOverride.openRouterApiKey);
     } catch (error) {
@@ -7008,16 +7008,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (resourceType && durationMs !== undefined && this.env.BILLING_WORKER) {
       if (infraCredits > 0) {
         try {
-          await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
-            method: "POST",
-            headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-            body: JSON.stringify({
-              event_type: "infra_credits",
-              quantity: infraCredits,
-              space_id: spaceId,
-              idempotency_key: `run:${runId}:infra`,
-            }),
-          }));
+          await this.recordCanonicalUsageEvent(tenantId, {
+            schema_version: 2, event_type: "infra_credits", quantity: infraCredits, unit: "credits",
+            cost_credits: infraCredits, rate_card_version: BILLING_CORE_RATE_CARD_VERSION,
+            space_id: spaceId, ...(projectId ? { project_id: projectId } : {}), run_id: runId,
+            runtime_tier: typeof tier === "number" ? tier : undefined,
+            payer_kind: chargeInfraToProject && walletProjectId ? "space_wallet" : "platform",
+            decision: "charged", idempotency_key: `run:${runId}:infra`,
+          });
           if (this.env.ANALYTICS) {
             try {
               this.env.ANALYTICS.writeDataPoint({
@@ -7147,6 +7145,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           body: JSON.stringify({ action: "settle_run", run_id: runId, credits }) }
       ));
     } catch { /* holds expire after 15 minutes; settlement accounting remains best effort */ }
+  }
+
+  /** Best-effort append to the versioned cross-surface usage ledger. Wallet and project cap
+   * ledgers remain authoritative for admission/settlement; this event carries dimensions needed
+   * to reconcile their decisions across retries and resource types. */
+  private async recordCanonicalUsageEvent(tenantId: string, event: Record<string, unknown>): Promise<void> {
+    if (!this.env.BILLING_WORKER) return;
+    try {
+      await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
+        method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+        body: JSON.stringify(event),
+      }));
+    } catch {
+      /* usage telemetry is best effort; payer ledgers are settled independently */
+    }
   }
 
   private async reserveRunInferenceCost(args: {
@@ -7673,13 +7686,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Step 28: same BYOK override as the interactive path — a customer messaging a business on a
     // channel is answered on the business's own Gemini/Groq key when it has one.
     const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, model);
-    let channelModelPricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    let channelModelPricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string } | undefined;
     try {
       channelModelPricing = await this.resolveDynamicModelPricing(model, byokOverride.openRouterApiKey);
     } catch (error) {
       return Response.json({ error_code: "model_price_unavailable", error: error instanceof Error ? error.message : "Fresh model price evidence unavailable" }, { status: 503 });
     }
-    const channelReservation = { enabled: false, projectId: "", runId: "", sequence: 0, reserved: false, estimatedCredits: 0 };
+    const channelReservation = { enabled: false, projectId: "", runId: "", sequence: 0, reserved: false, estimatedCredits: 0, estimatedTokens: 0 };
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}), ...(this.env.OPENROUTER_API_KEY && !model.startsWith("openrouter/") ? { openRouterApiKey: this.env.OPENROUTER_API_KEY } : {}), ...byokOverride },
@@ -7690,6 +7703,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const estimate = estimateRequestCostCredits(inference.serializedRequestBytes, inference.maxOutputTokens, inference.model,
           inference.model.startsWith("openrouter/") ? channelModelPricing : undefined);
         channelReservation.estimatedCredits += estimate.estimatedCredits;
+        channelReservation.estimatedTokens += estimate.estimatedInputTokens + estimate.reservedOutputTokens;
         if (!channelReservation.enabled) return true;
         const response = await this.env.SPACES_WORKER.fetch(new Request(
           `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(channelReservation.projectId)}/spend`,
@@ -7749,6 +7763,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       channelReservation.sequence = 0;
       channelReservation.reserved = false;
       channelReservation.estimatedCredits = 0;
+      channelReservation.estimatedTokens = 0;
       // Untrusted inbound text — moderate before it ever reaches the reasoning prompt or a rule
       // match. This used to just count "escalated" and continue — the message was silently
       // dropped with nobody ever told a customer-bot channel (including a business's own inbound
@@ -8047,6 +8062,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const billingNotes: string[] = [];
               await this.debitProjectWallet(spaceId, tenantId, walletCheck.walletProjectId, credits, billingNotes, channelReservation.runId);
             }
+            const subjectHash = await opaqueExternalSubject(this.env.PLATFORM_SECRET,
+              [tenantId, spaceId, msg.project_id, msg.channel, msg.channel_user_id]);
+            const tokenQuantity = answer.usage
+              ? answer.usage.input_tokens + answer.usage.output_tokens
+              : channelReservation.estimatedTokens;
+            await this.recordCanonicalUsageEvent(tenantId, {
+              event_type: "project_llm_tokens", quantity: tokenQuantity, unit: "tokens", schema_version: 2,
+              idempotency_key: `channel-answer:${msg.channel_extension_instance_id}:${msg.id}`,
+              space_id: spaceId, project_id: msg.project_id, installation_id: msg.channel_extension_instance_id,
+              run_id: channelReservation.runId, provider: model.startsWith("@cf/") ? "cloudflare"
+                : model.startsWith("claude-") ? "anthropic" : model.startsWith("gemini") ? "google"
+                  : model.includes("/") ? model.split("/")[0] ?? "unknown" : "unknown",
+              model_id: model, connector_provider: msg.channel, subject_hash: subjectHash,
+              cost_credits: credits, rate_card_version: channelModelPricing?.rateCardVersion ?? BILLING_CORE_RATE_CARD_VERSION,
+              payer_kind: walletCheck?.ok && walletCheck.walletProjectId ? "space_wallet" : "unknown",
+              decision: "allowed",
+            });
           }
         }
         if (!replyText || !moderateText(replyText).allowed) {
@@ -8335,7 +8367,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let legacyUserReserved = false;
     let legacyLlmQuotaReserved = false;
     const runByok = await this.resolveBusinessLlmOverride(body.spaceId, body.tenantId, model);
-    let legacyModelPricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined;
+    let legacyModelPricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string } | undefined;
     try { legacyModelPricing = await this.resolveDynamicModelPricing(model, runByok.openRouterApiKey); }
     catch (error) {
       return Response.json({ error_code: "model_price_unavailable", message: error instanceof Error ? error.message : "Fresh model price evidence unavailable" }, { status: 503 });
@@ -9065,7 +9097,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private async resolveDynamicModelPricing(
     model: string,
     apiKey: string | undefined,
-  ): Promise<{ inputUsdPerToken: number; outputUsdPerToken: number } | undefined> {
+  ): Promise<{ inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string } | undefined> {
     if (!model.startsWith("openrouter/")) return undefined;
     if (!apiKey) throw new Error("The selected Space OpenRouter key is unavailable; no platform key fallback is allowed");
     const catalog = await fetchOpenRouterCatalog(apiKey);
@@ -9076,6 +9108,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return {
       inputUsdPerToken: candidate.promptPriceUsdPerToken!,
       outputUsdPerToken: candidate.completionPriceUsdPerToken!,
+      rateCardVersion: `openrouter:${candidate.catalogObservedAt}`,
     };
   }
 

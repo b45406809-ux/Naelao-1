@@ -74,7 +74,7 @@ export function llmReservationAdmission(orgId: string, estimatedTokens: number, 
   const bindings: Array<string | number> = [];
   const predicates = windows.map(window => {
     bindings.push(estimatedTokens, orgId, orgId, window.limit);
-    return `? + COALESCE((SELECT SUM(quantity) FROM usage_events WHERE org_id=? AND event_type='llm_tokens' AND recorded_at>=${window.start}),0) + COALESCE((SELECT SUM(estimated_tokens) FROM llm_token_reservations WHERE org_id=? AND status='held' AND expires_at>datetime('now') AND created_at>=${window.start}),0) <= ?`;
+    return `? + COALESCE((SELECT SUM(quantity) FROM usage_events WHERE org_id=? AND event_type='llm_tokens' AND recorded_at>=${window.start} AND (schema_version<2 OR payer_kind='plan_quota')),0) + COALESCE((SELECT SUM(estimated_tokens) FROM llm_token_reservations WHERE org_id=? AND status='held' AND expires_at>datetime('now') AND created_at>=${window.start}),0) <= ?`;
   });
   return { predicate: predicates.length ? predicates.join(" AND ") : "1=1", bindings };
 }
@@ -162,6 +162,7 @@ async function getCurrentUsage(
            FROM usage_events
            WHERE org_id = ?
              AND event_type = 'llm_tokens'
+             AND (schema_version < 2 OR payer_kind = 'plan_quota')
              AND recorded_at >= datetime('now', 'start of month')`
         )
         .bind(orgId)
@@ -176,6 +177,7 @@ async function getCurrentUsage(
            FROM usage_events
            WHERE org_id = ?
              AND event_type = 'infra_credits'
+             AND (schema_version < 2 OR payer_kind IN ('plan_quota','platform','unknown'))
              AND recorded_at >= datetime('now', 'start of month')`
         )
         .bind(orgId)
