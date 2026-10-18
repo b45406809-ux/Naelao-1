@@ -1,7 +1,8 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1831
+Files: 1835
+Inventory revision: 4e4be8cf before this audit follow-up (no paths added or removed)
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -89,9 +90,9 @@ _BUILD_PLAN/
   316 - 318 But.txt
   319 - 320 What.txt
   AVOS Master Architectural Blueprint 1.json
-  avos1.json
   FILE_TREE.md
   NEXT_GAP_PASS_PROMPT.md
+  avos1.json
   plan.md
 apps/
   dashboard/
@@ -113,8 +114,8 @@ apps/
               analytics/
                 page.tsx
               billing/
-                page.tsx
                 PaymentsAccountCard.tsx
+                page.tsx
               configuration/
                 page.tsx
               danger-zone/
@@ -133,8 +134,8 @@ apps/
                 page.tsx
               wallet/
                 page.tsx
-              layout.tsx
               OnboardingChecklist.tsx
+              layout.tsx
               page.tsx
               productContext.tsx
             new/
@@ -411,6 +412,11 @@ apps/
       naelao-chat.ts
     package.json
     tsconfig.json
+audit-output/
+  naelao-audit-progress.md
+  naelao-file-by-file-stress-audit-plan.md
+  naelao-platform-surface-inventory.md
+  naelao-repository-tree.txt
 docs/
   spec-appendix/
     A1-script-agents-and-space-assistants.md
@@ -422,33 +428,33 @@ docs/
   BATCH_02_CHECKLIST.md
   BATCH_03_CHECKLIST.md
   BATCH_04_CHECKLIST.md
-  browser-web-push.md
-  cloudflare-agents-extension-review.md
   COMPETITIVE_2026-08-05_openclaw_hermes.md
   COMPETITIVE_2026-08-08_autonomy_matrix.md
-  composio-custom-api-access.md
   CUSTOM_BUSINESS.md
-  DEPLOY_SECRETS.md
   DEPLOYMENT_SECRETS.md
-  developer-preview.md
+  DEPLOY_SECRETS.md
   E2E_2026-08-09_end_user_journey.md
-  fast-python-execution.md
   LAUNCHPAD_ARCHITECTURE.md
   MODEL_EVAL_2026-07-25.md
   PHASE_01_INTEGRATION_AUDIT.md
+  SPEC_HEADER_INDEX.md
+  SYSTEM_ONE_DECISION_SENTRY.md
+  THINK_ALIGNMENT.md
+  TOKEN_EFFICIENCY.md
+  browser-web-push.md
+  cloudflare-agents-extension-review.md
+  composio-custom-api-access.md
+  developer-preview.md
+  fast-python-execution.md
   private-model-adapter-lifecycle.md
   project-lsp-indexer.md
   requirements-trace-matrix.md
   runtime-discovery-and-installation.md
   space-data-retention-and-backup.md
-  SPEC_HEADER_INDEX.md
   specialized-runtime-workspaces.md
   staging-smoke-test.md
-  SYSTEM_ONE_DECISION_SENTRY.md
   task-scoped-email-replies.md
-  THINK_ALIGNMENT.md
   timekeeper-pattern.md
-  TOKEN_EFFICIENCY.md
   trusted-package-egress.md
   ui-feature-inventory.md
 harness/
@@ -615,7 +621,6 @@ new plan/
   CODEX-CLOUD-PROMPTS.md
   CONTINUATION-IMPLEMENTATION-PROGRESS.md
   DEPLOYMENT-ACCEPTANCE-LOG.md
-  extract_ai_studio_messages.py
   FDE-EXTENSIONS-AND-MICROAPPS-ARCHITECTURE.md
   FOUNDRY-IMPLEMENTATION-PROGRESS.md
   FOUNDRY-REMAINING.md
@@ -626,20 +631,21 @@ new plan/
   OPEN-GAPS-IMPLEMENTATION-PLAN.md
   PROJECT-BOTS-UNIVERSAL-AGENT-OS-ROADMAP.md
   SCALEDOWN-AND-DEEPSEEK-INTEGRATION.md
-  test_extract_ai_studio_messages.py
-  Tokenizers vs. Embedding Models Explained.continuation.messages.txt
-  Tokenizers vs. Embedding Models Explained.messages.txt
   TOKENIZERS-CONTINUATION-IMPLEMENTATION-LEDGER.md
   TOKENIZERS-FIRST-IMPLEMENTATION-AUDIT.md
   TRANSCRIPT-CROSS-SOURCE-RECONCILIATION.md
+  Tokenizers vs. Embedding Models Explained.continuation.messages.txt
+  Tokenizers vs. Embedding Models Explained.messages.txt
+  extract_ai_studio_messages.py
+  test_extract_ai_studio_messages.py
 packages/
   agent-sdk/
     examples/
       trading-mentor-channel/
+        README.md
         console.html
         manifest.json
         place-order.ts
-        README.md
         student-answer.ts
     src/
       dogfood-extensions/
@@ -756,8 +762,8 @@ packages/
       runtime.mjs
     test/
       model-discovery.test.mjs
-    package.json
     README.md
+    package.json
     tsconfig.json
   client-sdk/
     src/
@@ -914,7 +920,6 @@ packages/
         Button.tsx
         Card.tsx
         Form.tsx
-        icons.tsx
         Modal.tsx
         NavItem.tsx
         PageView.tsx
@@ -923,6 +928,7 @@ packages/
         SpaceSwitcher.tsx
         Toast.tsx
         TopBar.tsx
+        icons.tsx
       index.ts
       qr.ts
       styles.css
@@ -947,9 +953,11 @@ repomix/
     batch-01-context.xml
     batch-02-context.xml
   patches/
-    batch-01.patch
     README.md
+    batch-01.patch
   prompts/
+    Update the batches.md
+    Updates2.md
     batch-01-items-1-19.md
     batch-02-items-20-24.md
     batch-03-items-25-38.md
@@ -963,8 +971,10 @@ repomix/
     batch-11-items-104-111.md
     batch-12-items-112-119.md
     batch-13-items-120-130.md
-    Update the batches.md
-    Updates2.md
+  IMPLEMENTATION_PLAN.md
+  README.md
+  Update the batches.md
+  Updates2.md
   apply-batch-patch.mjs
   batch-01-foundation-storage.json
   batch-02-runtime-vault-cli.json
@@ -980,11 +990,7 @@ repomix/
   batch-12-billing-export.json
   batch-13-marketplace-distribution.json
   build-prompts.mjs
-  IMPLEMENTATION_PLAN.md
   prepare-authority-context.mjs
-  README.md
-  Update the batches.md
-  Updates2.md
   verify-configs.mjs
 scripts/
   codex-goals.sh
@@ -1005,8 +1011,8 @@ tests/
   isolation/
     tenant-isolation.test.ts
   load/
-    platform-health.js
     README.md
+    platform-health.js
   plan/
     browser/
       01-shell.spec.ts
@@ -1394,8 +1400,8 @@ workers/
       server.mjs
       start.sh
     local-agent/
-      naelao-local-agent.mjs
       README.md
+      naelao-local-agent.mjs
     src/
       channels/
         fixtures/
@@ -1438,28 +1444,28 @@ workers/
         framing.test.ts
         framing.ts
       do/
-        channel-extension-inbox.test.ts
-        citation-metadata.test.ts
         ConcurrencyDO.test.ts
         ConcurrencyDO.ts
-        delegation-admission.test.ts
-        external-channel-spend.test.ts
-        external-channel-spend.ts
         HITLApprovalDO.ts
-        ingress-memory.test.ts
         LocalTunnelDO.test.ts
         LocalTunnelDO.ts
         NaelaoAgentDO.ts
-        project-llm-usage.test.ts
-        project-llm-usage.ts
         RiskGuardDO.ts
-        specialized-workspaces.test.ts
         TaskDO.ts
         ToolSandboxDO.test.ts
         ToolSandboxDO.ts
+        WorkflowRunDO.ts
+        channel-extension-inbox.test.ts
+        citation-metadata.test.ts
+        delegation-admission.test.ts
+        external-channel-spend.test.ts
+        external-channel-spend.ts
+        ingress-memory.test.ts
+        project-llm-usage.test.ts
+        project-llm-usage.ts
+        specialized-workspaces.test.ts
         usage-event-outbox.test.ts
         usage-event-outbox.ts
-        WorkflowRunDO.ts
       launchpad/
         bootstrap.ts
         business-context.ts
@@ -1697,8 +1703,9 @@ workers/
         voice-ticket.ts
         voice.test.ts
       workflows/
-        agent-task-checkpoints.ts
         AgentTaskWorkflow.ts
+        ScriptRunWorkflow.ts
+        agent-task-checkpoints.ts
         chunked-subagent-workflow.ts
         company-automation-workflow.ts
         customer-analytics-workflow.ts
@@ -1708,7 +1715,6 @@ workers/
         reconciliation-a2.test.ts
         report-infra-usage.test.ts
         report-infra-usage.ts
-        ScriptRunWorkflow.ts
         workflow-compiler.ts
         workflow-control.ts
         workflow-extension-scope.test.ts
@@ -1743,12 +1749,12 @@ workers/
     Dockerfile.media
     Dockerfile.toolsandbox
     FFLATE-MIT.txt
-    package.json
     PDFJS-APACHE-2.0.txt
     THIRD-PARTY-NOTICES.md
-    tsconfig.json
     TWILIO-MIT.txt
     UNPDF-MIT.txt
+    package.json
+    tsconfig.json
     vitest.config.ts
     wrangler.toml
   analytics/
@@ -1763,12 +1769,12 @@ workers/
     wrangler.toml
   artifact/
     src/
+      RepositoryDO.ts
       index.ts
       repository-token.test.ts
       repository-token.ts
       repository.test.ts
       repository.ts
-      RepositoryDO.ts
     package.json
     tsconfig.json
     vitest.config.ts
@@ -1806,8 +1812,8 @@ workers/
     wrangler.toml
   browser/
     src/
-      browser-session-state.ts
       BrowserSessionDO.ts
+      browser-session-state.ts
       index.ts
     package.json
     tsconfig.json
@@ -1923,6 +1929,7 @@ workers/
         ogg-opus.ts
         transcribe.test.ts
         transcribe.ts
+      RateLimitDO.ts
       customer-voice-routing.test.ts
       extension-product-paths.test.ts
       extension-provider-routing.test.ts
@@ -1930,7 +1937,6 @@ workers/
       index.ts
       preferred-language.test.ts
       preferred-language.ts
-      RateLimitDO.ts
     package.json
     tsconfig.json
     vitest.config.ts
@@ -1950,8 +1956,18 @@ workers/
   spaces/
     src/
       do/
-        artifact-linter.test.ts
         BuilderAccountDO.ts
+        FeatureFlagDO.ts
+        LockDO.ts
+        MicroAppDO.ts
+        ProductUserDO-credit-reservations.test.ts
+        ProductUserDO.ts
+        SpaceDO-migrations.test.ts
+        SpaceDO.ts
+        SpaceTypeRegistryDO.ts
+        TransactionCoordinatorDO.test.ts
+        TransactionCoordinatorDO.ts
+        artifact-linter.test.ts
         custom-model-lifecycle-do.test.ts
         custom-model-lifecycle.test.ts
         custom-model-lifecycle.ts
@@ -1961,12 +1977,7 @@ workers/
         domain-glossary.test.ts
         executive-contacts.test.ts
         extension-runtime-install.test.ts
-        FeatureFlagDO.ts
         gadget-mcp-crud.test.ts
-        LockDO.ts
-        MicroAppDO.ts
-        ProductUserDO-credit-reservations.test.ts
-        ProductUserDO.ts
         project-spend-reservations.test.ts
         project-subspace-migration-preflight.test.ts
         provenance-ledger.test.ts
@@ -1977,11 +1988,6 @@ workers/
         space-data-ops.test.ts
         space-retention.test.ts
         space-retention.ts
-        SpaceDO-migrations.test.ts
-        SpaceDO.ts
-        SpaceTypeRegistryDO.ts
-        TransactionCoordinatorDO.test.ts
-        TransactionCoordinatorDO.ts
       routes/
         channel-extensions.test.ts
         desk-drop.ts
@@ -2106,14 +2112,14 @@ workers/
 .gitignore
 .nvmrc
 AGENTS.md
+CLAUDE.md
+NAELAO_BUILD_PROMPT.md
+NAELAO_FILE_TREE.md
 ai_studio_code (2).sh
 ai_studio_code.sh
 biome.json
-CLAUDE.md
 create_patch.js
-NAELAO_BUILD_PROMPT.md
 naelao_expanded_gaps_resolved.html
-NAELAO_FILE_TREE.md
 naelao_whop_businesses_spec.html
 package.json
 pnpm-lock.yaml

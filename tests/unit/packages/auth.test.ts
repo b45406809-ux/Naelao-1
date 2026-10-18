@@ -1,13 +1,24 @@
-import { describe, it, expect } from "vitest";
-import { signJwt, verifyJwt, AuthError } from "@naelao/auth";
-import { hasPermission, assertPermission } from "@naelao/auth";
+import { describe, expect, it } from "vitest";
+import {
+  AuthError,
+  assertPermission,
+  hasPermission,
+  signJwt,
+  verifyJwt,
+} from "../../../packages/auth/src/index.js";
 
 const TEST_SECRET = "test-secret-for-unit-tests-only";
 
 describe("signJwt / verifyJwt", () => {
   it("produces a 3-part JWT string", async () => {
     const token = await signJwt(
-      { sub: "user1", tid: "org1", email: "a@b.com", role: "owner", scopes: [] },
+      {
+        sub: "user1",
+        tid: "org1",
+        email: "a@b.com",
+        role: "owner",
+        scopes: [],
+      },
       TEST_SECRET
     );
     expect(token.split(".")).toHaveLength(3);
@@ -15,7 +26,13 @@ describe("signJwt / verifyJwt", () => {
 
   it("verifyJwt returns correct claims for freshly signed token", async () => {
     const token = await signJwt(
-      { sub: "user1", tid: "org1", email: "a@b.com", role: "editor", scopes: ["api:access"] },
+      {
+        sub: "user1",
+        tid: "org1",
+        email: "a@b.com",
+        role: "editor",
+        scopes: ["api:access"],
+      },
       TEST_SECRET
     );
     const claims = await verifyJwt(token, TEST_SECRET);
@@ -29,10 +46,39 @@ describe("signJwt / verifyJwt", () => {
   it("throws AuthError token_expired when exp is in the past", async () => {
     const now = Math.floor(Date.now() / 1000);
     const token = await signJwt(
-      { sub: "u", tid: "t", email: "a@b.com", role: "viewer", scopes: [], iat: now - 7200, exp: now - 3600 },
+      {
+        sub: "u",
+        tid: "t",
+        email: "a@b.com",
+        role: "viewer",
+        scopes: [],
+        iat: now - 7200,
+        exp: now - 3600,
+      },
       TEST_SECRET
     );
-    await expect(verifyJwt(token, TEST_SECRET)).rejects.toMatchObject({ code: "token_expired" });
+    await expect(verifyJwt(token, TEST_SECRET)).rejects.toMatchObject({
+      code: "token_expired",
+    });
+  });
+
+  it("treats expiration equal to the current second as expired", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signJwt(
+      {
+        sub: "u",
+        tid: "t",
+        email: "a@b.com",
+        role: "viewer",
+        scopes: [],
+        iat: now - 1,
+        exp: now,
+      },
+      TEST_SECRET
+    );
+    await expect(verifyJwt(token, TEST_SECRET)).rejects.toMatchObject({
+      code: "token_expired",
+    });
   });
 
   it("throws AuthError invalid_token when signature is wrong", async () => {
@@ -42,12 +88,34 @@ describe("signJwt / verifyJwt", () => {
     );
     const parts = token.split(".");
     const tampered = `${parts[0]}.${parts[1]}.invalidsig`;
-    await expect(verifyJwt(tampered, TEST_SECRET)).rejects.toMatchObject({ code: "invalid_token" });
+    await expect(verifyJwt(tampered, TEST_SECRET)).rejects.toMatchObject({
+      code: "invalid_token",
+    });
   });
 
   it("throws AuthError invalid_token for malformed token", async () => {
-    await expect(verifyJwt("not.a.valid.jwt.string", TEST_SECRET)).rejects.toBeInstanceOf(AuthError);
-    await expect(verifyJwt("onlyone", TEST_SECRET)).rejects.toBeInstanceOf(AuthError);
+    await expect(
+      verifyJwt("not.a.valid.jwt.string", TEST_SECRET)
+    ).rejects.toBeInstanceOf(AuthError);
+    await expect(verifyJwt("onlyone", TEST_SECRET)).rejects.toBeInstanceOf(
+      AuthError
+    );
+    await expect(verifyJwt("%%%.e30.AA", TEST_SECRET)).rejects.toBeInstanceOf(
+      AuthError
+    );
+    await expect(
+      verifyJwt(`${"a".repeat(32_769)}.e30.AA`, TEST_SECRET)
+    ).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it("rejects structurally invalid signed identity claims", async () => {
+    const token = await signJwt(
+      { sub: "", tid: "t", email: "a@b.com", role: "viewer", scopes: [] },
+      TEST_SECRET
+    );
+    await expect(verifyJwt(token, TEST_SECRET)).rejects.toMatchObject({
+      code: "invalid_token",
+    });
   });
 });
 

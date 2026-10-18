@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1831` tracked/non-ignored files; `1648` code or executable-configuration files.
+Inventory basis: `1835` tracked/non-ignored files; `1629` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`).
 Status: every checklist item below is pending. This plan and inventory are not evidence that the listed files have already been reviewed.
 
 ## Review contract

@@ -1427,29 +1427,15 @@ app.post("/internal/web-search/fetch", async (c) => {
     return c.json({ error_code: "bad_request", message: "url must be an http(s) URL without embedded credentials" }, 400);
   }
   try {
-    // Handle redirects ourselves so every destination receives the SSRF and space-egress checks.
-    // Automatic redirect following would validate only the first URL and could reach a private IP.
-    let resp: Response | undefined;
-    for (let hop = 0; hop <= 5; hop++) {
-      const ssrf = await checkSsrf(target.href);
-      if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);
-      resp = await fetch(target.href, {
+    const guarded = await fetchSsrfGuarded(target.href, {
         headers: {
           "user-agent": "naelao-agent/1.0",
           accept: body.format === "markdown" ? "text/markdown, text/html;q=0.9, */*;q=0.8" : "text/html, */*;q=0.8",
         },
-        redirect: "manual",
       });
-      if (![301, 302, 303, 307, 308].includes(resp.status)) break;
-      const location = resp.headers.get("location");
-      if (!location) return c.json({ error_code: "bad_gateway", message: "redirect response omitted Location" }, 502);
-      if (hop === 5) return c.json({ error_code: "bad_gateway", message: "redirect limit exceeded" }, 502);
-      target = new URL(location, target);
-      if (!(target.protocol === "http:" || target.protocol === "https:") || target.username || target.password) {
-        return c.json({ error_code: "forbidden", message: "redirect destination must be an http(s) URL without embedded credentials" }, 403);
-      }
-    }
-    if (!resp) throw new Error("fetch produced no response");
+    if (!guarded.ok) return c.json({ error_code: guarded.status === 403 ? "forbidden" : "bad_gateway", message: guarded.message }, guarded.status);
+    const resp = guarded.response;
+    target = guarded.url;
     const { content, truncated } = await readBoundedText(resp, WEB_SEARCH_CONTENT_CAP);
     const contentType = resp.headers.get("content-type") ?? "";
     return c.json({
@@ -1495,6 +1481,67 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<{ 
   return { content, truncated };
 }
 
+async function readBoundedBytes(response: Response, maxBytes: number): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  if (!response.body) return { bytes: new Uint8Array(), truncated: false };
+  const reader = response.body.getReader();
+  let buffer = new Uint8Array(Math.min(maxBytes, 64 * 1024));
+  let bytesRead = 0;
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const remaining = maxBytes - bytesRead;
+      const take = Math.min(remaining, value.byteLength);
+      if (take > 0) {
+        const required = bytesRead + take;
+        if (required > buffer.byteLength) {
+          const capacity = Math.min(maxBytes, Math.max(required, buffer.byteLength * 2));
+          const grown = new Uint8Array(capacity);
+          grown.set(buffer.subarray(0, bytesRead));
+          buffer = grown;
+        }
+        buffer.set(value.subarray(0, take), bytesRead);
+        bytesRead += take;
+      }
+      if (take < value.byteLength) {
+        truncated = true;
+        await reader.cancel();
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return { bytes: buffer.slice(0, bytesRead), truncated };
+}
+
+type GuardedFetchResult =
+  | { ok: true; response: Response; url: URL }
+  | { ok: false; status: 403 | 502; message: string };
+
+async function fetchSsrfGuarded(rawUrl: string, init: RequestInit): Promise<GuardedFetchResult> {
+  let target: URL;
+  try { target = new URL(rawUrl); }
+  catch { return { ok: false, status: 403, message: "Destination URL is invalid" }; }
+  for (let hop = 0; hop <= 5; hop++) {
+    if ((target.protocol !== "http:" && target.protocol !== "https:") || target.username || target.password) {
+      return { ok: false, status: 403, message: "Destination must be an http(s) URL without embedded credentials" };
+    }
+    const ssrf = await checkSsrf(target.href);
+    if (ssrf.blocked) return { ok: false, status: 403, message: ssrf.reason ?? "url failed SSRF validation" };
+    const response = await fetch(target.href, { ...init, redirect: "manual" });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return { ok: true, response, url: target };
+    const location = response.headers.get("location");
+    if (!location) return { ok: false, status: 502, message: "redirect response omitted Location" };
+    if (hop === 5) return { ok: false, status: 502, message: "redirect limit exceeded" };
+    try { target = new URL(location, target); }
+    catch { return { ok: false, status: 403, message: "redirect destination is invalid" }; }
+    await response.body?.cancel().catch(() => undefined);
+  }
+  return { ok: false, status: 502, message: "redirect limit exceeded" };
+}
+
 app.post("/internal/web-search/extract", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
@@ -1527,9 +1574,10 @@ app.post("/internal/web-search/extract", async (c) => {
   }
 
   try {
-    const resp = await fetch(rawUrl, { headers: { "user-agent": "naelao-agent/1.0" }, redirect: "follow" });
-    const text = (await resp.text()).slice(0, WEB_SEARCH_CONTENT_CAP);
-    return c.json({ configured: Boolean(c.env.TAVILY_API_KEY), url: rawUrl, content: text });
+    const guarded = await fetchSsrfGuarded(rawUrl, { headers: { "user-agent": "naelao-agent/1.0" } });
+    if (!guarded.ok) return c.json({ error_code: guarded.status === 403 ? "forbidden" : "bad_gateway", message: guarded.message }, guarded.status);
+    const { content, truncated } = await readBoundedText(guarded.response, WEB_SEARCH_CONTENT_CAP);
+    return c.json({ configured: Boolean(c.env.TAVILY_API_KEY), url: guarded.url.href, content, truncated });
   } catch (err) {
     return c.json({ configured: Boolean(c.env.TAVILY_API_KEY), url: rawUrl, content: "", error: String(err) }, 502);
   }
@@ -1586,34 +1634,33 @@ app.post("/internal/web-search/download", async (c) => {
   if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);
 
   try {
-    const resp = await fetch(rawUrl, { headers: { "user-agent": "naelao-agent/1.0" }, redirect: "follow" });
+    const guarded = await fetchSsrfGuarded(rawUrl, { headers: { "user-agent": "naelao-agent/1.0" } });
+    if (!guarded.ok) return c.json({ error_code: guarded.status === 403 ? "forbidden" : "bad_gateway", message: guarded.message }, guarded.status);
+    const resp = guarded.response;
     const contentType = (resp.headers.get("content-type") ?? "").split(";")[0]!.trim();
-    // Read the bytes ONCE. A body can only be consumed a single time, so the text-vs-binary
-    // decision has to happen against the buffer, never by re-reading the response.
-    const buf = await resp.arrayBuffer();
-    const bytes = new Uint8Array(buf);
+    const maxBytes = isTextualContentType(contentType) ? WEB_DOWNLOAD_CONTENT_CAP : WEB_DOWNLOAD_BINARY_CAP;
+    const { bytes, truncated } = await readBoundedBytes(resp, maxBytes);
 
     if (isTextualContentType(contentType)) {
       const full = new TextDecoder().decode(bytes);
-      const truncated = full.length > WEB_DOWNLOAD_CONTENT_CAP;
       return c.json({
-        url: rawUrl, status: resp.status, encoding: "text", content_type: contentType || "text/plain",
+        url: guarded.url.href, status: resp.status, encoding: "text", content_type: contentType || "text/plain",
         content: full.slice(0, WEB_DOWNLOAD_CONTENT_CAP),
         size: full.length, truncated,
       });
     }
 
-    if (bytes.byteLength > WEB_DOWNLOAD_BINARY_CAP) {
+    if (truncated) {
       return c.json({
-        url: rawUrl, status: resp.status, content: null, content_type: contentType,
-        error: `file is ${bytes.byteLength} bytes, over the ${WEB_DOWNLOAD_BINARY_CAP}-byte download limit. Binary files are not truncated because a partial file is corrupt.`,
+        url: guarded.url.href, status: resp.status, content: null, content_type: contentType,
+        error: `file exceeds the ${WEB_DOWNLOAD_BINARY_CAP}-byte download limit. Binary files are not truncated because a partial file is corrupt.`,
       }, 413);
     }
     // Buffer (nodejs_compat is on for this worker) rather than String.fromCharCode(...bytes),
     // which blows the call stack on a large array — the same trap already hit and fixed once in
     // the browser worker's screenshot path.
     return c.json({
-      url: rawUrl, status: resp.status, encoding: "base64",
+      url: guarded.url.href, status: resp.status, encoding: "base64",
       content_type: contentType || "application/octet-stream",
       content: bytesToBase64(bytes),
       size: bytes.byteLength, truncated: false,

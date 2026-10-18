@@ -1,19 +1,19 @@
-import { describe, it, expect, vi } from "vitest";
 import {
+  detectPathTraversal,
   detectSqlInjection,
   detectXss,
-  detectPathTraversal,
   scanRequestBody,
 } from "@naelao/security";
 import {
   generateApiKey,
-  hashApiKey,
-  verifyApiKey,
-  validatePasswordStrength,
   generateCsrfToken,
+  hashApiKey,
+  validatePasswordStrength,
+  verifyApiKey,
   verifyCsrfToken,
 } from "@naelao/security";
 import { checkSsrf } from "@naelao/security";
+import { describe, expect, it, vi } from "vitest";
 
 const TEST_SECRET = "csrf-test-secret-123";
 
@@ -46,7 +46,7 @@ describe("detectXss", () => {
   });
 
   it("detects event handlers", () => {
-    expect(detectXss('<img onerror=alert(1) src=x>')).toBe(true);
+    expect(detectXss("<img onerror=alert(1) src=x>")).toBe(true);
     expect(detectXss('<div onload="evil()">')).toBe(true);
   });
 
@@ -148,14 +148,18 @@ describe("generateCsrfToken / verifyCsrfToken", () => {
 
   it("fails for wrong session ID", async () => {
     const token = await generateCsrfToken("session123", TEST_SECRET);
-    expect(await verifyCsrfToken(token, "other-session", TEST_SECRET)).toBe(false);
+    expect(await verifyCsrfToken(token, "other-session", TEST_SECRET)).toBe(
+      false
+    );
   });
 
   it("fails for expired token", async () => {
     const token = await generateCsrfToken("session123", TEST_SECRET);
     // Use 1ms max age — should be expired immediately
     await new Promise((r) => setTimeout(r, 5));
-    expect(await verifyCsrfToken(token, "session123", TEST_SECRET, 1)).toBe(false);
+    expect(await verifyCsrfToken(token, "session123", TEST_SECRET, 1)).toBe(
+      false
+    );
   });
 });
 
@@ -163,10 +167,38 @@ describe("generateCsrfToken / verifyCsrfToken", () => {
 // in the script-engine isolate harness (Tier 2/3/4, which can't import this package directly).
 describe("checkSsrf", () => {
   it("blocks a literal loopback/link-local/private host without needing DNS resolution", async () => {
-    for (const url of ["http://127.0.0.1/", "http://localhost/", "http://169.254.169.254/latest/meta-data", "http://10.0.0.5/", "http://192.168.1.1/", "http://internal-svc.internal/"]) {
+    for (const url of [
+      "http://127.0.0.1/",
+      "http://localhost/",
+      "http://169.254.169.254/latest/meta-data",
+      "http://10.0.0.5/",
+      "http://192.168.1.1/",
+      "http://internal-svc.internal/",
+      "http://[::1]/",
+      "http://[::ffff:127.0.0.1]/",
+      "http://[::ffff:7f00:1]/",
+      "http://[fd00::5]/",
+      "http://[fe80::1]/",
+      "http://[ff02::1]/",
+      "http://[2001:db8::1]/",
+      "http://[64:ff9b::7f00:1]/",
+      "http://[64:ff9b:1::1]/",
+      "http://192.0.2.1/",
+      "http://198.18.0.1/",
+      "http://240.0.0.1/",
+    ]) {
       const result = await checkSsrf(url, { resolveDns: false });
       expect(result.blocked).toBe(true);
     }
+  });
+
+  it("allows a public IPv6 literal without sending it to hostname resolution", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const result = await checkSsrf("https://[2606:4700:4700::1111]/", {
+      fetchImpl,
+    });
+    expect(result.blocked).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("blocks a non-http(s) protocol", async () => {
@@ -175,7 +207,9 @@ describe("checkSsrf", () => {
   });
 
   it("allows a public https URL when the literal hostname isn't blocked", async () => {
-    const result = await checkSsrf("https://example.com/page", { resolveDns: false });
+    const result = await checkSsrf("https://example.com/page", {
+      resolveDns: false,
+    });
     expect(result.blocked).toBe(false);
   });
 
@@ -184,14 +218,45 @@ describe("checkSsrf", () => {
       const url = String(input);
       const type = new URL(url).searchParams.get("type");
       if (type === "A") {
-        return new Response(JSON.stringify({ Answer: [{ data: "169.254.169.254" }] }));
+        return new Response(
+          JSON.stringify({ Answer: [{ data: "169.254.169.254" }] })
+        );
       }
       return new Response(JSON.stringify({ Answer: [] }));
     }) as unknown as typeof fetch;
 
-    const result = await checkSsrf("https://evil-rebind.example/", { fetchImpl });
+    const result = await checkSsrf("https://evil-rebind.example/", {
+      fetchImpl,
+    });
     expect(result.blocked).toBe(true);
     expect(result.reason).toContain("resolves to a blocked address");
+  });
+
+  it("blocks an IPv4-mapped private address returned by AAAA resolution", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const type = new URL(String(input)).searchParams.get("type");
+      return Response.json({
+        Answer: type === "AAAA" ? [{ data: "::ffff:7f00:1" }] : [],
+      });
+    }) as unknown as typeof fetch;
+    const result = await checkSsrf("https://mapped-private.example/", {
+      fetchImpl,
+    });
+    expect(result).toMatchObject({ blocked: true });
+    expect(result.reason).toContain("::ffff:7f00:1");
+  });
+
+  it("blocks a DNS response with no usable A or AAAA addresses", async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ Answer: [{ type: 5, data: "internal.example" }] })
+    ) as unknown as typeof fetch;
+    const result = await checkSsrf("https://cname-only.example/", {
+      fetchImpl,
+    });
+    expect(result).toMatchObject({
+      blocked: true,
+      reason: "Destination has no verified DNS address",
+    });
   });
 
   it("allows a hostname that resolves only to public addresses", async () => {
@@ -199,7 +264,9 @@ describe("checkSsrf", () => {
       const url = String(input);
       const type = new URL(url).searchParams.get("type");
       if (type === "A") {
-        return new Response(JSON.stringify({ Answer: [{ data: "93.184.216.34" }] }));
+        return new Response(
+          JSON.stringify({ Answer: [{ data: "93.184.216.34" }] })
+        );
       }
       return new Response(JSON.stringify({ Answer: [] }));
     }) as unknown as typeof fetch;

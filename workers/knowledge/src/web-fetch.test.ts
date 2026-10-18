@@ -15,7 +15,7 @@ vi.mock("@naelao/security", async (importOriginal) => {
 
 import worker from "./index.js";
 
-function bindings() {
+function bindings(extra: Record<string, unknown> = {}) {
   return {
     ENVIRONMENT: "test",
     PLATFORM_SECRET: "secret",
@@ -26,16 +26,22 @@ function bindings() {
         })),
       })),
     },
+    ...extra,
   } as unknown as Parameters<NonNullable<typeof worker.fetch>>[1];
 }
 
-async function request(url: string, format?: "markdown" | "html") {
+async function requestEndpoint(
+  endpoint: "fetch" | "extract" | "download",
+  url: string,
+  format?: "markdown" | "html",
+  extraBindings: Record<string, unknown> = {}
+) {
   const token = await mintInternalToken("secret", "tenant");
   const fetchWorker = worker.fetch;
   if (!fetchWorker)
     throw new Error("knowledge worker fetch handler unavailable");
   return fetchWorker(
-    new Request("https://knowledge/internal/web-search/fetch", {
+    new Request(`https://knowledge/internal/web-search/${endpoint}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -45,10 +51,13 @@ async function request(url: string, format?: "markdown" | "html") {
       },
       body: JSON.stringify({ url, ...(format ? { format } : {}) }),
     }),
-    bindings(),
+    bindings(extraBindings),
     {} as ExecutionContext
   );
 }
+
+const request = (url: string, format?: "markdown" | "html") =>
+  requestEndpoint("fetch", url, format);
 
 describe("guarded Markdown web fetch", () => {
   beforeEach(() => {
@@ -157,5 +166,61 @@ describe("guarded Markdown web fetch", () => {
     });
     const invalid = await request("file:///etc/passwd");
     expect(invalid.status).toBe(400);
+  });
+
+  it.each(["extract", "download"] as const)(
+    "revalidates a %s redirect before making the next request",
+    async (endpoint) => {
+      checkSsrf
+        .mockResolvedValueOnce({ blocked: false })
+        .mockResolvedValueOnce({ blocked: false })
+        .mockResolvedValueOnce({ blocked: true, reason: "private address" });
+      const outbound = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 302,
+          headers: { location: "http://127.0.0.1/private" },
+        })
+      );
+      vi.stubGlobal("fetch", outbound);
+      const response = await requestEndpoint(
+        endpoint,
+        "https://first.example/"
+      );
+      expect(response.status).toBe(403);
+      expect(outbound).toHaveBeenCalledOnce();
+      expect(checkSsrf.mock.calls.map(([url]) => url)).toContain(
+        "http://127.0.0.1/private"
+      );
+    }
+  );
+
+  it("stops reading and cancels an oversized binary download at the configured cap", async () => {
+    let enqueued = 0;
+    let cancelled = false;
+    const outbound = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (enqueued >= 20) return controller.close();
+              enqueued++;
+              controller.enqueue(new Uint8Array(1_000_000));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { headers: { "content-type": "application/pdf" } }
+        )
+    );
+    vi.stubGlobal("fetch", outbound);
+    const response = await requestEndpoint(
+      "download",
+      "https://example.com/large.pdf"
+    );
+    expect(response.status).toBe(413);
+    // A ReadableStream may prefetch one chunk into its own queue, but the route stops after that.
+    expect(enqueued).toBeLessThanOrEqual(14);
+    expect(cancelled).toBe(true);
   });
 });
