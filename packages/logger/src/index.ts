@@ -12,41 +12,159 @@ export interface LogEntry {
   [key: string]: unknown;
 }
 
-const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
-
-// PII field names to scrub from log output
-const PII_FIELDS = new Set([
-  "password", "secret", "token", "api_key", "apiKey", "authorization",
-  "credit_card", "creditCard", "ssn", "phone", "email", "dob",
-  "private_key", "privateKey", "refresh_token", "refreshToken",
+const LEVEL_ORDER: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+const MAX_LOG_DEPTH = 16;
+const MAX_LOG_ITEMS = 100;
+const MAX_LOG_STRING_LENGTH = 8_192;
+const RESERVED_LOG_FIELDS = new Set([
+  "level",
+  "message",
+  "service",
+  "timestamp",
+  "trace_id",
+  "tenant_id",
 ]);
 
-// G-N33: Store pattern sources (not compiled /g RegExp objects) to avoid shared
-// lastIndex state corruption across concurrent requests in the same isolate.
-const PII_PATTERN_SOURCES = [
-  /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/,  // email
-  /\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/,               // credit card
-  /\b\d{3}-\d{2}-\d{4}\b/,                                   // SSN
+const SENSITIVE_FIELDS = new Set([
+  "password",
+  "passwordhash",
+  "passwd",
+  "secret",
+  "clientsecret",
+  "token",
+  "accesstoken",
+  "refreshtoken",
+  "idtoken",
+  "apikey",
+  "authorization",
+  "cookie",
+  "setcookie",
+  "creditcard",
+  "ssn",
+  "phone",
+  "email",
+  "dob",
+  "dateofbirth",
+  "privatekey",
+  "signingkey",
+  "credential",
+  "credentials",
+  "accesskey",
+  "secretaccesskey",
+]);
+const SENSITIVE_FIELD_MARKERS = [
+  "password",
+  "secret",
+  "token",
+  "apikey",
+  "authorization",
+  "cookie",
+  "creditcard",
+  "ssn",
+  "socialsecuritynumber",
+  "phone",
+  "email",
+  "dateofbirth",
+  "dob",
+  "privatekey",
+  "credential",
+  "accesskey",
 ] as const;
 
+const PII_PATTERN_SOURCES = [
+  /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/,
+  /\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/,
+  /\b\d{3}-\d{2}-\d{4}\b/,
+  /(?:\+?1[\s.-]?)?(?:\(\d{3}\)|\b\d{3}\b)[\s.-]\d{3}[\s.-]\d{4}\b/,
+] as const;
+
+function scrubString(value: string): string {
+  let result =
+    value.length > MAX_LOG_STRING_LENGTH
+      ? `${value.slice(0, MAX_LOG_STRING_LENGTH)}[TRUNCATED]`
+      : value;
+  for (const source of PII_PATTERN_SOURCES) {
+    result = result.replace(new RegExp(source.source, "g"), "[REDACTED]");
+  }
+  return result;
+}
+
+function isSensitiveField(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    SENSITIVE_FIELDS.has(normalized) ||
+    SENSITIVE_FIELD_MARKERS.some(
+      (marker) => normalized.startsWith(marker) || normalized.endsWith(marker)
+    )
+  );
+}
+
+function scrubValue(
+  value: unknown,
+  seen: WeakSet<object>,
+  depth: number,
+  budget: { remaining: number }
+): unknown {
+  if (typeof value === "string") return scrubString(value);
+  if (typeof value === "bigint") return `${value}n`;
+  if (typeof value === "function" || typeof value === "symbol") {
+    return `[${typeof value}]`;
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= MAX_LOG_DEPTH) return "[Max depth]";
+  if (seen.has(value)) return "[Circular]";
+  if (budget.remaining <= 0) return "[Truncated]";
+  budget.remaining--;
+  seen.add(value);
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime())
+      ? "[Invalid Date]"
+      : value.toISOString();
+  }
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    return "[Binary data]";
+  }
+  if (value instanceof Error) {
+    return {
+      name: scrubString(value.name),
+      message: scrubString(value.message),
+    };
+  }
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, MAX_LOG_ITEMS)
+      .map((item) => scrubValue(item, seen, depth + 1, budget));
+    if (value.length > MAX_LOG_ITEMS)
+      items.push(`[${value.length - MAX_LOG_ITEMS} items omitted]`);
+    return items;
+  }
+
+  const result: Record<string, unknown> = Object.create(null);
+  let entries: [string, unknown][];
+  try {
+    entries = Object.entries(value as Record<string, unknown>);
+  } catch {
+    return "[Unserializable object]";
+  }
+  for (const [key, child] of entries.slice(0, MAX_LOG_ITEMS)) {
+    result[scrubString(key)] = isSensitiveField(key)
+      ? "[REDACTED]"
+      : scrubValue(child, seen, depth + 1, budget);
+  }
+  if (entries.length > MAX_LOG_ITEMS) {
+    result._omitted_fields = entries.length - MAX_LOG_ITEMS;
+  }
+  return result;
+}
+
 export function scrubPii(obj: unknown): unknown {
-  if (typeof obj === "string") {
-    let s = obj;
-    for (const src of PII_PATTERN_SOURCES) {
-      // Construct a fresh /g regex per call to avoid shared lastIndex across concurrent requests
-      s = s.replace(new RegExp(src.source, "g"), "[REDACTED]");
-    }
-    return s;
-  }
-  if (Array.isArray(obj)) return obj.map(scrubPii);
-  if (obj !== null && typeof obj === "object") {
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      result[k] = PII_FIELDS.has(k.toLowerCase()) ? "[REDACTED]" : scrubPii(v);
-    }
-    return result;
-  }
-  return obj;
+  return scrubValue(obj, new WeakSet(), 0, { remaining: 2_000 });
 }
 
 export class Logger {
@@ -62,7 +180,11 @@ export class Logger {
   }
 
   withContext(traceId: string, tenantId?: string): Logger {
-    return new Logger(this.service, Object.keys(LEVEL_ORDER).find((k) => LEVEL_ORDER[k as LogLevel] === this.minLevel) as LogLevel ?? "info", traceId, tenantId);
+    const level =
+      (Object.keys(LEVEL_ORDER) as LogLevel[]).find(
+        (key) => LEVEL_ORDER[key] === this.minLevel
+      ) ?? "info";
+    return new Logger(this.service, level, traceId, tenantId);
   }
 
   debug(message: string, extra?: Record<string, unknown>): void {
@@ -81,18 +203,27 @@ export class Logger {
     this.log("error", message, extra);
   }
 
-  private log(level: LogLevel, message: string, extra?: Record<string, unknown>): void {
+  private log(
+    level: LogLevel,
+    message: string,
+    extra?: Record<string, unknown>
+  ): void {
     if (LEVEL_ORDER[level] < this.minLevel) return;
+    const safeExtra = Object.fromEntries(
+      Object.entries(extra ?? {}).filter(
+        ([key]) => !RESERVED_LOG_FIELDS.has(key)
+      )
+    );
     const entry: LogEntry = {
+      ...safeExtra,
       level,
       message,
       service: this.service,
       timestamp: new Date().toISOString(),
       ...(this.traceId ? { trace_id: this.traceId } : {}),
       ...(this.tenantId ? { tenant_id: this.tenantId } : {}),
-      ...(extra ? (scrubPii(extra) as Record<string, unknown>) : {}),
     };
-    const output = JSON.stringify(entry);
+    const output = JSON.stringify(scrubPii(entry));
     if (level === "error" || level === "warn") {
       console.error(output);
     } else {
@@ -101,6 +232,9 @@ export class Logger {
   }
 }
 
-export function createLogger(service: string, minLevel: LogLevel = "info"): Logger {
+export function createLogger(
+  service: string,
+  minLevel: LogLevel = "info"
+): Logger {
   return new Logger(service, minLevel);
 }

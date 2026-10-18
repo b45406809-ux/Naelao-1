@@ -688,9 +688,11 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/logger`
 
-- [ ] `packages/logger/package.json`
-- [ ] `packages/logger/src/index.ts`
-- [ ] `packages/logger/tsconfig.json`
+- [x] `packages/logger/package.json`
+- [x] `packages/logger/src/index.ts`
+- [x] `packages/logger/src/index.test.ts` (added stress coverage)
+- [x] `packages/logger/vitest.config.ts` (added test discovery)
+- [x] `packages/logger/tsconfig.json`
 
 ### `packages/moderation`
 

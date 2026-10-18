@@ -166,11 +166,28 @@ Focused HTTP tests passed **24 tests across 7 files**; package TypeScript and fo
 - `jwtAuth` and `requireInternalHmac` have broad worker integration coverage but were not directly remounted in this package suite; route-by-route auth placement and every worker's secret binding remain pending.
 - Realtime broadcast response bodies are intentionally ignored; retries/delivery guarantees and gateway auth configuration remain runtime concerns.
 
+## Logger package stress pass (2026-10-18)
+
+Repository-wide source search found no production imports of `@naelao/logger` or `createLogger`; the package is retained because package visibility does not rule out external consumers. Its PII scrubber and logger behavior are now registered and tested directly.
+
+| File | Features and stress boundaries exercised | Evidence / disposition |
+|---|---|---|
+| `packages/logger/src/index.ts` | Field-name redaction, PII text patterns, reserved structured fields, context propagation, level filtering, circular/deep/binary/large/BigInt values | Fixed case/format bypasses for compound secret keys, PII in log messages, caller overrides of core fields, and unbounded/cyclic values. Reserved fields now win over caller extras; values are scrubbed and bounded before JSON serialization. |
+| `packages/logger/src/index.test.ts` | Camel-case and compound keys (`apiKey`, `openaiApiKey`, `refreshToken`, `phoneNumber`, `userEmail`), email/SSN/phone text, forged level/message/service/tenant/trace/timestamp, cycles/depth/bytes/long strings/BigInt, child logger level/context | 4 focused tests pass. |
+| `packages/logger/package.json`, `packages/logger/tsconfig.json`, `packages/logger/vitest.config.ts` | Build/typecheck/test discovery | Added Vitest test script/dependency and package project; typecheck and Biome pass. |
+
+The focused logger suite passed **4 tests**. The configured workspace passed **239 test files and 1,022 tests**.
+
+### Remaining logger risks
+
+- The free-text scrubber covers email, common phone, credit-card, and US SSN patterns; it is not a general secret detector and cannot guarantee removal of arbitrary credentials embedded in prose.
+- No in-repository production callsites were found, so expected production field shapes and downstream log retention/redaction behavior remain unverified.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 238 test files, 1,018 tests, with webhook, idempotency, sweeper, auth, crypto, DB, and HTTP projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 239 test files, 1,022 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, and logger projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |
