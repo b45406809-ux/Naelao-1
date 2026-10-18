@@ -1652,6 +1652,12 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added pure metric tests for required-fact recall, forbidden claims, exact extraction field precision/recall, Unicode, correction and negation cases. Verification passed 3 Node tests, script syntax check and `git diff --check`.
 - This is a smoke benchmark and a repeatable deployment tool, not held-out evidence. No credentials are present, so no provider calls, measured quality claims or savings claims were produced. Deployment-configured evaluation, broader approved corpus, downstream answer/retrieval validation, production cache/retry attribution, and DeepSeek long-running worker evaluation remain release gates.
 
+### Broader downstream and worker evaluation (2026-10-18)
+
+- Extended the evaluator with opt-in full-source versus processed-context answer runs on the pinned DeepSeek model. It checks required answer facts and validates citation quotes and optional offsets against the original source, then compares total preprocessing-plus-answer cost and end-to-end latency with the full-source baseline.
+- Added an opt-in synthetic two-tool worker trajectory that requires invoice and contract lookups, bounds the interaction to four rounds, rejects malformed/unknown tool calls, and records completion, per-call latency, tokens and provider-reported or configured-rate cost. This measures model tool-call behavior through the provider API, not the full Agents Worker runtime.
+- Added metric tests for downstream answer completeness, citation support, cost comparison and required worker tools. Verification: 5 Node tests, evaluator syntax check and `git diff --check` passed. Live downstream/worker calls remain unrun because provider credentials are absent; production cache/retry behavior and held-out retrieval benchmarks remain unmeasured.
+
 ### Integrated targeted verification (2026-10-18)
 
 - Re-ran the cross-phase targeted suites after the Shell Compact migration: Agents ScaleDown adapter, durable file partition, document workflow compilation and worker model routing passed (21 tests); SpaceDO compaction scope passed (2); Agent SDK passed (106); billing core passed (16); evaluation metrics passed (3). Agents and Spaces typechecks passed, and `git diff --check` is clean.
