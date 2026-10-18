@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, getChannelExtensionInboxSla, setChannelExtensionInboxSla } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -249,6 +249,9 @@ function ExtensionInboxNotes({ spaceId, projectId, installationId, eventId, sess
 function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId: string; projectId: string; session: SessionCredentials; installation: ChannelExtensionInstallation }) {
   const [events, setEvents] = React.useState<ChannelExtensionInboxEvent[]>([]);
   const [projectMembers, setProjectMembers] = React.useState<Array<{ user_id: string; role: string }>>([]);
+  const [slaMinutes, setSlaMinutes] = React.useState("60");
+  const [slaConfigured, setSlaConfigured] = React.useState(false);
+  const [savingSla, setSavingSla] = React.useState(false);
   const [pausedEvents, setPausedEvents] = React.useState<Set<string>>(() => new Set());
   const [cursor, setCursor] = React.useState<{ before: number; beforeId: string } | null>(null);
   const [loadingMore, setLoadingMore] = React.useState(false);
@@ -261,11 +264,18 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
   const [error, setError] = React.useState<string | null>(null);
   React.useEffect(() => {
     let cancelled = false;
-    Promise.all([listChannelExtensionInbox(spaceId, projectId, installation.instance_id, session), listProjectMembers(spaceId, projectId, session)])
-      .then(([page, members]) => { if (!cancelled) { setEvents(page.events); setProjectMembers(members); setCursor(page.next_before !== null && page.next_before_id ? { before: page.next_before, beforeId: page.next_before_id } : null); } })
+    Promise.all([listChannelExtensionInbox(spaceId, projectId, installation.instance_id, session), listProjectMembers(spaceId, projectId, session), getChannelExtensionInboxSla(spaceId, projectId, installation.instance_id, session)])
+      .then(([page, members, policy]) => { if (!cancelled) { setEvents(page.events); setProjectMembers(members); setSlaConfigured(!!policy); if (policy) setSlaMinutes(String(policy.first_response_seconds / 60)); setCursor(page.next_before !== null && page.next_before_id ? { before: page.next_before, beforeId: page.next_before_id } : null); } })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load extension inbox events."); });
     return () => { cancelled = true; };
   }, [spaceId, projectId, installation.instance_id, session]);
+  async function saveSla() {
+    if (savingSla) return;
+    setSavingSla(true); setError(null);
+    try { const policy = await setChannelExtensionInboxSla(spaceId, projectId, installation.instance_id, Number(slaMinutes) * 60, session); setSlaConfigured(true); setSlaMinutes(String(policy.first_response_seconds / 60)); }
+    catch (err) { setError(err instanceof Error ? err.message : "Couldn't update the first-response target."); }
+    finally { setSavingSla(false); }
+  }
   async function loadMore() {
     if (!cursor || loadingMore) return;
     setLoadingMore(true); setError(null);
@@ -331,11 +341,19 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
     finally { setExportingConversation(null); }
   }
   return <details style={{ marginTop: 8 }}>
-    <summary style={{ cursor: "pointer", fontSize: 11.5 }}>Recent customer inbox events ({events.length})</summary>
+    <summary style={{ cursor: "pointer", fontSize: 11.5 }}>Customer inbox ({events.length}{events.some(event => event.response_due_at !== null && event.response_due_at !== undefined && event.response_due_at < Date.now()) ? ` · ${events.filter(event => event.response_due_at !== null && event.response_due_at !== undefined && event.response_due_at < Date.now()).length} overdue` : ""})</summary>
     {error && <div role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11, marginTop: 6 }}>{error}</div>}
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 7, fontSize: 11 }}>
+      <label htmlFor={`inbox-sla-${installation.instance_id}`}>First response target</label>
+      <select id={`inbox-sla-${installation.instance_id}`} value={slaMinutes} onChange={e => setSlaMinutes(e.target.value)} style={{ background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: "3px 5px" }}>
+        {[5, 15, 30, 60, 240, 1440, 10080].map(minutes => <option key={minutes} value={minutes}>{minutes < 60 ? `${minutes} minutes` : minutes < 1440 ? `${minutes / 60} hours` : `${minutes / 1440} days`}</option>)}
+      </select>
+      <button type="button" className="btn-ghost" disabled={savingSla} onClick={() => void saveSla()}>{savingSla ? "Saving…" : slaConfigured ? "Update" : "Set target"}</button>
+      {!slaConfigured && <span style={{ color: "var(--text3)" }}>Not configured</span>}
+    </div>
     {!error && events.length === 0 && <div style={{ color: "var(--text3)", fontSize: 11, marginTop: 6 }}>No events for this installation yet.</div>}
     {events.map(event => <article key={event.event_id} style={{ marginTop: 7, padding: 8, border: "1px solid var(--border)", borderRadius: 6, fontSize: 11 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><span>{event.channel} · {event.status}</span><time>{new Date(event.created_at).toLocaleString()}</time></div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><span>{event.channel} · {event.status}{event.response_due_at !== null && event.response_due_at !== undefined && <strong style={{ color: event.response_due_at < Date.now() ? "var(--danger, #b42318)" : "var(--text3)", marginLeft: 6 }}>{event.response_due_at < Date.now() ? "Overdue" : `Due ${new Date(event.response_due_at).toLocaleString()}`}</strong>}</span><time>{new Date(event.created_at).toLocaleString()}</time></div>
       <div style={{ marginTop: 4, color: "var(--text2)" }}>
         <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>Assignee
           <select aria-label={`Assign inbox event ${event.event_id}`} value={event.assigned_to ?? ""} disabled={!!assigning} onChange={change => void setAssignment(event, change.target.value || null)} style={{ maxWidth: 180, marginLeft: 4, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: "3px 5px" }}>

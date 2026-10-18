@@ -1441,3 +1441,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Added route coverage for authenticated install-connection proxying and public Slack callback/Telegram webhook forwarding. The Node test exposed a streamed-body forwarding issue; the new proxy routes now set `duplex: "half"` for spec-compliant runtimes.
 - Verification: Agents, Notifications, Shell, and Router typechecks passed; Router provider/customer-voice tests passed (3 tests); Spaces migration replay passed (1 test); Agents inbox/channel/Slack tests passed (17 tests); Notifications interactive/air-gap tests passed (8 tests); `git diff --check` passed. No provider credentials, deployed migration, or live bot were used.
 - Phase 6 remains open for deployment-configured WhatsApp OAuth/BSP onboarding, lifecycle and routing for other providers, provider expiry/health reconciliation, robust uncertain-send reconciliation, inbox SLA/escalation and templates, and broader authorized-route tests.
+
+### Phase 6 owner-configured inbox response targets checkpoint (2026-10-18)
+
+- Added per-project and per-installation first-response targets (1 minute to 7 days), editable through an owner/admin API. Inbox events calculate a due timestamp only while neither the extension nor a team member has confirmed a reply; team replies remove them from the due queue.
+- The Shell inbox shows due/overdue status and exposes a bounded target selector. The target is a visible operational queue signal; automated paging, escalation policies, and scheduled reminders are still open and are not implied by this setting.
+- Verification: Agents and Shell typechecks passed; inbox projection tests passed (10 tests), including target validation, installation scoping, and reply closure; `git diff --check` passed. No deployed API was exercised.

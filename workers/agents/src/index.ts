@@ -7165,6 +7165,27 @@ app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
   return stub.fetch(new Request(`http://agent-do/channels/extensions/inbox?${query}`));
 });
 
+app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/sla", async c => {
+  const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Inbox SLA requires Space owner or admin access");
+  if (!await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId)) return c.json({ error_code: "extension_installation_unavailable" }, 404);
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId") ?? "");
+  return stub.fetch(new Request(`http://agent-do/channels/extensions/inbox/sla?${new URLSearchParams({ project_id: projectId, installation_id: installationId })}`));
+});
+
+app.put("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/sla", async c => {
+  const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Inbox SLA requires Space owner or admin access");
+  if (!await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId)) return c.json({ error_code: "extension_installation_unavailable" }, 404);
+  const body = await c.req.json<{ first_response_seconds?: unknown }>().catch(() => ({} as { first_response_seconds?: unknown }));
+  if (!Number.isSafeInteger(body.first_response_seconds) || Number(body.first_response_seconds) < 60 || Number(body.first_response_seconds) > 604800) throw badRequest("First response target must be 1 minute to 7 days");
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId") ?? "");
+  return stub.fetch(new Request("http://agent-do/channels/extensions/inbox/sla", { method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, installation_id: installationId, first_response_seconds: body.first_response_seconds, actor_id: userId }) }));
+});
+
 app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/notes", async c => {
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
   const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;

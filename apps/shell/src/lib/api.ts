@@ -1974,7 +1974,19 @@ export interface ChannelExtensionInboxEvent {
   assigned_to?: string | null;
   assigned_by?: string | null;
   assigned_at?: number | null;
+  first_response_seconds?: number | null;
+  response_due_at?: number | null;
   created_at: number;
+}
+
+export interface ChannelExtensionInboxSla { first_response_seconds: number; updated_by: string; updated_at: number }
+export async function getChannelExtensionInboxSla(spaceId: string, projectId: string, installationId: string, session: SessionCredentials): Promise<ChannelExtensionInboxSla | null> {
+  const result = await apiFetch<{ policy: ChannelExtensionInboxSla | null }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(installationId)}/inbox/sla`, { session });
+  return result.policy;
+}
+export async function setChannelExtensionInboxSla(spaceId: string, projectId: string, installationId: string, firstResponseSeconds: number, session: SessionCredentials): Promise<ChannelExtensionInboxSla> {
+  const result = await apiFetch<{ policy: ChannelExtensionInboxSla }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(installationId)}/inbox/sla`, { method: "PUT", session, body: JSON.stringify({ first_response_seconds: firstResponseSeconds }) });
+  return result.policy;
 }
 
 export interface ChannelExtensionInboxNote { note_id: string; actor_id: string; note_text: string; created_at: number }

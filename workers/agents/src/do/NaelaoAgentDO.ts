@@ -1572,6 +1572,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       note_id TEXT PRIMARY KEY, event_id TEXT NOT NULL, project_id TEXT NOT NULL, installation_id TEXT NOT NULL,
       actor_id TEXT NOT NULL, note_text TEXT NOT NULL CHECK(length(note_text)<=2000), created_at INTEGER NOT NULL
     )`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS channel_extension_inbox_sla (
+      project_id TEXT NOT NULL, installation_id TEXT NOT NULL, first_response_seconds INTEGER NOT NULL CHECK(first_response_seconds BETWEEN 60 AND 604800),
+      updated_by TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(project_id,installation_id)
+    )`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_extension_inbox_notes ON channel_extension_inbox_notes(project_id,installation_id,event_id,created_at)`);
     initChannelExtensionSessionStore(this.ctx.storage.sql);
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN task_id TEXT`); } catch { /* exists */ }
@@ -1828,6 +1832,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleListChannelSessions();
       }
       if (method === "GET" && url.pathname === "/channels/extensions/inbox") return this.handleChannelExtensionInbox(url.searchParams);
+      if (method === "GET" && url.pathname === "/channels/extensions/inbox/sla") return this.handleChannelExtensionInboxSla(url.searchParams);
+      if (method === "PUT" && url.pathname === "/channels/extensions/inbox/sla") return this.handleChannelExtensionInboxSlaUpdate(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/assign") return this.handleChannelExtensionInboxAssign(request);
       if (method === "GET" && url.pathname === "/channels/extensions/inbox/notes") return this.handleChannelExtensionInboxNotes(url.searchParams);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/notes") return this.handleChannelExtensionInboxAddNote(request);
@@ -5723,12 +5729,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const rows = this.ctx.storage.sql.exec(
       `SELECT m.id AS event_id,s.channel,s.human_takeover,m.text,m.answered,m.created_at,
               a.assigned_to,a.assigned_by,a.assigned_at,
+              sla.first_response_seconds,
+              CASE WHEN sla.first_response_seconds IS NOT NULL AND COALESCE(d.status,'')!='sent' AND COALESCE(h.status,'')!='sent'
+                   THEN m.created_at + sla.first_response_seconds*1000 ELSE NULL END AS response_due_at,
               COALESCE(d.status,CASE m.answered WHEN 1 THEN 'sent' WHEN 2 THEN 'processing' ELSE 'queued' END) AS status,
               d.reply_text,d.error_code,d.created_at AS dispatched_at,h.reply_text AS human_reply_text,h.status AS human_reply_status
        FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
        LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
        LEFT JOIN channel_extension_human_replies h ON h.event_id=m.id
        LEFT JOIN channel_extension_inbox_assignments a ON a.event_id=m.id AND a.project_id=m.project_id AND a.installation_id=m.channel_extension_instance_id
+       LEFT JOIN channel_extension_inbox_sla sla ON sla.project_id=m.project_id AND sla.installation_id=m.channel_extension_instance_id
        WHERE m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=?
          AND (m.created_at<? OR (m.created_at=? AND m.id<?))
        ORDER BY m.created_at DESC,m.id DESC LIMIT ?`, projectId, installationId, before, before, beforeId, limit
@@ -5738,6 +5748,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const nextBefore = events.length === limit && last ? Number(last.created_at ?? 0) : null;
     const nextBeforeId = events.length === limit && last ? String(last.event_id ?? "") : null;
     return Response.json({ events, next_before: nextBefore, next_before_id: nextBeforeId });
+  }
+
+  private handleChannelExtensionInboxSla(params: URLSearchParams): Response {
+    const projectId = params.get("project_id") ?? "", installationId = params.get("installation_id") ?? "";
+    if (!projectId || !installationId) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
+    const policy = this.ctx.storage.sql.exec(`SELECT first_response_seconds,updated_by,updated_at FROM channel_extension_inbox_sla WHERE project_id=? AND installation_id=?`, projectId, installationId).toArray()[0] ?? null;
+    return Response.json({ policy });
+  }
+
+  private async handleChannelExtensionInboxSlaUpdate(request: Request): Promise<Response> {
+    const body = await request.json<{ project_id?: unknown; installation_id?: unknown; actor_id?: unknown; first_response_seconds?: unknown }>()
+      .catch(() => ({} as { project_id?: unknown; installation_id?: unknown; actor_id?: unknown; first_response_seconds?: unknown }));
+    const projectId = typeof body.project_id === "string" ? body.project_id : "", installationId = typeof body.installation_id === "string" ? body.installation_id : "";
+    const actorId = typeof body.actor_id === "string" ? body.actor_id : "", seconds = body.first_response_seconds;
+    if (!projectId || !installationId || !/^[A-Za-z0-9._:@-]{1,128}$/.test(actorId)
+      || !Number.isSafeInteger(seconds) || Number(seconds) < 60 || Number(seconds) > 604800) {
+      return Response.json({ error_code: "channel_extension_inbox_sla_invalid" }, { status: 400 });
+    }
+    // A policy may be configured before the first customer message arrives, so scope existence
+    // is enforced by the authenticated Agents route against the active installation.
+    const updatedAt = Date.now();
+    this.ctx.storage.sql.exec(`INSERT INTO channel_extension_inbox_sla(project_id,installation_id,first_response_seconds,updated_by,updated_at) VALUES(?,?,?,?,?)
+      ON CONFLICT(project_id,installation_id) DO UPDATE SET first_response_seconds=excluded.first_response_seconds,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
+    projectId, installationId, Number(seconds), actorId, updatedAt);
+    return Response.json({ policy: { first_response_seconds: Number(seconds), updated_by: actorId, updated_at: updatedAt } });
   }
 
   private handleChannelExtensionInboxNotes(params: URLSearchParams): Response {

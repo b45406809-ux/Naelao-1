@@ -3,6 +3,23 @@ import { NaelaoAgentDO } from "./NaelaoAgentDO.js";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 
 describe("channel extension inbox projection", () => {
+  it("stores a first-response target by project and installation and omits replied events from the due queue", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
+    await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    storage.sql.exec("INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES('session-a','telegram','subject','project-a')");
+    storage.sql.exec("INSERT INTO channel_messages(id,session_id,direction,text,project_id,channel_extension_instance_id,created_at) VALUES('event-open','session-a','inbound','waiting','project-a','install-a',1000),('event-replied','session-a','inbound','answered','project-a','install-a',2000)");
+    storage.sql.exec("INSERT INTO channel_extension_human_replies(event_id,project_id,installation_id,reply_text,status) VALUES('event-replied','project-a','install-a','Done','sent')");
+    const update = await agent.fetch(new Request("http://agent/channels/extensions/inbox/sla", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: "project-a", installation_id: "install-a", actor_id: "owner-a", first_response_seconds: 60 }) }));
+    expect(await update.json()).toMatchObject({ policy: { first_response_seconds: 60, updated_by: "owner-a" } });
+    expect((await agent.fetch(new Request("http://agent/channels/extensions/inbox/sla?project_id=project-a&installation_id=install-b"))).status).toBe(200);
+    expect(await (await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"))).json()).toMatchObject({ events: [
+      { event_id: "event-replied", response_due_at: null }, { event_id: "event-open", first_response_seconds: 60, response_due_at: 61000 },
+    ] });
+    const invalid = await agent.fetch(new Request("http://agent/channels/extensions/inbox/sla", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ project_id: "project-a", installation_id: "install-a", actor_id: "owner-a", first_response_seconds: 30 }) }));
+    expect(invalid.status).toBe(400);
+  });
+
   it("claims and releases an inbox event with compare-and-set assignment scoped to its project and installation", async () => {
     const storage = createDOStorage();
     const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
