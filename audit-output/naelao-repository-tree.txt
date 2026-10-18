@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1873
-Files with source or executable-configuration extensions: 1667
-Inventory revision: SSRF security stress batch in the current working tree
+Files: 1874
+Files with source or executable-configuration extensions: 1668
+Inventory revision: egress policy security stress batch in the current working tree
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -901,6 +901,7 @@ packages/
       data-residency.ts
       delegation.ts
       dlp.ts
+      egress-policy.test.ts
       egress-policy.ts
       ephemeral-grant.ts
       headers.ts

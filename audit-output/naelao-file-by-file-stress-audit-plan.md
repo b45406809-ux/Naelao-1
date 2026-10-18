@@ -752,7 +752,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/security/src/data-residency.ts`
 - [ ] `packages/security/src/delegation.ts`
 - [ ] `packages/security/src/dlp.ts`
-- [ ] `packages/security/src/egress-policy.ts`
+- [x] `packages/security/src/egress-policy.ts`
 - [ ] `packages/security/src/ephemeral-grant.ts`
 - [ ] `packages/security/src/headers.ts`
 - [x] `packages/security/src/index.ts`
@@ -765,6 +765,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/rate-limit-policy.test.ts`
 - [x] `packages/security/src/waf-stress.test.ts`
 - [x] `packages/security/src/ssrf-stress.test.ts`
+- [x] `packages/security/src/egress-policy.test.ts`
 - [x] `packages/security/vitest.config.ts`
 - [ ] `packages/security/src/secrets.ts`
 - [x] `packages/security/src/security-phase4.test.ts`
