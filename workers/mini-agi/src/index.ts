@@ -1,6 +1,6 @@
 // G-AGI01..G-AGI08: Mini-AGI — hierarchical agent orchestration (planner + child agents, depth ≤ 3)
 import { Hono } from "hono";
-import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken, parseBoundedInteger } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 
 interface Env {
@@ -119,7 +119,7 @@ app.get("/v1/agi/runs", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const url = new URL(c.req.url);
   const spaceId = url.searchParams.get("space_id");
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10), 100);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, 1, 100);
   const stmt = spaceId
     ? c.env.PLATFORM_DB.prepare(
         "SELECT id, space_id, goal, status, depth, total_tokens_used, token_budget, result, created_at FROM agi_runs WHERE tenant_id = ? AND space_id = ? ORDER BY created_at DESC LIMIT ?"

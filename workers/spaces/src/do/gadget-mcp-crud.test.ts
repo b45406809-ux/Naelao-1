@@ -47,13 +47,15 @@ describe("Gadget MCP record operations", () => {
     expect((await updated.json() as { result: { structuredContent: unknown } }).result.structuredContent).toEqual({ updated: true });
     const record = await call("get", { table: "journal", id: "trade-1" });
     expect((await record.json() as { result: { structuredContent: unknown } }).result.structuredContent).toMatchObject({ id: "trade-1", status: "closed", quantity: 2 });
+    const boundedList = await call("list", { table: "journal", limit: "Infinity" });
+    expect((await boundedList.json() as { result: { structuredContent: unknown[] } }).result.structuredContent).toHaveLength(1);
     expect((await call("update", { table: "journal", id: "trade-1", record: { unapproved: true } })).status).toBe(400);
     expect((await call("delete", { table: "journal", id: "trade-1" })).status).toBe(200);
     const missing = await call("get", { table: "journal", id: "trade-1" });
     expect((await missing.json() as { result: { structuredContent: unknown } }).result.structuredContent).toBeNull();
     const audit = await gadget.fetch(new Request("http://gadget/api/actions/audit?after=0"));
     const auditBody = await audit.json() as { items: Array<Record<string, unknown>> };
-    expect(auditBody.items.map(item => [item.actor_id, item.operation, item.table_name])).toEqual([["owner-a", "insert", "journal"], ["owner-a", "update", "journal"], ["owner-a", "get", "journal"], ["owner-a", "delete", "journal"], ["owner-a", "get", "journal"]]);
+    expect(auditBody.items.map(item => [item.actor_id, item.operation, item.table_name])).toEqual([["owner-a", "insert", "journal"], ["owner-a", "update", "journal"], ["owner-a", "get", "journal"], ["owner-a", "list", "journal"], ["owner-a", "delete", "journal"], ["owner-a", "get", "journal"]]);
     expect(JSON.stringify(auditBody)).not.toContain("trade-1");
   });
 });

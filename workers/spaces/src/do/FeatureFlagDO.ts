@@ -40,6 +40,37 @@ interface EvalContext {
   [key: string]: string | undefined;
 }
 
+const FLAG_STATES = new Set(["on", "off", "rollout"]);
+const TARGET_ATTRIBUTES = new Set(["account_id", "plan_tier", "tenant_id"]);
+const MAX_TARGETING_RULES = 32;
+
+function validTargetingRules(value: unknown): value is TargetingRule[] {
+  return Array.isArray(value) && value.length <= MAX_TARGETING_RULES && value.every((rule) => {
+    if (!rule || typeof rule !== "object") return false;
+    const candidate = rule as Partial<TargetingRule>;
+    if (typeof candidate.attribute !== "string" || !TARGET_ATTRIBUTES.has(candidate.attribute)) return false;
+    if (!(candidate.operator === "eq" || candidate.operator === "ne" || candidate.operator === "in")) return false;
+    if (candidate.operator === "in") {
+      return Array.isArray(candidate.value) && candidate.value.length <= 100 && candidate.value.every((item) => typeof item === "string" && item.length <= 256);
+    }
+    return typeof candidate.value === "string" && candidate.value.length <= 256;
+  });
+}
+
+function safeEvalContext(value: unknown): EvalContext | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const context: EvalContext = {};
+  for (const key of TARGET_ATTRIBUTES) {
+    const field = input[key];
+    if (field !== undefined) {
+      if (typeof field !== "string" || field.length > 256) return undefined;
+      context[key] = field;
+    }
+  }
+  return context;
+}
+
 function evalRules(rules: TargetingRule[], ctx: EvalContext): boolean {
   for (const rule of rules) {
     const ctxVal = ctx[rule.attribute];
@@ -87,9 +118,14 @@ export class FeatureFlagDO extends DurableObject {
         state: "on" | "off" | "rollout";
         enabled_pct?: number;
         targeting_rules?: TargetingRule[];
-      }>();
-      if (!body.flag_id || !body.state) {
-        return Response.json({ error: "flag_id and state required" }, { status: 400 });
+      }>().catch(() => null);
+      if (!body || typeof body.flag_id !== "string" || !body.flag_id.trim() || body.flag_id.length > 128 || !FLAG_STATES.has(body.state)) {
+        return Response.json({ error: "flag_id and valid state required" }, { status: 400 });
+      }
+      const enabledPct = body.enabled_pct ?? 0;
+      if (!Number.isSafeInteger(enabledPct) || enabledPct < 0 || enabledPct > 100 ||
+          (body.targeting_rules !== undefined && !validTargetingRules(body.targeting_rules))) {
+        return Response.json({ error: "invalid_flag_configuration" }, { status: 400 });
       }
       const now = new Date().toISOString();
       this.ctx.storage.sql.exec(
@@ -97,7 +133,7 @@ export class FeatureFlagDO extends DurableObject {
          VALUES (?, ?, ?, ?, ?)`,
         body.flag_id,
         body.state,
-        body.enabled_pct ?? 0,
+        enabledPct,
         JSON.stringify(body.targeting_rules ?? []),
         now
       );
@@ -130,8 +166,10 @@ export class FeatureFlagDO extends DurableObject {
 
     // POST /evaluate — evaluate a flag for a given context
     if (method === "POST" && url.pathname === "/evaluate") {
-      const body = await request.json<{ flag_id: string; context: EvalContext }>();
-      if (!body.flag_id) return Response.json({ error: "flag_id required" }, { status: 400 });
+      const body = await request.json<{ flag_id: string; context: EvalContext }>().catch(() => null);
+      if (!body || typeof body.flag_id !== "string" || !body.flag_id.trim()) return Response.json({ error: "flag_id required" }, { status: 400 });
+      const context = safeEvalContext(body.context);
+      if (!context) return Response.json({ error: "invalid_evaluation_context" }, { status: 400 });
 
       const rows = this.ctx.storage.sql
         .exec(`SELECT * FROM flags WHERE flag_id = ?`, body.flag_id)
@@ -149,11 +187,11 @@ export class FeatureFlagDO extends DurableObject {
 
       // state === "rollout"
       const rules: TargetingRule[] = JSON.parse(flag.targeting_rules);
-      if (rules.length > 0 && evalRules(rules, body.context)) {
+      if (rules.length > 0 && evalRules(rules, context)) {
         return Response.json({ enabled: true, reason: "targeting_rule_match" });
       }
 
-      const accountId = body.context.account_id ?? body.context.tenant_id ?? "anonymous";
+      const accountId = context.account_id ?? context.tenant_id ?? "anonymous";
       const pct = await deterministicPct(body.flag_id, accountId);
       const enabled = pct < flag.enabled_pct;
       return Response.json({ enabled, reason: `rollout_pct_${flag.enabled_pct}` });

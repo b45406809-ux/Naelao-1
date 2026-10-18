@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ConcurrencyDO } from "./ConcurrencyDO.js";
+import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 
 function harness() {
   const locks = new Map<string, { holder_id: string; acquired_at: number; expires_at: number; fencing_token: number }>();
@@ -156,6 +157,30 @@ describe("ConcurrencyDO node leases", () => {
     vi.advanceTimersByTime(15_000); await h.instance.alarm();
     expect(h.nodeLeases.size).toBe(0);
     vi.useRealTimers();
+  });
+});
+
+describe("ConcurrencyDO slot admission bounds", () => {
+  it("caps caller supplied slot capacity and cannot turn a malformed request into unlimited admission", async () => {
+    const storage = Object.assign(createDOStorage(), {
+      getAlarm: async () => null,
+      setAlarm: async () => {},
+      deleteAlarm: async () => {},
+    });
+    const object = new ConcurrencyDO({ storage } as never, {});
+    const acquire = (holder: string, limit: number) => object.fetch(new Request("http://do/acquire", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "resource", holder_id: holder, limit }),
+    }));
+
+    for (let i = 0; i < 100; i++) {
+      const response = await acquire(`holder-${i}`, 1_000_000);
+      expect((await response.json()).granted).toBe(true);
+    }
+    const overflow = await acquire("holder-overflow", 1_000_000);
+    expect(await overflow.json()).toMatchObject({ granted: false, active: 100, limit: 100 });
+    const fractional = await acquire("holder-fractional", 0.5);
+    expect(await fractional.json()).toMatchObject({ granted: false, active: 100, limit: 3 });
   });
 });
 

@@ -1,6 +1,6 @@
 // G-BE02: Platform Admin Worker — tenant management, feature flags, stats
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, parseBoundedInteger, requestId } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -85,8 +85,8 @@ app.use("*", async (c, next) => {
 // GET /admin/tenants — list all tenants
 app.get("/admin/tenants", async (c) => {
   const url = new URL(c.req.url);
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 200);
-  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, 1, 200);
+  const offset = parseBoundedInteger(url.searchParams.get("offset"), 0, 0, 100_000);
 
   const { results } = await c.env.PLATFORM_DB.prepare(
     "SELECT id, name, plan_tier, status, created_at FROM orgs ORDER BY created_at DESC LIMIT ? OFFSET ?"
@@ -134,7 +134,7 @@ app.patch("/admin/tenants/:tenantId", async (c) => {
 app.get("/admin/users", async (c) => {
   const url = new URL(c.req.url);
   const email = url.searchParams.get("email") ?? "";
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 200);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, 1, 200);
 
   const { results } = email
     ? await c.env.PLATFORM_DB.prepare(
@@ -239,7 +239,7 @@ app.get("/admin/stats", async (c) => {
 app.get("/admin/failures", async (c) => {
   const url = new URL(c.req.url);
   const reviewed = url.searchParams.get("reviewed") ?? "0";
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 200);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, 1, 200);
 
   const { results } = await c.env.PLATFORM_DB.prepare(
     `SELECT id, message_type, payload_json, failure_reason, failed_at, retry_count, reviewed
@@ -276,7 +276,7 @@ app.get("/admin/audit", async (c) => {
   const url = new URL(c.req.url);
   const spaceId = url.searchParams.get("space_id") ?? "";
   const rawEventType = url.searchParams.get("event_type") ?? "";
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 200);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, 1, 200);
 
   if (!spaceId) return c.json({ error_code: "bad_request", message: "space_id is required" }, 400);
 

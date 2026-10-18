@@ -384,7 +384,9 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     const body = await request.json<{ key?: string; holder_id?: string; limit?: number; ttl_ms?: number }>().catch(() => ({}) as Record<string, never>);
     const key = String(body.key ?? "");
     const holderId = String(body.holder_id ?? "");
-    const limit = typeof body.limit === "number" && body.limit > 0 ? body.limit : 3; // spec default maxConcurrentRuns
+    const limit = Number.isSafeInteger(body.limit) && body.limit! > 0
+      ? Math.min(body.limit!, 100)
+      : 3; // spec default maxConcurrentRuns; one key cannot be configured above 100 slots
     // Only fall back to the default when the caller omitted ttl_ms entirely — an explicit
     // non-positive value (e.g. a test simulating an already-expired slot) is honored, not
     // silently overridden.

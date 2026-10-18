@@ -1113,6 +1113,17 @@ export interface ScriptEngineEnv {
   spaceId: string;
   agentId: string;
   tenantId: string;
+  /** Host-verified transcript for this run. Conversation tools must not accept a model-chosen
+   *  session as authority to read a different thread. */
+  currentSessionId?: string;
+  /** Optional host-owned transcript source for channel threads stored locally by the Agent DO.
+   *  It takes no caller-selected session argument, so it can only expose the active channel
+   *  conversation. */
+  loadCurrentConversation?: () => Promise<{
+    messages: Array<{ id?: string; role: string; content: string; created_at?: string }>;
+    complete: boolean;
+    error?: string;
+  }>;
   /** Host-owned session scope for private temporary tool logs. */
   outputSessionId?: string;
   /** Host-owned durable index that physically deletes encrypted tool logs after their TTL. */

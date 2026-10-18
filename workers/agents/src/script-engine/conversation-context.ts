@@ -30,6 +30,7 @@
  */
 
 export interface ConversationMessage {
+  id?: string | undefined;
   role: string;
   content: string;
   created_at?: string | undefined;
@@ -74,7 +75,7 @@ export const COMPACTION_TURN_THRESHOLD = 25;
 export const COMPACTION_TOKEN_RATIO_THRESHOLD = 0.8;
 export const COMPACTION_RECENT_TURNS = 6;
 export const COMPACTION_NOTICE =
-  "Context COMPACTED: earlier conversation history was compacted into PROJECT.md. Missing details do not mean events never happened. Do not guess; use `conversation.search` to inspect archived messages.";
+  "Context COMPACTED: earlier conversation history is omitted or summarized to fit. Missing details do not mean events never happened. Do not guess; use `conversation.search` to inspect the stored transcript.";
 
 export interface ConversationScope {
   spaceId: string;

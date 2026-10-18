@@ -1,6 +1,6 @@
 // G-T01..G-T08: Threads — multi-session conversation threading with LLM-generated summaries
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, parseBoundedInteger, requestId } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 
 interface Env {
@@ -45,8 +45,8 @@ app.get("/v1/threads", async (c) => {
   const url = new URL(c.req.url);
   const spaceId = url.searchParams.get("space_id");
   const endUserId = url.searchParams.get("end_user_id");
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10), 100);
-  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, 1, 100);
+  const offset = parseBoundedInteger(url.searchParams.get("offset"), 0, 0, 100_000);
 
   const conditions: string[] = ["tenant_id = ?"];
   const params: unknown[] = [tenantId];

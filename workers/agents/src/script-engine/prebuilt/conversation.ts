@@ -10,16 +10,15 @@
  * it is giving the model a way to go and look, plus instructions that say to look rather than
  * guess. This prebuilt is the "go and look" half.
  *
- * Retrieval is keyword-scored over the stored messages rather than semantic. That is a deliberate
- * limit, not an oversight: the messages are held in SpaceDO, not in an R2 bucket, so Cloudflare AI
- * Search (which indexes R2 objects on a batch cadence) cannot see them, and a just-sent message
- * must be findable immediately — a reindex delay would break the exact case this exists for. If a
- * semantic index over transcripts is ever wanted it belongs behind this same op, so the model's
- * contract does not change.
+ * Retrieval is keyword-scored over the stored messages rather than semantic. Web transcripts live
+ * in SpaceDO and external channel transcripts live in the owning Agent DO; neither should be
+ * copied to a shared index that could blur session boundaries. Reading is immediate, bounded to
+ * 10,000 messages / 20 MiB, and reports `complete: false` when that cap or a storage error stops
+ * the scan. A future semantic index belongs behind this same current-thread-only operation.
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, parseBoundedInteger } from "@naelao/http";
 
 interface StoredMessage {
   id?: string;
@@ -27,6 +26,10 @@ interface StoredMessage {
   content: string;
   created_at?: string;
 }
+
+const PAGE_SIZE = 100;
+const MAX_SEARCH_MESSAGES = 10_000;
+const MAX_SEARCH_CONTENT_BYTES = 20 * 1024 * 1024;
 
 /** Tokens worth matching on: drops the filler words that would otherwise match everything. */
 const STOP_WORDS = new Set([
@@ -38,8 +41,8 @@ const STOP_WORDS = new Set([
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 2 && !STOP_WORDS.has(t));
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((t) => t.length > 1 && !STOP_WORDS.has(t));
 }
 
 /** Score a message against the query. Exported for tests — the ranking is the whole product
@@ -49,7 +52,7 @@ export function scoreMessage(message: StoredMessage, queryTokens: string[]): num
   // match should hold for any caller, not only one that remembered to tokenize first. Without
   // this, a query like "what did we say about the thing" scores against every message in the
   // conversation and the ranking becomes meaningless.
-  const tokens = queryTokens.filter((t) => t.length > 2 && !STOP_WORDS.has(t.toLowerCase()));
+  const tokens = queryTokens.filter((t) => t.length > 1 && !STOP_WORDS.has(t.toLowerCase()));
   if (tokens.length === 0) return 0;
   const haystack = message.content.toLowerCase();
   const bodyTokens = new Set(tokenize(message.content));
@@ -78,18 +81,60 @@ function snippet(content: string, queryTokens: string[], radius = 160): string {
   return `${start > 0 ? "…" : ""}${content.slice(start, end)}${end < content.length ? "…" : ""}`;
 }
 
-async function loadMessages(ctx: PrebuiltOpContext, sessionId: string): Promise<StoredMessage[]> {
-  if (!ctx.env.spacesWorker) return [];
+interface LoadedMessages {
+  messages: StoredMessage[];
+  complete: boolean;
+  error?: string;
+}
+
+async function loadMessages(ctx: PrebuiltOpContext, sessionId: string): Promise<LoadedMessages> {
+  if (ctx.env.loadCurrentConversation) {
+    try { return await ctx.env.loadCurrentConversation(); }
+    catch { return { messages: [], complete: false, error: "The host could not read this conversation." }; }
+  }
+  if (!ctx.env.spacesWorker) return { messages: [], complete: false, error: "Transcript service is unavailable." };
   const token = await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId);
-  const resp = await ctx.env.spacesWorker.fetch(
-    new Request(
-      `http://spaces-worker/spaces/${encodeURIComponent(ctx.env.spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
-      { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } }
-    )
-  );
-  if (!resp.ok) return [];
-  const body = (await resp.json()) as { data?: StoredMessage[]; messages?: StoredMessage[] };
-  return body.data ?? body.messages ?? [];
+  const messages: StoredMessage[] = [];
+  let beforeId: string | undefined;
+  let contentBytes = 0;
+  let complete = false;
+  try {
+    while (true) {
+      const atLimit = messages.length >= MAX_SEARCH_MESSAGES || contentBytes >= MAX_SEARCH_CONTENT_BYTES;
+      const params = new URLSearchParams({ limit: String(atLimit ? 1 : PAGE_SIZE), scope_space_id: ctx.env.spaceId,
+        scope_project_id: ctx.env.projectId ?? "", scope_thread_id: sessionId });
+      if (beforeId) params.set("before_id", beforeId);
+      const resp = await ctx.env.spacesWorker.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(ctx.env.spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages?${params}`,
+        { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } },
+      ));
+      if (!resp.ok) return { messages, complete: false, error: `Transcript service returned ${resp.status}.` };
+      const body = (await resp.json()) as { data?: StoredMessage[]; messages?: StoredMessage[] };
+      const page = body.data ?? body.messages ?? [];
+      if (!Array.isArray(page)) return { messages, complete: false, error: "Transcript service returned an invalid page." };
+      if (page.length === 0) { complete = true; break; }
+      if (atLimit) break;
+      let accepted = page;
+      for (let i = 0; i < page.length; i++) {
+        const size = new TextEncoder().encode(page[i]?.content ?? "").byteLength;
+        if (messages.length + i >= MAX_SEARCH_MESSAGES || contentBytes + size > MAX_SEARCH_CONTENT_BYTES) {
+          accepted = page.slice(0, i);
+          break;
+        }
+        contentBytes += size;
+      }
+      // Pages are chronological; walking backwards and prepending preserves transcript order.
+      messages.unshift(...accepted);
+      if (accepted.length < page.length) break;
+      if (page.length < PAGE_SIZE) { complete = true; break; }
+      const oldest = page[0]?.id;
+      if (!oldest) return { messages, complete: false, error: "Transcript page is missing its pagination cursor." };
+      beforeId = oldest;
+    }
+  } catch {
+    return { messages, complete: false, error: "Transcript service could not be reached." };
+  }
+  return { messages, complete };
 }
 
 export const conversation: PrebuiltScript = {
@@ -102,19 +147,24 @@ export const conversation: PrebuiltScript = {
     async "conversation.search"(args, ctx) {
       const query = String(args["query"] ?? args["text"] ?? "").trim();
       if (!query) throw new Error("conversation.search requires 'query' — what are you looking for?");
-      const sessionId = String(args["session_id"] ?? "").trim();
+      const sessionId = ctx.env.currentSessionId;
       if (!sessionId) {
         return {
           ok: false,
-          reason:
-            "conversation.search needs 'session_id' — the id of the thread to search. It is in your goal context; pass it through.",
+          reason: "conversation.search is only available when this run has a host-authorized conversation thread.",
         };
       }
-      const limit = Math.min(Number(args["limit"] ?? 5) || 5, 20);
+      if (args["session_id"] !== undefined && String(args["session_id"]).trim() !== sessionId) {
+        return { ok: false, reason: "conversation.search can only read the current authorized conversation." };
+      }
+      const limit = parseBoundedInteger(String(args["limit"] ?? "5"), 5, 1, 20);
 
-      const messages = await loadMessages(ctx, sessionId);
+      const loaded = await loadMessages(ctx, sessionId);
+      const messages = loaded.messages;
+      if (loaded.error) return { ok: false, query, searched_messages: messages.length, complete: false, reason: loaded.error };
       if (messages.length === 0) {
-        return { ok: true, query, results: [], searched_messages: 0, note: "No stored messages to search." };
+        return { ok: true, query, results: [], searched_messages: 0, complete: loaded.complete,
+          note: loaded.complete ? "No stored messages to search." : "No messages could be scanned; transcript search was incomplete." };
       }
 
       const queryTokens = tokenize(query);
@@ -128,21 +178,23 @@ export const conversation: PrebuiltScript = {
         ok: true,
         query,
         searched_messages: messages.length,
+        complete: loaded.complete,
         results: scored.map((r) => ({
           role: r.m.role,
           // Position lets the model say "early in the conversation" rather than pretending to a
           // precision it does not have.
-          position: `${r.i + 1} of ${messages.length}`,
+          ...(loaded.complete ? { position: `${r.i + 1} of ${messages.length}` } : { position_in_scanned_window: `${r.i + 1} of ${messages.length}` }),
           created_at: r.m.created_at ?? null,
           excerpt: snippet(r.m.content, queryTokens),
           relevance: Number(r.score.toFixed(3)),
         })),
         // An empty result is a real answer — it means the thing genuinely is not in this
         // conversation — and saying so is what stops the model inventing a memory of it.
-        ...(scored.length === 0
+        ...(scored.length === 0 && loaded.complete
           ? { note: `Nothing in this conversation matches "${query}". It was not discussed here.` }
-          : {}),
+          : scored.length === 0 ? { note: `No match found in the ${messages.length} messages scanned. The transcript may contain more messages; search was incomplete.` } : {}),
       };
     },
   },
+  paramHints: { "conversation.search": "{ query: what detail to find in this conversation, limit?: 1–20 }" },
 };

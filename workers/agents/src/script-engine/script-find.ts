@@ -124,7 +124,9 @@ export async function scriptFind(
   opts: { snapshot?: ObserveSnapshot; domain?: ScriptDomain; roleTarget?: SkillRoleTarget; limit?: number } = {}
 ): Promise<FindCandidate[]> {
   const library = new SkillLibrary(env.scriptsBucket, env.spaceId);
-  const limit = opts.limit ?? 3;
+  const limit = Number.isSafeInteger(opts.limit)
+    ? Math.max(1, Math.min(20, opts.limit!))
+    : 3;
 
   let ranked: FindCandidate[];
 

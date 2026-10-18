@@ -1441,17 +1441,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     // Compacted-conversation summaries. Kept in the agent DO rather than SpaceDO because this is
     // derived reasoning context, not conversation data of record — SpaceDO still holds every
-    // message verbatim, which is what conversation.search reads. `covered_messages` is how many
-    // of the oldest messages the summary already accounts for, so it is only regenerated when the
-    // conversation has actually grown past it, not on every turn.
+    // message verbatim, which is what conversation.search reads. `covered_through_id` anchors the
+    // exact oldest-prefix message included in the summary; the count is informational/migration
+    // metadata only and is never used to skip source messages.
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS conversation_summaries (
         session_id      TEXT PRIMARY KEY,
         summary         TEXT NOT NULL,
         covered_messages INTEGER NOT NULL,
+        covered_through_id TEXT,
         updated_at      TEXT NOT NULL
       )
     `);
+    // Existing DOs predate the stable message cursor. Legacy coverage is rebuilt from the
+    // current transcript the next time compaction runs; a numeric count is not a safe cursor if
+    // a user truncates or edits history.
+    try { this.ctx.storage.sql.exec("ALTER TABLE conversation_summaries ADD COLUMN covered_through_id TEXT"); } catch { /* already migrated */ }
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS workflow_document_budget (
         run_id TEXT PRIMARY KEY, call_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
@@ -2198,6 +2203,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       agentId,
       tenantId,
       airGappedOnly,
+      ...(commitContext?.threadId ? { currentSessionId: commitContext.threadId } : {}),
       specialistCompactionEnabled: this.env.SCALEDOWN_AUTO_COMPACTION_ENABLED === "true",
       ...(templateMode ? { templateMode: resolveOperatingMode({ templateMode }).templateMode } : {}),
       platformSecret: this.env.PLATFORM_SECRET,
@@ -5508,53 +5514,93 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     sessionId: string,
     tenantId: string,
     documentProcessor?: DocumentProcessingGateway,
-  ): Promise<{ summarized_messages: number; summary_chars: number; already_current: boolean } | undefined> {
+    sourceMessages?: ConversationMessage[],
+  ): Promise<{ summarized_messages: number; summary_chars: number; already_current: boolean; remaining_messages: number; complete: boolean } | undefined> {
     try {
-      const messages = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
+      const messages = sourceMessages ?? await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
       if (!messages || messages.length === 0) return undefined;
 
       const toSummarize = messagesToSummarize(messages);
       if (toSummarize.length === 0) {
         // Nothing has fallen outside the recent window yet — honest "nothing to do", not a
         // fabricated success.
-        return { summarized_messages: 0, summary_chars: 0, already_current: true };
+        return { summarized_messages: 0, summary_chars: 0, already_current: true, remaining_messages: 0, complete: true };
       }
 
       let existing = "";
       let covered = 0;
+      let coveredThroughId: string | undefined;
       try {
         const row = this.ctx.storage.sql
-          .exec("SELECT summary, covered_messages FROM conversation_summaries WHERE session_id = ?", sessionId)
-          .toArray()[0] as { summary?: string; covered_messages?: number } | undefined;
+          .exec("SELECT summary, covered_messages, covered_through_id FROM conversation_summaries WHERE session_id = ?", sessionId)
+          .toArray()[0] as { summary?: string; covered_messages?: number; covered_through_id?: string | null } | undefined;
         if (row) {
           existing = String(row.summary ?? "");
           covered = Number(row.covered_messages ?? 0);
+          coveredThroughId = row.covered_through_id ?? undefined;
         }
       } catch {
         /* no stored summary is a valid state */
       }
-      if (toSummarize.length <= covered && existing) {
-        return { summarized_messages: covered, summary_chars: existing.length, already_current: true };
+      let cursorIndex = coveredThroughId ? toSummarize.findIndex((message) => message.id === coveredThroughId) : -1;
+      // A count-only legacy summary or an anchor removed by transcript truncation is unsafe to
+      // advance. Rebuild from the remaining source messages instead of skipping or retaining
+      // claims for deleted messages.
+      if ((coveredThroughId && cursorIndex < 0) || (!coveredThroughId && covered > 0)) {
+        existing = "";
+        covered = 0;
+        coveredThroughId = undefined;
+        cursorIndex = -1;
       }
+      const pending = toSummarize.slice(cursorIndex + 1);
+      if (pending.length === 0 && existing) {
+        return { summarized_messages: covered, summary_chars: existing.length, already_current: true, remaining_messages: 0, complete: true };
+      }
+      if (pending.length === 0) return { summarized_messages: 0, summary_chars: 0, already_current: true, remaining_messages: 0, complete: true };
 
-      const regenerated = await this.summarizeConversation(documentProcessor && existing ? toSummarize.slice(covered) : toSummarize, existing, documentProcessor);
-      if (!regenerated) return undefined; // summariser unavailable — never claim it compacted
-      try {
-        this.ctx.storage.sql.exec(
-          `INSERT OR REPLACE INTO conversation_summaries (session_id, summary, covered_messages, updated_at)
-           VALUES (?, ?, ?, ?)`,
-          sessionId, regenerated, toSummarize.length, new Date().toISOString()
-        );
-      } catch {
-        return undefined;
+      // Summarize in bounded batches and checkpoint each successful one. Threads with a backlog
+      // larger than this invocation's allowance continue on the next turn without one giant paid
+      // prompt or a false claim that messages beyond the 500-row API default were covered.
+      let regenerated = existing;
+      let summarizedNow = 0;
+      for (let offset = 0, batches = 0; offset < pending.length && batches < 20; batches++) {
+        let end = offset;
+        let chars = 0;
+        while (end < pending.length && end - offset < 80) {
+          const size = pending[end]!.content.length;
+          if (end > offset && chars + size > 80_000) break;
+          chars += size;
+          end++;
+        }
+        const batch = pending.slice(offset, end);
+        const batchLast = batch[batch.length - 1];
+        if (!batchLast?.id) return undefined;
+        const nextSummary = await this.summarizeConversation(batch, regenerated, documentProcessor);
+        if (!nextSummary) break;
+        regenerated = nextSummary;
+        covered += batch.length;
+        coveredThroughId = batchLast.id;
+        const sourceIndex = toSummarize.findIndex((message) => message.id === coveredThroughId);
+        try {
+          this.ctx.storage.sql.exec(
+            `INSERT OR REPLACE INTO conversation_summaries (session_id, summary, covered_messages, covered_through_id, updated_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            sessionId, regenerated, sourceIndex + 1, coveredThroughId, new Date().toISOString()
+          );
+        } catch {
+          return undefined;
+        }
+        summarizedNow += batch.length;
+        offset = end;
       }
+      if (summarizedNow === 0) return undefined;
       const { archive } = splitForCompaction(messages);
       const archivedAt = new Date().toISOString();
       for (let i = 0; i < archive.length; i++) {
         const message = archive[i]!;
         this.ctx.storage.sql.exec(
           `INSERT OR IGNORE INTO archived_messages (id, session_id, role, content, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?)`,
-          `${sessionId}:${i}`, sessionId, message.role, message.content, message.created_at ?? null, archivedAt
+          `${sessionId}:${message.id ?? i}`, sessionId, message.role, message.content, message.created_at ?? null, archivedAt
         );
       }
       if (projectId && this.env.SCRIPTS_R2) {
@@ -5567,7 +5613,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const updated = await appendActivity(journal, {
             at: archivedAt,
             actor: "context-compactor",
-            summary: `Compacted ${archive.length} earlier messages into project truth: ${milestone}`,
+            summary: `Summarized ${covered} of ${toSummarize.length} older messages so far: ${milestone}`,
             threadId: sessionId,
           });
           try {
@@ -5580,7 +5626,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
         if (!mirrored) throw new Error("Project journal changed repeatedly during memory compaction");
       }
-      return { summarized_messages: toSummarize.length, summary_chars: regenerated.length, already_current: false };
+      const remainingMessages = pending.length - summarizedNow;
+      return { summarized_messages: covered, summary_chars: regenerated.length, already_current: false,
+        remaining_messages: remainingMessages, complete: remainingMessages === 0 };
     } catch {
       return undefined;
     }
@@ -8026,7 +8074,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
     const agentId = body.agentId ?? "naelao-agent";
     const tenantId = body.tenantId ?? "";
-    const limit = Math.min(body.max ?? 5, 20);
+    const limit = Number.isSafeInteger(body.max)
+      ? Math.max(1, Math.min(body.max!, 20))
+      : 5;
 
     // human_takeover sessions are correctly left alone — a human is already handling them,
     // this is not an escalation/failure, so it's tracked separately from `escalated`.
@@ -8069,7 +8119,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // browser and container handlers do not exist in this object at all.
     // Customer attachments are message-scoped read operations. Copy-to-workspace is intentionally
     // absent here because the project workspace is shared across customers.
-    const tools = new ScriptToolSurface(engineEnv, ["customer-bot", "customer-attachments"]);
+    const tools = new ScriptToolSurface(engineEnv, ["customer-bot", "customer-attachments", "conversation"]);
     // Kept out of the model-facing surface; only platform code below can dispatch the resulting
     // reply to the same conversation address.
     const deliveryTools = new ScriptToolSurface(engineEnv, ["notifications"]);
@@ -8215,6 +8265,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { goal: msg.text, taskId: msg.task_id ?? msg.id, threadId: msg.session_id },
       );
       if (messageEnv) Object.assign(engineEnv, messageEnv);
+      // The channel transcript is local to this Agent DO, unlike web sessions stored in
+      // SpaceDO. The callback is closed over the active session and accepts no model-selected ID.
+      engineEnv.loadCurrentConversation = () => this.loadChannelTranscript(msg.session_id);
       engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}`;
 
       // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
@@ -9261,20 +9314,42 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     spaceId: string,
     projectId: string,
     sessionId: string,
-    tenantId: string
+    tenantId: string,
+    fullHistory = true
   ): Promise<ConversationMessage[] | undefined> {
     if (!sessionId || !this.env.SPACES_WORKER) return undefined;
     try {
       const headers = await this.internalHeaders(tenantId);
-      const resp = await this.env.SPACES_WORKER.fetch(
-        new Request(
-          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages?limit=500&scope_space_id=${encodeURIComponent(spaceId)}&scope_project_id=${encodeURIComponent(projectId)}&scope_thread_id=${encodeURIComponent(sessionId)}`,
-          { headers }
-        )
-      );
-      if (!resp.ok) return undefined;
-      const body = (await resp.json()) as { data?: ConversationMessage[]; messages?: ConversationMessage[] };
-      return body.data ?? body.messages ?? [];
+      const messages: ConversationMessage[] = [];
+      let beforeId: string | undefined;
+      let bytes = 0;
+      for (let pageNo = 0; pageNo <= (fullHistory ? 20 : 0); pageNo++) {
+        const params = new URLSearchParams({ limit: "500", scope_space_id: spaceId,
+          scope_project_id: projectId, scope_thread_id: sessionId });
+        if (beforeId) params.set("before_id", beforeId);
+        const resp = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages?${params}`,
+          { headers },
+        ));
+        if (!resp.ok) return undefined;
+        const body = (await resp.json()) as { data?: ConversationMessage[]; messages?: ConversationMessage[] };
+        const page = body.data ?? body.messages ?? [];
+        if (!Array.isArray(page)) return undefined;
+        if (page.length === 0) return messages;
+        if (!fullHistory) return page;
+        for (const message of page) {
+          bytes += new TextEncoder().encode(message.content ?? "").byteLength;
+          if (messages.length >= 10_000 || bytes > 40 * 1024 * 1024) return undefined;
+        }
+        messages.unshift(...page);
+        if (page.length < 500) return messages;
+        const oldest = page[0]?.id;
+        if (!oldest) return undefined;
+        beforeId = oldest;
+      }
+      // A full page beyond the hard bound means the transcript is larger than this bounded
+      // compaction operation can safely materialize. Never persist a summary with false coverage.
+      return undefined;
     } catch {
       return undefined;
     }
@@ -9291,7 +9366,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!sessionId || !this.env.SPACES_WORKER) return undefined;
     const workingKey = `${spaceId}\0${projectId}\0${sessionId}`;
     try {
-      const messages = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
+      // Most turns need only the newest page. Fetching 10,000 rows every time made thread cost
+      // grow linearly with its lifetime. Load the complete transcript only when the recent page
+      // shows that compaction is due.
+      let messages = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId, false);
       if (!messages || messages.length === 0) {
         this.workingContexts.delete(workingKey);
         return undefined;
@@ -9299,47 +9377,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       const threadTurns = messages.filter((message) => message.role === "user").length;
       const tokenUsageRatio = messages.reduce((sum, message) => sum + estimateTokens(message.content), 0) / modelContextTokens;
-      const attemptedSpecialistCompaction = Boolean(documentProcessor && shouldCompactContext(threadTurns, tokenUsageRatio));
-      if (shouldCompactContext(threadTurns, tokenUsageRatio)) {
-        await this.compactConversationForSession(spaceId, projectId, sessionId, tenantId, documentProcessor);
+      const compactionDue = shouldCompactContext(threadTurns, tokenUsageRatio) || messagesToSummarize(messages).length > 0;
+      let historyIncomplete = false;
+      if (compactionDue) {
+        const fullTranscript = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
+        if (fullTranscript && fullTranscript.length > 0) {
+          messages = fullTranscript;
+          await this.compactConversationForSession(spaceId, projectId, sessionId, tenantId, documentProcessor, fullTranscript);
+        } else {
+          // A history beyond the safe materialization ceiling must not erase the recent thread
+          // from the planner context. Keep the bounded newest page and disclose the gap.
+          historyIncomplete = true;
+        }
       }
 
-      // The stored summary covers the oldest `covered_messages`; reuse it unless the conversation
-      // has grown enough that more messages now fall outside the recent window.
+      // Summary coverage is anchored to a transcript message ID. Counts alone drift when a user
+      // truncates history, so compaction resumes from the exact source row it last summarized.
       let summary = "";
-      let covered = 0;
       try {
         const row = this.ctx.storage.sql
-          .exec("SELECT summary, covered_messages FROM conversation_summaries WHERE session_id = ?", sessionId)
+          .exec("SELECT summary FROM conversation_summaries WHERE session_id = ?", sessionId)
           .toArray()[0] as { summary?: string; covered_messages?: number } | undefined;
-        if (row) {
-          summary = String(row.summary ?? "");
-          covered = Number(row.covered_messages ?? 0);
-        }
+        if (row) summary = String(row.summary ?? "");
       } catch {
         // No summary is a valid state — the context is simply less informative.
       }
 
-      const toSummarize = messagesToSummarize(messages);
-      if (toSummarize.length > covered && !attemptedSpecialistCompaction) {
-        const regenerated = await this.summarizeConversation(documentProcessor && summary ? toSummarize.slice(covered) : toSummarize, summary, documentProcessor);
-        if (regenerated) {
-          summary = regenerated;
-          try {
-            this.ctx.storage.sql.exec(
-              `INSERT OR REPLACE INTO conversation_summaries (session_id, summary, covered_messages, updated_at)
-               VALUES (?, ?, ?, ?)`,
-              sessionId,
-              summary,
-              toSummarize.length,
-              new Date().toISOString()
-            );
-          } catch {
-            // Losing the cache costs a regeneration next turn, nothing more.
-          }
-        }
+      if (historyIncomplete) {
+        summary = "Older transcript history exceeds the automatic compaction scan limit. Details may be missing; do not infer that an absent fact was never discussed.";
       }
-
       const context = buildConversationContext(messages, summary);
       this.workingContexts.set(workingKey, context);
       return context;
@@ -9381,6 +9447,45 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return buildConversationContext(messages);
     } catch {
       return undefined;
+    }
+  }
+
+  /** Bounded full-history source for conversation.search on channel threads. Channel messages
+   *  live in this DO (not SpaceDO), so the ordinary worker-backed reader cannot see them. */
+  private async loadChannelTranscript(sessionId: string): Promise<{
+    messages: Array<{ id: string; role: string; content: string; created_at: string }>;
+    complete: boolean;
+    error?: string;
+  }> {
+    const messages: Array<{ id: string; role: string; content: string; created_at: string }> = [];
+    let beforeRowid: number | undefined;
+    let contentBytes = 0;
+    try {
+      while (true) {
+        const atLimit = messages.length >= 10_000 || contentBytes >= 20 * 1024 * 1024;
+        const limit = atLimit ? 1 : 100;
+        const rows = this.ctx.storage.sql.exec(
+          `SELECT rowid AS rid, id, direction, text, created_at FROM channel_messages
+           WHERE session_id = ? ${beforeRowid === undefined ? "" : "AND rowid < ?"}
+           ORDER BY rowid DESC LIMIT ?`,
+          ...(beforeRowid === undefined ? [sessionId, limit] : [sessionId, beforeRowid, limit]),
+        ).toArray() as Array<{ rid: number; id: string; direction: string; text: string; created_at: number }>;
+        if (rows.length === 0) return { messages, complete: true };
+        if (atLimit) return { messages, complete: false };
+        for (const row of rows) {
+          const size = new TextEncoder().encode(row.text ?? "").byteLength;
+          if (messages.length >= 10_000 || contentBytes + size > 20 * 1024 * 1024) {
+            return { messages, complete: false };
+          }
+          contentBytes += size;
+          messages.unshift({ id: row.id, role: row.direction === "inbound" ? "user" : "assistant",
+            content: row.text, created_at: new Date(row.created_at).toISOString() });
+        }
+        if (rows.length < limit) return { messages, complete: true };
+        beforeRowid = rows[rows.length - 1]!.rid;
+      }
+    } catch {
+      return { messages, complete: false, error: "The channel transcript could not be read." };
     }
   }
 

@@ -9,7 +9,7 @@
 import { Hono, type Context } from "hono";
 import { routeAgentRequest } from "agents";
 import { resolveEndUserBusinessRole } from "../../spaces/src/business-auth.js";
-import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
+import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, parseBoundedInteger, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
@@ -3411,7 +3411,7 @@ app.get("/connectors/directory", async (c) => {
   }
   const search = c.req.query("q")?.trim() || undefined;
   const cursor = c.req.query("cursor") || undefined;
-  const limit = Number(c.req.query("limit") ?? 40) || 40;
+  const limit = parseBoundedInteger(c.req.query("limit"), 40, 1, 100);
   // Default `popular`: alphabetical opened the directory on "0codekit" and buried Gmail hundreds
   // of entries down, which makes a genuinely rich catalogue look like junk.
   const sort = c.req.query("sort") === "name" ? "name" : "popular";

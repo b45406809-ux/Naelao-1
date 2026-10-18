@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono";
-import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac } from "@naelao/http";
+import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger } from "@naelao/http";
 import { chunkText, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope } from "@naelao/rag";
 import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNetworkEgressDenied, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
@@ -422,8 +422,8 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
   const url = new URL(c.req.url);
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 200);
-  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, 1, 200);
+  const offset = parseBoundedInteger(url.searchParams.get("offset"), 0, 0, 100_000);
   // WS-4: no project_id param = the pre-existing default, space-wide documents only
   // (project_id IS NULL) — never mixes in a project's own isolated documents by accident.
   const projectId = url.searchParams.get("project_id");
@@ -1006,7 +1006,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   const url = new URL(c.req.url);
   const query = url.searchParams.get("q");
-  const topK = Math.min(parseInt(url.searchParams.get("top_k") ?? "10", 10), 50);
+  const topK = parseBoundedInteger(url.searchParams.get("top_k"), 10, 1, 50);
   // WS-4: no project_id param = the pre-existing default, search space-wide documents only —
   // never silently mixes in a project's own isolated KB.
   const projectId = url.searchParams.get("project_id");
