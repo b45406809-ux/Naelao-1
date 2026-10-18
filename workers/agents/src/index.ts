@@ -2953,30 +2953,58 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
 // the thread keeps growing. Deliberately client-driven (called when the context-usage endpoint's
 // `percent_full` crosses a threshold), not a hidden check on every single message send — that
 // would add a full extra round trip + embedding calls to every run's hot path for a condition
-// that rarely fires. `sessionId` isn't used for scoping (maintenance runs per-space, matching the
-// existing heartbeat cron's own addressing) — accepted as a param for a symmetrical, session-
-// scoped client API even though the underlying action is space-wide.
+// that rarely fires. Compaction resolves session/project ownership before entering the DO. The
+// memory-maintenance pass remains space-wide for builder members; product end users can compact
+// only their own conversation and never trigger shared memory maintenance.
 app.post("/spaces/:spaceId/sessions/:sessionId/compact", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  if (!userId) throw forbidden("Session compaction requires an authenticated user");
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "session_scope_unavailable" }, 503);
+  const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": callerRole,
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) };
+  const isEndUser = callerRole === "product_end_user";
+  const role = isEndUser ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!role) throw forbidden("Space membership is required for compaction");
+  const scopeResponse = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`, { headers }));
+  if (!scopeResponse.ok) return c.json({ error_code: "session_unavailable" }, 404);
+  const scope = await scopeResponse.json<{ project_id?: string | null; owned_by_caller?: boolean; private_scratchpad?: boolean }>();
+  if (isEndUser && scope.owned_by_caller !== true) return c.json({ error_code: "session_unavailable" }, 404);
+  if (scope.private_scratchpad) return c.json({ error_code: "private_scratchpad_client_only" }, 403);
+
+  // Confirm caller membership and resolve project membership from the canonical session link.
+  if (!isEndUser) {
+    const membersResponse = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/members`, { headers }));
+    if (!membersResponse.ok) return c.json({ error_code: "space_membership_unavailable" }, 503);
+    const members = await membersResponse.json<{ data?: Array<{ user_id?: string; role?: string }> }>();
+    const member = members.data?.find((entry) => entry.user_id === userId);
+    if (!member) throw forbidden("Space membership is required for compaction");
+    if (scope.project_id) {
+      const projectResponse = await c.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(scope.project_id)}/members`, { headers }));
+      if (!projectResponse.ok) return c.json({ error_code: "project_membership_unavailable" }, 503);
+      const projectMembers = await projectResponse.json<{ data?: Array<{ user_id?: string }> }>();
+      if (!projectMembers.data?.some((entry) => entry.user_id === userId)
+        && !["owner", "admin"].includes(member.role ?? "")) throw forbidden("Project membership is required for compaction");
+    }
+  }
 
   const space = await c.env.PLATFORM_DB.prepare(
     "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
   ).bind(spaceId, tenantId).first<{ id: string }>();
   if (!space) throw notFound("Space");
 
-  // Address the SESSION's own DO, not the space-wide assistant one: `conversation_summaries` is
-  // written by whichever instance ran the chat, so compacting on the space-wide DO would leave the
-  // conversation that actually needs shrinking untouched. (The Memory OS half is per-space either
-  // way — the DO gets spaceId explicitly and doesn't care which instance runs it.)
-  const sessionId = c.req.param("sessionId");
+  // Address the SESSION's own DO, where its transcript summary is stored.
   const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
   const resp = await stub.fetch(new Request("http://agent-do/memory/maintenance", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    // sessionId was in the URL all along and never forwarded — which is why pressing Compact ran
-    // fact decay and visibly did nothing to the context window.
-    body: JSON.stringify({ spaceId, sessionId, tenantId }),
+    body: JSON.stringify({ spaceId, sessionId, tenantId, projectId: scope.project_id ?? "", userId,
+      callerRole: role, runSpaceMaintenance: !isEndUser }),
   }));
   if (!resp.ok) return c.json({ ok: false, message: "compaction pass failed" }, 502);
   const result = await resp.json();

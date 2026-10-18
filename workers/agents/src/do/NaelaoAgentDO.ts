@@ -5465,20 +5465,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async handleMemoryMaintenance(request: Request): Promise<Response> {
     this.ensureInit();
-    const body = await request.json<{ spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string }>()
-      .catch(() => ({}) as { spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string });
+    const body = await request.json<{ spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string;
+      userId?: string; callerRole?: string; runSpaceMaintenance?: boolean }>()
+      .catch(() => ({}) as { spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string;
+        userId?: string; callerRole?: string; runSpaceMaintenance?: boolean });
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
     const tenantId = body.tenantId ?? request.headers.get("x-naelao-tenant-id") ?? "";
-    const result = await this.runMemoryMaintenanceForSpace(spaceId, tenantId);
+    if (!tenantId || !body.userId || !body.sessionId || !body.callerRole)
+      return Response.json({ error_code: "compaction_identity_required" }, { status: 400 });
+    const runId = `compact:${crypto.randomUUID()}`;
+    const gate = await this.enforceRunGates({ spaceId, tenantId, projectId: body.projectId || undefined,
+      userId: body.userId, callerRole: body.callerRole, agentId: "naelao-agent", sessionId: body.sessionId, runId });
+    if (!gate.ok) return gate.response;
+    const result = body.runSpaceMaintenance ? await this.runMemoryMaintenanceForSpace(spaceId, tenantId) : undefined;
     // Memory OS maintenance (fact decay/prune/promote) does not shrink the CONTEXT WINDOW, which
     // is what someone pressing "Compact" at 85% full is actually asking for. When a session is
     // named, also fold its older messages into a stored summary — that summary is what
     // loadConversationContext serves on the next turn IN PLACE of those messages, so the window
     // genuinely gets smaller. Without this, Compact ran and visibly did nothing.
-    const conversation = body.sessionId && tenantId
-      ? await this.compactConversationForSession(spaceId, body.projectId ?? "", body.sessionId, tenantId)
-      : undefined;
+    let documentProcessor: DocumentProcessingGateway | undefined;
+    try {
+      documentProcessor = await this.createWorkflowDocumentProcessor({ tenantId, spaceId,
+        ...(body.projectId ? { projectId: body.projectId } : {}), userId: body.userId, callerRole: body.callerRole,
+        hasSpendCap: gate.hasSpendCap, ...(gate.walletProjectId ? { walletProjectId: gate.walletProjectId } : {}), runId });
+    } catch {
+      // Provider or model policy may be unavailable. The existing deterministic local summary
+      // remains available; missing specialist configuration never blocks compaction.
+    }
+    const conversation = await this.compactConversationForSession(spaceId, body.projectId ?? "", body.sessionId, tenantId, documentProcessor);
     return Response.json({ ...result, ...(conversation ? { conversation } : {}) });
   }
 

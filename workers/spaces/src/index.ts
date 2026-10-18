@@ -847,7 +847,7 @@ const handleSpaceSessions = async (c: any) => {
     search = `?${qs.toString()}`;
   } else if (
     (c.req.method === "GET" || c.req.method === "DELETE") &&
-    /^\/sessions\/([^/]+)(\/messages)?$/.test(doPath) &&
+    /^\/sessions\/([^/]+)(?:\/messages|\/compact-scope)?$/.test(doPath) &&
     isProductEndUser
   ) {
     // For GET /sessions/:id and GET /sessions/:id/messages, pass end_user_id so SpaceDO can verify

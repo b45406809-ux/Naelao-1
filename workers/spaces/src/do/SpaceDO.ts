@@ -2956,6 +2956,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/sessions") {
         return this.listSessions(url.searchParams);
       }
+      // Internal compaction scope lookup. The Spaces Worker has already verified the caller's
+      // tenant HMAC and, for product end users, injects their identity-derived end_user_id.
+      // Return only the canonical project/thread scope and ownership result; never expose the
+      // session's owner identifier to the Agents Worker.
+      const compactScopeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/compact-scope$/);
+      if (method === "GET" && compactScopeMatch?.[1]) {
+        const session = queryOne<SessionRow>(this.ctx.storage.sql as never,
+          "SELECT * FROM sessions WHERE id = ?", compactScopeMatch[1]);
+        const endUserId = url.searchParams.get("end_user_id");
+        if (!session || (endUserId && session.end_user_id !== endUserId))
+          return Response.json({ error_code: "not_found" }, { status: 404 });
+        const thread = queryOne<{ project_id: string | null; thread_tier: string; created_by: string | null }>(
+          this.ctx.storage.sql as never,
+          "SELECT project_id, thread_tier, created_by FROM threads WHERE session_id = ? LIMIT 1",
+          compactScopeMatch[1]);
+        const actorId = request.headers.get("x-naelao-user-id");
+        if (thread?.thread_tier === "tier_4_scratchpad" && thread.created_by !== actorId)
+          return Response.json({ error_code: "not_found" }, { status: 404 });
+        return Response.json({ project_id: thread?.project_id ?? null,
+          owned_by_caller: endUserId ? session.end_user_id === endUserId : undefined,
+          private_scratchpad: thread?.thread_tier === "tier_4_scratchpad" });
+      }
       // GET /sessions/:id
       const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
       if (method === "GET" && sessionMatch?.[1]) {
