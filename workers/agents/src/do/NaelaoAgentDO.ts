@@ -1553,6 +1553,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       status TEXT NOT NULL CHECK(status IN ('delivering','sent','uncertain')), error_code TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
     )`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS channel_extension_inbox_assignments (
+      event_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, installation_id TEXT NOT NULL, assigned_to TEXT,
+      assigned_by TEXT NOT NULL, assigned_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`);
     initChannelExtensionSessionStore(this.ctx.storage.sql);
     try { this.ctx.storage.sql.exec(`ALTER TABLE channel_messages ADD COLUMN task_id TEXT`); } catch { /* exists */ }
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
@@ -1808,6 +1812,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleListChannelSessions();
       }
       if (method === "GET" && url.pathname === "/channels/extensions/inbox") return this.handleChannelExtensionInbox(url.searchParams);
+      if (method === "POST" && url.pathname === "/channels/extensions/inbox/assign") return this.handleChannelExtensionInboxAssign(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/takeover") return this.handleChannelExtensionInboxTakeover(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/delete-conversation") return this.handleChannelExtensionInboxDeleteConversation(request);
       if (method === "POST" && url.pathname === "/channels/extensions/inbox/reply") return this.handleChannelExtensionInboxReply(request);
@@ -5698,11 +5703,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!projectId || !installationId || !Number.isSafeInteger(before) || !beforeId || beforeId.length > 160) return Response.json({ error_code: "channel_extension_inbox_scope_required" }, { status: 400 });
     const rows = this.ctx.storage.sql.exec(
       `SELECT m.id AS event_id,s.channel,s.human_takeover,m.text,m.answered,m.created_at,
+              a.assigned_to,a.assigned_by,a.assigned_at,
               COALESCE(d.status,CASE m.answered WHEN 1 THEN 'sent' WHEN 2 THEN 'processing' ELSE 'queued' END) AS status,
               d.reply_text,d.error_code,d.created_at AS dispatched_at,h.reply_text AS human_reply_text,h.status AS human_reply_status
        FROM channel_messages m JOIN channel_sessions s ON s.id=m.session_id
        LEFT JOIN channel_extension_dispatches d ON d.message_id=m.id
        LEFT JOIN channel_extension_human_replies h ON h.event_id=m.id
+       LEFT JOIN channel_extension_inbox_assignments a ON a.event_id=m.id AND a.project_id=m.project_id AND a.installation_id=m.channel_extension_instance_id
        WHERE m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=?
          AND (m.created_at<? OR (m.created_at=? AND m.id<?))
        ORDER BY m.created_at DESC,m.id DESC LIMIT ?`, projectId, installationId, before, before, beforeId, limit
@@ -5712,6 +5719,37 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const nextBefore = events.length === limit && last ? Number(last.created_at ?? 0) : null;
     const nextBeforeId = events.length === limit && last ? String(last.event_id ?? "") : null;
     return Response.json({ events, next_before: nextBefore, next_before_id: nextBeforeId });
+  }
+
+  private async handleChannelExtensionInboxAssign(request: Request): Promise<Response> {
+    const body = await request.json<{ project_id?: unknown; installation_id?: unknown; event_id?: unknown; actor_id?: unknown;
+      assigned_to?: unknown; expected_assigned_to?: unknown }>().catch(() => ({} as { project_id?: unknown; installation_id?: unknown; event_id?: unknown; actor_id?: unknown;
+        assigned_to?: unknown; expected_assigned_to?: unknown }));
+    const projectId = typeof body.project_id === "string" ? body.project_id : "";
+    const installationId = typeof body.installation_id === "string" ? body.installation_id : "";
+    const eventId = typeof body.event_id === "string" ? body.event_id : "";
+    const actorId = typeof body.actor_id === "string" ? body.actor_id : "";
+    const assignedTo = body.assigned_to === null ? null : typeof body.assigned_to === "string" ? body.assigned_to : undefined;
+    const expectedAssignedTo = body.expected_assigned_to === null ? null : typeof body.expected_assigned_to === "string" ? body.expected_assigned_to : undefined;
+    if (!projectId || !installationId || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId) || !actorId
+      || assignedTo === undefined || expectedAssignedTo === undefined
+      || assignedTo !== null && !/^[A-Za-z0-9._:@-]{1,128}$/.test(assignedTo)
+      || expectedAssignedTo !== null && !/^[A-Za-z0-9._:@-]{1,128}$/.test(expectedAssignedTo)) {
+      return Response.json({ error_code: "channel_extension_assignment_invalid" }, { status: 400 });
+    }
+    const event = this.ctx.storage.sql.exec(
+      `SELECT m.id FROM channel_messages m WHERE m.id=? AND m.direction='inbound' AND m.project_id=? AND m.channel_extension_instance_id=? LIMIT 1`,
+      eventId, projectId, installationId,
+    ).toArray()[0];
+    if (!event) return Response.json({ error_code: "channel_extension_event_not_found" }, { status: 404 });
+    const prior = this.ctx.storage.sql.exec("SELECT assigned_to,assigned_at FROM channel_extension_inbox_assignments WHERE event_id=? AND project_id=? AND installation_id=?", eventId, projectId, installationId).toArray()[0] as { assigned_to: string | null; assigned_at: number } | undefined;
+    if ((prior?.assigned_to ?? null) !== expectedAssignedTo) return Response.json({ error_code: "channel_extension_assignment_conflict", assigned_to: prior?.assigned_to ?? null }, { status: 409 });
+    const now = Date.now();
+    this.ctx.storage.sql.exec(`INSERT INTO channel_extension_inbox_assignments(event_id,project_id,installation_id,assigned_to,assigned_by,assigned_at,updated_at)
+      VALUES(?,?,?,?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET assigned_to=excluded.assigned_to,assigned_by=excluded.assigned_by,updated_at=excluded.updated_at
+      WHERE channel_extension_inbox_assignments.project_id=excluded.project_id AND channel_extension_inbox_assignments.installation_id=excluded.installation_id`,
+    eventId, projectId, installationId, assignedTo, actorId, prior?.assigned_at ?? now, now);
+    return Response.json({ assigned: true, event_id: eventId, assigned_to: assignedTo, assigned_by: actorId, assigned_at: prior?.assigned_at ?? now, updated_at: now });
   }
 
   private async handleChannelExtensionInboxTakeover(request: Request): Promise<Response> {

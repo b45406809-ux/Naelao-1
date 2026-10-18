@@ -6776,6 +6776,45 @@ app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
   return stub.fetch(new Request(`http://agent-do/channels/extensions/inbox?${query}`));
 });
 
+app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/assign", async c => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Project channel inbox assignment requires Space owner or admin access");
+  const body = await c.req.json<{ event_id?: unknown; assigned_to?: unknown; expected_assigned_to?: unknown }>().catch(() => ({} as { event_id?: unknown; assigned_to?: unknown; expected_assigned_to?: unknown }));
+  const eventId = typeof body.event_id === "string" ? body.event_id : "";
+  const assignedTo = body.assigned_to === null ? null : typeof body.assigned_to === "string" ? body.assigned_to : undefined;
+  const expectedAssignedTo = body.expected_assigned_to === null ? null : typeof body.expected_assigned_to === "string" ? body.expected_assigned_to : undefined;
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(installationId)
+    || !/^[A-Za-z0-9._:-]{1,160}$/.test(eventId) || assignedTo === undefined || expectedAssignedTo === undefined
+    || assignedTo !== null && !/^[A-Za-z0-9._:@-]{1,128}$/.test(assignedTo)
+    || expectedAssignedTo !== null && !/^[A-Za-z0-9._:@-]{1,128}$/.test(expectedAssignedTo)) throw badRequest("Invalid inbox assignment");
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "extension_installation_unavailable" }, 503);
+  const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+    "x-naelao-user-id": userId, "x-naelao-role": role! };
+  const installationResponse = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/workflow-installations/${encodeURIComponent(installationId)}`, { headers }));
+  if (!installationResponse.ok) return c.json({ error_code: "extension_installation_unavailable" }, installationResponse.status === 404 ? 404 : 503);
+  const installation = await installationResponse.json<{ instance?: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; status?: string; scope?: string } }>();
+  const instance = installation.instance;
+  if (!instance || instance.instance_id !== installationId || instance.tenant_id !== tenantId || instance.space_id !== spaceId
+    || instance.project_id !== projectId || instance.status !== "active" || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(instance.scope ?? "")) {
+    return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
+  }
+  if (assignedTo) {
+    const membersResponse = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/members`, { headers }));
+    if (!membersResponse.ok) return c.json({ error_code: "project_members_unavailable" }, 503);
+    const members = await membersResponse.json<{ data?: Array<{ user_id?: string }> }>();
+    if (!members.data?.some(member => member.user_id === assignedTo)) return c.json({ error_code: "assignee_not_project_member" }, 400);
+  }
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId") ?? "");
+  return stub.fetch(new Request("http://agent-do/channels/extensions/inbox/assign", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, installation_id: installationId, event_id: eventId, actor_id: userId,
+      assigned_to: assignedTo, expected_assigned_to: expectedAssignedTo }) }));
+});
+
 app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/takeover", async c => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");

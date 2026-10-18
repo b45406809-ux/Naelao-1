@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -126,6 +126,7 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
   const [cursor, setCursor] = React.useState<{ before: number; beforeId: string } | null>(null);
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [takingOver, setTakingOver] = React.useState<string | null>(null);
+  const [assigning, setAssigning] = React.useState<string | null>(null);
   const [deletingConversation, setDeletingConversation] = React.useState<string | null>(null);
   const [replyDrafts, setReplyDrafts] = React.useState<Record<string, string>>({});
   const [replyingTo, setReplyingTo] = React.useState<string | null>(null);
@@ -157,6 +158,17 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
       if (result.paused_pending_reply) setError("Automatic handling is paused; the pending event needs a team member reply.");
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't pause this conversation."); }
     finally { setTakingOver(null); }
+  }
+  async function toggleAssignment(event: ChannelExtensionInboxEvent) {
+    if (assigning) return;
+    if (event.assigned_to && event.assigned_to !== session.endUserId) { setError("This event is assigned to another project member."); return; }
+    setAssigning(event.event_id); setError(null);
+    try {
+      const nextAssignee = event.assigned_to === session.endUserId ? null : session.endUserId;
+      await assignChannelExtensionInboxEvent(spaceId, projectId, installation.instance_id, event.event_id, nextAssignee, event.assigned_to ?? null, session);
+      setEvents(current => current.map(item => item.event_id === event.event_id ? { ...item, assigned_to: nextAssignee, assigned_by: session.endUserId, assigned_at: nextAssignee ? Date.now() : null } : item));
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't update inbox assignment."); }
+    finally { setAssigning(null); }
   }
   async function deleteConversation(eventId: string) {
     if (deletingConversation || !window.confirm("Permanently delete this conversation's stored inbox history and extension session data? This does not delete messages held by the external provider.")) return;
@@ -198,6 +210,10 @@ function ExtensionInbox({ spaceId, projectId, session, installation }: { spaceId
     {!error && events.length === 0 && <div style={{ color: "var(--text3)", fontSize: 11, marginTop: 6 }}>No events for this installation yet.</div>}
     {events.map(event => <article key={event.event_id} style={{ marginTop: 7, padding: 8, border: "1px solid var(--border)", borderRadius: 6, fontSize: 11 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><span>{event.channel} · {event.status}</span><time>{new Date(event.created_at).toLocaleString()}</time></div>
+      <div style={{ marginTop: 4, color: "var(--text2)" }}>{event.assigned_to ? `Assigned to ${event.assigned_to}` : "Unassigned"}
+        <button type="button" className="btn-ghost" style={{ marginLeft: 6, fontSize: 10.5 }} disabled={!!assigning || !!event.assigned_to && event.assigned_to !== session.endUserId}
+          onClick={() => void toggleAssignment(event)}>{assigning === event.event_id ? "Saving…" : event.assigned_to === session.endUserId ? "Unassign me" : "Assign to me"}</button>
+      </div>
       <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginTop: 5 }}>{event.text}</div>
       {event.reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Reply: {event.reply_text}</div>}
       {event.human_reply_text && <div style={{ color: "var(--text2)", marginTop: 5 }}>Team reply ({event.human_reply_status}): {event.human_reply_text}</div>}

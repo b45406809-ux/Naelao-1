@@ -1934,6 +1934,9 @@ export interface ChannelExtensionInboxEvent {
   reply_text: string | null;
   human_reply_text?: string | null;
   human_reply_status?: "delivering" | "sent" | "uncertain" | null;
+  assigned_to?: string | null;
+  assigned_by?: string | null;
+  assigned_at?: number | null;
   created_at: number;
 }
 
@@ -1953,6 +1956,13 @@ export async function listChannelExtensionInbox(spaceId: string, projectId: stri
 export async function takeOverChannelExtensionInboxEvent(spaceId: string, projectId: string, instanceId: string, eventId: string, session: SessionCredentials): Promise<{ human_takeover: true; paused_pending_reply: boolean }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox/takeover`, {
     method: "POST", session, body: JSON.stringify({ event_id: eventId }),
+  });
+}
+
+export async function assignChannelExtensionInboxEvent(spaceId: string, projectId: string, instanceId: string, eventId: string,
+  assignedTo: string | null, expectedAssignedTo: string | null, session: SessionCredentials): Promise<{ assigned: true; assigned_to: string | null }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/channel-extensions/${encodeURIComponent(instanceId)}/inbox/assign`, {
+    method: "POST", session, body: JSON.stringify({ event_id: eventId, assigned_to: assignedTo, expected_assigned_to: expectedAssignedTo }),
   });
 }
 

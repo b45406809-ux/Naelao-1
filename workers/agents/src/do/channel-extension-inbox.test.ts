@@ -3,6 +3,24 @@ import { NaelaoAgentDO } from "./NaelaoAgentDO.js";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 
 describe("channel extension inbox projection", () => {
+  it("claims and releases an inbox event with compare-and-set assignment scoped to its project and installation", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
+    await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    storage.sql.exec("INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES('session-a','whatsapp','subject','project-a')");
+    storage.sql.exec("INSERT INTO channel_messages(id,session_id,direction,text,project_id,channel_extension_instance_id,created_at) VALUES('event-a','session-a','inbound','question','project-a','install-a',20),('event-b','session-a','inbound','other install','project-a','install-b',30)");
+    const assign = (eventId: string, actor: string, target: string | null, expected: string | null) => agent.fetch(new Request("http://agent/channels/extensions/inbox/assign", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ project_id: "project-a", installation_id: "install-a", event_id: eventId, actor_id: actor, assigned_to: target, expected_assigned_to: expected }),
+    }));
+    expect((await assign("event-a", "owner-a", "owner-a", null)).status).toBe(200);
+    expect((await assign("event-a", "owner-b", "owner-b", null)).status).toBe(409);
+    expect((await assign("event-b", "owner-a", "owner-a", null)).status).toBe(404);
+    expect((await assign("event-a", "owner-a", null, "owner-a")).status).toBe(200);
+    const list = await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    expect(await list.json()).toMatchObject({ events: [{ event_id: "event-a", assigned_to: null, assigned_by: "owner-a" }] });
+  });
+
   it("lists only events for the exact project and installation with dispatch outcomes", async () => {
     const storage = createDOStorage();
     const agent = new NaelaoAgentDO({ storage, id: { toString: () => "agent" } } as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
