@@ -1500,3 +1500,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Full Agents suite passed: 117 test files / 491 tests. Full Spaces suite passed: 48 test files / 166 tests.
 - Updated two test doubles exposed by the broader runs: the Canvas integrity fixture now retains the stored HTML digest; the provider-uninstall fixture now returns the connection query and batch results used by the current credential cleanup path. No product behavior changed in this checkpoint.
 - These suites include the new Phase 6/7 paths and the previously stale test groups. Router, Notifications, Shell, package-level checks, full deploy configuration, Workers-runtime integration, and staged release checks remain outstanding.
+
+### Phase 9 Router/Notifications/SDK regression and UI typecheck checkpoint (2026-10-18)
+
+- Full Router suite passed (6 files / 13 tests); full Notifications suite passed (3 files / 12 tests); full SDK suite passed (3 files / 8 tests).
+- Shell, Router, and Spaces typechecks passed. Agents and Notifications typechecks had passed in the immediately preceding feature checkpoints/full-suite cycle.
+- No full monorepo suite, browser flow, deployed D1 migration, provider sandbox, Workers runtime integration, or production release exercise was run. These remain phase gate items.
