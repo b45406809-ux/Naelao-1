@@ -26,6 +26,7 @@ export default function ProjectBotsPage() {
   const [canDecideReviews, setCanDecideReviews] = React.useState(false);
   const [savingReviewKey, setSavingReviewKey] = React.useState<string | null>(null);
   const [decisionError, setDecisionError] = React.useState(false);
+  const [reviewNotes, setReviewNotes] = React.useState<Record<string, string>>({});
 
   const refresh = React.useCallback(async () => {
     if (!session) return;
@@ -94,7 +95,7 @@ export default function ProjectBotsPage() {
     setDecisionError(false);
     try {
       await recordProjectStewardDecision(activeSpaceId, session, { projectId: review.project_id, reviewKey: review.review_key,
-        recommendation: review.recommendation, action });
+        recommendation: review.recommendation, action, ...(reviewNotes[review.review_key]?.trim() ? { note: reviewNotes[review.review_key]!.trim() } : {}) });
       await refresh();
     } catch {
       setDecisionError(true);
@@ -139,6 +140,19 @@ export default function ProjectBotsPage() {
                   </>}
                   <Button variant="secondary" onClick={() => router.push(`/p/${product.slug}/projects/${review.project_id}`)}>Review project</Button>
                 </div>
+                {canDecideReviews && <label style={{ display: "grid", gap: 4, flexBasis: "100%", fontSize: 11, color: "var(--text3)" }}>
+                  Review note (optional)
+                  <textarea
+                    value={reviewNotes[review.review_key] ?? ""}
+                    maxLength={240}
+                    rows={2}
+                    aria-label={`Review note for ${review.project_name}`}
+                    placeholder="Record why this project still needs attention or may be obsolete."
+                    onChange={(event) => setReviewNotes((current) => ({ ...current, [review.review_key]: event.target.value }))}
+                    style={{ width: "100%", resize: "vertical", background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6, padding: "8px 10px", font: "inherit", fontSize: 12 }}
+                  />
+                </label>}
+                {review.decision?.note && <p style={{ flexBasis: "100%", margin: 0, fontSize: 11, color: "var(--text3)" }}>Review note: {review.decision.note}</p>}
               </li>
             ))}
           </ul>

@@ -1555,3 +1555,9 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - Removed that legacy customer-automation panel from those user-facing routes, changed Workflows copy to describe internal planner routines, and surfaced the existing project-scoped Channels/extension manager on project details. A legacy channel-profile flag no longer changes project workspace kind. Compatibility APIs/data are untouched.
 - Verification: `corepack pnpm --filter @naelao/shell typecheck` passed; `git diff --check` passed. No provider call was made.
 - Remaining product migration: legacy external channel runtime/configuration remains in backend for compatibility, and unreferenced legacy UI/data APIs still need an inventory before retirement. Project Bots already link to routines; Phase 3 remains open for richer steward evidence, attributed reversible retirement review, and coordinated project lifecycle/routine pause/restore.
+
+### Phase 3 steward decision rationale checkpoint (2026-10-18)
+
+- The Project Bots roster now lets an owner/admin attach a bounded 240-character note to an acknowledge, snooze, or dismiss action. The note is stored with the existing evidence-keyed decision record and displayed again on an acknowledged signal. This captures human context alongside the actor and exact signal evidence.
+- Verification: Shell typecheck passed; `git diff --check` passed. The change uses the existing authorized decision API; no new lifecycle mutation was introduced.
+- Remaining: the UI note is optional, snoozed/dismissed records remain hidden as before, and no retirement action was added. The actual reversible retirement flow still needs impact preview, explicit owner confirmation, routine/extension/channel quiescence, and a coordinated restore record.
