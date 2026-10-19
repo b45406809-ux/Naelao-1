@@ -301,11 +301,17 @@ Repository-wide import search found no in-repository consumers of `@naelao/tool-
 Three focused tests cover validation and tenant/Space fencing. The package typecheck and Biome checks pass. This validator intentionally supports a subset of JSON Schema; enum, pattern/format, nested properties/items, `$ref`, and combinators are not validated and must not be assumed to be enforced. The package had no production callsites when reviewed.
 - Other security package callers and deployment bindings still need end-to-end review; focused module tests do not prove production DO, D1, DNS, or browser-policy behavior.
 
+## Tracing package stress pass (2026-10-19)
+
+`@naelao/tracing` has no direct in-repository consumers. Trace IDs and service names are now checked at tracer creation; injected trace IDs must be nonzero 32-character hex; span operation and parent IDs are bounded/validated. Span attributes reject reserved property names, invalid numbers, oversized keys/values, more than 64 attributes, and a serialized attribute payload above 12,000 characters. Error strings are truncated to the attribute value cap, span completion is idempotent, and negative duration from wall-clock movement is clamped to zero.
+
+Three focused tests cover propagation, malformed identifiers, attribute limits, one-write behavior, and clock rollback. Focused tests, package typecheck, and Biome pass. Analytics Engine behavior is stubbed; no deployed dataset call was exercised. Action receipt signing/verification and production integration are still separate review items.
+
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 274 test files, 1,211 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, security, security-gateway, shared testing, and tool-runtime projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 275 test files, 1,214 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, security, security-gateway, shared testing, tool-runtime, and tracing projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |
