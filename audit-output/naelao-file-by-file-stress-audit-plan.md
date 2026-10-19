@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1880` tracked/non-ignored files; `1674` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt`.
+Inventory basis: `1884` tracked/non-ignored files; `1678` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -783,9 +783,11 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/testing`
 
-- [ ] `packages/testing/package.json`
-- [ ] `packages/testing/src/index.ts`
-- [ ] `packages/testing/tsconfig.json`
+- [x] `packages/testing/package.json`
+- [x] `packages/testing/src/index.test.ts`
+- [x] `packages/testing/src/index.ts`
+- [x] `packages/testing/tsconfig.json`
+- [x] `packages/testing/vitest.config.ts`
 
 ### `packages/tool-runtime`
 

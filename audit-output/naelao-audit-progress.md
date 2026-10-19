@@ -287,13 +287,19 @@ The package's registered source and existing unit tests now pass **98 tests acro
 The security gateway previously skipped its global rate limiter when `CF-Connecting-IP` matched a short private-address regex. That created an avoidable bypass if a private-looking source address reached the gateway, and the regex did not cover all private IPv6 forms. The bypass is removed: all connecting IP values now receive the global limiter. The worker also rejects non-2xx, malformed JSON, invalid `allowed`, and invalid retry-delay responses from the limiter as denied requests.
 
 `workers/security-gateway/src/index.test.ts` has five tests covering private-looking IPs, limiter outages, malformed JSON, wrong response types, and invalid retry delay. The new security-gateway Vitest project passed **5/5 tests**; worker typecheck and focused Biome passed. The gateway's Cloudflare bindings and Wrangler deployment were not exercised live; `workers_dev = false` and the router-only reachability constraint still require deployment verification.
+
+## Shared test utility stress pass (2026-10-18)
+
+`packages/testing` currently has no code imports in the repository; its package docs identify it as a reusable test utility. The mock D1 UPDATE path previously counted matched rows without changing stored values, and the KV mock treated an entry as live at the exact expiry timestamp. UPDATE now applies bounded parameterized `column = ?` assignments while honoring bound WHERE filters; unsupported SET expressions throw. KV expiry now uses the expected inclusive deadline. Tests cover tenant-filtered updates, exact TTL expiry, and queue order/binding compatibility.
+
+Focused shared-test-utility tests passed **4/4**, package typecheck and focused Biome checks pass. The new testing project is included in the workspace; its mocks remain intentionally partial SQL/KV/Queue doubles and must not be used as a substitute for SQLite/Cloudflare runtime integration tests. No production behavior depends on this package according to repository-wide import search.
 - Other security package callers and deployment bindings still need end-to-end review; focused module tests do not prove production DO, D1, DNS, or browser-policy behavior.
 
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 272 test files, 1,204 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, security, and security-gateway projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 273 test files, 1,208 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, security, security-gateway, and shared testing projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

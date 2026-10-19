@@ -8,10 +8,14 @@ export interface D1Row {
 
 export class InMemoryD1 {
   private tables: Map<string, D1Row[]> = new Map();
-  private readonly sqlHandlers: Map<string, (params: unknown[]) => D1Row[]> = new Map();
+  private readonly sqlHandlers: Map<string, (params: unknown[]) => D1Row[]> =
+    new Map();
 
   // Low-level exec — runs SQL directly against in-memory store
-  exec(sql: string, ...params: unknown[]): { changes?: number; lastRowId?: number; rowsRead?: number } {
+  exec(
+    sql: string,
+    ...params: unknown[]
+  ): { changes?: number; lastRowId?: number; rowsRead?: number } {
     // Pass-through for DDL and transaction control
     if (/^\s*(CREATE|DROP|ALTER|PRAGMA|BEGIN|COMMIT|ROLLBACK)/i.test(sql)) {
       return { changes: 0 };
@@ -80,13 +84,17 @@ class MockD1Statement {
     const rows = this.tables.get(tableName) ?? [];
 
     // Basic WHERE filtering — match '= ?' placeholders in order
-    const whereMatch = this.sql.match(/WHERE\s+(.+?)(?:\s+ORDER|\s+LIMIT|\s+GROUP|$)/is);
+    const whereMatch = this.sql.match(
+      /WHERE\s+(.+?)(?:\s+ORDER|\s+LIMIT|\s+GROUP|$)/is
+    );
     if (!whereMatch) {
       const lim = extractLimit(sql, this.boundParams);
       return (lim !== null ? rows.slice(0, lim) : rows) as T[];
     }
 
-    const filtered = rows.filter((row) => matchesWhere(row, this.sql, this.boundParams));
+    const filtered = rows.filter((row) =>
+      matchesWhere(row, this.sql, this.boundParams)
+    );
     const limit = extractLimit(sql, this.boundParams);
     return (limit !== null ? filtered.slice(0, limit) : filtered) as T[];
   }
@@ -95,9 +103,11 @@ class MockD1Statement {
     const sql = this.sql.toLowerCase().trim();
     if (sql.startsWith("insert")) {
       return this.runInsert();
-    } else if (sql.startsWith("update")) {
+    }
+    if (sql.startsWith("update")) {
       return this.runUpdate();
-    } else if (sql.startsWith("delete")) {
+    }
+    if (sql.startsWith("delete")) {
       return this.runDelete();
     }
     return { meta: { changes: 0 } };
@@ -143,10 +153,29 @@ class MockD1Statement {
     const tableName = fromMatch?.[1]?.toLowerCase();
     if (!tableName) return { meta: { changes: 0 } };
     const rows = this.tables.get(tableName) ?? [];
-    // Simple: update first matching row or all (relies on bound params)
+    const setMatch = this.sql.match(/SET\s+(.+?)(?:\s+WHERE|$)/is);
+    if (!setMatch?.[1]) return { meta: { changes: 0 } };
+    const assignments = setMatch[1].split(",").map((assignment) => {
+      const match = assignment.trim().match(/^(\w+)\s*=\s*\?$/);
+      if (!match?.[1])
+        throw new Error(
+          "InMemoryD1 only supports parameterized SET assignments"
+        );
+      return match[1].toLowerCase();
+    });
+    const whereStart = this.sql.search(/\bWHERE\b/i);
+    const whereSql = whereStart < 0 ? "" : this.sql.slice(whereStart);
+    const whereParams = assignments.length;
     let changes = 0;
     for (const row of rows) {
-      if (matchesWhere(row, this.sql, this.boundParams)) {
+      if (matchesWhere(row, whereSql, this.boundParams.slice(whereParams))) {
+        assignments.forEach((column, index) => {
+          row[column] = this.boundParams[index] as
+            | string
+            | number
+            | null
+            | boolean;
+        });
         changes++;
       }
     }
@@ -159,14 +188,18 @@ class MockD1Statement {
     if (!tableName) return { meta: { changes: 0 } };
     const rows = this.tables.get(tableName) ?? [];
     const before = rows.length;
-    const filtered = rows.filter((r) => !matchesWhere(r, this.sql, this.boundParams));
+    const filtered = rows.filter(
+      (r) => !matchesWhere(r, this.sql, this.boundParams)
+    );
     this.tables.set(tableName, filtered);
     return { meta: { changes: before - filtered.length } };
   }
 }
 
 function matchesWhere(row: D1Row, sql: string, params: unknown[]): boolean {
-  const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+ORDER|\s+LIMIT|\s+GROUP|$)/is);
+  const whereMatch = sql.match(
+    /WHERE\s+(.+?)(?:\s+ORDER|\s+LIMIT|\s+GROUP|$)/is
+  );
   if (!whereMatch) return true;
   const clause = whereMatch[1] ?? "";
   const conditions = clause.split(/\s+AND\s+/i);
@@ -190,14 +223,14 @@ function countParamsBeforeWhere(sql: string): number {
 function extractLimit(sql: string, params: unknown[]): number | null {
   const limitMatch = sql.match(/LIMIT\s+\?/i);
   if (limitMatch) {
-    const whereParamCount = (sql.match(/WHERE[\s\S]*?(?=LIMIT|$)/i)?.[0]?.match(/\?/g) ?? []).length;
-    const totalBeforeLimit = (sql.split(/LIMIT/i)[0]?.match(/\?/g) ?? []).length;
+    const totalBeforeLimit = (sql.split(/LIMIT/i)[0]?.match(/\?/g) ?? [])
+      .length;
     const idx = totalBeforeLimit;
     const val = params[idx];
     return typeof val === "number" ? val : null;
   }
   const numericLimit = sql.match(/LIMIT\s+(\d+)/i);
-  return numericLimit ? parseInt(numericLimit[1] ?? "0", 10) : null;
+  return numericLimit ? Number.parseInt(numericLimit[1] ?? "0", 10) : null;
 }
 
 // ── InMemory KV mock ─────────────────────────────────────────────────────────
@@ -208,15 +241,21 @@ export class InMemoryKV {
   async get(key: string): Promise<string | null> {
     const entry = this.store.get(key);
     if (!entry) return null;
-    if (entry.expiresAt && Date.now() > entry.expiresAt) {
+    if (entry.expiresAt !== undefined && Date.now() >= entry.expiresAt) {
       this.store.delete(key);
       return null;
     }
     return entry.value;
   }
 
-  async put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
-    const expiresAt = options?.expirationTtl ? Date.now() + options.expirationTtl * 1000 : undefined;
+  async put(
+    key: string,
+    value: string,
+    options?: { expirationTtl?: number }
+  ): Promise<void> {
+    const expiresAt = options?.expirationTtl
+      ? Date.now() + options.expirationTtl * 1000
+      : undefined;
     const entry: { value: string; expiresAt?: number } = { value };
     if (expiresAt !== undefined) entry.expiresAt = expiresAt;
     this.store.set(key, entry);

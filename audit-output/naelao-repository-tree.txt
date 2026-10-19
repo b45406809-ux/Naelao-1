@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files --cached --others --exclude-standard
-Files: 1882
-Files with source or executable-configuration extensions: 1676
-Inventory revision: security gateway limiter stress pass
+Files: 1884
+Files with source or executable-configuration extensions: 1678
+Inventory revision: shared test utility stress pass
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -947,8 +947,10 @@ packages/
   testing/
     package.json
     src/
+      index.test.ts
       index.ts
     tsconfig.json
+    vitest.config.ts
   tool-runtime/
     package.json
     src/
