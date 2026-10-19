@@ -293,13 +293,19 @@ The security gateway previously skipped its global rate limiter when `CF-Connect
 `packages/testing` currently has no code imports in the repository; its package docs identify it as a reusable test utility. The mock D1 UPDATE path previously counted matched rows without changing stored values, and the KV mock treated an entry as live at the exact expiry timestamp. UPDATE now applies bounded parameterized `column = ?` assignments while honoring bound WHERE filters; unsupported SET expressions throw. KV expiry now uses the expected inclusive deadline. Tests cover tenant-filtered updates, exact TTL expiry, and queue order/binding compatibility.
 
 Focused shared-test-utility tests passed **4/4**, package typecheck and focused Biome checks pass. The new testing project is included in the workspace; its mocks remain intentionally partial SQL/KV/Queue doubles and must not be used as a substitute for SQLite/Cloudflare runtime integration tests. No production behavior depends on this package according to repository-wide import search.
+
+## Dynamic tool runtime stress pass (2026-10-19)
+
+Repository-wide import search found no in-repository consumers of `@naelao/tool-runtime`. The previously exported `getTool` and `deleteTool` methods fenced only by tenant and could return/delete a known tool ID from a different Space in the same tenant. Both now require the Space ID and query by ID, tenant, and Space. Tool input validation now checks own required fields, malformed schemas, supported primitive types (including integer/number behavior), `additionalProperties: false`, 512-field and 1,000,000-character input limits, and cyclic serialization failure.
+
+Three focused tests cover validation and tenant/Space fencing. The package typecheck and Biome checks pass. This validator intentionally supports a subset of JSON Schema; enum, pattern/format, nested properties/items, `$ref`, and combinators are not validated and must not be assumed to be enforced. The package had no production callsites when reviewed.
 - Other security package callers and deployment bindings still need end-to-end review; focused module tests do not prove production DO, D1, DNS, or browser-policy behavior.
 
 ## Broader validation
 
 | Check | Result | Evidence / limitation |
 |---|---|---|
-| Configured package/worker Vitest workspace | Passed: 273 test files, 1,208 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, security, security-gateway, and shared testing projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
+| Configured package/worker Vitest workspace | Passed: 274 test files, 1,211 tests, with webhook, idempotency, sweeper, auth, crypto, DB, HTTP, logger, LLM gateway, moderation, RAG, SDK, security, security-gateway, shared testing, and tool-runtime projects registered | `node_modules/.bin/vitest run --workspace vitest.workspace.ts` |
 | Root TypeScript projects | Passed | `tsc --noEmit -p packages/agent-sdk/tsconfig.json` and `tsc --noEmit -p workers/agents/tsconfig.json` |
 | Follow-up TypeScript projects | Passed | `packages/auth`, `packages/security`, and `workers/knowledge` |
 | Follow-up focused Biome check | Passed: 6 files | JWT/SSRF source and their focused tests/route fixtures |

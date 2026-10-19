@@ -15,10 +15,7 @@ export interface ToolDefinition {
   created_at: string;
 }
 
-export type ToolConfig =
-  | HttpToolConfig
-  | McpToolConfig
-  | BuiltinToolConfig;
+export type ToolConfig = HttpToolConfig | McpToolConfig | BuiltinToolConfig;
 
 export interface HttpToolConfig {
   type: "http";
@@ -37,7 +34,11 @@ export interface McpToolConfig {
 
 export interface BuiltinToolConfig {
   type: "builtin";
-  builtin_name: "web_search" | "kb_search" | "browser_navigate" | "code_execute";
+  builtin_name:
+    | "web_search"
+    | "kb_search"
+    | "browser_navigate"
+    | "code_execute";
 }
 
 export interface ToolCall {
@@ -57,39 +58,85 @@ export interface ToolResult {
 export class ToolRegistry {
   constructor(private readonly db: D1Database) {}
 
-  async getToolsForSpace(spaceId: string, tenantId: string): Promise<ToolDefinition[]> {
-    const { results } = await this.db.prepare(
-      "SELECT * FROM tools WHERE space_id = ? AND tenant_id = ? AND enabled = 1 ORDER BY name"
-    ).bind(spaceId, tenantId).all<ToolDefinition & { config: string; input_schema: string; output_schema: string }>();
+  async getToolsForSpace(
+    spaceId: string,
+    tenantId: string
+  ): Promise<ToolDefinition[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT * FROM tools WHERE space_id = ? AND tenant_id = ? AND enabled = 1 ORDER BY name"
+      )
+      .bind(spaceId, tenantId)
+      .all<
+        ToolDefinition & {
+          config: string;
+          input_schema: string;
+          output_schema: string;
+        }
+      >();
     return results.map(deserializeTool);
   }
 
-  async getTool(toolId: string, tenantId: string): Promise<ToolDefinition | null> {
-    const row = await this.db.prepare(
-      "SELECT * FROM tools WHERE id = ? AND tenant_id = ?"
-    ).bind(toolId, tenantId).first<ToolDefinition & { config: string; input_schema: string; output_schema: string }>();
+  async getTool(
+    toolId: string,
+    tenantId: string,
+    spaceId: string
+  ): Promise<ToolDefinition | null> {
+    const row = await this.db
+      .prepare(
+        "SELECT * FROM tools WHERE id = ? AND tenant_id = ? AND space_id = ?"
+      )
+      .bind(toolId, tenantId, spaceId)
+      .first<
+        ToolDefinition & {
+          config: string;
+          input_schema: string;
+          output_schema: string;
+        }
+      >();
     return row ? deserializeTool(row) : null;
   }
 
-  async registerTool(tool: Omit<ToolDefinition, "id" | "created_at">): Promise<string> {
+  async registerTool(
+    tool: Omit<ToolDefinition, "id" | "created_at">
+  ): Promise<string> {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    await this.db.prepare(
-      `INSERT INTO tools (id, space_id, tenant_id, name, description, input_schema, output_schema, tool_type, config, requires_confirmation, enabled, created_at, updated_at)
+    await this.db
+      .prepare(
+        `INSERT INTO tools (id, space_id, tenant_id, name, description, input_schema, output_schema, tool_type, config, requires_confirmation, enabled, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      id, tool.space_id, tool.tenant_id, tool.name, tool.description,
-      JSON.stringify(tool.input_schema), tool.output_schema ? JSON.stringify(tool.output_schema) : null,
-      tool.tool_type, JSON.stringify(tool.config),
-      tool.requires_confirmation ? 1 : 0, tool.enabled ? 1 : 0, now, now
-    ).run();
+      )
+      .bind(
+        id,
+        tool.space_id,
+        tool.tenant_id,
+        tool.name,
+        tool.description,
+        JSON.stringify(tool.input_schema),
+        tool.output_schema ? JSON.stringify(tool.output_schema) : null,
+        tool.tool_type,
+        JSON.stringify(tool.config),
+        tool.requires_confirmation ? 1 : 0,
+        tool.enabled ? 1 : 0,
+        now,
+        now
+      )
+      .run();
     return id;
   }
 
-  async deleteTool(toolId: string, tenantId: string): Promise<boolean> {
-    const result = await this.db.prepare(
-      "DELETE FROM tools WHERE id = ? AND tenant_id = ?"
-    ).bind(toolId, tenantId).run();
+  async deleteTool(
+    toolId: string,
+    tenantId: string,
+    spaceId: string
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        "DELETE FROM tools WHERE id = ? AND tenant_id = ? AND space_id = ?"
+      )
+      .bind(toolId, tenantId, spaceId)
+      .run();
     return result.meta.changes > 0;
   }
 }
@@ -100,23 +147,95 @@ export function validateToolInput(
   schema: Record<string, unknown>
 ): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
-  const required = (schema["required"] as string[] | undefined) ?? [];
-  const properties = (schema["properties"] as Record<string, Record<string, unknown>> | undefined) ?? {};
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { valid: false, errors: ["Tool input must be an object"] };
+  }
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return { valid: false, errors: ["Tool input schema must be an object"] };
+  }
+  try {
+    if (JSON.stringify(input).length > 1_000_000) {
+      return {
+        valid: false,
+        errors: ["Tool input exceeds 1000000 characters"],
+      };
+    }
+  } catch {
+    return {
+      valid: false,
+      errors: ["Tool input must contain only serializable values"],
+    };
+  }
+  const rawRequired = schema.required;
+  const rawProperties = schema.properties;
+  if (
+    rawRequired !== undefined &&
+    (!Array.isArray(rawRequired) ||
+      rawRequired.length > 256 ||
+      !rawRequired.every(
+        (field) => typeof field === "string" && field.length <= 256
+      ))
+  ) {
+    return {
+      valid: false,
+      errors: ["Tool schema required fields are invalid"],
+    };
+  }
+  if (
+    rawProperties !== undefined &&
+    (!rawProperties ||
+      typeof rawProperties !== "object" ||
+      Array.isArray(rawProperties) ||
+      Object.keys(rawProperties).length > 256)
+  ) {
+    return { valid: false, errors: ["Tool schema properties are invalid"] };
+  }
+  const required = (rawRequired as string[] | undefined) ?? [];
+  const properties =
+    (rawProperties as Record<string, Record<string, unknown>> | undefined) ??
+    {};
 
   for (const field of required) {
-    if (!(field in input) || input[field] === undefined || input[field] === null) {
+    if (
+      !Object.hasOwn(input, field) ||
+      input[field] === undefined ||
+      input[field] === null
+    ) {
       errors.push(`Missing required field: ${field}`);
     }
   }
 
-  for (const [field, value] of Object.entries(input)) {
+  const entries = Object.entries(input);
+  if (entries.length > 512)
+    return { valid: false, errors: ["Tool input has too many fields"] };
+  for (const [field, value] of entries) {
+    if (field.length > 256) {
+      errors.push("Tool input field name exceeds 256 characters");
+      continue;
+    }
     const propSchema = properties[field];
-    if (!propSchema) continue;
-    const expectedType = propSchema["type"] as string | undefined;
+    if (!propSchema) {
+      if (schema.additionalProperties === false)
+        errors.push(`Unexpected field: ${field}`);
+      continue;
+    }
+    const expectedType = propSchema.type as string | undefined;
     if (expectedType) {
-      const actualType = Array.isArray(value) ? "array" : typeof value;
-      if (actualType !== expectedType) {
-        errors.push(`Field '${field}' expected type '${expectedType}', got '${actualType}'`);
+      const actualType =
+        value === null
+          ? "null"
+          : Array.isArray(value)
+            ? "array"
+            : Number.isInteger(value)
+              ? "integer"
+              : typeof value;
+      if (
+        actualType !== expectedType &&
+        !(expectedType === "number" && actualType === "integer")
+      ) {
+        errors.push(
+          `Field '${field}' expected type '${expectedType}', got '${actualType}'`
+        );
       }
     }
   }
@@ -124,14 +243,29 @@ export function validateToolInput(
   return { valid: errors.length === 0, errors };
 }
 
-function deserializeTool(row: ToolDefinition & { config: string; input_schema: string; output_schema: string }): ToolDefinition {
+function deserializeTool(
+  row: ToolDefinition & {
+    config: string;
+    input_schema: string;
+    output_schema: string;
+  }
+): ToolDefinition {
   const result: ToolDefinition = {
     ...row,
-    config: typeof row.config === "string" ? JSON.parse(row.config) as ToolConfig : row.config,
-    input_schema: typeof row.input_schema === "string" ? JSON.parse(row.input_schema) as Record<string, unknown> : row.input_schema,
+    config:
+      typeof row.config === "string"
+        ? (JSON.parse(row.config) as ToolConfig)
+        : row.config,
+    input_schema:
+      typeof row.input_schema === "string"
+        ? (JSON.parse(row.input_schema) as Record<string, unknown>)
+        : row.input_schema,
   };
   if (row.output_schema) {
-    result.output_schema = typeof row.output_schema === "string" ? JSON.parse(row.output_schema) as Record<string, unknown> : row.output_schema;
+    result.output_schema =
+      typeof row.output_schema === "string"
+        ? (JSON.parse(row.output_schema) as Record<string, unknown>)
+        : row.output_schema;
   }
   return result;
 }
