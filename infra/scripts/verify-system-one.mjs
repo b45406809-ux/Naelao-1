@@ -1,14 +1,13 @@
 import { performance } from "node:perf_hooks";
 
 const DEFAULT_ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-const DEFAULT_MODEL = "perplexity/pplx-decider-v1.2";
-const FLASH_MODEL = "perplexity/pplx-decider-flash-v1.2";
+const DEFAULT_MODEL = "cloudflare/clef-flash";
+const LONG_CONTEXT_MODEL = "perplexity/pplx-decider-v1.2";
 
 export function resolveSmokeModel(model) {
   if (model === "jev-latest" || /^jev-[0-9]/.test(model) || model === "laya-typed-decisions") return DEFAULT_MODEL;
-  if (["clef", "@cf/cloudflare/clef", "cloudflare/clef"].includes(model)) return DEFAULT_MODEL;
-  if (["clef-flash", "@cf/cloudflare/clef-flash", "cloudflare/clef-flash"].includes(model)) return FLASH_MODEL;
-  if (model === DEFAULT_MODEL || model === FLASH_MODEL) return model;
+  if (["clef", "@cf/cloudflare/clef", "cloudflare/clef", "clef-flash", "@cf/cloudflare/clef-flash", "perplexity/pplx-decider-flash-v1.2", DEFAULT_MODEL].includes(model)) return DEFAULT_MODEL;
+  if (model === LONG_CONTEXT_MODEL) return DEFAULT_MODEL;
   throw new Error("system_one_unsupported_openrouter_model");
 }
 
@@ -45,7 +44,7 @@ export function validateResponse(payload) {
   return { model: payload.model, choice: answer.choice, confidence: answer.confidence, usage: payload.usage };
 }
 
-export async function runSmoke({ apiKey = process.env.OPENROUTER_API_KEY, model = resolveSmokeModel(process.env.SYSTEM_ONE_MODEL || (process.env.SYSTEM_ONE_PROVIDER === "clef" ? FLASH_MODEL : DEFAULT_MODEL)), fetcher = globalThis.fetch } = {}) {
+export async function runSmoke({ apiKey = process.env.OPENROUTER_API_KEY, model = resolveSmokeModel(process.env.SYSTEM_ONE_MODEL || DEFAULT_MODEL), fetcher = globalThis.fetch } = {}) {
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is required for OpenRouter Decisions API");
   const selectedModel = resolveSmokeModel(model);
   const started = performance.now();

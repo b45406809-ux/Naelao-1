@@ -102,7 +102,7 @@ export interface FastDecisionGateway {
 export interface SystemOneClientOptions {
   apiKey?: string;
   model?: string;
-  /** Legacy deployment selector: Clef maps to Decider Flash; Jev/Laya map to Decider. */
+  /** Legacy selector retained for deployments; all aliases use Clef Flash for ordinary decisions. */
   legacyProvider?: "jev" | "laya" | "clef";
   fetch?: typeof globalThis.fetch;
   maxRetries?: number;
@@ -128,17 +128,27 @@ interface SystemOneResponse {
 
 export const OPENROUTER_DECISIONS_ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
 export const DECIDER_MODEL = "perplexity/pplx-decider-v1.2";
-export const DECIDER_FLASH_MODEL = "perplexity/pplx-decider-flash-v1.2";
+export const CLEF_FLASH_MODEL = "cloudflare/clef-flash";
+/** Estimated token budgets leave room for instructions, question schemas, and provider variation. */
+export const CLEF_FLASH_MAX_ESTIMATED_TOKENS = 16_000;
+export const DECIDER_MAX_ESTIMATED_TOKENS = 200_000;
 
-/** Map former provider/model settings to approved OpenRouter models. */
+/** Map former provider/model settings to the default and long-context OpenRouter routes. */
 export function resolveDecisionModel(model?: string, legacyProvider?: "jev" | "laya" | "clef"): string {
+  void legacyProvider;
   const configured = model?.trim();
-  if (!configured) return legacyProvider === "clef" ? DECIDER_FLASH_MODEL : DECIDER_MODEL;
-  if (configured === "jev-latest" || /^jev-[0-9]/.test(configured) || configured === "laya-typed-decisions") return DECIDER_MODEL;
-  if (["clef", "@cf/cloudflare/clef", "cloudflare/clef"].includes(configured)) return DECIDER_MODEL;
-  if (["clef-flash", "@cf/cloudflare/clef-flash", "cloudflare/clef-flash"].includes(configured)) return DECIDER_FLASH_MODEL;
-  if (configured === DECIDER_MODEL || configured === DECIDER_FLASH_MODEL) return configured;
+  if (!configured) return CLEF_FLASH_MODEL;
+  if (configured === "jev-latest" || /^jev-[0-9]/.test(configured) || configured === "laya-typed-decisions") return CLEF_FLASH_MODEL;
+  if (["clef", "@cf/cloudflare/clef", "cloudflare/clef", "clef-flash", "@cf/cloudflare/clef-flash", "perplexity/pplx-decider-flash-v1.2", CLEF_FLASH_MODEL].includes(configured)) return CLEF_FLASH_MODEL;
+  // Decider is a long-context overflow route, never the default or a quality upgrade.
+  if (configured === DECIDER_MODEL) return DECIDER_MODEL;
   throw new Error("system_one_unsupported_openrouter_model");
+}
+
+/** Conservative upper-bound estimate for mixed text/JSON input size. */
+export function estimateDecisionTokens(value: unknown): number {
+  const serialized = typeof value === "string" ? value : JSON.stringify(value);
+  return Math.ceil(new TextEncoder().encode(serialized).byteLength / 2);
 }
 
 function boundedProbability(value: unknown, field: string): number {
@@ -169,7 +179,7 @@ function usage(value: unknown): { inputTokens: number; outputTokens: number } {
 export class SystemOneDecisionClient implements FastDecisionGateway {
   private readonly endpoint = OPENROUTER_DECISIONS_ENDPOINT;
   private readonly apiKey: string | undefined;
-  private readonly model: string;
+  private readonly longContextModel: string;
   private readonly provider = "openrouter" as const;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly maxRetries: number;
@@ -177,7 +187,8 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
 
   constructor(options: SystemOneClientOptions = {}) {
     this.apiKey = options.apiKey;
-    this.model = resolveDecisionModel(options.model, options.legacyProvider);
+    resolveDecisionModel(options.model, options.legacyProvider); // Validate deployment override; Decider is only ever selected on context overflow.
+    this.longContextModel = DECIDER_MODEL;
     this.fetcher = options.fetch ?? globalThis.fetch;
     this.maxRetries = options.maxRetries ?? 2;
     this.onDecision = options.onDecision;
@@ -188,14 +199,22 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     this.onDecision({ provider: meta.provider, policyCode, model: meta.model, latencyMs: meta.latencyMs, usage: meta.usage });
   }
 
+  private modelFor(questionSet: Record<string, unknown>, state: SystemOneState): string {
+    const estimatedTokens = estimateDecisionTokens({ state, questions: questionSet });
+    if (estimatedTokens <= CLEF_FLASH_MAX_ESTIMATED_TOKENS) return CLEF_FLASH_MODEL;
+    if (estimatedTokens <= DECIDER_MAX_ESTIMATED_TOKENS) return this.longContextModel;
+    throw new Error("system_one_context_exceeds_decider_limit");
+  }
+
   private async request(question: Record<string, unknown>, state: SystemOneState): Promise<{ answer: SystemOneAnswer; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
+    const model = this.modelFor({ decision: question }, state);
     let response: Response | undefined;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       response = await this.fetcher(this.endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
-        body: JSON.stringify({ model: this.model, state, questions: { decision: question } }),
+        body: JSON.stringify({ model, state, questions: { decision: question } }),
       });
       if (response.ok || ![429, 529, 503].includes(response.status) || attempt === this.maxRetries) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
@@ -213,12 +232,13 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
 
   private async requestMany(questions: Record<string, Record<string, unknown>>, state: SystemOneState): Promise<{ answers: Record<string, SystemOneAnswer>; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
+    const model = this.modelFor(questions, state);
     let response: Response | undefined;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       response = await this.fetcher(this.endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
-        body: JSON.stringify({ model: this.model, state, questions }),
+        body: JSON.stringify({ model, state, questions }),
       });
       if (response.ok || ![429, 529, 503].includes(response.status) || attempt === this.maxRetries) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
@@ -236,7 +256,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       answers[key] = answer as SystemOneAnswer;
     }
     const usageMeta = raw.usage === undefined ? {} : { usage: usage(raw.usage) };
-    return { answers, meta: { provider: this.provider, ...(typeof raw.model === "string" ? { model: raw.model } : { model: this.model }), latencyMs: Date.now() - started, ...usageMeta } };
+    return { answers, meta: { provider: this.provider, ...(typeof raw.model === "string" ? { model: raw.model } : { model }), latencyMs: Date.now() - started, ...usageMeta } };
   }
 
   async choice<T extends string>(input: { state: SystemOneState; instructions: SystemOneInstructions; criteria: Readonly<Record<T, SystemOneInstructions | null>>; policyCode: string }): Promise<ChoiceDecision<T>> {

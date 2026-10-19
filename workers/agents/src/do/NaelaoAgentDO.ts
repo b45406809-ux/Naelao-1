@@ -1028,7 +1028,7 @@ export interface AgentDOEnv {
   ENVIRONMENT?: string;
   DATA_JURISDICTION?: "eu";
   SYSTEM_ONE_MODEL?: string;
-  /** Legacy selector accepted during rollout: Jev/Laya -> Decider; Clef -> Decider Flash. */
+  /** Legacy selector accepted during rollout; provider aliases map to Clef Flash. */
   SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef" | "openrouter";
   PLATFORM_SECRET: string;
   KNOWLEDGE_WORKER: Fetcher;

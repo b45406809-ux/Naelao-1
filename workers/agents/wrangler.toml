@@ -342,10 +342,12 @@ NAELAO_GATEWAY_ID = "naelao-gateway"
 #
 # System One decisions all use the OpenRouter Decisions API. Set the platform decision key:
 #   wrangler secret put OPENROUTER_API_KEY
-# By default the sentry uses Decider V1.2. Set SYSTEM_ONE_PROVIDER="clef" (legacy role selector)
-# or SYSTEM_ONE_MODEL="perplexity/pplx-decider-flash-v1.2" to use Decider Flash for the former
-# Clef Flash route. Jev/Laya legacy selectors map to Decider V1.2. Only the two Perplexity model
-# IDs are accepted. A missing key leaves deterministic routing active.
+# Clef Flash (cloudflare/clef-flash) is the default for ordinary typed decisions via OpenRouter.
+# Full Decider V1.2 is selected automatically only when the serialized decision payload
+# exceeds Clef Flash's conservative input budget. Decider Flash is not used. Legacy Jev/Clef
+# selectors and old model aliases map to Clef Flash. SYSTEM_ONE_MODEL may be set to the Clef
+# Flash slug or full Decider V1.2 (the latter remains an overflow-only route).
+# A missing key leaves deterministic routing active.
 #
 # Google AI Studio (Gemini) — a genuinely separate provider relationship, BYOK to a real Google
 # key (not held by the CF Gateway itself). Lets the model switcher offer Gemini models
