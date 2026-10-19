@@ -20,7 +20,7 @@ describe("WriteGuard System One boundary", () => {
 
   it("never lets a sentry waive a deterministic destructive match", async () => {
     await expect(enforceWriteGuardWithSentry("git reset --hard", undefined, secret, requirement, {
-      noul: async () => ({ kind: "noul", value: false, probability: 0.01, confidence: 0.99, provider: "jev", policyCode: "write_guard_ambiguous_mutation" }),
+      noul: async () => ({ kind: "noul", value: false, probability: 0.01, confidence: 0.99, provider: "openrouter", policyCode: "write_guard_ambiguous_mutation" }),
       choice: async () => { throw new Error("unused"); }, score: async () => { throw new Error("unused"); },
     })).rejects.toThrow("destructive_mutation_denied");
   });
@@ -28,7 +28,7 @@ describe("WriteGuard System One boundary", () => {
   it("may tighten an ambiguous command and accepts a valid scoped grant", async () => {
     const token = await mintCapabilityGrant({ subject: "human", resources: ["project"], actions: ["destructive_write"], expiresAt: Date.now() + 60_000, nonce: "n" }, secret);
     await expect(enforceWriteGuardWithSentry("custom-admin rotate --all", token, secret, requirement, {
-      noul: async () => ({ kind: "noul", value: true, probability: 0.97, confidence: 0.97, provider: "laya", policyCode: "write_guard_ambiguous_mutation" }),
+      noul: async () => ({ kind: "noul", value: true, probability: 0.97, confidence: 0.97, provider: "openrouter", policyCode: "write_guard_ambiguous_mutation" }),
       choice: async () => { throw new Error("unused"); }, score: async () => { throw new Error("unused"); },
     })).resolves.toBe(true);
   });

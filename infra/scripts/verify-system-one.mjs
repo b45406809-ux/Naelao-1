@@ -1,8 +1,18 @@
 import { performance } from "node:perf_hooks";
 
-const DEFAULT_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+const DEFAULT_ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
+const DEFAULT_MODEL = "perplexity/pplx-decider-v1.2";
+const FLASH_MODEL = "perplexity/pplx-decider-flash-v1.2";
 
-export function buildRequest(model = "jev-latest") {
+export function resolveSmokeModel(model) {
+  if (model === "jev-latest" || /^jev-[0-9]/.test(model) || model === "laya-typed-decisions") return DEFAULT_MODEL;
+  if (["clef", "@cf/cloudflare/clef", "cloudflare/clef"].includes(model)) return DEFAULT_MODEL;
+  if (["clef-flash", "@cf/cloudflare/clef-flash", "cloudflare/clef-flash"].includes(model)) return FLASH_MODEL;
+  if (model === DEFAULT_MODEL || model === FLASH_MODEL) return model;
+  throw new Error("system_one_unsupported_openrouter_model");
+}
+
+export function buildRequest(model = DEFAULT_MODEL) {
   return {
     model,
     state: { naelao_smoke_test: true, request: "return the safer decision" },
@@ -35,18 +45,18 @@ export function validateResponse(payload) {
   return { model: payload.model, choice: answer.choice, confidence: answer.confidence, usage: payload.usage };
 }
 
-export async function runSmoke({ endpoint = process.env.SYSTEM_ONE_ENDPOINT || DEFAULT_ENDPOINT, apiKey = process.env.TYPESAFE_API_KEY, model = process.env.SYSTEM_ONE_MODEL || "jev-latest", fetcher = globalThis.fetch } = {}) {
-  if (!endpoint) throw new Error("SYSTEM_ONE_ENDPOINT is required");
-  if (endpoint === DEFAULT_ENDPOINT && !apiKey) throw new Error("TYPESAFE_API_KEY is required for the hosted Jev endpoint");
+export async function runSmoke({ apiKey = process.env.OPENROUTER_API_KEY, model = resolveSmokeModel(process.env.SYSTEM_ONE_MODEL || (process.env.SYSTEM_ONE_PROVIDER === "clef" ? FLASH_MODEL : DEFAULT_MODEL)), fetcher = globalThis.fetch } = {}) {
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY is required for OpenRouter Decisions API");
+  const selectedModel = resolveSmokeModel(model);
   const started = performance.now();
-  const response = await fetcher(endpoint, {
+  const response = await fetcher(DEFAULT_ENDPOINT, {
     method: "POST",
     headers: { "content-type": "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
-    body: JSON.stringify(buildRequest(model)),
+    body: JSON.stringify(buildRequest(selectedModel)),
   });
   if (!response.ok) throw new Error(`system_one_http_${response.status}:${(await response.text()).slice(0, 200)}`);
   const result = validateResponse(await response.json());
-  return { endpoint, provider: endpoint === DEFAULT_ENDPOINT ? "jev" : "laya", latencyMs: Math.round(performance.now() - started), ...result };
+  return { endpoint: DEFAULT_ENDPOINT, provider: "openrouter", latencyMs: Math.round(performance.now() - started), ...result };
 }
 
 if (process.argv[1]?.endsWith("verify-system-one.mjs")) {

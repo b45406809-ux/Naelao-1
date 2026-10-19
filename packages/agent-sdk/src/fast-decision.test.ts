@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { deterministicChoice, deterministicNoul, deterministicScore, SystemOneDecisionClient } from "./fast-decision.js";
+import { DECIDER_FLASH_MODEL, DECIDER_MODEL, deterministicChoice, deterministicNoul, deterministicScore, resolveDecisionModel, SystemOneDecisionClient } from "./fast-decision.js";
 
 describe("typed fast decisions", () => {
   it("keeps System-1 output bounded and provider-attributed", () => {
@@ -12,56 +12,54 @@ describe("typed fast decisions", () => {
     expect(() => deterministicScore(Number.NaN, "bad")).toThrow("fast_decision_score_must_be_finite");
   });
 
-  it("calls Jev and validates a bounded choice", async () => {
+  it("calls OpenRouter Decisions with Decider V1.2 and validates a bounded choice", async () => {
     const onDecision = vi.fn();
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      expect(JSON.parse(String(init?.body))).toMatchObject({ model: "jev-latest", questions: { decision: { type: "choice", criteria: { isolate: expect.anything(), container: expect.anything() } } } });
-      return Response.json({ model: "jev-1.13.0", answers: { decision: { type: "choice", choice: "container", probabilities: { isolate: 0.04, container: 0.96 }, confidence: 0.93 } }, usage: { input_tokens: 42, output_tokens: 7 } });
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: DECIDER_MODEL, questions: { decision: { type: "choice", criteria: { isolate: expect.anything(), container: expect.anything() } } } });
+      return Response.json({ model: DECIDER_MODEL, answers: { decision: { type: "choice", choice: "container", probabilities: { isolate: 0.04, container: 0.96 }, confidence: 0.93 } }, usage: { input_tokens: 42, output_tokens: 0 } });
     });
     const client = new SystemOneDecisionClient({ apiKey: "secret", fetch: fetcher as typeof fetch, maxRetries: 0, onDecision });
-    await expect(client.choice({ state: "cargo build", instructions: "Choose runtime", criteria: { isolate: "V8", container: "Linux" }, policyCode: "execution_preflight" })).resolves.toMatchObject({ kind: "choice", value: "container", provider: "jev", model: "jev-1.13.0", usage: { inputTokens: 42, outputTokens: 7 } });
-    expect(fetcher).toHaveBeenCalledWith("https://api.typesafe.ai/v1/systemone", expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer secret" }) }));
-    expect(onDecision).toHaveBeenCalledWith(expect.objectContaining({ provider: "jev", policyCode: "execution_preflight", model: "jev-1.13.0", usage: { inputTokens: 42, outputTokens: 7 } }));
+    await expect(client.choice({ state: "cargo build", instructions: "Choose runtime", criteria: { isolate: "V8", container: "Linux" }, policyCode: "execution_preflight" })).resolves.toMatchObject({ kind: "choice", value: "container", provider: "openrouter", model: DECIDER_MODEL, usage: { inputTokens: 42, outputTokens: 0 } });
+    expect(fetcher).toHaveBeenCalledWith("https://openrouter.ai/api/alpha/decisions", expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer secret" }) }));
+    expect(onDecision).toHaveBeenCalledWith(expect.objectContaining({ provider: "openrouter", policyCode: "execution_preflight", model: DECIDER_MODEL, usage: { inputTokens: 42, outputTokens: 0 } }));
   });
 
-  it("uses the same contract for a self-hosted Laya endpoint", async () => {
-    const client = new SystemOneDecisionClient({ endpoint: "https://laya.internal/v1/systemone", provider: "laya", fetch: vi.fn(async () => Response.json({ model: "laya-typed-decisions", answers: { decision: { type: "noul", noul: 0.82 } }, usage: { input_tokens: 20, output_tokens: 0 } })) as typeof fetch, maxRetries: 0 });
-    await expect(client.noul({ state: "npm install sharp", instructions: "Needs native runtime?", policyCode: "native_preflight" })).resolves.toMatchObject({ kind: "noul", value: true, probability: 0.82, provider: "laya" });
+  it("maps the former Jev and Clef routes to the corresponding Decider models", () => {
+    expect(resolveDecisionModel(undefined, "jev")).toBe(DECIDER_MODEL);
+    expect(resolveDecisionModel("jev-latest")).toBe(DECIDER_MODEL);
+    expect(resolveDecisionModel(undefined, "laya")).toBe(DECIDER_MODEL);
+    expect(resolveDecisionModel(undefined, "clef")).toBe(DECIDER_FLASH_MODEL);
+    expect(resolveDecisionModel("@cf/cloudflare/clef-flash")).toBe(DECIDER_FLASH_MODEL);
+    expect(resolveDecisionModel(DECIDER_FLASH_MODEL)).toBe(DECIDER_FLASH_MODEL);
+    expect(() => resolveDecisionModel("openai/gpt-6-luna-decisions")).toThrow("system_one_unsupported_openrouter_model");
   });
 
-  it("uses the documented Workers AI Clef typed-question contract when explicitly selected", async () => {
-    const runClef = vi.fn(async (model: string, input: Record<string, unknown>) => {
-      expect(model).toBe("@cf/cloudflare/clef-flash");
-      expect(input).toMatchObject({
-        model: "clef-flash",
-        state: { text: "checkout is down", image: "base64-image" },
-        questions: { decision: { type: "choice", criteria: { retry: expect.any(String), escalate: expect.any(String) } } },
-      });
-      return { answers: { decision: { type: "choice", choice: "escalate", probabilities: { retry: 0.08, escalate: 0.92 }, confidence: 0.92 } } };
+  it("routes the former Clef Flash path to Decider Flash over the same OpenRouter API", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: DECIDER_FLASH_MODEL, state: { text: "checkout is down", image: "base64-image" } });
+      return Response.json({ model: DECIDER_FLASH_MODEL, answers: { decision: { type: "choice", choice: "escalate", probabilities: { retry: 0.08, escalate: 0.92 }, confidence: 0.92 } }, usage: { input_tokens: 30, output_tokens: 0 } });
     });
-    const client = new SystemOneDecisionClient({ provider: "clef", runClef });
+    const client = new SystemOneDecisionClient({ legacyProvider: "clef", apiKey: "secret", fetch: fetcher as typeof fetch, maxRetries: 0 });
     await expect(client.choice({
       state: { text: "checkout is down", image: "base64-image" },
       instructions: "Choose a response",
       criteria: { retry: "Transient failure", escalate: "Service outage" },
       policyCode: "support_escalation",
-    })).resolves.toMatchObject({ kind: "choice", value: "escalate", provider: "clef", model: "@cf/cloudflare/clef-flash", confidence: 0.92 });
-    expect(runClef).toHaveBeenCalledTimes(1);
+    })).resolves.toMatchObject({ kind: "choice", value: "escalate", provider: "openrouter", model: DECIDER_FLASH_MODEL, confidence: 0.92 });
+    expect(fetcher).toHaveBeenCalledWith("https://openrouter.ai/api/alpha/decisions", expect.anything());
   });
 
-  it("does not construct a Clef client without the Workers AI binding", () => {
-    expect(() => new SystemOneDecisionClient({ provider: "clef" })).toThrow("system_one_clef_binding_required");
-  });
-
-  it("bundles container and browser preflight in one Clef request and requires strong probability", async () => {
-    const runClef = vi.fn(async (_model: string, input: Record<string, unknown>) => {
-      expect(Object.keys(input["questions"] as object)).toEqual(["needsContainer", "needsBrowser"]);
-      return { answers: { needsContainer: { noul: 0.91 }, needsBrowser: { noul: 0.72 } } };
+  it("bundles container and browser preflight in one Decisions API request", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { model: string; questions: Record<string, unknown> };
+      expect(body.model).toBe(DECIDER_FLASH_MODEL);
+      expect(Object.keys(body.questions)).toEqual(["needsContainer", "needsBrowser"]);
+      return Response.json({ model: DECIDER_FLASH_MODEL, answers: { needsContainer: { type: "noul", noul: 0.91 }, needsBrowser: { type: "noul", noul: 0.72 } }, usage: { input_tokens: 42, output_tokens: 0 } });
     });
-    const client = new SystemOneDecisionClient({ provider: "clef", runClef });
+    const client = new SystemOneDecisionClient({ legacyProvider: "clef", apiKey: "secret", fetch: fetcher as typeof fetch, maxRetries: 0 });
     await expect(client.preflightRuntime({ goal: "run native builds" })).resolves.toMatchObject({ needsContainer: true, needsBrowser: false, confidence: 0.91 });
-    expect(runClef).toHaveBeenCalledTimes(1);
-    await expect(new SystemOneDecisionClient().preflightRuntime("test")).resolves.toBeUndefined();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await expect(new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: DECIDER_MODEL, answers: { needsContainer: { type: "noul", noul: 0.8 }, needsBrowser: { type: "noul", noul: 0.2 } }, usage: { input_tokens: 10, output_tokens: 0 } })) as typeof fetch, maxRetries: 0 }).preflightRuntime("test")).resolves.toMatchObject({ needsContainer: true, needsBrowser: false });
   });
 
   it("classifies every worker blackboard item in one System One request", async () => {
@@ -70,7 +68,7 @@ describe("typed fast decisions", () => {
       expect(Object.keys(body.questions)).toEqual(["item_0", "item_1"]);
       expect(body.questions.item_0?.criteria).toHaveProperty("ffmpeg");
       const criteria = Object.keys(body.questions.item_0!.criteria);
-      return Response.json({ model: "jev-1.13.0", answers: {
+      return Response.json({ model: DECIDER_MODEL, answers: {
         item_0: { type: "choice", choice: "ffmpeg", probabilities: Object.fromEntries(criteria.map(key => [key, key === "ffmpeg" ? 1 : 0])), confidence: 0.96 },
         item_1: { type: "choice", choice: "none", probabilities: Object.fromEntries(criteria.map(key => [key, key === "none" ? 1 : 0])), confidence: 0.91 },
       }, usage: { input_tokens: 50, output_tokens: 8 } });
@@ -84,8 +82,8 @@ describe("typed fast decisions", () => {
       availableTools: ["workspace.read", "artifacts.write"],
       runtimes: [{ capability: "ffmpeg", description: "Video transcoding container." }],
     })).resolves.toMatchObject([
-      { itemId: "s1-video", capability: "ffmpeg", confidence: 0.96, provider: "jev" },
-      { itemId: "s2-report", confidence: 0.91, provider: "jev" },
+      { itemId: "s1-video", capability: "ffmpeg", confidence: 0.96, provider: "openrouter" },
+      { itemId: "s2-report", confidence: 0.91, provider: "openrouter" },
     ]);
     expect(fetcher).toHaveBeenCalledOnce();
   });
@@ -95,7 +93,7 @@ describe("typed fast decisions", () => {
       const body = JSON.parse(String(init?.body)) as { state: { task: string }; questions: Record<string, { instructions: string }> };
       expect(body.state.task).toContain("conversation");
       const answers = Object.fromEntries(Object.keys(body.questions).map((key, index) => [key, { type: "noul", noul: index === 0 ? 0.94 : 0.06 }]));
-      return Response.json({ model: "jev-1.13.0", answers, usage: { input_tokens: 40, output_tokens: 4 } });
+      return Response.json({ model: DECIDER_MODEL, answers, usage: { input_tokens: 40, output_tokens: 0 } });
     });
     const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
     await expect(client.classifyWorkerCapabilities!({
@@ -104,13 +102,13 @@ describe("typed fast decisions", () => {
         { capability: "conversation_research", description: "Search transcript and summarize evidence." },
         { capability: "code_and_runtime", description: "Run shell and build commands." },
       ],
-    })).resolves.toMatchObject({ capabilities: ["conversation_research"], provider: "jev", model: "jev-1.13.0" });
+    })).resolves.toMatchObject({ capabilities: ["conversation_research"], provider: "openrouter", model: DECIDER_MODEL });
     const sent = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body));
     expect(JSON.stringify(sent)).not.toContain("conversation content");
   });
 
   it("fails closed on malformed worker capability recommendations", async () => {
-    const client = new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: "jev", answers: { capability_0: { type: "noul", noul: 1.1 } }, usage: { input_tokens: 1, output_tokens: 1 } })) as typeof fetch, maxRetries: 0 });
+    const client = new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: DECIDER_MODEL, answers: { capability_0: { type: "noul", noul: 1.1 } }, usage: { input_tokens: 1, output_tokens: 1 } })) as typeof fetch, maxRetries: 0 });
     await expect(client.classifyWorkerCapabilities!({ task: "read history", capabilities: [{ capability: "conversation_research", description: "Search transcript." }] })).rejects.toThrow("system_one_invalid_noul");
   });
 
@@ -122,7 +120,7 @@ describe("typed fast decisions", () => {
       expect(JSON.stringify(body)).not.toContain("PRIVATE_FILE_BYTES");
       const criteria = (JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, unknown> } } }).questions.decision.criteria;
       expect(criteria).toHaveProperty("read_0");
-      return Response.json({ model: "jev-1.13.0", answers: { decision: { type: "choice", choice: "read_0", probabilities: Object.fromEntries(Object.keys(criteria).map((key) => [key, key === "read_0" ? 1 : 0])), confidence: 0.96 } }, usage: { input_tokens: 30, output_tokens: 3 } });
+      return Response.json({ model: DECIDER_MODEL, answers: { decision: { type: "choice", choice: "read_0", probabilities: Object.fromEntries(Object.keys(criteria).map((key) => [key, key === "read_0" ? 1 : 0])), confidence: 0.96 } }, usage: { input_tokens: 30, output_tokens: 3 } });
     });
     const client = new SystemOneDecisionClient({ apiKey: "secret", fetch: fetcher as typeof fetch, maxRetries: 0 });
     await expect(client.classifyAttachments!({
@@ -137,7 +135,7 @@ describe("typed fast decisions", () => {
       const body = JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, unknown> } } };
       expect(body.questions.decision.criteria).not.toHaveProperty("copy_0");
       const keys = Object.keys(body.questions.decision.criteria);
-      return Response.json({ model: "jev-1.13.0", answers: { decision: { type: "choice", choice: "not_needed", probabilities: Object.fromEntries(keys.map((key) => [key, key === "not_needed" ? 1 : 0])), confidence: 0.99 } }, usage: { input_tokens: 12, output_tokens: 2 } });
+      return Response.json({ model: DECIDER_MODEL, answers: { decision: { type: "choice", choice: "not_needed", probabilities: Object.fromEntries(keys.map((key) => [key, key === "not_needed" ? 1 : 0])), confidence: 0.99 } }, usage: { input_tokens: 12, output_tokens: 2 } });
     }) as typeof fetch, maxRetries: 0 });
     await expect(client.classifyAttachments!({
       message: "Save this image without reading it",
@@ -152,7 +150,7 @@ describe("typed fast decisions", () => {
       const criteria = body.questions.decision.criteria;
       expect(criteria).toHaveProperty("ocr_1");
       expect(criteria).not.toHaveProperty("ocr_0");
-      return Response.json({ model: "jev-1.13.0", answers: { decision: {
+      return Response.json({ model: DECIDER_MODEL, answers: { decision: {
         type: "choice", choice: "ocr_1", probabilities: Object.fromEntries(Object.keys(criteria).map((key) => [key, key === "ocr_1" ? 1 : 0])), confidence: 0.9,
       } }, usage: { input_tokens: 20, output_tokens: 3 } });
     });
@@ -172,7 +170,7 @@ describe("typed fast decisions", () => {
       const body = JSON.parse(String(init?.body)) as { questions: { decision: { criteria: Record<string, string> } } };
       const criteria = Object.keys(body.questions.decision.criteria);
       expect(criteria).toContain("transcribe_0");
-      return Response.json({ model: "jev-test", answers: { decision: { type: "choice", choice: "transcribe_0", probabilities: Object.fromEntries(criteria.map((key) => [key, key === "transcribe_0" ? 1 : 0])), confidence: 1 } }, usage: { input_tokens: 2, output_tokens: 1 } });
+      return Response.json({ model: DECIDER_MODEL, answers: { decision: { type: "choice", choice: "transcribe_0", probabilities: Object.fromEntries(criteria.map((key) => [key, key === "transcribe_0" ? 1 : 0])), confidence: 1 } }, usage: { input_tokens: 2, output_tokens: 1 } });
     } });
     await expect(client.classifyAttachments!({ message: "What does the speaker say?", attachments: [
       { id: "video-1", filename: "clip.mp4", mimeType: "video/mp4", sizeBytes: 400 },
@@ -187,7 +185,7 @@ describe("typed fast decisions", () => {
       const criteria = body.questions.decision.criteria;
       expect(criteria).toHaveProperty("describe_0");
       expect(criteria).toHaveProperty("ocr_0");
-      return Response.json({ model: "jev-1.13.0", answers: { decision: {
+      return Response.json({ model: DECIDER_MODEL, answers: { decision: {
         type: "choice", choice: "describe_0", probabilities: Object.fromEntries(Object.keys(criteria).map(key => [key, key === "describe_0" ? 1 : 0])), confidence: 0.9,
       } }, usage: { input_tokens: 18, output_tokens: 3 } });
     }) as typeof fetch, maxRetries: 0 });
@@ -199,12 +197,12 @@ describe("typed fast decisions", () => {
   });
 
   it("rejects an out-of-domain answer", async () => {
-    const client = new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: "jev-1", answers: { decision: { type: "choice", choice: "host", probabilities: { isolate: 0.5, container: 0.5 }, confidence: 0.1 } }, usage: { input_tokens: 1, output_tokens: 1 } })) as typeof fetch, maxRetries: 0 });
+    const client = new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: "perplexity/pplx-decider-v1.2", answers: { decision: { type: "choice", choice: "host", probabilities: { isolate: 0.5, container: 0.5 }, confidence: 0.1 } }, usage: { input_tokens: 1, output_tokens: 1 } })) as typeof fetch, maxRetries: 0 });
     await expect(client.choice({ state: "echo ok", instructions: "Choose", criteria: { isolate: null, container: null }, policyCode: "test" })).rejects.toThrow("system_one_invalid_choice_answer");
   });
 
   it("rejects malformed probability distributions", async () => {
-    const client = new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: "jev-1", answers: { decision: { type: "choice", choice: "isolate", probabilities: { isolate: 0.9, container: 0.9 }, confidence: 0.9 } }, usage: { input_tokens: 1, output_tokens: 1 } })) as typeof fetch, maxRetries: 0 });
+    const client = new SystemOneDecisionClient({ fetch: vi.fn(async () => Response.json({ model: "perplexity/pplx-decider-v1.2", answers: { decision: { type: "choice", choice: "isolate", probabilities: { isolate: 0.9, container: 0.9 }, confidence: 0.9 } }, usage: { input_tokens: 1, output_tokens: 1 } })) as typeof fetch, maxRetries: 0 });
     await expect(client.choice({ state: "echo ok", instructions: "Choose", criteria: { isolate: null, container: null }, policyCode: "test" })).rejects.toThrow("system_one_invalid_probability_sum");
   });
 });

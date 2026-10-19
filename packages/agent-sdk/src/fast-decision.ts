@@ -1,5 +1,5 @@
 /** Typed, text-free System One decisions shared by deterministic policy and model providers. */
-export type FastDecisionProvider = "deterministic" | "jev" | "laya" | "clef";
+export type FastDecisionProvider = "deterministic" | "openrouter";
 
 export interface FastDecisionMeta {
   provider: FastDecisionProvider;
@@ -100,17 +100,14 @@ export interface FastDecisionGateway {
 }
 
 export interface SystemOneClientOptions {
-  /** Exact Jev-compatible endpoint. Laya uses the same `/v1/systemone` wire contract. */
-  endpoint?: string;
   apiKey?: string;
   model?: string;
-  provider?: "jev" | "laya" | "clef";
-  /** Workers AI Clef binding. Supplied only for an explicitly selected cloud route. */
-  runClef?: (model: string, input: Record<string, unknown>) => Promise<unknown>;
+  /** Legacy deployment selector: Clef maps to Decider Flash; Jev/Laya map to Decider. */
+  legacyProvider?: "jev" | "laya" | "clef";
   fetch?: typeof globalThis.fetch;
   maxRetries?: number;
   onDecision?: (event: {
-  provider: "jev" | "laya" | "clef";
+  provider: "openrouter";
     policyCode: string;
     model: string;
     latencyMs: number;
@@ -129,7 +126,20 @@ interface SystemOneResponse {
   usage: { input_tokens: number; output_tokens: number };
 }
 
-const DEFAULT_JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+export const OPENROUTER_DECISIONS_ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
+export const DECIDER_MODEL = "perplexity/pplx-decider-v1.2";
+export const DECIDER_FLASH_MODEL = "perplexity/pplx-decider-flash-v1.2";
+
+/** Map former provider/model settings to approved OpenRouter models. */
+export function resolveDecisionModel(model?: string, legacyProvider?: "jev" | "laya" | "clef"): string {
+  const configured = model?.trim();
+  if (!configured) return legacyProvider === "clef" ? DECIDER_FLASH_MODEL : DECIDER_MODEL;
+  if (configured === "jev-latest" || /^jev-[0-9]/.test(configured) || configured === "laya-typed-decisions") return DECIDER_MODEL;
+  if (["clef", "@cf/cloudflare/clef", "cloudflare/clef"].includes(configured)) return DECIDER_MODEL;
+  if (["clef-flash", "@cf/cloudflare/clef-flash", "cloudflare/clef-flash"].includes(configured)) return DECIDER_FLASH_MODEL;
+  if (configured === DECIDER_MODEL || configured === DECIDER_FLASH_MODEL) return configured;
+  throw new Error("system_one_unsupported_openrouter_model");
+}
 
 function boundedProbability(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new Error(`system_one_invalid_${field}`);
@@ -155,24 +165,19 @@ function usage(value: unknown): { inputTokens: number; outputTokens: number } {
   return { inputTokens: raw!.input_tokens as number, outputTokens: raw!.output_tokens as number };
 }
 
-/** Strict client for the official Jev endpoint and Laya's compatible self-hosted server. */
+/** Strict client for Naelao's approved decision models through OpenRouter's Decisions API. */
 export class SystemOneDecisionClient implements FastDecisionGateway {
-  private readonly endpoint: string;
+  private readonly endpoint = OPENROUTER_DECISIONS_ENDPOINT;
   private readonly apiKey: string | undefined;
   private readonly model: string;
-  private readonly provider: "jev" | "laya" | "clef";
-  private readonly runClef: SystemOneClientOptions["runClef"];
+  private readonly provider = "openrouter" as const;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly maxRetries: number;
   private readonly onDecision: SystemOneClientOptions["onDecision"];
 
   constructor(options: SystemOneClientOptions = {}) {
-    this.endpoint = options.endpoint ?? DEFAULT_JEV_ENDPOINT;
     this.apiKey = options.apiKey;
-    this.model = options.model ?? (options.provider === "clef" ? "@cf/cloudflare/clef-flash" : "jev-latest");
-    this.provider = options.provider ?? "jev";
-    this.runClef = options.runClef;
-    if (this.provider === "clef" && !this.runClef) throw new Error("system_one_clef_binding_required");
+    this.model = resolveDecisionModel(options.model, options.legacyProvider);
     this.fetcher = options.fetch ?? globalThis.fetch;
     this.maxRetries = options.maxRetries ?? 2;
     this.onDecision = options.onDecision;
@@ -185,17 +190,6 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
 
   private async request(question: Record<string, unknown>, state: SystemOneState): Promise<{ answer: SystemOneAnswer; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
-    if (this.provider === "clef") {
-      const result = await this.runClef!(this.model, {
-        model: this.model.replace(/^@cf\/cloudflare\//, ""),
-        state,
-        questions: { decision: question },
-      }) as { answers?: Record<string, unknown>; usage?: unknown };
-      const answer = result?.answers?.["decision"] as SystemOneAnswer | undefined;
-      if (!answer || typeof answer !== "object") throw new Error("system_one_missing_answer");
-      const usageMeta = result.usage === undefined ? {} : { usage: usage(result.usage) };
-      return { answer, meta: { provider: "clef", model: this.model, latencyMs: Date.now() - started, ...usageMeta } };
-    }
     let response: Response | undefined;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       response = await this.fetcher(this.endpoint, {
@@ -219,26 +213,21 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
 
   private async requestMany(questions: Record<string, Record<string, unknown>>, state: SystemOneState): Promise<{ answers: Record<string, SystemOneAnswer>; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
-    let raw: { answers?: Record<string, unknown>; model?: string; usage?: unknown };
-    if (this.provider === "clef") {
-      raw = await this.runClef!(this.model, { model: this.model.replace(/^@cf\/cloudflare\//, ""), state, questions }) as typeof raw;
-    } else {
-      let response: Response | undefined;
-      for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-        response = await this.fetcher(this.endpoint, {
-          method: "POST",
-          headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
-          body: JSON.stringify({ model: this.model, state, questions }),
-        });
-        if (response.ok || ![429, 529, 503].includes(response.status) || attempt === this.maxRetries) break;
-        await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
-      }
-      if (!response?.ok) {
-        const detail = await response?.text().catch(() => "");
-        throw new Error(`system_one_http_${response?.status ?? "network"}${detail ? `:${detail.slice(0, 200)}` : ""}`);
-      }
-      raw = await response.json() as typeof raw;
+    let response: Response | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      response = await this.fetcher(this.endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
+        body: JSON.stringify({ model: this.model, state, questions }),
+      });
+      if (response.ok || ![429, 529, 503].includes(response.status) || attempt === this.maxRetries) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
     }
+    if (!response?.ok) {
+      const detail = await response?.text().catch(() => "");
+      throw new Error(`system_one_http_${response?.status ?? "network"}${detail ? `:${detail.slice(0, 200)}` : ""}`);
+    }
+    const raw = await response.json() as { answers?: Record<string, unknown>; model?: string; usage?: unknown };
     if (!raw.answers || typeof raw.answers !== "object") throw new Error("system_one_invalid_response");
     const answers: Record<string, SystemOneAnswer> = {};
     for (const key of Object.keys(questions)) {
@@ -425,22 +414,17 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     return results;
   }
 
-  /** One Clef forward pass predicts whether the current prompt may need expensive runtimes. */
+  /** One batched decision predicts whether the current prompt may need expensive runtimes. */
   async preflightRuntime(state: SystemOneState): Promise<{ needsContainer: boolean; needsBrowser: boolean; confidence: number } | undefined> {
-    if (this.provider !== "clef") return undefined;
-    const result = await this.runClef!(this.model, {
-      model: this.model.replace(/^@cf\/cloudflare\//, ""),
-      state,
-      questions: {
-        needsContainer: { type: "noul", instructions: "Could completing this task require executing shell commands, native builds, package installation, or a Linux container?" },
-        needsBrowser: { type: "noul", instructions: "Could completing this task require navigating a website or interacting with a browser?" },
-      },
-    }) as { answers?: Record<string, unknown> };
-    const answers = result?.answers;
+    const { answers, meta } = await this.requestMany({
+      needsContainer: { type: "noul", instructions: "Could completing this task require executing shell commands, native builds, package installation, or a Linux container?" },
+      needsBrowser: { type: "noul", instructions: "Could completing this task require navigating a website or interacting with a browser?" },
+    }, state);
     const container = answers?.["needsContainer"] as { noul?: unknown } | undefined;
     const browser = answers?.["needsBrowser"] as { noul?: unknown } | undefined;
     const containerProbability = boundedProbability(container?.noul, "noul");
     const browserProbability = boundedProbability(browser?.noul, "noul");
+    this.observe("runtime_preflight_v1", meta);
     return {
       needsContainer: containerProbability >= 0.8,
       needsBrowser: browserProbability >= 0.8,

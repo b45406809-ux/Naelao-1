@@ -34,10 +34,10 @@ describe("market radar and graduation", () => {
   it("uses a confident typed Jev/Laya score and falls back deterministically", async () => {
     const signal = { search_surge_pct: 118, saturation_index: 14 };
     const score = vi.fn(async () => ({
-      kind: "score" as const, value: 8.1, provider: "laya" as const,
+      kind: "score" as const, value: 8.1, provider: "openrouter" as const,
       policyCode: "market_radar_opportunity_v1", confidence: 0.91,
     }));
-    await expect(scoreMarketSignalWithSentry(signal, { score } as never)).resolves.toEqual({ score: 90, provider: "laya" });
+    await expect(scoreMarketSignalWithSentry(signal, { score } as never)).resolves.toEqual({ score: 90, provider: "openrouter" });
 
     score.mockRejectedValueOnce(new Error("offline"));
     await expect(scoreMarketSignalWithSentry(signal, { score } as never)).resolves.toEqual({

@@ -16,7 +16,7 @@ export interface MarketSignal {
   observed_at: string;
 }
 
-/** Jev-style System 1 scoring: deterministic, bounded, and fast enough for every radar refresh. */
+/** Bounded decision-model scoring with a deterministic fallback for every radar refresh. */
 export function scoreMarketSignal(
   signal: Pick<MarketSignal, "search_surge_pct" | "saturation_index">
 ): number {
@@ -168,12 +168,11 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
       `SELECT id, name, search_surge_pct, saturation_index, arr_low_cents, arr_high_cents, source_url, observed_at
        FROM market_radar_signals WHERE verified = 1 AND observed_at >= datetime('now', '-30 days')`
     ).all<MarketSignal>();
-    const gateway = c.env.TYPESAFE_API_KEY || c.env.SYSTEM_ONE_ENDPOINT
+    const gateway = c.env.OPENROUTER_API_KEY
       ? new SystemOneDecisionClient({
-          ...(c.env.SYSTEM_ONE_ENDPOINT ? { endpoint: c.env.SYSTEM_ONE_ENDPOINT } : {}),
-          ...(c.env.TYPESAFE_API_KEY ? { apiKey: c.env.TYPESAFE_API_KEY } : {}),
+          apiKey: c.env.OPENROUTER_API_KEY,
           ...(c.env.SYSTEM_ONE_MODEL ? { model: c.env.SYSTEM_ONE_MODEL } : {}),
-          provider: c.env.SYSTEM_ONE_PROVIDER ?? (c.env.SYSTEM_ONE_ENDPOINT ? "laya" : "jev"),
+          legacyProvider: c.env.SYSTEM_ONE_PROVIDER === "clef" ? "clef" : c.env.SYSTEM_ONE_PROVIDER === "laya" ? "laya" : "jev",
           ...(c.env.ANALYTICS ? { onDecision: (event) => {
             try {
               c.env.ANALYTICS!.writeDataPoint({
@@ -206,7 +205,7 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
       count: opportunities.length,
       generated_at: new Date().toISOString(),
       scoring_engine: opportunities.some((item) => item.provider !== "deterministic")
-        ? "jev-laya-system-1"
+        ? "openrouter-decisions"
         : "deterministic-system-1",
     });
   };

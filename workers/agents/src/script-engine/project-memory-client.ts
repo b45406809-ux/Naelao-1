@@ -33,7 +33,7 @@ export interface ProjectMemoryClientOptions {
   /** Mints the internal HMAC token every non-router call to another worker in this codebase
    *  requires — injected rather than imported so this module has no @naelao/http dependency. */
   mintInternalToken: (secret: string, tenantId: string) => Promise<string>;
-  /** Optional typed Jev/Laya sentry. Deterministic relevance remains the fail-closed fallback. */
+  /** Optional OpenRouter decision sentry. Deterministic relevance remains the fail-closed fallback. */
   fastDecision?: FastDecisionGateway;
 }
 
@@ -63,7 +63,7 @@ const FACT_RELEVANCE_CRITERIA = [
   "exactly answers the query",
 ] as const;
 
-/** Apply Jev/Laya to structured facts without making remote availability a correctness dependency. */
+/** Apply OpenRouter decisions to structured facts without making remote availability a correctness dependency. */
 export async function gateStructuredFacts(
   query: string,
   candidates: MemoryRecallResult[],

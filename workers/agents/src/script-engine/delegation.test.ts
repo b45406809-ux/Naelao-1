@@ -49,7 +49,7 @@ describe("turn routing and delegation ceiling", () => {
 
   it("uses high-confidence System One routing only within explicit mentions", async () => {
     const route = await routeMentionsWithSentry("@lead ask @legal to review", {
-      choice: async () => ({ kind: "choice", value: "legal", provider: "jev", policyCode: "mention_primary_turn_holder", confidence: 0.92 }),
+      choice: async () => ({ kind: "choice", value: "legal", provider: "openrouter", policyCode: "mention_primary_turn_holder", confidence: 0.92 }),
       score: async () => { throw new Error("unused"); },
       noul: async () => { throw new Error("unused"); },
     });
@@ -58,7 +58,7 @@ describe("turn routing and delegation ceiling", () => {
 
   it("keeps deterministic routing when System One confidence is low", async () => {
     const route = await routeMentionsWithSentry("@lead ask @legal", {
-      choice: async () => ({ kind: "choice", value: "legal", provider: "laya", policyCode: "mention_primary_turn_holder", confidence: 0.4 }),
+      choice: async () => ({ kind: "choice", value: "legal", provider: "openrouter", policyCode: "mention_primary_turn_holder", confidence: 0.4 }),
       score: async () => { throw new Error("unused"); },
       noul: async () => { throw new Error("unused"); },
     });

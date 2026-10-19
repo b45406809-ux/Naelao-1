@@ -76,7 +76,7 @@ export function DiscoverMarketRadar({
             🔥 Live Market Radar
           </h2>
           <p style={{ margin: "3px 0 0", color: "var(--text3)", fontSize: 12 }}>
-            Top autonomous opportunities scored by the Jev System 1 engine.
+            Top autonomous opportunities scored by the OpenRouter Decisions API.
           </p>
         </div>
         <span style={{ fontSize: 11, color: "var(--text3)" }}>

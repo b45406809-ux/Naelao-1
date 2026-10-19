@@ -30,7 +30,7 @@ describe("Step 13 browser runtime", () => {
     expect(sameBrowserOwner(scope(), { ...scope(), actorId: "other" })).toBe(false);
   });
   it.each([0.4, NaN, Infinity, 1.1, undefined])("falls back to thinking for unusable confidence %s", async confidence => {
-    const gateway = { choice: vi.fn(async () => ({ kind: "choice", value: "submit", provider: "jev", confidence })) } as unknown as FastDecisionGateway;
+    const gateway = { choice: vi.fn(async () => ({ kind: "choice", value: "submit", provider: "openrouter", confidence })) } as unknown as FastDecisionGateway;
     const result = await chooseBrowserReflex(scope(), observation(), [{ id: "submit", label: "Submit authorized form", action: { actionId: "submit", observationRevision: "revision", type: "click", handle: "e0" } }], gateway);
     expect(result.kind).toBe("thinking_required");
   });

@@ -340,15 +340,12 @@ NAELAO_GATEWAY_ID = "naelao-gateway"
 #   wrangler secret put NAELAO_AIG_TOKEN
 # When NAELAO_AIG_TOKEN is unset AND no ANTHROPIC_API_KEY is provided, LLM calls fail honestly.
 #
-# System One decision sentry. The verified Cloudflare Clef route uses the existing AI binding:
-#   SYSTEM_ONE_PROVIDER="clef"
-#   SYSTEM_ONE_MODEL="@cf/cloudflare/clef-flash"  # or clef / clef-omni when appropriate
-# Clef is opt-in; do not set it for spaces whose residency/egress policy forbids cloud inference.
-# Jev remains an explicitly configured provider and requires its own current vendor validation:
-#   wrangler secret put TYPESAFE_API_KEY
-# A separately operated, policy-authorized endpoint can be set with SYSTEM_ONE_ENDPOINT and
-# SYSTEM_ONE_PROVIDER="laya"; its wire contract and placement must be verified by its operator.
-# A missing sentry never weakens deterministic routing.
+# System One decisions all use the OpenRouter Decisions API. Set the platform decision key:
+#   wrangler secret put OPENROUTER_API_KEY
+# By default the sentry uses Decider V1.2. Set SYSTEM_ONE_PROVIDER="clef" (legacy role selector)
+# or SYSTEM_ONE_MODEL="perplexity/pplx-decider-flash-v1.2" to use Decider Flash for the former
+# Clef Flash route. Jev/Laya legacy selectors map to Decider V1.2. Only the two Perplexity model
+# IDs are accepted. A missing key leaves deterministic routing active.
 #
 # Google AI Studio (Gemini) — a genuinely separate provider relationship, BYOK to a real Google
 # key (not held by the CF Gateway itself). Lets the model switcher offer Gemini models

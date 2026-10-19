@@ -47,7 +47,7 @@ describe("project memory Jev/Laya relevance gate", () => {
       kind: "score" as const,
       value: 9,
       confidence: 0.96,
-      provider: "laya" as const,
+      provider: "openrouter" as const,
       policyCode: "project_fact_relevance",
     }));
     // The fact deliberately shares no exact query token: Jev must be allowed to recognize
@@ -62,7 +62,7 @@ describe("project memory Jev/Laya relevance gate", () => {
       kind: "score" as const,
       value: 4,
       confidence: 0.95,
-      provider: "jev" as const,
+      provider: "openrouter" as const,
       policyCode: "project_fact_relevance",
     }));
     await expect(gateStructuredFacts("refund window", [candidate("shipping status")], { score } as never)).resolves.toEqual([]);

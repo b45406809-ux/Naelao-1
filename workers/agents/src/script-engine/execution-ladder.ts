@@ -79,13 +79,13 @@ export function classifyExecutionRoute(command: string): { tier: ExecutionTier; 
 }
 
 /**
- * Refine an execution route with Jev or Laya before any isolate is created. The sentry may only
+ * Refine an execution route with the configured OpenRouter decision model before an isolate is created. The sentry may only
  * elevate to the Linux container; it can never downgrade a route selected by deterministic policy.
  */
 export async function classifyExecutionRouteWithSentry(
   command: string,
   sentry?: Pick<FastDecisionGateway, "noul">
-): Promise<{ tier: ExecutionTier; engine: ExecutionEngine; reason: string; sentry?: { provider: "jev" | "laya" | "clef"; confidence?: number; model?: string } }> {
+): Promise<{ tier: ExecutionTier; engine: ExecutionEngine; reason: string; sentry?: { provider: "openrouter"; confidence?: number; model?: string } }> {
   const baseline = classifyExecutionRoute(command);
   if (!sentry || baseline.tier === 6 || baseline.reason === "command_not_found" || baseline.tier === 1) return baseline;
   try {

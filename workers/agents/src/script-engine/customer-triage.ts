@@ -34,7 +34,7 @@ function deterministicTriage(message: string): CustomerMessageTriage {
   };
 }
 
-/** Jev/Laya triage with an explicit deterministic fallback. Moderation remains a separate gate. */
+/** OpenRouter decision triage with an explicit deterministic fallback. Moderation remains a separate gate. */
 export async function triageCustomerMessage(
   message: string,
   sentry?: Pick<FastDecisionGateway, "choice" | "noul">

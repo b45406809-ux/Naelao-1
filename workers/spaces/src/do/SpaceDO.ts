@@ -7332,7 +7332,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }))
       // Trust establishes that a fact is durable; it does not establish that it
       // belongs in this query. Keep the shared route fail-closed as well as the
-      // agent-side Jev gate, so direct project-memory consumers cannot receive an
+      // agent-side decision gate, so direct project-memory consumers cannot receive an
       // unrelated fact merely because it has a high trust score.
       .filter((row) => row.trust_score >= 0.8 && row.relevance_score >= 0.8)
       .sort((a, b) => b.relevance_score - a.relevance_score || b.trust_score - a.trust_score)

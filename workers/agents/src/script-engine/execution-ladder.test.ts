@@ -101,8 +101,8 @@ describe("Execution Ladder & Code Runner", () => {
   });
 
   it("lets System One elevate an ambiguous command but never lower deterministic native work", async () => {
-    const noul = vi.fn(async () => ({ kind: "noul" as const, value: true, probability: 0.91, confidence: 0.91, provider: "jev" as const, model: "jev-1.13.0", policyCode: "execution_native_preflight_v1" }));
-    await expect(classifyExecutionRouteWithSentry("ext:opaque run", { noul })).resolves.toMatchObject({ tier: 6, engine: "container", reason: "jev_native_preflight", sentry: { provider: "jev" } });
+    const noul = vi.fn(async () => ({ kind: "noul" as const, value: true, probability: 0.91, confidence: 0.91, provider: "openrouter" as const, model: "perplexity/pplx-decider-v1.2", policyCode: "execution_native_preflight_v1" }));
+    await expect(classifyExecutionRouteWithSentry("ext:opaque run", { noul })).resolves.toMatchObject({ tier: 6, engine: "container", reason: "openrouter_native_preflight", sentry: { provider: "openrouter" } });
     await expect(classifyExecutionRouteWithSentry("cargo build", { noul })).resolves.toMatchObject({ tier: 6, reason: "declared_native_command" });
     expect(noul).toHaveBeenCalledTimes(1);
   });

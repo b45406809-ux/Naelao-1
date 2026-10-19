@@ -1027,12 +1027,9 @@ export function processAgentException(
 export interface AgentDOEnv {
   ENVIRONMENT?: string;
   DATA_JURISDICTION?: "eu";
-  /** Official Jev credential. Set with `wrangler secret put TYPESAFE_API_KEY`. */
-  TYPESAFE_API_KEY?: string;
-  /** Optional Jev-compatible Laya endpoint, for example https://laya.internal/v1/systemone. */
-  SYSTEM_ONE_ENDPOINT?: string;
   SYSTEM_ONE_MODEL?: string;
-  SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef";
+  /** Legacy selector accepted during rollout: Jev/Laya -> Decider; Clef -> Decider Flash. */
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef" | "openrouter";
   PLATFORM_SECRET: string;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
@@ -1085,7 +1082,7 @@ export interface AgentDOEnv {
   GOOGLE_AI_STUDIO_API_KEY?: string;
   /** Groq BYOK key — free tier is 14,400 requests/day, which is what makes real testing possible. */
   GROQ_API_KEY?: string;
-  /** Optional OpenRouter developer fallback; customer keys are stored in the Space Vault. */
+  /** Platform OpenRouter key for model egress and System One decisions; customer keys stay in the Space Vault. */
   OPENROUTER_API_KEY?: string;
   /** Opt-in pilot; enable only after quality, billing granularity and provider readiness checks. */
   SCALEDOWN_AUTO_COMPACTION_ENABLED?: string;
@@ -2145,16 +2142,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       throw new Error(JSON.stringify({error_code:result.status,diagnostic_id:result.diagnosticId,diagnostics:result.diagnostics,correction_attempts:result.correctionAttempts}));
     };
     env.memoryRoleRank = memoryRoleRank;
-    const systemOneConfigured = this.env.SYSTEM_ONE_PROVIDER === "clef"
-      ? Boolean(this.env.AI)
-      : Boolean(this.env.TYPESAFE_API_KEY || this.env.SYSTEM_ONE_ENDPOINT);
-    if (!airGappedOnly && systemOneConfigured) {
+    const openRouterDecisionKey = this.env.OPENROUTER_API_KEY;
+    if (!airGappedOnly && openRouterDecisionKey) {
       env.fastDecision = new SystemOneDecisionClient({
-        ...(this.env.SYSTEM_ONE_ENDPOINT ? { endpoint: this.env.SYSTEM_ONE_ENDPOINT } : {}),
-        ...(this.env.TYPESAFE_API_KEY ? { apiKey: this.env.TYPESAFE_API_KEY } : {}),
+        apiKey: openRouterDecisionKey,
         ...(this.env.SYSTEM_ONE_MODEL ? { model: this.env.SYSTEM_ONE_MODEL } : {}),
-        provider: this.env.SYSTEM_ONE_PROVIDER ?? (this.env.SYSTEM_ONE_ENDPOINT ? "laya" : "jev"),
-        ...(this.env.SYSTEM_ONE_PROVIDER === "clef" && this.env.AI ? { runClef: (model, input) => this.env.AI!.run(model as Parameters<Ai["run"]>[0], input as Parameters<Ai["run"]>[1]) } : {}),
+        legacyProvider: this.env.SYSTEM_ONE_PROVIDER === "clef" ? "clef" : this.env.SYSTEM_ONE_PROVIDER === "laya" ? "laya" : "jev",
         ...(this.env.ANALYTICS ? {
           onDecision: (event) => {
             try {

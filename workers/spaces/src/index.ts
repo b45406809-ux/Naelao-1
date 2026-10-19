@@ -96,10 +96,9 @@ export interface Env {
   TWILIO_ACCOUNT_SID?: string;
   TWILIO_AUTH_TOKEN?: string;
   TWILIO_WHATSAPP_NUMBER?: string;
-  TYPESAFE_API_KEY?: string;
-  SYSTEM_ONE_ENDPOINT?: string;
+  OPENROUTER_API_KEY?: string;
   SYSTEM_ONE_MODEL?: string;
-  SYSTEM_ONE_PROVIDER?: "jev" | "laya";
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef" | "openrouter";
   ANALYTICS?: AnalyticsEngineDataset;
 }
 

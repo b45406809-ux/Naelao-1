@@ -5,10 +5,9 @@ export interface RiskLimits { stopLossBps: number; maxDrawdownBps: number; peakE
 export interface OrderRequest { id: string; side: "buy" | "sell"; quantity: number; priceMinor: number; currentEquityMinor: number; projectedLossMinor: number }
 
 interface RiskGuardEnv {
-  TYPESAFE_API_KEY?: string;
-  SYSTEM_ONE_ENDPOINT?: string;
+  OPENROUTER_API_KEY?: string;
   SYSTEM_ONE_MODEL?: string;
-  SYSTEM_ONE_PROVIDER?: "jev" | "laya";
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef" | "openrouter";
   ANALYTICS?: AnalyticsEngineDataset;
 }
 
@@ -42,12 +41,11 @@ export class RiskGuardDO extends DurableObject<RiskGuardEnv> {
   private readonly sentry?: FastDecisionGateway;
   constructor(state: DurableObjectState, env: RiskGuardEnv) {
     super(state, env);
-    if (env.TYPESAFE_API_KEY || env.SYSTEM_ONE_ENDPOINT) {
+    if (env.OPENROUTER_API_KEY) {
       this.sentry = new SystemOneDecisionClient({
-        ...(env.SYSTEM_ONE_ENDPOINT ? { endpoint: env.SYSTEM_ONE_ENDPOINT } : {}),
-        ...(env.TYPESAFE_API_KEY ? { apiKey: env.TYPESAFE_API_KEY } : {}),
+        apiKey: env.OPENROUTER_API_KEY,
         ...(env.SYSTEM_ONE_MODEL ? { model: env.SYSTEM_ONE_MODEL } : {}),
-        provider: env.SYSTEM_ONE_PROVIDER ?? (env.SYSTEM_ONE_ENDPOINT ? "laya" : "jev"),
+        legacyProvider: env.SYSTEM_ONE_PROVIDER === "clef" ? "clef" : env.SYSTEM_ONE_PROVIDER === "laya" ? "laya" : "jev",
         ...(env.ANALYTICS ? { onDecision: (event) => {
           try { env.ANALYTICS!.writeDataPoint({ blobs: ["system_one.decision", "", "", "", "risk-guard", event.provider, "risk", event.policyCode, event.model], doubles: [event.latencyMs, event.usage.inputTokens, event.usage.outputTokens] }); } catch { /* best effort */ }
         } } : {}),

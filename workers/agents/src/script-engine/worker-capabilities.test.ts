@@ -35,7 +35,7 @@ describe("task-filtered default worker capabilities", () => {
         "tool:workspace-admin",
         "unrecognized-secret-tool",
       ],
-      provider: "jev" as const,
+      provider: "openrouter" as const,
       confidence: 0.95,
     }));
     const result = await selectDefaultWorkerCapabilities({
@@ -53,7 +53,7 @@ describe("task-filtered default worker capabilities", () => {
     expect(result.enabledPrebuilts.every((name) => tools.includes(name))).toBe(
       true
     );
-    expect(result.provider).toBe("jev");
+    expect(result.provider).toBe("openrouter");
   });
 
   it("falls back to the deterministic task match when the decision service fails", async () => {

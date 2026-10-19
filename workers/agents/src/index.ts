@@ -269,10 +269,9 @@ export { CompanyAutomationWorkflow } from "./workflows/company-automation-workfl
 export interface AgentsEnv extends Cloudflare.Env {
   ENVIRONMENT: string;
   DATA_JURISDICTION?: "eu";
-  TYPESAFE_API_KEY?: string;
-  SYSTEM_ONE_ENDPOINT?: string;
+  OPENROUTER_API_KEY?: string;
   SYSTEM_ONE_MODEL?: string;
-  SYSTEM_ONE_PROVIDER?: "jev" | "laya";
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef" | "openrouter";
   /** Optional since the vendor cutover: the CF AI Gateway can hold the Anthropic key itself
    *  (Authenticated Gateway / BYOK — see NAELAO_AIG_TOKEN), so a deployment needs no per-worker
    *  Anthropic key. When BOTH this and NAELAO_AIG_TOKEN are unset, LLM calls fail honestly. */

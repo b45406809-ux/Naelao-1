@@ -119,7 +119,7 @@ export interface WorkerCapabilitySelection {
   enabledPrebuilts: string[];
   selectedSkills: string[];
   selectedBundles: string[];
-  provider: "deterministic" | "jev" | "laya" | "clef";
+  provider: "deterministic" | "openrouter";
   fallback: "none" | "full_toolset_ambiguous" | "decision_unavailable";
 }
 

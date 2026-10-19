@@ -9,10 +9,9 @@ export interface Env extends DurableWorkflowHostEnv, Cloudflare.Env {
   /** Deployment must supply the actual immutable bundle SHA-256, not a mutable version name. */
   WORKFLOW_BUILD_ID?: string;
   DATA_JURISDICTION?: "eu";
-  TYPESAFE_API_KEY?: string;
-  SYSTEM_ONE_ENDPOINT?: string;
+  OPENROUTER_API_KEY?: string;
   SYSTEM_ONE_MODEL?: string;
-  SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef";
+  SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef" | "openrouter";
   ANTHROPIC_API_KEY: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;

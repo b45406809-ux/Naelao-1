@@ -977,7 +977,7 @@ export interface ScriptEngineEnv {
   /** Immutable compliance posture for this run. Egress-capable gateways must be absent and the
    * code runner must reject cloud/browser/network backends when this is true. */
   airGappedOnly?: boolean;
-  /** Optional Jev or Laya System One sentry. Callers must retain deterministic fail-closed policy
+  /** Optional OpenRouter decision sentry. Callers must retain deterministic fail-closed policy
    * when it is absent, unavailable, or returns a low-confidence answer. */
   fastDecision?: import("@naelao/agent-sdk").FastDecisionGateway;
   /** Append-only execution telemetry used to prove, rather than assume, tier distribution. */

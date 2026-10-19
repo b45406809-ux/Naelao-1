@@ -13,7 +13,7 @@ describe("automatic worker model routing", () => {
   });
   it("rejects a System One suggestion outside its host-filtered effort candidates", async () => {
     const result = await selectWorkerModel({ plannerModel: "claude-sonnet-4-6", effort: "medium", contextAffinity: "isolated", goal: "simple lookup" }, {
-      choice: async () => ({ kind: "choice", value: "claude-opus-4-8", provider: "clef", policyCode: "test" }) as never,
+      choice: async () => ({ kind: "choice", value: "claude-opus-4-8", provider: "openrouter", policyCode: "test" }) as never,
     });
     expect(result.model).toBe(DEFAULT_WORKING_MODEL);
   });
