@@ -20,7 +20,7 @@ function harness() {
       return { size: 7, async text() { return "fixture"; } };
     },
   };
-  const env = {
+  const env: Record<string, any> = {
     PLATFORM_SECRET: "workflow-run-test-secret",
     SCRIPTS_R2: bucket,
     SPACES_WORKER: { async fetch() { return Response.json({ data: member ? [{ user_id: "actor-a", role: "owner" }] : [] }); } },
@@ -52,5 +52,25 @@ describe("WorkflowRunDO persisted authorization", () => {
     h.revoke();
     await expect(h.instance.authorize("run-a")).rejects.toThrow("workflow_membership_revoked");
     await expect(h.instance.authorize("another-run")).rejects.toThrow("workflow_run_scope_mismatch");
+  });
+
+  it("keeps a failed run retryable when budget reservation is unavailable", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-a", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-a",
+      startKey: "start-a", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    const input: WorkflowCheckpointPointer = {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-a/input.json", sha256: "b".repeat(64), bytes: 2,
+    };
+    await h.instance.initialize(identity, input, { budgetCredits: 5 });
+    await h.instance.finish("run-a", "failed", "prior failure");
+    h.env.AGENT_SCRIPT_WORKFLOW = { async get() { throw new Error("must_not_start_before_reservation"); } };
+    h.env.BILLING_WORKER = { async fetch() { return new Response("unavailable", { status: 503 }); } };
+
+    await expect(h.instance.retry("actor-a")).rejects.toThrow("workflow budget reservation failed (503)");
+    expect((await h.instance.existing())?.status).toBe("failed");
   });
 });

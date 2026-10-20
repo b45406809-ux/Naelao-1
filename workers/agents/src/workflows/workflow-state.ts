@@ -37,8 +37,19 @@ export class WorkflowJournal {
       return record;
     });
   }
-  async patch(patch: Partial<Pick<WorkflowJournalRecord, "launched" | "cleanupPending" | "usedCredits">>): Promise<void> {
+  async patch(patch: Partial<Pick<WorkflowJournalRecord, "launched" | "cleanupPending">>): Promise<void> {
     await this.storage.transaction(async (storage) => { const record = await storage.get<WorkflowJournalRecord>("run"); if (!record) throw new Error("workflow_not_found"); await storage.put("run", { ...record, ...patch, updatedAt: Date.now() }); });
+  }
+  async addUsedCredits(credits: number): Promise<number> {
+    if (!Number.isFinite(credits) || credits < 0) throw new Error("workflow_usage_invalid");
+    return this.storage.transaction(async (storage) => {
+      const record = await storage.get<WorkflowJournalRecord>("run");
+      if (!record) throw new Error("workflow_not_found");
+      const usedCredits = record.usedCredits + credits;
+      if (!Number.isFinite(usedCredits)) throw new Error("workflow_usage_overflow");
+      await storage.put("run", { ...record, usedCredits, updatedAt: Date.now() });
+      return usedCredits;
+    });
   }
   async transition(status: WorkflowJournalRecord["status"], result?: WorkflowCheckpointPointer, error?: string): Promise<WorkflowJournalRecord> {
     return this.storage.transaction(async (storage) => {

@@ -96,8 +96,7 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       await this.journal.commitEffect(effect, pointer);
       const credits = await reportWorkflowStepInfraUsage(this.env as Env, identity.tenantId, identity.spaceId, Date.now() - started, runId + ":" + key, false,
         { ...(identity.projectId ? { projectId: identity.projectId } : {}), ...(identity.installationId ? { installationId: identity.installationId } : {}), runId });
-      const latest = await this.journal.read();
-      await this.journal.patch({ usedCredits: latest.usedCredits + credits });
+      await this.journal.addUsedCredits(credits);
       await this.authorize(runId);
       return result;
     } catch (error) {
@@ -127,8 +126,9 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     const record = await this.assertOwner(actorId);
     await this.authorize(record.identity.runId);
     if (isTerminalWorkflow(record.status) || !/^[A-Za-z0-9._:-]{1,100}$/.test(type)) throw new Error("workflow_signal_invalid");
+    if (!this.env.AGENT_SCRIPT_WORKFLOW) throw new Error("workflow_provider_unavailable");
     const pointer = await this.putArtifact(record.identity.runId, payload);
-    await (await this.env.AGENT_SCRIPT_WORKFLOW!.get(record.identity.runId)).sendEvent({ type, payload: pointer });
+    await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).sendEvent({ type, payload: pointer });
   }
   async cancel(actorId: string): Promise<void> {
     const record = await this.assertOwner(actorId);
@@ -138,13 +138,27 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
   async retry(actorId: string): Promise<void> {
     const record = await this.assertOwner(actorId);
     await this.authorize(record.identity.runId);
-    await this.journal.retry(WORKFLOW_CLASS_POLICIES[record.identity.workflowClass].maxAttempts);
+    if (!this.env.AGENT_SCRIPT_WORKFLOW) throw new Error("workflow_provider_unavailable");
+    // Reserve before changing failed -> queued. A billing outage must leave the run
+    // retryable instead of stranding it in a queued state with no provider restart.
     await reserveWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.spaceId, record.identity.runId, record.budgetKey, record.budgetCredits, record.identity.expiresAt,
       { ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}), ...(record.identity.installationId ? { installationId: record.identity.installationId } : {}) });
-    if (!this.env.AGENT_SCRIPT_WORKFLOW) throw new Error("workflow_provider_unavailable");
-    await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).restart();
+    await this.journal.retry(WORKFLOW_CLASS_POLICIES[record.identity.workflowClass].maxAttempts);
     await this.journal.patch({ launched: true });
     await this.ctx.storage.setAlarm(record.identity.expiresAt);
+    try {
+      await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).restart();
+    } catch (error) {
+      // A restart reply can be lost after the provider accepted it. Reconcile before
+      // marking the run failed so a successfully restarted workflow is not duplicated.
+      try {
+        const provider = await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).status();
+        if (["queued", "running", "waiting", "sleeping"].includes(provider.status)) return;
+      } catch { /* retain the original restart error */ }
+      await this.journal.transition("failed", undefined, "workflow_retry_start_failed");
+      await this.cleanup();
+      throw error;
+    }
   }
   private async assertOwner(actorId: string): Promise<WorkflowJournalRecord> {
     const record = await this.journal.read();
