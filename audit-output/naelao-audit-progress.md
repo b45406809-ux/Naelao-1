@@ -1134,3 +1134,14 @@ Structured Markdown now splits oversized tables at row boundaries, repeats the t
 Validation: RAG package suite passed 4 files / 25 tests; Knowledge Worker suite passed 7 files / 29 tests; RAG and Knowledge Worker TypeScript checks passed; `git diff --check` passed. The repository-local Biome binary was unavailable in this workspace, so formatting checks were not run.
 
 This is a focused review of the RAG chunker and the Knowledge Worker document-ingestion coordinate path. `workers/knowledge/src/index.ts` remains unchecked overall; its many other route, authorization, database, external-fetch, and storage paths still need caller-by-caller review.
+
+
+## Cohere Parse provider boundary (2026-10-20)
+
+Traced `createParseV5Request` from the Knowledge Worker PDF ingestion route to Cohere's v2 Parse endpoint. The route bounds the incoming JSON field, but the helper itself had no direct upload-byte cap, no request timeout, and accepted extracted Markdown up to the 16 MiB response envelope. That result then bypassed the worker's 1 MiB input document limit. Provider JSON was also trusted as its declared TypeScript shape.
+
+Added a 10 MiB direct upload cap, a 30 second request timeout, sanitized network/provider failures, response-shape validation, and a 1 MiB extracted-Markdown cap before returning data to the indexer. The existing 16 MiB streamed response ceiling remains in place to bound JSON parsing. Added coverage for limits, timeout signal, malformed body shape, upstream status, missing API configuration, and empty documents.
+
+Validation: Knowledge Worker suite passed 7 files / 32 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
+
+Checked `parse-v5.ts` and `parse-v5.test.ts`. Its sole in-repository caller is the PDF ingestion route in `workers/knowledge/src/index.ts`; that large module remains unchecked overall.

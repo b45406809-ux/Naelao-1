@@ -2246,8 +2246,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/knowledge/src/foundry-sharing.test.ts`
 - [ ] `workers/knowledge/src/index.ts`
 - [x] `workers/knowledge/src/kb-search-boundaries.test.ts`
-- [ ] `workers/knowledge/src/parse-v5.test.ts`
-- [ ] `workers/knowledge/src/parse-v5.ts`
+- [x] `workers/knowledge/src/parse-v5.test.ts`
+- [x] `workers/knowledge/src/parse-v5.ts`
 - [ ] `workers/knowledge/src/search.ts`
 - [ ] `workers/knowledge/src/storage-usage.test.ts`
 - [ ] `workers/knowledge/src/storage-usage.ts`
