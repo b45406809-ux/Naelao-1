@@ -48,7 +48,7 @@ try:
     caveats = "## Audit caveats" + tail.split("## Audit caveats", 1)[1]
 except IndexError:
     caveats = ""
-prefix = re.sub(r"Inventory basis: .*", f"Inventory basis: `{len(paths)}` tracked files; `{len(source_paths)}` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `97dd605d`.", prefix)
+prefix = re.sub(r"Inventory basis: .*", f"Inventory basis: `{len(paths)}` tracked files; `{len(source_paths)}` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `3ff4c111`.", prefix)
 sections = ["## File-by-file checklist", "", "Check each file only after its behavior and runtime relationships are traced and recorded. Config, schema, and deployment files are included because they affect runtime behavior and security.", ""]
 groups = {}
 for p in source_paths:

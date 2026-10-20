@@ -1,8 +1,8 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1966
-Files with source or executable-configuration extensions: 1760
+Files: 1967
+Files with source or executable-configuration extensions: 1761
 Inventory revision: 2026-10-20 audit refresh at 4cc122ff
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
@@ -841,6 +841,7 @@ packages/
       kv.ts
       middleware.test.ts
       middleware.ts
+      pagination.test.ts
       pagination.ts
       realtime.test.ts
       realtime.ts
