@@ -30,6 +30,13 @@ interface ApiKeyRow {
   created_at: string;
 }
 
+const BUILDER_API_KEY_SCOPES = new Set([
+  "spaces:read", "spaces:write", "sessions:read", "sessions:write",
+  "kb:read", "kb:write", "agents:read", "agents:write", "analytics:read", "billing:read",
+]);
+const MAX_API_KEYS = 1_000;
+const MAX_PRODUCTS = 500;
+
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -76,13 +83,17 @@ export class BuilderAccountDO extends DurableObject {
 
     // POST /products — index a product this builder owns (called once at launch).
     if (method === "POST" && url.pathname === "/products") {
-      const body = await request.json<{ product_space_id: string }>();
-      if (!body.product_space_id) {
+      const body = await request.json<unknown>().catch(() => null);
+      const productSpaceId = body && typeof body === "object" && !Array.isArray(body)
+        ? (body as { product_space_id?: unknown }).product_space_id : undefined;
+      if (typeof productSpaceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(productSpaceId)) {
         return Response.json({ error: "product_space_id is required" }, { status: 400 });
       }
+      const count = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM products").toArray()[0]?.count ?? 0;
+      if (count >= MAX_PRODUCTS) return Response.json({ error: "product_limit_reached" }, { status: 429 });
       this.ctx.storage.sql.exec(
         "INSERT OR IGNORE INTO products (product_space_id) VALUES (?)",
-        body.product_space_id
+        productSpaceId
       );
       return Response.json({ ok: true }, { status: 201 });
     }
@@ -90,7 +101,7 @@ export class BuilderAccountDO extends DurableObject {
     // GET /products — this builder's product index.
     if (method === "GET" && url.pathname === "/products") {
       const rows = this.ctx.storage.sql
-        .exec("SELECT product_space_id, added_at FROM products ORDER BY added_at DESC")
+        .exec("SELECT product_space_id, added_at FROM products ORDER BY added_at DESC LIMIT ?", MAX_PRODUCTS)
         .toArray() as unknown as { product_space_id: string; added_at: string }[];
       return Response.json({ data: rows });
     }
@@ -98,29 +109,44 @@ export class BuilderAccountDO extends DurableObject {
     // POST /api-keys — mint a new scoped builder API key. Returns the raw key exactly once;
     // only its SHA-256 hash and a short prefix (for UI display) are ever persisted.
     if (method === "POST" && url.pathname === "/api-keys") {
-      const body = await request.json<{ name: string; scopes: string[]; expires_in_days?: number }>();
-      if (!body.name || !Array.isArray(body.scopes) || body.scopes.length === 0) {
+      const body = await request.json<unknown>().catch(() => null);
+      if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error: "invalid_api_key_configuration" }, { status: 400 });
+      const input = body as { name?: unknown; scopes?: unknown; expires_in_days?: unknown };
+      if (typeof input.name !== "string" || !input.name.trim() || input.name.length > 80 || !Array.isArray(input.scopes) ||
+          input.scopes.length === 0 || input.scopes.length > BUILDER_API_KEY_SCOPES.size ||
+          !input.scopes.every(scope => typeof scope === "string" && BUILDER_API_KEY_SCOPES.has(scope)) ||
+          new Set(input.scopes).size !== input.scopes.length ||
+          (input.expires_in_days !== undefined && (!Number.isSafeInteger(input.expires_in_days) || (input.expires_in_days as number) < 1 || (input.expires_in_days as number) > 3650))) {
         return Response.json({ error: "name and at least one scope are required" }, { status: 400 });
       }
+      const name = input.name.trim();
+      const scopes = input.scopes as string[];
       const id = crypto.randomUUID();
       const rawKey = `nbk_${crypto.randomUUID().replace(/-/g, "")}`;
       const keyHash = await sha256Hex(rawKey);
       const keyPrefix = rawKey.slice(0, 11); // "nbk_" + 7 chars
       const now = new Date();
-      const expiresAt = body.expires_in_days
-        ? new Date(now.getTime() + body.expires_in_days * 86_400_000).toISOString()
+      const expiresAt = input.expires_in_days !== undefined
+        ? new Date(now.getTime() + (input.expires_in_days as number) * 86_400_000).toISOString()
         : null;
-      this.ctx.storage.sql.exec(
-        `INSERT INTO api_keys (id, name, key_hash, key_prefix, scopes, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        id, body.name, keyHash, keyPrefix, JSON.stringify(body.scopes), expiresAt, now.toISOString()
-      );
+      const insert = () => {
+        const count = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM api_keys WHERE revoked_at IS NULL").toArray()[0]?.count ?? 0;
+        if (count >= MAX_API_KEYS) return false;
+        this.ctx.storage.sql.exec(
+          `INSERT INTO api_keys (id, name, key_hash, key_prefix, scopes, expires_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          id, name, keyHash, keyPrefix, JSON.stringify(scopes), expiresAt, now.toISOString()
+        );
+        return true;
+      };
+      if (typeof this.ctx.storage.transactionSync !== "function") return Response.json({ error: "atomic_api_key_storage_unavailable" }, { status: 503 });
+      if (!this.ctx.storage.transactionSync(insert)) return Response.json({ error: "api_key_limit_reached" }, { status: 429 });
       // key_hash is included for the calling worker route ONLY — it needs it to write the
       // builder_api_key_index routing row (migration 0045). The route strips it before the raw
       // client response goes out; it must never appear in a client-facing payload.
       return Response.json({
-        id, key: rawKey, key_hash: keyHash, name: body.name, key_prefix: keyPrefix,
-        scopes: body.scopes, last_used_at: null, expires_at: expiresAt, created_at: now.toISOString(),
+        id, key: rawKey, key_hash: keyHash, name, key_prefix: keyPrefix,
+        scopes, last_used_at: null, expires_at: expiresAt, created_at: now.toISOString(),
       }, { status: 201 });
     }
 
@@ -129,7 +155,7 @@ export class BuilderAccountDO extends DurableObject {
       const rows = this.ctx.storage.sql
         .exec(
           `SELECT id, name, key_prefix, scopes, last_used_at, expires_at, created_at
-           FROM api_keys WHERE revoked_at IS NULL ORDER BY created_at DESC`
+           FROM api_keys WHERE revoked_at IS NULL ORDER BY created_at DESC LIMIT ?`, MAX_API_KEYS
         )
         .toArray() as unknown as ApiKeyRow[];
       return Response.json({
@@ -150,9 +176,10 @@ export class BuilderAccountDO extends DurableObject {
     // POST /api-keys/verify — internal: validateProductScope middleware (Phase 3) resolves a
     // Bearer nbk_... key to its scopes here before any /builder/* route runs.
     if (method === "POST" && url.pathname === "/api-keys/verify") {
-      const body = await request.json<{ key: string }>();
-      if (!body.key) return Response.json({ valid: false }, { status: 400 });
-      const keyHash = await sha256Hex(body.key);
+      const body = await request.json<unknown>().catch(() => null);
+      const rawKey = body && typeof body === "object" && !Array.isArray(body) ? (body as { key?: unknown }).key : undefined;
+      if (typeof rawKey !== "string" || !/^nbk_[a-f0-9]{32}$/.test(rawKey)) return Response.json({ valid: false }, { status: 400 });
+      const keyHash = await sha256Hex(rawKey);
       const rows = this.ctx.storage.sql
         .exec(
           `SELECT id, scopes, expires_at FROM api_keys
@@ -162,7 +189,7 @@ export class BuilderAccountDO extends DurableObject {
         .toArray() as unknown as { id: string; scopes: string; expires_at: string | null }[];
       const row = rows[0];
       if (!row) return Response.json({ valid: false });
-      if (row.expires_at && new Date(row.expires_at) < new Date()) {
+      if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
         return Response.json({ valid: false });
       }
       this.ctx.storage.sql.exec(

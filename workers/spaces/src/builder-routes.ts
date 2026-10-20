@@ -9,22 +9,22 @@ import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, DEFAULT_WORKING_MOD
 // file declares its own minimal structural Env shape instead of importing index.ts's Env).
 //
 // AUTH: every /builder/* route accepts EITHER of two callers, resolved by resolveBuilderAuth():
-//  - a router-authenticated session (x-naelao-tenant-id header, set by naelao-router after JWT
-//    verification — the SAME mechanism every other builder-facing route in this worker already
-//    uses, e.g. /reseller/clients, /spaces/:id/member-billing). This is how the Dashboard UI
-//    itself calls these routes. Full access (no per-scope restriction — a builder's own session).
+//  - a router-authenticated session (x-naelao-tenant-id plus x-naelao-internal-token set by
+//    naelao-router after JWT verification). The HMAC is verified here so direct Worker access
+//    cannot forge the tenant. This is how the Dashboard UI itself calls these routes. Full access.
 //  - a Bearer `nbk_...` API key (the spec's programmatic Builder Dashboard API surface). Routed
 //    to the right BuilderAccountDO via builder_api_key_index (migration 0045, pure routing data —
 //    see its header comment for why this isn't a split-brain), then authoritatively re-verified
-//    against that DO. Scoped to whatever scopes the key was minted with.
+//    against that DO. Route middleware enforces the stored scope, and descendants cannot request
+//    a wider scope when minting another key.
 // Note: wiring naelao-router to actually forward external `Authorization: Bearer nbk_...` calls
 // through to this worker (today the router only forwards already-JWT-authenticated sessions) is a
 // separate, tracked router-level follow-up — out of this file's scope. The Dashboard UI's own use
 // of these routes (Phases 4/5) works today via the x-naelao-tenant-id path.
 
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import { getDOName } from "@naelao/crypto";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { createCustomHostname, getCustomHostname, cfSaasConfig } from "./cf-saas.js";
 import type { SpaceTypeProductConfig } from "./do/SpaceTypeRegistryDO.js";
 import { createSpaceRecord, SpaceCreationError, provisionBusinessWallet } from "./create-space.js";
@@ -69,6 +69,25 @@ async function sha256Hex(input: string): Promise<string> {
 
 interface ResolvedBuilder { tenantId: string; scopes: string[] }
 
+function builderScopeFor(path: string, method: string): string {
+  if (path === "/builder/api-keys" || /^\/builder\/api-keys\//.test(path)) return "spaces:write";
+  if (/\/analytics(?:\/|$)/.test(path)) return "analytics:read";
+  if (/\/users\/[^/]+\/conversations$/.test(path)) return "sessions:read";
+  if (/\/wallet$/.test(path) || path === "/builder/billing" || path.startsWith("/builder/billing/")) return "billing:read";
+  return method === "GET" ? "spaces:read" : "spaces:write";
+}
+
+function hasBuilderScope(auth: ResolvedBuilder, required: string): boolean {
+  if (auth.scopes.includes("*")) return true;
+  if (auth.scopes.includes(required)) return true;
+  return required === "spaces:read" && auth.scopes.includes("spaces:write")
+    || required === "sessions:read" && auth.scopes.includes("sessions:write");
+}
+
+async function builderAuthFor(env: BuilderRoutesEnv, context: Context<any>): Promise<ResolvedBuilder | null> {
+  return (context.get("builderAuth") as ResolvedBuilder | undefined) ?? resolveBuilderAuth(env, context.req.raw.headers);
+}
+
 async function builderAccountDoStubFor(env: BuilderRoutesEnv, tenantId: string) {
   const doId = env.BUILDER_ACCOUNT_DO.idFromName(
     await getDOName("builder", tenantId, tenantId, env.PLATFORM_SECRET)
@@ -89,7 +108,12 @@ async function resolveBuilderAuth(
   headers: { get(name: string): string | null }
 ): Promise<ResolvedBuilder | null> {
   const headerTenant = headers.get("x-naelao-tenant-id");
-  if (headerTenant) return { tenantId: headerTenant, scopes: ["*"] };
+  if (headerTenant) {
+    // The tenant header is a router assertion, not an identity credential by itself.
+    // Verify the router's signature so direct Worker access cannot choose another tenant.
+    if (!await verifyInternalToken(headers.get("x-naelao-internal-token") ?? undefined, headerTenant, env.PLATFORM_SECRET)) return null;
+    return { tenantId: headerTenant, scopes: ["*"] };
+  }
 
   const authHeader = headers.get("authorization") ?? "";
   const match = /^Bearer\s+(nbk_\S+)$/.exec(authHeader);
@@ -138,13 +162,26 @@ function parseProductConfig(configJson: string | null): { productConfig?: Partia
 // properly-typed `env` via the `c.env as BuilderRoutesEnv` cast below.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerBuilderRoutes(app: Hono<any>): void {
-  // ── /builder/api-keys — consolidates onto Phase 1's BuilderAccountDO ─────────────────────────
-  app.post("/builder/api-keys", async (c) => {
+  app.use("/builder/*", async (c, next) => {
     const env = c.env as BuilderRoutesEnv;
     const auth = await resolveBuilderAuth(env, c.req.raw.headers);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    const required = builderScopeFor(c.req.path, c.req.method);
+    if (!hasBuilderScope(auth, required)) return c.json({ error_code: "insufficient_scope", required_scope: required }, 403);
+    c.set("builderAuth", auth);
+    return next();
+  });
+  // ── /builder/api-keys — consolidates onto Phase 1's BuilderAccountDO ─────────────────────────
+  app.post("/builder/api-keys", async (c) => {
+    const env = c.env as BuilderRoutesEnv;
+    const auth = await builderAuthFor(env, c);
+    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
 
-    const body = await c.req.json<{ name: string; scopes: string[]; expires_in_days?: number }>();
+    const body = await c.req.json<{ name?: unknown; scopes?: unknown; expires_in_days?: unknown }>().catch(() => null);
+    if (!body || !Array.isArray(body.scopes)) return c.json({ error_code: "invalid_api_key_configuration" }, 400);
+    if (!auth.scopes.includes("*") && body.scopes.some(scope => typeof scope !== "string" || !hasBuilderScope(auth, scope))) {
+      return c.json({ error_code: "api_key_scope_escalation_denied" }, 403);
+    }
     const stub = await builderAccountDoStubFor(env, auth.tenantId);
     const doRes = await stub.fetch(new Request("http://do/api-keys", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
     if (!doRes.ok) return new Response(doRes.body, { status: doRes.status, headers: { "content-type": "application/json" } });
@@ -161,7 +198,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.get("/builder/api-keys", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const stub = await builderAccountDoStubFor(env, auth.tenantId);
     const doRes = await stub.fetch(new Request("http://do/api-keys"));
@@ -170,7 +207,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.delete("/builder/api-keys/:id", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const stub = await builderAccountDoStubFor(env, auth.tenantId);
     const doRes = await stub.fetch(new Request(`http://do/api-keys/${encodeURIComponent(c.req.param("id"))}`, { method: "DELETE" }));
@@ -187,7 +224,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // real (provisioning/active) from the moment it exists, same as any other Space.
   app.post("/builder/products", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
 
     const body = await c.req.json<{
@@ -239,7 +276,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.get("/builder/products", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const { results } = await env.PLATFORM_DB.prepare(
       `SELECT id, name, status, spacetype_id, product_slug, created_at, updated_at
@@ -250,7 +287,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.get("/builder/products/:id", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -260,7 +297,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.patch("/builder/products/:id", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -337,7 +374,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // separate, deliberate operation, not an implicit side effect of an unrelated field edit).
   app.patch("/builder/products/:id/pricing", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -464,7 +501,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // audit found (business-create.ts's own upsert never refreshed the rates on conflict).
   app.patch("/builder/products/:id/reseller", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -521,7 +558,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.delete("/builder/products/:id", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -553,7 +590,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // dead CRUD is a separate, out-of-scope gap (same treatment as /v1/team, /v1/usage in Phase 0).
   app.get("/builder/space-types", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const registryId = env.SPACE_TYPE_REGISTRY_DO.idFromName("global-space-type-registry");
     const registry = env.SPACE_TYPE_REGISTRY_DO.get(registryId);
@@ -568,7 +605,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // routes stay on /builder/payouts. ──────────────────────────────────────────────────────────────
   app.get("/builder/products/:id/wallet", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -610,7 +647,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // domain flow never had (only reachable via /internal/business-services, HMAC-gated) ──────────
   app.post("/builder/products/:id/domain", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -650,7 +687,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.get("/builder/products/:id/domain", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -676,7 +713,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // ── /builder/products/:id/users — the product_end_users roster (Phase 6 populates rows) ──────
   app.get("/builder/products/:id/users", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -690,7 +727,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.post("/builder/products/:id/users/:userId/suspend", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -706,7 +743,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.delete("/builder/products/:id/users/:userId", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -732,7 +769,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // audit row. A denied attempt writes NOTHING (nothing was disclosed).
   app.get("/builder/products/:id/users/:userId/conversations", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -777,7 +814,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // flagged follow-up, not a fabricated number). ──────────────────────────────────────────────
   app.get("/builder/products/:id/analytics", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -806,7 +843,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.get("/builder/products/:id/analytics/revenue", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -838,7 +875,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // into config_json.productConfig.featureFlags, same pattern as member billing (Phase 1). ──────
   app.put("/builder/products/:id/feature-flags", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -858,7 +895,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // ── /builder/products/:id/webhooks ────────────────────────────────────────────────────────────
   app.post("/builder/products/:id/webhooks", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -874,7 +911,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.get("/builder/products/:id/webhooks", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
@@ -888,7 +925,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   // scoped by builder tenant rather than reseller parent — a builder's own wholesale bill. ───────
   app.get("/builder/billing", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const period = c.req.query("period") ?? new Date().toISOString().slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(period)) return c.json({ error_code: "bad_request", message: "period must be YYYY-MM" }, 400);
@@ -904,7 +941,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.get("/builder/billing/history", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const { results } = await env.PLATFORM_DB.prepare(
       `SELECT period, COALESCE(SUM(retail_cents),0) AS retail, COALESCE(SUM(wholesale_cents),0) AS wholesale,
@@ -945,7 +982,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.get("/builder/payouts/balance", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const balances = await computeAvailableBalances(env, auth.tenantId);
     return c.json({ balances });
@@ -953,7 +990,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.post("/builder/payouts/request", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
 
     // A builder earning in multiple currencies must say which one they're drawing down — there's
@@ -986,7 +1023,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
   app.get("/builder/payouts", async (c) => {
     const env = c.env as BuilderRoutesEnv;
-    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const { results } = await env.PLATFORM_DB.prepare(
       "SELECT id, amount_cents, currency, status, requested_at, fulfilled_at, notes FROM payout_requests WHERE tenant_id = ? ORDER BY requested_at DESC LIMIT 100"

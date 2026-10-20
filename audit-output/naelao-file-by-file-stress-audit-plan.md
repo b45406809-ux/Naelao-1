@@ -1325,7 +1325,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/browser-code-exec-prebuilt.test.ts`
 - [ ] `tests/unit/browser-worker-kitesurf.test.ts`
 - [ ] `tests/unit/builder-account-do.test.ts`
-- [ ] `tests/unit/builder-dashboard-api.test.ts`
+- [x] `tests/unit/builder-dashboard-api.test.ts`
 - [ ] `tests/unit/builder-payout-requests.test.ts`
 - [ ] `tests/unit/builder-revenue-share.test.ts`
 - [ ] `tests/unit/builder-tier-usage-gate.test.ts`
@@ -2368,7 +2368,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/spaces/src`
 
 - [ ] `workers/spaces/src/BlueprintConformanceWorkflow.ts`
-- [ ] `workers/spaces/src/builder-routes.ts`
+- [x] `workers/spaces/src/builder-routes.ts`
 - [ ] `workers/spaces/src/business-auth.ts`
 - [ ] `workers/spaces/src/business-create.ts`
 - [ ] `workers/spaces/src/business-routes.ts`
@@ -2413,7 +2413,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/spaces/src/do`
 
-- [ ] `workers/spaces/src/do/BuilderAccountDO.ts`
+- [x] `workers/spaces/src/do/BuilderAccountDO.ts`
 - [x] `workers/spaces/src/do/FeatureFlagDO.test.ts`
 - [x] `workers/spaces/src/do/FeatureFlagDO.ts`
 - [x] `workers/spaces/src/do/LockDO.test.ts`
