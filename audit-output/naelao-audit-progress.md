@@ -487,3 +487,7 @@ The bounded full-transcript loader used by automatic summarization now rejects a
 ## Context-meter authorization boundary follow-up (2026-10-20)
 
 The context-usage endpoint verified only tenant ownership before returning per-session transcript size and tenant billing totals. It now also requires an authenticated user, canonical session scope, Space membership, and project membership for project-linked sessions; product end users are restricted to their own session and business role. Regression coverage denies missing identity, removed Space membership, and non-member access to a private project session. Focused context/compaction suites passed 17 tests and Agents TypeScript passed. The complete Agents/Spaces runs above predate this authorization-only follow-up; a targeted recheck was used here.
+
+## Compaction prompt provenance hardening (2026-10-20)
+
+The local fallback summarizer truncated each older message at 1,500 characters without marking the omission and omitted message IDs. It now includes source message IDs, explicit omitted-character counts, and an instruction to treat transcript text as untrusted data. This keeps prompt-injection text from being elevated to instructions and makes partial evidence visible in the summarization input. Regression, transcript paging, and conversation-compaction checks passed (11 tests); Agents TypeScript passed. The entire audit remains open.
