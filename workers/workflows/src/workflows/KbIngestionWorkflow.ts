@@ -16,6 +16,7 @@
  */
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
+import { readBoundedResponseText } from "@naelao/http";
 import type { Env } from "../env";
 
 export interface IngestionParams {
@@ -101,7 +102,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
 
         const content = await obj.text();
 
-        if (content.length > MAX_CONTENT_BYTES) {
+        if (new TextEncoder().encode(content).byteLength > MAX_CONTENT_BYTES) {
           throw new Error(
             `Document content exceeds 5MB character limit: length=${content.length}`,
           );
@@ -125,7 +126,8 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
         );
 
         if (!resp.ok) {
-          const text = await resp.text();
+          let text = "";
+          try { text = (await readBoundedResponseText(resp, 8 * 1024)).slice(0, 300); } catch { text = "response_body_unavailable"; }
           throw new Error(
             `Failed to set status=processing for doc ${params.docId}: (${resp.status}) ${text}`,
           );
@@ -145,7 +147,9 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
             `R2 object disappeared between steps: key="${params.r2Key}"`,
           );
         }
+        if (obj.size > MAX_CONTENT_BYTES) throw new Error(`Document exceeds 5MB limit: size=${obj.size} bytes, docId=${params.docId}`);
         const content = await obj.text();
+        if (new TextEncoder().encode(content).byteLength > MAX_CONTENT_BYTES) throw new Error("Document content exceeds 5MB byte limit");
 
         const chunks = splitIntoChunks(content, CHUNK_SIZE_CHARS);
 
@@ -173,7 +177,8 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
         );
 
         if (!resp.ok) {
-          const text = await resp.text();
+          let text = "";
+          try { text = (await readBoundedResponseText(resp, 8 * 1024)).slice(0, 300); } catch { text = "response_body_unavailable"; }
           throw new Error(
             `Chunk ingestion failed for doc ${params.docId}: (${resp.status}) ${text}`,
           );
@@ -194,7 +199,8 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
         );
 
         if (!resp.ok) {
-          const text = await resp.text();
+          let text = "";
+          try { text = (await readBoundedResponseText(resp, 8 * 1024)).slice(0, 300); } catch { text = "response_body_unavailable"; }
           throw new Error(
             `Failed to set status=indexed for doc ${params.docId}: (${resp.status}) ${text}`,
           );

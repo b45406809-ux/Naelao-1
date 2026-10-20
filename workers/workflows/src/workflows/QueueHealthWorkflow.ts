@@ -14,6 +14,7 @@
  */
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
+import { readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import type { Env } from "../env.js";
 
 export interface QueueHealthParams {
@@ -134,11 +135,12 @@ export class QueueHealthWorkflow extends WorkflowEntrypoint<Env, QueueHealthPara
     });
 
     if (!resp.ok) {
-      const text = await resp.text();
+      let text = "";
+      try { text = (await readBoundedResponseText(resp, 8 * 1024)).slice(0, 300); } catch { text = "response_body_unavailable"; }
       throw new Error(`CF GraphQL API error (${resp.status}): ${text}`);
     }
 
-    const data = await resp.json<{
+    const data = await readBoundedResponseJson<{
       data?: {
         viewer?: {
           accounts?: Array<{
@@ -149,7 +151,7 @@ export class QueueHealthWorkflow extends WorkflowEntrypoint<Env, QueueHealthPara
           }>;
         };
       };
-    }>();
+    }>(resp, 1024 * 1024);
 
     const queueMetrics = data.data?.viewer?.accounts?.[0]?.queueMetrics ?? [];
 

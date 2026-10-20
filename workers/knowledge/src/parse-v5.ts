@@ -1,4 +1,7 @@
+import { readBoundedResponseJson } from "@naelao/http";
+
 export interface ParseV5Env { COHERE_API_KEY?: string }
+const MAX_PARSE_RESPONSE_BYTES = 16 * 1024 * 1024;
 
 type ParseResponse = {
   markdown?: string;
@@ -28,7 +31,12 @@ export async function createParseV5Request(
     body: form,
   });
   if (!response.ok) throw Object.assign(new Error(`Cohere Parse failed (${response.status})`), { status: 502 });
-  const parsed = await response.json() as ParseResponse;
+  let parsed: ParseResponse;
+  try {
+    parsed = await readBoundedResponseJson<ParseResponse>(response, MAX_PARSE_RESPONSE_BYTES);
+  } catch {
+    throw Object.assign(new Error("Cohere Parse returned an invalid or oversized response"), { status: 502 });
+  }
   const markdown = parsed.markdown ?? parsed.document?.markdown ?? parsed.text ??
     parsed.document?.text ?? parsed.results?.map((result) => result.markdown ?? result.text ?? "").join("\n\n");
   if (!markdown?.trim()) throw Object.assign(new Error("Cohere Parse returned no Markdown"), { status: 502 });

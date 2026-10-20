@@ -1,6 +1,6 @@
 // G-T01..G-T08: Threads — multi-session conversation threading with LLM-generated summaries
 import { Hono } from "hono";
-import { errorResponse, parseBoundedInteger, requestId } from "@naelao/http";
+import { errorResponse, parseBoundedInteger, readBoundedResponseJson, requestId } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 
 interface Env {
@@ -223,7 +223,7 @@ async function generateSummary(transcript: string, env: Env): Promise<string> {
       }),
     });
     if (!resp.ok) return "Summary unavailable.";
-    const data = await resp.json<{ content?: { type: string; text: string }[] }>();
+    const data = await readBoundedResponseJson<{ content?: { type: string; text: string }[] }>(resp, 64 * 1024);
     const block = data.content?.find((b) => b.type === "text");
     return block?.text ?? "Summary unavailable.";
   } catch {

@@ -12,4 +12,12 @@ describe("createParseV5Request", () => {
     expect((init.body as FormData).get("model")).toBe("parse-v5.0");
     expect((init.body as FormData).get("output_format")).toBe("markdown");
   });
+
+  it("rejects a provider response that exceeds the extraction result budget", async () => {
+    const response = new Response("{}");
+    response.headers.set("content-length", String(16 * 1024 * 1024 + 1));
+    const fetcher = vi.fn().mockResolvedValue(response);
+    await expect(createParseV5Request(new Uint8Array([1]), "application/pdf", { COHERE_API_KEY: "secret" }, fetcher))
+      .rejects.toThrow("Cohere Parse returned an invalid or oversized response");
+  });
 });

@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono";
-import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger } from "@naelao/http";
+import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger, readBoundedResponseJson } from "@naelao/http";
 import { chunkText, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope } from "@naelao/rag";
 import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNetworkEgressDenied, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
@@ -1155,7 +1155,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       if (!response.ok) return [];
       // Web excerpts stay external/untrusted until separately ingested. They deliberately receive
       // no fake internal R2 coordinates or citation identity.
-      const data = await response.json<{ results?: TavilyResult[] }>();
+      const data = await readBoundedResponseJson<{ results?: TavilyResult[] }>(response, 4 * 1024 * 1024);
       return (data.results ?? []).map((item, index) => ({ id: `web:${index}`, score: item.score ?? 0,
         content: item.content ?? "", r2Key: "", byteStart: 0, byteEnd: 0, title: item.title ?? "", url: item.url ?? "" }));
     }),
@@ -1397,7 +1397,7 @@ app.post("/internal/web-search/search", async (c) => {
     if (!resp.ok) {
       return c.json({ configured: true, results: [], error: `search provider error (${resp.status})` }, 502);
     }
-    const data = await resp.json<{ answer?: string; results?: TavilyResult[] }>();
+    const data = await readBoundedResponseJson<{ answer?: string; results?: TavilyResult[] }>(resp, 4 * 1024 * 1024);
     const results = (data.results ?? []).map((r) => ({
       title: r.title ?? "",
       url: r.url ?? "",
@@ -1562,7 +1562,7 @@ app.post("/internal/web-search/extract", async (c) => {
         body: JSON.stringify({ api_key: c.env.TAVILY_API_KEY, urls: [rawUrl] }),
       });
       if (resp.ok) {
-        const data = await resp.json<{ results?: Array<{ url?: string; raw_content?: string }> }>();
+        const data = await readBoundedResponseJson<{ results?: Array<{ url?: string; raw_content?: string }> }>(resp, 4 * 1024 * 1024);
         const first = data.results?.[0];
         if (first) {
           return c.json({ configured: true, url: rawUrl, content: (first.raw_content ?? "").slice(0, WEB_SEARCH_CONTENT_CAP) });

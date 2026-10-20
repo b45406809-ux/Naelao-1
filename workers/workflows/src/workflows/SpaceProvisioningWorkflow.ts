@@ -12,6 +12,7 @@
  */
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
+import { readBoundedResponseText } from "@naelao/http";
 import type { Env } from "../env";
 
 export interface ProvisioningParams {
@@ -80,7 +81,8 @@ export class SpaceProvisioningWorkflow extends WorkflowEntrypoint<Env, Provision
       );
 
       if (!resp.ok) {
-        const text = await resp.text();
+        let text = "";
+        try { text = (await readBoundedResponseText(resp, 8 * 1024)).slice(0, 300); } catch { text = "response_body_unavailable"; }
         throw new Error(`SpaceDO init failed (${resp.status}): ${text}`);
       }
 
