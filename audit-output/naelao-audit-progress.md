@@ -319,6 +319,8 @@ Three focused tests cover propagation, malformed identifiers, attribute limits, 
 | Root `corepack pnpm test` wrapper | Failed before tests completed because Turbo launched parallel pnpm install subprocesses whose package fetches failed with `EAI_AGAIN`; the command was interrupted, with no tracked lockfile changes | Direct configured Vitest workspace run above completed successfully; root wrapper/install networking remains an environment limitation. |
 | Biome on changed files | Failed with 124 diagnostics across 19 files; the three new worker-capability/transcript files pass a focused check after formatting | Remaining diagnostics include non-null assertions, formatting, and other style issues across the changed files. They were not mass-fixed because this would reformat unrelated surrounding code. |
 
+Fresh workspace validation after the 2026-10-20 WAF and channel-attachment follow-ups passed 290 test files / 1,274 tests (`node_modules/.bin/vitest run --workspace vitest.workspace.ts`). This includes the updated 133-file / 558-test Agents Worker suite. It remains unit/in-memory evidence and does not exercise deployed Cloudflare resources or live provider accounts.
+
 Before validation, the pnpm 11 install tool rewrote lockfile patch metadata and added an ignored-build policy block. Both repository files were restored to their original committed contents after dependencies installed. `node_modules` is ignored. `git diff --check` is run before commit.
 
 ## Not yet reviewed
