@@ -56,6 +56,8 @@ export interface BusinessCreateEnv {
    *  dev/test environments without this binding degrade to the pre-existing flat-ceiling-only
    *  behavior (every existing caller/test that doesn't set this is unaffected). */
   PRODUCT_USER_DO?: DurableObjectNamespace;
+  /** Serializes per-product/per-user business creation so concurrent requests cannot bypass the quota. */
+  LOCK_DO?: DurableObjectNamespace;
 }
 
 export interface CreateBusinessOptions {
@@ -82,7 +84,7 @@ export interface CreateBusinessErr {
   ok: false;
   error_code: string;
   message: string;
-  status: 400 | 403 | 404 | 429;
+  status: 400 | 403 | 404 | 429 | 503;
 }
 
 export type CreateBusinessResult = CreateBusinessOk | CreateBusinessErr;
@@ -153,13 +155,74 @@ export async function loadEffectiveProductConfig(
  *  router-allowlistable wrapper). Identical gating + tenant-hierarchy + provisioning-queue logic
  *  either way; callers differ only in how they resolve `resellerProductSpaceId` and what they do
  *  with the result (the wrapper additionally dual-writes business_memberships for the owner). */
+export function validateCreateOptions(opts: CreateBusinessOptions): string | null {
+  if (typeof opts.resellerProductSpaceId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(opts.resellerProductSpaceId) ||
+      typeof opts.userId !== "string" || !/^[A-Za-z0-9._:@-]{1,256}$/.test(opts.userId) ||
+      typeof opts.spacetypeId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(opts.spacetypeId)) return "Invalid product, user, or SpaceType identifier.";
+  if (typeof opts.name !== "string" || opts.name.length > 256 || !opts.name.trim() || opts.name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(opts.name)) return "Business name must contain 1–100 printable characters.";
+  const templateIds = opts.templateIds && opts.templateIds.length > 0 ? opts.templateIds : opts.templateId ? [opts.templateId] : [];
+  if (templateIds.length > 10 || templateIds.some((id) => typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) || new Set(templateIds).size !== templateIds.length) return "Template selection is invalid or exceeds the 10-template limit.";
+  if (opts.configOverrides !== undefined) {
+    if (!opts.configOverrides || typeof opts.configOverrides !== "object" || Array.isArray(opts.configOverrides)) return "config_overrides must be a JSON object.";
+    try { if (JSON.stringify(opts.configOverrides).length > 64 * 1024) return "config_overrides exceeds the 64 KiB limit."; }
+    catch { return "config_overrides must be JSON serializable."; }
+  }
+  return null;
+}
+
+export interface BusinessCreationLease { acquired: boolean; release(): Promise<void>; }
+
+/** Per-(product,user) lease shared by both business-create routes. */
+export async function acquireBusinessCreationLease(
+  env: BusinessCreateEnv,
+  productSpaceId: string,
+  userId: string,
+): Promise<BusinessCreationLease> {
+  if (!env.LOCK_DO) throw new Error("business_creation_lock_unavailable");
+  const lockName = await getDOName("business-create", `${productSpaceId}:${userId}`, productSpaceId, env.PLATFORM_SECRET);
+  const lock = env.LOCK_DO.get(env.LOCK_DO.idFromName(lockName));
+  const callerId = `business-create:${crypto.randomUUID()}`;
+  const acquire = await lock.fetch(new Request("http://lock/acquire", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ caller_id: callerId, ttl_ms: 10 * 60_000 }),
+  }));
+  if (!acquire.ok) throw new Error("business_creation_lock_unavailable");
+  const state = await acquire.json<{ acquired: boolean }>();
+  return {
+    acquired: state.acquired,
+    async release() {
+      if (state.acquired) {
+        const response = await lock.fetch(new Request("http://lock/release", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ caller_id: callerId }),
+        }));
+        if (!response.ok) throw new Error("business_creation_lock_release_failed");
+      }
+    },
+  };
+}
+
 export async function createBusinessForEndUser(
   env: BusinessCreateEnv,
   opts: CreateBusinessOptions
 ): Promise<CreateBusinessResult> {
-  if (!opts.resellerProductSpaceId || !opts.name || !opts.spacetypeId) {
-    return { ok: false, error_code: "bad_request", message: "reseller_product_space_id, name, spacetype_id are required", status: 400 };
+  const validationError = validateCreateOptions(opts);
+  if (validationError) return { ok: false, error_code: "bad_request", message: validationError, status: 400 };
+  let lease: BusinessCreationLease | undefined;
+  try {
+    lease = await acquireBusinessCreationLease(env, opts.resellerProductSpaceId, opts.userId);
+    if (!lease.acquired) return { ok: false, error_code: "business_creation_busy", message: "Another business creation is already in progress. Retry shortly.", status: 429 };
+    return await createBusinessForEndUserUnlocked(env, { ...opts, name: opts.name.trim() });
+  } catch {
+    return { ok: false, error_code: "business_creation_unavailable", message: "Business creation is temporarily unavailable.", status: 503 };
+  } finally {
+    try { await lease?.release(); } catch { /* lease expires automatically if release delivery fails */ }
   }
+}
+
+async function createBusinessForEndUserUnlocked(
+  env: BusinessCreateEnv,
+  opts: CreateBusinessOptions
+): Promise<CreateBusinessResult> {
 
   // 1. Resolve the reseller (parent tenant) from the product space.
   const product = await env.PLATFORM_DB.prepare(
@@ -167,6 +230,10 @@ export async function createBusinessForEndUser(
   ).bind(opts.resellerProductSpaceId).first<{ tenant_id: string; spacetype_id: string; config_json: string | null }>();
   if (!product) return { ok: false, error_code: "not_found", message: "Reseller product not found", status: 404 };
   const parentTenantId = product.tenant_id;
+  const endUser = await env.PLATFORM_DB.prepare(
+    "SELECT 1 AS active FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL"
+  ).bind(opts.resellerProductSpaceId, opts.userId).first();
+  if (!endUser) return { ok: false, error_code: "not_allowed", message: "An active end-user account for this product is required.", status: 403 };
 
   // 2. Load effective productConfig and gate the request.
   const pc = await loadEffectiveProductConfig(env, product.spacetype_id, product.config_json);
@@ -188,7 +255,7 @@ export async function createBusinessForEndUser(
       status: 403,
     };
   }
-  const allowed = pc.allowedChildSpaceTypes ?? [];
+  const allowed = Array.isArray(pc.allowedChildSpaceTypes) ? pc.allowedChildSpaceTypes : [];
   if (!allowed.includes(opts.spacetypeId)) {
     return { ok: false, error_code: "spacetype_not_allowed", message: `SpaceType '${opts.spacetypeId}' is not offered by this product`, status: 403 };
   }
@@ -213,27 +280,6 @@ export async function createBusinessForEndUser(
   const childTenantId = existing?.child_tenant_id ?? `ten_${crypto.randomUUID().replace(/-/g, "")}`;
   const now = new Date().toISOString();
 
-  // Ensure a reseller_accounts row exists for the parent (lazily, from productConfig). WS-3:
-  // previously hardcoded wholesale_cents=NULL/referral_share_pct=0.0 literals with no rate
-  // fields anywhere in productConfig to seed from — now reads pc.resellerRates (set via PATCH
-  // /builder/products/:id/reseller). The ON CONFLICT branch only refreshes product_space_id, not
-  // the rates: a builder's rate change is applied directly to this row by that same PATCH
-  // endpoint (immediate effect on the existing row), not deferred until the next business is
-  // created under this reseller — re-seeding rates here on every conflict would silently
-  // overwrite a rate the builder set AFTER this tenant's account row already existed.
-  await env.PLATFORM_DB.prepare(
-    `INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(tenant_id) DO UPDATE SET product_space_id = excluded.product_space_id, updated_at = excluded.updated_at`
-  ).bind(
-    parentTenantId,
-    opts.resellerProductSpaceId,
-    pc.billingRelationship ?? "platform",
-    pc.resellerRates?.wholesaleCents ?? null,
-    pc.resellerRates?.referralSharePct ?? 0.0,
-    now
-  ).run();
-
   // F-19 (abuse/DoS): bound how many businesses a single end user can create under this reseller
   // product. Without this, one verified free-tier email could loop POST /businesses and provision
   // unlimited spaces (SpaceDO init, agent installs, R2 writes, wallet seed each) — the rate limiter
@@ -248,7 +294,11 @@ export async function createBusinessForEndUser(
   // builder allowed. Fails open to the flat ceiling (tier "free") on any resolution error or a
   // missing PRODUCT_USER_DO binding (dev/test) — never blocks MORE than the pre-existing behavior
   // already did, only ever the same or less restrictive.
-  const productCeiling = (pc as { maxBusinessesPerEndUser?: number }).maxBusinessesPerEndUser ?? 10;
+  const configuredCeiling = (pc as { maxBusinessesPerEndUser?: number }).maxBusinessesPerEndUser;
+  if (configuredCeiling !== undefined && (!Number.isSafeInteger(configuredCeiling) || configuredCeiling < 1 || configuredCeiling > 100)) {
+    return { ok: false, error_code: "product_business_limit_invalid", message: "The product business limit must be an integer between 1 and 100.", status: 400 };
+  }
+  const productCeiling = configuredCeiling ?? 10;
   const personalTier = await resolvePersonalPlanTier(env, opts.resellerProductSpaceId, opts.userId, parentTenantId);
   const maxBusinesses = resolveEffectiveBusinessLimit(personalTier, productCeiling);
   const existingCount = await env.PLATFORM_DB.prepare(
@@ -265,6 +315,21 @@ export async function createBusinessForEndUser(
       status: 429,
     };
   }
+
+  // Ensure a reseller_accounts row exists only after all no-side-effect eligibility and quota
+  // checks have passed. Do not mutate reseller state for a rejected create request.
+  await env.PLATFORM_DB.prepare(
+    `INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(tenant_id) DO UPDATE SET product_space_id = excluded.product_space_id, updated_at = excluded.updated_at`
+  ).bind(
+    parentTenantId,
+    opts.resellerProductSpaceId,
+    pc.billingRelationship ?? "platform",
+    pc.resellerRates?.wholesaleCents ?? null,
+    pc.resellerRates?.referralSharePct ?? 0.0,
+    now
+  ).run();
 
   // 4. Create the child business (space) under the child tenant.
   const spaceId = crypto.randomUUID();
@@ -287,31 +352,58 @@ export async function createBusinessForEndUser(
   // The child business is its OWN top-level space under its OWN tenant (saas per-end-user
   // isolation, G-Y16): own SpaceDO, own SQLite. parent_space_id links it to the reseller's
   // product for portfolio/promotion queries; scenario_type marks it a user-created business.
-  await env.PLATFORM_DB.prepare(
-    `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, parent_space_id, depth, tenancy_mode, scenario_type, created_at, updated_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'saas', 'user-workspace', ?, ?, ?)`
-  ).bind(spaceId, childTenantId, opts.spacetypeId, opts.name, initialStatus, configJson, opts.resellerProductSpaceId, now, now, opts.userId).run();
-
-  // 5. Record the hierarchy on first business for this child tenant.
-  if (!existing) {
+  const rollbackUnprovisioned = async (includeActive = false) => {
+    const cleanup = [
+      env.PLATFORM_DB.prepare("DELETE FROM business_memberships WHERE business_space_id = ? AND end_user_id = ?").bind(spaceId, opts.userId).run(),
+      env.PLATFORM_DB.prepare("DELETE FROM spaces WHERE id = ? AND (status = 'provisioning' OR (? = 1 AND status = 'active'))").bind(spaceId, includeActive ? 1 : 0).run(),
+    ];
+    if (!existing) cleanup.push(env.PLATFORM_DB.prepare("DELETE FROM tenant_hierarchy WHERE child_tenant_id = ? AND child_space_id = ?").bind(childTenantId, spaceId).run());
+    await Promise.allSettled(cleanup);
+  };
+  try {
     await env.PLATFORM_DB.prepare(
-      `INSERT INTO tenant_hierarchy (child_tenant_id, parent_tenant_id, reseller_product_space_id, child_space_id, child_owner_user_id)
-       VALUES (?, ?, ?, ?, ?)`
-    ).bind(childTenantId, parentTenantId, opts.resellerProductSpaceId, spaceId, opts.userId).run();
+      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, parent_space_id, depth, tenancy_mode, scenario_type, created_at, updated_at, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'saas', 'user-workspace', ?, ?, ?)`
+    ).bind(spaceId, childTenantId, opts.spacetypeId, opts.name, initialStatus, configJson, opts.resellerProductSpaceId, now, now, opts.userId).run();
+
+    // 5. Record the hierarchy on first business for this child tenant, and index owner membership
+    // before the queue can provision asynchronously. If any D1 write fails, remove the incomplete
+    // provisioning state so a client retry does not consume quota or create a phantom business.
+    if (!existing) {
+      await env.PLATFORM_DB.prepare(
+        `INSERT INTO tenant_hierarchy (child_tenant_id, parent_tenant_id, reseller_product_space_id, child_space_id, child_owner_user_id)
+         VALUES (?, ?, ?, ?, ?)`
+      ).bind(childTenantId, parentTenantId, opts.resellerProductSpaceId, spaceId, opts.userId).run();
+    }
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status, joined_at)
+       VALUES (?, ?, ?, 'owner', 'active', datetime('now'))
+       ON CONFLICT(business_space_id, end_user_id) DO NOTHING`
+    ).bind(spaceId, opts.resellerProductSpaceId, opts.userId).run();
+  } catch (error) {
+    await rollbackUnprovisioned(true);
+    console.error(`[business-create] failed to persist business ${spaceId}:`, (error as Error).message);
+    return { ok: false, error_code: "business_creation_unavailable", message: "Business creation is temporarily unavailable.", status: 503 };
   }
 
   // 6. Provision under the CHILD tenant (reuses the 10-step provisioner unchanged).
   if (useProvisioningQueue && env.PROVISION_QUEUE) {
-    await env.PROVISION_QUEUE.send({
-      type: "space_provision",
-      spaceId,
-      tenantId: childTenantId,
-      spaceTypeId: opts.spacetypeId,
-      spaceName: opts.name,
-      ...(templateIds.length > 0 ? { templateId: templateIds[0]!, templateIds } : {}),
-      userId: opts.userId,
-      requestedAt: now,
-    });
+    try {
+      await env.PROVISION_QUEUE.send({
+        type: "space_provision",
+        spaceId,
+        tenantId: childTenantId,
+        spaceTypeId: opts.spacetypeId,
+        spaceName: opts.name,
+        ...(templateIds.length > 0 ? { templateId: templateIds[0]!, templateIds } : {}),
+        userId: opts.userId,
+        requestedAt: now,
+      });
+    } catch (error) {
+      await rollbackUnprovisioned();
+      console.error(`[business-create] provision queue rejected business ${spaceId}:`, (error as Error).message);
+      return { ok: false, error_code: "provision_queue_unavailable", message: "Business provisioning could not be queued. Retry shortly.", status: 503 };
+    }
   }
 
   // Every customer-created business gets the same isolated Whop business-wallet attempt as a

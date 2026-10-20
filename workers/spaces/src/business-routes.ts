@@ -6,6 +6,7 @@
 // minimal structural Env (avoids a circular import with index.ts).
 
 import type { Hono } from "hono";
+import { verifyInternalToken } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { createBusinessForEndUser, resolvePersonalPlanTier, loadEffectiveProductConfig, type BusinessCreateEnv } from "./business-create.js";
 import { canPersonalPlanInvite } from "@naelao/billing-core";
@@ -94,8 +95,13 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
   app.post("/spaces/:productSpaceId/businesses", async (c) => {
     const env = c.env as BusinessRoutesEnv;
     const productSpaceId = c.req.param("productSpaceId");
-    const { userId } = callerIdentity(c);
-    if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
+    const { tenantId, userId, role } = callerIdentity(c);
+    if (!tenantId || !userId || role !== "product_end_user" || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, env.PLATFORM_SECRET)) {
+      return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
+    }
+    const productTenant = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status = 'active'")
+      .bind(productSpaceId).first<{ tenant_id: string }>();
+    if (!productTenant || productTenant.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
     const body = await c.req.json<{
       name: string;
@@ -121,11 +127,8 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
       return c.json({ error_code: result.error_code, message: result.message }, result.status);
     }
 
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status, joined_at)
-       VALUES (?, ?, ?, 'owner', 'active', datetime('now'))
-       ON CONFLICT(business_space_id, end_user_id) DO NOTHING`
-    ).bind(result.spaceId, productSpaceId, userId).run();
+    // The shared create service commits this membership before enqueueing provisioning, so a
+    // response retry cannot leave a visible business without its owner index row.
     await seedSpaceDoMember(env, result.spaceId, result.tenantId, userId, "owner");
 
     return c.json(

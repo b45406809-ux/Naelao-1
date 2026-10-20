@@ -65,6 +65,8 @@ export interface Env {
   BUILDER_ACCOUNT_DO: DurableObjectNamespace;
   /** Three-Tier Platform Model, Phase 2 — one per (productId, endUserId). */
   PRODUCT_USER_DO: DurableObjectNamespace;
+  /** Per-product/user lease for serialized customer business creation. */
+  LOCK_DO?: DurableObjectNamespace;
   MICRO_APP_DO: DurableObjectNamespace;
   /** Registrable application-domain suffix used to reject cookie-sharing preview subdomains. */
   APPLICATION_HOST_SUFFIX?: string;
@@ -6601,8 +6603,11 @@ app.patch("/me/preferences", async (c) => {
 // (POST /spaces/:productSpaceId/businesses, business-routes.ts) so there is exactly one copy of
 // this security-sensitive path, not two that could drift.
 app.post("/reseller/spaces", async (c) => {
-  const { userId } = getCallerIdentity(c);
-  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
+  const { tenantId, userId, role } = getCallerIdentity(c);
+  if (!tenantId || !userId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) {
+    return c.json({ error_code: "forbidden", message: "Signed router identity required" }, 403);
+  }
+  if (role !== "product_end_user") return c.json({ error_code: "forbidden", message: "Product end-user identity required" }, 403);
 
   const body = await c.req.json<{
     reseller_product_space_id: string;
@@ -6610,7 +6615,8 @@ app.post("/reseller/spaces", async (c) => {
     spacetype_id: string;
     template_id?: string;
     config_overrides?: Record<string, unknown>;
-  }>();
+  }>().catch(() => null);
+  if (!body) return c.json({ error_code: "bad_request", message: "Invalid request body" }, 400);
 
   const result = await createBusinessForEndUser(c.env, {
     resellerProductSpaceId: body.reseller_product_space_id,

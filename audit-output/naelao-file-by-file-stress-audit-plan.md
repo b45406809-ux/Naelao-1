@@ -2370,7 +2370,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/BlueprintConformanceWorkflow.ts`
 - [x] `workers/spaces/src/builder-routes.ts`
 - [ ] `workers/spaces/src/business-auth.ts`
-- [ ] `workers/spaces/src/business-create.ts`
+- [x] `workers/spaces/src/business-create.ts`
 - [ ] `workers/spaces/src/business-routes.ts`
 - [ ] `workers/spaces/src/cf-saas.ts`
 - [ ] `workers/spaces/src/conformance-state.test.ts`
