@@ -239,7 +239,7 @@ export const conversation: PrebuiltScript = {
       if (!process || !result.ok || !result.results?.length) return result;
       if (!["summarize", "extract", "compress"].includes(process)) throw new Error("conversation.research process must be summarize, extract, or compress");
       const evidence = result.results.map((r, i) => `[${i + 1}] message_id=${r.message_id ?? "unknown"} role=${r.role} at=${r.created_at ?? "unknown"} relevance=${r.relevance}\n${r.excerpt}`).join("\n\n").slice(0, 24_000);
-      const sourceId = `conversation:${String(args["session_id"]).slice(0, 160)}:${String(args["before_id"] ?? "latest").slice(0, 160)}`;
+      const sourceId = `conversation:${String(ctx.env.currentSessionId ?? "unknown").slice(0, 160)}:${String(args["before_id"] ?? "latest").slice(0, 160)}`;
       let derived: unknown;
       if (process === "extract") {
         const entities = args["entities"];

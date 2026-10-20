@@ -172,6 +172,43 @@ describe("conversation.search", () => {
     expect(result.reason).toContain("503");
   });
 
+  it("chains only matched current-thread excerpts into the selected document processor", async () => {
+    const api = pagedFetch([
+      {
+        id: "message-1",
+        role: "user",
+        content: "We approved a 30 day retention window.",
+        created_at: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "message-2",
+        role: "assistant",
+        content: "Unrelated discussion about the color palette.",
+        created_at: "2026-01-01T00:00:01.000Z",
+      },
+    ]);
+    const ctx = context(api.fetch);
+    const calls: Array<{ operation: string; params: Record<string, unknown> }> = [];
+    ctx.run = async (operation, params) => {
+      calls.push({ operation, params });
+      return { summary: "The approved retention window is 30 days." };
+    };
+
+    const result = (await conversation.operations["conversation.research"](
+      { query: "retention window", process: "summarize" },
+      ctx
+    )) as { ok: boolean; derived: unknown; derivation: { source_message_ids: string[] } };
+
+    expect(result.ok).toBe(true);
+    expect(result.derived).toEqual({ summary: "The approved retention window is 30 days." });
+    expect(result.derivation.source_message_ids).toEqual(["message-1"]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.operation).toBe("document.summarize");
+    expect(calls[0]?.params["sourceId"]).toContain("thread-1");
+    expect(calls[0]?.params["text"]).toContain("30 day retention window");
+    expect(calls[0]?.params["text"]).not.toContain("color palette");
+  });
+
   it("does not make a claim of absence when its bounded scan stops early", async () => {
     const api = pagedFetch(messages(10_001));
     const result = (await conversation.operations["conversation.search"](
