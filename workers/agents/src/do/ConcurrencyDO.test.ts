@@ -134,6 +134,19 @@ describe("ConcurrencyDO file mutexes", () => {
     expect(h.locks.has("row")).toBe(false);
     vi.useRealTimers();
   });
+
+  it("rejects malformed lock identities and TTLs before touching the lease table", async () => {
+    const h = harness();
+    const send = (path: string, body: string) => h.instance.fetch(new Request(`http://do/locks/${path}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    }));
+    expect((await send("acquire", "null")).status).toBe(400);
+    expect((await send("acquire", JSON.stringify({ key: "row", holderId: "run", ttlMs: "30000" }))).status).toBe(400);
+    expect((await send("acquire", JSON.stringify({ key: "row", holderId: "run", ttlMs: 1e100 }))).status).toBe(400);
+    expect((await send("renew", "null")).status).toBe(400);
+    expect((await send("release", JSON.stringify({ key: "row", holderId: "run" }))).status).toBe(400);
+    expect(h.locks.size).toBe(0);
+  });
 });
 
 describe("ConcurrencyDO appointment slot holds", () => {

@@ -167,13 +167,18 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   private async acquireLock(request: Request): Promise<Response> {
-    const body = await request.json<{ key?: string; holderId?: string; holder_id?: string; ttlMs?: number; ttl_ms?: number }>().catch(() => ({} as { key?: string; holderId?: string; holder_id?: string; ttlMs?: number; ttl_ms?: number }));
-    const key = String(body.key ?? "");
-    const holderId = String(body.holderId ?? body.holder_id ?? "");
-    if (!key || !holderId) return Response.json({ error_code: "bad_request", message: "key and holderId are required" }, { status: 400 });
-    // File locks are deliberately short lived. Callers may request less, never more.
+    let value: unknown;
+    try { value = await request.json(); } catch { return Response.json({ error_code: "bad_request" }, { status: 400 }); }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const body = value as { key?: unknown; holderId?: unknown; holder_id?: unknown; ttlMs?: unknown; ttl_ms?: unknown };
+    const key = body.key;
+    const holderId = body.holderId ?? body.holder_id;
     const requestedTtl = body.ttlMs ?? body.ttl_ms ?? FILE_LOCK_TTL_MS;
-    const ttlMs = Math.max(1, Math.min(FILE_LOCK_TTL_MS, requestedTtl));
+    if (typeof key !== "string" || !key || key.length > MAX_SLOT_KEY_LENGTH
+      || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH
+      || !Number.isSafeInteger(requestedTtl) || (requestedTtl as number) <= 0) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    // File locks are deliberately short lived. Callers may request less, never more.
+    const ttlMs = Math.min(FILE_LOCK_TTL_MS, requestedTtl as number);
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec(`SELECT holder_id, expires_at, fencing_token FROM locks WHERE key = ?`, key).toArray() as Array<{ holder_id: string; expires_at: number; fencing_token?: number }>;
     const held = rows[0];
@@ -197,11 +202,18 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   private async renewLock(request: Request): Promise<Response> {
-    const body = await request.json<{ key?: string; holderId?: string; fencingToken?: number; ttlMs?: number }>().catch(() => ({} as { key?: string; holderId?: string; fencingToken?: number; ttlMs?: number }));
-    const key = String(body.key ?? ""); const holderId = String(body.holderId ?? "");
-    const token = Number(body.fencingToken); const now = Date.now();
-    if (!key || !holderId || !Number.isSafeInteger(token) || token < 1) return Response.json({ error_code: "bad_request" }, { status: 400 });
-    const ttlMs = Math.max(1, Math.min(FILE_LOCK_TTL_MS, Number(body.ttlMs ?? FILE_LOCK_TTL_MS)));
+    let value: unknown;
+    try { value = await request.json(); } catch { return Response.json({ error_code: "bad_request" }, { status: 400 }); }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const body = value as { key?: unknown; holderId?: unknown; fencingToken?: unknown; ttlMs?: unknown };
+    const key = body.key; const holderId = body.holderId; const token = body.fencingToken;
+    const requestedTtl = body.ttlMs ?? FILE_LOCK_TTL_MS;
+    const now = Date.now();
+    if (typeof key !== "string" || !key || key.length > MAX_SLOT_KEY_LENGTH
+      || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH
+      || !Number.isSafeInteger(token) || (token as number) < 1
+      || !Number.isSafeInteger(requestedTtl) || (requestedTtl as number) <= 0) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const ttlMs = Math.min(FILE_LOCK_TTL_MS, requestedTtl as number);
     const expiresAt = now + ttlMs;
     const result = this.ctx.storage.sql.exec("UPDATE locks SET expires_at=? WHERE key=? AND holder_id=? AND fencing_token=? AND expires_at>?", expiresAt, key, holderId, token, now);
     await this.scheduleNextAlarm();
