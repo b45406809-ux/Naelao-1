@@ -44,6 +44,7 @@ import { resolveTenancy } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 import { type ProvisionMessage } from "./message-contract.js";
 import { handleProvisionQueueMessage } from "./queue-message-handler.js";
 import { isProvisionableManifest } from "./manifest-contract.js";
+import { mayStartProvisioning } from "./provisioning-state.js";
 
 async function responseErrorDetail(response: Response): Promise<string> {
   return (await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 500);
@@ -669,11 +670,20 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
   const now = new Date().toISOString();
   const provisioned: string[] = [];
 
+  const current = await env.PLATFORM_DB.prepare(
+    "SELECT status FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ status: string }>();
+  if (!current || !mayStartProvisioning(current.status)) {
+    console.warn(`[provisioner] Ignoring stale provision request for ${spaceId} (status=${current?.status ?? "missing"})`);
+    return;
+  }
+
   try {
     // Step 1: Mark DB as provisioning + write KV config cache
-    await env.PLATFORM_DB.prepare(
-      "UPDATE spaces SET status = 'provisioning', updated_at = ? WHERE id = ? AND tenant_id = ?"
+    const begin = await env.PLATFORM_DB.prepare(
+      "UPDATE spaces SET status = 'provisioning', updated_at = ? WHERE id = ? AND tenant_id = ? AND status IN ('provisioning', 'error')"
     ).bind(now, spaceId, tenantId).run();
+    if (begin.meta.changes === 0) return;
     await env.SPACES_KV.put(
       `space:${tenantId}:${spaceId}`,
       JSON.stringify({ spaceId, tenantId, spaceTypeId, name: spaceName, status: "provisioning", provisionedAt: now }),
@@ -1001,9 +1011,10 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         body: JSON.stringify({ spaceId, version: manifest.version }),
       })
     );
-    await env.PLATFORM_DB.prepare(
-      "UPDATE spaces SET status = 'active', updated_at = ? WHERE id = ? AND tenant_id = ?"
+    const activated = await env.PLATFORM_DB.prepare(
+      "UPDATE spaces SET status = 'active', updated_at = ? WHERE id = ? AND tenant_id = ? AND status = 'provisioning'"
     ).bind(now, spaceId, tenantId).run();
+    if (activated.meta.changes === 0) throw new Error("space_status_changed_during_provisioning");
     await env.SPACES_KV.put(
       `space:${tenantId}:${spaceId}`,
       JSON.stringify({ spaceId, tenantId, spaceTypeId, name: spaceName, status: "active", provisionedAt: now }),
@@ -1126,7 +1137,7 @@ export async function rollbackSpace(
   // same reason (no existing endpoint removes it, and doing so touches sub-space hierarchy state
   // this pass hasn't audited) — documented as a deferred follow-up, not silently dropped.
   await env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET status = 'error', updated_at = ? WHERE id = ? AND tenant_id = ?"
+    "UPDATE spaces SET status = 'error', updated_at = ? WHERE id = ? AND tenant_id = ? AND status IN ('provisioning', 'error')"
   ).bind(now, spaceId, tenantId).run().catch(() => {});
   await env.SPACES_KV.delete(`space:${tenantId}:${spaceId}`);
 }
@@ -1136,6 +1147,12 @@ export async function rollbackSpace(
 async function deprovisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
   const { spaceId, tenantId } = msg;
   const now = new Date().toISOString();
+
+  // Hide the space and block a stale provisioning retry before deleting external resources.
+  // Queue retries can safely repeat the cleanup because each operation is keyed by spaceId.
+  await env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET status = 'deleted', updated_at = ? WHERE id = ? AND tenant_id = ?"
+  ).bind(now, spaceId, tenantId).run();
 
   // Delete all R2 objects under this space's prefix
   let cursor: string | undefined;
@@ -1155,10 +1172,7 @@ async function deprovisionSpace(msg: ProvisionMessage, env: Env): Promise<void> 
     await env.PORTAL_KV.delete(`portal-space:${spaceId}`);
   }
 
-  // Flip DB to deleted + remove KV cache
-  await env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET status = 'deleted', updated_at = ? WHERE id = ? AND tenant_id = ?"
-  ).bind(now, spaceId, tenantId).run();
+  // The D1 row was marked deleted before cleanup to close the stale-provision race.
   await env.SPACES_KV.delete(`space:${tenantId}:${spaceId}`);
 }
 
