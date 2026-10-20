@@ -553,3 +553,5 @@ Validation: malformed publication/ingress plus ConcurrencyDO tests passed (18 te
 ## Inventory refresh after audit commits (2026-10-20)
 
 Recounted tracked repository files after the earlier audit additions. The previous tree listed 1,888 files / 1,682 source and executable-configuration files; the tracked tree now contains 1,939 / 1,733. Refreshed `naelao-repository-tree.txt` from `git ls-files` and rebuilt the source-file checklist while preserving 176 already checked rows. Temporary untracked `work/`, root test reports, and failure lists are excluded. The platform-surface route/worker discovery index remains unchanged because this tranche altered existing routes and DOs rather than adding registrations. Inventory is tied to commit `b928acb7`; audit findings remain open.
+
+Refreshed root-workspace validation after the inventory and worker changes: direct local Vitest run passed 308 files / 1,356 tests with no failures in 92 seconds. This run uses the currently configured workspace projects; it is not a substitute for build/deploy or live provider/DO load checks.
