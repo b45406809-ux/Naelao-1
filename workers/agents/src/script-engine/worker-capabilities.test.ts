@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { selectDefaultWorkerCapabilities } from "./worker-capabilities.js";
+import { PREBUILT_SCRIPTS } from "./prebuilt/index.js";
+import { UNIVERSAL_PLANNER_PREBUILTS } from "./agent-topology.js";
+import {
+  DEFAULT_WORKER_CAPABILITY_BUNDLES,
+  selectDefaultWorkerCapabilities,
+} from "./worker-capabilities.js";
 
 describe("task-filtered default worker capabilities", () => {
   const tools = [
@@ -77,6 +82,77 @@ describe("task-filtered default worker capabilities", () => {
     expect(result.enabledPrebuilts).toContain("attachments");
     expect(result.enabledPrebuilts).not.toContain("code-exec");
     expect(result.fallback).toBe("decision_unavailable");
+  });
+
+  it("offers built-in tool families beyond the former first-nine standalone cutoff", async () => {
+    const configured = [
+      "browser-use",
+      "computer-use",
+      "language-detection",
+      "language-glossary",
+      "language-translation",
+      "approvals",
+      "business-diagnostics",
+      "revenue-tracker",
+      "foundry-inbox",
+      "skill-manager",
+      "local-machine",
+      "customer-bot",
+      "code-exec",
+      "plan",
+    ];
+    const result = await selectDefaultWorkerCapabilities({
+      task: "Translate this customer intake into French and inspect the approval policy.",
+      enabledPrebuilts: configured,
+      skills: [],
+      allowRemoteDecision: false,
+    });
+    expect(result.selectedBundles).toEqual(
+      expect.arrayContaining([
+        "language_services",
+        "customer_intake",
+        "approval_and_policy",
+      ])
+    );
+    expect(result.enabledPrebuilts).toEqual(
+      expect.arrayContaining([
+        "language-detection",
+        "language-glossary",
+        "language-translation",
+        "foundry-inbox",
+        "approvals",
+        "plan",
+      ])
+    );
+    expect(result.enabledPrebuilts).not.toContain("code-exec");
+  });
+
+  it("has a worker capability group for every non-planner built-in prebuilt", () => {
+    const grouped = new Set(
+      DEFAULT_WORKER_CAPABILITY_BUNDLES.flatMap((bundle) => [...bundle.tools])
+    );
+    const plannerOnly = new Set<string>(UNIVERSAL_PLANNER_PREBUILTS);
+    const missing = Object.keys(PREBUILT_SCRIPTS).filter(
+      (name) => name !== "plan" && !plannerOnly.has(name) && !grouped.has(name)
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("treats malformed decision payloads as unavailable without granting tools", async () => {
+    const configured = ["conversation", "document-processing", "code-exec"];
+    const result = await selectDefaultWorkerCapabilities({
+      task: "Search earlier conversation messages.",
+      enabledPrebuilts: configured,
+      skills: [],
+      decision: {
+        classifyWorkerCapabilities: async () =>
+          ({ capabilities: [null, "tool:code-exec"], provider: "unknown" }) as never,
+      } as never,
+      allowRemoteDecision: true,
+    });
+    expect(result.fallback).toBe("decision_unavailable");
+    expect(result.enabledPrebuilts).toContain("conversation");
+    expect(result.enabledPrebuilts).not.toContain("code-exec");
   });
 
   it("retains the full configured set for an ambiguous task rather than breaking legacy tasks", async () => {

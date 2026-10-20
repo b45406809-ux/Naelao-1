@@ -109,6 +109,62 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
     match:
       /memory|remember|long.term|wiki|journal|standing instructions|past project/i,
   },
+  {
+    capability: "browser_operations",
+    description: "Browse websites and use authorized visual computer controls.",
+    tools: ["browser-use", "computer-use"],
+    skills: [],
+    match: /browser|website|web page|click|navigate|computer|screen|visual/i,
+  },
+  {
+    capability: "language_services",
+    description: "Detect, translate, and maintain terminology across languages.",
+    tools: ["language-detection", "language-glossary", "language-translation"],
+    skills: [],
+    match: /language|translate|translation|locali[sz]e|glossary|terminology/i,
+  },
+  {
+    capability: "approval_and_policy",
+    description: "Review pending approvals and action policies.",
+    tools: ["approvals"],
+    skills: [],
+    match: /approval|approve|permission|policy|authorization/i,
+  },
+  {
+    capability: "business_insights",
+    description: "Review business diagnostics and external revenue records.",
+    tools: ["business-diagnostics", "revenue-tracker"],
+    skills: [],
+    match: /business health|diagnostic|revenue|sales report|business metrics/i,
+  },
+  {
+    capability: "customer_intake",
+    description: "Review and organize customer or Foundry intake submissions.",
+    tools: ["foundry-inbox"],
+    skills: [],
+    match: /foundry|intake|submission|lead form|customer inquiry/i,
+  },
+  {
+    capability: "skill_library",
+    description: "Inspect and maintain the agent's installed skills.",
+    tools: ["skill-manager"],
+    skills: [],
+    match: /skill library|installed skill|skill health|manage skills/i,
+  },
+  {
+    capability: "local_machine_access",
+    description: "Use the explicitly authorized local machine connection.",
+    tools: ["local-machine"],
+    skills: [],
+    match: /local machine|my computer|local device/i,
+  },
+  {
+    capability: "customer_support",
+    description: "Manage customer support responses and customer records.",
+    tools: ["customer-bot"],
+    skills: [],
+    match: /customer support|support reply|customer bot|support ticket/i,
+  },
 ] as const;
 
 export interface WorkerSkillCandidate {
@@ -230,8 +286,18 @@ export async function selectDefaultWorkerCapabilities(input: {
         task,
         capabilities: candidates,
       });
-      aiSelections = decision.capabilities;
-      provider = decision.provider;
+      if (
+        !decision ||
+        !Array.isArray(decision.capabilities) ||
+        (decision.provider !== "deterministic" && decision.provider !== "openrouter")
+      ) {
+        decisionUnavailable = true;
+      } else {
+        aiSelections = decision.capabilities.filter(
+          (name): name is string => typeof name === "string"
+        );
+        provider = decision.provider;
+      }
     } catch {
       decisionUnavailable = true;
     }
