@@ -1071,3 +1071,9 @@ Reviewed the public Agent SDK Artifact Repository adapter and existing response 
 Validation: Agent SDK full suite passed 27 files / 142 tests; package typecheck passed; `git diff --check` passed. Regressions verify oversized input is rejected before binding fetch and caller headers remain unchanged, alongside the existing streamed success/error response limit tests.
 
 Refreshed the tracked tree after code commit `3f8df7a2`: 1,970 tracked files and 1,764 source/config files; marked only the Artifact client contract and its focused suite reviewed.
+
+## Customer-bot capability and task-scoped attachment operations
+
+Reviewed the SDK CustomerBotContext projection and the Agents customer-bot/attachment prebuilt operations. The capability projection is an allowlist with no privileged handles, and tool names/tier checks fail closed. Found the appointment operation sent `start_at`/`end_at` while SpaceDO reads `start_date`/`end_date`, making the supported calendar lookup fail for valid requests. Corrected the parameter mapping and validate ordered bounded date inputs before egress. FAQ queries and top-k values now have explicit limits; canned-response selection uses own-property checks (so inherited keys such as `toString` are not accepted); escalation reasons are bounded. Attachment responses now use the shared 2 MiB bounded JSON reader, and transcription language hints are restricted to bounded language tags.
+
+Validation: Agents suite passed 149 files / 666 tests; targeted customer-bot and customer-attachment tests passed 10/10; SDK capability-context tests passed 3/3; Agents and Agent SDK typechecks passed. Regressions cover the calendar query contract, invalid date ranges, FAQ limits, prototype-property canned keys, escalation length, oversized downstream responses, and malformed language hints.

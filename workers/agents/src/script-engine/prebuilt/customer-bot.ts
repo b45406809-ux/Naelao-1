@@ -25,10 +25,13 @@ export const customerBot: PrebuiltScript = {
     async "customer.faq_search"(args, ctx) {
       assertCustomerBotToolAllowed("knowledge.search", 2);
       if (!ctx.env.knowledgeWorker) throw new Error("knowledge_unavailable");
-      const query = String(args["query"] ?? "");
+      const query = typeof args["query"] === "string" ? args["query"].trim() : "";
+      if (!query || query.length > 4_096) throw new Error("faq_search_query_invalid");
+      const requestedTopK = args["top_k"] === undefined ? 5 : Number(args["top_k"]);
+      if (!Number.isSafeInteger(requestedTopK) || requestedTopK < 1) throw new Error("faq_search_limit_invalid");
       const response = await ctx.env.knowledgeWorker.fetch(
         new Request(
-          `http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/search?q=${encodeURIComponent(query)}&top_k=${Math.min(8, Number(args["top_k"] ?? 5))}`,
+          `http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/search?q=${encodeURIComponent(query)}&top_k=${Math.min(8, requestedTopK)}`,
           { headers: await headers(ctx) }
         )
       );
@@ -45,17 +48,22 @@ export const customerBot: PrebuiltScript = {
           "I don't have a verified answer for that yet, so I've asked a human to help.",
       };
       const key = String(args["key"] ?? "");
-      if (!(key in responses))
+      if (!Object.hasOwn(responses, key))
         throw new Error(`unknown_canned_response:${key}`);
       return { key, response: responses[key] };
     },
     async "customer.appointment_availability"(args, ctx) {
       assertCustomerBotToolAllowed("primary_calendar.availability", 2);
       if (!ctx.env.spacesWorker) throw new Error("calendar_unavailable");
+      const startAt = typeof args["start_at"] === "string" ? args["start_at"] : "";
+      const endAt = typeof args["end_at"] === "string" ? args["end_at"] : "";
+      if (!startAt || !endAt || startAt.length > 64 || endAt.length > 64
+        || !Number.isFinite(Date.parse(startAt)) || !Number.isFinite(Date.parse(endAt)) || Date.parse(startAt) >= Date.parse(endAt))
+        throw new Error("calendar_availability_range_invalid");
       const qs = new URLSearchParams({
         space_id: ctx.env.spaceId,
-        start_at: String(args["start_at"] ?? ""),
-        end_at: String(args["end_at"] ?? ""),
+        start_date: startAt,
+        end_date: endAt,
       });
       const response = await ctx.env.spacesWorker.fetch(
         new Request(
@@ -69,9 +77,11 @@ export const customerBot: PrebuiltScript = {
     },
     async "customer.escalate"(args) {
       assertCustomerBotToolAllowed("human.escalate", 1);
+      const reason = typeof args["reason"] === "string" ? args["reason"].trim() : "Customer requested a human";
+      if (reason.length > 2_000) throw new Error("customer_escalation_reason_invalid");
       return {
         escalated: true,
-        reason: String(args["reason"] ?? "Customer requested a human"),
+        reason: reason || "Customer requested a human",
       };
     },
   },

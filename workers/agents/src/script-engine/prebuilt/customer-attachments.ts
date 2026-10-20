@@ -1,6 +1,6 @@
 /** Restricted attachment operations for inbound customer conversations. These never copy
  * customer files into the project-wide workspace shared with other channel users. */
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { assertCustomerBotToolAllowed } from "@naelao/agent-sdk";
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 
@@ -16,7 +16,9 @@ async function call(path: string, ctx: PrebuiltOpContext, extra: Record<string, 
     },
     body: JSON.stringify({ tenantId: ctx.env.tenantId, spaceId: ctx.env.spaceId, taskId: ctx.env.taskId, ...extra }),
   }));
-  const result = await response.json<Record<string, unknown>>().catch(() => null);
+  let result: Record<string, unknown> | null;
+  try { result = await readBoundedResponseJson<Record<string, unknown>>(response, 2 * 1024 * 1024); }
+  catch { throw new Error("customer_attachment_response_invalid"); }
   if (!response.ok || !result || result.error_code) throw new Error(`customer attachment operation failed: ${String(result?.error_code ?? response.status)}`);
   return result;
 }
@@ -24,6 +26,14 @@ async function call(path: string, ctx: PrebuiltOpContext, extra: Record<string, 
 function id(args: Record<string, unknown>): string {
   const value = typeof args.id === "string" ? args.id.trim() : "";
   if (!value || value.length > 128) throw new Error("attachment id is required");
+  return value;
+}
+
+function validatedLanguageHint(args: Record<string, unknown>): string | undefined {
+  if (args.languageHint === undefined) return undefined;
+  const value = typeof args.languageHint === "string" ? args.languageHint.trim() : "";
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(value) || value.length > 64)
+    throw new Error("attachment_language_hint_invalid");
   return value;
 }
 
@@ -43,7 +53,7 @@ export const customerAttachments: PrebuiltScript = {
       if (!question || question.length > 500) throw new Error("attachment_question_invalid");
       return call("/internal/attachments/describe-image", ctx, { id: id(args), question, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}), agentId: ctx.env.agentId });
     },
-    "attachment.transcribe": (args, ctx) => { assertCustomerBotToolAllowed("attachment.transcribe", 2); return call("/internal/attachments/transcribe", ctx, { id: id(args), agentId: ctx.env.agentId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}), ...(typeof args.languageHint === "string" ? { languageHint: args.languageHint } : {}) }); },
+    "attachment.transcribe": (args, ctx) => { assertCustomerBotToolAllowed("attachment.transcribe", 2); const languageHint = validatedLanguageHint(args); return call("/internal/attachments/transcribe", ctx, { id: id(args), agentId: ctx.env.agentId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}), ...(languageHint ? { languageHint } : {}) }); },
   },
   paramHints: {
     "attachment.list": "No parameters. Lists metadata for files on the active customer message only.",

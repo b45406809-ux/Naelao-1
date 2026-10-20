@@ -765,8 +765,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/agent-sdk/src/cockpit-promotion.ts`
 - [ ] `packages/agent-sdk/src/connector-provider.test.ts`
 - [ ] `packages/agent-sdk/src/connector-provider.ts`
-- [ ] `packages/agent-sdk/src/customer-bot-context.test.ts`
-- [ ] `packages/agent-sdk/src/customer-bot-context.ts`
+- [x] `packages/agent-sdk/src/customer-bot-context.test.ts`
+- [x] `packages/agent-sdk/src/customer-bot-context.ts`
 - [ ] `packages/agent-sdk/src/display-mode.ts`
 - [ ] `packages/agent-sdk/src/document-node.ts`
 - [ ] `packages/agent-sdk/src/document-processing.test.ts`
@@ -1945,9 +1945,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/prebuilt/computer-use.ts`
 - [x] `workers/agents/src/script-engine/prebuilt/conversation.test.ts`
 - [x] `workers/agents/src/script-engine/prebuilt/conversation.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/customer-attachments.test.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/customer-attachments.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/customer-bot.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/customer-attachments.test.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/customer-attachments.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/customer-bot.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/document-processing.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/document-processing.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/dynamic-workflow.ts`
