@@ -93,10 +93,11 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       try { result = JSON.parse(await readBoundedResponseText(response, 4 * 1024 * 1024)); }
       catch { throw new Error("workflow_effect_result_invalid_or_too_large"); }
       const pointer = await putWorkflowArtifact(this.env, identity, result);
-      await this.journal.commitEffect(effect, pointer);
       const credits = await reportWorkflowStepInfraUsage(this.env as Env, identity.tenantId, identity.spaceId, Date.now() - started, runId + ":" + key, false,
         { ...(identity.projectId ? { projectId: identity.projectId } : {}), ...(identity.installationId ? { installationId: identity.installationId } : {}), runId });
-      await this.journal.addUsedCredits(credits);
+      // Receipt and measured usage must commit together. If the worker dies after the
+      // external effect, replay must neither repeat it nor lose its credits at settlement.
+      await this.journal.commitEffect(effect, pointer, credits);
       await this.authorize(runId);
       return result;
     } catch (error) {

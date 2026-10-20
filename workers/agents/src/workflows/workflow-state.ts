@@ -74,8 +74,23 @@ export class WorkflowJournal {
       return { effect: record, created: true };
     });
   }
-  async commitEffect(effect: DurableEffectRecord, result: WorkflowCheckpointPointer): Promise<void> {
-    await this.storage.put("effect:" + effect.key, { ...effect, status: "committed", result });
+  async commitEffect(effect: DurableEffectRecord, result: WorkflowCheckpointPointer, credits: number): Promise<void> {
+    if (!Number.isFinite(credits) || credits < 0) throw new Error("workflow_usage_invalid");
+    await this.storage.transaction(async (storage) => {
+      const run = await storage.get<WorkflowJournalRecord>("run");
+      if (!run) throw new Error("workflow_not_found");
+      const current = await storage.get<DurableEffectRecord & { usageCredits?: number }>("effect:" + effect.key);
+      if (!current || current.operation !== effect.operation || current.inputDigest !== effect.inputDigest) throw new Error("workflow_effect_receipt_conflict");
+      if (current.status === "committed") {
+        if (current.usageCredits !== credits || JSON.stringify(current.result) !== JSON.stringify(result)) throw new Error("workflow_effect_receipt_conflict");
+        return;
+      }
+      if (current.status !== "prepared") throw new Error("workflow_effect_receipt_conflict");
+      const usedCredits = run.usedCredits + credits;
+      if (!Number.isFinite(usedCredits)) throw new Error("workflow_usage_overflow");
+      await storage.put("effect:" + effect.key, { ...effect, status: "committed", result, usageCredits: credits });
+      await storage.put("run", { ...run, usedCredits, updatedAt: Date.now() });
+    });
   }
   async markIndeterminate(effect: DurableEffectRecord): Promise<void> { await this.storage.put("effect:" + effect.key, { ...effect, status: "indeterminate" }); }
   async retry(maxAttempts: number): Promise<WorkflowJournalRecord> {

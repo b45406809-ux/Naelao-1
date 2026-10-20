@@ -614,5 +614,11 @@ Manual retry previously changed a failed run to queued before confirming that bu
 
 Validation: workflow journal and WorkflowRunDO focused tests passed 4/4; Agents TypeScript passed; `git diff --check` passed. These tests model storage transactions and provider/billing failures but do not exercise Cloudflare DO eviction, real Workflow restart ambiguity, live billing idempotency, or concurrent production effects. Only these paths were stress-tested in this pass; the workflow files and their wider caller graph remain unchecked in the file checklist pending full review.
 
+### Effect receipt and usage atomicity follow-up
+
+Continued tracing the same effect path and found that a process crash after the effect receipt was marked committed but before measured credits were added would correctly prevent replay while omitting usage from settlement. `commitEffect` now writes the committed receipt and accumulated credits in one storage transaction, records the usage amount with the receipt, and treats an identical repeated commit as idempotent while rejecting conflicting commits. The effect handler computes the measured amount before this atomic commit.
+
+Validation: workflow journal and WorkflowRunDO suites passed 6/6; Agents TypeScript and `git diff --check` passed. Regressions cover receipt-plus-credit commit, repeated commit without double-counting, and invalid usage without committing. This closes the local journal gap; it does not simulate a real DO transaction failure or reconcile indeterminate external effects.
+
 
 Refreshed the tracked inventory after adding `workers/agents/src/workflows/workflow-state.test.ts`: 1,942 tracked files and 1,736 source/config files. The tree snapshot is tied to code commit `23227de1`; 191 scoped file checks remain recorded.
