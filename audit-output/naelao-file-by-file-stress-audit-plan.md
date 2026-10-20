@@ -2372,8 +2372,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/business-auth.ts`
 - [ ] `workers/spaces/src/business-create.test.ts`
 - [x] `workers/spaces/src/business-create.ts`
-- [ ] `workers/spaces/src/business-routes.test.ts`
-- [ ] `workers/spaces/src/business-routes.ts`
+- [x] `workers/spaces/src/business-routes.test.ts`
+- [x] `workers/spaces/src/business-routes.ts`
 - [ ] `workers/spaces/src/cf-saas.ts`
 - [ ] `workers/spaces/src/conformance-state.test.ts`
 - [ ] `workers/spaces/src/conformance-state.ts`

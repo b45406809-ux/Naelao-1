@@ -83,6 +83,24 @@ async function seedSpaceDoMember(env: BusinessRoutesEnv, spaceId: string, tenant
   }
 }
 
+async function authorizeProductUser(
+  env: BusinessRoutesEnv,
+  c: { req: { header(h: string): string | undefined } },
+  spaceId: string,
+): Promise<{ tenantId: string; userId: string } | null> {
+  const identity = callerIdentity(c);
+  if (!identity.tenantId || !identity.userId || identity.role !== "product_end_user" ||
+      !await verifyInternalToken(c.req.header("x-naelao-internal-token"), identity.tenantId, env.PLATFORM_SECRET)) return null;
+  const space = await env.PLATFORM_DB.prepare("SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(spaceId).first<{ tenant_id: string; parent_space_id: string | null }>();
+  if (!space || space.tenant_id !== identity.tenantId) return null;
+  const productId = space.parent_space_id ?? spaceId;
+  const roster = await env.PLATFORM_DB.prepare(
+    "SELECT 1 AS active FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL"
+  ).bind(productId, identity.userId).first();
+  return roster ? { tenantId: identity.tenantId, userId: identity.userId } : null;
+}
+
 export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable-line @typescript-eslint/no-explicit-any
   // POST /spaces/:productSpaceId/businesses — product-scoped wrapper over createBusinessForEndUser
   // (the same logic POST /reseller/spaces uses). Being product-scoped (a path spaceId) is what
@@ -143,8 +161,9 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
   app.get("/spaces/:productSpaceId/my-businesses", async (c) => {
     const env = c.env as BusinessRoutesEnv;
     const productSpaceId = c.req.param("productSpaceId");
-    const { userId } = callerIdentity(c);
-    if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
+    const identity = await authorizeProductUser(env, c, productSpaceId);
+    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
+    const { userId } = identity;
 
     // onboarding_status/template_id ride along from the space's own config_json rather than
     // costing a second round trip per business: Discover's most important call to action is
@@ -176,8 +195,9 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
   app.get("/spaces/:productSpaceId/directory", async (c) => {
     const env = c.env as BusinessRoutesEnv;
     const productSpaceId = c.req.param("productSpaceId");
-    const { userId } = callerIdentity(c);
-    if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
+    const identity = await authorizeProductUser(env, c, productSpaceId);
+    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
+    const { userId } = identity;
     const { results } = await env.PLATFORM_DB.prepare(
       `SELECT s.id, s.name,
               json_extract(s.config_json, '$.template_id') AS template_id,
@@ -201,21 +221,17 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
   app.post("/spaces/:businessSpaceId/invites", async (c) => {
     const env = c.env as BusinessRoutesEnv;
     const businessSpaceId = c.req.param("businessSpaceId");
-    const { userId, role: callerPlatformRole } = callerIdentity(c);
-    if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
-
-    // Only a product_end_user caller needs the business-role check (a builder/team caller acting
-    // on a business it owns is out of this phase's scope — invites are an end-user-business
-    // feature).
-    if (callerPlatformRole === "product_end_user") {
-      const myRole = await resolveEndUserBusinessRole(env.PLATFORM_DB, businessSpaceId, userId);
-      if (myRole !== "owner" && myRole !== "admin") {
-        return c.json({ error_code: "forbidden", message: "Only a business owner or admin can invite" }, 403);
-      }
+    const identity = await authorizeProductUser(env, c, businessSpaceId);
+    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
+    const { userId } = identity;
+    const myRole = await resolveEndUserBusinessRole(env.PLATFORM_DB, businessSpaceId, userId);
+    if (myRole !== "owner" && myRole !== "admin") {
+      return c.json({ error_code: "forbidden", message: "Only a business owner or admin can invite" }, 403);
     }
 
     const body = await c.req.json<{ email: string; role?: "member" | "admin" | "owner" }>().catch(() => null);
-    if (!body?.email) return c.json({ error_code: "bad_request", message: "email is required" }, 400);
+    if (!body || typeof body.email !== "string" || body.email.trim().length < 3 || body.email.trim().length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email.trim()) ||
+        (body.role !== undefined && body.role !== "member" && body.role !== "admin")) return c.json({ error_code: "bad_request", message: "A valid invite email and member/admin role are required" }, 400);
 
     const business = await env.PLATFORM_DB.prepare(
       "SELECT parent_space_id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
@@ -223,11 +239,20 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     if (!business?.parent_space_id) {
       return c.json({ error_code: "not_found", message: "Business not found" }, 404);
     }
+    await env.PLATFORM_DB.prepare(
+      "DELETE FROM business_invites WHERE business_space_id = ? AND ((accepted_at IS NOT NULL AND accepted_at < datetime('now', '-30 days')) OR expires_at < datetime('now', '-30 days'))"
+    ).bind(businessSpaceId).run();
+    const pending = await env.PLATFORM_DB.prepare(
+      "SELECT COUNT(*) AS count FROM business_invites WHERE business_space_id = ? AND accepted_at IS NULL AND expires_at > datetime('now')"
+    ).bind(businessSpaceId).first<{ count: number }>();
+    if ((pending?.count ?? 0) >= 100) return c.json({ error_code: "invite_limit_reached", message: "This business has reached its pending invite limit" }, 429);
+    const history = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM business_invites WHERE business_space_id = ?")
+      .bind(businessSpaceId).first<{ count: number }>();
+    if ((history?.count ?? 0) >= 500) return c.json({ error_code: "invite_history_limit_reached", message: "This business has reached its invite history limit" }, 429);
 
     // Phase 4 (money): "a personal plan gates ... whether others may join" — the CALLER's own
     // personal-plan tier (the person issuing the invite, already confirmed owner/admin above)
-    // must allow inviting at all. A builder/team caller (checked via callerPlatformRole above)
-    // is unaffected — this only applies to a product_end_user acting as a business owner/admin.
+    // must allow inviting at all.
     //
     // DELIBERATELY ONLY ENFORCED when the product actually has a real personalPlans checkout
     // configured (pc.pricingConfig.personalPlans non-empty) — this feature is brand new and no
@@ -236,21 +261,19 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     // way for anyone to fix it (there'd be nothing to upgrade TO). Matches this codebase's own
     // "never gate on a monetization control nobody can actually satisfy" precedent
     // (free_tier_eligible's own template-catalog gate has the identical shape).
-    if (callerPlatformRole === "product_end_user") {
-      const productRoot = await env.PLATFORM_DB.prepare(
+    const productRoot = await env.PLATFORM_DB.prepare(
         "SELECT tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
       ).bind(business.parent_space_id).first<{ tenant_id: string; spacetype_id: string; config_json: string | null }>();
-      if (productRoot) {
-        const pc = await loadEffectiveProductConfig(env, productRoot.spacetype_id, productRoot.config_json);
-        const hasRealUpgradePath = ((pc as { pricingConfig?: { personalPlans?: unknown[] } })?.pricingConfig?.personalPlans?.length ?? 0) > 0;
-        if (hasRealUpgradePath) {
-          const tier = await resolvePersonalPlanTier(env, business.parent_space_id, userId, productRoot.tenant_id);
-          if (!canPersonalPlanInvite(tier)) {
-            return c.json(
-              { error_code: "personal_plan_invite_not_allowed", message: "Your personal plan doesn't allow inviting others yet — upgrade to invite collaborators." },
-              403
-            );
-          }
+    if (productRoot) {
+      const pc = await loadEffectiveProductConfig(env, productRoot.spacetype_id, productRoot.config_json);
+      const hasRealUpgradePath = ((pc as { pricingConfig?: { personalPlans?: unknown[] } })?.pricingConfig?.personalPlans?.length ?? 0) > 0;
+      if (hasRealUpgradePath) {
+        const tier = await resolvePersonalPlanTier(env, business.parent_space_id, userId, productRoot.tenant_id);
+        if (!canPersonalPlanInvite(tier)) {
+          return c.json(
+            { error_code: "personal_plan_invite_not_allowed", message: "Your personal plan doesn't allow inviting others yet — upgrade to invite collaborators." },
+            403
+          );
         }
       }
     }
@@ -284,33 +307,53 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     const env = c.env as BusinessRoutesEnv;
     const businessSpaceId = c.req.param("businessSpaceId");
     const token = c.req.param("token");
-    const { userId } = callerIdentity(c);
-    if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
+    const identity = await authorizeProductUser(env, c, businessSpaceId);
+    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
+    const { userId } = identity;
+    if (!/^inv_[a-f0-9]{48}$/.test(token)) return c.json({ error_code: "invalid_token", message: "Invite token is invalid" }, 400);
 
     const tokenHash = await sha256Hex(token);
     const invite = await env.PLATFORM_DB.prepare(
-      `SELECT id, role, expires_at, accepted_at FROM business_invites
+      `SELECT id, role, email, expires_at, accepted_at FROM business_invites
         WHERE business_space_id = ? AND token_hash = ?`
-    ).bind(businessSpaceId, tokenHash).first<{ id: string; role: string; expires_at: string; accepted_at: string | null }>();
+    ).bind(businessSpaceId, tokenHash).first<{ id: string; role: string; email: string; expires_at: string; accepted_at: string | null }>();
     if (!invite) return c.json({ error_code: "not_found", message: "Invite not found" }, 404);
     if (invite.accepted_at) return c.json({ error_code: "already_accepted", message: "This invite has already been used" }, 409);
-    if (new Date(invite.expires_at).getTime() < Date.now()) {
+    const inviteExpiresAt = Date.parse(invite.expires_at);
+    if (!Number.isFinite(inviteExpiresAt) || inviteExpiresAt <= Date.now()) {
       return c.json({ error_code: "expired", message: "This invite has expired" }, 410);
     }
+    if (invite.role !== "member" && invite.role !== "admin") return c.json({ error_code: "invalid_invite_role", message: "This invite has an unsupported role" }, 409);
 
     const business = await env.PLATFORM_DB.prepare(
       "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
     ).bind(businessSpaceId).first<{ tenant_id: string; parent_space_id: string | null }>();
     if (!business?.parent_space_id) return c.json({ error_code: "not_found", message: "Business not found" }, 404);
 
-    await env.PLATFORM_DB.prepare(
-      "UPDATE business_invites SET accepted_at = datetime('now'), accepted_by = ? WHERE id = ?"
+    const account = await env.PLATFORM_DB.prepare("SELECT email FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL")
+      .bind(business.parent_space_id, userId).first<{ email: string | null }>();
+    if (!account?.email || account.email.trim().toLowerCase() !== invite.email.trim().toLowerCase()) {
+      return c.json({ error_code: "invite_email_mismatch", message: "Sign in with the email address this invitation was sent to" }, 403);
+    }
+    const memberCount = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM business_memberships WHERE business_space_id = ? AND status = 'active'")
+      .bind(businessSpaceId).first<{ count: number }>();
+    if ((memberCount?.count ?? 0) >= 1000) return c.json({ error_code: "business_member_limit_reached", message: "This business has reached its member limit" }, 429);
+
+    const claimed = await env.PLATFORM_DB.prepare(
+      "UPDATE business_invites SET accepted_at = datetime('now'), accepted_by = ? WHERE id = ? AND accepted_at IS NULL AND expires_at > datetime('now')"
     ).bind(userId, invite.id).run();
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status, invited_by, joined_at)
-       VALUES (?, ?, ?, ?, 'active', NULL, datetime('now'))
-       ON CONFLICT(business_space_id, end_user_id) DO UPDATE SET status = 'active', role = excluded.role`
-    ).bind(businessSpaceId, business.parent_space_id, userId, invite.role).run();
+    if (claimed.meta.changes === 0) return c.json({ error_code: "already_accepted", message: "This invite has already been used" }, 409);
+    try {
+      await env.PLATFORM_DB.prepare(
+        `INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status, invited_by, joined_at)
+         VALUES (?, ?, ?, ?, 'active', NULL, datetime('now'))
+         ON CONFLICT(business_space_id, end_user_id) DO UPDATE SET status = 'active',
+           role = CASE WHEN business_memberships.role = 'owner' THEN 'owner' ELSE excluded.role END`
+      ).bind(businessSpaceId, business.parent_space_id, userId, invite.role).run();
+    } catch (error) {
+      await env.PLATFORM_DB.prepare("UPDATE business_invites SET accepted_at = NULL, accepted_by = NULL WHERE id = ? AND accepted_by = ?").bind(invite.id, userId).run().catch(() => undefined);
+      throw error;
+    }
     await seedSpaceDoMember(env, businessSpaceId, business.tenant_id, userId, invite.role);
 
     return c.json({ business_space_id: businessSpaceId, role: invite.role });
@@ -324,13 +367,11 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
   app.get("/spaces/:businessSpaceId/business-members", async (c) => {
     const env = c.env as BusinessRoutesEnv;
     const businessSpaceId = c.req.param("businessSpaceId");
-    const { userId, role: callerPlatformRole } = callerIdentity(c);
-    if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
-
-    if (callerPlatformRole === "product_end_user") {
-      const myRole = await resolveEndUserBusinessRole(env.PLATFORM_DB, businessSpaceId, userId);
-      if (!myRole) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
-    }
+    const identity = await authorizeProductUser(env, c, businessSpaceId);
+    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
+    const { userId } = identity;
+    const myRole = await resolveEndUserBusinessRole(env.PLATFORM_DB, businessSpaceId, userId);
+    if (!myRole) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
 
     const { results } = await env.PLATFORM_DB.prepare(
       "SELECT end_user_id, role, status, joined_at FROM business_memberships WHERE business_space_id = ? ORDER BY joined_at ASC"
@@ -345,14 +386,12 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     const env = c.env as BusinessRoutesEnv;
     const businessSpaceId = c.req.param("businessSpaceId");
     const targetEndUserId = c.req.param("endUserId");
-    const { userId, role: callerPlatformRole } = callerIdentity(c);
-    if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
-
-    if (callerPlatformRole === "product_end_user") {
-      const myRole = await resolveEndUserBusinessRole(env.PLATFORM_DB, businessSpaceId, userId);
-      if (myRole !== "owner" && myRole !== "admin") {
-        return c.json({ error_code: "forbidden", message: "Only a business owner or admin can remove members" }, 403);
-      }
+    const identity = await authorizeProductUser(env, c, businessSpaceId);
+    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
+    const { userId, tenantId } = identity;
+    const myRole = await resolveEndUserBusinessRole(env.PLATFORM_DB, businessSpaceId, userId);
+    if (myRole !== "owner" && myRole !== "admin") {
+      return c.json({ error_code: "forbidden", message: "Only a business owner or admin can remove members" }, 403);
     }
 
     const target = await env.PLATFORM_DB.prepare(
@@ -366,6 +405,11 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     await env.PLATFORM_DB.prepare(
       "DELETE FROM business_memberships WHERE business_space_id = ? AND end_user_id = ?"
     ).bind(businessSpaceId, targetEndUserId).run();
+
+    try {
+      const doId = env.SPACE_DO.idFromName(await getDOName("space", businessSpaceId, tenantId, env.PLATFORM_SECRET));
+      await env.SPACE_DO.get(doId).fetch(new Request(`http://space-do/members/${encodeURIComponent(targetEndUserId)}?space_id=${encodeURIComponent(businessSpaceId)}`, { method: "DELETE" }));
+    } catch { /* D1 remains authoritative for route authorization; the SpaceDO mirror is best effort. */ }
 
     return c.json({ deleted: true, business_space_id: businessSpaceId, end_user_id: targetEndUserId });
   });
