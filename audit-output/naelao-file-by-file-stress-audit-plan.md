@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1943` tracked files; `1737` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt`.
+Inventory basis: `1944` tracked files; `1738` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -2117,6 +2117,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/billing/package.json`
 - [ ] `workers/billing/tsconfig.json`
+- [ ] `workers/billing/vitest.config.ts`
 - [ ] `workers/billing/wrangler.toml`
 
 ### `workers/billing/src`
