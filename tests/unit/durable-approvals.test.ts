@@ -335,4 +335,80 @@ describe("resuming after a human approves", () => {
     expect(seenPriorSteps).toBeDefined();
     expect((seenPriorSteps as Array<{ name: string }>)[0]!.name).toBe("list_files");
   });
+
+  it("refreshes autonomy before each action so a mid-run revocation gates the next operation", async () => {
+    const env = makeEnv();
+    let refreshCount = 0;
+    const requested: string[] = [];
+    env.hitlGateway = { async requestApproval(params) {
+      requested.push(params.actionName);
+      return { approvalId: "revoked-policy", approved: false, pending: true };
+    } };
+    const result = await runScriptLoop(env, new ScriptToolSurface(env, ["r2-workspace"]), {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
+      },
+    }, ["r2-workspace"], {
+      goal: "write a file",
+      startupObserve: "observe_filesystem",
+      // The run entered under a permissive action allowlist. Before execution, the authoritative
+      // policy has changed to ask first for everything.
+      requiresApprovalFor: [],
+      approvalMode: "gate_listed",
+      async refreshApprovalPolicy() {
+        refreshCount++;
+        return { requiresApprovalFor: [], approvalMode: "gate_unless_listed" };
+      },
+    });
+
+    expect(refreshCount).toBeGreaterThan(0);
+    expect(requested).toEqual(["write_file"]);
+    expect(result.deferred_approvals?.[0]?.action_name).toBe("write_file");
+    const listed = await env.scriptsBucket.list({ prefix: "spaces/space-1/" });
+    expect(listed.objects.some((object) => object.key.includes("a.txt"))).toBe(false);
+  });
+
+  it("fails closed when policy requires approval but the approval service is unavailable", async () => {
+    const env = makeEnv();
+    const result = await runScriptLoop(env, new ScriptToolSurface(env, ["r2-workspace"]), {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
+      },
+    }, ["r2-workspace"], {
+      goal: "write a file",
+      startupObserve: "observe_filesystem",
+      requiresApprovalFor: [],
+      approvalMode: "gate_unless_listed",
+    });
+
+    expect(result.result?.ok).toBe(false);
+    expect(result.result?.error).toMatch(/needed approval and was not approved/i);
+    const listed = await env.scriptsBucket.list({ prefix: "spaces/space-1/" });
+    expect(listed.objects.some((object) => object.key.includes("a.txt"))).toBe(false);
+  });
+
+  it("does not reuse a permissive policy snapshot when per-action policy refresh fails", async () => {
+    const env = makeEnv();
+    let requested = 0;
+    env.hitlGateway = { async requestApproval() {
+      requested++;
+      return { approvalId: "policy-refresh-failed", approved: false, pending: true };
+    } };
+    const result = await runScriptLoop(env, new ScriptToolSurface(env, ["r2-workspace"]), {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
+      },
+    }, ["r2-workspace"], {
+      goal: "write a file",
+      startupObserve: "observe_filesystem",
+      requiresApprovalFor: [],
+      approvalMode: "gate_listed",
+      async refreshApprovalPolicy() { throw new Error("Spaces worker unavailable"); },
+    });
+
+    expect(requested).toBe(1);
+    expect(result.deferred_approvals?.[0]?.action_name).toBe("write_file");
+    const listed = await env.scriptsBucket.list({ prefix: "spaces/space-1/" });
+    expect(listed.objects.some((object) => object.key.includes("a.txt"))).toBe(false);
+  });
 });

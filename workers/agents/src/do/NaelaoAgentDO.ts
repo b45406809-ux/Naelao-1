@@ -4794,7 +4794,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       requiresApprovalFor = plan.requiresApprovalFor;
       approvalMode = plan.approvalMode;
     }
-    const currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor);
+    let currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor);
     // Template mode controls presentation and seeded work only. Approval policy and autonomous
     // kernel capabilities are identical for Cowork and Venture OS projects.
 
@@ -5043,6 +5043,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(memoryContext ? { memoryContext } : {}),
         requiresApprovalFor,
         approvalMode,
+        ...(!projectId ? {
+          refreshApprovalPolicy: async () => {
+            // Approval is checked per action, not just at run admission. Bypass the 30-second
+            // ingress cache so an owner revoking autonomy affects the next action in this run.
+            const latestPolicy = await this.fetchAssistantPolicy(spaceId, tenantId, true);
+            const latestPlan = resolveAssistantApprovalPlan(latestPolicy, callerRole, businessRole);
+            requiresApprovalFor = latestPlan.requiresApprovalFor;
+            approvalMode = latestPlan.approvalMode;
+            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor);
+            return { requiresApprovalFor, approvalMode };
+          },
+        } : {}),
         runId,
         sessionId,
         ...(config.pipelines ? { pipeline: config.pipelines } : {}),
@@ -6775,7 +6787,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * (always_ask, nothing pre-approved), never as "assume yolo." This is a security-relevant
    * control: failures fail CLOSED (ask more), not open.
    */
-  private async fetchAssistantPolicy(spaceId: string, tenantId: string): Promise<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } | null> {
+  private async fetchAssistantPolicy(spaceId: string, tenantId: string, forceFresh = false): Promise<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } | null> {
     if (!this.env.SPACES_WORKER || !tenantId) return null;
 
     // Short-lived in-DO cache. This fetch sits on the hot path of EVERY Space Assistant run, and
@@ -6789,8 +6801,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // 30s is deliberately short: a builder who flips autonomy off wants that to take effect
     // promptly, and half a minute of staleness on a setting they just changed themself is the
     // outer bound of acceptable. A cached value is never used to widen access after it expires.
-    const cached = this.assistantPolicyCache;
-    if (cached && cached.spaceId === spaceId && Date.now() - cached.at < 30_000) {
+    const cached = forceFresh ? undefined : this.assistantPolicyCache;
+    if (!forceFresh && cached && cached.spaceId === spaceId && Date.now() - cached.at < 30_000) {
       return cached.policy;
     }
 

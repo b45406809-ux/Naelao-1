@@ -11,43 +11,45 @@ import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/typ
 
 // ── Minimal in-memory R2 bucket (the subset the engine uses) ──────────────────
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  const meta = new Map<string, Date>();
+  const store = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string>; uploaded: Date }>();
+  let revision = 0;
   const bucket = {
-    async put(key: string, value: unknown) {
-      const text = typeof value === "string" ? value : String(value);
-      store.set(key, text);
-      meta.set(key, new Date());
-      return {} as R2Object;
+    async put(key: string, value: unknown, options?: R2PutOptions) {
+      const previous = store.get(key);
+      const onlyIf = options?.onlyIf as { etagMatches?: string; etagDoesNotMatch?: string } | undefined;
+      if (onlyIf?.etagMatches !== undefined && previous?.etag !== onlyIf.etagMatches) return null;
+      if (onlyIf?.etagDoesNotMatch === "*" && previous) return null;
+      const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(typeof value === "string" ? value : String(value));
+      const etag = String(++revision);
+      store.set(key, { bytes: bytes.slice(), etag, customMetadata: options?.customMetadata ?? {}, uploaded: new Date() });
+      return { etag } as R2Object;
     },
     async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
+      const item = store.get(key);
+      if (!item || item.customMetadata["deleted"] === "true") return null;
       return {
-        size: text.length,
-        uploaded: meta.get(key) ?? new Date(),
-        async text() {
-          return text;
-        },
-        get body() {
-          return text;
-        },
+        size: item.bytes.byteLength,
+        etag: item.etag,
+        uploaded: item.uploaded,
+        customMetadata: item.customMetadata,
+        async text() { return new TextDecoder().decode(item.bytes); },
+        async arrayBuffer() { return item.bytes.slice().buffer; },
       } as unknown as R2ObjectBody;
     },
     async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
+      const item = store.get(key);
+      return item ? { key, size: item.bytes.byteLength, etag: item.etag, uploaded: item.uploaded, customMetadata: item.customMetadata } as R2Object : null;
     },
     async delete(keys: string | string[]) {
       for (const k of Array.isArray(keys) ? keys : [keys]) {
         store.delete(k);
-        meta.delete(k);
       }
     },
     async list(opts?: { prefix?: string; cursor?: string }) {
       const prefix = opts?.prefix ?? "";
-      const objects = [...store.keys()]
-        .filter((k) => k.startsWith(prefix))
-        .map((k) => ({ key: k, size: store.get(k)!.length, uploaded: meta.get(k) ?? new Date(), etag: "x" }));
+      const objects = [...store.entries()]
+        .filter(([k, item]) => k.startsWith(prefix) && item.customMetadata["deleted"] !== "true")
+        .map(([key, item]) => ({ key, size: item.bytes.byteLength, uploaded: item.uploaded, etag: item.etag, customMetadata: item.customMetadata }));
       return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
     },
   };
@@ -102,7 +104,7 @@ describe("ScriptToolSurface — the 6-op surface (spec §3)", () => {
   it("runs prebuilt r2-workspace ops (write then read) at Tier 1", async () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
-    const w = await tools.run("write_file", { path: "notes/a.txt", content: "hello" });
+    const w = await tools.run("write_file", { path: "notes/a.txt", content: "hello", expectedHash: null });
     expect(w.ok).toBe(true);
     const r = await tools.run("read_file", { path: "notes/a.txt" });
     expect(r.ok).toBe(true);
@@ -263,11 +265,11 @@ describe("observe_filesystem (spec §9) produces a stable fingerprint", () => {
   it("same workspace state → same fingerprint, change → different", async () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
-    await tools.run("write_file", { path: "a.txt", content: "1" });
+    await tools.run("write_file", { path: "a.txt", content: "1", expectedHash: null });
     const s1 = await observeFilesystem(env);
     const s2 = await observeFilesystem(env);
     expect(s1.fingerprint).toBe(s2.fingerprint);
-    await tools.run("write_file", { path: "b.txt", content: "2" });
+    await tools.run("write_file", { path: "b.txt", content: "2", expectedHash: null });
     const s3 = await observeFilesystem(env);
     expect(s3.fingerprint).not.toBe(s1.fingerprint);
   });
@@ -288,7 +290,7 @@ describe("runScriptLoop — L1 execution + L4 distill (spec §2/§5)", () => {
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
         return step++ === 0
-          ? { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } }
+          ? { action: "run", name: "write_file", params: { path: "out.txt", content: "done", expectedHash: null } }
           : { action: "answer", text: "Wrote out.txt." };
       },
     };
@@ -438,7 +440,7 @@ describe("runScriptLoop — structured trace (§A1 Phase HX1, the persisted coun
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
         return step++ === 0
-          ? { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } }
+          ? { action: "run", name: "write_file", params: { path: "out.txt", content: "done", expectedHash: null } }
           : { action: "answer", text: "Wrote out.txt." };
       },
     };
@@ -516,7 +518,7 @@ describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordin
     env.hitlGateway = gateway;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
       },
     };
     // "write_file" is NOT in requiresApprovalFor -> gate_listed mode means it runs freely.
@@ -536,7 +538,7 @@ describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordin
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
         return step++ === 0
-          ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } }
+          ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } }
           : { action: "answer", text: "Wrote a.txt." };
       },
     };
@@ -557,7 +559,7 @@ describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordin
     env.hitlGateway = gateway;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
       },
     };
     await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
@@ -575,7 +577,7 @@ describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordin
     env.hitlGateway = gateway;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
       },
     };
     const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
@@ -598,7 +600,7 @@ describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordin
     env.hitlGateway = gateway;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
       },
     };
     await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {

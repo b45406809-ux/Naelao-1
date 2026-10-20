@@ -145,8 +145,8 @@ export interface ApprovedActionEvidence {
 
 /**
  * Gate an action against the HITL policy.
- * When hitlGateway is absent, the action isn't gated under the current mode, or the action was
- * already approved on a previous pass of a suspended run, execution proceeds.
+ * When hitlGateway is absent, a gated action fails closed. An action proceeds only when policy
+ * permits it or an exact approval was verified for the suspended operation.
  */
 async function hitlGate(
   actionName: string,
@@ -160,7 +160,11 @@ async function hitlGate(
   preApproved: ReadonlyMap<string, ApprovedActionEvidence>,
   currentPolicyFingerprint: string,
 ): Promise<GateOutcome> {
-  if (!isGated(actionName, gatedActions, mode) || !gateway) return { verdict: "proceed" };
+  if (!isGated(actionName, gatedActions, mode)) return { verdict: "proceed" };
+  if (!gateway) {
+    notes.push(`HITL unavailable: '${actionName}' is gated and cannot run without an approval service`);
+    return { verdict: "denied", reason: "approval service unavailable" };
+  }
   // Approval is bound to the exact input and policy that the approver saw.
   const evidence = preApproved.get(actionName);
   if (evidence
@@ -471,13 +475,15 @@ export interface RunLoopOptions {
    *     else requires approval by default. The Space Assistant's posture: same access as the
    *     user who owns it, but ask first unless the user has explicitly trusted this action
    *     (an empty list + this mode = ask before literally everything; a non-empty list here
-   *     with an absent hitlGateway, or "yolo" policy passing an empty gate_listed set, is how
-   *     a user grants full autonomy — see NaelaoAgentDO.fetchAssistantPolicy).
+   *     "yolo" policy passing an empty gate_listed set, is how a user grants full autonomy — see
+   *     NaelaoAgentDO.fetchAssistantPolicy. A missing HITL gateway fails closed for gated actions.
    * When env.hitlGateway is present and the chosen action is gated under the current mode,
    * the loop pauses and waits for HITLApprovalDO to resolve it before running.
    */
   requiresApprovalFor?: string[];
   approvalMode?: ApprovalMode;
+  /** Re-read the host's authoritative approval policy immediately before each action gate. */
+  refreshApprovalPolicy?: () => Promise<{ requiresApprovalFor: string[]; approvalMode: ApprovalMode }>;
   /**
    * Resuming a run that suspended waiting on a human: the actions a human has since approved.
    * The gate lets these through once without re-asking — otherwise every resume would open a
@@ -590,12 +596,12 @@ export async function runScriptLoop(
 ): Promise<LoopResult> {
   const cfg: EscalationConfig = { ...DEFAULT_ESCALATION, ...opts.escalation };
   const notes: string[] = [];
-  const gatedActions = new Set(opts.requiresApprovalFor ?? []);
-  const approvalMode: ApprovalMode = opts.approvalMode ?? "gate_listed";
+  let gatedActions = new Set(opts.requiresApprovalFor ?? []);
+  let approvalMode: ApprovalMode = opts.approvalMode ?? "gate_listed";
   const runId = opts.runId ?? crypto.randomUUID();
   const sessionId = opts.sessionId ?? "unknown";
   const preApproved = new Map((opts.preApprovedActions ?? []).map((evidence) => [evidence.actionName, evidence]));
-  const currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, opts.requiresApprovalFor ?? []);
+  let currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, opts.requiresApprovalFor ?? []);
   const ledgerKey = opts.ledgerKey ?? runId;
   if(env.artifactValidationState) { env.artifactValidationState.workKey=ledgerKey;env.artifactValidationState.sessionId=sessionId; }
 
@@ -611,6 +617,24 @@ export async function runScriptLoop(
       output: [output.stdout, output.stderr].filter(Boolean).join("\n").slice(-6500) }); };
     try { return await tools.run(name, params); }
     finally { if (previous) env.onToolOutput = previous; else delete env.onToolOutput; }
+  };
+  const gateCurrentPolicy = async (name: string, params: Record<string, unknown>): Promise<GateOutcome> => {
+    if (opts.refreshApprovalPolicy) {
+      try {
+        const latest = await opts.refreshApprovalPolicy();
+        gatedActions = new Set(latest.requiresApprovalFor);
+        approvalMode = latest.approvalMode;
+        currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, latest.requiresApprovalFor);
+      } catch {
+        // An unknown policy must never preserve a previously broader grant. Gate every action;
+        // the host can retry after its policy service recovers.
+        gatedActions = new Set();
+        approvalMode = "gate_unless_listed";
+        currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, []);
+        notes.push("HITL: current approval policy could not be refreshed; requiring approval");
+      }
+    }
+    return hitlGate(name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
   };
   const runOnce = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
     const injected = await runBeforeStep(opts.pipeline, env.pipelineRuntime);
@@ -780,7 +804,7 @@ export async function runScriptLoop(
     case "L1": {
       const params = paramsFor(top!, opts.goal);
       // HITL gate before execution
-      const gate = await hitlGate(top!.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
+      const gate = await gateCurrentPolicy(top!.name, params);
       if (gate.verdict === "pending") return suspend(level, gate, top!.name, params, opts.resumeSteps ?? []);
       if (gate.verdict === "denied") {
         return finish({ level, script_name: top!.name, result: { ok: false, error: gateRejectedMessage(top!.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
@@ -828,7 +852,7 @@ export async function runScriptLoop(
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
         const params = paramsFor(top!, opts.goal);
-        const gate = await hitlGate(decision.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
+        const gate = await gateCurrentPolicy(decision.name, params);
         if (gate.verdict === "pending") return suspend(level, gate, decision.name, params, opts.resumeSteps ?? []);
         if (gate.verdict === "denied") {
           return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
@@ -1245,7 +1269,7 @@ export async function runScriptLoop(
           }
 
           // HITL gate before execution
-          const gate = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
+          const gate = await gateCurrentPolicy(decision.name, decision.params);
           if (gate.verdict === "pending") {
             // Park it and CARRY ON. Blocking the whole run here is what made an agent useless the
             // moment it needed permission for one thing: an assistant with five jobs to do would

@@ -452,6 +452,15 @@ export const projectCoordination: PrebuiltScript = {
   // the thread with no project attached, then never attempted thread.send_message at all because
   // it had no idea what fields that call needed. See PrebuiltScript.paramHints's own doc.
   paramHints: {
+    "project.accumulator.commit": "task_id (string, REQUIRED — active repository task id). chunk_id (string, REQUIRED — stable id for this worker's contribution). files (array, REQUIRED — changed file paths to accumulate). branch (string, optional — defaults to task/<task_id>/accumulator). message (string, optional — concise summary of this contribution). goal (string, optional — task context recorded with the contribution).",
+    "project.pull_request.diff": "base_branch (string, optional, default main). fork_branch (string, REQUIRED — task branch to compare). Returns a diff preview; it does not merge.",
+    "project.pull_request.submit": "base_branch (string, optional, default main). fork_branch (string, REQUIRED). title (string, optional). author (string, optional). reasoning (string, optional). Opens a review card; it does not merge.",
+    "project.pull_request.merge": "base_branch (string, optional, default main). fork_branch (string, REQUIRED — must identify a reviewed pull request). Requires the current human to be a project owner/admin; the model cannot supply reviewer identity.",
+    "project.upstream.status": "base_ref (string, optional, default main). current_ref (string, REQUIRED — branch/ref to compare). Reads divergence only.",
+    "project.upstream.reconcile": "target_branch (string, REQUIRED — project branch to reconcile). upstream_branch (string, optional, default main). Review the diff and conflicts before reconciling.",
+    "project.mcp_call": "project_id (string, REQUIRED — an authorized project). tool (string, REQUIRED — tool name returned by project.mcp_list_tools). params (object, optional — tool arguments). Host grants still constrain which tools can run.",
+    "project.mcp_list_tools": "project_id (string, REQUIRED — an authorized project). Lists the tools available through that project's MCP surface; this does not grant additional access.",
+    "thread.delegate": "agent_id (string, REQUIRED — target project agent). message (string, REQUIRED — bounded task and expected result). project_id/thread_id (string, optional — defaults to this run's project/thread). Delegates through the existing worker topology.",
     "thread.create": "project_id (string, OPTIONAL but almost always what you want — the project's " +
       "own id, e.g. from project.list/project.create's result; pass it to attach the new thread to " +
       "THAT project, otherwise omitting it silently creates a space-wide thread with no project at " +
