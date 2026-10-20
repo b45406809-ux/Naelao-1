@@ -40,7 +40,34 @@ import { createVaultProxy } from "../vault-proxy.js";
 import { inspectMutation } from "@naelao/security";
 import { isDeclaredNativeCommand } from "../execution-ladder.js";
 import { assertWorkspaceFileAllowed } from "../workspace-paths.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
+import type { MarkdownFetchResult } from "../virtual-cli.js";
+
+/** Validate and bound the internal Knowledge worker response before exposing it to the CLI. */
+export async function readMarkdownFetchResponse(response: Response, fallbackUrl: string): Promise<MarkdownFetchResult> {
+  const payload = await readBoundedResponseJson<Record<string, unknown>>(response, 1024 * 1024);
+  if (!response.ok) {
+    const message = typeof payload.message === "string" ? payload.message.slice(0, 300) : "request rejected";
+    throw new Error(`fetch-md request failed (${response.status}): ${message}`);
+  }
+  if (typeof payload.url !== "string" || payload.url.length > 2_048
+    || !Number.isInteger(payload.status) || Number(payload.status) < 100 || Number(payload.status) > 599
+    || typeof payload.content !== "string"
+    || new TextEncoder().encode(payload.content).byteLength > 100_000
+    || payload.content_type !== undefined && (typeof payload.content_type !== "string" || payload.content_type.length > 512)
+    || payload.format !== undefined && payload.format !== "markdown" && payload.format !== "source"
+    || payload.truncated !== undefined && typeof payload.truncated !== "boolean") {
+    throw new Error("fetch-md response shape is invalid");
+  }
+  return {
+    url: payload.url || fallbackUrl,
+    status: Number(payload.status),
+    content: payload.content,
+    ...(typeof payload.content_type === "string" ? { content_type: payload.content_type } : {}),
+    ...(payload.format === "markdown" || payload.format === "source" ? { format: payload.format } : {}),
+    ...(payload.truncated === true ? { truncated: true } : {}),
+  };
+}
 
 const PYTHON_HARNESS = `
 import { execFileSync } from "node:child_process";
@@ -240,16 +267,7 @@ async function runBash(
               },
               body: JSON.stringify({ url, format: "markdown" }),
             }));
-            const payload = await response.json() as { url?: string; status?: number; content?: string; content_type?: string; format?: string; truncated?: boolean; message?: string };
-            if (!response.ok) throw new Error(`fetch-md request failed (${response.status}): ${payload.message ?? "request rejected"}`);
-            return {
-              url: payload.url ?? url,
-              status: payload.status ?? 502,
-              content: payload.content ?? "",
-              ...(payload.content_type ? { content_type: payload.content_type } : {}),
-              ...(payload.format ? { format: payload.format } : {}),
-              ...(payload.truncated ? { truncated: true } : {}),
-            };
+            return readMarkdownFetchResponse(response, url);
           },
         })
       : undefined;
