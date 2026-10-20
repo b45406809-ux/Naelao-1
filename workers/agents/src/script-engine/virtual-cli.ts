@@ -298,7 +298,7 @@ export class VirtualCliDispatcher {
     }
     if (!API_COMMANDS.has(command)) return null;
     const { positional, body } = bodyAndFlags(args);
-    let url: string; let credentialName: string; let method = "GET";
+    let url: string; let credentialName: string; let method = "GET"; let providerBodyOverride: unknown; let omitProviderBody = false;
     let providerHeaders: Record<string, string> = { "content-type": "application/json" };
     if (command === "api") {
       if (positional[0] !== "request" || positional.length !== 3) throw new Error("usage: api request <method> <https-url> --credential <vault-name> [--body <json>] [--headers <json>] [--idempotency-key <key>]");
@@ -348,18 +348,94 @@ export class VirtualCliDispatcher {
       method = ["list", "retrieve", "get"].includes(action) ? "GET" : action === "delete" ? "DELETE" : "POST";
       providerHeaders = { "content-type": "application/x-www-form-urlencoded" };
     } else if (command === "gh") {
-      const [resource, action, id] = positional;
-      if (!resource) throw new Error("usage: gh <resource> <action>");
-      url = `https://api.github.com/${encodeURIComponent(resource)}${id ? `/${encodeURIComponent(id)}` : ""}`;
-      credentialName = "GITHUB_TOKEN"; method = action === "list" || action === "get" ? "GET" : action === "delete" ? "DELETE" : "POST";
+      credentialName = "GITHUB_TOKEN";
+      if (positional[0] === "api") {
+        const endpoint = positional[1];
+        if (positional.length !== 2 || !endpoint || endpoint.startsWith("/") || endpoint.includes("?") || endpoint.includes("#")) {
+          throw new Error("usage: gh api <endpoint-path> [--method GET|POST|PUT|PATCH|DELETE] [--params <json>] [--body <json>] [--idempotency-key <key>]");
+        }
+        const parts = endpoint.split("/");
+        if (parts.some((part) => !part || part === "." || part === ".." || !/^[A-Za-z0-9_.-]+$/.test(part))) throw new Error("gh_endpoint_invalid");
+        url = `https://api.github.com/${parts.map(encodeURIComponent).join("/")}`;
+        const requestedMethod = typeof body.method === "string" ? body.method.toUpperCase() : "GET";
+        delete body.method;
+        if (!/^(GET|POST|PUT|PATCH|DELETE)$/.test(requestedMethod)) throw new Error("gh_method_denied");
+        method = requestedMethod;
+        let params: unknown;
+        let requestBody: unknown;
+        try {
+          if (body.params !== undefined) params = typeof body.params === "string" ? JSON.parse(body.params) : body.params;
+          if (body.body !== undefined) requestBody = typeof body.body === "string" ? JSON.parse(body.body) : body.body;
+        } catch { throw new Error("gh_params_must_be_json"); }
+        delete body.params;
+        delete body.body;
+        const validObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+        if (params !== undefined && !validObject(params)) throw new Error("gh_params_must_be_object");
+        if (requestBody !== undefined && !validObject(requestBody)) throw new Error("gh_body_must_be_object");
+        if (["GET", "HEAD"].includes(method)) {
+          if (requestBody !== undefined) throw new Error("gh_body_not_allowed_for_read");
+          if (params) {
+            const query = new URLSearchParams();
+            for (const [key, value] of Object.entries(params)) {
+              if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") query.append(key, String(value));
+              else if (Array.isArray(value) && value.every((item) => ["string", "number", "boolean"].includes(typeof item))) value.forEach((item) => query.append(key, String(item)));
+              else throw new Error("gh_params_invalid");
+            }
+            const target = new URL(url);
+            query.forEach((value, key) => target.searchParams.append(key, value));
+            url = target.toString();
+          }
+        } else {
+          if (params !== undefined && requestBody !== undefined) throw new Error("gh_params_and_body_conflict");
+          providerBodyOverride = requestBody ?? params;
+          omitProviderBody = providerBodyOverride === undefined;
+        }
+      } else if (positional[0] === "repos" && positional[1] === "list" && positional.length === 2) {
+        url = "https://api.github.com/user/repos";
+        const target = new URL(url);
+        for (const [key, value] of Object.entries(body)) {
+          if (key === "idempotency_key") continue;
+          if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") throw new Error("gh_params_invalid");
+          target.searchParams.append(key, String(value));
+        }
+        url = target.toString();
+        for (const key of Object.keys(body)) delete body[key];
+      } else {
+        throw new Error("usage: gh api <endpoint-path> [--method GET|POST|PUT|PATCH|DELETE] [--params <json>] [--body <json>] [--idempotency-key <key>]");
+      }
     } else if (command === "resend") {
       if (positional[0] !== "emails" || positional[1] !== "send") throw new Error("usage: resend emails send [--field value]");
       url = "https://api.resend.com/emails"; credentialName = "RESEND_API_KEY"; method = "POST";
     } else if (command === "r2") {
-      const [bucket, action = "list"] = positional;
-      if (!bucket) throw new Error("usage: r2 <bucket> <action>");
-      url = `https://api.cloudflare.com/client/v4/r2/buckets/${encodeURIComponent(bucket)}/${encodeURIComponent(action!)}`;
-      credentialName = "CLOUDFLARE_API_TOKEN"; method = action === "list" || action === "get" ? "GET" : "POST";
+      const [accountId, action, bucket] = positional;
+      if (!accountId || !/^[a-fA-F0-9]{32}$/.test(accountId)) throw new Error("usage: r2 <account-id> list|get|create|delete [bucket] [--location-hint <region>] [--idempotency-key <key>]");
+      if (!["list", "get", "create", "delete"].includes(action ?? "")) throw new Error("usage: r2 <account-id> list|get|create|delete [bucket]");
+      if ((action === "list") !== (positional.length === 2) || (action !== "list" && positional.length !== 3)) throw new Error("r2_bucket_required");
+      if (bucket !== undefined && !/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/.test(bucket)) throw new Error("r2_bucket_invalid");
+      const collectionUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`;
+      const key = bucket && action !== "create" ? `/${encodeURIComponent(bucket)}` : "";
+      url = collectionUrl + key;
+      credentialName = "CLOUDFLARE_API_TOKEN";
+      method = action === "list" || action === "get" ? "GET" : action === "delete" ? "DELETE" : "POST";
+      if (action === "list") {
+        const target = new URL(url);
+        for (const [name, value] of Object.entries(body)) {
+          if (name === "idempotency_key") continue;
+          if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") throw new Error("r2_params_invalid");
+          target.searchParams.append(name, String(value));
+        }
+        url = target.toString();
+        for (const name of Object.keys(body)) delete body[name];
+      } else if (action === "create") {
+        if (Object.keys(body).some((name) => !["idempotency_key", "location_hint"].includes(name))) throw new Error("r2_create_parameter_invalid");
+        const locationHint = body.location_hint;
+        if (locationHint !== undefined && (typeof locationHint !== "string" || !/^[a-zA-Z0-9-]{2,16}$/.test(locationHint))) throw new Error("r2_location_hint_invalid");
+        providerBodyOverride = { name: bucket, ...(locationHint ? { locationHint } : {}) };
+        providerHeaders = { "content-type": "application/json" };
+      } else if (action === "get" || action === "delete") {
+        if (Object.keys(body).some((name) => name !== "idempotency_key")) throw new Error("r2_params_invalid");
+        if (action === "delete") omitProviderBody = true;
+      }
     } else {
       const [accountSid, resource, action] = positional;
       if (!accountSid || !resource || !action || !/^AC[a-fA-F0-9]{32}$/.test(accountSid) || !/^[A-Za-z][A-Za-z0-9]*$/.test(resource)) {
@@ -373,6 +449,7 @@ export class VirtualCliDispatcher {
       url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/${collection}${id ? `/${encodeURIComponent(id)}` : ""}.json`;
       credentialName = "TWILIO_AUTH_TOKEN";
       method = ["list", "get"].includes(action) ? "GET" : action === "delete" ? "DELETE" : "POST";
+      if (method === "DELETE") omitProviderBody = true;
       providerHeaders = { "content-type": "application/x-www-form-urlencoded" };
     }
     if (!this.ctx.vault) throw new Error("virtual_cli_credentials_unavailable");
@@ -381,7 +458,7 @@ export class VirtualCliDispatcher {
     if (!["GET", "HEAD"].includes(method) && (!idempotencyKey || !/^[A-Za-z0-9._:-]{1,120}$/.test(idempotencyKey))) {
       throw new Error("api_idempotency_key_required");
     }
-    let providerBody: unknown = body;
+    let providerBody: unknown = omitProviderBody ? undefined : (providerBodyOverride ?? body);
     if (command === "stripe" || command === "twilio") {
       const fields = new URLSearchParams();
       for (const [key, value] of Object.entries(body)) {

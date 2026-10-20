@@ -120,6 +120,54 @@ describe("VirtualCliDispatcher", () => {
       .rejects.toThrow("api_idempotency_key_required");
     expect(fetchWithAuth).toHaveBeenCalledTimes(3);
   });
+  it("maps GitHub REST API reads and writes to validated endpoint paths", async () => {
+    const fetchWithAuth = vi.fn(async () => Response.json({ ok: true }));
+    const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space" });
+    await cli.execute(["gh", "api", "repos/octo/widget/issues", "--params", '{"state":"open","labels":["bug","help wanted"]}']);
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/octo/widget/issues?state=open&labels=bug&labels=help+wanted",
+      expect.objectContaining({ credentialName: "GITHUB_TOKEN", method: "GET" }),
+    );
+    await cli.execute(["gh", "api", "repos/octo/widget/issues", "--method", "POST", "--body", '{"title":"Bug"}', "--idempotency-key", "gh-issue-1"]);
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      "https://api.github.com/repos/octo/widget/issues",
+      expect.objectContaining({
+        credentialName: "GITHUB_TOKEN", method: "POST", idempotencyKey: "gh-issue-1",
+        body: { title: "Bug" }, headers: { "content-type": "application/json" },
+      }),
+    );
+    await expect(cli.execute(["gh", "api", "../private"])).rejects.toThrow("gh_endpoint_invalid");
+    await expect(cli.execute(["gh", "api", "repos/octo/widget/issues", "--method", "TRACE"])).rejects.toThrow("gh_method_denied");
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
+  it("maps R2 bucket management to Cloudflare account-scoped endpoints", async () => {
+    const fetchWithAuth = vi.fn(async () => Response.json({ success: true }));
+    const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space" });
+    const accountId = "a".repeat(32);
+    await cli.execute(["r2", accountId, "list", "--per-page", "10"]);
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets?per_page=10`,
+      expect.objectContaining({ credentialName: "CLOUDFLARE_API_TOKEN", method: "GET" }),
+    );
+    await cli.execute(["r2", accountId, "create", "my-bucket", "--location-hint", "wnam", "--idempotency-key", "r2-create-1"]);
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`,
+      expect.objectContaining({ method: "POST", idempotencyKey: "r2-create-1", body: { name: "my-bucket", locationHint: "wnam" } }),
+    );
+    await cli.execute(["r2", accountId, "get", "my-bucket"]);
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets/my-bucket`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    await cli.execute(["r2", accountId, "delete", "my-bucket", "--idempotency-key", "r2-delete-1"]);
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets/my-bucket`,
+      expect.objectContaining({ method: "DELETE", idempotencyKey: "r2-delete-1" }),
+    );
+    await expect(cli.execute(["r2", "bad-account", "list"])).rejects.toThrow("usage: r2");
+    await expect(cli.execute(["r2", accountId, "get", "../bucket"])).rejects.toThrow("r2_bucket_invalid");
+    expect(fetchWithAuth).toHaveBeenCalledTimes(4);
+  });
 
   it("requires and forwards idempotency for built-in provider writes without sending it in the provider body", async () => {
     const fetchWithAuth = vi.fn(async () => Response.json({ id: "email_1" }));
