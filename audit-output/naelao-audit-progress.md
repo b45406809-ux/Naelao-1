@@ -632,7 +632,7 @@ Refreshed the tracked inventory after adding `workers/agents/src/workflows/workf
 
 Refreshed the tracked inventory after adding `workers/agents/src/workflows/agent-task-checkpoints.test.ts`: 1,943 tracked files and 1,737 source/config files. The tree snapshot is tied to code commit `e29bed43`; 191 scoped file checks remain recorded.
 
-The Agents worker suite subsequently passed **145 test files / 634 tests** with the workflow changes included. Agents TypeScript also passed in the focused validation cycle. This does not close the Agents file checklist.
+The Agents worker suite subsequently passed **145 test files / 637 tests** after the terminal-settlement protocol was added. Agents TypeScript also passed in the focused validation cycle. This does not close the Agents file checklist.
 
 ### Terminal transition and in-flight effect settlement
 
