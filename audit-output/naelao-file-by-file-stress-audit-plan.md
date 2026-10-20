@@ -735,9 +735,9 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/agent-sdk`
 
-- [ ] `packages/agent-sdk/package.json`
-- [ ] `packages/agent-sdk/tsconfig.json`
-- [ ] `packages/agent-sdk/vitest.config.ts`
+- [x] `packages/agent-sdk/package.json`
+- [x] `packages/agent-sdk/tsconfig.json`
+- [x] `packages/agent-sdk/vitest.config.ts`
 
 ### `packages/agent-sdk/examples/trading-mentor-channel`
 
@@ -793,7 +793,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/agent-sdk/src/recipes.ts`
 - [ ] `packages/agent-sdk/src/runtime-context.test.ts`
 - [ ] `packages/agent-sdk/src/runtime-context.ts`
-- [ ] `packages/agent-sdk/src/scratchpad.ts`
+- [x] `packages/agent-sdk/src/scratchpad.ts`
 - [ ] `packages/agent-sdk/src/subagent-context.test.ts`
 - [ ] `packages/agent-sdk/src/subagent-context.ts`
 - [ ] `packages/agent-sdk/src/token-accounting.ts`
