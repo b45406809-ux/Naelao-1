@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { createFakeD1 } from "../../../tests/stubs/d1-sqlite.js";
+import { hashPassword } from "@naelao/crypto";
 import { normalizeE164, registerProductEndUserRoutes, type ProductEndUserRoutesEnv } from "./product-end-user-routes.js";
 
 const AUTH_SCHEMA = [
@@ -8,6 +9,7 @@ const AUTH_SCHEMA = [
   `CREATE TABLE product_end_users (product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, email TEXT, display_name TEXT, password_hash TEXT, email_verified_at TEXT, phone_e164 TEXT, phone_verified_at TEXT, suspended_at TEXT, deleted_at TEXT, first_seen_at TEXT, last_seen_at TEXT, PRIMARY KEY (product_space_id, end_user_id));`,
   `CREATE TABLE password_reset_tokens (id TEXT PRIMARY KEY, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, token_hash TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);`,
   `CREATE TABLE email_verification_tokens (id TEXT PRIMARY KEY, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, token_hash TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);`,
+  `CREATE TABLE whatsapp_auth_challenges (id TEXT PRIMARY KEY, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, phone_e164 TEXT NOT NULL, otp_hash TEXT NOT NULL, magic_hash TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));`,
 ];
 
 async function sha256Hex(value: string): Promise<string> {
@@ -26,11 +28,15 @@ function authHarness(config = '{"productConfig":{"authProvider":{"provider":"nae
     PRODUCT_USER_DO: { idFromName: (name: string) => name, get: () => ({ fetch: doFetch }) },
     SPACE_TYPE_REGISTRY_DO: {},
     NAELAO_CONFIG_KV: {},
+    WHATSAPP_ACCESS_TOKEN: "test-token",
+    WHATSAPP_PHONE_NUMBER_ID: "123456789",
   } as unknown as ProductEndUserRoutesEnv;
   const app = new Hono();
   registerProductEndUserRoutes(app);
   return { fakeDb, env, app, doFetch };
 }
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("WhatsApp passwordless identity", () => {
   it.each([
@@ -61,6 +67,38 @@ describe("product end-user recovery token replay boundary", () => {
     expect(user.password_hash).toBeTruthy();
     const reset = fakeDb.db.prepare("SELECT used_at FROM password_reset_tokens WHERE id = 'reset-1'").get() as { used_at: string | null };
     expect(reset.used_at).toBeTruthy();
+  });
+
+  it("uses one login failure response for unknown, wrong-password, and suspended accounts", async () => {
+    const { fakeDb, env, app } = authHarness();
+    const stored = await hashPassword("correct password");
+    fakeDb.db.prepare("UPDATE product_end_users SET password_hash = ? WHERE end_user_id = 'user'").run(JSON.stringify(stored));
+    const request = (body: string) => app.request("/spaces/product/end-users/login", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    }, env);
+    const unknown = await request(JSON.stringify({ email: "missing@example.com", password: "wrong password" }));
+    const wrong = await request(JSON.stringify({ email: "user@example.com", password: "wrong password" }));
+    fakeDb.db.exec("UPDATE product_end_users SET suspended_at = datetime('now') WHERE end_user_id = 'user'");
+    const suspended = await request(JSON.stringify({ email: "user@example.com", password: "correct password" }));
+    const bodies = await Promise.all([unknown, wrong, suspended].map((response) => response.json()));
+    expect([unknown.status, wrong.status, suspended.status]).toEqual([401, 401, 401]);
+    expect(bodies).toEqual(Array(3).fill({ error_code: "invalid_credentials", message: "Incorrect email or password" }));
+    const malformed = await request("{");
+    expect(malformed.status).toBe(400);
+  });
+
+  it("keeps the WhatsApp challenge cap atomic under concurrent requests", async () => {
+    const { fakeDb, env, app } = authHarness();
+    const fetch = vi.fn(async () => Response.json({ messages: [{ id: "sent" }] }));
+    vi.stubGlobal("fetch", fetch);
+    const request = () => app.request("/spaces/product/end-users/request-whatsapp-login", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ phone: "+14155550100" }),
+    }, env);
+    const responses = await Promise.all(Array.from({ length: 10 }, () => request()));
+    expect(responses.every((response) => response.status === 200)).toBe(true);
+    const challenges = fakeDb.db.prepare("SELECT COUNT(*) AS count FROM whatsapp_auth_challenges WHERE product_space_id = 'product' AND phone_e164 = '+14155550100'").get() as { count: number };
+    expect(challenges.count).toBe(3);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it("allows only one concurrent email verification for a single-use token", async () => {

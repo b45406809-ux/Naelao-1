@@ -804,3 +804,10 @@ Validation: product-end-user routes + air-gap tests passed 12/12; business route
 
 
 Refreshed the tracked tree after adding the entitlement expiry regression file; inventory reflects code commit `fb65809b`. The checklist preserves all completed review rows; remaining files are pending.
+
+
+## Product authentication abuse limits and enumeration timing (2026-10-20)
+
+Continued stress testing the public product login and WhatsApp challenge routes. The WhatsApp 3-per-10-minute check previously ran as a separate read from the insert, so parallel requests could exceed the intended limit. The count is now part of the same conditional `INSERT ... SELECT`; only successfully inserted challenges trigger provider delivery. Password login now performs the same-cost PBKDF2 check for unknown, malformed, and suspended records and returns the same credential failure body, closing the easy account-enumeration timing/status branch. Signup collisions already return a stable 409 after the earlier input-validation hardening.
+
+Validation: the new 10-way concurrent WhatsApp test stored and delivered exactly three challenges; login tests confirmed unknown email, wrong password, and suspended accounts all return the same 401 body. The full Spaces suite passed 64 files / 242 tests; Spaces TypeScript and `git diff --check` passed. This is SQLite-backed concurrency simulation, not deployed D1 load. External Meta/Twilio delivery, provider timeout behavior, and distributed IP/phone abuse were not exercised.

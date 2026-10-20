@@ -47,6 +47,12 @@ const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours — long enough tha
 const WHATSAPP_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 const WHATSAPP_MAX_ATTEMPTS = 5;
 const OUTBOUND_MESSAGE_TIMEOUT_MS = 10_000;
+const DUMMY_PASSWORD_HASH: HashedPassword = {
+  algorithm: "pbkdf2-sha256-100k",
+  iterations: 100_000,
+  salt: "0".repeat(64),
+  hash: "0".repeat(64),
+};
 
 function isValidEmail(email: string): boolean {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -270,7 +276,7 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
       return c.json({ error_code: "unsupported_provider", message: `This product uses ${resolved.authConfig?.provider ?? "an external"} sign-in, not email/password` }, 400);
     }
 
-    const body = await c.req.json<{ email: string; password: string }>();
+    const body = await c.req.json<{ email?: string; password?: string }>().catch(() => ({} as { email?: string; password?: string }));
     if (typeof body.email !== "string" || typeof body.password !== "string" || new TextEncoder().encode(body.password).byteLength > 4096) {
       return c.json({ error_code: "bad_request", message: "email and password are required" }, 400);
     }
@@ -282,10 +288,20 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     ).bind(productId, email).first<{ end_user_id: string; password_hash: string | null; suspended_at: string | null }>();
     // Constant-shape response whether the email doesn't exist or the password is wrong — never
     // reveal which one it was.
-    if (!row || !row.password_hash) return c.json({ error_code: "invalid_credentials", message: "Incorrect email or password" }, 401);
-    const ok = await verifyPassword(body.password, JSON.parse(row.password_hash) as HashedPassword);
-    if (!ok) return c.json({ error_code: "invalid_credentials", message: "Incorrect email or password" }, 401);
-    if (row.suspended_at) return c.json({ error_code: "suspended", message: "This account has been suspended" }, 403);
+    let storedPassword = DUMMY_PASSWORD_HASH;
+    if (row?.password_hash) {
+      try {
+        const parsed = JSON.parse(row.password_hash) as HashedPassword;
+        if (parsed?.algorithm === "pbkdf2-sha256-100k" && parsed.iterations === 100_000 &&
+            /^[0-9a-f]{64}$/i.test(parsed.salt) && /^[0-9a-f]{64}$/i.test(parsed.hash)) storedPassword = parsed;
+      } catch { /* use the same-cost dummy verification for corrupt records */ }
+    }
+    // Do one PBKDF2 verification for missing, malformed, suspended, and normal accounts so the
+    // public login endpoint does not reveal roster membership through a cheap timing branch.
+    const ok = await verifyPassword(body.password, storedPassword);
+    if (!row || !row.password_hash || !ok || row.suspended_at) {
+      return c.json({ error_code: "invalid_credentials", message: "Incorrect email or password" }, 401);
+    }
 
     await env.PLATFORM_DB.prepare(
       "UPDATE product_end_users SET last_seen_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
@@ -317,12 +333,6 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     if (!phone) return c.json({ error_code: "bad_request", message: "Enter a valid international phone number, including + and country code" }, 400);
     const generic = { ok: true, message: "If WhatsApp delivery is available, a sign-in code and link are on the way." };
 
-    const recent = await env.PLATFORM_DB.prepare(
-      `SELECT COUNT(*) AS count FROM whatsapp_auth_challenges
-       WHERE product_space_id = ? AND phone_e164 = ? AND created_at > datetime('now', '-10 minutes')`
-    ).bind(productId, phone).first<{ count: number }>();
-    if ((recent?.count ?? 0) >= 3) return c.json(generic);
-
     const existing = await env.PLATFORM_DB.prepare(
       `SELECT end_user_id, suspended_at FROM product_end_users
        WHERE product_space_id = ? AND phone_e164 = ? AND deleted_at IS NULL`
@@ -343,11 +353,16 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
       : null;
     const text = `Your ${resolved.product.product_slug ?? "Naelao"} sign-in code is ${otp}. It expires in 10 minutes.${magicUrl ? `\n\nSign in: ${magicUrl}` : ""}`;
 
-    await env.PLATFORM_DB.prepare(
+    const challengeInsert = await env.PLATFORM_DB.prepare(
       `INSERT INTO whatsapp_auth_challenges
        (id, product_space_id, end_user_id, phone_e164, otp_hash, magic_hash, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(challengeId, productId, endUserId, phone, otpHash, magicHash, expiresAt).run();
+       SELECT ?, ?, ?, ?, ?, ?, ?
+       WHERE (SELECT COUNT(*) FROM whatsapp_auth_challenges
+              WHERE product_space_id = ? AND phone_e164 = ? AND created_at > datetime('now', '-10 minutes')) < 3`
+    ).bind(challengeId, productId, endUserId, phone, otpHash, magicHash, expiresAt, productId, phone).run();
+    // Keep the request cap in the same atomic SQLite statement as the insert. A prior separate
+    // COUNT then INSERT allowed many simultaneous requests to all observe the same count < 3.
+    if ((challengeInsert.meta.changes ?? 0) !== 1) return c.json(generic);
     try {
       if (!(await sendWhatsApp(env, productId, phone, text))) {
         await env.PLATFORM_DB.prepare("DELETE FROM whatsapp_auth_challenges WHERE id = ?").bind(challengeId).run();
