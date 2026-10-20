@@ -9,34 +9,46 @@ import { mintInternalToken } from "@naelao/http";
 
 const SECRET = "test-platform-secret";
 
-function makeSpacesWorkerStub(businessRoleOk: boolean): Fetcher {
+function makeSpacesWorkerStub(businessRoleOk: boolean, projectId?: string): Fetcher {
   return {
     fetch: async (input: RequestInfo) => {
       const req = input as Request;
       const url = new URL(typeof input === "string" ? input : req.url);
-      if (url.pathname === "/internal/business-role") {
-        return businessRoleOk ? Response.json({ role: "member" }) : Response.json({ error_code: "forbidden" }, { status: 404 });
+      if (url.pathname.endsWith("/compact-scope")) {
+        // Session ownership and product membership are both resolved by the canonical
+        // SpaceDO-backed scope endpoint. Inaccessible sessions are intentionally concealed.
+        return businessRoleOk ? Response.json({ project_id: projectId ?? null, private_scratchpad: false }) : Response.json({ error_code: "not_found" }, { status: 404 });
       }
+      if (url.pathname.includes("/projects/")) return Response.json({ id: projectId });
       return new Response("not found", { status: 404 });
     },
   } as unknown as Fetcher;
 }
 
 function makeR2Stub() {
-  const store = new Map<string, { body: ArrayBuffer; contentType: string; size: number; uploaded: Date }>();
+  const store = new Map<string, { body: Uint8Array; contentType: string; size: number; uploaded: Date; customMetadata: Record<string, string>; etag: string }>();
   const bucket: Partial<R2Bucket> = {
     async put(key: unknown, value: unknown, opts?: unknown) {
       const k = key as string;
-      const buf = value as ArrayBuffer;
-      const contentType = (opts as { httpMetadata?: { contentType?: string } } | undefined)?.httpMetadata?.contentType ?? "application/octet-stream";
-      store.set(k, { body: buf, contentType, size: buf.byteLength, uploaded: new Date() });
-      return {} as R2Object;
+      const buf = value instanceof Uint8Array ? value.slice() : new Uint8Array(value as ArrayBuffer);
+      const options = opts as { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> } | undefined;
+      const etag = String((store.get(k)?.etag ? Number(store.get(k)!.etag) + 1 : 1));
+      store.set(k, { body: buf, contentType: options?.httpMetadata?.contentType ?? "application/octet-stream", size: buf.byteLength, uploaded: new Date(), customMetadata: options?.customMetadata ?? {}, etag });
+      return { etag } as R2Object;
+    },
+    async head(key: unknown) {
+      const item = store.get(key as string);
+      return item ? { size: item.size, etag: item.etag, customMetadata: item.customMetadata } as unknown as R2Object : null;
+    },
+    async get(key: unknown) {
+      const item = store.get(key as string);
+      return item ? { size: item.size, arrayBuffer: async () => item.body.slice().buffer } as unknown as R2ObjectBody : null;
     },
     async list(opts: unknown) {
       const prefix = (opts as { prefix?: string } | undefined)?.prefix ?? "";
       const objects = [...store.entries()]
         .filter(([k]) => k.startsWith(prefix))
-        .map(([key, v]) => ({ key, size: v.size, uploaded: v.uploaded, httpMetadata: { contentType: v.contentType } }));
+        .map(([key, v]) => ({ key, size: v.size, uploaded: v.uploaded, customMetadata: v.customMetadata, httpMetadata: { contentType: v.contentType } }));
       return { objects, truncated: false } as unknown as R2Objects;
     },
     async delete(key: unknown) {
@@ -46,12 +58,12 @@ function makeR2Stub() {
   return { bucket: bucket as R2Bucket, store };
 }
 
-function makeEnv(opts: { spacesOk: boolean; withR2?: boolean }) {
+function makeEnv(opts: { spacesOk: boolean; withR2?: boolean; projectId?: string }) {
   const { bucket, store } = makeR2Stub();
   const env: AgentsEnv & { __store: typeof store } = {
     ANTHROPIC_API_KEY: "test-anthropic-key",
     PLATFORM_SECRET: SECRET,
-    SPACES_WORKER: makeSpacesWorkerStub(opts.spacesOk),
+    SPACES_WORKER: makeSpacesWorkerStub(opts.spacesOk, opts.projectId),
     PLATFORM_DB: {} as unknown as D1Database,
     ...(opts.withR2 !== false ? { SCRIPTS_R2: bucket } : {}),
     ANALYTICS: { writeDataPoint() {} },
@@ -78,11 +90,11 @@ function makeUploadRequest(path: string, files: Array<{ name: string; content: s
 }
 
 describe("chat uploads — POST /spaces/:spaceId/sessions/:sessionId/uploads", () => {
-  it("denies a product_end_user who isn't a member of the business", async () => {
+  it("conceals an inaccessible session from a product_end_user", async () => {
     const env = makeEnv({ spacesOk: false });
     const headers = await authedHeaders("tenant-1");
     const res = await app.fetch(makeUploadRequest("/spaces/space1/sessions/sess1/uploads", [{ name: "a.txt", content: "hi" }], headers), env);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it("stores an uploaded file under the session's own uploads prefix", async () => {
@@ -97,7 +109,7 @@ describe("chat uploads — POST /spaces/:spaceId/sessions/:sessionId/uploads", (
   });
 
   it("scopes to the project workspace when project_id is given, matching workspacePrefix()", async () => {
-    const env = makeEnv({ spacesOk: true });
+    const env = makeEnv({ spacesOk: true, projectId: "proj1" });
     const headers = await authedHeaders("tenant-1");
     const form = new FormData();
     form.append("files", new File(["x"], "notes.txt"));
@@ -166,6 +178,6 @@ describe("chat uploads — GET/DELETE", () => {
     const delReq = new Request("https://agents.naelao.com/spaces/space1/sessions/sess1/uploads/gone.txt", { method: "DELETE", headers });
     const res = await app.fetch(delReq, env);
     expect(res.status).toBe(200);
-    expect(env.__store.has("spaces/space1/workspace/uploads/sess1/gone.txt")).toBe(false);
+    expect(env.__store.get("spaces/space1/workspace/uploads/sess1/gone.txt")?.customMetadata.deleted).toBe("true");
   });
 });

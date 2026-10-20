@@ -21,6 +21,7 @@ function makeEnv(opts: { ownerTenantId: string; vectorizeQuery: ReturnType<typeo
           return stmt;
         },
         async first() {
+          if (/SELECT config_json FROM spaces/.test(sql)) return { config_json: "{}" };
           if (/FROM spaces WHERE/.test(sql)) {
             const args = (stmt as unknown as { _args: unknown[] })._args;
             const [, tenantId] = args;
@@ -54,7 +55,7 @@ describe("knowledge worker — GET /spaces/:spaceId/kb/search tenant isolation",
     const token = await mintInternalToken(SECRET, "attacker-tenant");
     const res = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/victim-space/kb/search?q=secret", {
-        headers: { "x-naelao-tenant-id": "attacker-tenant", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
+        headers: { "x-naelao-tenant-id": "attacker-tenant", "x-naelao-internal-token": token, "x-naelao-role": "owner", "x-naelao-user-id": "builder" },
       }),
       makeEnv({ ownerTenantId: "victim-tenant", vectorizeQuery }) as never,
       execCtx
@@ -68,12 +69,12 @@ describe("knowledge worker — GET /spaces/:spaceId/kb/search tenant isolation",
     const token = await mintInternalToken(SECRET, "owner-tenant");
     const res = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/my-space/kb/search?q=hello", {
-        headers: { "x-naelao-tenant-id": "owner-tenant", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
+        headers: { "x-naelao-tenant-id": "owner-tenant", "x-naelao-internal-token": token, "x-naelao-role": "owner", "x-naelao-user-id": "builder" },
       }),
       makeEnv({ ownerTenantId: "owner-tenant", vectorizeQuery }) as never,
       execCtx
     );
-    expect(res.status).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(200);
     expect(vectorizeQuery).toHaveBeenCalledTimes(1);
     expect(vectorizeQuery.mock.calls[0]?.[1]).toMatchObject({ filter: { space_id: { $eq: "my-space" } } });
   });

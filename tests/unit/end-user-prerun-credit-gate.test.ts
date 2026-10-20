@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { NaelaoAgentDO } from "../../workers/agents/src/do/NaelaoAgentDO.js";
 import { writeAgentConfig } from "../../workers/agents/src/script-engine/agent-config.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
+import { makeR2Bucket } from "./helpers/r2-bucket.js";
 
 // Metering enforcement pass: a non-project (Space Assistant / Home chat) run by a signed-in
 // product_end_user used to debit their ProductUserDO balance ONLY after the reasoning loop
@@ -11,30 +12,7 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // is already at or below zero, and lets it through otherwise.
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  const bucket = {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
-    },
-    async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; }, get body() { return text; } } as unknown as R2ObjectBody;
-    },
-    async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
-    },
-    async delete(keys: string | string[]) {
-      for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k);
-    },
-    async list(opts?: { prefix?: string }) {
-      const prefix = opts?.prefix ?? "";
-      const objects = [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k, size: store.get(k)!.length, uploaded: new Date(), etag: "x" }));
-      return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
-    },
-  };
-  return bucket as unknown as R2Bucket;
+  return makeR2Bucket();
 }
 
 function makeSpacesWorker(balanceCredits: number | "unreachable") {
@@ -44,8 +22,10 @@ function makeSpacesWorker(balanceCredits: number | "unreachable") {
       const req = input as Request;
       const url = new URL(typeof input === "string" ? input : req.url);
       calls.push(url.pathname);
+      if (url.pathname.endsWith("/model-policy")) return Response.json({ policy: null });
       if (url.pathname === "/internal/pricing-catalog") return Response.json({ external_revenue_cut: { enabled: false } });
       if (url.pathname === "/internal/business-subscription-status") return Response.json({ gated: false, active: true, reason: "" });
+      if (/\/credits\/refresh-monthly$/.test(url.pathname)) return Response.json({ ok: true, refreshed: false });
       if (/\/credits\/balance$/.test(url.pathname)) {
         if (balanceCredits === "unreachable") throw new Error("network down");
         return Response.json({ balance_credits: balanceCredits });
@@ -58,7 +38,7 @@ function makeSpacesWorker(balanceCredits: number | "unreachable") {
 
 async function makeDO(balanceCredits: number | "unreachable") {
   const r2 = makeR2();
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   const { fetcher: spacesWorker, calls } = makeSpacesWorker(balanceCredits);
   const env = {
     PLATFORM_SECRET: "test",
@@ -96,7 +76,7 @@ describe("NaelaoAgentDO /script/run — pre-run credit gate (product_end_user, n
   it("rejects with 402 when the end user's balance is zero, before any reasoning runs", async () => {
     const { spaceDO, calls } = await makeDO(0);
     const res = await scriptRunAsEndUser(spaceDO, "alice");
-    expect(res.status).toBe(402);
+    expect(res.status, await res.clone().text()).toBe(402);
     const body = await res.json() as { error_code?: string; balance_credits?: number };
     expect(body.error_code).toBe("insufficient_credits");
     expect(body.balance_credits).toBe(0);

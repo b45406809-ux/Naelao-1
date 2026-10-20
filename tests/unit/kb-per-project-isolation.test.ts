@@ -15,7 +15,7 @@ const SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 const SPACES_TABLE_SQL = `
-  CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active');
+  CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', config_json TEXT NOT NULL DEFAULT '{}');
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
 `;
 const KB_DOCUMENTS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0006_kb_documents.sql"), "utf8");
@@ -84,7 +84,7 @@ function makeEnv() {
 
 async function req(path: string, opts: { method?: string; body?: unknown } = {}): Promise<Request> {
   const token = await mintInternalToken(SECRET, "tenant-1");
-  const headers: Record<string, string> = { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token, "x-naelao-role": "builder", "x-naelao-user-id": "builder" };
+  const headers: Record<string, string> = { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token, "x-naelao-role": "owner", "x-naelao-user-id": "builder" };
   if (opts.body !== undefined) headers["content-type"] = "application/json";
   return new Request(`https://knowledge.naelao.com${path}`, {
     method: opts.method ?? "GET",

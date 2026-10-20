@@ -20,6 +20,7 @@ function makeEnv(opts: {
   cacheStore?: Map<string, string>;
   deleteRan?: { called: boolean };
   insertRan?: { called: boolean };
+  spaceId?: string;
 }) {
   const cacheStore = opts.cacheStore ?? new Map<string, string>();
   const db = {
@@ -30,6 +31,7 @@ function makeEnv(opts: {
           return stmt;
         },
         async first() {
+          if (/SELECT config_json FROM spaces/.test(sql)) return { config_json: "{}" };
           if (/FROM spaces WHERE/.test(sql)) {
             const args = (stmt as unknown as { _args: unknown[] })._args;
             const [, tenantId] = args;
@@ -45,7 +47,8 @@ function makeEnv(opts: {
             return { results: [{
               id: "doc-1_chunk_0", document_id: "doc-1", content: "hello there",
               r2_key: "kb/chunk.txt", byte_start: 0, byte_end: 11,
-              line_start: 1, line_end: 1, title: "Hello",
+              line_start: 1, line_end: 1, title: "Hello", tenant_id: opts.ownerTenantId,
+              space_id: opts.spaceId ?? "shared-space-id", project_id: "_space", required_role_rank: 0,
             }] };
           }
           return { results: [] };
@@ -157,7 +160,7 @@ describe("knowledge worker — kb/* ownership gate covers every verb", () => {
     // Tenant A searches its own space — cache miss, populates the cache.
     const resA = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/shared-space-id/kb/search?q=hello", {
-        headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": tokenA, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
+        headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": tokenA, "x-naelao-role": "owner", "x-naelao-user-id": "builder" },
       }),
       envA as never,
       execCtx
@@ -171,7 +174,7 @@ describe("knowledge worker — kb/* ownership gate covers every verb", () => {
     const tokenB = await mintInternalToken(SECRET, "tenant-b");
     const resB = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/shared-space-id/kb/search?q=hello", {
-        headers: { "x-naelao-tenant-id": "tenant-b", "x-naelao-internal-token": tokenB, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
+        headers: { "x-naelao-tenant-id": "tenant-b", "x-naelao-internal-token": tokenB, "x-naelao-role": "owner", "x-naelao-user-id": "builder" },
       }),
       makeEnv({ ownerTenantId: "tenant-a", cacheStore }) as never,
       execCtx
@@ -184,9 +187,9 @@ describe("knowledge worker — kb/* ownership gate covers every verb", () => {
     const tokenBOwn = await mintInternalToken(SECRET, "tenant-b");
     const resBOwn = await knowledgeWorker.fetch(
       new Request("https://knowledge.naelao.com/spaces/tenant-b-space/kb/search?q=hello", {
-        headers: { "x-naelao-tenant-id": "tenant-b", "x-naelao-internal-token": tokenBOwn, "x-naelao-role": "builder", "x-naelao-user-id": "builder" },
+        headers: { "x-naelao-tenant-id": "tenant-b", "x-naelao-internal-token": tokenBOwn, "x-naelao-role": "owner", "x-naelao-user-id": "builder" },
       }),
-      makeEnv({ ownerTenantId: "tenant-b", cacheStore }) as never,
+      makeEnv({ ownerTenantId: "tenant-b", cacheStore, spaceId: "tenant-b-space" }) as never,
       execCtx
     );
     expect(resBOwn.status).toBe(200);

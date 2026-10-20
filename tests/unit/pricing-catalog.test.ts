@@ -36,9 +36,10 @@ const BUSINESS_MEMBERSHIPS_SQL = `
   );
 `;
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
+const SPACE_MEMBERS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0021_space_members.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL, BUILDER_DASHBOARD_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL, SPACE_MEMBERS_MIGRATION, BUILDER_DASHBOARD_MIGRATION]);
   return {
     PLATFORM_SECRET,
     ENVIRONMENT: "test",
@@ -80,6 +81,9 @@ async function seedProductWithPlans(env: ReturnType<typeof makeEnv>) {
   await env.PLATFORM_DB.prepare(
     "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, config_json) VALUES ('prod-root', 'root-tenant', 'active', 'Product', 'launchpad', ?)"
   ).bind(JSON.stringify({ productConfig: { pricingConfig } })).run();
+  await env.PLATFORM_DB.prepare(
+    "INSERT INTO space_members (id, space_id, tenant_id, end_user_id, role) VALUES ('member-anyone', 'prod-root', 'root-tenant', 'anyone', 'member')"
+  ).run();
   await env.PLATFORM_DB.prepare(
     "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, parent_space_id) VALUES ('biz-alice', 'alice-tenant', 'active', 'Alice Biz', 'launchpad', 'prod-root')"
   ).run();

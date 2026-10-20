@@ -11,18 +11,10 @@ import { describe, it, expect } from "vitest";
 import { runScriptLoop, type Reasoner, type ReasonDecision } from "../../workers/agents/src/script-engine/loop.js";
 import { ScriptToolSurface } from "../../workers/agents/src/script-engine/tool-surface.js";
 import type { ScriptEngineEnv, ScriptRunResult, ActionLedger } from "../../workers/agents/src/script-engine/types.js";
+import { makeR2Bucket } from "./helpers/r2-bucket.js";
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  return {
-    async put(key: string, value: unknown) { store.set(key, typeof value === "string" ? value : String(value)); return {} as R2Object; },
-    async get(key: string) {
-      const v = store.get(key);
-      return v === undefined ? null : ({ text: async () => v, uploaded: new Date() } as unknown as R2ObjectBody);
-    },
-    async delete(key: string) { store.delete(key); },
-    async list() { return { objects: [], truncated: false } as unknown as R2Objects; },
-  } as unknown as R2Bucket;
+  return makeR2Bucket();
 }
 
 /** Matches the DO's semantics: first write wins (INSERT OR IGNORE). */
@@ -54,7 +46,7 @@ const OPTS = { goal: "set up the project", startupObserve: "observe_filesystem",
 /** Does the work, then never composes an answer — the shape of the reported failure. */
 const stubborn: Reasoner = {
   async decide(): Promise<ReasonDecision> {
-    return { action: "run", name: "write_file", params: { path: "project.json", content: "{}" } };
+    return { action: "run", name: "write_file", params: { path: "project.json", content: "{}", expectedHash: null } };
   },
 };
 
@@ -78,6 +70,9 @@ describe("a failed run is resumable", () => {
     const { env, puts } = makeEnv();
     env.actionLedger = makeLedger();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const invoked: string[] = [];
+    const runTool = tools.run.bind(tools);
+    tools.run = async (name, params) => { invoked.push(name); return runTool(name, params); };
     const originalRunId = "run-original";
 
     const failed = await runScriptLoop(env, tools, stubborn, ["r2-workspace"], {
@@ -89,7 +84,7 @@ describe("a failed run is resumable", () => {
     const answering: Reasoner = {
       async decide(input): Promise<ReasonDecision> {
         if (input.priorSteps?.length) return { action: "answer", text: "Set up — it was already created." };
-        return { action: "run", name: "write_file", params: { path: "project.json", content: "{}" } };
+        return { action: "run", name: "write_file", params: { path: "project.json", content: "{}", expectedHash: null } };
       },
     };
     const continued = await runScriptLoop(env, tools, answering, ["r2-workspace"], {
@@ -109,11 +104,14 @@ describe("a failed run is resumable", () => {
     const { env, puts } = makeEnv();
     env.actionLedger = makeLedger();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const invoked: string[] = [];
+    const runTool = tools.run.bind(tools);
+    tools.run = async (name, params) => { invoked.push(name); return runTool(name, params); };
 
     await runScriptLoop(env, tools, stubborn, ["r2-workspace"], { ...OPTS, maxSteps: 3, ledgerKey: "run-a" });
     await runScriptLoop(env, tools, stubborn, ["r2-workspace"], { ...OPTS, maxSteps: 3, ledgerKey: "run-b" });
 
-    expect(puts()).toBe(2);
+    expect(invoked.filter((name) => name === "write_file")).toHaveLength(2);
   });
 
   it("carries the completed steps into the continuation so the model can answer from them", async () => {
@@ -150,7 +148,7 @@ describe("a failed run is resumable", () => {
       async decide(): Promise<ReasonDecision> {
         n++;
         return n === 1
-          ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } }
+          ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } }
           : { action: "answer", text: "done" };
       },
     };

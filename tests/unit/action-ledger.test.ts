@@ -14,26 +14,10 @@ import { runScriptLoop } from "../../workers/agents/src/script-engine/loop.js";
 import { ScriptToolSurface } from "../../workers/agents/src/script-engine/tool-surface.js";
 import type { Reasoner, ReasonDecision } from "../../workers/agents/src/script-engine/loop.js";
 import type { ActionLedger, ScriptEngineEnv, ScriptRunResult } from "../../workers/agents/src/script-engine/types.js";
+import { makeR2Bucket } from "./helpers/r2-bucket.js";
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  return {
-    async put(key: string, value: unknown) { store.set(key, String(value)); return {} as R2Object; },
-    async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; } } as unknown as R2ObjectBody;
-    },
-    async head(key: string) { return store.has(key) ? ({} as R2Object) : null; },
-    async delete(keys: string | string[]) { for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k); },
-    async list(opts?: { prefix?: string }) {
-      const prefix = opts?.prefix ?? "";
-      return {
-        objects: [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k, size: 1, uploaded: new Date(), etag: "x" })),
-        truncated: false,
-      } as unknown as R2Objects;
-    },
-  } as unknown as R2Bucket;
+  return makeR2Bucket();
 }
 
 /** An in-memory ledger with the same semantics as the DO's: first write wins, never overwritten. */
@@ -73,7 +57,7 @@ function writeThenAnswer(): Reasoner {
   return {
     async decide(): Promise<ReasonDecision> {
       return step++ === 0
-        ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } }
+        ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } }
         : { action: "answer", text: "done" };
     },
   };

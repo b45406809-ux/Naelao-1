@@ -15,6 +15,7 @@ import { describe, it, expect } from "vitest";
 import { runScriptLoop, type Reasoner, type ReasonDecision } from "../../workers/agents/src/script-engine/loop.js";
 import { ScriptToolSurface } from "../../workers/agents/src/script-engine/tool-surface.js";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
+import { makeR2Bucket } from "./helpers/r2-bucket.js";
 import {
   assessBudget,
   resolveLoopBudget,
@@ -31,20 +32,7 @@ import {
 } from "../../workers/agents/src/script-engine/step-context.js";
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  return {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
-    },
-    async get(key: string) {
-      const v = store.get(key);
-      if (v === undefined) return null;
-      return { text: async () => v, uploaded: new Date() } as unknown as R2ObjectBody;
-    },
-    async delete(key: string) { store.delete(key); },
-    async list() { return { objects: [], truncated: false } as unknown as R2Objects; },
-  } as unknown as R2Bucket;
+  return makeR2Bucket();
 }
 
 function makeEnv(): ScriptEngineEnv {
@@ -64,7 +52,7 @@ function multiStepReasoner(toolCalls: number) {
       if (input.finalStep) return { action: "answer", text: "stopped early" };
       if (i < toolCalls) {
         const n = i++;
-        return { action: "run", name: "write_file", params: { path: `f${n}.md`, content: `body ${n}` } };
+        return { action: "run", name: "write_file", params: { path: `f${n}.md`, content: `body ${n}`, expectedHash: null } };
       }
       return { action: "answer", text: `wrote ${toolCalls} files` };
     },
@@ -163,7 +151,7 @@ describe("the loop runs as many steps as the task needs", () => {
           const n = i++;
           const file = `f${Math.floor(n / 2)}.md`;
           return n % 2 === 0
-            ? { action: "run", name: "write_file", params: { path: file, content: "x".repeat(3000) } }
+            ? { action: "run", name: "write_file", params: { path: file, content: "x".repeat(3000), expectedHash: null } }
             : { action: "run", name: "read_file", params: { path: file } };
         }
         return { action: "answer", text: "wrote and read 10 files" };
@@ -202,7 +190,7 @@ describe("the loop runs as many steps as the task needs", () => {
         if (input.finalStep) return { action: "answer", text: "done" };
         if (i < 12) {
           const n = i++;
-          return { action: "run", name: "write_file", params: { path: `f${n}.md`, content: "x".repeat(4000) } };
+          return { action: "run", name: "write_file", params: { path: `f${n}.md`, content: "x".repeat(4000), expectedHash: null } };
         }
         // Never answers — forces the exhaustion path, which is what attaches steps_completed.
         return { action: "run", name: "nope", params: { n: i++ } };
@@ -258,7 +246,7 @@ describe("what actually stops the loop", () => {
         if (input.finalStep) return { action: "answer", text: "wrapped up" };
         const n = i++;
         if (n >= 12) return { action: "answer", text: "got there in the end" };
-        if (n % 3 === 2) return { action: "run", name: "write_file", params: { path: `ok${n}.md`, content: "y" } };
+        if (n % 3 === 2) return { action: "run", name: "write_file", params: { path: `ok${n}.md`, content: "y", expectedHash: null } };
         return { action: "run", name: `missing-${n}`, params: {} };
       },
     };
@@ -282,7 +270,7 @@ describe("what actually stops the loop", () => {
           sawFinal = true;
           return { action: "answer", text: "here is what I managed to do" };
         }
-        return { action: "run", name: "write_file", params: { path: "a.md", content: "1" } };
+        return { action: "run", name: "write_file", params: { path: "a.md", content: "1", expectedHash: null } };
       },
     };
 
@@ -307,7 +295,7 @@ describe("what actually stops the loop", () => {
       async decide() {
         const n = i++;
         return n === 0
-          ? { action: "run", name: "write_file", params: { path: "a.md", content: "1" } }
+          ? { action: "run", name: "write_file", params: { path: "a.md", content: "1", expectedHash: null } }
           : { action: "run", name: `missing-${n}`, params: {} };
       },
     };
@@ -576,7 +564,7 @@ describe("step compaction", () => {
   });
 
   it("estimates tokens the same way the rest of the codebase does", () => {
-    expect(estimateTokens("abcd")).toBe(1);
+    expect(estimateTokens("abcd")).toBe(2);
     expect(estimateTokens("")).toBe(0);
   });
 });

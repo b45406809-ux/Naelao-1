@@ -74,7 +74,7 @@ function makeHitlStub(initialApprovals: ApprovalRow[] = []) {
 }
 
 function makeDO(env: Record<string, unknown>): NaelaoAgentDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: { sql: createDOSqlStorage() }, waitUntil(promise: Promise<unknown>) { void promise.catch(() => undefined); } };
   return new NaelaoAgentDO(ctx as never, { PLATFORM_SECRET: "test", ...env } as never);
 }
 

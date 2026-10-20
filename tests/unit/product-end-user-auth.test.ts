@@ -16,6 +16,7 @@ import { mintInternalToken } from "@naelao/http";
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
+const USERS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0001_users.sql"), "utf8");
 const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
@@ -30,9 +31,10 @@ const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/mi
 const PASSWORD_RESET_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0054_password_reset_tokens.sql"), "utf8");
 const EMAIL_VERIFICATION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0055_email_verification.sql"), "utf8");
 const DELETED_AT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0058_product_end_users_deleted_at.sql"), "utf8");
+const PRODUCT_END_USER_LANGUAGE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0096_product_end_user_language.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION]);
+  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION]);
   const notifyCalls: Array<{ to: string; subject: string; body: string }> = [];
   return {
     PLATFORM_SECRET: "test-platform-secret",

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { decodeSpaceArchive, encodeSpaceArchive, readSpaceArchiveObject, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, type SpaceArchivePayload } from "./space-backup.js";
 
 const payload: SpaceArchivePayload = {
