@@ -953,3 +953,5 @@ Stress testing the new auth redaction uncovered a resource issue in its original
 Validation: Credentials suite passed all 8 tests, including a repeated-prefix adversarial case and 2 MiB short-secret repetition; Credentials TypeScript and Wrangler dry-run passed; `git diff --check` passed. These are deterministic matcher and handler-adjacent tests; no live provider echo behavior was exercised.
 
 Refreshed the tracked tree after code commit `45d54a35`: 1,966 tracked files and 1,760 source/config files. No source files were added or removed in this follow-up; checklist rows are unchanged.
+
+Follow-up during auth interoperability review: Basic-auth construction now Base64-encodes UTF-8 bytes in bounded chunks instead of relying on `btoa`'s Latin-1 input, so Unicode provider secrets do not fail or truncate. Credential tests cover a non-ASCII vaulted password; the full Credentials suite (8 tests), typecheck, and Wrangler dry-run passed again.

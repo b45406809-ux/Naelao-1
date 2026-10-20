@@ -506,7 +506,10 @@ function validateCredentialName(name: string): void {
 export function buildOutboundAuthorization(secret: string, auth?: { type: "basic"; username: string }): string {
   if (auth?.type === "basic") {
     if (!/^[\x20-\x7e]{1,128}$/.test(auth.username) || auth.username.includes(":")) throw new Error("egress_auth_invalid");
-    return `Basic ${btoa(`${auth.username}:${secret}`)}`;
+    const bytes = new TextEncoder().encode(`${auth.username}:${secret}`);
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    return `Basic ${btoa(binary)}`;
   }
   return `Bearer ${secret}`;
 }

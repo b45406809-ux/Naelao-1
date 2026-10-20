@@ -6,6 +6,13 @@ describe("credential outbound authorization", () => {
     expect(buildOutboundAuthorization("secret-token")).toBe(`Bearer secret-token`);
     expect(buildOutboundAuthorization("secret-token", { type: "basic", username: "AC123" }))
       .toBe(`Basic ${btoa("AC123:secret-token")}`);
+    expect(buildOutboundAuthorization("secret", { type: "basic", username: "A1" }))
+      .toBe(`Basic ${btoa("A1:secret")}`);
+    expect(buildOutboundAuthorization("secret", { type: "basic", username: "AC123" }))
+      .toBe(`Basic ${btoa("AC123:secret")}`);
+    const unicodeBytes = new TextEncoder().encode("AC123:🔒");
+    const unicodeBase64 = btoa(String.fromCharCode(...unicodeBytes));
+    expect(buildOutboundAuthorization("🔒", { type: "basic", username: "AC123" })).toBe(`Basic ${unicodeBase64}`);
   });
 
   it("rejects invalid Basic usernames", () => {
