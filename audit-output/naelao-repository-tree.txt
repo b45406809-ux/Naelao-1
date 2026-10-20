@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1951
-Files with source or executable-configuration extensions: 1745
-Inventory revision: 2026-10-20 audit refresh at 24eb5d45
+Files: 1952
+Files with source or executable-configuration extensions: 1746
+Inventory revision: 2026-10-20 audit refresh at fb65809b
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1227,6 +1227,7 @@ tests/
     durable-run-stream.test.ts
     end-user-credit-debit.test.ts
     end-user-prerun-credit-gate.test.ts
+    entitlements-expiry.test.ts
     entitlements-schema.test.ts
     eval-dataset-validity.test.ts
     eval-trace-checks.test.ts

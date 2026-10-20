@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1951` tracked files; `1745` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt` at code commit `24eb5d45`.
+Inventory basis: `1952` tracked files; `1746` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt` at code commit `fb65809b`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1283,7 +1283,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/stubs/d1-sqlite.ts`
 
 ### `tests/unit`
-- [x] `tests/unit/entitlements-expiry.test.ts`
 
 - [ ] `tests/unit/action-ledger.test.ts`
 - [ ] `tests/unit/admin-worker-schema.test.ts`
@@ -1390,6 +1389,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/durable-run-stream.test.ts`
 - [ ] `tests/unit/end-user-credit-debit.test.ts`
 - [ ] `tests/unit/end-user-prerun-credit-gate.test.ts`
+- [x] `tests/unit/entitlements-expiry.test.ts`
 - [ ] `tests/unit/entitlements-schema.test.ts`
 - [ ] `tests/unit/eval-dataset-validity.test.ts`
 - [ ] `tests/unit/eval-trace-checks.test.ts`
