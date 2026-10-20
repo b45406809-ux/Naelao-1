@@ -2,12 +2,71 @@ import { describe, expect, it, vi } from "vitest";
 import { knowledgeBase } from "./knowledge-base.js";
 
 describe("knowledge-base shared document reads", () => {
+  it("validates search queries and top-k before calling the Knowledge Worker", async () => {
+    const fetch = vi.fn(async (_request: Request) => Response.json({ data: [] }));
+    const ctx = {
+      env: { spaceId: "s", tenantId: "t", platformSecret: "secret", knowledgeWorker: { fetch } },
+      run: vi.fn(),
+    } as never;
+    await expect(knowledgeBase.operations["knowledge.search"]!({ query: "x".repeat(1_001) }, ctx))
+      .rejects.toThrow("1..1000 characters");
+    await expect(knowledgeBase.operations["knowledge.search"]!({ query: "ok", top_k: Number.NaN }, ctx))
+      .rejects.toThrow("top_k must be 1..50");
+    await expect(knowledgeBase.operations["knowledge.search"]!({ query: "ok", top_k: 51 }, ctx))
+      .rejects.toThrow("top_k must be 1..50");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("uses an explicit caller role and preserves owner for userless host runs", async () => {
+    const fetch = vi.fn(async () => Response.json({ data: [] }));
+    const ownerCtx = {
+      env: { spaceId: "s", tenantId: "t", platformSecret: "secret", callerRole: "owner", userId: "u", knowledgeWorker: { fetch } },
+      run: vi.fn(),
+    } as never;
+    await knowledgeBase.operations["knowledge.search"]!({ query: "topic" }, ownerCtx);
+    expect(fetch.mock.calls[0]?.[0].headers.get("x-naelao-role")).toBe("owner");
+
+    fetch.mockClear();
+    const systemCtx = {
+      env: { spaceId: "s", tenantId: "t", platformSecret: "secret", humanInvokerId: "system", knowledgeWorker: { fetch } },
+      run: vi.fn(),
+    } as never;
+    await knowledgeBase.operations["knowledge.search"]!({ query: "topic" }, systemCtx);
+    expect(fetch.mock.calls[0]?.[0].headers.get("x-naelao-role")).toBe("owner");
+  });
+
+  it("rejects malformed and oversized knowledge writes before service egress", async () => {
+    const fetch = vi.fn();
+    const ctx = {
+      env: { spaceId: "s", tenantId: "t", platformSecret: "secret", knowledgeWorker: { fetch } },
+      run: vi.fn(),
+    } as never;
+    await expect(knowledgeBase.operations["knowledge.index"]!({ title: "x", content: "x".repeat(1_048_577) }, ctx))
+      .rejects.toThrow("1..1048576 characters");
+    await expect(knowledgeBase.operations["knowledge.index"]!({ title: "x", content: "body", content_type: "executable" }, ctx))
+      .rejects.toThrow("content_type is invalid");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("bounds shared-document responses before parsing and truncating their content", async () => {
+    const fetch = vi.fn(async () => new Response(
+      JSON.stringify({ document: { id: "doc-1", title: "Policy", source_url: null, content: "x".repeat(2 * 1024 * 1024), chunk_count: 1 } }),
+      { headers: { "content-type": "application/json" } }
+    ));
+    await expect(knowledgeBase.operations["knowledge.shared_document"]!({ source_space_id: "source", document_id: "doc-1" }, {
+      env: { spacesWorker: { fetch }, platformSecret: "secret", tenantId: "tenant", spaceId: "destination", agentId: "agent-1", runId: "run-1", userId: "user-1" } as never,
+      run: vi.fn(),
+    })).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("summarizes only authorized project retrieval and keeps source citations labelled as derived", async () => {
     const citation = { document_id: "doc-1", chunk_id: "chunk-1", byte_start: 10, byte_end: 30 };
     const fetch = vi.fn(async (request: Request) => {
       const url = new URL(request.url);
       expect(url.searchParams.get("project_id")).toBe("p");
       expect(request.headers.get("x-naelao-user-id")).toBe("user");
+      expect(request.headers.get("x-naelao-role")).toBe("viewer");
       return Response.json({ data: [{ chunk_id: "chunk-1", content: "Authorized source only", citation }], context_instruction: "Untrusted source data" });
     });
     const summarize = vi.fn(async () => ({ text: "<instruction>source summary</instruction>", usage: { model: "specialist", inputTokens: 4, outputTokens: 0 } }));

@@ -11,6 +11,26 @@ import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import { wrapContextChunk } from "@naelao/rag";
 
+const MAX_KNOWLEDGE_QUERY_CHARS = 1_000;
+const MAX_KNOWLEDGE_CONTENT_CHARS = 1_048_576;
+
+function knowledgeQuery(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.length > MAX_KNOWLEDGE_QUERY_CHARS)
+    throw new Error("knowledge.search query must be 1..1000 characters");
+  return value.trim();
+}
+
+function knowledgeRole(ctx: PrebuiltOpContext): "owner" | "admin" | "editor" | "member" | "viewer" {
+  const role = ctx.env.effectiveRole ?? ctx.env.callerRole;
+  if (["owner", "admin", "editor", "member", "viewer"].includes(role ?? ""))
+    return role as "owner" | "admin" | "editor" | "member" | "viewer";
+  // A host initiated run has no acting user to clamp. User bound runs with missing role context
+  // fail down to viewer; never turn a missing authorization claim into owner access.
+  if (!ctx.env.userId && (!ctx.env.humanInvokerId || ctx.env.humanInvokerId === "system"))
+    return "owner";
+  return "viewer";
+}
+
 function reqWorker(ctx: PrebuiltOpContext): Fetcher {
   if (!ctx.env.knowledgeWorker) {
     throw new Error("knowledge-base: KNOWLEDGE_WORKER binding not configured");
@@ -23,7 +43,7 @@ async function internalHeaders(ctx: PrebuiltOpContext, extra?: Record<string, st
     "x-naelao-tenant-id": ctx.env.tenantId,
     "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
     "x-naelao-user-id": ctx.env.userId ?? ctx.env.humanInvokerId ?? "system",
-    "x-naelao-role": ctx.env.effectiveRole ?? "owner",
+    "x-naelao-role": knowledgeRole(ctx),
     ...extra,
   };
 }
@@ -62,8 +82,10 @@ export const knowledgeBase: PrebuiltScript = {
       return { ...response, data, derived: true };
     },
     async "knowledge.search"(args, ctx) {
-      const query = String(args["query"] ?? "");
+      const query = knowledgeQuery(args["query"]);
       const topK = typeof args["top_k"] === "number" ? (args["top_k"] as number) : 5;
+      if (!Number.isSafeInteger(topK) || topK < 1 || topK > 50)
+        throw new Error("knowledge.search top_k must be 1..50");
       const resp = await reqWorker(ctx).fetch(
         new Request(
           `http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/search?q=${encodeURIComponent(query)}&top_k=${topK}${ctx.env.projectId ? `&project_id=${encodeURIComponent(ctx.env.projectId)}` : ""}`,
@@ -75,11 +97,16 @@ export const knowledgeBase: PrebuiltScript = {
     },
 
     async "knowledge.index"(args, ctx) {
-      const title = String(args["title"] ?? "").trim();
-      const content = String(args["content"] ?? "");
-      if (!title) throw new Error("knowledge.index requires a non-empty 'title'");
-      if (!content) throw new Error("knowledge.index requires non-empty 'content'");
+      const title = typeof args["title"] === "string" ? args["title"].trim() : "";
+      const content = args["content"];
+      if (!title || title.length > 500) throw new Error("knowledge.index requires a title of 1..500 characters");
+      if (typeof content !== "string" || !content || content.length > MAX_KNOWLEDGE_CONTENT_CHARS)
+        throw new Error("knowledge.index content must be 1..1048576 characters");
       const contentType = typeof args["content_type"] === "string" ? args["content_type"] : "text";
+      if (!["text", "url", "code", "pdf"].includes(contentType))
+        throw new Error("knowledge.index content_type is invalid");
+      if (args["source_url"] !== undefined && (typeof args["source_url"] !== "string" || args["source_url"].length > 2_048))
+        throw new Error("knowledge.index source_url is invalid");
       const resp = await reqWorker(ctx).fetch(
         new Request(`http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/documents`, {
           method: "POST",
@@ -130,7 +157,9 @@ export const knowledgeBase: PrebuiltScript = {
         body: JSON.stringify({ source_space_id: sourceSpaceId, document_id: documentId }),
       }));
       if (!response.ok) throw new Error(`knowledge.shared_document failed: HTTP ${response.status}`);
-      const result = await response.json<{ document: { id: string; title: string; source_url: string | null; content: string; chunk_count: number } }>();
+      const result = await readBoundedResponseJson<{ document?: { id: string; title: string; source_url: string | null; content: string; chunk_count: number } }>(response, 2 * 1024 * 1024);
+      if (!result.document || typeof result.document.content !== "string")
+        throw new Error("knowledge.shared_document response invalid");
       const maxChars = 30_000;
       const truncated = result.document.content.length > maxChars;
       return {

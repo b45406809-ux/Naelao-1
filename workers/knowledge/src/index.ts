@@ -1018,8 +1018,8 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // than retrieve broadly and filter afterward (which would leak ranking density).
   const useAutoRag: boolean = false;
 
-  if (!query || query.trim().length === 0) {
-    throw badRequest("q parameter is required");
+  if (!query || query.trim().length === 0 || query.length > 1_000) {
+    throw badRequest("q parameter is required and cannot exceed 1000 characters");
   }
 
   const roleRank = effectiveRoleRank(c);

@@ -1101,3 +1101,14 @@ Found a pagination gap in SpaceDO-backed scans when the 16 MiB ceiling cut throu
 Validation: conversation search tests passed 16/16; full Agents worker suite passed 149 files / 667 tests; Agents worker typecheck passed; `git diff --check` passed.
 
 Checked only `conversation.ts` and its focused test in this slice. The Agent DO channel reader and SpaceDO transcript endpoint were traced and their focused tests ran in the full suite, but both large files remain unchecked pending full-file review.
+
+
+## Knowledge retrieval isolation, request bounds, and derived context (2026-10-20)
+
+Traced the Agent SDK knowledge-base operations through the Knowledge Worker search route and the shared RAG Vectorize filter. The worker applies tenant/space ownership in its `/spaces/:spaceId/kb/*` middleware before the search handler, then checks air-gap policy, role/project scope, and ACL-filtered retrieval. Dense candidates are role and user filtered before BM25 reranking; retrieved text is marked untrusted and citations remain attached to derived summaries.
+
+Found that the prebuilt sent `x-naelao-role: owner` whenever `effectiveRole` was absent. In an acting-user run, a missing role claim therefore widened the retrieval role mask. The prebuilt now preserves explicit effective/caller roles, uses viewer for user-bound runs missing those claims, and keeps owner for userless host runs. Also bounded semantic queries to 1,000 characters at both the prebuilt and worker route, validated top-k before egress, bounded and type-checked prebuilt indexing inputs to the worker contract, and replaced an unbounded `response.json()` for shared documents with the 2 MiB streaming JSON reader before truncation.
+
+Validation: Knowledge Worker suite passed 7 files / 27 tests; focused knowledge-base tests passed 8/8; new worker route tests verify foreign-Space denial and query rejection before Workers AI/Vectorize; Agent and Knowledge Worker typechecks passed; `git diff --check` passed.
+
+Checked only the Agent knowledge-base prebuilt and focused tests. The Knowledge Worker's search route/middleware and new regression test were traced, but `workers/knowledge/src/index.ts` remains unchecked because it is a large file and only its retrieval/ownership sections were reviewed. The RAG Vectorize helper had previously been reviewed and checked in the earlier batch-05 stress pass.

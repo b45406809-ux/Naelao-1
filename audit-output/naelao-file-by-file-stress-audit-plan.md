@@ -1960,8 +1960,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/prebuilt/foundry-inbox.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/goal-planner.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/index.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/knowledge-base.test.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/knowledge-base.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/knowledge-base.test.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/knowledge-base.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/language-detection.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/language-detection.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/language-glossary.test.ts`
