@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1952` tracked files; `1746` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt` at code commit `4ba203c9`.
+Inventory basis: `1965` tracked files; `1759` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `ba9cf2ff`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1892,7 +1892,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/transcript-loader.ts`
 - [ ] `workers/agents/src/script-engine/types.ts`
 - [ ] `workers/agents/src/script-engine/typescript-runtime.ts`
-- [ ] `workers/agents/src/script-engine/vault-proxy.test.ts`
+- [x] `workers/agents/src/script-engine/vault-proxy.test.ts`
 - [ ] `workers/agents/src/script-engine/vault-proxy.ts`
 - [ ] `workers/agents/src/script-engine/video-distill.ts`
 - [x] `workers/agents/src/script-engine/virtual-cli.test.ts`
@@ -2197,6 +2197,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/credentials/src/air-gap.test.ts`
 - [ ] `workers/credentials/src/index.ts`
+- [x] `workers/credentials/src/outbound-auth.test.ts`
 - [ ] `workers/credentials/src/request-body-boundaries.test.ts`
 
 ### `workers/eval`
