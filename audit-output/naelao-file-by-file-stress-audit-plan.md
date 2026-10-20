@@ -1735,8 +1735,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/agents/src/do`
 
-- [ ] `workers/agents/src/do/ConcurrencyDO.test.ts`
-- [ ] `workers/agents/src/do/ConcurrencyDO.ts`
+- [x] `workers/agents/src/do/ConcurrencyDO.test.ts`
+- [x] `workers/agents/src/do/ConcurrencyDO.ts`
 - [ ] `workers/agents/src/do/HITLApprovalDO.ts`
 - [ ] `workers/agents/src/do/LocalTunnelDO.test.ts`
 - [ ] `workers/agents/src/do/LocalTunnelDO.ts`

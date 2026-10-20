@@ -36,6 +36,7 @@ const DEFAULT_TTL_MS = 30 * 60 * 1000; // a slot no one explicitly releases with
 const MAX_SLOT_KEY_LENGTH = 512;
 const MAX_HOLDER_ID_LENGTH = 128;
 const FILE_LOCK_TTL_MS = 30_000;
+const MAX_OUTBOUND_PACER_DELAY_MS = 30_000;
 export const SLOT_HOLD_TTL_MS = 15_000;
 export const NODE_LEASE_TTL_MS = 15_000;
 
@@ -123,9 +124,6 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
           ? this.ctx.blockConcurrencyWhile(publish)
           : publish();
       }
-      if (request.method === "POST" && url.pathname === "/locks/force-release") {
-        return this.forceReleaseLock(request);
-      }
       if (request.method === "POST" && url.pathname === "/node-leases/claim") return this.claimNodeLease(request);
       if (request.method === "POST" && url.pathname === "/node-leases/renew") return this.renewNodeLease(request);
       if (request.method === "POST" && url.pathname === "/node-leases/release") return this.releaseNodeLease(request);
@@ -137,7 +135,11 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
         const input = body as { domain?: unknown; maxPerSecond?: unknown };
         if (typeof input.domain !== "string" || (input.maxPerSecond !== undefined && typeof input.maxPerSecond !== "number")) return Response.json({ error_code: "bad_request" }, { status: 400 });
         try { return Response.json(await this.paceOutboundRequest({ domain: input.domain, ...(input.maxPerSecond === undefined ? {} : { maxPerSecond: input.maxPerSecond }) })); }
-        catch { return Response.json({ error_code: "bad_request" }, { status: 400 }); }
+        catch (error) {
+          if (error instanceof Error && error.message === "outbound_pacer_queue_full")
+            return Response.json({ error_code: "pacer_queue_full" }, { status: 429 });
+          return Response.json({ error_code: "bad_request" }, { status: 400 });
+        }
       }
       if (request.method === "POST" && url.pathname === "/slot-holds/acquire") return this.acquireSlotHold(await request.json().catch(() => undefined));
       if (request.method === "POST" && url.pathname === "/slot-holds/confirm") return this.confirmSlotBooking(await request.json().catch(() => undefined));
@@ -167,6 +169,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec(`SELECT next_release_at FROM outbound_pacers WHERE domain = ?`, domain).toArray() as Array<{ next_release_at: number }>;
     const releasedAt = Math.max(now, rows[0]?.next_release_at ?? now);
+    if (releasedAt - now > MAX_OUTBOUND_PACER_DELAY_MS) throw new Error("outbound_pacer_queue_full");
     this.ctx.storage.sql.exec(
       `INSERT INTO outbound_pacers (domain, next_release_at) VALUES (?, ?)
        ON CONFLICT(domain) DO UPDATE SET next_release_at=excluded.next_release_at`, domain, releasedAt + interval
@@ -296,15 +299,6 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.ctx.storage.sql.exec(`DELETE FROM locks WHERE key = ? AND holder_id = ? AND fencing_token = ?`, key, holderId, token);
     await this.scheduleNextAlarm();
     return Response.json({ released: before[0]?.holder_id === holderId && before[0]?.fencing_token === token });
-  }
-
-  private async forceReleaseLock(request: Request): Promise<Response> {
-    const body = await request.json<{ key?: string }>().catch(() => ({} as { key?: string }));
-    const key = String(body.key ?? "");
-    if (!key) return Response.json({ error_code: "bad_request", message: "key is required" }, { status: 400 });
-    this.ctx.storage.sql.exec(`DELETE FROM locks WHERE key = ?`, key);
-    await this.scheduleNextAlarm();
-    return Response.json({ released: true, forced: true });
   }
 
   private parseNodeLease(body: unknown): { resourceKey: string; nodeId: string; holderId: string; holderType: "HUMAN" | "AGENT" } | undefined {

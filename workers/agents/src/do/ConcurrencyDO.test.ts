@@ -147,6 +147,21 @@ describe("ConcurrencyDO file mutexes", () => {
     expect((await send("release", JSON.stringify({ key: "row", holderId: "run" }))).status).toBe(400);
     expect(h.locks.size).toBe(0);
   });
+
+  it("does not expose an unfenced force-release operation", async () => {
+    const h = harness();
+    const acquire = await h.instance.fetch(new Request("http://do/locks/acquire", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "protected", holderId: "owner" }),
+    }));
+    expect(acquire.status).toBe(200);
+    const force = await h.instance.fetch(new Request("http://do/locks/force-release", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "protected" }),
+    }));
+    expect(force.status).toBe(404);
+    expect(h.locks.get("protected")?.holder_id).toBe("owner");
+  });
 });
 
 describe("ConcurrencyDO appointment slot holds", () => {
@@ -281,6 +296,29 @@ describe("ConcurrencyDO outbound pacing", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     const releases = (await Promise.all(pending)).map((result) => result.releasedAt);
     expect(releases[5]! - releases[0]!).toBe(1_000);
+    vi.useRealTimers();
+  });
+
+  it("bounds the persisted wait queue and rejects excess work without extending it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const { instance, pacers } = harness();
+    const queued = Array.from({ length: 151 }, () =>
+      instance.paceOutboundRequest({ domain: "api.example.com", maxPerSecond: 5 })
+    );
+    const scheduledUntil = pacers.get("api.example.com");
+    await expect(
+      instance.paceOutboundRequest({ domain: "api.example.com", maxPerSecond: 5 })
+    ).rejects.toThrow("outbound_pacer_queue_full");
+    expect(pacers.get("api.example.com")).toBe(scheduledUntil);
+    const overflow = await instance.fetch(new Request("http://do/outbound/pace", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ domain: "api.example.com", maxPerSecond: 5 }),
+    }));
+    expect(overflow.status).toBe(429);
+    expect(await overflow.json()).toMatchObject({ error_code: "pacer_queue_full" });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(Promise.all(queued)).resolves.toHaveLength(151);
     vi.useRealTimers();
   });
 
