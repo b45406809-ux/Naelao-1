@@ -27,20 +27,20 @@ export type FeatureKindRole = "owner" | "admin" | "editor";
 
 export interface BusinessFeatureKind {
   /** The `projects.kind` value. */
-  kind: string;
-  label: string;
-  description: string;
+  readonly kind: string;
+  readonly label: string;
+  readonly description: string;
   /** DB-enforced: at most one active project of this kind per space (partial unique index). */
-  singleton: boolean;
+  readonly singleton: boolean;
   /** Who even SEES this as a creatable template (role-filtered server-side, not just UI-hidden). */
-  minCreationRole: FeatureKindRole;
+  readonly minCreationRole: FeatureKindRole;
   /** Whether a template's bootstrap may auto-provision this kind (vs. created on demand only). */
-  autoProvisionable: boolean;
+  readonly autoProvisionable: boolean;
   /** script-engine prebuilt names gated to this kind (informational; enforced by the engine). */
-  prebuiltScripts?: string[];
+  readonly prebuiltScripts?: readonly string[];
   /** Frontend panel key — the shell mounts the natively-built panel for this kind (F-40). A kind
    *  with no built panel yet renders the shared workspace shell alone (expected incremental path). */
-  uiPanel?: string;
+  readonly uiPanel?: string;
 }
 
 /**
@@ -197,12 +197,19 @@ export const BUSINESS_FEATURE_KIND_REGISTRY: readonly BusinessFeatureKind[] = [
   },
 ];
 
+for (const featureKind of BUSINESS_FEATURE_KIND_REGISTRY) {
+  if (featureKind.prebuiltScripts) Object.freeze(featureKind.prebuiltScripts);
+  Object.freeze(featureKind);
+}
+Object.freeze(BUSINESS_FEATURE_KIND_REGISTRY);
+
 const KIND_MAP: Map<string, BusinessFeatureKind> = new Map(
   BUSINESS_FEATURE_KIND_REGISTRY.map((k) => [k.kind, k])
 );
 
-/** The generic project shape — always creatable, no singleton/role gate. */
-export const STRUCTURAL_PROJECT_KINDS = ["workspace"] as const;
+/** Generic and legacy project shapes — no singleton/role gate. `customer_bot` remains accepted for
+ * compatibility with existing projects and migrations that still recognize that stored kind. */
+export const STRUCTURAL_PROJECT_KINDS = Object.freeze(["workspace", "customer_bot"] as const);
 
 /** Look up a registry entry (undefined for structural kinds or an unknown kind). */
 export function getBusinessFeatureKind(kind: string): BusinessFeatureKind | undefined {
@@ -224,6 +231,6 @@ export function roleMeetsMinimum(callerRole: string, minRole: FeatureKindRole): 
  * The registry entries a caller with `callerRole` may create, for the project-template picker.
  * Role-filtered server-side (F-35) so a non-admin never even sees "Create Wallet" as an option.
  */
-export function creatableFeatureKindsForRole(callerRole: string): BusinessFeatureKind[] {
-  return BUSINESS_FEATURE_KIND_REGISTRY.filter((k) => roleMeetsMinimum(callerRole, k.minCreationRole));
+export function creatableFeatureKindsForRole(callerRole: string): readonly BusinessFeatureKind[] {
+  return Object.freeze(BUSINESS_FEATURE_KIND_REGISTRY.filter((k) => roleMeetsMinimum(callerRole, k.minCreationRole)));
 }

@@ -37,6 +37,16 @@ describe("BUSINESS_FEATURE_KIND_REGISTRY (F-34 registry, pure)", () => {
     const wallet = getBusinessFeatureKind("wallet");
     expect(wallet).toMatchObject({ kind: "wallet", singleton: true, minCreationRole: "admin" });
   });
+  it("freezes registry entries and role-filtered views so callers cannot rewrite shared gates", () => {
+    const wallet = getBusinessFeatureKind("wallet")!;
+    const visible = creatableFeatureKindsForRole("owner");
+    expect(Object.isFrozen(BUSINESS_FEATURE_KIND_REGISTRY)).toBe(true);
+    expect(Object.isFrozen(wallet)).toBe(true);
+    expect(Reflect.set(wallet, "minCreationRole", "editor")).toBe(false);
+    expect(Object.isFrozen(visible)).toBe(true);
+    expect(isKnownProjectKind("workspace")).toBe(true);
+    expect(getBusinessFeatureKind("wallet")?.minCreationRole).toBe("admin");
+  });
   it("recognizes structural kinds without a registry entry", () => {
     expect(isKnownProjectKind("workspace")).toBe(true);
     expect(isKnownProjectKind("customer_bot")).toBe(true);

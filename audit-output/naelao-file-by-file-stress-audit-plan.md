@@ -939,14 +939,14 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/events`
 
-- [ ] `packages/events/package.json`
-- [ ] `packages/events/tsconfig.json`
+- [x] `packages/events/package.json`
+- [x] `packages/events/tsconfig.json`
 
 ### `packages/events/src`
 
-- [ ] `packages/events/src/business-feature-kinds.ts`
-- [ ] `packages/events/src/failure-classification.ts`
-- [ ] `packages/events/src/index.ts`
+- [x] `packages/events/src/business-feature-kinds.ts`
+- [x] `packages/events/src/failure-classification.ts`
+- [x] `packages/events/src/index.ts`
 
 ### `packages/http`
 
@@ -1338,7 +1338,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/business-create.test.ts`
 - [ ] `tests/unit/business-diagnostics-prebuilt.test.ts`
 - [ ] `tests/unit/business-email-agentmail-routes.test.ts`
-- [ ] `tests/unit/business-feature-kinds.test.ts`
+- [x] `tests/unit/business-feature-kinds.test.ts`
 - [x] `tests/unit/business-membership-role.test.ts`
 - [ ] `tests/unit/business-onboarding-flow.test.ts`
 - [ ] `tests/unit/business-role-cache.test.ts`
@@ -1399,7 +1399,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/execution-ceiling.test.ts`
 - [ ] `tests/unit/external-revenue-tracking.test.ts`
 - [ ] `tests/unit/fail-closed-lock-and-rules.test.ts`
-- [ ] `tests/unit/failure-classification.test.ts`
+- [x] `tests/unit/failure-classification.test.ts`
 - [ ] `tests/unit/feature-kinds-route.test.ts`
 - [ ] `tests/unit/federation.test.ts`
 - [ ] `tests/unit/file-and-schedule-tools.test.ts`

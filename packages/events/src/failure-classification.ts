@@ -269,7 +269,7 @@ function toClassification(rule: Rule): FailureClassification {
 }
 
 /** Every kind, for a UI or a rollup that wants to enumerate them without hardcoding the list. */
-export const FAILURE_KINDS: FailureKind[] = [
+export const FAILURE_KINDS: readonly FailureKind[] = Object.freeze([
   "quota_exhausted",
   "rate_limited",
   "context_overflow",
@@ -280,8 +280,8 @@ export const FAILURE_KINDS: FailureKind[] = [
   "tool_error",
   "user_cancelled",
   "unknown",
-];
+]);
 
 export function isFailureKind(value: unknown): value is FailureKind {
-  return typeof value === "string" && (FAILURE_KINDS as string[]).includes(value);
+  return typeof value === "string" && FAILURE_KINDS.includes(value as FailureKind);
 }

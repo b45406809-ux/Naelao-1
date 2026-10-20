@@ -2,6 +2,13 @@ import { describe, it, expect } from "vitest";
 import { classifyFailure, FAILURE_KINDS, isFailureKind } from "@naelao/events";
 
 describe("classifyFailure", () => {
+  it("keeps the shared failure-kind vocabulary immutable", () => {
+    expect(Object.isFrozen(FAILURE_KINDS)).toBe(true);
+    expect(isFailureKind("quota_exhausted")).toBe(true);
+    expect(Reflect.set(FAILURE_KINDS, "0", "unknown_new_kind")).toBe(false);
+    expect(isFailureKind("quota_exhausted")).toBe(true);
+  });
+
   it("recognises Workers AI's own out-of-allowance code as a quota that clears by itself", () => {
     // The literal shape seen live when this account's free neuron budget runs out.
     const c = classifyFailure("AiError: 4006: You have exceeded your daily neuron allocation");
