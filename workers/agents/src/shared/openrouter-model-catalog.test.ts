@@ -38,6 +38,21 @@ describe("OpenRouter model catalog", () => {
     expect(() => openRouterCatalogForTest.parse({ models: [] })).toThrow("openrouter_catalog_shape_invalid");
   });
 
+  it("rejects streamed catalogs over the byte ceiling without Content-Length", async () => {
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1));
+        controller.close();
+      },
+    });
+    const fetcher = vi.fn(async (input: string | URL | Request) => String(input).endsWith("/auth/key")
+      ? Response.json({ data: {} })
+      : new Response(oversized));
+
+    await expect(fetchOpenRouterCatalog("user-key", { fetch: fetcher as typeof fetch, now: 1 }))
+      .rejects.toThrow("openrouter_response_too_large");
+  });
+
   it("caches catalog data but revalidates each user's key", async () => {
     const fetcher = vi.fn(async (input: string | URL | Request) => String(input).endsWith("/auth/key")
       ? Response.json({ data: {} })

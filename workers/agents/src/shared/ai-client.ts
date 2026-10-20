@@ -60,6 +60,41 @@ export interface GatewayOpts {
   openRouterApiKeys?: string[];
 }
 
+const MAX_UNIVERSAL_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+async function readBoundedUniversalResponseText(response: Response): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_UNIVERSAL_RESPONSE_BYTES) {
+    void response.body?.cancel().catch(() => {});
+    throw new Error("provider_response_too_large");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > MAX_UNIVERSAL_RESPONSE_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw new Error("provider_response_too_large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 // ── CF AI Gateway Universal Endpoint ─────────────────────────────────────────
 
 /**
@@ -473,8 +508,11 @@ export async function parseUniversalStream(
   // way, so honour what actually came back rather than what was asked for.
   if (!(resp.headers.get("content-type") ?? "").includes("text/event-stream")) {
     try {
-      return normalizeUniversalResponse(await resp.json());
-    } catch {
+      return normalizeUniversalResponse(JSON.parse(await readBoundedUniversalResponseText(resp)));
+    } catch (error) {
+      if (error instanceof Error && error.message === "provider_response_too_large") {
+        return { text: "", usage: undefined, error: "provider_response_too_large" };
+      }
       return { text: "", usage: undefined };
     }
   }
@@ -485,6 +523,7 @@ export async function parseUniversalStream(
   /** Everything read, kept for the salvage path below — a stream LABELLED as SSE that turns out to
    *  carry a plain JSON body would otherwise be indistinguishable from an empty reply. */
   let raw = "";
+  let totalResponseBytes = 0;
 
   const handleEvent = (raw: string): void => {
     const line = raw.trim();
@@ -549,6 +588,11 @@ export async function parseUniversalStream(
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      totalResponseBytes += value.byteLength;
+      if (totalResponseBytes > MAX_UNIVERSAL_RESPONSE_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw new Error("provider_response_too_large");
+      }
       const chunk = decoder.decode(value, { stream: true });
       raw += chunk;
       buffered += chunk;
@@ -561,7 +605,8 @@ export async function parseUniversalStream(
         sep = buffered.indexOf("\n\n");
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "provider_response_too_large") throw error;
     // A dropped stream keeps whatever arrived — see this function's own doc.
   } finally {
     // Flush the tail in `finally`, not on the success path only: a stream that dies can leave a

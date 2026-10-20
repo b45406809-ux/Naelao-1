@@ -66,6 +66,34 @@ describe("partialJsonString — reading a value out of truncated JSON", () => {
 });
 
 describe("parseUniversalStream", () => {
+  it("rejects oversized SSE responses instead of retaining unbounded stream history", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(8 * 1024 * 1024));
+        controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1));
+        controller.close();
+      },
+    });
+
+    await expect(parseUniversalStream(new Response(body, {
+      headers: { "content-type": "text/event-stream" },
+    }))).rejects.toThrow("provider_response_too_large");
+  });
+
+  it("reports an oversized non-stream response without parsing it", async () => {
+    const response = new Response("{}", {
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(16 * 1024 * 1024 + 1),
+      },
+    });
+
+    await expect(parseUniversalStream(response)).resolves.toMatchObject({
+      text: "",
+      error: "provider_response_too_large",
+    });
+  });
+
   it("reports the growing text on every chunk, then returns the assembled tool call", async () => {
     const seen: string[] = [];
     const result = await parseUniversalStream(
@@ -219,7 +247,7 @@ describe("GatewayReasoner — streaming is opt-in per call", () => {
     // A cron wake, a channel drain and a sub-agent all pass no onDelta — paying for a held-open
     // connection there buys nothing, since the output is only read once it is finished.
     const { bodies } = captureBody(() => new Response(
-      JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"hi"}' } }] } }] }),
+      JSON.stringify({ choices: [{ message: { content: "hi" } }] }),
       { status: 200, headers: { "content-type": "application/json" } }
     ));
     const reasoner = new GatewayReasoner({
@@ -234,9 +262,8 @@ describe("GatewayReasoner — streaming is opt-in per call", () => {
 
   it("asks for a stream and reports the answer as it is written when onDelta is passed", async () => {
     const { bodies } = captureBody(() => sseResponse([
-      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "answer", arguments: "" } }] } }] }),
-      argFrame('{"text":"You sell '),
-      argFrame('websites."}'),
+      JSON.stringify({ choices: [{ delta: { content: "You sell " } }] }),
+      JSON.stringify({ choices: [{ delta: { content: "websites." } }] }),
     ]));
     const reasoner = new GatewayReasoner({
       apiKey: "k",
@@ -256,9 +283,9 @@ describe("GatewayReasoner — streaming is opt-in per call", () => {
 
   it("streams `doing` as the turn's status, kept separate from a real `say` message", async () => {
     captureBody(() => sseResponse([
-      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "run", arguments: "" } }] } }] }),
+      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "commerce.list_products", arguments: "" } }] } }] }),
       argFrame('{"doing":"Checking your '),
-      argFrame('store","say":"Let me see what you already sell.","name":"commerce.list_products","params":{}}'),
+      argFrame('store","say":"Let me see what you already sell.","params":{}}'),
     ]));
     const reasoner = new GatewayReasoner({
       apiKey: "k",
@@ -287,8 +314,8 @@ describe("GatewayReasoner — streaming is opt-in per call", () => {
 
   it("leaves `lastMessage` unset on a turn where the model wrote only a status", async () => {
     captureBody(() => sseResponse([
-      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "run", arguments: "" } }] } }] }),
-      argFrame('{"doing":"Reading the order list","name":"commerce.list_orders","params":{}}'),
+      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "commerce.list_products", arguments: "" } }] } }] }),
+      argFrame('{"doing":"Reading the order list","params":{}}'),
     ]));
     const reasoner = new GatewayReasoner({
       apiKey: "k",
@@ -337,7 +364,7 @@ describe("a stream that comes back unusable never reaches a person as their answ
         return sseResponse([JSON.stringify({ choices: [{ delta: { content: '{"' } }] })]);
       }
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"Here is the real four-paragraph plan."}' } }] } }] }),
+        JSON.stringify({ choices: [{ message: { content: "Here is the real four-paragraph plan." } }] }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
     }) as unknown as typeof fetch;
@@ -423,7 +450,7 @@ describe("a provider that fails part way through a 200 stream", () => {
         ]);
       }
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"the real answer"}' } }] } }] }),
+        JSON.stringify({ choices: [{ message: { content: "the real answer" } }] }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
     }) as unknown as typeof fetch;
@@ -461,7 +488,7 @@ describe("an empty stream is a turn that never happened, not an answer", () => {
     globalThis.fetch = (async (_u: string, init?: RequestInit) => {
       if (JSON.parse(String(init?.body ?? "{}")).stream) return sseResponse([]);
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"recovered"}' } }] } }] }),
+        JSON.stringify({ choices: [{ message: { content: "recovered" } }] }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
     }) as unknown as typeof fetch;

@@ -55,8 +55,41 @@ let catalogCache: { expiresAt: number; observedAt: number; models: OpenRouterMod
 let catalogPending: Promise<OpenRouterModelCandidate[]> | undefined;
 
 async function boundedJson(response: Response, limit: number): Promise<unknown> {
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > limit) throw new Error("openrouter_response_too_large");
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > limit) {
+    void response.body?.cancel().catch(() => {});
+    throw new Error("openrouter_response_too_large");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("openrouter_invalid_json");
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > limit) {
+        void reader.cancel().catch(() => {});
+        throw new Error("openrouter_response_too_large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+  } catch {
+    throw new Error("openrouter_invalid_json");
+  }
   try { return JSON.parse(text); } catch { throw new Error("openrouter_invalid_json"); }
 }
 
