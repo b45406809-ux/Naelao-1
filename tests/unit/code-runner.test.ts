@@ -1,26 +1,54 @@
-import { describe, it, expect, vi } from "vitest";
-import { buildCodeRunner, type WorkerLoaderBinding, type WorkerLoaderModuleConfig } from "../../workers/agents/src/script-engine/code-runner.js";
-import { verifyInternalToken } from "@naelao/http";
+import { describe, expect, it, vi } from "vitest";
+import {
+  type WorkerLoaderBinding,
+  type WorkerLoaderModuleConfig,
+  buildCodeRunner,
+} from "../../workers/agents/src/script-engine/code-runner.js";
 
 // A fake Worker Loader that actually executes the assembled module's `fetch` handler by
 // evaluating it with `new Function` — enough to verify the harness wiring (user code +
 // fetch wrapper + injected env) without a real CF isolate.
-function fakeLoader(): WorkerLoaderBinding {
+function fakeLoader(
+  onConfig?: (config: WorkerLoaderModuleConfig) => void
+): WorkerLoaderBinding {
   return {
-    get(_id: string, factory: () => WorkerLoaderModuleConfig | Promise<WorkerLoaderModuleConfig>) {
+    get(
+      _id: string,
+      factory: () =>
+        | WorkerLoaderModuleConfig
+        | Promise<WorkerLoaderModuleConfig>
+    ) {
       return {
         getEntrypoint() {
           return {
             async fetch(req: Request): Promise<Response> {
               const cfg = await factory();
-              const source = cfg.modules["main.js"]!;
-              // Strip ESM export syntax so the source runs as a plain function body: the
-              // harness's `export default {...}` becomes `return {...}`, and the user code's
-              // `export async function run(...)` becomes a plain (still-hoisted) declaration.
-              const body = source.replace(/export\s+default/, "return").replace(/export\s+/g, "");
+              onConfig?.(cfg);
+              const mainModule = cfg.modules["main.js"];
+              const source =
+                typeof mainModule === "string"
+                  ? mainModule
+                  : mainModule && "js" in mainModule
+                    ? mainModule.js
+                    : "";
+              const policy = String(cfg.modules["policy.js"] ?? "");
+              const guest = String(cfg.modules["guest.js"] ?? "");
+              // The production loader evaluates separate ES modules. This lightweight test
+              // loader joins the trusted policy, compiled guest, and entry module after removing
+              // their known static imports, then strips exports for new Function evaluation.
+              const main = source.replace(/^import .*;\s*$/gm, "");
+              const body = `${policy}\n${guest}\n${main}`
+                .replace(/^import .*;\s*$/gm, "")
+                .replace(/export\s+default/, "return")
+                .replace(/export\s+/g, "");
               // eslint-disable-next-line no-new-func
               const build = new Function(`${body}`);
-              const mod = build() as { fetch: (r: Request, env: Record<string, unknown>) => Promise<Response> };
+              const mod = build() as {
+                fetch: (
+                  r: Request,
+                  env: Record<string, unknown>
+                ) => Promise<Response>;
+              };
               return mod.fetch(req, cfg.env ?? {});
             },
           } as unknown as Fetcher;
@@ -30,12 +58,29 @@ function fakeLoader(): WorkerLoaderBinding {
   };
 }
 
+function testRunner(options: Parameters<typeof buildCodeRunner>[0] = {}) {
+  const runner = buildCodeRunner({
+    authorizeContainer: async () => true,
+    ...options,
+  });
+  return {
+    ...runner,
+    async run(params: Parameters<typeof runner.run>[0]) {
+      return runner.run({
+        ...params,
+        userId: params.userId ?? "test-user",
+        runId: params.runId ?? "test-run",
+      });
+    },
+  };
+}
+
 describe("code-runner — Tier 2/3 isolate execution", () => {
   it("runs a stored script's exported run() and returns its output", async () => {
-    const runner = buildCodeRunner({ loader: fakeLoader() });
+    const runner = testRunner({ loader: fakeLoader() });
     const result = await runner.run({
       name: "double",
-      code: `export async function run(args, ctx) { return { doubled: args.n * 2 }; }`,
+      code: "export async function run(args, ctx) { return { doubled: args.n * 2 }; }",
       tier: 2,
       args: { n: 21 },
       spaceId: "space1",
@@ -48,7 +93,7 @@ describe("code-runner — Tier 2/3 isolate execution", () => {
   });
 
   it("captures a thrown error from the script as a failed result, not a crash", async () => {
-    const runner = buildCodeRunner({ loader: fakeLoader() });
+    const runner = testRunner({ loader: fakeLoader() });
     const result = await runner.run({
       name: "broken",
       code: `export async function run(args, ctx) { throw new Error("boom"); }`,
@@ -63,248 +108,174 @@ describe("code-runner — Tier 2/3 isolate execution", () => {
   });
 
   it("reports unavailable (not a crash) when no LOADER binding is configured", async () => {
-    const runner = buildCodeRunner({});
-    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+    const runner = testRunner({});
+    const result = await runner.run({
+      name: "x",
+      code: "export async function run(){}",
+      tier: 2,
+      args: {},
+      spaceId: "s",
+      agentId: "a",
+      tenantId: "t",
+    });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("unavailable");
   });
 
   it("Tier 6 (container) is routed separately and reports unavailable without a ToolSandboxDO binding", async () => {
-    const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 6, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+    const runner = testRunner({ loader: fakeLoader() });
+    const result = await runner.run({
+      name: "x",
+      code: "export async function run(){}",
+      tier: 6,
+      args: {},
+      spaceId: "s",
+      agentId: "a",
+      tenantId: "t",
+    });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Tier 6");
   });
 
   it("Tier 1 is rejected — execution-ladder.ts must handle it in-process, never via codeRunner", async () => {
-    const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 1, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+    const runner = testRunner({ loader: fakeLoader() });
+    const result = await runner.run({
+      name: "x",
+      code: "export async function run(){}",
+      tier: 1,
+      args: {},
+      spaceId: "s",
+      agentId: "a",
+      tenantId: "t",
+    });
     expect(result.ok).toBe(false);
   });
 });
 
-describe("code-runner — F10 SSRF guard inside the isolate", () => {
-  it("blocks ctx.fetch to a literal link-local/metadata address", async () => {
-    const runner = buildCodeRunner({ loader: fakeLoader() });
+describe("code-runner — isolate capability boundaries", () => {
+  it("does not expose ambient network, browser, or MCP access to guest code", async () => {
+    let config: WorkerLoaderModuleConfig | undefined;
+    const runner = testRunner({
+      loader: fakeLoader((value) => {
+        config = value;
+      }),
+      platformSecret: "must-not-enter-guest",
+    });
     const result = await runner.run({
-      name: "ssrf-attempt",
-      code: `export async function run(args, ctx) { await ctx.fetch("http://169.254.169.254/latest/meta-data"); return "unreachable"; }`,
+      name: "capability-boundary",
+      code: "export async function run(args, ctx) { return { fetch: typeof ctx.fetch, browser: typeof ctx.browser, mcp: typeof ctx.mcp, tools: typeof ctx.tools.call }; }",
       tier: 2,
       args: {},
       spaceId: "space1",
       agentId: "agent1",
       tenantId: "tenant1",
     });
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("ssrf_blocked");
-  });
-
-  it("also blocks a bare fetch() call (not just ctx.fetch) — global fetch is overridden too", async () => {
-    const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({
-      name: "ssrf-attempt-bare",
-      code: `export async function run(args, ctx) { await fetch("http://10.0.0.5/"); return "unreachable"; }`,
-      tier: 2,
-      args: {},
-      spaceId: "space1",
-      agentId: "agent1",
-      tenantId: "tenant1",
+    expect(result.ok).toBe(true);
+    expect(result.output).toEqual({
+      fetch: "undefined",
+      browser: "undefined",
+      mcp: "undefined",
+      tools: "function",
     });
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("ssrf_blocked");
+    expect(config?.globalOutbound).toBeNull();
+    expect(config?.env).not.toHaveProperty("platformSecret");
+    expect(config?.env).not.toHaveProperty("mcpHubWorker");
   });
 
-  it("blocks a non-http(s) protocol", async () => {
-    const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({
-      name: "ssrf-file-protocol",
-      code: `export async function run(args, ctx) { await ctx.fetch("file:///etc/passwd"); return "unreachable"; }`,
-      tier: 2,
-      args: {},
-      spaceId: "space1",
-      agentId: "agent1",
-      tenantId: "tenant1",
-    });
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("ssrf_blocked");
-  });
-});
-
-describe("code-runner — Tier 4 browser capability injection", () => {
-  it("injects ctx.browser.navigate proxied to the BROWSER_WORKER binding", async () => {
-    const navigateSpy = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ url: "https://example.com", text: "hello" }), { status: 200 })
+  it("requires an explicit authorized capability for tool RPC calls", async () => {
+    const dispatch = vi.fn(async (name: string, input: unknown) => ({
+      name,
+      input,
+    }));
+    const authorize = vi.fn(
+      async (name: string) => name === "tool:knowledge.search"
     );
-    const browserWorker = { fetch: navigateSpy } as unknown as Fetcher;
-
-    const runner = buildCodeRunner({ loader: fakeLoader(), browserWorker, platformSecret: "shh" });
+    const runner = testRunner({
+      loader: fakeLoader(),
+      createRpcBinding: async (options) => ({
+        binding: {
+          call: async (name, input) => {
+            if (!(await options.authorize(name, input)))
+              throw new Error(`code_capability_denied:${name}`);
+            return options.dispatch(name, input);
+          },
+        },
+        close() {},
+      }),
+      authorizeCodeCapability: authorize,
+      dispatchCodeCapability: dispatch,
+    });
     const result = await runner.run({
-      name: "browse",
-      code: `export async function run(args, ctx) { return await ctx.browser.navigate({ url: args.url }); }`,
+      name: "scoped-tool-call",
+      code: `export async function run(args, ctx) { return ctx.tools.call("knowledge.search", { query: "invoice" }); }`,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "tenant1",
+      capabilities: ["tool:knowledge.search"],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toEqual({
+      name: "tool:knowledge.search",
+      input: { query: "invoice" },
+    });
+    expect(authorize).toHaveBeenCalledWith("tool:knowledge.search", {
+      query: "invoice",
+    });
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("rejects ambient imports before isolate execution", async () => {
+    const loader = vi.fn(fakeLoader().get);
+    const runner = testRunner({ loader: { get: loader } });
+    const result = await runner.run({
+      name: "ambient-import",
+      code: `import secrets from "secrets"; export async function run() { return secrets; }`,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "tenant1",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("code_dependency_not_declared");
+    expect(loader).not.toHaveBeenCalled();
+  });
+
+  it("keeps browser operations behind the host browser grant path", async () => {
+    const runner = testRunner({
+      loader: fakeLoader(),
+      browserWorker: { fetch: vi.fn() } as unknown as Fetcher,
+      platformSecret: "shh",
+    });
+    const result = await runner.run({
+      name: "browser-use.navigate",
+      code: "",
       tier: 4,
       args: { url: "https://example.com" },
       spaceId: "space1",
       agentId: "agent1",
       tenantId: "tenant1",
     });
-    expect(result.ok).toBe(true);
-    expect(result.output).toEqual({ url: "https://example.com", text: "hello" });
-    expect(navigateSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it("Tier 4 reports unavailable without a browserWorker binding", async () => {
-    const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 4, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Tier 4");
-  });
-});
-
-// §A1.17 Phase I: ctx.mcp lets ONE authored script deterministically chain several MCP servers
-// (get data from A, act on B) instead of that composition only happening across multiple
-// model-driven reasoning-loop turns. The isolate never receives a credential — mcp-hub still
-// resolves auth server-side — it receives only a short-lived (60s), tenant-scoped internal
-// token, minted in real TS before the isolate is constructed, never the platform secret itself.
-describe("code-runner — Tier 2 ctx.mcp capability injection (§A1.17 Phase I)", () => {
-  it("resolves logical aliases with the original human and project scope", async () => {
-    const hubSpy = vi.fn(async (req: Request) => {
-      expect(new URL(req.url).pathname).toContain("/connector-aliases/primary_inbox/tools/call");
-      expect(req.headers.get("x-naelao-user-id")).toBe("human-7");
-      expect(req.headers.get("x-naelao-project-id")).toBe("project9");
-      expect(req.headers.get("x-naelao-required-scopes")).toBe("mail.read");
-      return Response.json({ result: { messages: 2 } });
-    });
-    const runner = buildCodeRunner({ loader: fakeLoader(), mcpHubWorker: { fetch: hubSpy } as unknown as Fetcher, platformSecret: "shh" });
-    const result = await runner.run({
-      name: "alias-call",
-      code: `export async function run(args, ctx) { return ctx.connectors.call("primary_inbox", "messages.list", {}, ["mail.read"]); }`,
-      tier: 2, args: {}, spaceId: "space1", projectId: "project9", agentId: "agent1", userId: "human-7", tenantId: "tenant1",
-    });
-    expect(result.ok).toBe(true);
-    expect(result.output).toEqual({ result: { messages: 2 } });
-  });
-
-  it("injects ctx.mcp proxied to the MCP_HUB binding with a verified internal token", async () => {
-    const hubSpy = vi.fn(async (req: Request) => {
-      const url = new URL(req.url);
-      if (url.pathname.endsWith("/mcp-servers") && req.method === "GET") {
-        return new Response(JSON.stringify({ data: [{ id: "srv-1", name: "whop" }] }), { status: 200 });
-      }
-      if (url.pathname.endsWith("/tools/call")) {
-        const body = await req.json<{ tool_name: string; input: unknown }>();
-        return new Response(JSON.stringify({ result: { echoed: body.tool_name } }), { status: 200 });
-      }
-      return new Response("not found", { status: 404 });
-    });
-    const mcpHubWorker = { fetch: hubSpy } as unknown as Fetcher;
-
-    const runner = buildCodeRunner({ loader: fakeLoader(), mcpHubWorker, platformSecret: "shh" });
-    const result = await runner.run({
-      name: "single-mcp-call",
-      code: `export async function run(args, ctx) { return await ctx.mcp.call("whop", "list_members", {}); }`,
-      tier: 2,
-      args: {},
-      spaceId: "space1",
-      agentId: "agent1",
-      tenantId: "tenant1",
-    });
-    expect(result.ok).toBe(true);
-    expect(result.output).toEqual({ result: { echoed: "list_members" } });
-
-    // Every hub call carried a token verifiable against the caller's own tenant.
-    for (const call of hubSpy.mock.calls) {
-      const req = call[0] as Request;
-      const token = req.headers.get("x-naelao-internal-token");
-      expect(await verifyInternalToken(token ?? undefined, "tenant1", "shh")).toBe(true);
-    }
-  });
-
-  it("one script chains TWO different MCP servers deterministically — the core multi-MCP ask", async () => {
-    const hubSpy = vi.fn(async (req: Request) => {
-      const url = new URL(req.url);
-      if (url.pathname.endsWith("/mcp-servers")) {
-        return new Response(JSON.stringify({ data: [{ id: "srv-a", name: "server-a" }, { id: "srv-b", name: "server-b" }] }), { status: 200 });
-      }
-      if (url.pathname.endsWith("/tools/call")) {
-        const body = await req.json<{ tool_name: string; input: Record<string, unknown> }>();
-        if (url.pathname.includes("srv-a")) return new Response(JSON.stringify({ result: { value: 42 } }), { status: 200 });
-        if (url.pathname.includes("srv-b")) return new Response(JSON.stringify({ result: { acked: body.input["value"] } }), { status: 200 });
-      }
-      return new Response("not found", { status: 404 });
-    });
-    const mcpHubWorker = { fetch: hubSpy } as unknown as Fetcher;
-
-    const runner = buildCodeRunner({ loader: fakeLoader(), mcpHubWorker, platformSecret: "shh" });
-    const result = await runner.run({
-      name: "multi-mcp-chain",
-      code: `
-        export async function run(args, ctx) {
-          const a = await ctx.mcp.call("server-a", "get_value", {});
-          const b = await ctx.mcp.call("server-b", "act_on_value", { value: a.result.value });
-          return { chained: b.result.acked };
-        }
-      `,
-      tier: 2,
-      args: {},
-      spaceId: "space1",
-      agentId: "agent1",
-      tenantId: "tenant1",
-    });
-    expect(result.ok).toBe(true);
-    expect(result.output).toEqual({ chained: 42 });
-  });
-
-  it("ctx.mcp.list_servers/list_tools work without a tool call", async () => {
-    const hubSpy = vi.fn(async (req: Request) => {
-      const url = new URL(req.url);
-      if (url.pathname.endsWith("/mcp-servers")) {
-        return new Response(JSON.stringify({ data: [{ id: "srv-1", name: "whop" }] }), { status: 200 });
-      }
-      if (url.pathname.endsWith("/tools")) {
-        return new Response(JSON.stringify({ tools: [{ name: "list_members" }] }), { status: 200 });
-      }
-      return new Response("not found", { status: 404 });
-    });
-    const mcpHubWorker = { fetch: hubSpy } as unknown as Fetcher;
-    const runner = buildCodeRunner({ loader: fakeLoader(), mcpHubWorker, platformSecret: "shh" });
-    const result = await runner.run({
-      name: "list-mcp",
-      code: `export async function run(args, ctx) { const servers = await ctx.mcp.list_servers(); const tools = await ctx.mcp.list_tools("whop"); return { servers, tools }; }`,
-      tier: 2,
-      args: {},
-      spaceId: "space1",
-      agentId: "agent1",
-      tenantId: "tenant1",
-    });
-    expect(result.ok).toBe(true);
-    expect(result.output).toEqual({ servers: [{ id: "srv-1", name: "whop" }], tools: { tools: [{ name: "list_members" }] } });
-  });
-
-  it("ctx.mcp is absent (not a crash) when no mcpHubWorker binding is configured", async () => {
-    const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({
-      name: "no-mcp",
-      code: `export async function run(args, ctx) { return typeof ctx.mcp; }`,
-      tier: 2,
-      args: {},
-      spaceId: "space1",
-      agentId: "agent1",
-      tenantId: "tenant1",
-    });
-    expect(result.ok).toBe(true);
-    expect(result.output).toBe("undefined");
+    expect(result.error).toContain("browser_runtime_unavailable");
   });
 });
 
 describe("code-runner — Tier 6 container execution", () => {
   it("forwards to the ToolSandboxDO's /exec route and returns its result", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: { stdout: "hi" } }), { status: 200 }));
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, result: { stdout: "hi" } }), {
+        status: 200,
+      })
+    );
     const toolSandbox = {
       idFromName: vi.fn().mockReturnValue("do-id"),
       get: vi.fn().mockReturnValue({ fetch: fetchSpy }),
     } as unknown as DurableObjectNamespace;
 
-    const runner = buildCodeRunner({ toolSandbox });
+    const runner = testRunner({ toolSandbox });
     const result = await runner.run({
       name: "code-exec.execute_bash",
       code: "export async function run(args){ return {stdout:'hi'} }",
@@ -320,13 +291,25 @@ describe("code-runner — Tier 6 container execution", () => {
   });
 
   it("surfaces a container-side error without throwing", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, error: "build failed" }), { status: 200 }));
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: false, error: "build failed" }), {
+        status: 200,
+      })
+    );
     const toolSandbox = {
       idFromName: vi.fn().mockReturnValue("do-id"),
       get: vi.fn().mockReturnValue({ fetch: fetchSpy }),
     } as unknown as DurableObjectNamespace;
-    const runner = buildCodeRunner({ toolSandbox });
-    const result = await runner.run({ name: "x", code: "bad code", tier: 6, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
+    const runner = testRunner({ toolSandbox });
+    const result = await runner.run({
+      name: "x",
+      code: "bad code",
+      tier: 6,
+      args: {},
+      spaceId: "s",
+      agentId: "a",
+      tenantId: "t",
+    });
     expect(result.ok).toBe(false);
     expect(result.error).toBe("build failed");
   });
@@ -335,12 +318,37 @@ describe("code-runner — Tier 6 container execution", () => {
   // project shares one container + R2 workspace.
   it("addresses the sandbox DO per project, not per agent — two agents in the same project share one container", async () => {
     const idFromName = vi.fn().mockReturnValue("do-id");
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
-    const toolSandbox = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
-    const runner = buildCodeRunner({ toolSandbox });
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })
+      );
+    const toolSandbox = {
+      idFromName,
+      get: vi.fn().mockReturnValue({ fetch: fetchSpy }),
+    } as unknown as DurableObjectNamespace;
+    const runner = testRunner({ toolSandbox });
 
-    await runner.run({ name: "x", code: "c", tier: 6, args: {}, spaceId: "space1", agentId: "agent-A", tenantId: "t", projectId: "proj-1" });
-    await runner.run({ name: "x", code: "c", tier: 6, args: {}, spaceId: "space1", agentId: "agent-B", tenantId: "t", projectId: "proj-1" });
+    await runner.run({
+      name: "x",
+      code: "c",
+      tier: 6,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent-A",
+      tenantId: "t",
+      projectId: "proj-1",
+    });
+    await runner.run({
+      name: "x",
+      code: "c",
+      tier: 6,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent-B",
+      tenantId: "t",
+      projectId: "proj-1",
+    });
 
     expect(idFromName).toHaveBeenNthCalledWith(1, "sandbox:space1:proj-1");
     expect(idFromName).toHaveBeenNthCalledWith(2, "sandbox:space1:proj-1");
@@ -348,27 +356,55 @@ describe("code-runner — Tier 6 container execution", () => {
 
   it("falls back to a fixed per-space slot when projectId is absent (the Space Assistant)", async () => {
     const idFromName = vi.fn().mockReturnValue("do-id");
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
-    const toolSandbox = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
-    const runner = buildCodeRunner({ toolSandbox });
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })
+      );
+    const toolSandbox = {
+      idFromName,
+      get: vi.fn().mockReturnValue({ fetch: fetchSpy }),
+    } as unknown as DurableObjectNamespace;
+    const runner = testRunner({ toolSandbox });
 
-    await runner.run({ name: "x", code: "c", tier: 6, args: {}, spaceId: "space1", agentId: "naelao-agent", tenantId: "t" });
+    await runner.run({
+      name: "x",
+      code: "c",
+      tier: 6,
+      args: {},
+      spaceId: "space1",
+      agentId: "naelao-agent",
+      tenantId: "t",
+    });
 
     expect(idFromName).toHaveBeenCalledWith("sandbox:space1:_assistant");
   });
 
   it("sends spaceId/projectId to the sandbox DO so it can sync the right R2 workspace prefix", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })
+      );
     const toolSandbox = {
       idFromName: vi.fn().mockReturnValue("do-id"),
       get: vi.fn().mockReturnValue({ fetch: fetchSpy }),
     } as unknown as DurableObjectNamespace;
-    const runner = buildCodeRunner({ toolSandbox });
+    const runner = testRunner({ toolSandbox });
 
-    await runner.run({ name: "x", code: "c", tier: 6, args: { a: 1 }, spaceId: "space1", agentId: "agent1", tenantId: "t", projectId: "proj-1" });
+    await runner.run({
+      name: "x",
+      code: "c",
+      tier: 6,
+      args: { a: 1 },
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "t",
+      projectId: "proj-1",
+    });
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const req = fetchSpy.mock.calls[0]![0] as Request;
+    const req = fetchSpy.mock.calls[0]?.[0] as Request;
     const parsed = await req.json();
     expect(parsed).toMatchObject({ spaceId: "space1", projectId: "proj-1" });
   });
@@ -378,147 +414,78 @@ describe("code-runner — Tier 6 container execution", () => {
 // binding, never the base sandbox — and fails closed (not silently falling back to the base
 // sandbox, which would run the script against the wrong image's compute) when unwired.
 describe("code-runner — Tier 6 Container Marketplace routing (§A1.17 Phase L)", () => {
-  it("fails closed with a clear message when the named image has no wired binding", async () => {
+  it("fails closed until the host resolves an active installation and image binding", async () => {
+    const baseGet = vi.fn();
     const toolSandbox = {
-      idFromName: vi.fn().mockReturnValue("do-id"),
-      get: vi.fn(),
+      idFromName: vi.fn(),
+      get: baseGet,
     } as unknown as DurableObjectNamespace;
-    const runner = buildCodeRunner({ toolSandbox }); // no containerImages map at all
-
+    const runner = testRunner({ toolSandbox });
     const result = await runner.run({
-      name: "x", code: "c", tier: 6, args: {}, spaceId: "space1", agentId: "agent1", tenantId: "t",
+      name: "postgres.query",
+      code: "",
+      tier: 6,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "t",
+      projectId: "proj-1",
       containerImage: "postgres-16",
     });
-
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/postgres-16.*not available/i);
-    // Must NOT silently fall back to the base sandbox and run against the wrong compute.
-    expect(toolSandbox.get).not.toHaveBeenCalled();
-  });
-
-  it("routes to the image's own binding (not the base ToolSandboxDO) when one IS wired", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: { rows: [] } }), { status: 200 }));
-    const idFromName = vi.fn().mockReturnValue("slot-do-id");
-    const postgresNamespace = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
-    const toolSandbox = { idFromName: vi.fn(), get: vi.fn() } as unknown as DurableObjectNamespace;
-
-    const runner = buildCodeRunner({ toolSandbox, containerImages: { "postgres-16": postgresNamespace } });
-    const result = await runner.run({
-      name: "postgres.query", code: "c", tier: 6, args: { sql: "select 1" }, spaceId: "space1", agentId: "agent1", tenantId: "t",
-      projectId: "proj-1", containerImage: "postgres-16",
-    });
-
-    expect(result.ok).toBe(true);
-    expect(idFromName).toHaveBeenCalledWith("slot:postgres-16:space1:proj-1");
-    // The base sandbox binding must never be touched for an image-routed run.
-    expect((toolSandbox as unknown as { get: ReturnType<typeof vi.fn> }).get).not.toHaveBeenCalled();
+    expect(result.error).toBe("container_active_installation_required");
+    expect(baseGet).not.toHaveBeenCalled();
   });
 });
 
-// AVOS plan, step 3 — an isolate has no real package manager, so a genuinely unresolved import
-// is a deterministic "this tier structurally cannot do this" signal; a plain timeout is not.
-describe("code-runner — Execution Ladder auto-promotion (Tier 2-4 -> Tier 6)", () => {
-  function loaderThatThrows(message: string): WorkerLoaderBinding {
-    return {
-      get() {
-        return {
-          getEntrypoint() {
-            return {
-              async fetch(): Promise<Response> {
-                throw new Error(message);
-              },
-            } as unknown as Fetcher;
-          },
-        };
-      },
-    };
-  }
-
-  it("promotes to Tier 6 and returns its output when the isolate fails with an unresolved import", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: { installed: true } }), { status: 200 }));
-    const toolSandbox = { idFromName: vi.fn().mockReturnValue("do-id"), get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
-    const runner = buildCodeRunner({ loader: loaderThatThrows("Cannot find module 'pandas'"), toolSandbox });
-
+describe("code-runner — fail-closed escalation", () => {
+  it("does not promote ambient imports into a container install", async () => {
+    const fetchSpy = vi.fn();
+    const toolSandbox = {
+      idFromName: vi.fn(),
+      get: vi.fn().mockReturnValue({ fetch: fetchSpy }),
+    } as unknown as DurableObjectNamespace;
+    const approveEscalation = vi.fn(async () => true);
+    const runner = testRunner({
+      loader: fakeLoader(),
+      toolSandbox,
+      approveEscalation,
+    });
     const result = await runner.run({
-      name: "run-pandas", code: "import pandas", tier: 3, args: {}, spaceId: "space1", agentId: "agent1", tenantId: "t",
+      name: "run-package",
+      code: `import packageX from "package-x"; export async function run(){ return packageX; }`,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "t",
     });
-
-    expect(result.ok).toBe(true);
-    expect(result.output).toEqual({ installed: true });
-    expect(result.tier).toBe(6); // the promoted attempt's own tier, not the original 3
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it("forwards projectId to the promoted container run — same project's shared sandbox", async () => {
-    const idFromName = vi.fn().mockReturnValue("do-id");
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
-    const toolSandbox = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
-    const runner = buildCodeRunner({ loader: loaderThatThrows("Module not found: 'requests'"), toolSandbox });
-
-    await runner.run({
-      name: "x", code: "c", tier: 2, args: {}, spaceId: "space1", agentId: "agent1", tenantId: "t", projectId: "proj-1",
-    });
-
-    expect(idFromName).toHaveBeenCalledWith("sandbox:space1:proj-1");
-  });
-
-  it("reports BOTH errors, in order, when the promoted container run also fails", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, error: "pip install failed" }), { status: 200 }));
-    const toolSandbox = { idFromName: vi.fn().mockReturnValue("do-id"), get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
-    const runner = buildCodeRunner({ loader: loaderThatThrows("Cannot find module 'x'"), toolSandbox });
-
-    const result = await runner.run({ name: "x", code: "c", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
-
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Cannot find module 'x'");
-    expect(result.error).toContain("pip install failed");
-  });
-
-  it("does NOT promote a plain timeout — a slower container isn't obviously the fix", async () => {
-    const fetchSpy = vi.fn();
-    const toolSandbox = { idFromName: vi.fn().mockReturnValue("do-id"), get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
-    const abortLoader: WorkerLoaderBinding = {
-      get() {
-        return {
-          getEntrypoint() {
-            return {
-              async fetch(): Promise<Response> {
-                const e = new Error("aborted");
-                e.name = "AbortError";
-                throw e;
-              },
-            } as unknown as Fetcher;
-          },
-        };
-      },
-    };
-    const runner = buildCodeRunner({ loader: abortLoader, toolSandbox, isolateTimeoutMs: 5 });
-
-    const result = await runner.run({ name: "x", code: "c", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
-
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("timed out");
-    expect(result.tier).toBe(2); // never promoted
-    expect(fetchSpy).not.toHaveBeenCalled(); // the container was never even attempted
-  });
-
-  it("does NOT promote when no ToolSandboxDO binding is wired — the original isolate error stands", async () => {
-    const runner = buildCodeRunner({ loader: loaderThatThrows("Cannot find module 'x'") }); // no toolSandbox at all
-    const result = await runner.run({ name: "x", code: "c", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
-    expect(result.ok).toBe(false);
-    expect(result.error).toBe("Cannot find module 'x'");
-    expect(result.tier).toBe(2);
-  });
-
-  it("does NOT promote an unrelated runtime error (e.g. a real bug in the script)", async () => {
-    const fetchSpy = vi.fn();
-    const toolSandbox = { idFromName: vi.fn().mockReturnValue("do-id"), get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
-    const runner = buildCodeRunner({ loader: loaderThatThrows("TypeError: x is not a function"), toolSandbox });
-
-    const result = await runner.run({ name: "x", code: "c", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
-
-    expect(result.ok).toBe(false);
-    expect(result.tier).toBe(2);
+    expect(result.error).toContain("code_dependency_not_declared");
+    expect(approveEscalation).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("requires actor/run identity even when a container binding and policy callback exist", async () => {
+    const toolSandbox = {
+      idFromName: vi.fn(),
+      get: vi.fn(),
+    } as unknown as DurableObjectNamespace;
+    const runner = buildCodeRunner({
+      toolSandbox,
+      authorizeContainer: async () => true,
+    });
+    const result = await runner.run({
+      name: "container",
+      code: "",
+      tier: 6,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "t",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("container_authorized_actor_run_required");
+    expect(toolSandbox.get).not.toHaveBeenCalled();
   });
 });
