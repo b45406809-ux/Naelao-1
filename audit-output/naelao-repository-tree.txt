@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1941
-Files with source or executable-configuration extensions: 1735
-Inventory revision: 2026-10-20 audit refresh at a9de2354
+Files: 1942
+Files with source or executable-configuration extensions: 1736
+Inventory revision: 2026-10-20 audit refresh at 23227de1
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1860,6 +1860,7 @@ workers/
         workflow-host.ts
         workflow-orchestration.test.ts
         workflow-orchestration.ts
+        workflow-state.test.ts
         workflow-state.ts
     THIRD-PARTY-NOTICES.md
     tsconfig.json

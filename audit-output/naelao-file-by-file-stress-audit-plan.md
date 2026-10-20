@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1941` tracked files; `1735` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt`.
+Inventory basis: `1942` tracked files; `1736` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -2056,6 +2056,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/workflows/workflow-host.ts`
 - [ ] `workers/agents/src/workflows/workflow-orchestration.test.ts`
 - [ ] `workers/agents/src/workflows/workflow-orchestration.ts`
+- [ ] `workers/agents/src/workflows/workflow-state.test.ts`
 - [ ] `workers/agents/src/workflows/workflow-state.ts`
 
 ### `workers/analytics`
