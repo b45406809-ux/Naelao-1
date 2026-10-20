@@ -848,3 +848,5 @@ Validation: profile/export/erasure route suite passed 5/5, including child-busin
 Refreshed the tracked tree after code commit `6600e188`; tracked/source counts are unchanged and prior review marks are retained.
 
 Erasure follow-up: traced the D1 recovery tables and found password-reset tokens, email-verification tokens, and WhatsApp OTP/magic-link challenge records also survived anonymization. The self-service erasure now clears all three user-scoped tables before anonymizing the profile; retries remain safe if a D1 delete or update fails. Regression coverage asserts all three cleanup statements. Focused route tests passed 5/5 and the full Spaces suite passed 64 files / 247 tests with Spaces TypeScript and `git diff --check` clean.
+
+Refreshed the tracked inventory at code commit `cd8cc433`; counts remain 1954 tracked files / 1748 source or executable-configuration files.
