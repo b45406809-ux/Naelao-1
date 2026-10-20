@@ -101,6 +101,34 @@ describe("POST /agents/:agentId/script/run — auth boundary", () => {
     expect(res.status).toBe(200);
     expect(env.__runCalls).toHaveLength(1);
   });
+
+  it("never forwards caller-supplied durable continuation state to the agent DO", async () => {
+    const env = makeEnv();
+    const validToken = await mintInternalToken(SECRET, "tenant-a");
+    const res = await app.fetch(
+      scriptRunReq({
+        goal: "do something",
+        spaceId: "space-1",
+        tenantId: "tenant-a",
+        humanAnswer: "approved",
+        resumeSteps: [{ name: "send_payment", params: { amount: 500 }, ok: true }],
+        ledgerKey: "some-other-run",
+        deliberationRound: 2,
+      }, {
+        "x-naelao-tenant-id": "tenant-a",
+        "x-naelao-internal-token": validToken,
+      }),
+      env,
+    );
+
+    expect(res.status).toBe(200);
+    expect(env.__runCalls).toHaveLength(1);
+    const forwarded = env.__runCalls[0] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty("humanAnswer");
+    expect(forwarded).not.toHaveProperty("resumeSteps");
+    expect(forwarded).not.toHaveProperty("ledgerKey");
+    expect(forwarded).not.toHaveProperty("deliberationRound");
+  });
 });
 
 describe("POST /spaces/:spaceId/sessions/:sessionId/agent/run — auth boundary", () => {

@@ -4471,7 +4471,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }, { status: 201 });
   }
 
-  private async handleScriptRun(request: Request, resumeApprovalEvidence?: ApprovedActionEvidence): Promise<Response> {
+  private async handleScriptRun(
+    request: Request,
+    continuation?: {
+      approvedActionEvidence?: ApprovedActionEvidence;
+      /** Continuation data comes only from a server-side durable checkpoint. Never read it from
+       * the ordinary /script/run JSON body: those fields can forge prior work or a human answer. */
+      humanAnswer?: string;
+      ledgerKey?: string;
+      resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+      deliberationRound?: number;
+    },
+  ): Promise<Response> {
     const body = await request.json<{
       goal: string;
       spaceId: string;
@@ -4511,12 +4522,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       /** The id the caller already handed to its client, so the persisted trace is reachable
        *  through GET .../runs/:runId/trace. Optional — direct callers omit it. */
       runId?: string;
-      resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
-      humanAnswer?: string;
-      /** The ORIGINAL run's id, so the action ledger recognises a resume as the same task. */
-      ledgerKey?: string;
-      /** Durable continuation state: the completed deliberation round must survive DO hibernation. */
-      deliberationRound?: number;
       /** Phase 2 item 13 — opt-in progressive tool disclosure (see ScriptEngineEnv's own doc).
        *  Resolved by the caller (index.ts) from an explicit per-request override or the space's
        *  own stored productConfig.modelConfig.progressiveToolDisclosure; defaults to false/full
@@ -4565,9 +4570,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return this.finishScriptFailure(runId, "invalid templateMode", 400, "bad_request");
     }
     const templateMode: TemplateMode = body.templateMode ?? "cowork_studio";
-    const deliberationRound = body.deliberationRound === undefined
+    const deliberationRound = continuation?.deliberationRound === undefined
       ? undefined
-      : Math.max(0, Math.min(2, Math.trunc(body.deliberationRound))) as 0 | 1 | 2;
+      : Math.max(0, Math.min(2, Math.trunc(continuation.deliberationRound))) as 0 | 1 | 2;
 
     if (!body.goal || !spaceId) {
       return this.finishScriptFailure(runId, "goal and spaceId are required", 400, "bad_request");
@@ -5044,10 +5049,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // Checked once per step, so a Stop button actually stops something. Only wired here —
         // the interactive path — since a cron wake or channel drain has nobody watching it.
         shouldCancel: () => this.isCancelRequested(runId),
-        ...(resumeApprovalEvidence ? { preApprovedActions: [resumeApprovalEvidence] } : {}),
-        ...(body.ledgerKey ? { ledgerKey: body.ledgerKey } : {}),
-        ...(body.resumeSteps?.length ? { resumeSteps: body.resumeSteps } : {}),
-        ...(body.humanAnswer ? { humanAnswer: body.humanAnswer } : {}),
+        ...(continuation?.approvedActionEvidence ? { preApprovedActions: [continuation.approvedActionEvidence] } : {}),
+        ...(continuation?.ledgerKey ? { ledgerKey: continuation.ledgerKey } : {}),
+        ...(continuation?.resumeSteps?.length ? { resumeSteps: continuation.resumeSteps } : {}),
+        ...(continuation?.humanAnswer ? { humanAnswer: continuation.humanAnswer } : {}),
         ...(deliberationRound !== undefined ? { deliberationRound } : {}),
         ...(typeof maxStepsFromContext === "number" ? { maxSteps: maxStepsFromContext } : {}),
         ...(typeof maxTokensFromContext === "number" ? { maxTokens: maxTokensFromContext } : {}),
@@ -6261,7 +6266,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       `UPDATE interrupted_runs SET continued_run_id = ? WHERE run_id = ?`, continuedRunId, runId
     );
 
-    const res = await this.fetch(new Request("http://agent-do/script/run", {
+    const res = await this.handleScriptRun(new Request("http://agent-do/script/run", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -6270,13 +6275,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         userId: row["user_id"] ?? undefined, callerRole: row["caller_role"] ?? undefined,
         model: row["model"] ?? undefined, goal: row["goal"],
         runId: continuedRunId,
-        // THE point of this route — same key as the original, so completed actions replay
-        // instead of re-executing.
-        ledgerKey: runId,
-        resumeSteps: steps,
-        deliberationRound: Math.max(0, Math.min(2, Number(row["deliberation_round"] ?? 0))),
       }),
-    }));
+    }), {
+      // THE point of this continuation — same key as the original, so completed actions replay
+      // instead of re-executing. Checkpoint state never crosses the public JSON boundary.
+      ledgerKey: runId,
+      resumeSteps: steps,
+      deliberationRound: Math.max(0, Math.min(2, Number(row["deliberation_round"] ?? 0))),
+    });
 
     this.ctx.storage.sql.exec(
       `UPDATE interrupted_runs SET status = 'continued' WHERE run_id = ?`, runId
@@ -6393,10 +6399,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // first pass already did — the model is shown those steps, but being shown is not being
       // prevented, and the cost of it deciding to redo one is a second real side effect.
       runId: crypto.randomUUID(),
-      ledgerKey: row["run_id"] ?? undefined,
-      ...(humanAnswer ? { humanAnswer } : {}),
-      resumeSteps: steps,
-      deliberationRound: Math.max(0, Math.min(2, Number(row["deliberation_round"] ?? 0))),
     };
 
     // Recorded BEFORE the continuation actually executes (which can take as long as the rest of
@@ -6417,7 +6419,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         },
         body: JSON.stringify(resumeBody),
       }),
-      approvedActionEvidence
+      {
+        ...(approvedActionEvidence ? { approvedActionEvidence } : {}),
+        ...(humanAnswer ? { humanAnswer } : {}),
+        ...(row["run_id"] ? { ledgerKey: row["run_id"] } : {}),
+        resumeSteps: steps as Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>,
+        deliberationRound: Math.max(0, Math.min(2, Number(row["deliberation_round"] ?? 0))),
+      }
     );
 
     this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'resumed' WHERE approval_id = ?`, approvalId);

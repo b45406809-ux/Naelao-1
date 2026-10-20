@@ -896,7 +896,7 @@ app.get("/customer-voice/twilio/stream/:token", async (c) => {
 
 // Cloudflare Agents' voice SDK owns the browser WebSocket/SFU-compatible transport. Every
 // connection must carry an owner-minted ticket that is bound to this exact Agent instance.
-app.all("/agents/*", async (c) => {
+app.all("/agents/*", async (c, next) => {
   const authorize = async (request: Request, route: { className: string; name: string }) => {
     if (route.className !== "OWNER_VOICE_AGENT") return new Response("Not found", { status: 404 });
     const ticket = new URL(request.url).searchParams.get("ticket") ?? "";
@@ -905,7 +905,11 @@ app.all("/agents/*", async (c) => {
     return undefined;
   };
   const response = await routeAgentRequest(c.req.raw, c.env, { onBeforeConnect: authorize, onBeforeRequest: authorize });
-  return response ?? c.notFound();
+  // This wildcard also covers ordinary agent HTTP routes registered below (for example
+  // /agents/:agentId/script/run). Cloudflare's Agent router returns null when the path does not
+  // target an Agent RPC/DO endpoint; let Hono continue to the route table instead of turning all
+  // such requests into a 404 here.
+  return response ?? next();
 });
 
 // Extract caller identity from request headers (set by router after JWT validation)
