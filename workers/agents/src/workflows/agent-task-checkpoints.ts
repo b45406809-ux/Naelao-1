@@ -6,6 +6,8 @@ import type { AgentTaskParams } from "./AgentTaskWorkflow.js";
 
 /** Static workflows use the same journal and pointer boundary as developer workflows. */
 export async function checkpointAgentTask(env: Env, runId: string, params: AgentTaskParams, native: WorkflowStep): Promise<{ step: WorkflowStep; identity: DurableWorkflowIdentity }> {
+  if (!runId || params.taskId !== runId) throw new Error("agent_task_workflow_run_scope_mismatch");
+  if (params.taskDoName !== `tasks:${params.spaceId}`) throw new Error("agent_task_workflow_task_do_scope_mismatch");
   if (!params.userId) throw new Error("agent_task_workflow_actor_required");
   if (!env.SCRIPTS_R2 || !env.WORKFLOW_BUILD_ID || !/^[a-f0-9]{64}$/.test(env.WORKFLOW_BUILD_ID)) throw new Error("agent_task_workflow_build_pin_required");
   const scope = { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}), actorId: params.userId, agentId: params.agentId ?? "naelao-agent", runId };

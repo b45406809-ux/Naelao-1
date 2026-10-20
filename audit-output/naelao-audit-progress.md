@@ -620,5 +620,11 @@ Continued tracing the same effect path and found that a process crash after the 
 
 Validation: workflow journal and WorkflowRunDO suites passed 6/6; Agents TypeScript and `git diff --check` passed. Regressions cover receipt-plus-credit commit, repeated commit without double-counting, and invalid usage without committing. This closes the local journal gap; it does not simulate a real DO transaction failure or reconcile indeterminate external effects.
 
+### Static agent-task checkpoint scope
+
+The checkpoint helper accepted its run ID and TaskDO name on the assumption that callers always used the same task ID and Space. It now rejects an instance ID that differs from `params.taskId` and rejects TaskDO names other than `tasks:${spaceId}` before accessing bindings. Added regressions for both cross-scope mismatches.
+
+Validation: checkpoint, journal, and WorkflowRunDO focused tests passed 8/8; Agents TypeScript and `git diff --check` passed. The two task boundary checks are covered; the full AgentTaskWorkflow event lifecycle and TaskDO integration still need end-to-end review.
+
 
 Refreshed the tracked inventory after adding `workers/agents/src/workflows/workflow-state.test.ts`: 1,942 tracked files and 1,736 source/config files. The tree snapshot is tied to code commit `23227de1`; 191 scoped file checks remain recorded.
