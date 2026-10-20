@@ -14,7 +14,7 @@ lines = [
     "Inventory source: git ls-files (tracked files only)",
     f"Files: {len(paths)}",
     f"Files with source or executable-configuration extensions: {len(source_paths)}",
-    "Inventory revision: 2026-10-20 audit refresh at 45d54a35",
+    "Inventory revision: 2026-10-20 audit refresh at 2bc9d755",
     "Ignored dependencies, caches, generated build output, and .git internals are excluded.",
     "Empty directories are not represented because Git does not track them.",
     "",
@@ -48,7 +48,7 @@ try:
     caveats = "## Audit caveats" + tail.split("## Audit caveats", 1)[1]
 except IndexError:
     caveats = ""
-prefix = re.sub(r"Inventory basis: .*", f"Inventory basis: `{len(paths)}` tracked files; `{len(source_paths)}` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `45d54a35`.", prefix)
+prefix = re.sub(r"Inventory basis: .*", f"Inventory basis: `{len(paths)}` tracked files; `{len(source_paths)}` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `2bc9d755`.", prefix)
 sections = ["## File-by-file checklist", "", "Check each file only after its behavior and runtime relationships are traced and recorded. Config, schema, and deployment files are included because they affect runtime behavior and security.", ""]
 groups = {}
 for p in source_paths:
