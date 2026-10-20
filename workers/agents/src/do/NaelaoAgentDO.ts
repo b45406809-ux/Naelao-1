@@ -102,7 +102,7 @@ import type { TemplateMode, UniversalAgentManifest, UniversalAgentRole } from "@
 import { composeUniversalPrompt } from "../script-engine/index.js";
 import { framePlannerFirstGoal } from "../script-engine/planner-first.js";
 import { UNIVERSAL_AGENT_BASELINE_PREBUILTS, UNIVERSAL_PLANNER_PREBUILTS } from "../script-engine/agent-topology.js";
-import { selectDefaultWorkerCapabilities } from "../script-engine/worker-capabilities.js";
+import { prioritizeWorkerSkillNames, selectDefaultWorkerCapabilities } from "../script-engine/worker-capabilities.js";
 import {
   sanitizeSubAgentOutput,
   safeJsonParse,
@@ -3654,7 +3654,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             const workerPrebuilts = runtimeEnv.workerPrebuiltCapabilities.filter(name => !(UNIVERSAL_PLANNER_PREBUILTS as readonly string[]).includes(name));
             const skillLibrary = new SkillLibrary(runtimeEnv.scriptsBucket, spaceId);
             const skillNames = await skillLibrary.list().catch(() => [] as string[]);
-            const skillCandidates = (await Promise.all(skillNames.slice(0, 100).map(async name => {
+            const skillCandidates = (await Promise.all(prioritizeWorkerSkillNames(goal, skillNames).map(async name => {
               const metadata = await skillLibrary.readMetadata(name).catch(() => null);
               return metadata && metadata.role_target !== "PLANNER_ORCHESTRATION"
                 ? { name, description: metadata.description.slice(0, 500) }

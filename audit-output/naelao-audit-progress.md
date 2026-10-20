@@ -555,3 +555,9 @@ Validation: malformed publication/ingress plus ConcurrencyDO tests passed (18 te
 Recounted tracked repository files after the earlier audit additions. The previous tree listed 1,888 files / 1,682 source and executable-configuration files; the tracked tree now contains 1,939 / 1,733. Refreshed `naelao-repository-tree.txt` from `git ls-files` and rebuilt the source-file checklist while preserving 176 already checked rows. Temporary untracked `work/`, root test reports, and failure lists are excluded. The platform-surface route/worker discovery index remains unchanged because this tranche altered existing routes and DOs rather than adding registrations. Inventory is tied to commit `b928acb7`; audit findings remain open.
 
 Refreshed root-workspace validation after the inventory and worker changes: direct local Vitest run passed 308 files / 1,356 tests with no failures in 92 seconds. This run uses the currently configured workspace projects; it is not a substitute for build/deploy or live provider/DO load checks.
+
+## Bounded task-relevant skill discovery (2026-10-20)
+
+Default-worker delegation read metadata only for the first 100 R2 skill names, so an otherwise relevant skill later in a large library could never reach the decision selector. The bounded scan now ranks valid skill names by task-term overlap with deterministic tie-breaking before loading up to 100 descriptions. Added coverage showing a conversation-research skill at position 151 is selected first without increasing metadata reads.
+
+Validation: worker-capability and skill-role-targeting suites passed 10/10; Agents TypeScript passed. Description-based ranking and the OpenRouter capability filter remain advisory; signed parent tool/skill authority is still the execution boundary.

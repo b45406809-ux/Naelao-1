@@ -191,6 +191,28 @@ function taskTokens(text: string): Set<string> {
       .filter((token) => token.length > 2)
   );
 }
+
+/** Stable, bounded metadata scan: prioritize task terms found in skill names before the R2 read cap. */
+export function prioritizeWorkerSkillNames(
+  task: string,
+  names: readonly string[],
+  limit = 100
+): string[] {
+  const tokens = taskTokens(task);
+  const safeLimit = Number.isSafeInteger(limit) ? Math.max(0, Math.min(500, limit)) : 100;
+  return [...new Set(names)]
+    .filter((name) => /^[a-zA-Z0-9._-]{1,128}$/.test(name))
+    .map((name) => {
+      const nameTokens = taskTokens(name.replace(/[._-]/g, " "));
+      let score = 0;
+      for (const token of tokens) if (nameTokens.has(token)) score++;
+      return { name, score };
+    })
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+    .slice(0, safeLimit)
+    .map((item) => item.name);
+}
+
 function rankSkills(
   task: string,
   skills: readonly WorkerSkillCandidate[]

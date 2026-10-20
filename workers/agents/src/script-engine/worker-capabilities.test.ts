@@ -3,6 +3,7 @@ import { PREBUILT_SCRIPTS } from "./prebuilt/index.js";
 import { UNIVERSAL_PLANNER_PREBUILTS } from "./agent-topology.js";
 import {
   DEFAULT_WORKER_CAPABILITY_BUNDLES,
+  prioritizeWorkerSkillNames,
   selectDefaultWorkerCapabilities,
 } from "./worker-capabilities.js";
 
@@ -136,6 +137,16 @@ describe("task-filtered default worker capabilities", () => {
       (name) => name !== "plan" && !plannerOnly.has(name) && !grouped.has(name)
     );
     expect(missing).toEqual([]);
+  });
+
+  it("prioritizes task-matching skill names beyond the bounded metadata scan prefix", () => {
+    const names = Array.from({ length: 150 }, (_, index) => `skill-${String(index).padStart(3, "0")}`);
+    names.push("zz-conversation-research");
+    const selected = prioritizeWorkerSkillNames("research the conversation history", names, 100);
+    expect(selected).toHaveLength(100);
+    expect(selected[0]).toBe("zz-conversation-research");
+    expect(selected).not.toContain("unsafe/skill");
+    expect(prioritizeWorkerSkillNames("task", ["../escape", "valid-skill"], 100)).toEqual(["valid-skill"]);
   });
 
   it("treats malformed decision payloads as unavailable without granting tools", async () => {
