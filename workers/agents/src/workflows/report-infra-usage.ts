@@ -6,7 +6,7 @@
  * different Env shape), so this is a small standalone equivalent rather than a DO method.
  * Best-effort throughout — a reporting failure never fails the workflow step it's timing.
  */
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { infraTimeToCredits, BILLING_CORE_RATE_CARD_VERSION } from "@naelao/billing-core";
 import type { Env } from "../env.js";
 
@@ -72,7 +72,7 @@ export async function reserveWorkflowBudget(
       ...(expiresAt ? { expires_at: new Date(expiresAt).toISOString() } : {}) }),
   }));
   if (!response.ok) throw new Error(`workflow budget reservation failed (${response.status})`);
-  const body = await response.json<{ reservation_id?: string }>();
+  const body = await readBoundedResponseJson<{ reservation_id?: string }>(response, 64 * 1024);
   return body.reservation_id ?? workflowId;
 }
 

@@ -18,6 +18,15 @@ describe("verified extension workflow identity", () => {
     expect(text).not.toHaveBeenCalled();
   });
 
+  it("rejects an oversized membership response before using its grant", async () => {
+    const env = {
+      PLATFORM_SECRET: "test-secret",
+      SPACES_WORKER: { fetch: async () => new Response(new Uint8Array(2 * 1024 * 1024 + 1)) },
+      SCRIPTS_R2: { get: async () => ({ size: 0, text: async () => "" }) },
+    } as unknown as DurableWorkflowHostEnv;
+    await expect(readWorkflowGrant(env, { tenantId: "tenant", spaceId: "space", actorId: "user", agentId: "agent" })).rejects.toThrow();
+  });
+
   it("recomputes the full immutable R2 release digest", async () => {
     const prefix = "spaces/space/extensions/ext_customs/1.0.0/";
     const files = new Map([[`${prefix}place-order.ts`, "export function run() { return 1; }"], [`${prefix}console.html`, "<main>Hi</main>"]]);

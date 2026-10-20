@@ -11,7 +11,7 @@
  */
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import type { Env } from "../env.js";
 import { reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
 import type { BusinessContext } from "../launchpad/business-context.js";
@@ -388,7 +388,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       const stub = this.env.TASK_DO.get(this.env.TASK_DO.idFromName(p.taskDoName));
       const resp = await stub.fetch(`http://task-do/tasks/${p.taskId}`);
       if (!resp.ok) throw new Error("workflow_task_ledger_unavailable");
-      const task = await resp.json<{ status?: string; result?: string | null; error?: string | null }>();
+      const task = await readBoundedResponseJson<{ status?: string; result?: string | null; error?: string | null }>(resp, 2 * 1024 * 1024);
       // "awaiting_approval" is deliberately NOT recorded-and-short-circuited here — unlike
       // complete/failed, it isn't a terminal outcome the ledger should ever treat as "the run
       // happened, don't redo it": the whole point of a suspended run is that it resumes later

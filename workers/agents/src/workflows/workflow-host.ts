@@ -1,5 +1,5 @@
 import { durableWorkflowRunId, serializeWorkflowCheckpoint, validateDurableWorkflowIdentity, validateWorkflowPointer, workflowArtifactPrefix, type DurableWorkflowIdentity, type WorkflowCheckpointPointer, type WorkflowClass } from "@naelao/agent-sdk";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import type { WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { SkillLibrary } from "../script-engine/skill-library.js";
 import type { StoredScript } from "../script-engine/types.js";
@@ -90,7 +90,7 @@ export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick
   const base = "http://spaces-worker/spaces/" + encodeURIComponent(scope.spaceId);
   const response = await env.SPACES_WORKER.fetch(new Request(base + "/members", { headers }));
   if (!response.ok) throw new Error("workflow_membership_unavailable");
-  const members = await response.json<{ data?: Array<Record<string, unknown>> }>();
+  const members = await readBoundedResponseJson<{ data?: Array<Record<string, unknown>> }>(response, 2 * 1024 * 1024);
   const member = members.data?.find((row) => row.user_id === scope.actorId);
   if (!member) throw new Error("workflow_membership_revoked");
   const role = String(member.role);
@@ -98,7 +98,7 @@ export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick
   if (scope.projectId) {
     const projectResponse = await env.SPACES_WORKER.fetch(new Request(base + "/projects/" + encodeURIComponent(scope.projectId) + "/members", { headers }));
     if (!projectResponse.ok) throw new Error("workflow_project_unavailable");
-    const rows = await projectResponse.json<{ data?: Array<Record<string, unknown>> }>();
+    const rows = await readBoundedResponseJson<{ data?: Array<Record<string, unknown>> }>(projectResponse, 2 * 1024 * 1024);
     projectMember = rows.data?.find((row) => row.user_id === scope.actorId) ?? null;
     if (!projectMember && role !== "owner" && role !== "admin") throw new Error("workflow_project_membership_revoked");
   }
@@ -106,7 +106,7 @@ export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick
   if (scope.installationId) {
     const installed = await env.SPACES_WORKER.fetch(new Request(base + "/workflow-installations/" + encodeURIComponent(scope.installationId), { headers }));
     if (!installed.ok) throw new Error("workflow_installation_revoked");
-    const record = await installed.json<WorkflowInstallationGrant>();
+    const record = await readBoundedResponseJson<WorkflowInstallationGrant>(installed, 2 * 1024 * 1024);
     const instance = record.instance;
     if (instance.status !== "active" || instance.tenant_id !== scope.tenantId || instance.space_id !== scope.spaceId || instance.project_id && instance.project_id !== scope.projectId || instance.user_id && instance.user_id !== scope.actorId) throw new Error("workflow_installation_scope_mismatch");
     installation = record;

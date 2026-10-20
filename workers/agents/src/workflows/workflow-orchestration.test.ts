@@ -213,4 +213,13 @@ describe("container work inside durable workflows", () => {
     ]);
     expect(fetch).toHaveBeenCalledTimes(3);
   });
+
+  it("rejects an oversized scheduled-job response", async () => {
+    const tools = { availableOperations: () => [], create: vi.fn() };
+    const hooks = createWorkflowHooks({
+      PLATFORM_SECRET: "test-secret",
+      SPACES_WORKER: { fetch: async () => new Response(new Uint8Array(64 * 1024 + 1)) },
+    } as never, { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", actorId: "owner" }, "parent", tools as never);
+    await expect(hooks.workflowSchedule?.("nightly", "0 0 * * *")).rejects.toThrow();
+  });
 });

@@ -20,6 +20,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 
 const TASK_TTL_MS = 24 * 60 * 60 * 1000;
 const LONG_POLL_MAX_MS = 30_000;
@@ -71,6 +72,14 @@ export class TaskDO extends DurableObject {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      try {
+        request = new Request(request, { body: await readBoundedRequestBytes(request, 1024 * 1024) });
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+        return Response.json({ error_code: "invalid_request_body" }, { status: 400 });
+      }
+    }
     this.ensureInit();
     const url = new URL(request.url);
     const method = request.method;

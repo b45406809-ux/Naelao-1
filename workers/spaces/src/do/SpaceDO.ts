@@ -23,7 +23,7 @@ import type {
   TriggerCondition,
   TriggerRule,
 } from "@naelao/events";
-import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken } from "@naelao/http";
+import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
 import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
@@ -2762,6 +2762,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      try {
+        const bytes = await readBoundedRequestBytes(request, 8 * 1024 * 1024);
+        request = new Request(request, { body: bytes });
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError)
+          return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+        return Response.json({ error_code: "invalid_request_body" }, { status: 400 });
+      }
+    }
     this.ensureInit();
     const url = new URL(request.url);
     const method = request.method;

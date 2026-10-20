@@ -1,4 +1,5 @@
 import type { WorkflowClass } from "@naelao/agent-sdk";
+import { readBoundedResponseJson } from "@naelao/http";
 import type { OrchestrationHooks } from "../script-engine/types.js";
 import type { ScriptToolSurface } from "../script-engine/tool-surface.js";
 import { readWorkflowGrant, startDurableWorkflow, workflowHash, workflowHeaders, workflowRunStub, type DurableWorkflowHostEnv } from "./workflow-host.js";
@@ -25,7 +26,7 @@ export function createWorkflowHooks(env: DurableWorkflowHostEnv, scope: { tenant
         headers: await workflowHeaders(env, scope.tenantId, actorId),
       }));
       if (!response.ok) throw new Error("extension_workflow_inventory_unavailable");
-      const result = await response.json<{ installations?: WorkflowInventoryRow[] }>();
+      const result = await readBoundedResponseJson<{ installations?: WorkflowInventoryRow[] }>(response, 2 * 1024 * 1024);
       return (result.installations ?? []).flatMap(item => {
         const instanceId = item.instance?.instance_id, bundle = item.manifest?.bundle;
         if (!instanceId || item.instance?.status !== "active" || (scope.projectId && item.instance.project_id !== scope.projectId)
@@ -63,7 +64,7 @@ export function createWorkflowHooks(env: DurableWorkflowHostEnv, scope: { tenant
         body: JSON.stringify({ name: "workflow:" + name, cron_expression: cron, script_name: name, agent_id: scope.agentId, project_id: scope.projectId, created_by: actor() }),
       }));
       if (!response.ok) throw new Error("workflow_schedule_failed:" + response.status);
-      return response.json<{ id: string }>();
+      return readBoundedResponseJson<{ id: string }>(response, 64 * 1024);
     },
   };
 }

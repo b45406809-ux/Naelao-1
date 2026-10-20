@@ -1,4 +1,5 @@
 import { WorkflowEntrypoint, WorkflowEvent, WorkflowStep } from "cloudflare:workers";
+import { readBoundedResponseJson } from "@naelao/http";
 import type { Env } from "../env.js";
 
 export interface ScheduledReminderParams { spaceId: string; tenantId: string; from?: string; }
@@ -14,7 +15,8 @@ export class ScheduledReminderWorkflow extends WorkflowEntrypoint<Env, Scheduled
     const events = await step.do("query-tomorrows-confirmed-bookings", async () => {
       const response = await this.env.SPACES_WORKER.fetch(`http://spaces-do/internal/calendar/reminders?space_id=${encodeURIComponent(event.payload.spaceId)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
       if (!response.ok) throw new Error(`Calendar reminder query failed (${response.status})`);
-      const rows = (await response.json<{ events: Array<{ id: string; start_at: string; client_details: { phone?: string; phone_number?: string } }> }>()).events;
+      const rows = (await readBoundedResponseJson<{ events: Array<{ id: string; start_at: string; client_details: { phone?: string; phone_number?: string } }> }>(response, 4 * 1024 * 1024)).events;
+      if (!Array.isArray(rows) || rows.length > 1000) throw new Error("Calendar reminder result exceeds its event limit");
       return rows.map((row) => ({ id: row.id, start_at: row.start_at, phone: String(row.client_details.phone ?? row.client_details.phone_number ?? "") }));
     });
     let called = 0;
@@ -28,7 +30,7 @@ export class ScheduledReminderWorkflow extends WorkflowEntrypoint<Env, Scheduled
           body: JSON.stringify({ to: phone, max_duration_seconds: 60, purpose: "appointment_reminder", appointment }),
         });
         if (!response.ok) throw new Error(`Outbound reminder failed (${response.status})`);
-        const result = await response.json<{ response: "confirmed" | "reschedule_requested" }>();
+        const result = await readBoundedResponseJson<{ response: "confirmed" | "reschedule_requested" }>(response, 64 * 1024);
         return result.response;
       });
       called++;
