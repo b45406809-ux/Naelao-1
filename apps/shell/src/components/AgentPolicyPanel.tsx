@@ -119,7 +119,7 @@ export function AgentPolicyPanel({
                     disabled={saving || !canEdit || policy.approval_mode === "always_ask"}
                     onClick={() => void setMode("always_ask")}
                   >
-                    Asks first
+                    Ask first
                   </button>
                   <button
                     type="button"

@@ -14,25 +14,49 @@ import { writeAgentConfig } from "../../workers/agents/src/script-engine/agent-c
 import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  return {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
+  const store = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string>; uploaded: Date }>();
+  let revision = 0;
+  const bucket = {
+    async put(key: string, value: unknown, options?: R2PutOptions) {
+      const previous = store.get(key);
+      const onlyIf = options?.onlyIf as { etagMatches?: string; etagDoesNotMatch?: string } | undefined;
+      if (onlyIf?.etagMatches !== undefined && previous?.etag !== onlyIf.etagMatches) return null;
+      if (onlyIf?.etagDoesNotMatch === "*" && previous) return null;
+      const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(typeof value === "string" ? value : String(value));
+      const etag = String(++revision);
+      store.set(key, { bytes: bytes.slice(), etag, customMetadata: options?.customMetadata ?? {}, uploaded: new Date() });
+      return { etag } as R2Object;
     },
     async get(key: string) {
-      const v = store.get(key);
-      if (v === undefined) return null;
-      return { text: async () => v, uploaded: new Date() } as unknown as R2ObjectBody;
+      const item = store.get(key);
+      if (!item || item.customMetadata["deleted"] === "true") return null;
+      return {
+        size: item.bytes.byteLength,
+        etag: item.etag,
+        uploaded: item.uploaded,
+        customMetadata: item.customMetadata,
+        async text() { return new TextDecoder().decode(item.bytes); },
+        async arrayBuffer() { return item.bytes.slice().buffer; },
+      } as unknown as R2ObjectBody;
     },
-    async delete(key: string) { store.delete(key); },
-    async list() { return { objects: [], truncated: false } as unknown as R2Objects; },
-  } as unknown as R2Bucket;
+    async head(key: string) {
+      const item = store.get(key);
+      return item ? { key, size: item.bytes.byteLength, etag: item.etag, uploaded: item.uploaded, customMetadata: item.customMetadata } as R2Object : null;
+    },
+    async delete(key: string | string[]) { for (const item of Array.isArray(key) ? key : [key]) store.delete(item); },
+    async list(options?: { prefix?: string }) {
+      const prefix = options?.prefix ?? "";
+      const objects = [...store.entries()].filter(([key, item]) => key.startsWith(prefix) && item.customMetadata["deleted"] !== "true")
+        .map(([key, item]) => ({ key, size: item.bytes.byteLength, etag: item.etag, uploaded: item.uploaded, customMetadata: item.customMetadata }));
+      return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
+    },
+  };
+  return bucket as unknown as R2Bucket;
 }
 
 /** A spaces worker whose assistant-policy endpoint can be made to start failing mid-test. */
 function makeSpacesWorker() {
-  const state = { policyCalls: 0, failPolicy: false, failWith: 500, mode: "yolo" as "yolo" | "always_ask" };
+  const state = { policyCalls: 0, agentPolicyCalls: 0, failPolicy: false, failWith: 500, mode: "yolo" as "yolo" | "always_ask" };
   const fetcher = {
     async fetch(input: RequestInfo) {
       const req = input as Request;
@@ -41,6 +65,10 @@ function makeSpacesWorker() {
         state.policyCalls++;
         if (state.failPolicy) return new Response("boom", { status: state.failWith });
         return Response.json({ approval_mode: state.mode, auto_approved_actions: ["memory.recall"] });
+      }
+      if (/\/agents\/[^/]+\/policy$/.test(url.pathname)) {
+        state.agentPolicyCalls++;
+        return Response.json({ approval_mode: "always_ask", auto_approved_actions: ["knowledge-base.search"], updated_at: "2026-10-20T00:00:00.000Z" });
       }
       return new Response("not found", { status: 404 });
     },
@@ -72,6 +100,12 @@ function readPolicy(agentDO: NaelaoAgentDO, spaceId = "space1", tenantId = "tena
   }).fetchAssistantPolicy(spaceId, tenantId);
 }
 
+function readAgentPolicy(agentDO: NaelaoAgentDO, spaceId = "space1", agentId = "agent-1", tenantId = "tenant1") {
+  return (agentDO as unknown as {
+    fetchAgentPolicy(s: string, a: string, t: string): Promise<{ approval_mode: string; auto_approved_actions: string[]; updated_at?: string } | null>;
+  }).fetchAgentPolicy(spaceId, agentId, tenantId);
+}
+
 describe("assistant policy — cached per run, not re-fetched on every one", () => {
   it("hits the spaces worker once for repeated reads of the same space", async () => {
     const { agentDO, state } = await makeDO();
@@ -86,6 +120,19 @@ describe("assistant policy — cached per run, not re-fetched on every one", () 
     await readPolicy(agentDO, "space1");
     await readPolicy(agentDO, "space2");
     expect(state.policyCalls).toBe(2);
+  });
+});
+
+describe("project-agent policy reads", () => {
+  it("reads the owner-configured agent override and its policy version from SpaceDO", async () => {
+    const { agentDO, state } = await makeDO();
+    const policy = await readAgentPolicy(agentDO);
+    expect(policy).toEqual({
+      approval_mode: "always_ask",
+      auto_approved_actions: ["knowledge-base.search"],
+      updated_at: "2026-10-20T00:00:00.000Z",
+    });
+    expect(state.agentPolicyCalls).toBe(1);
   });
 });
 

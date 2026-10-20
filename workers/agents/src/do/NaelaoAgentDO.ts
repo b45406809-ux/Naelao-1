@@ -6832,17 +6832,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private async fetchAssistantPolicy(spaceId: string, tenantId: string, forceFresh = false): Promise<AssistantApprovalPolicySnapshot | null> {
     if (!this.env.SPACES_WORKER || !tenantId) return null;
 
-    // Short-lived in-DO cache. This fetch sits on the hot path of EVERY Space Assistant run, and
-    // a policy changes about as often as a person changes their mind about autonomy — roughly
-    // never, per run. Caching it removes a cross-worker round trip from every run and, more
-    // importantly, removes the failure mode that motivated this: under concurrent load against
-    // the same SpaceDO the call can fail, which fails CLOSED and kills the run. Observed for real
-    // while running the eval matrix — runs that worked fine when the space was idle came back
-    // "HITL rejected" while it was busy.
+    // Short-lived cache for ingress and non-action policy reads. The run's action gate explicitly
+    // passes forceFresh=true below, because revocation must affect the next operation in a long
+    // run. The cache still avoids redundant policy lookups outside that security-critical path.
     //
-    // 30s is deliberately short: a builder who flips autonomy off wants that to take effect
-    // promptly, and half a minute of staleness on a setting they just changed themself is the
-    // outer bound of acceptable. A cached value is never used to widen access after it expires.
+    // Non-action reads may use a 30s cache. An action gate bypasses it, so this is not a delay on
+    // an owner revoking autonomy while a run is underway.
     const cached = forceFresh ? undefined : this.assistantPolicyCache;
     if (!forceFresh && cached && cached.spaceId === spaceId && Date.now() - cached.at < 30_000) {
       return cached.policy;
