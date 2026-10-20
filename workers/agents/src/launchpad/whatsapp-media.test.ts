@@ -77,6 +77,9 @@ describe("WhatsApp attachment ingress", () => {
     const raw = { entry: [{ changes: [{ value: { messages: [{ type: "image", image: { id: "media-3" } }] } }] }] };
     const untrusted = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ url: "https://attacker.example/image", mime_type: "image/png", file_size: 3 }));
     await expect(downloadWhatsAppAttachments(raw, { accessToken: "token", fetcher: untrusted })).rejects.toThrow("whatsapp_media_url_rejected");
+    const alternatePort = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ url: "https://lookaside.fbsbx.com:8443/image", mime_type: "image/png", file_size: 3 }));
+    await expect(downloadWhatsAppAttachments(raw, { accessToken: "token", fetcher: alternatePort })).rejects.toThrow("whatsapp_media_url_rejected");
+    expect(alternatePort).toHaveBeenCalledOnce();
     const oversized = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ url: "https://lookaside.fbsbx.com/media/3", mime_type: "image/png", file_size: 6 * 1024 * 1024 }));
     await expect(downloadWhatsAppAttachments(raw, { accessToken: "token", fetcher: oversized })).rejects.toThrow("whatsapp_media_rejected");
   });

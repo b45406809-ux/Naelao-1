@@ -66,7 +66,7 @@ export async function downloadSlackAttachments(raw: JsonObject, input: { botToke
     if (!payload.ok || !file || typeof downloadUrl !== "string" || !Number.isSafeInteger(size) || size <= 0 ||
         size > MAX_FILE_BYTES || aggregateBytes + size > MAX_TOTAL_BYTES) throw new Error("slack_media_rejected");
     const url = new URL(downloadUrl);
-    if (url.protocol !== "https:" || url.username || url.password || !(url.hostname === "slack.com" || url.hostname.endsWith(".slack.com"))) {
+    if (url.protocol !== "https:" || url.port || url.username || url.password || !(url.hostname === "slack.com" || url.hostname.endsWith(".slack.com"))) {
       throw new Error("slack_media_url_rejected");
     }
     const response = await fetcher(url, {

@@ -89,7 +89,7 @@ export async function downloadWhatsAppAttachments(raw: JsonObject, env: WhatsApp
         total + declaredBytes > MAX_INBOUND_CHANNEL_MEDIA_TOTAL_BYTES) throw new Error("whatsapp_media_rejected");
     const url = new URL(urlValue);
     const trustedHost = url.hostname === "lookaside.fbsbx.com" || url.hostname.endsWith(".fbsbx.com") || url.hostname.endsWith(".fbcdn.net");
-    if (url.protocol !== "https:" || url.username || url.password || !trustedHost) throw new Error("whatsapp_media_url_rejected");
+    if (url.protocol !== "https:" || url.port || url.username || url.password || !trustedHost) throw new Error("whatsapp_media_url_rejected");
     const response = await fetcher(url, {
       headers: { authorization: `Bearer ${env.accessToken}` }, redirect: "manual", signal: AbortSignal.timeout(15_000),
     });
@@ -124,7 +124,7 @@ export async function downloadTwilioWhatsAppAttachments(fields: Record<string, s
     if (!mediaUrl || !/^[\w.+-]+\/[\w.+-]+$/.test(mimeType)) throw new Error("twilio_whatsapp_media_rejected");
     const url = new URL(mediaUrl);
     const prefix = `/2010-04-01/Accounts/${env.accountSid}/Messages/${messageSid}/Media/`;
-    if (url.protocol !== "https:" || url.hostname !== "api.twilio.com" || url.username || url.password ||
+    if (url.protocol !== "https:" || url.port || url.hostname !== "api.twilio.com" || url.username || url.password ||
         url.search || !url.pathname.startsWith(prefix) || !/^ME[\da-f]{32}(?:\.json)?$/i.test(url.pathname.slice(prefix.length))) {
       throw new Error("twilio_whatsapp_media_url_rejected");
     }
@@ -204,7 +204,7 @@ export async function transcribeWhatsAppVoiceNote(raw: JsonObject, env: WhatsApp
   }
   const mediaUrl = new URL(urlValue);
   const trustedMediaHost = mediaUrl.hostname === "lookaside.fbsbx.com" || mediaUrl.hostname.endsWith(".fbsbx.com") || mediaUrl.hostname.endsWith(".fbcdn.net");
-  if (mediaUrl.protocol !== "https:" || mediaUrl.username || mediaUrl.password || !trustedMediaHost) {
+  if (mediaUrl.protocol !== "https:" || mediaUrl.port || mediaUrl.username || mediaUrl.password || !trustedMediaHost) {
     throw new Error("whatsapp_media_url_rejected");
   }
   const mediaResponse = await fetcher(mediaUrl, {
@@ -246,7 +246,7 @@ export async function transcribeTwilioWhatsAppVoice(fields: Record<string, strin
   const messageSid = fields["MessageSid"] ?? "";
   const url = new URL(mediaUrlValue);
   const expectedPrefix = `/2010-04-01/Accounts/${env.accountSid}/Messages/${messageSid}/Media/`;
-  if (url.protocol !== "https:" || url.hostname !== "api.twilio.com" || url.username || url.password ||
+  if (url.protocol !== "https:" || url.port || url.hostname !== "api.twilio.com" || url.username || url.password ||
       !/^SM[\da-f]{32}$/i.test(messageSid) || !url.pathname.startsWith(expectedPrefix) ||
       !/^ME[\da-f]{32}(?:\.json)?$/i.test(url.pathname.slice(expectedPrefix.length))) {
     throw new Error("whatsapp_media_url_rejected");

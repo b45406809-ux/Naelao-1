@@ -60,7 +60,7 @@ export async function downloadDiscordAttachments(raw: JsonObject, input: { fetch
       throw new Error("discord_media_rejected");
     }
     const url = new URL(value);
-    if (url.protocol !== "https:" || url.hostname !== "cdn.discordapp.com" || url.username || url.password ||
+    if (url.protocol !== "https:" || url.port || url.hostname !== "cdn.discordapp.com" || url.username || url.password ||
         !url.pathname.startsWith("/attachments/") || url.pathname.split("/").some((part) => part === "." || part === "..")) {
       throw new Error("discord_media_url_rejected");
     }

@@ -29,6 +29,9 @@ describe("Slack attachment ingress", () => {
     await expect(downloadSlackAttachments(raw, {})).rejects.toThrow("slack_media_unavailable");
     const hostile = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, file: { name: "a", size: 1, url_private_download: "https://attacker.example/file" } }));
     await expect(downloadSlackAttachments(raw, { botToken: "token", fetcher: hostile })).rejects.toThrow("slack_media_url_rejected");
+    const alternatePort = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, file: { name: "a", size: 1, url_private_download: "https://files.slack.com:8443/file" } }));
+    await expect(downloadSlackAttachments(raw, { botToken: "token", fetcher: alternatePort })).rejects.toThrow("slack_media_url_rejected");
+    expect(alternatePort).toHaveBeenCalledOnce();
     const large = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, file: { name: "a", size: 5 * 1024 * 1024 + 1, url_private_download: "https://files.slack.com/file" } }));
     await expect(downloadSlackAttachments(raw, { botToken: "token", fetcher: large })).rejects.toThrow("slack_media_rejected");
   });
