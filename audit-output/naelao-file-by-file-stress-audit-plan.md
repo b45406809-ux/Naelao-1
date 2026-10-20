@@ -1995,7 +1995,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/prebuilt/tasks.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/voice-desk.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/wallet.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/web-search.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/web-search.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/wiki.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/workspace-admin.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/workspace.ts`
@@ -2250,7 +2250,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/knowledge/src/search.ts`
 - [ ] `workers/knowledge/src/storage-usage.test.ts`
 - [ ] `workers/knowledge/src/storage-usage.ts`
-- [ ] `workers/knowledge/src/web-fetch.test.ts`
+- [x] `workers/knowledge/src/web-fetch.test.ts`
 
 ### `workers/marketplace`
 

@@ -29,7 +29,23 @@ import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { workspacePrefix } from "../types.js";
 import { publishWorkspaceBytesCas, readBytesWithHash } from "../r2-cas.js";
 
-async function proxy(ctx: PrebuiltOpContext, path: string, body: unknown): Promise<unknown> {
+const MAX_WEB_QUERY_CHARS = 1_000;
+const MAX_WEB_URL_CHARS = 2_048;
+const MAX_DOWNLOAD_RESPONSE_BYTES = 17 * 1024 * 1024;
+
+function queryArgument(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.length > MAX_WEB_QUERY_CHARS)
+    throw new Error("web search query must be 1..1000 characters");
+  return value.trim();
+}
+
+function urlArgument(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || value.length > MAX_WEB_URL_CHARS)
+    throw new Error("web URL must be 1..2048 characters");
+  return value.trim();
+}
+
+async function proxy(ctx: PrebuiltOpContext, path: string, body: unknown, maxResponseBytes = 4 * 1024 * 1024): Promise<unknown> {
   if (!ctx.env.knowledgeWorker) {
     throw new Error("web-search: search proxy (KNOWLEDGE_WORKER) not configured");
   }
@@ -47,7 +63,7 @@ async function proxy(ctx: PrebuiltOpContext, path: string, body: unknown): Promi
     })
   );
   if (!resp.ok) throw new Error(`web-search ${path} failed: ${resp.status}`);
-  return readBoundedResponseJson(resp, 4 * 1024 * 1024);
+  return readBoundedResponseJson(resp, maxResponseBytes);
 }
 
 export const webSearch: PrebuiltScript = {
@@ -61,17 +77,21 @@ export const webSearch: PrebuiltScript = {
   },
   operations: {
     async search(args, ctx) {
+      const query = queryArgument(args["query"]);
+      const maxResults = args["max_results"] ?? 10;
+      if (!Number.isSafeInteger(maxResults) || Number(maxResults) < 1 || Number(maxResults) > 20)
+        throw new Error("web search max_results must be 1..20");
       return proxy(ctx, "/internal/web-search/search", {
-        query: String(args["query"] ?? ""),
-        max_results: typeof args["max_results"] === "number" ? args["max_results"] : 10,
+        query,
+        max_results: maxResults,
       });
     },
     async fetch_page(args, ctx) {
-      return proxy(ctx, "/internal/web-search/fetch", { url: String(args["url"] ?? "") });
+      return proxy(ctx, "/internal/web-search/fetch", { url: urlArgument(args["url"]) });
     },
     async extract_content(args, ctx) {
       return proxy(ctx, "/internal/web-search/extract", {
-        url: String(args["url"] ?? ""),
+        url: urlArgument(args["url"]),
         schema: args["schema"] ?? null,
       });
     },
@@ -84,10 +104,11 @@ export const webSearch: PrebuiltScript = {
       if (!ctx.env.llmCaller) {
         return { ok: false, reason: "grounded_answer unavailable: no LLM credentials configured on this host" };
       }
-      const query = String(args["query"] ?? "");
-      if (!query) throw new Error("grounded_answer requires 'query'");
+      const query = queryArgument(args["query"]);
       const model = typeof args["model"] === "string" ? (args["model"] as string) : "claude-haiku-4-5-20251001";
       const maxUses = typeof args["max_results"] === "number" ? (args["max_results"] as number) : undefined;
+      if (maxUses !== undefined && (!Number.isSafeInteger(maxUses) || maxUses < 1 || maxUses > 20))
+        throw new Error("grounded_answer max_results must be 1..20");
       const result = await ctx.env.llmCaller.callWithNativeWebSearch({ model, query, maxUses });
       return {
         answer: result.answer,
@@ -98,14 +119,23 @@ export const webSearch: PrebuiltScript = {
     // Downloads a real file into the workspace, mirroring the existing `uploads/` convention —
     // the SAME r2-workspace bucket/prefix, under `downloads/` instead. Deliberately does NOT
     // return the content in the tool result (unlike fetch_page/extract_content): a download can
-    // be up to 2MB (WEB_DOWNLOAD_CONTENT_CAP on the knowledge worker), and echoing that into the
-    // reasoning payload would defeat the entire point of saving it to disk instead of reading it.
+    // be up to 12MB binary / 2MB text, and echoing that into the reasoning payload would defeat
+    // the point of saving it to disk instead of reading it.
     // The caller gets a path and a size; use read_file/stat_file on it afterward if inspection is
     // actually needed — read_file's own size guard applies there too.
     async download_file(args, ctx) {
-      const url = String(args["url"] ?? "").trim();
-      if (!url) throw new Error("download_file requires 'url'");
-      const result = (await proxy(ctx, "/internal/web-search/download", { url })) as {
+      const url = urlArgument(args["url"]);
+      const explicitName = typeof args["filename"] === "string" && args["filename"] ? (args["filename"] as string) : undefined;
+      if (explicitName && explicitName.length > 255)
+        throw new Error("download filename exceeds 255 characters");
+      // R2 keys are flat strings, but keep the resulting leaf safe and bounded before egress.
+      const filename = (
+        (explicitName ?? url.split("/").pop() ?? "download")
+          .replace(/[^a-zA-Z0-9._-]/g, "_")
+          .replace(/\.{2,}/g, "_")
+          .replace(/^[._]+/, "")
+      ).slice(0, 255) || "download";
+      const result = (await proxy(ctx, "/internal/web-search/download", { url }, MAX_DOWNLOAD_RESPONSE_BYTES)) as {
         url: string; status: number; content: string | null; size?: number; truncated?: boolean;
         error?: string; encoding?: "text" | "base64"; content_type?: string;
       };
@@ -126,17 +156,6 @@ export const webSearch: PrebuiltScript = {
           body_preview: result.content.slice(0, 200),
         };
       }
-      const explicitName = typeof args["filename"] === "string" && args["filename"] ? (args["filename"] as string) : undefined;
-      // R2 keys are flat strings with no real directory-traversal semantics, but sanitized the
-      // same defensive way r2-workspace.ts's own key() helper does for consistency: strip
-      // anything but a safe character class, then collapse any run of 2+ dots (".." and longer)
-      // so a filename can never even LOOK like a traversal attempt.
-      const filename = (
-        (explicitName ?? url.split("/").pop() ?? "download")
-          .replace(/[^a-zA-Z0-9._-]/g, "_")
-          .replace(/\.{2,}/g, "_")
-          .replace(/^[._]+/, "")
-      ) || "download";
       const bucket = ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
       const path = `downloads/${filename}`;
       // A base64 payload has to be decoded back to real bytes before it hits R2 — writing the
@@ -146,7 +165,7 @@ export const webSearch: PrebuiltScript = {
           ? Uint8Array.from(atob(result.content), (ch) => ch.charCodeAt(0))
           : result.content;
       const storageKey = `${workspacePrefix(ctx.env)}${path}`;
-      const current = await readBytesWithHash(bucket, storageKey);
+      const current = await readBytesWithHash(bucket, storageKey, 12_000_000);
       await publishWorkspaceBytesCas(ctx.env, bucket, storageKey, payload instanceof Uint8Array ? payload : new TextEncoder().encode(payload), current?.hash ?? null, { sourceUrl: url },
         result.content_type ? { contentType: result.content_type } : undefined);
       await ctx.env.onWorkspaceChange?.({ path, operation: "write" });

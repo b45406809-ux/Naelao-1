@@ -1348,6 +1348,8 @@ const TAVILY_EXTRACT_URL = "https://api.tavily.com/extract";
 // Cap fetched/extracted page text so one call can't blow the isolate's memory or the sub-request
 // response budget — matches the platform's general "bounded text" convention.
 const WEB_SEARCH_CONTENT_CAP = 100_000;
+const WEB_SEARCH_QUERY_MAX_CHARS = 1_000;
+const WEB_TARGET_URL_MAX_CHARS = 2_048;
 
 app.use("/internal/web-search/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
 
@@ -1373,18 +1375,22 @@ app.post("/internal/web-search/search", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
   const body = await c.req.json<{ query?: string; max_results?: number }>().catch(() => ({} as { query?: string; max_results?: number }));
-  const query = (body.query ?? "").trim();
-  if (!query) return c.json({ error_code: "bad_request", message: "query required" }, 400);
+  const query = typeof body.query === "string" ? body.query.trim() : "";
+  if (!query || query.length > WEB_SEARCH_QUERY_MAX_CHARS)
+    return c.json({ error_code: "bad_request", message: "query must be 1..1000 characters" }, 400);
+  const maxResults = body.max_results === undefined ? 10 : body.max_results;
+  if (!Number.isSafeInteger(maxResults) || Number(maxResults) < 1 || Number(maxResults) > 20)
+    return c.json({ error_code: "bad_request", message: "max_results must be 1..20" }, 400);
 
   // Honest degradation: no platform key → report unconfigured, don't fake empty results.
   if (!c.env.TAVILY_API_KEY) {
     return c.json({ configured: false, results: [], message: "platform web search is not configured" });
   }
 
-  const maxResults = Math.min(Math.max(typeof body.max_results === "number" ? body.max_results : 10, 1), 20);
   try {
     const resp = await fetch(TAVILY_SEARCH_URL, {
       method: "POST",
+      signal: AbortSignal.timeout(15_000),
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         api_key: c.env.TAVILY_API_KEY,
@@ -1414,8 +1420,9 @@ app.post("/internal/web-search/fetch", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
   const body = await c.req.json<{ url?: string; format?: "markdown" | "html" }>().catch(() => ({} as { url?: string; format?: "markdown" | "html" }));
-  const rawUrl = (body.url ?? "").trim();
-  if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
+  const rawUrl = typeof body.url === "string" ? body.url.trim() : "";
+  if (!rawUrl || rawUrl.length > WEB_TARGET_URL_MAX_CHARS)
+    return c.json({ error_code: "bad_request", message: "url must be 1..2048 characters" }, 400);
   if (body.format !== undefined && body.format !== "markdown" && body.format !== "html") {
     return c.json({ error_code: "bad_request", message: "format must be markdown or html" }, 400);
   }
@@ -1524,13 +1531,14 @@ async function fetchSsrfGuarded(rawUrl: string, init: RequestInit): Promise<Guar
   let target: URL;
   try { target = new URL(rawUrl); }
   catch { return { ok: false, status: 403, message: "Destination URL is invalid" }; }
+  const signal = AbortSignal.timeout(30_000);
   for (let hop = 0; hop <= 5; hop++) {
     if ((target.protocol !== "http:" && target.protocol !== "https:") || target.username || target.password) {
       return { ok: false, status: 403, message: "Destination must be an http(s) URL without embedded credentials" };
     }
     const ssrf = await checkSsrf(target.href);
     if (ssrf.blocked) return { ok: false, status: 403, message: ssrf.reason ?? "url failed SSRF validation" };
-    const response = await fetch(target.href, { ...init, redirect: "manual" });
+    const response = await fetch(target.href, { ...init, signal, redirect: "manual" });
     if (![301, 302, 303, 307, 308].includes(response.status)) return { ok: true, response, url: target };
     const location = response.headers.get("location");
     if (!location) return { ok: false, status: 502, message: "redirect response omitted Location" };
@@ -1546,8 +1554,9 @@ app.post("/internal/web-search/extract", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
   const body = await c.req.json<{ url?: string; schema?: unknown }>().catch(() => ({} as { url?: string }));
-  const rawUrl = (body.url ?? "").trim();
-  if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
+  const rawUrl = typeof body.url === "string" ? body.url.trim() : "";
+  if (!rawUrl || rawUrl.length > WEB_TARGET_URL_MAX_CHARS)
+    return c.json({ error_code: "bad_request", message: "url must be 1..2048 characters" }, 400);
 
   const ssrf = await checkSsrf(rawUrl);
   if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);
@@ -1558,6 +1567,7 @@ app.post("/internal/web-search/extract", async (c) => {
     try {
       const resp = await fetch(TAVILY_EXTRACT_URL, {
         method: "POST",
+        signal: AbortSignal.timeout(15_000),
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ api_key: c.env.TAVILY_API_KEY, urls: [rawUrl] }),
       });
@@ -1627,8 +1637,9 @@ app.post("/internal/web-search/download", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
   const body = await c.req.json<{ url?: string }>().catch(() => ({} as { url?: string }));
-  const rawUrl = (body.url ?? "").trim();
-  if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
+  const rawUrl = typeof body.url === "string" ? body.url.trim() : "";
+  if (!rawUrl || rawUrl.length > WEB_TARGET_URL_MAX_CHARS)
+    return c.json({ error_code: "bad_request", message: "url must be 1..2048 characters" }, 400);
 
   const ssrf = await checkSsrf(rawUrl);
   if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);

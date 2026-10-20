@@ -1112,3 +1112,14 @@ Found that the prebuilt sent `x-naelao-role: owner` whenever `effectiveRole` was
 Validation: Knowledge Worker suite passed 7 files / 27 tests; focused knowledge-base tests passed 8/8; new worker route tests verify foreign-Space denial and query rejection before Workers AI/Vectorize; Agent and Knowledge Worker typechecks passed; `git diff --check` passed.
 
 Checked only the Agent knowledge-base prebuilt and focused tests. The Knowledge Worker's search route/middleware and new regression test were traced, but `workers/knowledge/src/index.ts` remains unchecked because it is a large file and only its retrieval/ownership sections were reviewed. The RAG Vectorize helper had previously been reviewed and checked in the earlier batch-05 stress pass.
+
+
+## Web search, guarded fetch, and file download ceilings (2026-10-20)
+
+Traced the web-search prebuilt into the Knowledge Worker search/fetch/extract/download routes, shared SSRF checker, DNS-over-HTTPS resolver, and workspace CAS write. Redirects are manual and every destination is rechecked; fetched text is stream-capped at 100,000 bytes; downloads distinguish 2 MB text from 12 MB binary and cancel oversized streams; downloaded files are status-checked, decoded, and CAS-published into the scoped workspace.
+
+Found that the prebuilt used the same 4 MiB response cap for every operation even though a maximum 12 MB binary is returned as about 16 MB of Base64, so larger valid downloads always failed before workspace write. It now gives download responses a 17 MiB JSON ceiling, caps the existing-object hash read at 12 MB, bounds URL/query/result/name inputs before egress, and keeps filenames within 255 characters. Knowledge Worker search and URL routes now enforce the same limits directly; malformed tool payloads fail with 400 rather than type errors. DNS-over-HTTPS, external page fetches, and Tavily requests now have explicit timeouts (5 / 30 / 15 seconds).
+
+Validation: Agents full suite passed 150 files / 673 tests; Knowledge Worker suite passed 7 files / 29 tests; Security suite passed 21 files / 111 tests; Agent, Knowledge, and Security typechecks passed; `git diff --check` passed. Added a 5 MB Base64 response regression proving a 3.75 MB binary file reaches R2 as decoded bytes, along with URL/query/result/name bounds and DNS timeout coverage.
+
+Checked only the web-search prebuilt, the web-fetch test module, and shared SSRF checker. The large Knowledge Worker `index.ts` was inspected only around web-search endpoints and remains unchecked pending full-file review.

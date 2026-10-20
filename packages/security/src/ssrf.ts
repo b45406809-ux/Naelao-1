@@ -163,6 +163,7 @@ export async function resolveHostnameIps(
       {
         headers: { accept: "application/dns-json" },
         redirect: "error",
+        signal: AbortSignal.timeout(5_000),
       }
     );
     if (!response.ok) throw new Error(`DoH returned ${response.status}`);

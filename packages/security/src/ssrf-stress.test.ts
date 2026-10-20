@@ -29,4 +29,13 @@ describe("SSRF DNS resolution stress boundaries", () => {
     ).rejects.toThrow("DNS hostname is invalid");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("puts a timeout on both DNS-over-HTTPS lookups", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ Status: 0, Answer: [{ data: "93.184.216.34" }] }));
+    await expect(checkSsrf("https://example.com", { fetchImpl })).resolves.toMatchObject({ blocked: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchImpl.mock.calls) {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
 });

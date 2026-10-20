@@ -69,6 +69,7 @@ describe("guarded Markdown web fetch", () => {
     const outbound = vi.fn(
       async (_input: RequestInfo | URL, init?: RequestInit) => {
         expect(init?.redirect).toBe("manual");
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
         expect(new Headers(init?.headers).get("accept")).toContain(
           "text/markdown"
         );
@@ -166,6 +167,36 @@ describe("guarded Markdown web fetch", () => {
     });
     const invalid = await request("file:///etc/passwd");
     expect(invalid.status).toBe(400);
+  });
+
+  it("rejects oversized web URLs before DNS validation or outbound requests", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const response = await request(`https://example.com/${"x".repeat(2_050)}`);
+    expect(response.status).toBe(400);
+    expect(checkSsrf).not.toHaveBeenCalled();
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed and oversized search requests before provider egress", async () => {
+    const token = await mintInternalToken("secret", "tenant");
+    const makeRequest = (body: unknown) => worker.fetch!(new Request("https://knowledge/internal/web-search/search", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": "tenant",
+        "x-naelao-space-id": "space",
+        "x-naelao-internal-token": token,
+      },
+      body: JSON.stringify(body),
+    }), bindings({ TAVILY_API_KEY: "test" }), {} as ExecutionContext);
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const longQuery = await makeRequest({ query: "x".repeat(1_001) });
+    expect(longQuery.status).toBe(400);
+    const invalidCount = await makeRequest({ query: "search", max_results: Number.NaN });
+    expect(invalidCount.status).toBe(400);
+    expect(outbound).not.toHaveBeenCalled();
   });
 
   it.each(["extract", "download"] as const)(
