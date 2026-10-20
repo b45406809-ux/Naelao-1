@@ -188,6 +188,15 @@ export function wafMiddleware() {
           413
         );
       }
+      if (bounded.status === "unavailable") {
+        return c.json(
+          {
+            error_code: "waf_inspection_unavailable",
+            message: "Unable to inspect JSON request body",
+          },
+          503
+        );
+      }
       if (bounded.status === "ok") {
         try {
           const body = JSON.parse(

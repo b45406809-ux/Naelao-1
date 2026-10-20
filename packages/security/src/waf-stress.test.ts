@@ -106,4 +106,29 @@ describe("WAF JSON byte limits", () => {
     expect(response.status).toBe(413);
     expect(handlerCalled).toBe(false);
   });
+
+  it("fails closed when an earlier middleware locks the JSON stream", async () => {
+    const app = new Hono();
+    let handlerCalled = false;
+    app.use("*", async (c, next) => {
+      c.req.raw.body?.getReader();
+      await next();
+    });
+    app.use("*", wafMiddleware());
+    app.post("/", (c) => {
+      handlerCalled = true;
+      return c.text("unexpected");
+    });
+
+    const response = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error_code: "waf_inspection_unavailable",
+    });
+    expect(handlerCalled).toBe(false);
+  });
 });
