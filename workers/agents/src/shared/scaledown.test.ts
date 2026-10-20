@@ -276,4 +276,29 @@ describe("ScaleDown task-specific provider contracts", () => {
       { expirationTtl: 604800 }
     );
   });
+
+  it("does not trust cached extraction spans that no longer match their source", async () => {
+    const values = new Map<string, string>();
+    const cache = {
+      get: vi.fn(async (key: string) => values.get(key) ?? null),
+      put: vi.fn(async (key: string, value: string) => { values.set(key, value); }),
+    };
+    const input = { text: "Vendor: Acme", sourceId: "source-1", entities: { vendor: "vendor name" } };
+    const first = setup(completion(JSON.stringify({ entities: [
+      { type: "vendor", text: "Acme", start: 8, end: 12, confidence: 0.9 },
+    ] })), { cache, cacheScope: "tenant:space:project:actor:policy" });
+    await first.processor.extract(input);
+
+    const [key, serialized] = [...values.entries()][0]!;
+    const corrupted = JSON.parse(serialized) as { entities: Array<{ text: string }> };
+    corrupted.entities[0]!.text = "Other";
+    values.set(key, JSON.stringify(corrupted));
+
+    const second = setup(completion(JSON.stringify({ entities: [
+      { type: "vendor", text: "Acme", start: 8, end: 12, confidence: 0.9 },
+    ] })), { cache, cacheScope: "tenant:space:project:actor:policy" });
+    const result = await second.processor.extract(input);
+    expect(result.entities[0]?.text).toBe("Acme");
+    expect(second.fetcher).toHaveBeenCalledOnce();
+  });
 });

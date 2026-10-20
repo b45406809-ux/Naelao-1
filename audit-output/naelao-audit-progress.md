@@ -495,3 +495,7 @@ The local fallback summarizer truncated each older message at 1,500 characters w
 ## Decisions API error redaction (2026-10-20)
 
 The OpenRouter Decisions client copied up to 200 characters from provider error bodies into thrown errors. A provider could echo request fragments, placing user conversation text or account metadata in logs. Both single and batched decision paths now expose only the HTTP status. Regressions verify prompt-like provider error text is absent. Agent SDK decision tests passed 21/21 and its TypeScript check passed. Decisions remain OpenRouter-only, Clef Flash is the ordinary route, and Decider is reserved for long-context overflow; no provider benchmark/live request was run in this pass.
+
+## ScaleDown derivative-cache integrity (2026-10-20)
+
+Fresh extraction output validates every entity span against the supplied source, but cache hits checked only the model name and bypassed those source-span validations. Cached summaries, extraction spans, compression output, and usage metadata now receive operation-specific schema/source validation before reuse; invalid entries are treated as misses and recomputed through the provider admission path. A regression corrupts a cached extraction span and verifies it is rejected and fetched again. ScaleDown and document-processing tests passed (12 tests); Agents TypeScript passed. No external provider request was made by these mocked tests.

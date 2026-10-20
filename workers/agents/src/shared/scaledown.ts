@@ -53,6 +53,13 @@ function validateSource(input: DocumentText): void {
 function integer(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
+function validUsage(value: unknown, model: string): value is DocumentUsage {
+  if (!value || typeof value !== "object") return false;
+  const usage = value as Partial<DocumentUsage>;
+  return usage.model === model && integer(usage.inputTokens) &&
+    (usage.outputTokens === null || integer(usage.outputTokens)) &&
+    (usage.providerCostUsd === undefined || (typeof usage.providerCostUsd === "number" && Number.isFinite(usage.providerCostUsd) && usage.providerCostUsd >= 0));
+}
 async function boundedJson(
   response: Response
 ): Promise<Record<string, unknown>> {
@@ -92,7 +99,8 @@ export function createScaleDownProcessor(
     model: string,
     body: Record<string, unknown>,
     compute: () => Promise<T>,
-    identity?: unknown
+    identity: unknown,
+    validate: (value: unknown) => value is T,
   ): Promise<T> {
     if (!options.cache || !options.cacheScope) return compute();
     const serialized = JSON.stringify([
@@ -116,8 +124,8 @@ export function createScaleDownProcessor(
     const stored = await options.cache.get(key, "text").catch(() => null);
     if (stored) {
       try {
-        const value = JSON.parse(stored) as T;
-        if (value && value.usage?.model === model)
+        const value: unknown = JSON.parse(stored);
+        if (validate(value))
           return {
             ...value,
             usage: { model, inputTokens: 0, outputTokens: 0, cacheHit: true },
@@ -246,7 +254,13 @@ export function createScaleDownProcessor(
             usage,
           };
         },
-        input.sourceId
+        input.sourceId,
+        (value): value is { text: string; sourceId?: string; usage: DocumentUsage } => Boolean(
+          value && typeof value === "object" && typeof (value as { text?: unknown }).text === "string" &&
+          (value as { text: string }).text.trim() &&
+          ((value as { sourceId?: unknown }).sourceId === undefined || (value as { sourceId?: unknown }).sourceId === input.sourceId) &&
+          validUsage((value as { usage?: unknown }).usage, DOCUMENT_MODELS.summarize)
+        ),
       );
     },
     async extract(input) {
@@ -343,7 +357,26 @@ export function createScaleDownProcessor(
             usage,
           };
         },
-        { sourceId: input.sourceId, threshold }
+        { sourceId: input.sourceId, threshold },
+        (value): value is { entities: ExtractedDocumentEntity[]; sourceId?: string; usage: DocumentUsage } => {
+          if (!value || typeof value !== "object") return false;
+          const result = value as { entities?: unknown; sourceId?: unknown; usage?: unknown };
+          if (!Array.isArray(result.entities) || result.entities.length > 10_000 ||
+            (result.sourceId !== undefined && result.sourceId !== input.sourceId) ||
+            !validUsage(result.usage, DOCUMENT_MODELS.extract)) return false;
+          const codepoints = Array.from(input.text);
+          return result.entities.every((entity: unknown) => {
+            if (!entity || typeof entity !== "object") return false;
+            const item = entity as Partial<ExtractedDocumentEntity>;
+            if (typeof item.type !== "string" || !Object.hasOwn(input.entities, item.type) ||
+              typeof item.text !== "string" || !item.text || !integer(item.start) || !integer(item.end) ||
+              item.end <= item.start || item.end > input.text.length || typeof item.confidence !== "number" ||
+              !Number.isFinite(item.confidence) || item.confidence < threshold || item.confidence > 1) return false;
+            const utf16 = input.text.slice(item.start, item.end) === item.text;
+            return item.offsetEncoding === (utf16 ? "utf16" : "unicode_code_points") &&
+              (utf16 || codepoints.slice(item.start, item.end).join("") === item.text);
+          });
+        },
       );
     },
     async compress(input) {
@@ -392,7 +425,17 @@ export function createScaleDownProcessor(
             usage,
           };
         },
-        input.sourceId
+        input.sourceId,
+        (value): value is { text: string; applied: boolean; sourceId?: string; usage: DocumentUsage } => {
+          if (!value || typeof value !== "object") return false;
+          const result = value as { text?: unknown; applied?: unknown; sourceId?: unknown; usage?: unknown };
+          if (typeof result.text !== "string" || typeof result.applied !== "boolean" ||
+            (result.sourceId !== undefined && result.sourceId !== input.sourceId) ||
+            !validUsage(result.usage, DOCUMENT_MODELS.compress)) return false;
+          return result.applied
+            ? new TextEncoder().encode(result.text).byteLength < new TextEncoder().encode(input.text).byteLength
+            : result.text === input.text;
+        },
       );
     },
   };
