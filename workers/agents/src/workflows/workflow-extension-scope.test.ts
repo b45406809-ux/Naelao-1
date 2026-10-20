@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertDeclaredExtensionWorkflow, extensionWorkflowName, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type WorkflowInstallationGrant } from "./workflow-host.js";
+import { assertDeclaredExtensionWorkflow, extensionWorkflowName, readWorkflowGrant, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv, type WorkflowInstallationGrant } from "./workflow-host.js";
 
 const installation: WorkflowInstallationGrant = {
   instance: { tenant_id: "tenant", space_id: "space", status: "active", scope: "SPACE_SHARED" },
@@ -7,6 +7,17 @@ const installation: WorkflowInstallationGrant = {
 };
 
 describe("verified extension workflow identity", () => {
+  it("rejects an oversized agent config from R2 metadata before materializing its text", async () => {
+    const text = vi.fn(async () => "oversized");
+    const env = {
+      PLATFORM_SECRET: "test-secret",
+      SPACES_WORKER: { fetch: async () => Response.json({ data: [{ user_id: "user", role: "owner" }] }) },
+      SCRIPTS_R2: { get: async () => ({ size: 1024 * 1024 + 1, text }) },
+    } as unknown as DurableWorkflowHostEnv;
+    await expect(readWorkflowGrant(env, { tenantId: "tenant", spaceId: "space", actorId: "user", agentId: "agent" })).rejects.toThrow("workflow_agent_config_too_large");
+    expect(text).not.toHaveBeenCalled();
+  });
+
   it("recomputes the full immutable R2 release digest", async () => {
     const prefix = "spaces/space/extensions/ext_customs/1.0.0/";
     const files = new Map([[`${prefix}place-order.ts`, "export function run() { return 1; }"], [`${prefix}console.html`, "<main>Hi</main>"]]);

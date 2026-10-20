@@ -1,4 +1,5 @@
 import type { TwilioVoiceCredentials } from "./customer-telephony.js";
+import { readBoundedResponseText } from "../shared/bounded-response-text.js";
 
 export type TwilioNumberPriceErrorCode = "twilio_number_pricing_unavailable" | "twilio_number_price_invalid" | "twilio_number_price_currency_unsupported";
 export class TwilioNumberPriceError extends Error {
@@ -22,8 +23,9 @@ function minor(value: unknown): number | null {
 
 async function boundedJson(response: Response): Promise<Record<string, unknown>> {
   if (!response.ok) throw new TwilioNumberPriceError("twilio_number_pricing_unavailable");
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > 64 * 1024) throw new TwilioNumberPriceError("twilio_number_pricing_unavailable");
+  let text: string;
+  try { text = await readBoundedResponseText(response, 64 * 1024); }
+  catch { throw new TwilioNumberPriceError("twilio_number_pricing_unavailable"); }
   try {
     const value = JSON.parse(text) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid");

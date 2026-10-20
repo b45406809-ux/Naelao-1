@@ -17,7 +17,7 @@ function harness() {
   const bucket = {
     async get(key: string) {
       if (!key.startsWith("spaces/space-a/agents/agent-a/")) return null;
-      return { async text() { return "fixture"; } };
+      return { size: 7, async text() { return "fixture"; } };
     },
   };
   const env = {

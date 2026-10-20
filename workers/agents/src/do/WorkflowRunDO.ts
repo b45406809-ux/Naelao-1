@@ -5,6 +5,7 @@ import { WorkflowJournal, type WorkflowJournalStorage, type WorkflowJournalRecor
 import { putWorkflowArtifact, readWorkflowArtifact, readWorkflowGrant, workflowHash, workflowHeaders, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import { finalizeWorkflowBudget, reserveWorkflowBudget, reportWorkflowStepInfraUsage } from "../workflows/report-infra-usage.js";
 import type { Env } from "../env.js";
+import { readBoundedResponseText } from "../shared/bounded-response-text.js";
 
 /** One persisted journal per scoped run. The core SpaceDO never executes developer code. */
 export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
@@ -88,7 +89,9 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
         body: JSON.stringify({ identity, key, operation, params, idempotencyKey: runId + ":" + key }),
       }));
       if (!response.ok) throw new Error("workflow_effect_failed:" + response.status);
-      const result = await response.json();
+      let result: unknown;
+      try { result = JSON.parse(await readBoundedResponseText(response, 4 * 1024 * 1024)); }
+      catch { throw new Error("workflow_effect_result_invalid_or_too_large"); }
       const pointer = await putWorkflowArtifact(this.env, identity, result);
       await this.journal.commitEffect(effect, pointer);
       const credits = await reportWorkflowStepInfraUsage(this.env as Env, identity.tenantId, identity.spaceId, Date.now() - started, runId + ":" + key, false,

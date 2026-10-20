@@ -20,6 +20,7 @@ export async function workflowHash(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+const MAX_WORKFLOW_AGENT_CONFIG_BYTES = 1024 * 1024;
 export function workflowRunStub(env: DurableWorkflowHostEnv, scope: Pick<DurableWorkflowIdentity, "tenantId" | "spaceId" | "runId">) {
   if (!env.WORKFLOW_RUN_DO) throw new Error("workflow_journal_unavailable");
   return env.WORKFLOW_RUN_DO.get(env.WORKFLOW_RUN_DO.idFromName("workflow:" + scope.tenantId + ":" + scope.spaceId + ":" + scope.runId));
@@ -113,7 +114,10 @@ export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick
   const config = await Promise.all(["agents.md", "system-prompt.md", "scripts.json", "skills.json"].map(async (file) => {
     const object = await env.SCRIPTS_R2!.get("spaces/" + scope.spaceId + "/agents/" + scope.agentId + "/" + file);
     if (!object) throw new Error("workflow_agent_not_provisioned");
-    return [file, await workflowHash(await object.text())];
+    if (!Number.isSafeInteger(object.size) || object.size < 0 || object.size > MAX_WORKFLOW_AGENT_CONFIG_BYTES) throw new Error("workflow_agent_config_too_large");
+    const source = await object.text();
+    if (new TextEncoder().encode(source).byteLength !== object.size) throw new Error("workflow_agent_config_size_mismatch");
+    return [file, await workflowHash(source)];
   }));
   return { role, version: await workflowHash(JSON.stringify([member, projectMember, installation, config])), ...(installation ? { installation } : {}) };
 }

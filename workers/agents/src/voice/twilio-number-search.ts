@@ -1,4 +1,5 @@
 import type { TwilioVoiceCredentials } from "./customer-telephony.js";
+import { readBoundedResponseText } from "../shared/bounded-response-text.js";
 
 export interface AvailableTwilioLocalNumber {
   phone_number: string;
@@ -33,8 +34,9 @@ export async function searchTwilioLocalNumbers(input: {
   }
   if (response.status === 401 || response.status === 403) return { ok: false, status: 409, error: "twilio_voice_credentials_rejected" };
   if (!response.ok) return { ok: false, status: 503, error: "twilio_number_search_unavailable" };
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > 256 * 1024) return { ok: false, status: 502, error: "twilio_number_search_response_too_large" };
+  let text: string;
+  try { text = await readBoundedResponseText(response, 256 * 1024); }
+  catch (error) { return { ok: false, status: 502, error: error instanceof Error && error.message === "response_too_large" ? "twilio_number_search_response_too_large" : "twilio_number_search_invalid_response" }; }
   let payload: { available_phone_numbers?: Array<Record<string, unknown>> };
   try { payload = JSON.parse(text) as typeof payload; } catch { return { ok: false, status: 502, error: "twilio_number_search_invalid_response" }; }
   if (!Array.isArray(payload.available_phone_numbers)) return { ok: false, status: 502, error: "twilio_number_search_invalid_response" };

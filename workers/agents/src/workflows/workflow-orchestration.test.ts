@@ -165,7 +165,7 @@ describe("container work inside durable workflows", () => {
         });
       return new Response("", { status: 404 });
     });
-    const bucket = { get: async () => ({ text: async () => "{}" }) };
+    const bucket = { get: async () => ({ size: 2, text: async () => "{}" }) };
     const env = {
       PLATFORM_SECRET: "secret",
       SPACES_WORKER: { fetch },

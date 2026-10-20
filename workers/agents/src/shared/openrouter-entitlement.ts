@@ -1,3 +1,5 @@
+import { readBoundedResponseText } from "./bounded-response-text.js";
+
 const OPENROUTER_CHAT_COMPLETIONS = "https://openrouter.ai/api/v1/chat/completions";
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -30,8 +32,7 @@ export async function runOpenRouterEntitlementPreflight(args: {
   }
   if (!response.ok) return { ok: false, reason: "provider_unavailable" };
   try {
-    const text = await response.text();
-    if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) return { ok: false, reason: "invalid_response" };
+    const text = await readBoundedResponseText(response, MAX_RESPONSE_BYTES);
     const payload = JSON.parse(text) as { choices?: Array<{ message?: { content?: unknown } }> };
     if (!Array.isArray(payload.choices) || payload.choices.length !== 1 || typeof payload.choices[0]?.message?.content !== "string") {
       return { ok: false, reason: "invalid_response" };

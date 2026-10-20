@@ -2,8 +2,11 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import type { NoCodeSubagentManifest } from "@naelao/agent-sdk";
 import { mintInternalToken } from "@naelao/http";
 import type { Env } from "../env.js";
+import { readBoundedResponseText } from "../shared/bounded-response-text.js";
 
 export const NO_CODE_SUBAGENT_CONTEXT_CEILING = 2_000;
+const MAX_SUBAGENT_RESULT_BYTES = 2 * 1024 * 1024;
+const MAX_SUBAGENT_ERROR_BYTES = 8 * 1024;
 
 export interface GenericSubagentParams {
   manifest: NoCodeSubagentManifest;
@@ -41,8 +44,14 @@ export async function executeGenericSubagent(env: Pick<Env, "AGENTS_WORKER" | "P
       maxContextTokens: NO_CODE_SUBAGENT_CONTEXT_CEILING,
     }),
   });
-  if (!response.ok) throw new Error(`generic_subagent_failed:${response.status}:${(await response.text()).slice(0, 300)}`);
-  const output = await response.text();
+  if (!response.ok) {
+    let detail = "";
+    try { detail = (await readBoundedResponseText(response, MAX_SUBAGENT_ERROR_BYTES)).slice(0, 300); } catch { detail = "response_body_unavailable"; }
+    throw new Error(`generic_subagent_failed:${response.status}:${detail}`);
+  }
+  let output: string;
+  try { output = await readBoundedResponseText(response, MAX_SUBAGENT_RESULT_BYTES); }
+  catch { throw new Error("generic_subagent_result_too_large"); }
   return { status: "completed", output, receiptCard: { kind: "subagent_receipt", collapsed: true, lines: [`${params.manifest.name} completed`, "Ephemeral run · 2,000-token ceiling"] } };
 }
 

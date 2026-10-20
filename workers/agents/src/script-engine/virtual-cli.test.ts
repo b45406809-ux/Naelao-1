@@ -97,6 +97,11 @@ describe("VirtualCliDispatcher", () => {
       .rejects.toThrow("api_idempotency_key_required");
     expect(fetchWithAuth).toHaveBeenCalledTimes(2);
   });
+  it("rejects oversized API replies while streaming", async () => {
+    const fetchWithAuth = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024)); } })));
+    const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space" });
+    await expect(cli.execute(["stripe", "customers", "list"])).rejects.toThrow("virtual_cli_response_too_large");
+  });
   it("synthesizes a durable command at the hot-mounted path", async () => {
     const files = new Map<string, string>();
     const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth: vi.fn() }, tenantId: "t", spaceId: "s" }, {

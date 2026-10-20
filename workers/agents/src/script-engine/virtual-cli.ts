@@ -1,10 +1,10 @@
+import { readBoundedResponseText } from "../shared/bounded-response-text.js";
 import { parseShell, shellWords } from "./shell-parser.js";
 
 export interface CliDispatch {
   operation: string;
   params: Record<string, unknown>;
 }
-
 /**
  * Planner coordination commands. These are deliberately parsed here, at the Bash boundary,
  * rather than exposed as native model tools. The planner gets one stable shell-shaped interface;
@@ -242,7 +242,9 @@ function bodyAndFlags(args: string[]): { positional: string[]; body: Record<stri
   return { positional, body };
 }
 async function responseText(response: Response): Promise<string> {
-  const text = await response.text();
+  let text: string;
+  try { text = await readBoundedResponseText(response, response.ok ? 1024 * 1024 : 8 * 1024); }
+  catch { throw new Error(response.ok ? "virtual_cli_response_too_large" : `virtual_cli_http_${response.status}:response_body_unavailable`); }
   if (!response.ok) throw new Error(`virtual_cli_http_${response.status}:${text.slice(0, 300)}`);
   try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
 }

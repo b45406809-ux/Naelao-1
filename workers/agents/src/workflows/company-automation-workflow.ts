@@ -1,4 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { readBoundedResponseText } from "../shared/bounded-response-text.js";
+
+const MAX_AUTOMATION_RESULT_BYTES = 1024 * 1024;
 
 export interface CompanyAutomationOperation { name: string; input?: Record<string, unknown>; semantic?: boolean }
 export interface CompanyAutomationParams { tenantId: string; spaceId: string; automationId: string; operations: CompanyAutomationOperation[] }
@@ -23,7 +26,8 @@ export class CompanyAutomationWorkflow extends WorkflowEntrypoint<CompanyAutomat
         await step.do(`operation-${index}-${operation.name}`, async () => {
           const response = await this.env.AGENTS_WORKER.fetch("https://agents-worker/internal/automations/execute", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...p, operation, mode: operation.semantic ? "semantic_anomaly" : "deterministic" }) });
           if (!response.ok) throw new Error(`automation_operation_failed:${operation.name}:${response.status}`);
-          return await response.text();
+          try { return await readBoundedResponseText(response, MAX_AUTOMATION_RESULT_BYTES); }
+          catch { throw new Error("automation_result_too_large"); }
         });
       }
     } catch (error) {

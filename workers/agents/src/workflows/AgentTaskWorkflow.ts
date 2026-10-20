@@ -18,6 +18,7 @@ import type { BusinessContext } from "../launchpad/business-context.js";
 import type { OpenRouterModelCandidate } from "../shared/openrouter-model-catalog.js";
 import { checkpointAgentTask } from "./agent-task-checkpoints.js";
 import { workflowRunStub } from "./workflow-host.js";
+import { readBoundedResponseText } from "../shared/bounded-response-text.js";
 
 export interface AgentTaskParams {
   taskId: string;
@@ -229,7 +230,9 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           // deferred_approvals below already exists to prevent for the 200-with-error-status case.
           // Falls back to the raw response text as the error when the body isn't the JSON shape
           // this expects (e.g. a plain-text 500 from an upstream outage).
-          const text = await resp.text();
+          let text = "";
+          try { text = await readBoundedResponseText(resp, 256 * 1024); }
+          catch { text = "{}"; }
           let parsedError: string | undefined;
           let errorCode: string | undefined;
           let pendingApprovalJson: string | undefined;
