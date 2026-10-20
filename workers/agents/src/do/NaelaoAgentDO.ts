@@ -2156,6 +2156,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+    const byteLength = typeof message === "string" ? new TextEncoder().encode(message).byteLength : message.byteLength;
+    if (byteLength > 64 * 1024) {
+      ws.close(1009, "message too large");
+      return;
+    }
     try {
       const data = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message));
       if (data.type === "ping") {

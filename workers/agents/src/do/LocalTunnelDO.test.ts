@@ -27,6 +27,13 @@ async function fixture() {
     newTunnel: () => new LocalTunnelDO(ctx as never, env), makeSocket };
 }
 describe("LocalTunnelDO correlation and multiplexing", () => {
+  it("closes oversized machine frames before JSON parsing", async () => {
+    const f = await fixture();
+    await f.tunnel.webSocketMessage(f.socket as never, "x".repeat(65_537));
+    expect(f.socket.close).toHaveBeenCalledWith(1009, "frame too large");
+    expect(f.outbox).toHaveLength(0);
+  });
+
   it("rejects non-TLS remote tunnel upgrades", async () => {
     const f = await fixture();
     const response = await f.tunnel.fetch(new Request("http://agents.example.test/connect", { headers: { Upgrade: "websocket" } }));

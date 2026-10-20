@@ -36,7 +36,7 @@ import { MACHINE_NAME, assertMachineIdentity, validateMachinePublicKey, validate
 import { matchGlossaryTerms, normalizeGlossaryTerm, validateGlossaryEntry, type DomainGlossaryEntry } from "../domain-glossary.js";
 import { isAllowedModel } from "@naelao/billing-core";
 import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvaluation, validateConsentAttestation, type CustomModelLifecycleAction } from "./custom-model-lifecycle.js";
-import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, type ResumableArchiveUploadState, type SpaceArchivePayload } from "./space-backup.js";
+import { decodeSpaceArchive, encodeSpaceArchive, readSpaceArchiveObject, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, type ResumableArchiveUploadState, type SpaceArchivePayload } from "./space-backup.js";
 import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
 
@@ -2445,7 +2445,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const archiveObject = await this.env.SCRIPTS_R2.get(archived.object_key);
         if (!archiveObject) return Response.json({ error_code: "matching_archive_object_missing" }, { status: 409 });
         try {
-          const archivedPayload = await decodeSpaceArchive(new Uint8Array(await archiveObject.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId: archived.archive_id });
+          const archivedPayload = await decodeSpaceArchive(await readSpaceArchiveObject(archiveObject), this.archiveKeys(), { tenantId, spaceId, archiveId: archived.archive_id });
           const archivedMessages = (archivedPayload.tableRows.messages ?? []) as unknown as RetainedMessageRow[];
           if (archivedPayload.selectionFingerprint !== preview.fingerprint || await spaceArchiveChecksum(archivedPayload) !== archived.checksum || await fingerprintRetainedMessages(archivedMessages) !== preview.fingerprint) return Response.json({ error_code: "matching_archive_integrity_check_failed" }, { status: 409 });
         } catch { return Response.json({ error_code: "matching_archive_integrity_check_failed" }, { status: 409 }); }
@@ -2466,7 +2466,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const object = await this.env.SCRIPTS_R2.get(prior.object_key);
         if (!object) return Response.json({ error_code: "verified_archive_object_missing_use_new_request_id", archive_id: prior.archive_id }, { status: 409 });
         try {
-          const priorPayload = await decodeSpaceArchive(new Uint8Array(await object.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId: prior.archive_id });
+          const priorPayload = await decodeSpaceArchive(await readSpaceArchiveObject(object), this.archiveKeys(), { tenantId, spaceId, archiveId: prior.archive_id });
           if (await spaceArchiveChecksum(priorPayload) !== prior.checksum) throw new Error("archive_checksum_mismatch");
         } catch { return Response.json({ error_code: "verified_archive_integrity_failed_use_new_request_id", archive_id: prior.archive_id }, { status: 409 }); }
         execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", prior.archive_id);
@@ -2483,7 +2483,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         let uploadState: ResumableArchiveUploadState = { uploadId: savedUpload.upload_id, completedParts: JSON.parse(savedUpload.completed_parts_json) as R2UploadedPart[] };
         if (existingObject) {
           try {
-            const recovered = await decodeSpaceArchive(new Uint8Array(await existingObject.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
+            const recovered = await decodeSpaceArchive(await readSpaceArchiveObject(existingObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
             if (await spaceArchiveChecksum(recovered) !== savedUpload.checksum) throw new Error("archive_checksum_mismatch");
             execute(sql, "UPDATE space_archive_records SET status='verified',schema_version=?,checksum=?,plaintext_bytes=?,row_counts_json=?,object_refs_json=?,selection_fingerprint=? WHERE archive_id=? AND tenant_id=? AND space_id=?", recovered.migrationVersion, savedUpload.checksum, savedUpload.plaintext_bytes, savedUpload.row_counts_json, savedUpload.object_refs_json, savedUpload.selection_fingerprint, archiveId, tenantId, spaceId);
             execute(sql, "DELETE FROM space_archive_uploads WHERE archive_id=?", archiveId);
@@ -2503,7 +2503,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             "UPDATE space_archive_uploads SET upload_id=?,completed_parts_json=?,updated_at=? WHERE archive_id=?", state.uploadId, JSON.stringify(state.completedParts), now, archiveId));
           const completedObject = await this.env.SCRIPTS_R2.get(objectKey);
           if (!completedObject) throw new Error("archive_object_missing_after_upload");
-          const completedPayload = await decodeSpaceArchive(new Uint8Array(await completedObject.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
+          const completedPayload = await decodeSpaceArchive(await readSpaceArchiveObject(completedObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
           if (await spaceArchiveChecksum(completedPayload) !== savedUpload.checksum) throw new Error("archive_checksum_mismatch");
         } catch (error) {
           execute(sql, "UPDATE space_archive_records SET status='failed' WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
@@ -2570,7 +2570,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           "UPDATE space_archive_uploads SET upload_id=?,completed_parts_json=?,updated_at=? WHERE archive_id=?", state.uploadId, JSON.stringify(state.completedParts), now, archiveId));
         const completedObject = await this.env.SCRIPTS_R2.get(objectKey);
         if (!completedObject) throw new Error("archive_object_missing_after_upload");
-        const completedPayload = await decodeSpaceArchive(new Uint8Array(await completedObject.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
+          const completedPayload = await decodeSpaceArchive(await readSpaceArchiveObject(completedObject), this.archiveKeys(), { tenantId, spaceId, archiveId });
         if (await spaceArchiveChecksum(completedPayload) !== encoded.checksum) throw new Error("archive_checksum_mismatch");
       } catch (error) {
         execute(sql, "UPDATE space_archive_records SET status='failed' WHERE archive_id=? AND tenant_id=? AND space_id=?", archiveId, tenantId, spaceId);
@@ -2644,7 +2644,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!record || record.status !== "verified") return Response.json({ error_code: "archive_not_found" }, { status: 404 });
       const source = await this.env.SCRIPTS_R2.get(record.object_key);
       if (!source) return Response.json({ error_code: "archive_object_missing" }, { status: 409 });
-      const sourceBytes = new Uint8Array(await source.arrayBuffer());
+      const sourceBytes = await readSpaceArchiveObject(source);
       if (spaceArchiveKeyVersion(sourceBytes) === this.archiveKeys().active.version) return Response.json({ archive_id: archiveId, rewrapped: false, reason: "already_uses_active_key" });
       let payload: SpaceArchivePayload;
       try {
@@ -2658,8 +2658,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         await this.env.SCRIPTS_R2.put(targetKey, encoded.bytes, { httpMetadata: { contentType: "application/vnd.naelao.space-archive+json" } });
         const stored = await this.env.SCRIPTS_R2.get(targetKey);
         if (!stored) throw new Error("rewrapped_archive_missing_after_write");
-        const verified = await decodeSpaceArchive(new Uint8Array(await stored.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
-        if (await spaceArchiveChecksum(verified) !== record.checksum || spaceArchiveKeyVersion(new Uint8Array(await stored.arrayBuffer())) !== this.archiveKeys().active.version) throw new Error("rewrapped_archive_verification_failed");
+        const storedBytes = await readSpaceArchiveObject(stored);
+        const verified = await decodeSpaceArchive(storedBytes, this.archiveKeys(), { tenantId, spaceId, archiveId });
+        if (await spaceArchiveChecksum(verified) !== record.checksum || spaceArchiveKeyVersion(storedBytes) !== this.archiveKeys().active.version) throw new Error("rewrapped_archive_verification_failed");
         this.ctx.storage.transactionSync(() => {
           const result = this.ctx.storage.sql.exec("UPDATE space_archive_records SET object_key=?,checksum=? WHERE archive_id=? AND tenant_id=? AND space_id=? AND status='verified'", targetKey, record.checksum, archiveId, tenantId, spaceId);
           if (!result.rowsWritten) throw new Error("archive_record_changed_during_rewrap");
@@ -2682,7 +2683,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (!object) return Response.json({ error_code: "archive_object_missing" }, { status: 409 });
       let payload: SpaceArchivePayload;
       try {
-        payload = await decodeSpaceArchive(new Uint8Array(await object.arrayBuffer()), this.archiveKeys(), { tenantId, spaceId, archiveId });
+        payload = await decodeSpaceArchive(await readSpaceArchiveObject(object), this.archiveKeys(), { tenantId, spaceId, archiveId });
         if (await spaceArchiveChecksum(payload) !== record.checksum) throw new Error("archive_checksum_mismatch");
       } catch (error) { return Response.json({ error_code: (error as Error).message }, { status: 422 }); }
       if (Object.entries(payload.tableRows).some(([table, rows]) => !Array.isArray(rows) || payload.rowCounts[table] !== rows.length)

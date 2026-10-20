@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { GadgetActorScope, GadgetScope, GadgetTier } from "@naelao/agent-sdk";
 import { signHmac, verifyHmac } from "@naelao/crypto";
-import { parseBoundedInteger } from "@naelao/http";
+import { parseBoundedInteger, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
 
@@ -96,6 +96,13 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      try { request = new Request(request, { body: await readBoundedRequestBytes(request, 4 * 1024 * 1024) }); }
+      catch (error) {
+        if (error instanceof RequestBodyTooLargeError) return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+        return Response.json({ error_code: "invalid_request_body" }, { status: 400 });
+      }
+    }
     this.ensureBaseSchema();
     const url = new URL(request.url);
     try {

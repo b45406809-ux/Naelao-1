@@ -9,6 +9,19 @@ describe("ConformanceSandboxDO boundary handling", () => {
     expect((await sandbox.fetch(new Request("http://sandbox/prepare", { method: "POST", body: "x".repeat(524_289) }))).status).toBe(413);
   });
 
+  it("enforces the byte cap on streamed UTF-8 bodies without Content-Length", async () => {
+    const sandbox = new ConformanceSandboxDO({ storage: createDOStorage() } as never, {} as never);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`"${"é".repeat(262_145)}"`));
+        controller.close();
+      },
+    });
+    const response = await sandbox.fetch(new Request("http://sandbox/prepare", { method: "POST", body, duplex: "half" } as RequestInit));
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error: "fixture_size_limit" });
+  });
+
   it("does not seal the oracle after a rejected assertion and rejects duplicate preparation cleanly", async () => {
     const sandbox = new ConformanceSandboxDO({ storage: createDOStorage() } as never, {} as never);
     const post = (path: string, body: unknown) => sandbox.fetch(new Request(`http://sandbox${path}`, {

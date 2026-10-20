@@ -15,6 +15,7 @@ describe("sample-audit UI action delegation", () => {
       }),
     };
     const ws = {
+      close: vi.fn(),
       deserializeAttachment: () => ({
         tenantId: "tenant-1",
         spaceId: "space-1",
@@ -52,7 +53,7 @@ describe("sample-audit UI action delegation", () => {
       "http://agents/agents/project-agent/script/run"
     );
     expect(forwarded?.headers.get("x-naelao-tenant-id")).toBe("tenant-1");
-    const body = (await forwarded!.json()) as {
+    const body = (await forwarded?.json()) as {
       goal: string;
       spaceId: string;
       projectId: string;
@@ -74,5 +75,51 @@ describe("sample-audit UI action delegation", () => {
     expect(messages.map((message) => JSON.parse(message).type)).toContain(
       "mcp.ui_action.queued"
     );
+  });
+
+  it("closes oversized frames before parsing or forwarding them", () => {
+    const messages: string[] = [];
+    const ws = {
+      send: (message: string) => messages.push(message),
+      close: vi.fn(),
+    };
+    const gateway = new WsHubDO(
+      { storage: { sql: { exec: () => [] } }, getTags: () => [] } as never,
+      {
+        ENVIRONMENT: "development",
+        PLATFORM_SECRET: "test-secret",
+        WS_HUB: {} as never,
+        AGENTS_WORKER: { fetch: vi.fn() } as never,
+      }
+    );
+    gateway.webSocketMessage(ws as never, "x".repeat(64 * 1024 + 1));
+    expect(ws.close).toHaveBeenCalledWith(1009, "message too large");
+    expect(messages).toHaveLength(0);
+  });
+
+  it("rejects oversized internal broadcasts before parsing JSON", async () => {
+    const gateway = new WsHubDO(
+      { storage: { sql: { exec: () => [] } }, getTags: () => [] } as never,
+      {
+        ENVIRONMENT: "development",
+        PLATFORM_SECRET: "test-secret",
+        WS_HUB: {} as never,
+        AGENTS_WORKER: {} as never,
+      }
+    );
+    const response = await gateway.fetch(
+      new Request("http://ws/broadcast", {
+        method: "POST",
+        headers: { "x-naelao-platform-secret": "test-secret" },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+            controller.close();
+          },
+        }),
+        duplex: "half",
+      } as RequestInit)
+    );
+    expect(response.status).toBe(413);
   });
 });

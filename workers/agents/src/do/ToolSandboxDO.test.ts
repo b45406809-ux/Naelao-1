@@ -302,7 +302,10 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(storage.has("sidecar_warm_expires_at")).toBe(false);
     expect(analyticsPoints).toHaveLength(1);
     expect(analyticsPoints[0]?.doubles?.[6]).toBe(2); // prewarm and failed command are both measured
-    expect(analyticsPoints[0]?.doubles?.[7]).toBeGreaterThanOrEqual(1000);
+    // The enforced deadline is 1,000 ms; runtime sampling can finish slightly before the
+    // timer boundary because the execution abort and cleanup race on the isolate event loop.
+    expect(analyticsPoints[0]?.doubles?.[7]).toBeGreaterThanOrEqual(900);
+    expect(analyticsPoints[0]?.doubles?.[7]).toBeLessThanOrEqual(1100);
     expect(storage.has("container_runtime_metrics")).toBe(false);
   });
 

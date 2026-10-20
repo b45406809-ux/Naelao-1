@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeSpaceArchive, encodeSpaceArchive, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, type SpaceArchivePayload } from "./space-backup.js";
+import { decodeSpaceArchive, encodeSpaceArchive, readSpaceArchiveObject, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, type SpaceArchivePayload } from "./space-backup.js";
 
 const payload: SpaceArchivePayload = {
   format: "naelao-space-archive", formatVersion: 1,
@@ -11,6 +11,12 @@ const payload: SpaceArchivePayload = {
 const secret = "stable-test-platform-secret-with-at-least-32-characters";
 
 describe("encrypted Space archive envelope", () => {
+  it("checks R2 size metadata before materializing an archive and validates fetched bytes", async () => {
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(1));
+    await expect(readSpaceArchiveObject({ size: 16 * 1024 * 1024 + 1, arrayBuffer } as never)).rejects.toThrow("archive_size_limit_exceeded");
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    await expect(readSpaceArchiveObject({ size: 2, arrayBuffer } as never)).rejects.toThrow("archive_size_mismatch");
+  });
   it("round-trips authenticated data and records checksum", async () => {
     const encoded = await encodeSpaceArchive(payload, secret);
     expect(new TextDecoder().decode(encoded.bytes)).not.toContain("hello");

@@ -178,7 +178,8 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
   }
   private async receive(ws: WebSocket, message: string | ArrayBuffer) {
     const state = ws.deserializeAttachment() as SocketState | null;
-    if (!state || typeof message !== "string" || new TextEncoder().encode(message).byteLength > 65536) { ws.close(1008, "invalid frame"); return; }
+    if (typeof message === "string" && new TextEncoder().encode(message).byteLength > 65536) { ws.close(1009, "frame too large"); return; }
+    if (!state || typeof message !== "string") { ws.close(1008, "invalid frame"); return; }
     try {
       const frame = JSON.parse(message) as { type: string; generation: number; original_generation?: number; payload_hash?: string; status?: string; request_id?: string; sequence?: number; stream?: "stdout" | "stderr"; chunk?: string; ok?: boolean; result?: unknown; error?: string; cancelled?: boolean };
       if (frame.generation !== state.generation || state.generation !== await this.ctx.storage.get("socket_generation") || state.expiresAt <= Date.now()) throw new Error("tunnel_stale_socket");

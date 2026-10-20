@@ -68,7 +68,20 @@ function archiveKeysForVersion(keys: ArchiveKeys, version: string): string[] {
 }
 
 const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
+const MAX_ENCRYPTED_ARCHIVE_BYTES = MAX_ARCHIVE_BYTES * 2;
 const MULTIPART_PART_BYTES = 5 * 1024 * 1024;
+
+/** R2 archive loads must check object metadata before allocating the encrypted body. */
+export async function readSpaceArchiveObject(
+  object: Pick<R2ObjectBody, "size" | "arrayBuffer">
+): Promise<Uint8Array> {
+  if (!Number.isSafeInteger(object.size) || object.size < 0 || object.size > MAX_ENCRYPTED_ARCHIVE_BYTES)
+    throw new Error("archive_size_limit_exceeded");
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  if (bytes.byteLength !== object.size || bytes.byteLength > MAX_ENCRYPTED_ARCHIVE_BYTES)
+    throw new Error("archive_size_mismatch");
+  return bytes;
+}
 
 export interface ResumableArchiveUploadState { uploadId: string | null; completedParts: R2UploadedPart[]; }
 
@@ -176,7 +189,7 @@ export async function decodeSpaceArchive(
   keys: ArchiveKeys,
   expected: { tenantId: string; spaceId: string; archiveId: string },
 ): Promise<SpaceArchivePayload> {
-  if (bytes.byteLength > MAX_ARCHIVE_BYTES * 2) throw new Error("archive_size_limit_exceeded");
+  if (bytes.byteLength > MAX_ENCRYPTED_ARCHIVE_BYTES) throw new Error("archive_size_limit_exceeded");
   let envelope: ArchiveEnvelope;
   try { envelope = JSON.parse(new TextDecoder().decode(bytes)) as ArchiveEnvelope; }
   catch { throw new Error("archive_envelope_invalid"); }

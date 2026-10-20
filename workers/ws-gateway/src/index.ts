@@ -1,7 +1,7 @@
 // WebSocket Gateway via Durable Object — one WsHubDO per tenant, manages live WS connections
 // Dashboard clients connect to receive live session/agent events.
 import { DurableObject } from "cloudflare:workers";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { restoreWsSessionMeta, type WsSessionMeta } from "./session-meta";
 import { blocksNodeEdit } from "./node-lease-gate";
 
@@ -169,6 +169,13 @@ export class WsHubDO extends DurableObject<Env> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      try { request = new Request(request, { body: await readBoundedRequestBytes(request, 1024 * 1024) }); }
+      catch (error) {
+        if (error instanceof RequestBodyTooLargeError) return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+        return Response.json({ error_code: "invalid_request_body" }, { status: 400 });
+      }
+    }
     const url = new URL(request.url);
     const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
 
@@ -255,6 +262,11 @@ export class WsHubDO extends DurableObject<Env> {
 
   // Hibernation API handlers — called by CF when the DO wakes for a WebSocket event
   override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+    const byteLength = typeof message === "string" ? new TextEncoder().encode(message).byteLength : message.byteLength;
+    if (byteLength > 64 * 1024) {
+      ws.close(1009, "message too large");
+      return;
+    }
     // Clients can send ping frames; echo back a pong
     if (typeof message === "string") {
       let parsed: unknown;

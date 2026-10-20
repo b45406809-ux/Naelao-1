@@ -18,6 +18,7 @@
 //   3. If state=rollout → check targeting_rules first; if matched → true, else hash(flag_id:account_id) % 100 < enabled_pct
 
 import { DurableObject } from "cloudflare:workers";
+import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 
 interface FlagRow {
   flag_id: string;
@@ -107,6 +108,13 @@ export class FeatureFlagDO extends DurableObject {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      try { request = new Request(request, { body: await readBoundedRequestBytes(request, 1024 * 1024) }); }
+      catch (error) {
+        if (error instanceof RequestBodyTooLargeError) return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+        return Response.json({ error_code: "invalid_request_body" }, { status: 400 });
+      }
+    }
     this.ensureInit();
     const url = new URL(request.url);
     const method = request.method;

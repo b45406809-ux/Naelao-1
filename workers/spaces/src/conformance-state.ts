@@ -1,4 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { lintArtifact, parseArtifactLinters } from "@naelao/agent-sdk";
 
 interface Environment { CONFORMANCE_SANDBOX_DO: DurableObjectNamespace }
@@ -16,8 +17,15 @@ function filePath(path: string): boolean { return /^\/workspace\/(?:[a-zA-Z0-9_.
 export class ConformanceSandboxDO extends DurableObject<Environment> {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
-    if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY) return Response.json({ error: "fixture_size_limit" }, { status: 413 });
-    const raw = await request.text(); if (raw.length > MAX_BODY) return Response.json({ error: "fixture_size_limit" }, { status: 413 });
+    let bytes: Uint8Array;
+    try { bytes = await readBoundedRequestBytes(request, MAX_BODY); }
+    catch (error) {
+      if (error instanceof RequestBodyTooLargeError) return Response.json({ error: "fixture_size_limit" }, { status: 413 });
+      return Response.json({ error: "invalid_fixture_body" }, { status: 400 });
+    }
+    let raw: string;
+    try { raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
     let body: Record<string, unknown>;
     try { body = raw ? JSON.parse(raw) as Record<string, unknown> : {}; }
     catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
@@ -102,6 +110,12 @@ export class ConformanceState extends WorkerEntrypoint<Environment, { sandboxId:
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (request.method !== "POST" || !['/sql','/files/read','/files/write','/files/validate'].includes(path)) return Response.json({ error: "capability_denied" }, { status: 403 });
-    return this.env.CONFORMANCE_SANDBOX_DO.get(this.env.CONFORMANCE_SANDBOX_DO.idFromString(this.ctx.props.sandboxId)).fetch(new Request(`http://sandbox${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: await request.arrayBuffer() }));
+    try {
+      const body = await readBoundedRequestBytes(request, MAX_BODY);
+      return this.env.CONFORMANCE_SANDBOX_DO.get(this.env.CONFORMANCE_SANDBOX_DO.idFromString(this.ctx.props.sandboxId)).fetch(new Request(`http://sandbox${path}`, { method: "POST", headers: { "content-type": "application/json" }, body }));
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) return Response.json({ error: "fixture_size_limit" }, { status: 413 });
+      return Response.json({ error: "invalid_fixture_body" }, { status: 400 });
+    }
   }
 }
