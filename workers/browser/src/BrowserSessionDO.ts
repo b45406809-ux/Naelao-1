@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import puppeteer from "@cloudflare/puppeteer";
 import type { Browser, Page } from "@cloudflare/puppeteer";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { checkSsrf } from "@naelao/security";
 import { assertBrowserAction, assertBrowserUrl, browserEngineFor, validateBrowserScope,
   type BrowserObservation, type BrowserRuntimeScope, type BrowserScopedAction } from "@naelao/agent-sdk";
@@ -27,6 +27,13 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
   private cancelled = false;
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      try { request = new Request(request, { body: await readBoundedRequestBytes(request, 1024 * 1024) }); }
+      catch (error) {
+        if (error instanceof RequestBodyTooLargeError) return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+        return Response.json({ error_code: "invalid_request_body" }, { status: 400 });
+      }
+    }
     let body: BrowserRequest;
     try { body = await request.json<BrowserRequest>(); validateBrowserScope(body.scope); }
     catch { return Response.json({ error_code: "browser_scope_invalid" }, { status: 400 }); }

@@ -28,6 +28,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { deleteBytesCas, putBytesCas } from "../script-engine/r2-cas.js";
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // spec: "auto-release abandoned slots" via DO Alarms
@@ -81,6 +82,13 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      try { request = new Request(request, { body: await readBoundedRequestBytes(request, 1024 * 1024) }); }
+      catch (error) {
+        if (error instanceof RequestBodyTooLargeError) return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+        return Response.json({ error_code: "invalid_request_body" }, { status: 400 });
+      }
+    }
     this.ensureInit();
     // First-ever slot creation on a fresh DO instance schedules the sweep; subsequent calls
     // are no-ops (setAlarm is idempotent-by-overwrite, but we only need one recurring cadence).

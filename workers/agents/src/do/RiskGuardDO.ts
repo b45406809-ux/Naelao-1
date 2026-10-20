@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { deterministicNoul, SystemOneDecisionClient, type FastDecisionGateway, type ScoreDecision } from "@naelao/agent-sdk";
 
 export interface RiskLimits { stopLossBps: number; maxDrawdownBps: number; peakEquityMinor: number }
@@ -54,6 +55,13 @@ export class RiskGuardDO extends DurableObject<RiskGuardEnv> {
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS risk_limits(id INTEGER PRIMARY KEY CHECK(id=1),stop_loss_bps INTEGER NOT NULL CHECK(stop_loss_bps BETWEEN 1 AND 10000),max_drawdown_bps INTEGER NOT NULL CHECK(max_drawdown_bps BETWEEN 1 AND 10000),peak_equity_minor INTEGER NOT NULL CHECK(peak_equity_minor>0),frozen INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS guarded_orders(id TEXT PRIMARY KEY,side TEXT NOT NULL,quantity INTEGER NOT NULL,price_minor INTEGER NOT NULL,status TEXT NOT NULL,reason TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);`);
   }
   override async fetch(request: Request): Promise<Response> {
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      try { request = new Request(request, { body: await readBoundedRequestBytes(request, 64 * 1024) }); }
+      catch (error) {
+        if (error instanceof RequestBodyTooLargeError) return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+        return Response.json({ error_code: "invalid_request_body" }, { status: 400 });
+      }
+    }
     const path = new URL(request.url).pathname;
     if (path === "/limits" && request.method === "PUT") {
       const b = await request.json<RiskLimits>();
