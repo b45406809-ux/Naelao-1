@@ -41,6 +41,7 @@ import { inheritTemplateSkills } from "../../agents/src/script-engine/federation
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 import { resolveTenancy } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
+import { isProvisionMessage, type ProvisionMessage } from "./message-contract.js";
 
 async function responseErrorDetail(response: Response): Promise<string> {
   return (await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 500);
@@ -61,30 +62,6 @@ export interface Env {
    *  (holds AGENTMAIL_API_KEY). Optional: the seed degrades to a no-op when unbound or the key
    *  isn't configured, so email provisioning happens on-demand via the assistant instead. */
   AGENTS_WORKER?: Fetcher;
-}
-
-interface ProvisionMessage {
-  type: "space_provision" | "space_deprovision";
-  spaceId: string;
-  tenantId: string;
-  spaceTypeId: string;
-  spaceName: string;
-  templateId?: string;
-  /** Phase C (§A1.17): a business built from more than one template. When set, takes priority
-   *  over the singular `templateId` (which stays as the first entry for back-compat readers). */
-  templateIds?: string[];
-  requestedAt: string;
-  /** The user who created this space — registered as space_members owner in step 5c.
-   *  Optional only for backward compatibility with any already-queued messages; every new
-   *  enqueue (POST /spaces, POST /reseller/spaces) sets it.
-   *
-   *  F-45 (trust boundary — do not weaken): `userId` is TRUSTED. It is sourced from verified
-   *  auth in createSpaceRecord (getCallerIdentity), never from client-supplied input, and
-   *  seedOwnerMember (step 5c) registers it as `owner` of the space using a platform-secret
-   *  internal token. ProvisionMessages arrive only from the internal provisioning queue, which
-   *  is enqueued exclusively by that verified path. Never accept `userId` from an untrusted
-   *  source — doing so would let an attacker register themselves as owner of any space. */
-  userId?: string;
 }
 
 function validateEnv(env: Env): void {
@@ -1186,6 +1163,11 @@ async function deprovisionSpace(msg: ProvisionMessage, env: Env): Promise<void> 
 
 export async function queue(batch: MessageBatch<ProvisionMessage>, env: Env): Promise<void> {
   for (const message of batch.messages) {
+    if (!isProvisionMessage(message.body)) {
+      console.warn("[provisioner] Discarding malformed queue message");
+      message.ack();
+      continue;
+    }
     try {
       if (message.body.type === "space_provision") {
         await provisionSpace(message.body, env);

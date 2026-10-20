@@ -830,3 +830,9 @@ Traced the pure tenancy resolver through its registry re-export and the provisio
 Validation: `tests/unit/space-tenancy.test.ts` passed 6/6; Spaces and Provisioner TypeScript checks passed; `git diff --check` passed. Provisioner has no local test file for the full queue-to-registry path, and no live queue/D1/SpaceDO provisioning run was performed. The exact resolver and its test are checked in the file plan; the provisioner was traced at this call site but remains unchecked as a full-file review.
 
 Refreshed the tracked tree and checklist after code commit `9fa8ae19`; counts are unchanged, completed review marks are preserved, and the inventory records the tenancy-validation revision.
+
+## Provisioning queue payload boundary (2026-10-20)
+
+Traced the queue handler through provisioning, rollback, and deprovisioning entrypoints and confirmed that queue values reach D1 updates and broad R2-prefix cleanup. The handler previously read `message.body.type` without a runtime contract; malformed/unknown payloads could be retried until dead-lettering, while valid-looking payloads could carry unbounded IDs/names/template arrays. Added a shared bounded payload guard and reject/ack malformed messages before any side effects; retry remains reserved for valid messages whose processing fails. The current spaces and business creation producers emit the required payload fields.
+
+Validation: new queue-contract tests passed 13/13, Provisioner TypeScript passed, and `git diff --check` passed. The tests exercise the pure validator; they do not run the Cloudflare queue runtime or prove delivery/ack/dead-letter behavior. `workers/provisioner/src/index.ts` was reviewed at queue/provisioning boundaries but remains unchecked as a complete file; the contract implementation and test are checked.
