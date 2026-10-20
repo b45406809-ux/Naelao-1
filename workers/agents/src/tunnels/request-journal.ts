@@ -14,7 +14,7 @@ export class TunnelRequestJournal {
   constructor(private readonly storage: TunnelJournalStorage) {}
   private key(id: string) { if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) throw new Error("tunnel_request_id_invalid"); return "tunnel-request:" + id; }
   async get(id: string) { return this.storage.get<TunnelRequestRecord>(this.key(id)); }
-  async prepare(record: TunnelRequestRecord): Promise<{ created: boolean; record: TunnelRequestRecord }> {
+  async prepare(record: TunnelRequestRecord, options: { activeLimit?: number } = {}): Promise<{ created: boolean; record: TunnelRequestRecord }> {
     return this.storage.transaction(async tx => {
       const key = this.key(record.id), previous = await tx.get<TunnelRequestRecord>(key);
       if (previous) {
@@ -22,7 +22,15 @@ export class TunnelRequestJournal {
           || previous.tenantId !== record.tenantId || previous.spaceId !== record.spaceId || previous.machineId !== record.machineId) throw new Error("tunnel_request_conflict");
         return { created: false, record: previous };
       }
-      await tx.put(key, record); return { created: true, record };
+      if (options.activeLimit !== undefined) {
+        const active = await tx.get<string[]>("active_requests") ?? [];
+        if (!Number.isSafeInteger(options.activeLimit) || options.activeLimit < 1 ||
+            (active.length >= options.activeLimit && !active.includes(record.id)))
+          throw new Error("tunnel_machine_concurrency_limit");
+        if (!active.includes(record.id)) await tx.put("active_requests", [...active, record.id]);
+      }
+      await tx.put(key, record);
+      return { created: true, record };
     });
   }
   async update(id: string, generation: number, patch: Partial<Pick<TunnelRequestRecord, "status" | "result" | "error">>): Promise<TunnelRequestRecord> {

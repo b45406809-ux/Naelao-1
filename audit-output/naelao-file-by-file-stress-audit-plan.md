@@ -1738,8 +1738,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/agents/src/do/ConcurrencyDO.test.ts`
 - [x] `workers/agents/src/do/ConcurrencyDO.ts`
 - [x] `workers/agents/src/do/HITLApprovalDO.ts`
-- [ ] `workers/agents/src/do/LocalTunnelDO.test.ts`
-- [ ] `workers/agents/src/do/LocalTunnelDO.ts`
+- [x] `workers/agents/src/do/LocalTunnelDO.test.ts`
+- [x] `workers/agents/src/do/LocalTunnelDO.ts`
 - [ ] `workers/agents/src/do/NaelaoAgentDO.ts`
 - [ ] `workers/agents/src/do/RiskGuardDO.ts`
 - [x] `workers/agents/src/do/TaskDO.ts`
@@ -2010,8 +2010,9 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/agents/src/tunnels`
 
-- [ ] `workers/agents/src/tunnels/host.ts`
-- [ ] `workers/agents/src/tunnels/request-journal.ts`
+- [x] `workers/agents/src/tunnels/host.test.ts`
+- [x] `workers/agents/src/tunnels/host.ts`
+- [x] `workers/agents/src/tunnels/request-journal.ts`
 
 ### `workers/agents/src/voice`
 

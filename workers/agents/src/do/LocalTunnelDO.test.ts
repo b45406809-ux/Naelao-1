@@ -9,10 +9,15 @@ async function fixture() {
   const makeSocket = () => ({ send: (message: string) => { outbox.push(message); }, close: vi.fn(),
     deserializeAttachment: () => ({ ...identity, generation: 1, keyVersion: 1, expiresAt: Date.now() + 300000, heartbeatAt: Date.now() }) });
   const sockets = [makeSocket()];
+  let transactionTail: Promise<unknown> = Promise.resolve();
   const storage = { get: async (key: string) => data.get(key), put: async (key: string, value: unknown) => { data.set(key, structuredClone(value)); },
     delete: async (key: string) => data.delete(key), setAlarm: async () => undefined,
     list: async ({ prefix }: { prefix: string }) => new Map([...data].filter(([key]) => key.startsWith(prefix))),
-    transaction: async (fn: (tx: unknown) => unknown) => fn(storage) };
+    transaction: async (fn: (tx: unknown) => unknown) => {
+      const result = transactionTail.then(() => fn(storage));
+      transactionTail = result.catch(() => undefined);
+      return result;
+    } };
   const machine = { schema: 1, ...identity, name: "machine", ownerId: "owner", status: "active", sequence: 1, keyVersion: 1,
     hardware: { platform: "linux", arch: "x64", cpuCount: 2, memoryBytes: 4096, capabilities: [], models: ["local-model"] },
     grants: [{ id: "grant", actorId: "owner", projectId: "project", expiresAt: Date.now() + 300000, roots: [], commands: ["task1", "task2"], inference: true }] };
@@ -39,6 +44,13 @@ describe("LocalTunnelDO correlation and multiplexing", () => {
     const response = await f.tunnel.fetch(new Request("http://agents.example.test/connect", { headers: { Upgrade: "websocket" } }));
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: "tunnel_secure_upgrade_required" });
+  });
+  it("bounds direct machine-authorization bodies before JSON parsing", async () => {
+    const f = await fixture();
+    const response = await f.tunnel.fetch(new Request("https://tunnel/authorize", {
+      method: "POST", body: "x".repeat(32 * 1024 + 1),
+    }));
+    expect(response.status).toBe(413);
   });
   it("rejects anonymous inference before contacting the enrolled local machine", async () => {
     const f = await fixture();
@@ -98,5 +110,35 @@ describe("LocalTunnelDO correlation and multiplexing", () => {
     await f.tunnel.webSocketMessage(f.socket as never, JSON.stringify({ type: "response", request_id: request.request_id,
       generation: request.generation, cancelled: true, ok: false }));
     expect(await (await pending).json()).toMatchObject({ status: "cancelled", request_id: "request-cancel" });
+  });
+
+  it("enforces the eight-request limit atomically under concurrent dispatch", async () => {
+    const f = await fixture();
+    const pending = Array.from({ length: 9 }, (_, index) => f.tunnel.fetch(f.invoke(`parallel-${index}`, `task${index % 2 + 1}`)));
+    await vi.waitFor(() => expect(f.outbox).toHaveLength(8));
+    expect(await f.storage.get("active_requests")).toHaveLength(8);
+    const frames = f.outbox.map((text) => JSON.parse(text));
+    for (const frame of frames) await f.tunnel.webSocketMessage(f.socket as never, JSON.stringify({
+      type: "response", request_id: frame.request_id, generation: frame.generation, ok: true, result: { ok: true },
+    }));
+    const responses = await Promise.all(pending);
+    expect(responses.filter((response) => response.status === 200)).toHaveLength(8);
+    expect(responses.filter((response) => response.status === 429)).toHaveLength(1);
+    expect(await f.storage.get("active_requests")).toEqual([]);
+  });
+
+  it("releases timed-out durable active slots after marking the result indeterminate", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const f = await fixture();
+    const pending = f.tunnel.fetch(f.invoke("request-deadline", "task1"));
+    await vi.waitFor(() => expect(f.outbox).toHaveLength(1));
+    vi.advanceTimersByTime(60_000);
+    await f.tunnel.alarm();
+    expect(await f.storage.get("active_requests")).toEqual([]);
+    expect((await f.storage.get("tunnel-request:request-deadline") as { status: string }).status).toBe("indeterminate");
+    await pending;
+    expect(JSON.parse(f.outbox[1]!).type).toBe("cancel");
+    vi.useRealTimers();
   });
 });

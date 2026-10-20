@@ -77,6 +77,13 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
     const url = new URL(request.url);
     try {
       if (url.pathname === "/authorize" && request.method === "POST") {
+        let text: string;
+        try { text = await readBoundedRequestText(request, 32 * 1024); }
+        catch (error) {
+          if (error instanceof RequestBodyTooLargeError) return Response.json({ error: "tunnel_request_limit" }, { status: 413 });
+          return Response.json({ error: "tunnel_request_invalid" }, { status: 400 });
+        }
+        request = new Request(request, { body: text });
         const body = await request.json<{ proof: MachineProof; signature: string; hardware?: unknown; publicKey?: JsonWebKey }>();
         const identity: Identity = { tenantId: body.proof.tenantId, spaceId: body.proof.spaceId, machineId: body.proof.machineId };
         const machine = await this.authority(identity, { ...body, action: "authenticate" });
@@ -136,12 +143,10 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
         if (!this.allowed(machine, body.invocation, op, params)) throw new Error("tunnel_machine_grant_denied");
         const socket = this.target(identity, machine.sequence);
         if (!socket) return Response.json({ ok: false, error: "local_machine_offline", machineId: machine.machineId }, { status: 503 });
-        const active = await this.ctx.storage.get<string[]>("active_requests") ?? [];
-        if (active.length >= 8 && !existing) throw new Error("tunnel_machine_concurrency_limit");
         const prepared = await this.journal.prepare({ id: body.invocation.requestId, ...identity, actorId: body.invocation.actorId, projectId: body.invocation.projectId, runId: body.invocation.runId,
-          operation: op, payloadHash: await tunnelHash(JSON.stringify([op, params])), generation: machine.sequence, deadline: body.invocation.deadline, status: "prepared", nextOutputSequence: 0, outputBytes: 0, stdout: "", stderr: "", createdAt: Date.now(), updatedAt: Date.now() });
+          operation: op, payloadHash: await tunnelHash(JSON.stringify([op, params])), generation: machine.sequence, deadline: body.invocation.deadline, status: "prepared", nextOutputSequence: 0, outputBytes: 0, stdout: "", stderr: "", createdAt: Date.now(), updatedAt: Date.now() },
+          existing ? {} : { activeLimit: 8 });
         if (!prepared.created) return this.receipt(prepared.record);
-        await this.activeRequest(prepared.record.id, true);
         // Persist sent before send: a crash here is uncertain, never an automatic replay.
         await this.journal.update(prepared.record.id, machine.sequence, { status: "sent" });
         try {
@@ -163,7 +168,8 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
       }
       return Response.json({ error: "not_found" }, { status: 404 });
     } catch (error) {
-      return Response.json({ ok: false, error: error instanceof RequestBodyTooLargeError ? "tunnel_request_limit" : error instanceof Error ? error.message : "tunnel_request_failed" }, { status: error instanceof RequestBodyTooLargeError ? 413 : 403 });
+      const code = error instanceof RequestBodyTooLargeError ? "tunnel_request_limit" : error instanceof Error ? error.message : "tunnel_request_failed";
+      return Response.json({ ok: false, error: code }, { status: error instanceof RequestBodyTooLargeError ? 413 : code === "tunnel_machine_concurrency_limit" ? 429 : 403 });
     }
   }
   private receipt(record: TunnelRequestRecord): Response {
@@ -244,10 +250,15 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
     }
     for (const id of await this.ctx.storage.get<string[]>("active_requests") ?? []) {
       const record = await this.journal.get(id);
+      if (!record) {
+        await this.activeRequest(id, false);
+        continue;
+      }
       if (record && record.deadline <= Date.now()) {
         this.target(identity, record.generation)?.send(JSON.stringify({ type: "cancel", request_id: id, generation: record.generation }));
         await this.journal.update(id, record.generation, { status: "indeterminate", error: "tunnel_deadline_awaiting_machine_ack" });
         this.waiting.get(id)?.(); this.waiting.delete(id);
+        await this.activeRequest(id, false);
       }
     }
     if (this.ctx.getWebSockets().length || (await this.ctx.storage.get<string[]>("active_requests") ?? []).length) await this.ctx.storage.setAlarm(Date.now() + 15000);
