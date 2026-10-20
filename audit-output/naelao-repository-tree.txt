@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1952
-Files with source or executable-configuration extensions: 1746
-Inventory revision: 2026-10-20 audit refresh at 9fa8ae19
+Files: 1954
+Files with source or executable-configuration extensions: 1748
+Inventory revision: 2026-10-20 audit refresh at bccdc830
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -2040,6 +2040,8 @@ workers/
     package.json
     src/
       index.ts
+      message-contract.test.ts
+      message-contract.ts
     tsconfig.json
     wrangler.toml
   router/
