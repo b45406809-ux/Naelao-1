@@ -29,9 +29,9 @@ function makeEnv(opts: {
 }) {
   const jobRow = {
     id: "job-1", space_id: "space-1", tenant_id: "tenant-1", project_id: null,
-    cron_expression: "0 13 * * *", script_name: "", params: "{}",
+    cron_expression: "* * * * *", script_name: "", params: "{}",
     agent_id: "naelao-agent", goal: "Review revenue and report anything that needs attention.",
-    last_run_at: null, created_at: Date.now(), consecutive_failures: 0,
+    last_run_at: null, created_at: Date.now() - 86_400_000, consecutive_failures: 0,
   };
 
   return {
@@ -40,10 +40,15 @@ function makeEnv(opts: {
       prepare: (sql: string) => ({
         bind: () => ({
           first: async () => {
+            if (sql.includes("INSERT INTO scheduled_job_dispatches")) return { claim_token: "claim-1" };
             if (sql.includes("FROM scheduled_jobs")) return jobRow;
-            if (sql.includes("FROM spaces")) return opts.spaceRow ?? null;
+            if (sql.includes("FROM spaces")) return opts.spaceRow ?? {
+              name: "Pixel Forge Studio",
+              config_json: JSON.stringify({ onboarding: { status: "complete" } }),
+            };
             return null;
           },
+          all: async () => ({ results: sql.includes("FROM channel_links") ? [{ channel: "whatsapp", model_override: null }] : [] }),
           run: async () => ({ success: true }),
         }),
       }),
@@ -51,6 +56,12 @@ function makeEnv(opts: {
     SPACES_WORKER: {
       fetch: async (req: Request) => {
         const path = new URL(req.url).pathname;
+          if (path === "/active-run") return Response.json({ active: false });
+          if (path === "/memory/maintenance") return Response.json({ ok: true });
+          if (path === "/channels/heartbeat") {
+            if (opts.doStatus && opts.doStatus >= 400) return new Response(opts.doBody ?? "boom", { status: opts.doStatus });
+            return Response.json({ ok: true });
+          }
         if (path.includes("/agent-diagnostics")) {
           if (opts.diagnosticsThrows) throw new Error("spaces worker unreachable");
           return new Response(JSON.stringify(opts.diagnostics ?? {}), {

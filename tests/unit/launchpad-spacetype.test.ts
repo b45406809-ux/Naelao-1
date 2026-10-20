@@ -16,11 +16,11 @@ describe("Launchpad SpaceType (§11)", () => {
   it("is the launchpad space type with the business-model templates + the Whop-seller and web-studio platform templates", () => {
     expect(LAUNCHPAD_SPACETYPE.id).toBe("launchpad");
     expect(LAUNCHPAD_TEMPLATES.map(t => t.id).sort()).toEqual(
-      // Step 28: six "just create it and start earning" business templates added alongside the
-      // originals — paid-audit, interactive-tool, productized-service, intelligence-vault,
-      // digital-toolkit, niche-community.
+      // Step 28 and the later AVE/Cowork vertical templates shipped alongside the originals.
       [
-        "coaching-community", "creator-store", "customer-service", "digital-toolkit",
+        "ave-expert-service-studio", "ave-local-services", "ave-vertical-commerce",
+        "coaching-community", "cowork-clinical-operations", "cowork-finance-fpa", "cowork-legal-ops",
+        "creator-store", "customer-service", "digital-toolkit",
         "intelligence-vault", "interactive-tool", "micro-saas", "newsletter-business",
         "niche-community", "paid-audit", "productized-service", "service-agency",
         "whop-seller", "whop-webdev-agency",

@@ -24,7 +24,7 @@ export class ConformanceSandboxDO extends DurableObject<Environment> {
       return Response.json({ error: "invalid_fixture_body" }, { status: 400 });
     }
     let raw: string;
-    try { raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    try { raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes); }
     catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
     let body: Record<string, unknown>;
     try { body = raw ? JSON.parse(raw) as Record<string, unknown> : {}; }

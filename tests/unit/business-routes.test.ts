@@ -46,6 +46,17 @@ const SCHEMA = [
     invited_by TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL, accepted_at TEXT, accepted_by TEXT
   );`,
+  `CREATE TABLE space_members (
+    id TEXT PRIMARY KEY, space_id TEXT NOT NULL, tenant_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
+    email TEXT, display_name TEXT, role TEXT NOT NULL DEFAULT 'member', auth_token_hash TEXT,
+    auth_token_expires_at TEXT, last_seen_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    suspended_at TEXT
+  );`,
+  `CREATE TABLE product_end_users (
+    product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, email TEXT, display_name TEXT,
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')), last_seen_at TEXT, consented_at TEXT,
+    suspended_at TEXT, PRIMARY KEY (product_space_id, end_user_id)
+  );`,
 ];
 
 function make404RegistryDo(): DurableObjectNamespace {
@@ -414,7 +425,8 @@ describe("Business invites — create + accept round trip", () => {
       env as never, execCtx
     );
     const invite = (await inviteRes.json()) as { id: string; token: string };
-    env.PLATFORM_DB.db.prepare("UPDATE business_invites SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(invite.id);
+    await env.PLATFORM_DB.prepare("UPDATE business_invites SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
+      .bind(invite.id).run();
 
     const carolHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
     const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/invites/${invite.token}/accept`, carolHeaders, { method: "POST" }), env as never, execCtx);

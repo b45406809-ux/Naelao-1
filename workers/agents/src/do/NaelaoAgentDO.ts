@@ -8450,16 +8450,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             continue;
           }
         } else if (matchedRule.action === "run_script" && matchedRule.script_name) {
+          if (projectCfgResult?.status === "error") {
+            // Project limits cannot be verified, so do not let a rule action proceed under a
+            // permissive default. Keep the blocked run visible in the spend-cap counter.
+            engineEnv.maxTier = 1 as ExecutionTier;
+            spendCapped++;
+            continue;
+          }
           if (!msg.channel_extension_instance_id || !msg.channel_extension_sha256) {
             this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
             escalated++;
-            continue;
-          }
-          if (projectCfgResult?.status === "error") {
-            // F17 / A1.13: fail closed — never run a rule-triggered script unrestricted while
-            // the project's config is unreachable. Treat exactly like a spend-cap hit.
-            engineEnv.maxTier = 1 as ExecutionTier;
-            spendCapped++;
             continue;
           }
           if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
@@ -8472,6 +8472,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
         // Rule matched but delivery/script failed — fall through to escalation, not silent drop.
         escalated++;
+        continue;
+      }
+
+      // F17 / A1.13: after safe deterministic rules, hold every remaining project message when
+      // structural policy is unavailable. Without this gate a normal inbound message could be
+      // escalated for an unrelated missing extension without being recorded as policy-blocked.
+      if (msg.project_id && projectCfgResult?.status === "error") {
+        engineEnv.maxTier = 1 as ExecutionTier;
+        spendCapped++;
         continue;
       }
 

@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestBytes, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import { normalizePreferredLanguage, validateScheduledQuietHours } from "@naelao/types";
@@ -666,8 +666,9 @@ app.all("/spaces/:spaceId/agent-definitions", async (c) => {
 // rule: "never make product customers into SpaceDO members") — confirmed neither widget nor
 // portal ever calls this route. Safe to gate. Gated inline for the same reason as
 // agent-definitions above.
-app.all("/spaces/:spaceId/members*", async (c) => {
+const handleSpaceMembers = async (c: Context<{ Bindings: Env }>) => {
   const spaceId = c.req.param("spaceId");
+  if (!spaceId) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const token = c.req.header("x-naelao-internal-token");
@@ -692,7 +693,12 @@ app.all("/spaces/:spaceId/members*", async (c) => {
       ...(c.req.raw.body ? { duplex: "half" as const } : {}),
     })
   );
-});
+};
+// Register the collection and descendant routes explicitly. The `members*` suffix pattern can
+// fall through to 404 in this large Hono route table, so unauthenticated callers never reach the
+// internal-token check and receive a misleading response.
+app.all("/spaces/:spaceId/members", handleSpaceMembers);
+app.all("/spaces/:spaceId/members/*", handleSpaceMembers);
 
 // §A1.17 Phase O: GET /internal/spaces/:spaceId/owner-contact — resolves an email address the
 // Space Assistant can notify when an agent needs approval (NaelaoAgentDO.notifyApprovalRequested

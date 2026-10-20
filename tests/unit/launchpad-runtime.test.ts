@@ -147,22 +147,22 @@ describe("Launchpad workspace runtime", () => {
     expect(selectContainerBackend({ browserAvailable: true })).toBe(
       "webcontainer"
     );
-    expect(selectContainerBackend({ native: true })).toBe("cloudflare");
+    expect(selectContainerBackend({ native: true })).toBe("cloudflare_container");
     expect(
       selectContainerBackend({ gpu: true, localTunnelAuthorized: true })
-    ).toBe("local");
+    ).toBe("local_workstation");
     expect(() => selectContainerBackend({ gpu: true })).toThrow(
-      "not_authorized"
+      "local_tunnel_not_authorized"
     );
     expect(
-      planEnvironmentHandoff("webcontainer", "cloudflare", [
+      planEnvironmentHandoff("webcontainer", "cloudflare_container", [
         "package.json",
         "package-lock.json",
         "src/a.ts",
       ])
     ).toMatchObject({ terminateSource: true, installCommand: "npm ci" });
     expect(() =>
-      planEnvironmentHandoff("webcontainer", "cloudflare", [
+      planEnvironmentHandoff("webcontainer", "cloudflare_container", [
         "package-lock.json",
         "node_modules/x.js",
       ])

@@ -18,7 +18,9 @@ function makeSpacesEnv(): Record<string, unknown> {
       const stmt = {
         bind() { return stmt; },
         async first() {
-          if (/FROM spaces WHERE/.test(sql)) return { name: "Test Space", spacetype_id: "launchpad", config_json: null };
+          if (/FROM spaces WHERE/.test(sql)) return { name: "Test Space", spacetype_id: "launchpad", config_json: "{}", parent_space_id: "product-1" };
+          if (/FROM space_members/.test(sql)) return null;
+          if (/FROM business_memberships/.test(sql)) return { role: "member" };
           return null;
         },
         async all() { return { results: [] }; },
@@ -246,7 +248,16 @@ describe("knowledge worker — kb/* routes (bucket A) now require a token", () =
 
 describe("knowledge worker — semantic-cache routes now require a token (previously NO auth at all)", () => {
   function makeKnowledgeEnv(): Record<string, unknown> {
-    return { PLATFORM_SECRET: SECRET, ENVIRONMENT: "test" };
+    return {
+      PLATFORM_SECRET: SECRET,
+      ENVIRONMENT: "test",
+      PLATFORM_DB: {
+        prepare() {
+          const stmt = { bind() { return stmt; }, async first() { return { config_json: "{}" }; } };
+          return stmt;
+        },
+      },
+    };
   }
 
   it("POST /internal/semantic-cache/lookup rejects an unauthenticated request", async () => {
