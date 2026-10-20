@@ -1163,3 +1163,14 @@ Checked `search.ts` and the new `search.test.ts`. Repository search found `spars
 Triple-checked `workers/knowledge/src/auth.ts` before removal: full tracked-source search found no import or callsite; `workers/knowledge/wrangler.toml` and `package.json` both identify `src/index.ts` as the only runtime entry; no test imported the adapter. Its only behavior was a pass-through to the shared, still-exported security implementation, which has its own tests. Removed the unreferenced Worker wrapper while retaining the shared security API.
 
 Validation after removal: Knowledge Worker suite passed 8 files / 35 tests; Knowledge Worker TypeScript check and `git diff --check` passed; repository search confirms no remaining Worker adapter references.
+
+
+## Knowledge Worker route middleware ordering and external publications (2026-10-20)
+
+Mapped all route registrations in the 1,697-line Knowledge Worker entry file. The external publication list/create/delete and internal published-collection search handlers were registered before the `/spaces/.../kb/*` and `/internal/spaces/.../kb/*` HMAC guards. A route test without an internal token returned HTTP 200, proving those early handlers bypassed the later middleware. The same early routes also ran before the KB tenant-to-space ownership gate.
+
+Moved the shared HMAC and ownership middleware ahead of all routes. Added regressions proving the project publication list and service-only external search reject unsigned requests; existing tests continue to prove signed project actions and retrieval work. No endpoint behavior or signature format changed.
+
+Validation: Knowledge Worker suite passed 8 files / 36 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
+
+This closes the early-route group (publication list/write/delete and external collection search) and their test module. The main `index.ts` remains unchecked overall; later route groups and every DB/R2/Vectorize side-effect path still need review.

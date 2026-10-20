@@ -49,6 +49,21 @@ async function request(path: string, body: unknown, role = "owner", method = bod
 }
 
 describe("owner-published external Knowledge collections", () => {
+  it("requires the host HMAC on external-publication and service-only search routes", async () => {
+    const h = env();
+    for (const [path, method, body] of [
+      ["/spaces/space-1/kb/projects/project-1/external-publications", "GET", undefined],
+      ["/internal/spaces/space-1/kb/projects/project-1/external-search", "POST", { publication_id: "course_material", query: "risk" }],
+    ] as const) {
+      const response = await worker.fetch(new Request(`https://knowledge${path}`, {
+        method,
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner", "x-naelao-user-id": "mentor-1" },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      }), h.env, {} as ExecutionContext);
+      expect(response.status).toBe(403);
+    }
+  });
+
   it("publishes only indexed documents in the exact project and atomically replaces collection membership", async () => {
     const h = env();
     const response = await worker.fetch(await request("/spaces/space-1/kb/projects/project-1/external-publications/course_material", {

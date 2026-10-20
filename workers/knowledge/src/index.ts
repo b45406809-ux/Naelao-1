@@ -93,6 +93,19 @@ const app = new Hono<{ Bindings: KnowledgeEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
+// Register trust-boundary middleware before route handlers. Hono executes handlers in
+// registration order, so adding these guards below a route leaves that earlier route ungated.
+app.use("/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/citations/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
+app.use("/internal/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/kb/*", async (c, next) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const owned = await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId);
+  if (!owned) throw notFound("Space not found");
+  await next();
+});
+
 // ── Helper: extract + validate tenant ────────────────────────────────────────
 
 function requireTenant(c: { req: { header: (h: string) => string | undefined } }): string {
@@ -357,30 +370,9 @@ function chunkCoordinates(document: string, chunks: string[], sourceChunks?: Str
   });
 }
 
-// A1.16.10 (layer-3 backstop, bucket A): KB is a server-side agent tool, never called
-// client-side (confirmed neither apps/widget nor apps/portal ever reaches /kb/*) — safe to
-// gate broadly.
-app.use("/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/citations/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
-
-// F8: requireInternalHmac only authenticates the CALLING WORKER, not the tenant the request
-// is acting on behalf of. A compromised/malicious agent script belonging to tenant A can still
-// pass a spaceId belonging to tenant B (leaked/guessed via URLs, logs, screenshots) in the
-// x-naelao-tenant-id + spaceId pair. Every kb/* verb (list, ingest, patch, delete, search) must
-// refuse to touch a space the caller's tenant doesn't own — gated once, here, before any
-// handler runs (including cache lookups), so no future route can reintroduce the gap.
-app.use("/spaces/:spaceId/kb/*", async (c, next) => {
-  const tenantId = requireTenant(c);
-  const spaceId = c.req.param("spaceId");
-  const owned = await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId);
-  if (!owned) throw notFound("Space not found");
-  await next();
-});
-
 // Foundry's source-reference checker and explicit cross-Space document-share route call these
 // authenticated service endpoints. They return indexed/sanitized KB content only; callers must
 // perform the source Space capability check before requesting a document body.
-app.use("/internal/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
 app.post("/internal/spaces/:spaceId/kb/references/resolve", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
