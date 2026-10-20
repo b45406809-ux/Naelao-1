@@ -628,3 +628,6 @@ Validation: checkpoint, journal, and WorkflowRunDO focused tests passed 8/8; Age
 
 
 Refreshed the tracked inventory after adding `workers/agents/src/workflows/workflow-state.test.ts`: 1,942 tracked files and 1,736 source/config files. The tree snapshot is tied to code commit `23227de1`; 191 scoped file checks remain recorded.
+
+
+Refreshed the tracked inventory after adding `workers/agents/src/workflows/agent-task-checkpoints.test.ts`: 1,943 tracked files and 1,737 source/config files. The tree snapshot is tied to code commit `e29bed43`; 191 scoped file checks remain recorded.

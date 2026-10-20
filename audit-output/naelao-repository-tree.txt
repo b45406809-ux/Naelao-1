@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1942
-Files with source or executable-configuration extensions: 1736
-Inventory revision: 2026-10-20 audit refresh at 23227de1
+Files: 1943
+Files with source or executable-configuration extensions: 1737
+Inventory revision: 2026-10-20 audit refresh at e29bed43
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1840,6 +1840,7 @@ workers/
         voice-ticket.ts
         voice.test.ts
       workflows/
+        agent-task-checkpoints.test.ts
         agent-task-checkpoints.ts
         AgentTaskWorkflow.ts
         chunked-subagent-workflow.ts
