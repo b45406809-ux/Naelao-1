@@ -90,6 +90,59 @@ export function scanRequestBody(
 
 // ── Hono middleware ──────────────────────────────────────────────────────────
 
+export const MAX_WAF_JSON_BODY_BYTES = 1_048_576;
+
+type BoundedBodyResult =
+  | { status: "ok"; bytes: Uint8Array }
+  | { status: "too_large" }
+  | { status: "unavailable" };
+
+/** Reads at most maxBytes from a cloned request before JSON parsing. */
+export async function readBoundedRequestBody(
+  request: Request,
+  maxBytes = MAX_WAF_JSON_BODY_BYTES
+): Promise<BoundedBodyResult> {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
+    if (Number(declaredLength) > maxBytes) return { status: "too_large" };
+  }
+
+  try {
+    const stream = request.clone().body;
+    if (!stream) return { status: "ok", bytes: new Uint8Array() };
+
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBytes) {
+          // A cloned request body is tee'd; cancel can wait for the untouched
+          // original branch. Fire it without awaiting so the limit stays bounded.
+          void reader.cancel().catch(() => undefined);
+          return { status: "too_large" };
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { status: "ok", bytes };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
 export function wafMiddleware() {
   return createMiddleware(async (c, next) => {
     // Scan query parameters
@@ -125,22 +178,35 @@ export function wafMiddleware() {
     // Scan JSON body (only for content-type: application/json)
     const ct = c.req.header("content-type") ?? "";
     if (ct.includes("application/json")) {
-      try {
-        const body = await c.req.json<unknown>();
-        const scan = scanRequestBody(body);
-        if (scan.detected) {
-          console.warn(
-            `[WAF] ${scan.pattern} in request body — path=${c.req.path}`
-          );
-          return c.json(
-            { error_code: "bad_request", message: "Request blocked by WAF" },
-            400
-          );
+      const bounded = await readBoundedRequestBody(c.req.raw);
+      if (bounded.status === "too_large") {
+        return c.json(
+          {
+            error_code: "payload_too_large",
+            message: "JSON request body exceeds the 1 MiB limit",
+          },
+          413
+        );
+      }
+      if (bounded.status === "ok") {
+        try {
+          const body = JSON.parse(
+            new TextDecoder().decode(bounded.bytes)
+          ) as unknown;
+          const scan = scanRequestBody(body);
+          if (scan.detected) {
+            console.warn(
+              `[WAF] ${scan.pattern} in request body — path=${c.req.path}`
+            );
+            return c.json(
+              { error_code: "bad_request", message: "Request blocked by WAF" },
+              400
+            );
+          }
+          // The request was cloned for inspection; downstream can still read the original.
+        } catch {
+          // Not valid JSON — let downstream handle it.
         }
-        // Re-attach body so downstream handlers can read it
-        // Hono caches the parsed body so this is safe
-      } catch {
-        // Not valid JSON — let downstream handle it
       }
     }
 
