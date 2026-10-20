@@ -782,8 +782,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/agent-sdk/src/launchpad-runtime.ts`
 - [ ] `packages/agent-sdk/src/mode-dispatch.test.ts`
 - [ ] `packages/agent-sdk/src/mode-dispatch.ts`
-- [ ] `packages/agent-sdk/src/no-code-subagent.test.ts`
-- [ ] `packages/agent-sdk/src/no-code-subagent.ts`
+- [x] `packages/agent-sdk/src/no-code-subagent.test.ts`
+- [x] `packages/agent-sdk/src/no-code-subagent.ts`
 - [ ] `packages/agent-sdk/src/project-fact-relevance.test.ts`
 - [ ] `packages/agent-sdk/src/project-fact-relevance.ts`
 - [ ] `packages/agent-sdk/src/project-kinds.ts`
