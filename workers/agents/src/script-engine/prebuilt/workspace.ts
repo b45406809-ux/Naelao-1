@@ -100,11 +100,11 @@ async function withWorkspaceLock<T>(ctx: PrebuiltOpContext, keyName: string, wor
   // through the same namespaced lock gateway as the explicit lock prebuilt.
   if (!ctx.env.lockGateway || !ctx.env.runId) return work();
   const lock = await ctx.env.lockGateway.acquire({ key: `workspace:${keyName}`, holderId: ctx.env.runId, limit: 1, ttlMs: WORKSPACE_LOCK_TTL_MS });
-  if (!lock.granted) throw new Error(`Workspace is busy: '${keyName}' is locked by another run`);
+  if (!lock.granted || !Number.isSafeInteger(lock.fencingToken) || !lock.fencingToken) throw new Error(`Workspace is busy: '${keyName}' is locked by another run`);
   try {
     return await work();
   } finally {
-    await ctx.env.lockGateway.release({ key: `workspace:${keyName}`, holderId: ctx.env.runId });
+    await ctx.env.lockGateway.release({ key: `workspace:${keyName}`, holderId: ctx.env.runId, fencingToken: lock.fencingToken });
   }
 }
 

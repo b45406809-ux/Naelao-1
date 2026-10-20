@@ -66,7 +66,7 @@ describe("agent configuration bundle locking", () => {
       fetch: vi.fn(async (request: Request) => {
         requests.push(request);
         if (request.url.endsWith("/acquire"))
-          return Response.json({ acquired: true });
+          return Response.json({ acquired: true, fencingToken: 7 });
         return Response.json({ released: true });
       }),
     } as unknown as Fetcher;
@@ -82,10 +82,11 @@ describe("agent configuration bundle locking", () => {
         limit: 1,
         ttlMs: 30_000,
       })
-    ).resolves.toMatchObject({ granted: true, active: 1 });
+    ).resolves.toMatchObject({ granted: true, active: 1, fencingToken: 7 });
     await gateway.release({
       key: "agent-config:space-1:agent-1",
       holderId: "provision-1",
+      fencingToken: 7,
     });
     expect(requests).toHaveLength(2);
     expect(requests[0]?.url).toContain("/internal/agent-config-lock/acquire");
@@ -97,7 +98,7 @@ describe("agent configuration bundle locking", () => {
   });
 
   it("holds the 30-second named lock across the four-file bundle", async () => {
-    const acquire = vi.fn(async () => ({ granted: true, active: 1 }));
+    const acquire = vi.fn(async () => ({ granted: true, active: 1, fencingToken: 7 }));
     const release = vi.fn(async () => undefined);
     await writeAgentConfig(bucket(), "space-1", "agent-1", config, {
       holderId: "run-1",
@@ -112,6 +113,7 @@ describe("agent configuration bundle locking", () => {
     expect(release).toHaveBeenCalledWith({
       key: "agent-config:space-1:agent-1",
       holderId: "run-1",
+      fencingToken: 7,
     });
   });
 

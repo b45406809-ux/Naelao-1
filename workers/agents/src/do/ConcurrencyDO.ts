@@ -239,17 +239,20 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   private async releaseLock(request: Request): Promise<Response> {
-    const body = await request.json<{ key?: string; holderId?: string; holder_id?: string; fencingToken?: number }>().catch(() => ({} as { key?: string; holderId?: string; holder_id?: string; fencingToken?: number }));
-    const key = String(body.key ?? "");
-    const holderId = String(body.holderId ?? body.holder_id ?? "");
-    const token = Number(body.fencingToken);
+    let value: unknown;
+    try { value = await request.json(); } catch { return Response.json({ error_code: "bad_request" }, { status: 400 }); }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const body = value as { key?: unknown; holderId?: unknown; holder_id?: unknown; fencingToken?: unknown };
+    const key = body.key;
+    const holderId = body.holderId ?? body.holder_id;
+    const token = body.fencingToken;
+    if (typeof key !== "string" || !key || key.length > MAX_SLOT_KEY_LENGTH
+      || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH
+      || !Number.isSafeInteger(token) || (token as number) < 1) return Response.json({ error_code: "bad_request" }, { status: 400 });
     const before = this.ctx.storage.sql.exec(`SELECT holder_id,fencing_token FROM locks WHERE key = ?`, key).toArray() as Array<{ holder_id: string; fencing_token: number }>;
-    if (key && holderId) {
-      if (Number.isSafeInteger(token) && token > 0) this.ctx.storage.sql.exec(`DELETE FROM locks WHERE key = ? AND holder_id = ? AND fencing_token = ?`, key, holderId, token);
-      else this.ctx.storage.sql.exec(`DELETE FROM locks WHERE key = ? AND holder_id = ?`, key, holderId);
-    }
+    this.ctx.storage.sql.exec(`DELETE FROM locks WHERE key = ? AND holder_id = ? AND fencing_token = ?`, key, holderId, token);
     await this.scheduleNextAlarm();
-    return Response.json({ released: before[0]?.holder_id === holderId && (!Number.isSafeInteger(token) || token <= 0 || before[0]?.fencing_token === token) });
+    return Response.json({ released: before[0]?.holder_id === holderId && before[0]?.fencing_token === token });
   }
 
   private async forceReleaseLock(request: Request): Promise<Response> {

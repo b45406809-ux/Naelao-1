@@ -51,7 +51,7 @@ export function createAgentConfigLockGateway(
   };
   return {
     acquire: async (params) => {
-      const result = await call<{ acquired?: boolean; granted?: boolean; active?: number; limit?: number; heldBy?: string; remainingMs?: number }>(
+      const result = await call<{ acquired?: boolean; granted?: boolean; active?: number; limit?: number; heldBy?: string; remainingMs?: number; fencingToken?: number }>(
         "/lock/acquire", { key: params.key, holderId: params.holderId, ttlMs: params.ttlMs });
       return {
         granted: result.granted ?? result.acquired ?? false,
@@ -59,9 +59,10 @@ export function createAgentConfigLockGateway(
         ...(result.limit === undefined ? {} : { limit: result.limit }),
         ...(result.heldBy === undefined ? {} : { heldBy: result.heldBy }),
         ...(result.remainingMs === undefined ? {} : { remainingMs: result.remainingMs }),
+        ...(result.fencingToken === undefined ? {} : { fencingToken: result.fencingToken }),
       };
     },
-    release: async (params) => { await call("/lock/release", { key: params.key, holderId: params.holderId }); },
+    release: async (params) => { await call("/lock/release", { key: params.key, holderId: params.holderId, fencingToken: params.fencingToken }); },
     status: (key) => call<{ active: number }>(`/status?key=${encodeURIComponent(key)}`),
   };
 }
@@ -85,7 +86,7 @@ export function createRemoteAgentConfigLockGateway(
   };
   return {
     acquire: async (params) => {
-      const result = await call<{ acquired?: boolean; granted?: boolean; active?: number; limit?: number; heldBy?: string; remainingMs?: number }>(
+      const result = await call<{ acquired?: boolean; granted?: boolean; active?: number; limit?: number; heldBy?: string; remainingMs?: number; fencingToken?: number }>(
         "/acquire", { key: params.key, holderId: params.holderId, ttlMs: params.ttlMs });
       return {
         granted: result.granted ?? result.acquired ?? false,
@@ -93,9 +94,10 @@ export function createRemoteAgentConfigLockGateway(
         ...(result.limit === undefined ? {} : { limit: result.limit }),
         ...(result.heldBy === undefined ? {} : { heldBy: result.heldBy }),
         ...(result.remainingMs === undefined ? {} : { remainingMs: result.remainingMs }),
+        ...(result.fencingToken === undefined ? {} : { fencingToken: result.fencingToken }),
       };
     },
-    release: async (params) => { await call("/release", { key: params.key, holderId: params.holderId }); },
+    release: async (params) => { await call("/release", { key: params.key, holderId: params.holderId, fencingToken: params.fencingToken }); },
     status: (key) => call<{ active: number }>(`/status?key=${encodeURIComponent(key)}`),
   };
 }
@@ -205,11 +207,13 @@ export async function writeAgentConfig(
   if (files.some(([, text]) => new TextEncoder().encode(text).byteLength > MAX_AGENT_CONFIG_OBJECT_BYTES))
     throw new Error("agent_config_object_too_large");
   let locked = false;
+  let fencingToken = 0;
   const lockKey = `agent-config:${spaceId}:${agentId}`;
   if (options.lockGateway) {
     if (!options.holderId) throw new Error("agent_config_lock_holder_required");
     const result = await options.lockGateway.acquire({ key: lockKey, holderId: options.holderId, limit: 1, ttlMs: 30_000 });
-    if (!result.granted) throw new Error("agent_config_lock_unavailable");
+    if (!result.granted || !Number.isSafeInteger(result.fencingToken) || !result.fencingToken) throw new Error("agent_config_lock_unavailable");
+    fencingToken = result.fencingToken;
     locked = true;
   }
   try {
@@ -219,7 +223,7 @@ export async function writeAgentConfig(
     await Promise.all(files.map(([key, text], index) => putTextCas(bucket, key, text, observed[index]?.hash ?? null)));
   } finally {
     if (locked && options.lockGateway && options.holderId) {
-      await options.lockGateway.release({ key: lockKey, holderId: options.holderId });
+      await options.lockGateway.release({ key: lockKey, holderId: options.holderId, fencingToken });
     }
   }
 }

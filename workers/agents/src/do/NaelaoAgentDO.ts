@@ -3557,12 +3557,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return body;
   }
 
-  private async releaseFileLock(key: string, holderId: string, fencingToken?: number): Promise<void> {
+  private async releaseFileLock(key: string, holderId: string, fencingToken: number): Promise<void> {
     if (!this.env.CONCURRENCY_DO) return;
     try {
       const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
       await stub.fetch(new Request("http://concurrency-do/locks/release", {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key, holderId, ...(fencingToken ? { fencingToken } : {}) }),
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key, holderId, fencingToken }),
       }));
     } catch { /* expiry is the fail-safe */ }
   }

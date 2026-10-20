@@ -527,3 +527,9 @@ The OpenRouter Decisions client accepted an arbitrary `maxRetries` override, so 
 ## Concurrency slot input and lease bounds (2026-10-20)
 
 The concurrency slot endpoint converted arbitrary JSON values to string IDs, treated malformed limits as defaults, and accepted unbounded/negative TTL values. Slot acquisition and release now require bounded non-empty string IDs, reject malformed JSON and invalid/fractional limits or TTLs, and cap the lease at the existing 30-minute reclaim window. Oversized positive limits remain capped at 100 slots. Validation: ConcurrencyDO and ingress-boundary suites passed 12/12; Agents TypeScript passed. Other ConcurrencyDO operations (locks, pacer, appointment holds, node leases, and workspace publication) still require their own scoped audit.
+
+## Fenced lock release propagation (2026-10-20)
+
+Tracing ConcurrencyDO lock callers found that several callers discarded the fencing token returned by acquisition. The DO then accepted holder-only release, allowing an old operation with a reused holder ID to release a newer lease. Release now requires the exact positive fencing token; the generic lock tool, workspace sync, agent-config local/remote adapters, and workspace CAS paths preserve it. Added a stale-token replay regression proving the newer lease remains active.
+
+Validation: ConcurrencyDO, agent-config, R2 CAS, and workspace CAS tests passed (23 tests across 4 files); Agents TypeScript passed. Fencing tests use the DO SQLite test harness; no concurrent live Durable Object deployment test was run. The remaining ConcurrencyDO endpoints still need scoped review.

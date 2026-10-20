@@ -14,6 +14,9 @@ function harness() {
       if (query.includes("DELETE FROM locks WHERE key = ? AND expires_at")) {
         const row = locks.get(String(args[0]));
         if (row && row.expires_at <= Number(args[1])) locks.delete(String(args[0]));
+      } else if (query.includes("DELETE FROM locks WHERE key = ? AND holder_id = ? AND fencing_token = ?")) {
+        const row = locks.get(String(args[0]));
+        if (row?.holder_id === args[1] && row.fencing_token === args[2]) locks.delete(String(args[0]));
       } else if (query.includes("DELETE FROM locks WHERE key = ? AND holder_id")) {
         const row = locks.get(String(args[0]));
         if (row?.holder_id === args[1]) locks.delete(String(args[0]));
@@ -57,6 +60,9 @@ function harness() {
           const row = nodeLeases.get(`${args[0]}:${args[1]}`); return row ? [row] : [];
         }
         if (query.includes("SELECT holder_id, expires_at, fencing_token FROM locks")) {
+          const row = locks.get(String(args[0])); return row ? [row] : [];
+        }
+        if (query.includes("SELECT holder_id,fencing_token FROM locks")) {
           const row = locks.get(String(args[0])); return row ? [row] : [];
         }
         if (query.includes("SELECT fencing_token FROM lock_fences")) {
@@ -108,6 +114,24 @@ describe("ConcurrencyDO file mutexes", () => {
     await h.instance.alarm();
     expect(h.locks.size).toBe(0);
     expect(await acquire("agent-b")).toMatchObject({ acquired: true, holderId: "agent-b" });
+    vi.useRealTimers();
+  });
+
+  it("requires the current fencing token when releasing a renewed lease", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const h = harness();
+    const send = (path: string, body: Record<string, unknown>) => h.instance.fetch(new Request(`http://do/locks/${path}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }));
+    const first = await (await send("acquire", { key: "row", holderId: "run" })).json<{ fencingToken: number }>();
+    vi.advanceTimersByTime(30_001);
+    const second = await (await send("acquire", { key: "row", holderId: "run" })).json<{ fencingToken: number }>();
+    expect(second.fencingToken).toBeGreaterThan(first.fencingToken);
+    expect(await (await send("release", { key: "row", holderId: "run", fencingToken: first.fencingToken })).json()).toMatchObject({ released: false });
+    expect(h.locks.get("row")?.fencing_token).toBe(second.fencingToken);
+    expect(await (await send("release", { key: "row", holderId: "run", fencingToken: second.fencingToken })).json()).toMatchObject({ released: true });
+    expect(h.locks.has("row")).toBe(false);
     vi.useRealTimers();
   });
 });

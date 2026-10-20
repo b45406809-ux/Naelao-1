@@ -27,6 +27,11 @@ export const lock: PrebuiltScript = {
     "Acquire, release, and check a named lock — the building block for scripts that need their own concurrency strategy (e.g. locking a spreadsheet row before writing it).",
   domain: "orchestration",
   requires_tier: 1,
+  paramHints: {
+    "lock.acquire": "key (string), holder_id (string), optional limit and ttl_ms. Save the returned fencingToken for release and writes.",
+    "lock.release": "key (string), holder_id (string), fencing_token (positive integer returned by lock.acquire).",
+    "lock.status": "key (string) — returns the current active-holder count.",
+  },
   operations: {
     async "lock.acquire"(args, ctx: PrebuiltOpContext) {
       if (!ctx.env.lockGateway) return { granted: false, active: 0, reason: "lock primitive not available in this environment" };
@@ -41,7 +46,9 @@ export const lock: PrebuiltScript = {
       if (!ctx.env.lockGateway) return { ok: false, reason: "lock primitive not available in this environment" };
       const key = reqStr(args, "key");
       const holderId = reqStr(args, "holder_id");
-      await ctx.env.lockGateway.release({ key, holderId });
+      const fencingToken = args["fencing_token"];
+      if (!Number.isSafeInteger(fencingToken) || (fencingToken as number) < 1) throw new Error("'fencing_token' (positive integer) is required");
+      await ctx.env.lockGateway.release({ key, holderId, fencingToken: fencingToken as number });
       return { ok: true };
     },
 

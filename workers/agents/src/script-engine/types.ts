@@ -774,7 +774,7 @@ export interface LockGateway {
     operation: "write" | "delete"; expectedHash: string | null; contentBase64?: string;
     metadata?: Record<string, string>; contentType?: string;
   }): Promise<{ hash?: string; deleted?: boolean; etag?: string; fencingToken: number }>;
-  release(params: { key: string; holderId: string; fencingToken?: number }): Promise<void>;
+  release(params: { key: string; holderId: string; fencingToken: number }): Promise<void>;
   status(key: string): Promise<{ active: number }>;
 }
 

@@ -70,7 +70,7 @@ describe("r2-workspace SHA-256 CAS", () => {
 
   it("takes and releases the run-scoped 30-second lock for production sync-back", async () => {
     const { ctx } = makeContext();
-    const calls: Array<{ type: string; key: string; holderId: string; ttlMs?: number }> = [];
+    const calls: Array<{ type: string; key: string; holderId: string; ttlMs?: number; fencingToken?: number }> = [];
     const withLock = {
       ...ctx,
       env: {
@@ -79,9 +79,9 @@ describe("r2-workspace SHA-256 CAS", () => {
         lockGateway: {
           acquire: async (input: { key: string; holderId: string; limit: number; ttlMs: number }) => {
             calls.push({ type: "acquire", ...input });
-            return { granted: true, active: 1 };
+            return { granted: true, active: 1, fencingToken: 5 };
           },
-          release: async (input: { key: string; holderId: string }) => {
+          release: async (input: { key: string; holderId: string; fencingToken: number }) => {
             calls.push({ type: "release", ...input });
           },
           status: async () => ({ active: 1 }),
@@ -92,7 +92,7 @@ describe("r2-workspace SHA-256 CAS", () => {
     await workspace.operations["workspace.sync_from_container"]!({}, withLock as never);
     expect(calls).toEqual([
       { type: "acquire", key: "workspace:container-to-r2", holderId: "run-1", limit: 1, ttlMs: 30_000 },
-      { type: "release", key: "workspace:container-to-r2", holderId: "run-1" },
+      { type: "release", key: "workspace:container-to-r2", holderId: "run-1", fencingToken: 5 },
     ]);
   });
 });

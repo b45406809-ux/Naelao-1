@@ -2316,7 +2316,7 @@ app.post("/internal/agent-ticks/run", async (c) => {
 // serialize through this worker's ConcurrencyDO namespace. The HMAC scope is the space id, so a
 // service binding cannot acquire a lock for another tenant by changing the request body alone.
 app.post("/internal/agent-config-lock/:operation", async (c) => {
-  const body = (await c.req.json<{ space_id?: string; key?: string; holderId?: string; ttlMs?: number }>().catch(() => null)) ?? {};
+  const body = (await c.req.json<{ space_id?: string; key?: string; holderId?: string; ttlMs?: number; fencingToken?: number }>().catch(() => null)) ?? {};
   const spaceId = String(body.space_id ?? "");
   if (!spaceId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), spaceId, c.env.PLATFORM_SECRET))) {
     return c.json({ error_code: "forbidden", message: "internal only" }, 403);
@@ -2329,7 +2329,8 @@ app.post("/internal/agent-config-lock/:operation", async (c) => {
     return c.json(await gateway.acquire({ key: body.key, holderId: body.holderId, limit: 1, ttlMs: body.ttlMs ?? 30_000 }));
   }
   if (operation === "release") {
-    await gateway.release({ key: body.key, holderId: body.holderId });
+    if (!Number.isSafeInteger(body.fencingToken) || !body.fencingToken || body.fencingToken < 1) return c.json({ error_code: "bad_request", message: "fencingToken is required" }, 400);
+    await gateway.release({ key: body.key, holderId: body.holderId, fencingToken: body.fencingToken });
     return c.json({ released: true });
   }
   return c.json({ error_code: "not_found" }, 404);
