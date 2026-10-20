@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1939
-Files with source or executable-configuration extensions: 1733
-Inventory revision: 2026-10-20 audit refresh at b928acb7
+Files: 1940
+Files with source or executable-configuration extensions: 1734
+Inventory revision: 2026-10-20 audit refresh at a1314366
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1558,6 +1558,7 @@ workers/
         direct-do-request-boundaries.test.ts
         external-channel-spend.test.ts
         external-channel-spend.ts
+        hitl-approval-boundaries.test.ts
         HITLApprovalDO.ts
         ingress-memory.test.ts
         LocalTunnelDO.test.ts
