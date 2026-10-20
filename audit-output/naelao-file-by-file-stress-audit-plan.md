@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1948` tracked files; `1742` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt` at code commit `13d6240c`.
+Inventory basis: `1950` tracked files; `1744` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt` at code commit `1d7832d0`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -2374,8 +2374,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/business-create.ts`
 - [x] `workers/spaces/src/business-routes.test.ts`
 - [x] `workers/spaces/src/business-routes.ts`
-- [x] `workers/spaces/src/cf-saas.test.ts`
 - [x] `workers/spaces/src/business-services.test.ts`
+- [x] `workers/spaces/src/cf-saas.test.ts`
 - [x] `workers/spaces/src/cf-saas.ts`
 - [ ] `workers/spaces/src/conformance-state.test.ts`
 - [ ] `workers/spaces/src/conformance-state.ts`
