@@ -45,6 +45,8 @@ const BUSINESS_SCHEMA = [
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );`,
   `CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');`,
+  `CREATE TABLE product_end_users (product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, email TEXT, suspended_at TEXT, deleted_at TEXT);`,
+  `CREATE TABLE business_memberships (business_space_id TEXT NOT NULL, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active', joined_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (business_space_id, end_user_id));`,
 ];
 
 function make404RegistryDo(): DurableObjectNamespace {
@@ -77,6 +79,7 @@ function makeBusinessEnv(opts: { builderTier?: string; withAgentsWorker?: boolea
   fakeDb.db.exec(
     `INSERT INTO spaces (id, tenant_id, status, name, config_json) VALUES ('prod-1', 'builder-tenant', 'active', 'Acme', '${JSON.stringify({ productConfig: OPEN_PRODUCT_CONFIG }).replace(/'/g, "''")}')`
   );
+  fakeDb.db.exec("INSERT INTO product_end_users (product_space_id, end_user_id) VALUES ('prod-1', 'u1')");
   if (opts.builderTier) {
     fakeDb.db.exec(`INSERT INTO orgs (id, plan_tier) VALUES ('builder-tenant', '${opts.builderTier}')`);
   }
@@ -84,6 +87,8 @@ function makeBusinessEnv(opts: { builderTier?: string; withAgentsWorker?: boolea
     env: {
       PLATFORM_DB: fakeDb,
       PLATFORM_SECRET: "test-secret",
+      LOCK_DO: { idFromName: (name: string) => name, get: () => ({ fetch: async (request: Request) =>
+        request.url.endsWith("/acquire") ? Response.json({ acquired: true }) : Response.json({ released: true }) }) },
       SPACE_TYPE_REGISTRY_DO: make404RegistryDo(),
       NAELAO_CONFIG_KV: makeKv(),
       ...(opts.withAgentsWorker !== false ? { AGENTS_WORKER: agentsWorkerStub } : {}),
@@ -153,6 +158,13 @@ describe("G-BF08 — free-tier template gating: createBusinessForEndUser", () =>
 
   it("an org with no orgs row is treated as free (tier fails closed)", async () => {
     const { env } = makeBusinessEnv({}); // no orgs row for builder-tenant
+    const result = await createBiz(env, ["micro-saas"]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error_code).toBe("plan_upgrade_required");
+  });
+
+  it("an unknown stored tier also fails closed instead of bypassing eligibility", async () => {
+    const { env } = makeBusinessEnv({ builderTier: "not-a-real-tier" });
     const result = await createBiz(env, ["micro-saas"]);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error_code).toBe("plan_upgrade_required");

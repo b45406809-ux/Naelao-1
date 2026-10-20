@@ -7,6 +7,8 @@
 // so the flag — which existed on LaunchpadTemplate and in the dashboard projection since Phase F
 // but was NEVER enforced anywhere — finally gets teeth at creation time.
 
+import { readBoundedResponseJson } from "@naelao/http";
+
 export interface TemplateCatalogEntry {
   id: string;
   name: string;
@@ -33,6 +35,36 @@ export interface TemplateCatalogEnv {
 // older shape would make the onboarding "Recommended apps" panel silently show nothing for up to
 // an hour after deploy, so the key is bumped again rather than reusing v2.
 const CATALOG_CACHE_KEY = "launchpad-template-catalog:v5";
+const CATALOG_REQUEST_TIMEOUT_MS = 5_000;
+const CATALOG_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
+
+function normalizeTemplateCatalog(value: unknown): TemplateCatalogEntry[] | null {
+  if (!value || typeof value !== "object" || !Array.isArray((value as { templates?: unknown }).templates)) return null;
+  const templates = (value as { templates: unknown[] }).templates;
+  if (templates.length > 500) return null;
+  const result: TemplateCatalogEntry[] = [];
+  for (const raw of templates) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const t = raw as Record<string, unknown>;
+    if (typeof t.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(t.id) ||
+        typeof t.name !== "string" || !t.name.trim() || t.name.length > 160) return null;
+    const connectors = Array.isArray(t.connectors) && t.connectors.length <= 50 &&
+      t.connectors.every((id) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id))
+      ? t.connectors as string[] : [];
+    result.push({
+      id: t.id,
+      name: t.name.slice(0, 160),
+      description: typeof t.description === "string" ? t.description.slice(0, 2000) : "Preconfigured workspace, agents and setup.",
+      template_mode: t.template_mode === "cowork" ? "cowork" : "ave",
+      vertical: typeof t.vertical === "string" ? t.vertical.slice(0, 120) : "Digital business",
+      wallet_mode: t.wallet_mode === "company_budget" ? "company_budget" : "business_wallet",
+      coming_soon: t.coming_soon === true,
+      free_tier_eligible: t.free_tier_eligible === true,
+      connectors,
+    });
+  }
+  return result;
+}
 
 /**
  * Load the catalogue, or null when it is genuinely UNAVAILABLE (no AGENTS_WORKER binding, or
@@ -40,44 +72,28 @@ const CATALOG_CACHE_KEY = "launchpad-template-catalog:v5";
  * catalogue must not be confused with "this template doesn't exist."
  */
 export async function loadTemplateCatalogOrNull(env: TemplateCatalogEnv): Promise<TemplateCatalogEntry[] | null> {
-  const cached = env.NAELAO_CONFIG_KV
-    ? (await env.NAELAO_CONFIG_KV.get(CATALOG_CACHE_KEY, "json")) as TemplateCatalogEntry[] | null
-    : null;
-  if (cached) return cached;
+  if (env.NAELAO_CONFIG_KV) {
+    try {
+      const cached = normalizeTemplateCatalog(await env.NAELAO_CONFIG_KV.get(CATALOG_CACHE_KEY, "json"));
+      if (cached) return cached;
+    } catch { /* a corrupt/unavailable cache is a cache miss */ }
+  }
   if (!env.AGENTS_WORKER) return null;
   let resp: Response;
   try {
-    resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/templates"));
+    resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/templates", { signal: AbortSignal.timeout(CATALOG_REQUEST_TIMEOUT_MS) }));
   } catch {
     return null;
   }
   if (!resp.ok) return null;
-  const body = await resp.json<{
-    templates: Array<{
-      id: string;
-      name: string;
-      description?: string;
-      template_mode?: "ave" | "cowork";
-      vertical?: string;
-      wallet_mode?: "business_wallet" | "company_budget";
-      coming_soon?: boolean;
-      free_tier_eligible?: boolean;
-      connectors?: string[];
-    }>;
-  }>();
-  const catalog: TemplateCatalogEntry[] = body.templates.map((t) => ({
-    id: t.id,
-    name: t.name,
-    description: t.description ?? "Preconfigured workspace, agents and setup.",
-    template_mode: t.template_mode ?? "ave",
-    vertical: t.vertical ?? "Digital business",
-    wallet_mode: t.wallet_mode ?? "business_wallet",
-    coming_soon: t.coming_soon ?? false,
-    free_tier_eligible: t.free_tier_eligible ?? false,
-    connectors: t.connectors ?? [],
-  }));
+  let catalog: TemplateCatalogEntry[] | null;
+  try {
+    catalog = normalizeTemplateCatalog(await readBoundedResponseJson<unknown>(resp, CATALOG_RESPONSE_MAX_BYTES));
+  } catch { return null; }
+  if (!catalog) return null;
   if (env.NAELAO_CONFIG_KV) {
-    await env.NAELAO_CONFIG_KV.put(CATALOG_CACHE_KEY, JSON.stringify(catalog), { expirationTtl: 3600 });
+    try { await env.NAELAO_CONFIG_KV.put(CATALOG_CACHE_KEY, JSON.stringify({ templates: catalog }), { expirationTtl: 3600 }); }
+    catch { /* cache failure must not turn an available catalogue into a request failure */ }
   }
   return catalog;
 }
@@ -93,7 +109,8 @@ export async function loadTemplateCatalog(env: TemplateCatalogEnv): Promise<Temp
 export async function resolveOrgPlanTier(db: D1Database, tenantId: string): Promise<string> {
   try {
     const org = await db.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(tenantId).first<{ plan_tier: string }>();
-    return org?.plan_tier ?? "free";
+    const tier = org?.plan_tier?.toLowerCase();
+    return tier && ["free", "growth", "business", "enterprise"].includes(tier) ? tier : "free";
   } catch {
     return "free";
   }
@@ -148,23 +165,42 @@ export interface ShellCatalog {
 
 const SHELL_CATALOG_CACHE_KEY = "launchpad-shell-catalog:v1";
 
+function normalizeShellCatalog(value: unknown): ShellCatalog | null {
+  if (!value || typeof value !== "object") return null;
+  const body = value as { project_templates?: unknown; agents?: unknown };
+  if (!Array.isArray(body.project_templates) || !Array.isArray(body.agents) || body.project_templates.length > 500 || body.agents.length > 500) return null;
+  const normalizeRows = (rows: unknown[], key: "kind" | "description") => rows.map((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const row = raw as Record<string, unknown>;
+    if (typeof row.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(row.id) ||
+        typeof row.name !== "string" || row.name.length > 160 || typeof row[key] !== "string" || row[key].length > 2000) return null;
+    return { id: row.id, name: row.name, [key]: row[key] };
+  });
+  const projectTemplates = normalizeRows(body.project_templates, "kind");
+  const agents = normalizeRows(body.agents, "description");
+  if (projectTemplates.some((row) => row === null) || agents.some((row) => row === null)) return null;
+  return {
+    project_templates: projectTemplates as ShellCatalog["project_templates"],
+    agents: agents as ShellCatalog["agents"],
+  };
+}
+
 /** Unavailable (no binding, failed fetch) degrades to empty lists — this drives an informational
  *  panel, never an access decision, so a missing catalogue must never fail a manifest read. */
 export async function loadShellCatalog(env: TemplateCatalogEnv): Promise<ShellCatalog> {
   const empty: ShellCatalog = { project_templates: [], agents: [] };
-  const cached = env.NAELAO_CONFIG_KV
-    ? ((await env.NAELAO_CONFIG_KV.get(SHELL_CATALOG_CACHE_KEY, "json")) as ShellCatalog | null)
-    : null;
-  if (cached) return cached;
+  if (env.NAELAO_CONFIG_KV) {
+    try {
+      const cached = normalizeShellCatalog(await env.NAELAO_CONFIG_KV.get(SHELL_CATALOG_CACHE_KEY, "json"));
+      if (cached) return cached;
+    } catch { /* unavailable/corrupt KV is a cache miss */ }
+  }
   if (!env.AGENTS_WORKER) return empty;
   try {
-    const resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/catalog/shell"));
+    const resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/catalog/shell", { signal: AbortSignal.timeout(CATALOG_REQUEST_TIMEOUT_MS) }));
     if (!resp.ok) return empty;
-    const body = await resp.json<Partial<ShellCatalog>>();
-    const catalog: ShellCatalog = {
-      project_templates: body.project_templates ?? [],
-      agents: body.agents ?? [],
-    };
+    const catalog = normalizeShellCatalog(await readBoundedResponseJson<unknown>(resp, CATALOG_RESPONSE_MAX_BYTES));
+    if (!catalog) return empty;
     if (env.NAELAO_CONFIG_KV) {
       await env.NAELAO_CONFIG_KV.put(SHELL_CATALOG_CACHE_KEY, JSON.stringify(catalog), { expirationTtl: 3600 });
     }

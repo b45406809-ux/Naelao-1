@@ -93,6 +93,9 @@ export interface SchemaValidationError {
 // extraction verbatim (do not "improve" these without checking billing/entitlements agree).
 const SPACE_LIMITS: Record<string, number> = {
   free: 3,
+  growth: 25,
+  business: 100,
+  // Historical aliases still appear in older billing rows.
   starter: 25,
   pro: 100,
   enterprise: 1000,

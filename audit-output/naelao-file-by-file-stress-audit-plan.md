@@ -1400,7 +1400,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/feature-kinds-route.test.ts`
 - [ ] `tests/unit/federation.test.ts`
 - [ ] `tests/unit/file-and-schedule-tools.test.ts`
-- [ ] `tests/unit/free-tier-template-gating.test.ts`
+- [x] `tests/unit/free-tier-template-gating.test.ts`
 - [ ] `tests/unit/gateway-reasoner-failover.test.ts`
 - [ ] `tests/unit/gemini-provider-routing.test.ts`
 - [ ] `tests/unit/grounded-search-contract.test.ts`
@@ -2409,7 +2409,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/space-hierarchy-policy.test.ts`
 - [ ] `workers/spaces/src/state-delta-conformance.ts`
 - [ ] `workers/spaces/src/task-coordination.test.ts`
-- [ ] `workers/spaces/src/template-catalog.ts`
+- [x] `workers/spaces/src/template-catalog.test.ts`
+- [x] `workers/spaces/src/template-catalog.ts`
 - [ ] `workers/spaces/src/tenancy.ts`
 - [ ] `workers/spaces/src/thread-hierarchy.test.ts`
 - [ ] `workers/spaces/src/webhook-defense.test.ts`

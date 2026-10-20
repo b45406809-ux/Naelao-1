@@ -57,6 +57,16 @@ describe("createSpaceRecord — quota enforcement queries the REAL orgs table", 
     const row = await fakeDb.prepare("SELECT COUNT(*) as n FROM spaces WHERE tenant_id = ?").bind("tenant-1").first<{ n: number }>();
     expect(row?.n).toBe(4);
   });
+
+  it.each([["growth", 25], ["business", 100]])("uses the configured %s space ceiling instead of silently applying free tier", async (tier, limit) => {
+    const fakeDb = makeDb();
+    fakeDb.db.exec(`INSERT INTO orgs (id, plan_tier) VALUES ('tenant-1', '${tier}')`);
+    for (let i = 0; i < limit; i++) {
+      await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "tenant-1", name: `Space ${i}`, spacetypeId: "launchpad" });
+    }
+    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "tenant-1", name: "Over limit", spacetypeId: "launchpad" }))
+      .rejects.toMatchObject({ error_code: "quota_exceeded", status: 402 });
+  });
 });
 
 describe("createSpaceRecord — bounded inputs and tenant quota serialization", () => {

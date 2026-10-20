@@ -784,3 +784,10 @@ Validation: `tests/unit/create-space-record.test.ts` passed 36/36; Spaces suite 
 
 
 Refreshed the tracked tree and checklist after the space-creation code commit `34820917`; file counts are unchanged, checked rows are preserved, and remaining files stay pending.
+
+
+## Template catalogue and free-tier plan gate (2026-10-20)
+
+Reviewed the agent-worker catalogue fetch/cache path, shell catalogue path, plan-tier resolver, and both creation gates. Found that any unknown `plan_tier` was treated as paid by the template gate (`tier !== 'free'`), despite quota code falling back to the free limit. Unknown or malformed tiers now resolve to free. Space quotas now include the actual persisted `growth` and `business` tiers alongside historical aliases. Catalogue reads now tolerate KV failures, bound provider JSON to 2 MiB with a 5-second deadline, validate/cache only bounded catalogue shapes, and safely degrade malformed/unavailable responses according to the documented monetization-gate policy. Shell catalogue cache/provider errors now return bounded empty data rather than failing manifest reads.
+
+Validation: focused template-catalog suite passed 5/5; plan gate + space creation root suites passed 52/52; full Spaces suite passed 64 files / 237 tests, Spaces typecheck passed, and `git diff --check` passed. Coverage includes unknown tier denial, malformed/oversized provider data, bad cache, provider outage, and normalized catalog caching. Free-tier template availability intentionally degrades open when the agent catalogue is unavailable; this remains a monetization-policy limitation. Live KV outage, provider timeout, actual paid-tier records, and D1 plan-tier drift were not exercised. The template catalogue, relevant plan gate test, and creation path received scoped review; other files remain pending.
