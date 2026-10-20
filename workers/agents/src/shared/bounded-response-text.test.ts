@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { readBoundedResponseText } from "./bounded-response-text.js";
+import {
+  readBoundedRequestText,
+  readBoundedResponseText,
+} from "./bounded-response-text.js";
 
 describe("bounded provider response text", () => {
   it("reads responses within budget", async () => {
@@ -28,5 +31,20 @@ describe("bounded provider response text", () => {
       readBoundedResponseText(new Response(body), 4)
     ).rejects.toThrow("response_too_large");
     expect(cancel).toHaveBeenCalled();
+  });
+
+  it("bounds inbound request bodies with no Content-Length", async () => {
+    const request = new Request("https://naelao.invalid/webhook", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(new Uint8Array(5));
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+    await expect(readBoundedRequestText(request, 4)).rejects.toThrow(
+      "response_too_large"
+    );
   });
 });

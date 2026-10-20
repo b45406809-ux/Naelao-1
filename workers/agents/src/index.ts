@@ -111,6 +111,7 @@ import { EMAIL_PDF_MAX_BYTES, EMAIL_PDF_MAX_PAGES, EMAIL_PDF_MAX_TEXT_BYTES, Ema
 import { EMAIL_DOCX_MAX_BYTES, EMAIL_DOCX_MAX_ENTRIES, EMAIL_DOCX_MAX_XML_BYTES, EMAIL_DOCX_MAX_TEXT_BYTES, EmailDocxError, extractEmailDocxText } from "./channels/email-docx.js";
 import { EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MODEL, EmailOcrError, extractEmailImageOcr, queryEmailImage, reserveEmailOcrAttempt } from "./channels/email-ocr.js";
 import { TwilioAdapter } from "@cloudflare/voice-twilio";
+import { readBoundedRequestText, readBoundedResponseText } from "./shared/bounded-response-text.js";
 import { CustomerVoiceAgent } from "./voice/customer-voice-agent.js";
 import {
   CUSTOMER_VOICE_ADMISSION_SQL, CUSTOMER_VOICE_HEARTBEAT_ROSTER_SQL, customerVoiceAdmissionBindings, decodeCustomerVoiceTicketPayload, isE164, mintCustomerVoiceTicket, parseTwilioVoiceCredentials, twimlConsentResponse, twimlRejectResponse,
@@ -447,6 +448,19 @@ function validateEnv(env: AgentsEnv): void {
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+
+const MAX_JSON_REQUEST_BYTES = 4 * 1024 * 1024;
+export async function fetchAgentsRequest(request: Request, env: AgentsEnv, ctx: ExecutionContext): Promise<Response> {
+  const contentType = request.headers.get("content-type") ?? "";
+  const isJson = /^application\/(?:[a-z0-9.+-]*\+)?json(?:\s*;|$)/i.test(contentType);
+  if (!isJson || request.method === "GET" || request.method === "HEAD") return app.fetch(request, env, ctx);
+  let body: string;
+  try { body = await readBoundedRequestText(request, MAX_JSON_REQUEST_BYTES); }
+  catch { return Response.json({ error_code: "payload_too_large" }, { status: 413 }); }
+  const headers = new Headers(request.headers);
+  headers.delete("content-length");
+  return app.fetch(new Request(request, { body, headers }), env, ctx);
+}
 
 type CustomerVoiceBindingRow = {
   id: string; tenant_id: string; space_id: string; agent_id: string; provider_account_sid: string;
@@ -792,8 +806,9 @@ app.post("/customer-voice/twilio/answer/:bindingId", async (c) => {
   if (!binding || !c.env.PUBLIC_AGENTS_URL) return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 404 });
   const credentials = await customerVoiceCredentials(c.env, binding.tenant_id, binding.space_id);
   if (!credentials || credentials.accountSid !== binding.provider_account_sid) return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 503 });
-  const raw = await c.req.raw.clone().text();
-  if (raw.length > 16_384) return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 413 });
+  let raw: string;
+  try { raw = await readBoundedRequestText(c.req.raw, 16_384); }
+  catch { return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 413 }); }
   const origin = new URL(c.env.PUBLIC_AGENTS_URL).origin;
   const canonicalUrl = `${origin}${new URL(c.req.url).pathname}`;
   if (!validateTwilioFormWebhook({ authToken: credentials.authToken, signature: c.req.header("x-twilio-signature") ?? null, canonicalUrl, rawBody: raw })) {
@@ -844,8 +859,10 @@ app.post("/customer-voice/twilio/status/:bindingId", async (c) => {
   if (!binding || !c.env.PUBLIC_AGENTS_URL) return c.json({ error_code: "voice_binding_not_found" }, 404);
   const credentials = await customerVoiceCredentials(c.env, binding.tenant_id, binding.space_id);
   if (!credentials || credentials.accountSid !== binding.provider_account_sid) return c.json({ error_code: "voice_credentials_unavailable" }, 503);
-  const raw = await c.req.raw.clone().text();
-  if (raw.length > 16_384 || !validateTwilioFormWebhook({ authToken: credentials.authToken, signature: c.req.header("x-twilio-signature") ?? null, canonicalUrl: `${new URL(c.env.PUBLIC_AGENTS_URL).origin}${new URL(c.req.url).pathname}`, rawBody: raw })) return c.json({ error_code: "invalid_twilio_signature" }, 403);
+  let raw: string;
+  try { raw = await readBoundedRequestText(c.req.raw, 16_384); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
+  if (!validateTwilioFormWebhook({ authToken: credentials.authToken, signature: c.req.header("x-twilio-signature") ?? null, canonicalUrl: `${new URL(c.env.PUBLIC_AGENTS_URL).origin}${new URL(c.req.url).pathname}`, rawBody: raw })) return c.json({ error_code: "invalid_twilio_signature" }, 403);
   const form = new URLSearchParams(raw);
   const callSid = form.get("CallSid") ?? "";
   const callStatus = form.get("CallStatus") ?? "";
@@ -872,7 +889,9 @@ app.post("/customer-voice/twilio/consent/:token", async (c) => {
   const binding = claims.bindingId ? await customerVoiceBinding(c.env, claims.bindingId) : null;
   const credentials = binding ? await customerVoiceCredentials(c.env, binding.tenant_id, binding.space_id) : null;
   const origin = c.env.PUBLIC_AGENTS_URL ? new URL(c.env.PUBLIC_AGENTS_URL).origin : "";
-  const raw = await c.req.raw.clone().text();
+  let raw: string;
+  try { raw = await readBoundedRequestText(c.req.raw, 16_384); }
+  catch { return twiml({ body: twimlRejectResponse("rejected"), status: 413 }); }
   const expected = claims.callSid ?? "";
   const valid = Boolean(binding && credentials && origin && validateTwilioFormWebhook({ authToken: credentials.authToken, signature: c.req.header("x-twilio-signature") ?? null, canonicalUrl: `${origin}${new URL(c.req.url).pathname}`, rawBody: raw }));
   const form = new URLSearchParams(raw);
@@ -5228,7 +5247,9 @@ app.post("/connectors/:platform/webhook/:spaceId", async (c) => {
   // connector or credential exists.
   if (wake.airGappedOnly) return c.json({ ok: true, skipped: "air_gapped" });
 
-  const rawBody = await c.req.text();
+  let rawBody: string;
+  try { rawBody = await readBoundedRequestText(c.req.raw, 1024 * 1024); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
 
   // Resolve the webhook signing secret from the vault (the signature IS the auth).
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
@@ -5887,7 +5908,9 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
   if (!isChannelType(channel) || !isPairableChannel(channel)) return c.json({ ok: true, skipped: "unknown_channel" });
   const adapter = getAdapter(channel)!;
 
-  const rawBody = await c.req.text();
+  let rawBody: string;
+  try { rawBody = await readBoundedRequestText(c.req.raw, 1024 * 1024); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
 
   // WhatsApp can arrive over either transport. Which one is live is decided by which platform
   // credentials exist, not by anything in the request — they differ in body encoding AND in how
@@ -6256,7 +6279,9 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     return c.json({ ok: true, skipped: "air_gapped" });
   }
 
-  const rawBody = await c.req.text();
+  let rawBody: string;
+  try { rawBody = await readBoundedRequestText(c.req.raw, 1024 * 1024); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
 
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
   const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, space.tenant_id, spaceId, "naelao-agent");
@@ -6481,10 +6506,9 @@ function constantTimeStringEqual(left: string, right: string): boolean {
 
 app.post("/channels/whatsapp/extensions", async c => {
   if (!c.env.WHATSAPP_APP_SECRET) return c.json({ error_code: "whatsapp_webhook_unavailable" }, 503);
-  const declaredLength = Number(c.req.header("content-length") ?? 0);
-  if (declaredLength > 1_048_576) return c.json({ error_code: "payload_too_large" }, 413);
-  const rawBody = await c.req.text();
-  if (new TextEncoder().encode(rawBody).byteLength > 1_048_576) return c.json({ error_code: "payload_too_large" }, 413);
+  let rawBody: string;
+  try { rawBody = await readBoundedRequestText(c.req.raw, 1_048_576); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
   const headers: Record<string, string> = {};
   c.req.raw.headers.forEach((value, key) => { headers[key.toLowerCase()] = value; });
   if (!await getAdapter("whatsapp")!.verifySignature({ rawBody, headers, secret: c.env.WHATSAPP_APP_SECRET })) return c.json({ error_code: "invalid_signature" }, 401);
@@ -6548,7 +6572,9 @@ app.post("/channels/telegram/extensions/:spaceId/:installationId/:connectionId",
   }));
   if (!secretResponse.ok) return c.json({ error_code: "webhook_secret_unavailable" }, 503);
   const { value: secret } = await secretResponse.json<{ value?: string }>();
-  const rawBody = await c.req.text();
+  let rawBody: string;
+  try { rawBody = await readBoundedRequestText(c.req.raw, 1_048_576); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
   const headers: Record<string, string> = {}; c.req.raw.headers.forEach((value, key) => { headers[key.toLowerCase()] = value; });
   const adapter = getAdapter("telegram")!;
   if (!secret || !await adapter.verifySignature({ rawBody, headers, secret })) return c.json({ error_code: "invalid_signature" }, 401);
@@ -7281,7 +7307,9 @@ app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
   const wakeContext = await resolveWakeContext(c.env, spaceId, space.tenant_id);
   if (wakeContext.airGappedOnly) return c.json({ ok: true, skipped: "air_gapped" });
 
-  const rawBody = await c.req.text();
+  let rawBody: string;
+  try { rawBody = await readBoundedRequestText(c.req.raw, 1024 * 1024); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable" }, 503);
 
   // Resolve the vaulted Svix secret (written at provision time).
@@ -8172,7 +8200,19 @@ app.get("/spaces/:spaceId/assistant/files/*", async (c) => {
   const rest = c.req.path.split("/assistant/files/")[1] ?? "";
   const relative = decodeURIComponent(rest).split("/").filter((seg) => seg && seg !== "." && seg !== "..").join("/");
   if (!relative) return c.json({ error_code: "bad_request", message: "file path required" }, 400);
-  const current = await readBytesWithHash(c.env.SCRIPTS_R2, prefix + relative);
+  const head = await c.env.SCRIPTS_R2.head(prefix + relative);
+  if (!head || head.customMetadata?.deleted === "true") return c.json({ error_code: "not_found", message: "File not found" }, 404);
+  if (head.size > ASSISTANT_FILE_MAX_BYTES) {
+    return c.json({ path: relative, size: head.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
+  }
+  let current: Awaited<ReturnType<typeof readBytesWithHash>>;
+  try { current = await readBytesWithHash(c.env.SCRIPTS_R2, prefix + relative, ASSISTANT_FILE_MAX_BYTES); }
+  catch (error) {
+    if (error instanceof Error && error.message === "r2_object_too_large") {
+      return c.json({ path: relative, size: (await c.env.SCRIPTS_R2.head(prefix + relative))?.size ?? null, too_large: true, message: "File exceeds the 2MB inline view limit" });
+    }
+    throw error;
+  }
   const obj = current ? await c.env.SCRIPTS_R2.get(prefix + relative) : null;
   if (!obj) return c.json({ error_code: "not_found", message: "File not found" }, 404);
   if (obj.size > ASSISTANT_FILE_MAX_BYTES) {
@@ -8227,7 +8267,8 @@ app.get("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {
     })
   );
   if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
+    let body = "";
+    try { body = (await readBoundedResponseText(resp, 8 * 1024)).slice(0, 300); } catch { body = ""; }
     return c.json({ error_code: resp.status === 404 ? "not_found" : "upstream_error", message: body || `artifact worker returned ${resp.status}` }, resp.status as 404 | 500);
   }
   const contentType = resp.headers.get("content-type") ?? "application/octet-stream";
@@ -8236,11 +8277,18 @@ app.get("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {
   if (!isText) {
     return c.json({ artifact_id: artifactId, filename, content_type: contentType, binary: true });
   }
-  const buf = await resp.arrayBuffer();
-  if (buf.byteLength > ARTIFACT_INLINE_MAX_BYTES) {
+  let content: string;
+  try { content = await readBoundedResponseText(resp, ARTIFACT_INLINE_MAX_BYTES); }
+  catch (error) {
+    if (error instanceof Error && error.message === "response_too_large") {
+      return c.json({ artifact_id: artifactId, filename, content_type: contentType, too_large: true, message: "Artifact exceeds the 2MB inline view limit" });
+    }
+    return c.json({ error_code: "upstream_error", message: "Artifact response was invalid" }, 502);
+  }
+  if (new TextEncoder().encode(content).byteLength > ARTIFACT_INLINE_MAX_BYTES) {
     return c.json({ artifact_id: artifactId, filename, content_type: contentType, too_large: true, message: "Artifact exceeds the 2MB inline view limit" });
   }
-  return c.json({ artifact_id: artifactId, filename, content_type: contentType, content: new TextDecoder().decode(buf) });
+  return c.json({ artifact_id: artifactId, filename, content_type: contentType, content });
 });
 
 app.delete("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {
@@ -9030,8 +9078,9 @@ app.get("/local-tunnel/connect", async (c) => {
 app.post("/tunnel/enroll", async c => {
   const url = new URL(c.req.url);
   if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return c.json({ error_code: "tls_required" }, 403);
-  const text = await c.req.text();
-  if (new TextEncoder().encode(text).byteLength > 32768) return c.json({ error_code: "payload_too_large" }, 413);
+  let text: string;
+  try { text = await readBoundedRequestText(c.req.raw, 32_768); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
   let body: { tenantId: string; spaceId: string; token: string; name: string; publicKey: JsonWebKey; hardware: unknown };
   try { body = JSON.parse(text); if (!body || typeof body !== "object") throw new Error(); }
   catch { return c.json({ error_code: "bad_request" }, 400); }
@@ -9044,8 +9093,9 @@ app.post("/tunnel/enroll", async c => {
 app.post("/tunnel/authenticate", async c => {
   const url = new URL(c.req.url);
   if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return c.json({ error_code: "tls_required" }, 403);
-  const text = await c.req.text();
-  if (new TextEncoder().encode(text).byteLength > 32768) return c.json({ error_code: "payload_too_large" }, 413);
+  let text: string;
+  try { text = await readBoundedRequestText(c.req.raw, 32_768); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
   let body: { proof: { tenantId: string; spaceId: string; machineId: string } };
   try { body = JSON.parse(text); if (!body?.proof || typeof body.proof !== "object") throw new Error(); }
   catch { return c.json({ error_code: "bad_request" }, 400); }
@@ -9837,7 +9887,7 @@ export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, resolve
 export type { AgentTickMessage };
 
 export default {
-  fetch: app.fetch,
+  fetch: fetchAgentsRequest,
   async email(message: ForwardableEmailMessage, env: AgentsEnv): Promise<void> {
     await handleCloudflareEmail(message, env);
   },

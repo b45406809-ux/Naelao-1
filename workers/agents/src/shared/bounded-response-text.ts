@@ -45,3 +45,15 @@ export async function readBoundedResponseText(
     bytes
   );
 }
+
+/** Read a cloned inbound request under a streaming UTF-8 byte limit. */
+export async function readBoundedRequestText(
+  request: Request,
+  maximumBytes: number
+): Promise<string> {
+  if (request.bodyUsed) throw new Error("request_body_unavailable");
+  return readBoundedResponseText(
+    new Response(request.body, { headers: request.headers }),
+    maximumBytes
+  );
+}

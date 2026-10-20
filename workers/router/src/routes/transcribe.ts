@@ -1,4 +1,5 @@
 import { decodeOggOpusToWav } from "./ogg-opus";
+import { readBoundedRequestBytes } from "./bounded-request-body";
 
 export const MAX_DICTATION_BYTES = 10 * 1024 * 1024;
 export const WHISPER_MODEL = "@cf/openai/whisper";
@@ -7,23 +8,28 @@ export interface TranscriptionEnv { AI: Ai; }
 
 export async function transcribeAudio(request: Request, env: TranscriptionEnv): Promise<Response> {
   const contentType = request.headers.get("content-type") ?? "";
-  let bytes: ArrayBuffer;
+  const isMultipart = contentType.includes("multipart/form-data");
+  const isRawAudio = contentType.startsWith("audio/webm") || contentType.startsWith("audio/wav") || contentType.startsWith("audio/ogg");
+  if (!isMultipart && !isRawAudio) return Response.json({ ok: false, error: "Expected multipart/form-data, audio/webm, audio/ogg, or audio/wav" }, { status: 415 });
+  let bytes: Uint8Array;
+  try { bytes = await readBoundedRequestBytes(request, MAX_DICTATION_BYTES); }
+  catch { return Response.json({ ok: false, error: "Audio exceeds 10 MiB" }, { status: 413 }); }
   let audioContentType = contentType;
-  if (contentType.includes("multipart/form-data")) {
-    const form = await request.formData().catch(() => null);
+  if (isMultipart) {
+    const headers = new Headers(request.headers);
+    headers.delete("content-length");
+    const boundedRequest = new Request(request.url, { method: "POST", headers, body: bytes });
+    const form = await boundedRequest.formData().catch(() => null);
     const audio = form?.get("audio") as unknown;
     if (!audio || typeof audio !== "object" || !("arrayBuffer" in audio)) return Response.json({ ok: false, error: "multipart field 'audio' is required" }, { status: 400 });
     const file = audio as Blob;
     audioContentType = file.type || "application/octet-stream";
-    bytes = await file.arrayBuffer();
-  } else if (contentType.startsWith("audio/webm") || contentType.startsWith("audio/wav") || contentType.startsWith("audio/ogg")) {
-    bytes = await request.arrayBuffer();
-  } else {
-    return Response.json({ ok: false, error: "Expected multipart/form-data, audio/webm, audio/ogg, or audio/wav" }, { status: 415 });
+    bytes = new Uint8Array(await file.arrayBuffer());
+  } else if (isRawAudio) {
+    // Raw audio was already incrementally bounded before allocation.
   }
   if (!bytes.byteLength) return Response.json({ ok: false, error: "Audio body is empty" }, { status: 400 });
-  if (bytes.byteLength > MAX_DICTATION_BYTES) return Response.json({ ok: false, error: "Audio exceeds 10 MiB" }, { status: 413 });
-  let normalized: Uint8Array = new Uint8Array(bytes);
+  let normalized: Uint8Array = bytes;
   const hasWebWorkerRuntime = typeof (globalThis as unknown as { Worker?: unknown }).Worker === "function";
   if (audioContentType.startsWith("audio/ogg") && hasWebWorkerRuntime) {
     // ogg-opus-decoder's final flush hangs in the tested local workerd runtime. Keep it out of
@@ -43,6 +49,6 @@ export async function transcribeAudio(request: Request, env: TranscriptionEnv): 
   } catch {
     return Response.json({ ok: false, error: "transcription_provider_unavailable" }, { status: 503 });
   }
-  const text = result.text?.trim() ?? "";
+  const text = (result.text?.trim() ?? "").slice(0, 256 * 1024);
   return Response.json({ ok: true, text });
 }

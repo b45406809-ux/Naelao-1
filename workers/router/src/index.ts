@@ -4,6 +4,7 @@ import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
 import { loadSavedLanguagePreference } from "./preferred-language";
 import { transcribeAudio } from "./routes/transcribe";
+import { readBoundedRequestBytes } from "./routes/bounded-request-body";
 export { RateLimitDO } from "./RateLimitDO";
 
 export interface Env {
@@ -274,7 +275,12 @@ app.all("/v1/desk-drop/:action", async c => {
     if (!allowed) return c.json({ error_code: "origin_required" }, 403);
   }
   const url = new URL(c.req.url); url.pathname = url.pathname.replace(/^\/v1/, "");
-  return c.env.SPACES_WORKER.fetch(new Request(url, { method: c.req.method, headers: c.req.raw.headers, ...(c.req.method === "GET" ? {} : { body: await c.req.arrayBuffer() }) }));
+  let body: Uint8Array | undefined;
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    try { body = await readBoundedRequestBytes(c.req.raw, 64 * 1024); }
+    catch { return c.json({ error_code: "payload_too_large" }, 413); }
+  }
+  return c.env.SPACES_WORKER.fetch(new Request(url, { method: c.req.method, headers: c.req.raw.headers, ...(body ? { body } : {}) }));
 });
 
 // Browser dictation intentionally has its own small, rate-limited media endpoint. It accepts no

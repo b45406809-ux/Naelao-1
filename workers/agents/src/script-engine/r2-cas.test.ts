@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { publishWorkspaceBytesCas, putTextCas, readTextWithHash, R2CasConflictError, sha256Text } from "./r2-cas.js";
+import { describe, expect, it, vi } from "vitest";
+import { publishWorkspaceBytesCas, putTextCas, readBytesWithHash, readTextWithHash, R2CasConflictError, sha256Text } from "./r2-cas.js";
 
 type Entry = { text: string; etag: string; customMetadata?: Record<string, string> };
 
@@ -43,6 +43,13 @@ describe("shared R2 compare-and-swap", () => {
     expect(observed?.hash).toBe(await sha256Text("old"));
     await expect(putTextCas(bucket, "legacy", "new", observed!.hash)).resolves.toEqual({ hash: await sha256Text("new") });
     expect((await bucket.head("legacy"))?.customMetadata?.sha256).toBe(await sha256Text("new"));
+  });
+
+  it("rejects an oversized R2 object from head metadata before downloading its body", async () => {
+    const get = vi.fn(async () => null);
+    const bucket = { head: async () => ({ size: 100, etag: "large" }), get } as unknown as R2Bucket;
+    await expect(readBytesWithHash(bucket, "large", 10)).rejects.toThrow("r2_object_too_large");
+    expect(get).not.toHaveBeenCalled();
   });
 
   it("validates workspace bytes before taking a lease or writing R2", async () => {

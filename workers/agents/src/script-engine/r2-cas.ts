@@ -114,11 +114,13 @@ export async function sha256Bytes(bytes: Uint8Array): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function readBytesWithHash(bucket: R2Bucket, key: string): Promise<CasReadResult | null> {
+export async function readBytesWithHash(bucket: R2Bucket, key: string, maximumBytes = Number.POSITIVE_INFINITY): Promise<CasReadResult | null> {
   const head = await bucket.head(key);
   if (!head || head.customMetadata?.["deleted"] === "true") return null;
+  if (head.size > maximumBytes) throw new Error("r2_object_too_large");
   const object = await bucket.get(key);
   if (!object) return null;
+  if (object.size > maximumBytes) throw new Error("r2_object_too_large");
   const bytes = new Uint8Array(await object.arrayBuffer());
   const hash = await sha256Bytes(bytes);
   if (head.customMetadata?.["sha256"] && head.customMetadata["sha256"] !== hash) throw new Error(`Workspace integrity check failed for '${key}'`);
