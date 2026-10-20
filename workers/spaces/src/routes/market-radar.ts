@@ -1,5 +1,6 @@
 import { deterministicScore, SystemOneDecisionClient, type FastDecisionGateway, type FastDecisionProvider, type SpaceBlueprint } from "@naelao/agent-sdk";
 import { getDOName } from "@naelao/crypto";
+import { readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import type { Context, Hono } from "hono";
 import { createBusinessForEndUser } from "../business-create.js";
 import { createSpaceRecord } from "../create-space.js";
@@ -279,7 +280,7 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
       return c.json(
         {
           error_code: "blueprint_instantiation_failed",
-          details: await installed.text(),
+          details: (await readBoundedResponseText(installed, 8 * 1024).catch(() => "")).slice(0, 300),
           space_id: spaceId,
         },
         500
@@ -289,7 +290,7 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
         space_id: spaceId,
         opportunity_id: signal.id,
         blueprint_id: blueprint.id,
-        installation: await installed.json(),
+        installation: await readBoundedResponseJson(installed, 2 * 1024 * 1024),
       },
       201
     );

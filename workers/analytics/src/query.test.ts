@@ -46,4 +46,12 @@ describe("runtime economics metrics", () => {
       totalTokens: 321,
     });
   });
+
+  it("rejects an oversized Analytics Engine response from its declared byte length", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", {
+      status: 200,
+      headers: { "content-length": String(4 * 1024 * 1024 + 1) },
+    })));
+    await expect(getRuntimeEconomicsMetrics("account", "token", 30)).rejects.toThrow("response_too_large");
+  });
 });

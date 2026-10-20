@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestText, RequestBodyTooLargeError } from "@naelao/http";
+import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestBytes, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import { normalizePreferredLanguage, validateScheduledQuietHours } from "@naelao/types";
 import { compileWorkflowPlan } from "@naelao/sdk/workflow";
@@ -1519,12 +1519,16 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
           "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
         body: JSON.stringify({ source: code, language: path.endsWith(".js") ? "javascript" : "typescript" }),
       }));
-      if (!validation.ok) return c.json({ error_code: "channel_handler_source_invalid", message: await validation.text().then(value => value.slice(0, 300)) }, 400);
+      if (!validation.ok) return c.json({ error_code: "channel_handler_source_invalid", message: (await readBoundedResponseText(validation, 8 * 1024).catch(() => "")).slice(0, 300) }, 400);
       const filename = path.slice(2);
       const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${filename}`;
       const existing = await c.env.SCRIPTS_R2.get(key);
-      if (existing && await existing.text() !== code)
-        return c.json({ error_code: "channel_artifact_version_is_immutable" }, 409);
+      if (existing) {
+        if (existing.size > 262_144) return c.json({ error_code: "channel_artifact_version_is_immutable" }, 409);
+        const existingBytes = await existing.arrayBuffer();
+        if (existingBytes.byteLength !== existing.size || new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(existingBytes) !== code)
+          return c.json({ error_code: "channel_artifact_version_is_immutable" }, 409);
+      }
     }
     for (const [path, code] of sourceEntries) {
       const filename = path.slice(2);
@@ -1695,12 +1699,17 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
           "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
         body: JSON.stringify({ source, language: path.endsWith(".js") ? "javascript" : "typescript" }),
       }));
-      if (!validation.ok) return c.json({ error_code: "extension_channel_artifact_invalid", message: await validation.text().then(value => value.slice(0, 300)) }, 400);
+      if (!validation.ok) return c.json({ error_code: "extension_channel_artifact_invalid", message: (await readBoundedResponseText(validation, 8 * 1024).catch(() => "")).slice(0, 300) }, 400);
     }
     if (typeof source !== "string") return c.json({ error_code: "extension_artifact_invalid" }, 400);
     const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${path.slice(2)}`;
     const previous = await c.env.SCRIPTS_R2.get(key);
-    if (previous && await previous.text() !== source) return c.json({ error_code: "extension_release_artifact_immutable" }, 409);
+    if (previous) {
+      if (previous.size > 262_144) return c.json({ error_code: "extension_release_artifact_immutable" }, 409);
+      const previousBytes = await previous.arrayBuffer();
+      if (previousBytes.byteLength !== previous.size || new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(previousBytes) !== source)
+        return c.json({ error_code: "extension_release_artifact_immutable" }, 409);
+    }
     sourceEntries.push([path, source]);
   }
   const publisherKeyId = body.publisherSignature?.key_id;
@@ -1735,7 +1744,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: [...requiredCapabilities], artifactSha256: digest, instanceKey,
       publisherId: trustedPublisher.publisher_id, publisherKeyId, publisherSignature, publisherPayloadSha256, ...(body.upgrade ? { upgrade: true } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
-  const installedResult = await installed.clone().json() as { release?: { version?: string; artifactSha256?: string; hostSignature?: string } };
+  const installedResult = await readBoundedResponseJson<{ release?: { version?: string; artifactSha256?: string; hostSignature?: string } }>(installed.clone(), 64 * 1024);
   if (canvases.length && (installedResult.release?.version !== bundle.version || installedResult.release.artifactSha256 !== digest
     || !/^[a-f0-9]{64}$/.test(installedResult.release.hostSignature ?? ""))) return c.json({ error_code: "extension_canvas_release_attestation_unavailable" }, 503);
   const runtimeAppId = (primitiveId: string) => {
@@ -1754,19 +1763,19 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 3, html: canvasHtml, releaseProof }) }));
-    if (!init.ok) return c.json({ error_code: "extension_canvas_initialize_failed", message: await init.text().then(value => value.slice(0, 300)) }, init.status as 400 | 409 | 500);
+    if (!init.ok) return c.json({ error_code: "extension_canvas_initialize_failed", message: (await readBoundedResponseText(init, 8 * 1024).catch(() => "")).slice(0, 300) }, init.status as 400 | 409 | 500);
   }
   for (const gadget of gadgets) {
     const appId = runtimeAppId(gadget.id);
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [] }) }));
-    if (!init.ok) return c.json({ error_code: "extension_gadget_initialize_failed", message: await init.text().then(value => value.slice(0, 300)) }, init.status as 400 | 409 | 500);
+    if (!init.ok) return c.json({ error_code: "extension_gadget_initialize_failed", message: (await readBoundedResponseText(init, 8 * 1024).catch(() => "")).slice(0, 300) }, init.status as 400 | 409 | 500);
   }
   if (canvases[0]) {
     const update = await stub.fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(identity.tenantId)}`, { method: "PATCH", headers: { "content-type": "application/json" },
       body: JSON.stringify({ viewport_config: { component: "CanvasMount", resourceId: runtimeAppId(canvases[0].id) } }) }));
-    if (!update.ok) return c.json({ error_code: "extension_canvas_mount_failed", installation: await installed.json(), message: await update.text().then(value => value.slice(0, 300)) }, 500);
+    if (!update.ok) return c.json({ error_code: "extension_canvas_mount_failed", installation: await readBoundedResponseJson(installed.clone(), 64 * 1024), message: (await readBoundedResponseText(update, 8 * 1024).catch(() => "")).slice(0, 300) }, 500);
   }
   return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
 });
@@ -1783,7 +1792,7 @@ app.post("/spaces/:spaceId/extension-releases/rollback", async c => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const installed = await stub.fetch(new Request("http://space-do/extension-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: body.extension_id })));
   if (!installed.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
-  const rows = await installed.json<{ installations: Array<{ project_id: string | null }> }>();
+  const rows = await readBoundedResponseJson<{ installations: Array<{ project_id: string | null }> }>(installed, 2 * 1024 * 1024);
   if (!rows.installations.some(item => item.project_id === body.project_id)) return c.json({ error_code: "project_extension_not_installed" }, 404);
   const response = await stub.fetch(new Request("http://space-do/extension-releases/rollback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ extensionId: body.extension_id, version: body.version }) }));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
@@ -1800,7 +1809,7 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases",
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const installed = await stub.fetch(new Request("http://space-do/extension-installations?" + new URLSearchParams({ tenant_id: identity.tenantId, space_id: spaceId, extension_id: extensionId })));
   if (!installed.ok) return c.json({ error_code: "extension_installation_lookup_unavailable" }, 503);
-  const rows = await installed.json<{ installations: Array<{ project_id: string | null }> }>();
+  const rows = await readBoundedResponseJson<{ installations: Array<{ project_id: string | null }> }>(installed, 2 * 1024 * 1024);
   if (!rows.installations.some(item => item.project_id === projectId)) return c.json({ error_code: "project_extension_not_installed" }, 404);
   return stub.fetch(new Request("http://space-do/extension-releases?extension_id=" + encodeURIComponent(extensionId)));
 });
@@ -2053,11 +2062,15 @@ async function readWorkspaceObject(obj: R2ObjectBody, relative: string): Promise
     return Response.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
   }
   const contentType = viewableBinaryType(relative);
+  const bytes = await obj.arrayBuffer();
+  if (bytes.byteLength !== obj.size || bytes.byteLength > WORKSPACE_MAX_FILE_BYTES) {
+    return Response.json({ path: relative, size: obj.size, error_code: "workspace_file_changed_during_read" }, { status: 409 });
+  }
   if (contentType) {
-    const b64 = arrayBufferToBase64(await obj.arrayBuffer());
+    const b64 = arrayBufferToBase64(bytes);
     return Response.json({ path: relative, size: obj.size, encoding: "base64", content_type: contentType, content: b64 });
   }
-  return Response.json({ path: relative, size: obj.size, content: await obj.text() });
+  return Response.json({ path: relative, size: obj.size, content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes) });
 }
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireBusinessMembership({ GET: "member" }));
@@ -5503,7 +5516,7 @@ app.patch("/spaces/:spaceId/member-billing", async (c) => {
       if (lsResp.ok) {
         lsVariantId = (await lsResp.json<{ ls_variant_id: string }>()).ls_variant_id;
       } else {
-        console.error(`[spaces/member-billing] seat variant create failed space=${spaceId}: ${await lsResp.text()}`);
+        console.error(`[spaces/member-billing] seat variant create failed space=${spaceId}: ${(await readBoundedResponseText(lsResp, 8 * 1024).catch(() => "")).slice(0, 300)}`);
         // Non-fatal: seats are enabled but the dev/placeholder path in seat checkout applies
         // until a variant exists. Builder can PATCH again to retry provisioning.
       }
@@ -6781,4 +6794,19 @@ app.onError((err, c) => err instanceof RequestBodyTooLargeError
   ? c.json({ error_code: "request_body_too_large", message: "Request body exceeds the 1 MiB limit" }, 413)
   : errorResponse(err, c.get("requestId") ?? "unknown"));
 
-export default { fetch: app.fetch } satisfies ExportedHandler<Env>;
+const MAX_SPACES_REQUEST_BYTES = 8 * 1024 * 1024;
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if (!request.body || request.method === "GET" || request.method === "HEAD")
+      return app.fetch(request, env, ctx);
+    try {
+      const bytes = await readBoundedRequestBytes(request, MAX_SPACES_REQUEST_BYTES);
+      return app.fetch(new Request(request, { body: bytes }), env, ctx);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError)
+        return Response.json({ error_code: "request_body_too_large", message: "Request body exceeds the 8 MiB limit" }, { status: 413 });
+      return errorResponse(error, "unknown");
+    }
+  },
+} satisfies ExportedHandler<Env>;

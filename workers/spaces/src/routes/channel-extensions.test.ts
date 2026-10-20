@@ -63,7 +63,11 @@ describe("project channel-only extension install route", () => {
     const bucket = {
       get: async (key: string) => {
         const value = artifacts.get(key);
-        return value === undefined ? null : { text: async () => value };
+        return value === undefined ? null : {
+          size: new TextEncoder().encode(value).byteLength,
+          text: async () => value,
+          arrayBuffer: async () => new TextEncoder().encode(value).buffer,
+        };
       },
       head: async (key: string) => (artifacts.has(key) ? { key } : null),
       put: async (key: string, value: string) => {

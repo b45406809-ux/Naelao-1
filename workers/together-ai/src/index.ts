@@ -1,5 +1,5 @@
 // G-L01: Together AI worker — alternative LLM provider (OpenAI-compatible API)
-import { badRequest, errorResponse, internalError, requestId } from "@naelao/http";
+import { badRequest, errorResponse, internalError, requestId, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import { Hono } from "hono";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -116,12 +116,7 @@ app.post("/chat", async (c) => {
   });
 
   if (!upstreamRes.ok) {
-    let errText = "";
-    try {
-      errText = await upstreamRes.text();
-    } catch {
-      errText = "unknown upstream error";
-    }
+    const errText = (await readBoundedResponseText(upstreamRes, 8 * 1024).catch(() => "unknown upstream error")).slice(0, 300);
     console.error(
       `[together-ai] upstream error status=${upstreamRes.status} body=${errText}`
     );
@@ -131,13 +126,26 @@ app.post("/chat", async (c) => {
   // Streaming: pipe SSE stream directly through
   if (isStream) {
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const maxStreamBytes = 16 * 1024 * 1024;
+    const declaredStreamLength = Number(upstreamRes.headers.get("content-length"));
+    if (Number.isFinite(declaredStreamLength) && declaredStreamLength > maxStreamBytes) {
+      await upstreamRes.body?.cancel().catch(() => undefined);
+      throw internalError("Together AI stream exceeded 16 MiB");
+    }
 
     if (!upstreamRes.body) {
       throw internalError("Together AI returned empty streaming body");
     }
 
     // Pipe upstream response body through our transform stream
-    upstreamRes.body.pipeTo(writable).catch((err) => {
+    let streamBytes = 0;
+    upstreamRes.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        streamBytes += chunk.byteLength;
+        if (streamBytes > maxStreamBytes) throw new Error("Together AI stream exceeded 16 MiB");
+        controller.enqueue(chunk);
+      },
+    })).pipeTo(writable).catch((err) => {
       console.error("[together-ai] stream pipe error:", err);
     });
 
@@ -154,7 +162,7 @@ app.post("/chat", async (c) => {
   // Non-streaming: translate response to LlmResponse format
   let togetherData: TogetherResponse;
   try {
-    togetherData = (await upstreamRes.json()) as TogetherResponse;
+    togetherData = await readBoundedResponseJson<TogetherResponse>(upstreamRes, 16 * 1024 * 1024);
   } catch {
     throw internalError("Failed to parse Together AI response");
   }

@@ -2,6 +2,8 @@
 // The Analytics Engine SQL API is REST-only — it is NOT available as a Worker binding.
 // Must use fetch() with the CF REST API.
 
+import { readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
+
 // ── Internal query helper ─────────────────────────────────────────────────────
 
 interface AnalyticsEngineResponse {
@@ -10,7 +12,6 @@ interface AnalyticsEngineResponse {
   rows: number;
   rows_before_limit_at_least?: number;
 }
-
 async function queryAnalytics(
   accountId: string,
   apiToken: string,
@@ -28,16 +29,15 @@ async function queryAnalytics(
   });
 
   if (!resp.ok) {
-    const text = await resp.text().catch(() => "(no body)");
+    const text = (await readBoundedResponseText(resp, 8 * 1024).catch(() => "(no body)")).slice(0, 300);
     throw new Error(
       `Analytics Engine query failed: HTTP ${resp.status} — ${text}`
     );
   }
 
-  const result = (await resp.json()) as AnalyticsEngineResponse;
+  const result = await readBoundedResponseJson<AnalyticsEngineResponse>(resp, 4 * 1024 * 1024);
   return { data: result.data ?? [], meta: result.meta ?? null };
 }
-
 // ── Helper: safe number coercion from query result ────────────────────────────
 
 function toNum(val: unknown, fallback = 0): number {

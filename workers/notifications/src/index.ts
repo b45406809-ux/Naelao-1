@@ -1,5 +1,5 @@
 // G-N01: Notifications worker — email + in-app notification consumer
-import { badRequest, errorResponse, notFound, requestId, mintInternalToken, requireInternalHmac } from "@naelao/http";
+import { badRequest, errorResponse, notFound, requestId, mintInternalToken, requireInternalHmac, readBoundedResponseText } from "@naelao/http";
 import { Hono } from "hono";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import { decryptSubscription, deliverWebPush, encryptSubscription, hashEndpoint, validatePushSubscription, type BrowserPushSubscription } from "./web-push.js";
@@ -368,7 +368,7 @@ async function sendApnsPush(
   });
 
   if (!res.ok) {
-    const errBody = await res.text().catch(() => "");
+    const errBody = (await readBoundedResponseText(res, 8 * 1024).catch(() => "")).slice(0, 300);
     throw new Error(`APNs push failed: ${res.status} ${errBody}`);
   }
 }
@@ -530,7 +530,7 @@ async function sendEmailNow(
 
   if (!res.ok) {
     // eslint-disable-next-line no-console -- diagnostic only, Resend never echoes secrets back
-    console.error("resend send failed", res.status, await res.text().catch(() => ""));
+    console.error("resend send failed", res.status, (await readBoundedResponseText(res, 8 * 1024).catch(() => "")).slice(0, 300));
     return { ok: false, status: res.status };
   }
 
