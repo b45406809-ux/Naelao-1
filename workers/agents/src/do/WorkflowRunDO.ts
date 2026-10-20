@@ -75,7 +75,7 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     if (!identity.capabilities.includes(operation) || !/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/.test(operation)) throw new Error("workflow_capability_denied");
     const json = JSON.stringify(params);
     if (!json || new TextEncoder().encode(json).byteLength > 262144) throw new Error("workflow_effect_input_limit");
-    const { effect, created } = await this.journal.prepareEffect(key, operation, await workflowHash(json));
+    const { effect, created } = await this.journal.prepareExternalEffect(key, operation, await workflowHash(json));
     if (effect.status === "committed" && effect.result) return readWorkflowArtifact(this.env, identity, effect.result);
     if (!created) {
       // A prepared receipt after a crash proves neither failure nor success. Never repeat it.
@@ -104,6 +104,7 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       // Keep any already committed receipt intact even if a later grant check fails.
       const checkpoint = await this.ctx.storage.get<{ status: string }>("effect:" + key);
       if (checkpoint?.status !== "committed") await this.journal.markIndeterminate(effect);
+      if ((await this.journal.read()).cleanupPending) await this.cleanup();
       throw error;
     }
   }
@@ -168,7 +169,7 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     return record;
   }
   private async cleanup(): Promise<void> {
-    const record = await this.journal.read();
+    let record = await this.journal.read();
     if (!record.cleanupPending) return;
     // Terminal state is already persisted. Alarms retry cleanup even during provider outages.
     await this.ctx.storage.setAlarm(Date.now() + 60_000);
@@ -176,7 +177,15 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       if (!this.env.AGENT_SCRIPT_WORKFLOW) throw new Error("workflow_provider_unavailable");
       await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).terminate();
     }
-    await finalizeWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.reservationId, record.status === "succeeded" ? "settle" : "release", record.usedCredits);
+    if (record.activeEffects?.length) {
+      await this.journal.expireStaleEffects(Date.now() - 60_000);
+      record = await this.journal.read();
+      if (record.activeEffects?.length) return;
+    }
+    // Failed/cancelled work may still have completed billable effects. Settle measured use
+    // for every terminal state; use the reserved ceiling only when an effect is indeterminate.
+    const settlement = record.usageUncertain ? record.budgetCredits : record.usedCredits;
+    await finalizeWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.reservationId, "settle", settlement);
     await this.journal.patch({ cleanupPending: false });
     await this.ctx.storage.deleteAlarm();
   }

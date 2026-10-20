@@ -634,9 +634,11 @@ Refreshed the tracked inventory after adding `workers/agents/src/workflows/agent
 
 The Agents worker suite subsequently passed **145 test files / 634 tests** with the workflow changes included. Agents TypeScript also passed in the focused validation cycle. This does not close the Agents file checklist.
 
-### Open workflow settlement race
+### Terminal transition and in-flight effect settlement
 
-The effect receipt and usage counter now commit atomically, but another interleaving remains to verify/fix: `cancel()`/`finish()` can persist a terminal status and run budget cleanup while an already-authorized `effect()` is awaiting the external worker. If the effect returns after finalization, its receipt/usage can be committed too late for settlement (or final authorization can fail after the external action already completed). No production concurrency test currently covers terminal transition versus in-flight effects. Keep this as an open workflow correctness/billing finding; the current unit tests model concurrent journal updates, not interleaved DO RPCs or billing finalization.
+Addressed the cancellation/finish race between an authorized external effect and reservation cleanup. The journal now atomically registers external effects before dispatch, caps active effects at 128, and rejects new effects after terminal cleanup begins. Committing a receipt atomically removes its active marker and adds measured credits. Terminal cleanup waits up to 60 seconds for active effects, retries by alarm, and then marks stale receipts indeterminate; an indeterminate effect cannot be replayed and settles the run's reserved credit ceiling as a conservative bound. Failed and cancelled runs settle measured completed use instead of releasing the entire reservation.
+
+Validation: journal and WorkflowRunDO focused suites passed 9/9; Agents TypeScript and `git diff --check` passed. Regressions cover atomic start/commit, terminal admission denial, stale-effect expiry, measured failed-run settlement, and reserved-ceiling settlement for uncertainty. Residual risk: an effect unresolved beyond 60 seconds is charged the whole reserved ceiling, which can exceed its true cost but is bounded by the reservation. The tests use storage and billing stubs; no real concurrent DO RPC, external side effect, provider termination, alarm delivery, or billing service was exercised.
 
 ## OpenRouter decision request deadline (2026-10-20)
 

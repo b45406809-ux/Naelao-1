@@ -11,6 +11,8 @@ export interface WorkflowJournalRecord extends DurableWorkflowRecord {
   budgetKey?: string;
   budgetCredits?: number;
   usedCredits: number;
+  activeEffects: string[];
+  usageUncertain: boolean;
   launched: boolean;
   cleanupPending: boolean;
 }
@@ -32,7 +34,7 @@ export class WorkflowJournal {
         if (JSON.stringify(oldIdentity) !== JSON.stringify(newIdentity) || existing.inputDigest !== input.sha256) throw new Error("workflow_start_key_conflict");
         return existing;
       }
-      const record: WorkflowJournalRecord = { identity, input, inputDigest: input.sha256, ...budget, usedCredits: 0, status: "queued", attempt: 1, updatedAt: Date.now(), launched: false, cleanupPending: false };
+      const record: WorkflowJournalRecord = { identity, input, inputDigest: input.sha256, ...budget, usedCredits: 0, activeEffects: [], usageUncertain: false, status: "queued", attempt: 1, updatedAt: Date.now(), launched: false, cleanupPending: false };
       await storage.put("run", record);
       return record;
     });
@@ -74,25 +76,70 @@ export class WorkflowJournal {
       return { effect: record, created: true };
     });
   }
+  async prepareExternalEffect(key: string, operation: string, inputDigest: string): Promise<{ effect: DurableEffectRecord; created: boolean }> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(key)) throw new Error("workflow_effect_key_invalid");
+    return this.storage.transaction(async (storage) => {
+      const run = await storage.get<WorkflowJournalRecord>("run");
+      if (!run) throw new Error("workflow_not_found");
+      if (isTerminalWorkflow(run.status) || run.cleanupPending) throw new Error("workflow_already_terminal");
+      const existing = await storage.get<DurableEffectRecord & { startedAt?: number }>("effect:" + key);
+      if (existing) {
+        if (existing.operation !== operation || existing.inputDigest !== inputDigest) throw new Error("workflow_effect_key_conflict");
+        return { effect: existing, created: false };
+      }
+      const activeEffects = run.activeEffects ?? [];
+      if (activeEffects.length >= 128) throw new Error("workflow_effect_concurrency_limit");
+      const effect = { key, operation, inputDigest, status: "prepared" as const, startedAt: Date.now() };
+      await storage.put("effect:" + key, effect);
+      await storage.put("run", { ...run, activeEffects: [...activeEffects, key], updatedAt: Date.now() });
+      return { effect, created: true };
+    });
+  }
   async commitEffect(effect: DurableEffectRecord, result: WorkflowCheckpointPointer, credits: number): Promise<void> {
     if (!Number.isFinite(credits) || credits < 0) throw new Error("workflow_usage_invalid");
     await this.storage.transaction(async (storage) => {
       const run = await storage.get<WorkflowJournalRecord>("run");
       if (!run) throw new Error("workflow_not_found");
-      const current = await storage.get<DurableEffectRecord & { usageCredits?: number }>("effect:" + effect.key);
+      const current = await storage.get<DurableEffectRecord & { usageCredits?: number; startedAt?: number }>("effect:" + effect.key);
       if (!current || current.operation !== effect.operation || current.inputDigest !== effect.inputDigest) throw new Error("workflow_effect_receipt_conflict");
       if (current.status === "committed") {
         if (current.usageCredits !== credits || JSON.stringify(current.result) !== JSON.stringify(result)) throw new Error("workflow_effect_receipt_conflict");
         return;
       }
       if (current.status !== "prepared") throw new Error("workflow_effect_receipt_conflict");
+      const activeEffects = (run.activeEffects ?? []).filter((key) => key !== effect.key);
+      if (activeEffects.length === (run.activeEffects ?? []).length) throw new Error("workflow_effect_receipt_conflict");
       const usedCredits = run.usedCredits + credits;
       if (!Number.isFinite(usedCredits)) throw new Error("workflow_usage_overflow");
       await storage.put("effect:" + effect.key, { ...effect, status: "committed", result, usageCredits: credits });
-      await storage.put("run", { ...run, usedCredits, updatedAt: Date.now() });
+      await storage.put("run", { ...run, activeEffects, usedCredits, updatedAt: Date.now() });
     });
   }
-  async markIndeterminate(effect: DurableEffectRecord): Promise<void> { await this.storage.put("effect:" + effect.key, { ...effect, status: "indeterminate" }); }
+  async markIndeterminate(effect: DurableEffectRecord): Promise<void> {
+    await this.storage.transaction(async (storage) => {
+      const current = await storage.get<DurableEffectRecord>("effect:" + effect.key);
+      const run = await storage.get<WorkflowJournalRecord>("run");
+      if (!current || !run || current.status !== "prepared") return;
+      await storage.put("effect:" + effect.key, { ...current, status: "indeterminate" });
+      await storage.put("run", { ...run, activeEffects: (run.activeEffects ?? []).filter((key) => key !== effect.key), usageUncertain: true, updatedAt: Date.now() });
+    });
+  }
+  async expireStaleEffects(before: number): Promise<void> {
+    await this.storage.transaction(async (storage) => {
+      const run = await storage.get<WorkflowJournalRecord>("run");
+      if (!run) throw new Error("workflow_not_found");
+      const remaining: string[] = [];
+      let usageUncertain = run.usageUncertain ?? false;
+      for (const key of run.activeEffects ?? []) {
+        const effect = await storage.get<DurableEffectRecord & { startedAt?: number }>("effect:" + key);
+        if (effect?.status === "prepared" && typeof effect.startedAt === "number" && effect.startedAt <= before) {
+          await storage.put("effect:" + key, { ...effect, status: "indeterminate" });
+          usageUncertain = true;
+        } else if (effect?.status === "prepared") remaining.push(key);
+      }
+      await storage.put("run", { ...run, activeEffects: remaining, usageUncertain, updatedAt: Date.now() });
+    });
+  }
   async retry(maxAttempts: number): Promise<WorkflowJournalRecord> {
     return this.storage.transaction(async (storage) => {
       const record = await storage.get<WorkflowJournalRecord>("run");

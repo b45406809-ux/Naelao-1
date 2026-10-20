@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DurableWorkflowIdentity, WorkflowCheckpointPointer } from "@naelao/agent-sdk";
 import { readWorkflowGrant } from "../workflows/workflow-host.js";
+import type { WorkflowJournalRecord } from "../workflows/workflow-state.js";
 import { WorkflowRunDO } from "./WorkflowRunDO.js";
 
 function harness() {
@@ -72,5 +73,51 @@ describe("WorkflowRunDO persisted authorization", () => {
 
     await expect(h.instance.retry("actor-a")).rejects.toThrow("workflow budget reservation failed (503)");
     expect((await h.instance.existing())?.status).toBe("failed");
+  });
+
+  it("settles measured workflow usage on failure instead of releasing the whole reservation", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-a", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-a",
+      startKey: "start-a", reservationId: "reservation-a", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    await h.instance.initialize(identity, {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-a/input.json", sha256: "b".repeat(64), bytes: 2,
+    }, { budgetCredits: 5 });
+    const requests: Array<{ path: string; body: unknown }> = [];
+    h.env.BILLING_WORKER = { async fetch(request: Request) {
+      requests.push({ path: new URL(request.url).pathname, body: await request.json() });
+      return Response.json({ ok: true });
+    } };
+
+    await h.instance.finish("run-a", "failed", "workflow failed");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ path: "/internal/workflows/budget/settle", body: { reservation_id: "reservation-a", quantity: 0 } });
+  });
+
+  it("settles the reserved ceiling when an in-flight external effect becomes stale and indeterminate", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-a", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-a",
+      startKey: "start-a", reservationId: "reservation-a", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    await h.instance.initialize(identity, {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-a/input.json", sha256: "b".repeat(64), bytes: 2,
+    }, { budgetCredits: 5 });
+    h.values.set("run", { ...(h.values.get("run") as WorkflowJournalRecord), status: "running", activeEffects: ["effect-a"] });
+    h.values.set("effect:effect-a", { key: "effect-a", operation: "agent.run", inputDigest: "digest", status: "prepared", startedAt: Date.now() - 120_000 });
+    const requests: Array<{ path: string; body: unknown }> = [];
+    h.env.BILLING_WORKER = { async fetch(request: Request) {
+      requests.push({ path: new URL(request.url).pathname, body: await request.json() });
+      return Response.json({ ok: true });
+    } };
+
+    await h.instance.finish("run-a", "failed", "workflow failed");
+    expect(h.values.get("effect:effect-a")).toMatchObject({ status: "indeterminate" });
+    expect(requests[0]).toMatchObject({ path: "/internal/workflows/budget/settle", body: { reservation_id: "reservation-a", quantity: 5 } });
   });
 });
