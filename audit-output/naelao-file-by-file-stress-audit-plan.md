@@ -1929,6 +1929,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/prebuilt/business-email.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/business-email.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/business-wallet.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/code-exec-fetch.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/code-exec-lsp.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/code-exec-python.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/code-exec.ts`
