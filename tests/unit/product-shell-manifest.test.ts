@@ -415,6 +415,35 @@ describe("GET /spaces/:spaceId/sessions (list)", () => {
     expect(messagesRes.status).toBe(200);
   });
 
+  it("restricts product end-user message writes to the claim-owned session and ignores spoofed owner ids", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const ownerSession = await createSession(env, "prod-1", "tenant-1", "user-a");
+    const otherSession = await createSession(env, "prod-1", "tenant-1", "user-b");
+    const headers = await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-a" });
+
+    const denied = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${otherSession.id}/messages?end_user_id=user-b`, {
+        method: "POST", headers, body: JSON.stringify({ role: "user", content: "cross-user write" }),
+      }),
+      env as never, execCtx
+    );
+    expect(denied.status).toBe(404);
+
+    const allowed = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${ownerSession.id}/messages?end_user_id=user-b`, {
+        method: "POST", headers, body: JSON.stringify({ role: "user", content: "owner write" }),
+      }),
+      env as never, execCtx
+    );
+    expect(allowed.status).toBe(201);
+    const messages = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${ownerSession.id}/messages`, { headers }),
+      env as never, execCtx
+    );
+    expect((await messages.json() as { data: Array<{ content: string }> }).data.map((message) => message.content)).toEqual(["owner write"]);
+  });
+
   it("a session the ASSISTANT creates on a user's behalf is readable by that user — regression test for thread.create still showing 'Session not found'", async () => {
     // The fix above covers a session the CLIENT creates (role: product_end_user). It did not cover
     // the one `thread.create` creates: the agents worker calls this route internally, proving

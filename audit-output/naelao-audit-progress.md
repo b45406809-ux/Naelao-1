@@ -499,3 +499,11 @@ The OpenRouter Decisions client copied up to 200 characters from provider error 
 ## ScaleDown derivative-cache integrity (2026-10-20)
 
 Fresh extraction output validates every entity span against the supplied source, but cache hits checked only the model name and bypassed those source-span validations. Cached summaries, extraction spans, compression output, and usage metadata now receive operation-specific schema/source validation before reuse; invalid entries are treated as misses and recomputed through the provider admission path. A regression corrupts a cached extraction span and verifies it is rejected and fetched again. ScaleDown and document-processing tests passed (12 tests); Agents TypeScript passed. No external provider request was made by these mocked tests.
+
+## Message write isolation and serialized-page ceilings (2026-10-20)
+
+The session message POST path did not apply the product end-user ownership filter used by GET/DELETE. Spaces now derives `end_user_id` for POST from verified claims, and SpaceDO checks that it matches the target session before writing. Authenticated callers are restricted to user-authored messages and cannot set assistant/agent authorship, tool fields, token counts, owner IDs, or internal message metadata. Message metadata is capped at 32 KiB, client idempotency keys at 256 characters, and tool identifiers are bounded.
+
+A row-count-only GET cap could serialize 500 near-maximum messages into a 64 MiB response. SpaceDO now serializes pages under 1 MiB, trims only the oldest rows in the page, and returns `has_more` plus the exact `next_before_id`; transcript and conversation-search readers honor byte-trimmed short pages and continue without gaps. Regressions cover large pages, cursor continuity, stale cursor behavior, cross-user POST denial, forged authorship/metadata, and trusted internal attribution.
+
+Validation: full Agents suite passed 141 files / 592 tests; full Spaces suite passed 57 / 195; product-shell + message-edit root tests passed 42/42; Agents and Spaces TypeScript checks passed; `git diff --check` passed. No production deployment or live load test was run. Remaining whole-repository checklist and root test failure triage continue.

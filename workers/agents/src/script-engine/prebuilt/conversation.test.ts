@@ -80,6 +80,22 @@ describe("conversation.search", () => {
     );
   });
 
+  it("continues a short byte-trimmed page when the message service says older rows remain", async () => {
+    const calls: string[] = [];
+    const result = (await conversation.operations["conversation.search"](
+      { query: "copper telescope" },
+      context(async (request) => {
+        const beforeId = new URL(request.url).searchParams.get("before_id") ?? "";
+        calls.push(beforeId);
+        if (!beforeId) return Response.json({ data: [messages(2)[1]], has_more: true });
+        return Response.json({ data: [{ id: "message-1", role: "user", content: "The ancient copper telescope was packed away." }], has_more: false, cursor_applied: true });
+      })
+    )) as { complete: boolean; searched_messages: number; results: Array<{ message_id: string }> };
+    expect(result).toMatchObject({ complete: true, searched_messages: 2 });
+    expect(result.results[0]?.message_id).toBe("message-1");
+    expect(calls).toEqual(["", "message-2"]);
+  });
+
   it("refuses a model supplied session outside the host authorized thread", async () => {
     let calls = 0;
     const result = (await conversation.operations["conversation.search"](

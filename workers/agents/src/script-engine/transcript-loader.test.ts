@@ -42,4 +42,16 @@ describe("bounded transcript page loading", () => {
     expect(result).toBeUndefined();
     expect(calls).toBe(2);
   });
+
+  it("continues after a short page explicitly marked as byte-trimmed", async () => {
+    let calls = 0;
+    const result = await loadTranscriptPages<{ id: string; content: string }>(() => {
+      calls++;
+      return Promise.resolve(calls === 1
+        ? Response.json({ data: [{ id: "new-2", content: "new" }], has_more: true })
+        : Response.json({ data: [{ id: "old-1", content: "old" }], cursor_applied: true, has_more: false }));
+    });
+    expect(result?.map((message) => message.id)).toEqual(["old-1", "new-2"]);
+    expect(calls).toBe(2);
+  });
 });

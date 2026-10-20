@@ -3,6 +3,55 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.j
 import { SpaceDO } from "./SpaceDO.js";
 
 describe("session message pagination under long transcripts", () => {
+  it("caps large serialized pages and exposes a contiguous continuation cursor", async () => {
+    const storage = createDOStorage();
+    const space = new SpaceDO(
+      { storage } as never,
+      { PLATFORM_SECRET: "pagination-test-secret" } as never
+    );
+    const base = "http://space/sessions/large-thread/messages";
+    await space.fetch(new Request(`${base}?limit=1`));
+    storage.sql.exec(
+      "INSERT INTO sessions(id,space_id,tenant_id) VALUES(?,?,?)",
+      "large-thread",
+      "space-a",
+      "tenant-a"
+    );
+    const content = "x".repeat(100_000);
+    for (let i = 1; i <= 20; i++) {
+      storage.sql.exec(
+        "INSERT INTO messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
+        `large-${i}`,
+        "large-thread",
+        "user",
+        content,
+        `2026-10-18T00:00:${String(i).padStart(2, "0")}.000Z`
+      );
+    }
+
+    const requestPage = async (beforeId?: string) => {
+      const url = new URL(`${base}?limit=20&scope_space_id=space-a&scope_project_id=&scope_thread_id=large-thread`);
+      if (beforeId) url.searchParams.set("before_id", beforeId);
+      const response = await space.fetch(new Request(url));
+      const serialized = await response.text();
+      expect(new TextEncoder().encode(serialized).byteLength).toBeLessThanOrEqual(1024 * 1024);
+      return JSON.parse(serialized) as {
+        data: Array<{ id: string }>;
+        total_count: number;
+        total_content_chars: number;
+        has_more: boolean;
+        next_before_id: string | null;
+      };
+    };
+    const newest = await requestPage();
+    expect(newest.data.length).toBeLessThan(20);
+    expect(newest).toMatchObject({ total_count: 20, total_content_chars: 2_000_000, has_more: true });
+    expect(newest.next_before_id).toBe(newest.data[0]?.id);
+    const oldestShown = Number(newest.data[0]?.id.replace("large-", ""));
+    const older = await requestPage(newest.next_before_id ?? undefined);
+    expect(older.data.at(-1)?.id).toBe(`large-${oldestShown - 1}`);
+  });
+
   it("pages 1,105 same-timestamp messages without duplicates or gaps and enforces structural scope", async () => {
     const storage = createDOStorage();
     const space = new SpaceDO(

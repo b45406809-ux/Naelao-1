@@ -3014,7 +3014,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // POST /sessions/:id/messages
       const msgMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
       if (method === "POST" && msgMatch?.[1]) {
-        return this.appendMessage(request, msgMatch[1]);
+        return this.appendMessage(request, msgMatch[1], url.searchParams.get("end_user_id") ?? undefined);
       }
       // GET /sessions/:id/messages
       if (method === "GET" && msgMatch?.[1]) {
@@ -4510,7 +4510,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private async appendMessage(
     request: Request,
-    sessionId: string
+    sessionId: string,
+    endUserId?: string
   ): Promise<Response> {
     const body = await request.json<{
       role: MessageRole;
@@ -4536,7 +4537,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }>();
 
     // G-D02: Reject oversized messages before writing to SQLite
-    const contentBytes = new TextEncoder().encode(body.content ?? "").length;
+    if (typeof body.content !== "string") return Response.json({ error_code: "invalid_message_content" }, { status: 400 });
+    const contentBytes = new TextEncoder().encode(body.content).length;
     if (contentBytes > SpaceDO.MAX_MESSAGE_CONTENT_BYTES) {
       return Response.json(
         {
@@ -4546,10 +4548,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 413 }
       );
     }
+    if (!["user", "assistant", "tool", "system"].includes(body.role)) {
+      return Response.json({ error_code: "invalid_message_role" }, { status: 400 });
+    }
+    const hasCallerIdentity = request.headers.has("x-naelao-role") || request.headers.has("x-naelao-user-id");
+    if (hasCallerIdentity && (body.role !== "user" || body.agent_id !== undefined || body.metadata !== undefined ||
+      body.end_user_id !== undefined || body.tool_call_id !== undefined || body.tool_name !== undefined || body.token_count !== undefined)) {
+      return Response.json({ error_code: "message_author_fields_internal_only" }, { status: 403 });
+    }
+    if (body.agent_id !== undefined && (typeof body.agent_id !== "string" || body.agent_id.length > 160)) {
+      return Response.json({ error_code: "invalid_agent_id" }, { status: 400 });
+    }
+    let metadataJson = "{}";
+    if (body.metadata !== undefined) {
+      if (!body.metadata || typeof body.metadata !== "object" || Array.isArray(body.metadata)) {
+        return Response.json({ error_code: "invalid_message_metadata" }, { status: 400 });
+      }
+      metadataJson = JSON.stringify(body.metadata);
+      if (new TextEncoder().encode(metadataJson).byteLength > 32 * 1024) {
+        return Response.json({ error_code: "message_metadata_too_large" }, { status: 413 });
+      }
+    }
+    if (body.client_message_id !== undefined && (typeof body.client_message_id !== "string" || body.client_message_id.length > 256)) {
+      return Response.json({ error_code: "invalid_client_message_id" }, { status: 400 });
+    }
+    if (body.tool_call_id !== undefined && (typeof body.tool_call_id !== "string" || body.tool_call_id.length > 256)) {
+      return Response.json({ error_code: "invalid_tool_call_id" }, { status: 400 });
+    }
+    if (body.tool_name !== undefined && (typeof body.tool_name !== "string" || body.tool_name.length > 128)) {
+      return Response.json({ error_code: "invalid_tool_name" }, { status: 400 });
+    }
+    if (body.token_count !== undefined && (!Number.isSafeInteger(body.token_count) || body.token_count! < 0 || body.token_count! > 1_000_000)) {
+      return Response.json({ error_code: "invalid_message_token_count" }, { status: 400 });
+    }
 
     // G-AX13: Per-user rate limiting — only for end-user "user" role messages
-    if (body.role === "user" && body.end_user_id) {
-      const rl = this.checkUserRateLimit(body.end_user_id);
+    const rateLimitedEndUserId = endUserId ?? body.end_user_id;
+    if (body.role === "user" && rateLimitedEndUserId) {
+      const rl = this.checkUserRateLimit(rateLimitedEndUserId);
       if (!rl.allowed) {
         return Response.json(
           {
@@ -4562,9 +4598,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
     }
 
-    const session = queryOne<{ id: string }>(
+    const session = queryOne<{ id: string; end_user_id: string | null }>(
       this.ctx.storage.sql as never,
-      "SELECT id FROM sessions WHERE id = ?",
+      "SELECT id, end_user_id FROM sessions WHERE id = ?",
       sessionId
     );
     if (!session) {
@@ -4572,6 +4608,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { error_code: "not_found", message: "Session not found" },
         { status: 404 }
       );
+    }
+    if (endUserId && session.end_user_id !== endUserId) {
+      return Response.json({ error_code: "not_found", message: "Session not found" }, { status: 404 });
     }
 
     const id = crypto.randomUUID();
@@ -4650,7 +4689,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       now,
       authorType,
       authorId,
-      body.metadata ? JSON.stringify(body.metadata) : "{}",
+      metadataJson,
       body.client_message_id ?? null
     );
 
@@ -4859,7 +4898,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         )?.rid
       : undefined;
 
-    const rows = (
+    const queryLimit = limit + 1;
+    const fetchedRows = (
       beforeRowid !== undefined
         ? queryAll<MessageRow>(
             this.ctx.storage.sql as never,
@@ -4867,7 +4907,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
              ORDER BY created_at DESC, rowid DESC LIMIT ?`,
             sessionId,
             beforeRowid,
-            limit
+            queryLimit
           )
         : before
           ? queryAll<MessageRow>(
@@ -4876,21 +4916,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
                ORDER BY created_at DESC, rowid DESC LIMIT ?`,
               sessionId,
               before,
-              limit
+              queryLimit
             )
           : queryAll<MessageRow>(
               this.ctx.storage.sql as never,
               `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
               sessionId,
-              limit
+              queryLimit
             )
     ).reverse();
+    let hasMore = fetchedRows.length > limit;
+    const rows = fetchedRows.slice(-limit);
 
     // metadata is stored as a raw JSON string column (matching sessions.metadata's own
     // convention) — parsed here so the client never has to double-decode it. A malformed value
     // (shouldn't happen — only this route's own JSON.stringify ever writes it) degrades to {}
     // rather than breaking the whole message list.
-    const data = rows.map((r) => {
+    let data = rows.map((r) => {
       let metadata: Record<string, unknown> = {};
       try {
         metadata = JSON.parse(
@@ -4902,13 +4944,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return { ...r, metadata };
     });
 
-    return Response.json({
+    const responseBody = () => ({
       data,
       count: data.length,
       cursor_applied: !beforeId || beforeRowid !== undefined,
       total_count: transcriptSize?.message_count ?? data.length,
       total_content_chars: transcriptSize?.total_content_chars ?? data.reduce((sum, message) => sum + message.content.length, 0),
+      has_more: hasMore,
+      next_before_id: hasMore ? data[0]?.id ?? null : null,
     });
+    // A row-count limit alone permits a 500-row page to serialize tens of MiB when messages are
+    // near their individual content ceiling. Keep the actual JSON response below 1 MiB and make
+    // byte-trimming explicit so bounded readers can continue from the exact oldest returned row.
+    let body = responseBody();
+    let serialized = JSON.stringify(body);
+    while (new TextEncoder().encode(serialized).byteLength > 1024 * 1024 && data.length > 1) {
+      data = data.slice(1);
+      hasMore = true;
+      body = responseBody();
+      serialized = JSON.stringify(body);
+    }
+    if (new TextEncoder().encode(serialized).byteLength > 1024 * 1024) {
+      return Response.json({ error_code: "message_response_too_large" }, { status: 500 });
+    }
+    return new Response(serialized, { headers: { "content-type": "application/json; charset=utf-8" } });
   }
 
   private async updateSession(

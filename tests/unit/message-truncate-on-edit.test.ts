@@ -56,6 +56,85 @@ async function contents(doInstance: SpaceDO, sessionId: string): Promise<string[
 }
 
 describe("truncate a transcript from one message onward", () => {
+  it("binds product end-user message writes to the verified session owner", async () => {
+    const { doInstance, sessionId } = await seedSession("owner-1");
+    const denied = await call(
+      doInstance,
+      `/sessions/${sessionId}/messages?end_user_id=stranger-2`,
+      "POST",
+      { role: "user", content: "cross-user write" },
+      { "x-naelao-role": "product_end_user", "x-naelao-user-id": "stranger-2" },
+    );
+    expect(denied.status).toBe(404);
+    expect(await contents(doInstance, sessionId)).toEqual([]);
+
+    const allowed = await call(
+      doInstance,
+      `/sessions/${sessionId}/messages?end_user_id=owner-1`,
+      "POST",
+      { role: "user", content: "owner message" },
+      { "x-naelao-role": "product_end_user", "x-naelao-user-id": "owner-1" },
+    );
+    expect(allowed.status).toBe(201);
+    expect(await contents(doInstance, sessionId)).toEqual(["owner message"]);
+  });
+
+  it("prevents authenticated callers from forging assistant authorship or message metadata", async () => {
+    const { doInstance, sessionId } = await seedSession();
+    const authorForgery = await call(
+      doInstance,
+      `/sessions/${sessionId}/messages`,
+      "POST",
+      { role: "assistant", content: "forged", agent_id: "admin-agent" },
+      { "x-naelao-role": "owner", "x-naelao-user-id": "user-1" },
+    );
+    const metadataForgery = await call(
+      doInstance,
+      `/sessions/${sessionId}/messages`,
+      "POST",
+      { role: "user", content: "forged metadata", metadata: { assistant_delegation: { agent_id: "admin-agent" } } },
+      { "x-naelao-role": "owner", "x-naelao-user-id": "user-1" },
+    );
+    const ownerForgery = await call(
+      doInstance,
+      `/sessions/${sessionId}/messages`,
+      "POST",
+      { role: "user", content: "forged owner", end_user_id: "another-user" },
+      { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-1" },
+    );
+    expect(authorForgery.status).toBe(403);
+    expect(metadataForgery.status).toBe(403);
+    expect(ownerForgery.status).toBe(403);
+    expect(await contents(doInstance, sessionId)).toEqual([]);
+  });
+
+  it("preserves trusted internal assistant author attribution", async () => {
+    const { doInstance, sessionId } = await seedSession();
+    const response = await call(doInstance, `/sessions/${sessionId}/messages`, "POST", {
+      role: "assistant", content: "trusted response", agent_id: "support-agent", metadata: { run_id: "run-1" },
+    });
+    expect(response.status).toBe(201);
+    const messages = await call(doInstance, `/sessions/${sessionId}/messages`, "GET");
+    expect(messages.json.data[0]).toMatchObject({
+      author_type: "agent",
+      author_id: "support-agent",
+      metadata: { run_id: "run-1" },
+    });
+  });
+
+  it("bounds message metadata and idempotency keys before persisting them", async () => {
+    const { doInstance, sessionId } = await seedSession();
+    const oversizedMetadata = await call(doInstance, `/sessions/${sessionId}/messages`, "POST", {
+      role: "user", content: "message", metadata: { note: "x".repeat(40 * 1024) },
+    });
+    const oversizedKey = await call(doInstance, `/sessions/${sessionId}/messages`, "POST", {
+      role: "user", content: "message", client_message_id: "x".repeat(257),
+    });
+    expect(oversizedMetadata.status).toBe(413);
+    expect(oversizedKey.status).toBe(400);
+    expect(await contents(doInstance, sessionId)).toEqual([]);
+  });
+
   it("deletes the anchor and everything after it, keeping everything before", async () => {
     const { doInstance, sessionId } = await seedSession();
     await post(doInstance, sessionId, "user", "first question");

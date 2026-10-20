@@ -29,7 +29,7 @@ export async function loadTranscriptPages<T extends TranscriptPageMessage>(
     while (true) {
       const response = await fetchPage(beforeId);
       if (!response.ok) return undefined;
-      const body = await readBoundedResponseJson<{ data?: T[]; messages?: T[]; cursor_applied?: boolean }>(response, TRANSCRIPT_MAX_BYTES + 256 * 1024);
+      const body = await readBoundedResponseJson<{ data?: T[]; messages?: T[]; cursor_applied?: boolean; has_more?: boolean }>(response, TRANSCRIPT_MAX_BYTES + 256 * 1024);
       if (beforeId && body.cursor_applied === false) return undefined;
       const page = body.data ?? body.messages ?? [];
       if (page.length === 0) break;
@@ -46,7 +46,7 @@ export async function loadTranscriptPages<T extends TranscriptPageMessage>(
       )
         return undefined;
       messages.unshift(...page);
-      if (page.length < TRANSCRIPT_PAGE_SIZE) break;
+      if (body.has_more === false || (page.length < TRANSCRIPT_PAGE_SIZE && body.has_more !== true)) break;
       const oldestId = page[0]?.id;
       if (!oldestId) return undefined;
       beforeId = oldestId;

@@ -121,7 +121,8 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
   try {
     while (messages.length < maxMessages && bytes < SEARCH_MAX_BYTES) {
       const url = new URL(`http://spaces-worker/spaces/${encodeURIComponent(ctx.env.spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`);
-      url.searchParams.set("limit", String(Math.min(SEARCH_PAGE_SIZE, maxMessages - messages.length)));
+      const requestLimit = Math.min(SEARCH_PAGE_SIZE, maxMessages - messages.length);
+      url.searchParams.set("limit", String(requestLimit));
       url.searchParams.set("scope_space_id", ctx.env.spaceId);
       url.searchParams.set("scope_project_id", ctx.env.projectId ?? "");
       url.searchParams.set("scope_thread_id", sessionId);
@@ -130,7 +131,7 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
         new Request(url, { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } })
       );
       if (!resp.ok) return { messages, incomplete: true, unavailable: messages.length === 0, error: `Transcript service returned ${resp.status}.`, ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
-      const body = await readBoundedResponseJson<{ data?: StoredMessage[]; messages?: StoredMessage[]; cursor_applied?: boolean }>(resp, 2 * 1024 * 1024);
+      const body = await readBoundedResponseJson<{ data?: StoredMessage[]; messages?: StoredMessage[]; cursor_applied?: boolean; has_more?: boolean }>(resp, 2 * 1024 * 1024);
       if (beforeId && body.cursor_applied === false) {
         return { messages, incomplete: true, unavailable: false, error: "The history cursor is no longer valid; restart the search from the newest page.", ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
       }
@@ -164,7 +165,7 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
         incomplete = (probeBody.data ?? probeBody.messages ?? []).length > 0;
         break;
       }
-      if (page.length < SEARCH_PAGE_SIZE) break;
+      if (body.has_more === false || (page.length < requestLimit && body.has_more !== true)) break;
       const oldestId = page[0]?.id;
       if (!oldestId) {
         incomplete = true;

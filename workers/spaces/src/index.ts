@@ -790,6 +790,7 @@ const handleSpaceSessions = async (c: any) => {
   const spaceId = c.req.param("spaceId");
   const { tenantId, role, userId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (role === "product_end_user" && !userId) return c.json({ error_code: "unauthorized", message: "Missing end-user identity" }, 401);
   const token = c.req.header("x-naelao-internal-token");
   if (!(await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET))) {
     return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
@@ -862,6 +863,11 @@ const handleSpaceSessions = async (c: any) => {
     const qs = new URLSearchParams(url.searchParams);
     qs.set("end_user_id", callerId);
     search = `?${qs.toString()}`;
+  } else if (c.req.method === "POST" && /^\/sessions\/([^/]+)\/messages$/.test(doPath)) {
+    // End-user ownership is derived from verified claims; discard any client-supplied query id.
+    const qs = new URLSearchParams();
+    if (isProductEndUser) qs.set("end_user_id", callerId);
+    search = qs.size ? `?${qs.toString()}` : "";
   }
   const doUrl = new URL(doPath + search, "http://space-do");
 
