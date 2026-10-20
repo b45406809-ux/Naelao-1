@@ -67,6 +67,25 @@ describe("typed fast decisions", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("bounds streamed Decisions API responses without trusting Content-Length", async () => {
+    const oversizedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+        controller.close();
+      },
+    });
+    const fetcher = vi.fn(async () => new Response(oversizedBody));
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
+
+    await expect(client.choice({
+      state: "small decision",
+      instructions: "Choose a result",
+      criteria: { keep: null, discard: null },
+      policyCode: "response_size_limit",
+    })).rejects.toThrow("system_one_response_too_large");
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("bundles container and browser preflight in one Decisions API request", async () => {
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { model: string; questions: Record<string, unknown> };

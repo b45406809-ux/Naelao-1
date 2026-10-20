@@ -1741,3 +1741,8 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - The same audit found Twilio WhatsApp only checked its 15 MiB aggregate after buffering each file. Its downloader now caps each response stream to the remaining aggregate and rejects the next fetch at exhaustion. A 5 MiB x 3 regression confirms the fourth request is never made. WhatsApp media suite passed 8/8, Agents typecheck and `git diff --check` passed; no Twilio request was made.
 - Fresh full Agents Worker suite after both channel changes passed 133 files / 558 tests. This does not cover every monorepo package or deployed runtime.
 - Fresh configured workspace suite passed 290 test files / 1,274 tests after the current WAF and channel attachment changes. It includes all 133 Agents Worker files / 558 tests; this remains unit/in-memory evidence, not deployed Cloudflare or live-provider verification.
+
+### OpenRouter Decisions API response bound (2026-10-20)
+
+- System One already bounded request contexts (Clef Flash by default, full Decider only for long-context overflow) but parsed both decision response shapes with unbounded `response.json()`. Added a 1 MiB streamed response parser that checks actual bytes regardless of Content-Length and fails closed on oversize before JSON parsing.
+- Added a regression for a streamed 1 MiB+1 response without a Content-Length. Agent SDK suite passed 24 files / 110 tests; SDK typecheck and `git diff --check` passed. The 290-file workspace run above predates this SDK change. No live OpenRouter call was made.

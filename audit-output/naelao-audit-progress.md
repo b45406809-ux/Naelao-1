@@ -321,6 +321,10 @@ Three focused tests cover propagation, malformed identifiers, attribute limits, 
 
 Fresh workspace validation after the 2026-10-20 WAF and channel-attachment follow-ups passed 290 test files / 1,274 tests (`node_modules/.bin/vitest run --workspace vitest.workspace.ts`). This includes the updated 133-file / 558-test Agents Worker suite. It remains unit/in-memory evidence and does not exercise deployed Cloudflare resources or live provider accounts.
 
+## OpenRouter Decisions API response bound (2026-10-20)
+
+The System One client bounded request context but parsed OpenRouter Decisions responses with unbounded `response.json()`. Both single- and multi-question paths now read at most 1 MiB from the response stream before parsing, including when Content-Length is missing or understated. Oversized responses fail closed with `system_one_response_too_large`. The regression confirms streamed oversize rejection; Agent SDK tests passed 24 files / 110 tests, SDK typecheck passed, and `git diff --check` passed. The configured full workspace run above predates this specific SDK change. No live OpenRouter request was made.
+
 Before validation, the pnpm 11 install tool rewrote lockfile patch metadata and added an ignored-build policy block. Both repository files were restored to their original committed contents after dependencies installed. `node_modules` is ignored. `git diff --check` is run before commit.
 
 ## Not yet reviewed

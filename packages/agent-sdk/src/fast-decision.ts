@@ -132,6 +132,43 @@ export const CLEF_FLASH_MODEL = "cloudflare/clef-flash";
 /** Estimated token budgets leave room for instructions, question schemas, and provider variation. */
 export const CLEF_FLASH_MAX_ESTIMATED_TOKENS = 16_000;
 export const DECIDER_MAX_ESTIMATED_TOKENS = 200_000;
+const MAX_DECISION_RESPONSE_BYTES = 1024 * 1024;
+
+async function readBoundedDecisionJson(response: Response): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_DECISION_RESPONSE_BYTES) {
+    throw new Error("system_one_response_too_large");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("system_one_invalid_response_json");
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > MAX_DECISION_RESPONSE_BYTES) {
+        void reader.cancel();
+        throw new Error("system_one_response_too_large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new Error("system_one_invalid_response_json");
+  }
+}
 
 /** Map former provider/model settings to the default and long-context OpenRouter routes. */
 export function resolveDecisionModel(model?: string, legacyProvider?: "jev" | "laya" | "clef"): string {
@@ -223,7 +260,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       const detail = await response?.text().catch(() => "");
       throw new Error(`system_one_http_${response?.status ?? "network"}${detail ? `:${detail.slice(0, 200)}` : ""}`);
     }
-    const payload = await response.json() as Partial<SystemOneResponse>;
+    const payload = await readBoundedDecisionJson(response) as Partial<SystemOneResponse>;
     if (typeof payload.model !== "string" || !payload.answers || typeof payload.answers !== "object") throw new Error("system_one_invalid_response");
     const answer = payload.answers["decision"];
     if (!answer || typeof answer !== "object") throw new Error("system_one_missing_answer");
@@ -247,7 +284,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       const detail = await response?.text().catch(() => "");
       throw new Error(`system_one_http_${response?.status ?? "network"}${detail ? `:${detail.slice(0, 200)}` : ""}`);
     }
-    const raw = await response.json() as { answers?: Record<string, unknown>; model?: string; usage?: unknown };
+    const raw = await readBoundedDecisionJson(response) as { answers?: Record<string, unknown>; model?: string; usage?: unknown };
     if (!raw.answers || typeof raw.answers !== "object") throw new Error("system_one_invalid_response");
     const answers: Record<string, SystemOneAnswer> = {};
     for (const key of Object.keys(questions)) {
