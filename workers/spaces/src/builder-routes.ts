@@ -25,7 +25,7 @@ import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, DEFAULT_WORKING_MOD
 import type { Context, Hono } from "hono";
 import { getDOName } from "@naelao/crypto";
 import { mintInternalToken, verifyInternalToken } from "@naelao/http";
-import { createCustomHostname, getCustomHostname, cfSaasConfig } from "./cf-saas.js";
+import { createCustomHostname, getCustomHostname, cfSaasConfig, normalizeCustomHostname } from "./cf-saas.js";
 import type { SpaceTypeProductConfig } from "./do/SpaceTypeRegistryDO.js";
 import { createSpaceRecord, SpaceCreationError, provisionBusinessWallet } from "./create-space.js";
 import type { CreateSpaceEnv } from "./create-space.js";
@@ -654,6 +654,8 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
     const body = await c.req.json<{ custom_domain: string }>();
     if (!body.custom_domain) return c.json({ error_code: "bad_request", message: "custom_domain is required" }, 400);
+    try { body.custom_domain = normalizeCustomHostname(body.custom_domain); }
+    catch (err) { return c.json({ error_code: "bad_request", message: (err as Error).message }, 400); }
 
     const cf = cfSaasConfig(env);
     let cfHostnameId: string | null = null;
@@ -700,7 +702,9 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const cf = cfSaasConfig(env);
     if (!cf || !row.cf_hostname_id) return c.json({ custom_domain: row.custom_domain, status: row.status, ssl_status: "unknown" });
 
-    const result = await getCustomHostname(cf, row.cf_hostname_id);
+    let result;
+    try { result = await getCustomHostname(cf, row.cf_hostname_id); }
+    catch (err) { return c.json({ error_code: "cf_saas_failed", message: (err as Error).message }, 502); }
     const active = result.status === "active" && result.ssl_status === "active";
     if (active && row.status !== "active") {
       await env.PLATFORM_DB.prepare(

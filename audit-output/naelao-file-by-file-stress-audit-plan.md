@@ -2374,7 +2374,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/business-create.ts`
 - [x] `workers/spaces/src/business-routes.test.ts`
 - [x] `workers/spaces/src/business-routes.ts`
-- [ ] `workers/spaces/src/cf-saas.ts`
+- [x] `workers/spaces/src/cf-saas.test.ts`
+- [x] `workers/spaces/src/business-services.test.ts`
+- [x] `workers/spaces/src/cf-saas.ts`
 - [ ] `workers/spaces/src/conformance-state.test.ts`
 - [ ] `workers/spaces/src/conformance-state.ts`
 - [ ] `workers/spaces/src/create-space.ts`

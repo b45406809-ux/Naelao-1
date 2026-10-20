@@ -6,7 +6,7 @@ import { compileWorkflowPlan } from "@naelao/sdk/workflow";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
-import { cfSaasConfig, createCustomHostname, getCustomHostname } from "./cf-saas.js";
+import { cfSaasConfig, createCustomHostname, getCustomHostname, normalizeCustomHostname } from "./cf-saas.js";
 import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
@@ -5327,12 +5327,21 @@ app.post("/internal/business-services", async (c) => {
   if (!body.space_id || !body.kind) {
     return c.json({ error_code: "bad_request", message: "space_id and kind are required" }, 400);
   }
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(body.space_id) || !["storefront", "business_email", "custom_domain"].includes(body.kind)) {
+    return c.json({ error_code: "bad_request", message: "Invalid business service target or kind" }, 400);
+  }
+  const targetSpace = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(body.space_id, tenantId).first<{ id: string }>();
+  if (!targetSpace) return c.json({ error_code: "not_found", message: "Space not found for this tenant" }, 404);
 
   // Custom domain: opt-in. Records the hostname as pending DNS validation. The actual
   // Cloudflare-for-SaaS custom_hostnames API call happens in the SaaS provisioner with the
   // zone-scoped token; here we persist intent + the DNS target the owner must CNAME to.
   if (body.kind === "custom_domain") {
     if (!body.custom_domain) return c.json({ error_code: "bad_request", message: "custom_domain is required" }, 400);
+    try { body.custom_domain = normalizeCustomHostname(body.custom_domain); }
+    catch (err) { return c.json({ error_code: "bad_request", message: (err as Error).message }, 400); }
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
@@ -5424,6 +5433,11 @@ app.get("/internal/member-billing", async (c) => {
 app.get("/internal/business-services", async (c) => {
   const spaceId = c.req.query("space_id") ?? "";
   const kind = c.req.query("kind") ?? "";
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const target = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (!target) return c.json({ error_code: "not_found", message: "Space not found for this tenant" }, 404);
   const row = await c.env.PLATFORM_DB.prepare(
     "SELECT * FROM business_services WHERE space_id = ? AND kind = ?"
   ).bind(spaceId, kind).first();
@@ -5435,6 +5449,11 @@ app.get("/internal/business-services", async (c) => {
 app.use("/internal/business-services/custom-domain-status", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.get("/internal/business-services/custom-domain-status", async (c) => {
   const spaceId = c.req.query("space_id") ?? "";
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const target = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (!target) return c.json({ error_code: "not_found", message: "Space not found for this tenant" }, 404);
   const row = await c.env.PLATFORM_DB.prepare(
     "SELECT cf_hostname_id, custom_domain, status FROM business_services WHERE space_id = ? AND kind = 'custom_domain'"
   ).bind(spaceId).first<{ cf_hostname_id: string | null; custom_domain: string | null; status: string }>();
