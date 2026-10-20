@@ -622,7 +622,7 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
       || existing.project_id !== (body.project_id ?? null) || existing.installation_id !== (body.installation_id ?? null)
       || existing.runtime_tier !== (body.runtime_tier ?? null)) return c.json({ error_code: "reservation_scope_conflict" }, 409);
     if (existing.status === "released") {
-      const renewed = await c.env.PLATFORM_DB.prepare("UPDATE workflow_budget_reservations SET status='held', credits=?, expires_at=?, updated_at=datetime('now') WHERE id=? AND org_id=? AND status='released' AND ? + (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) + (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND expires_at>datetime('now')) <= ?")
+      const renewed = await c.env.PLATFORM_DB.prepare("UPDATE workflow_budget_reservations SET status='held', credits=?, expires_at=?, updated_at=datetime('now') WHERE id=? AND org_id=? AND status='released' AND ? + (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id=? AND event_type='infra_credits' AND recorded_at>=datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) + (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id=? AND status='held' AND julianday(expires_at)>julianday('now')) <= ?")
         .bind(credits, expiry, existing.id, orgId, credits, orgId, orgId, quota.limit).run();
       if (!renewed.meta.changes) return c.json({ error_code: "infra_quota_exceeded", message: "Workflow retry budget is unavailable" }, 402);
     }
@@ -635,7 +635,7 @@ app.post("/internal/workflows/budget/reserve", async (c) => {
     SELECT ?,?,?,?,?,?,?,?,?,'held',?,datetime('now'),datetime('now')
     WHERE ? +
       (SELECT COALESCE(SUM(quantity),0) FROM usage_events WHERE org_id = ? AND event_type = 'infra_credits' AND recorded_at >= datetime('now','start of month') AND (schema_version<2 OR payer_kind IN ('plan_quota','platform','unknown'))) +
-      (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id = ? AND status = 'held' AND expires_at > datetime('now')) <= ?
+      (SELECT COALESCE(SUM(credits),0) FROM workflow_budget_reservations WHERE org_id = ? AND status = 'held' AND julianday(expires_at) > julianday('now')) <= ?
   `).bind(id, orgId, body.space_id, workflowId, body.budget_key, body.project_id ?? null, body.installation_id ?? null,
     body.runtime_tier ?? null, credits, expiry, credits, orgId, orgId, quota.limit).run();
   if (inserted.meta.changes === 0) {

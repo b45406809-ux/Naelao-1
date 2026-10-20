@@ -1283,6 +1283,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/stubs/d1-sqlite.ts`
 
 ### `tests/unit`
+- [x] `tests/unit/entitlements-expiry.test.ts`
 
 - [ ] `tests/unit/action-ledger.test.ts`
 - [ ] `tests/unit/admin-worker-schema.test.ts`
@@ -2124,7 +2125,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/billing/src/index.ts`
 - [ ] `workers/billing/src/lemon-squeezy.ts`
-- [ ] `workers/billing/src/llm-quota-reservations.test.ts`
+- [x] `workers/billing/src/llm-quota-reservations.test.ts`
 - [ ] `workers/billing/src/ls-products.ts`
 - [ ] `workers/billing/src/marketplace-licenses.ts`
 - [ ] `workers/billing/src/partner-portal.ts`
@@ -2394,9 +2395,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/language-preference-routes.test.ts`
 - [ ] `workers/spaces/src/launchpad-manifest.ts`
 - [ ] `workers/spaces/src/private-scratchpad.test.ts`
-- [ ] `workers/spaces/src/product-end-user-air-gap.test.ts`
-- [ ] `workers/spaces/src/product-end-user-routes.test.ts`
-- [ ] `workers/spaces/src/product-end-user-routes.ts`
+- [x] `workers/spaces/src/product-end-user-air-gap.test.ts`
+- [x] `workers/spaces/src/product-end-user-routes.test.ts`
+- [x] `workers/spaces/src/product-end-user-routes.ts`
 - [ ] `workers/spaces/src/project-automation.test.ts`
 - [ ] `workers/spaces/src/project-external-quota.ts`
 - [ ] `workers/spaces/src/project-steward-decisions.test.ts`

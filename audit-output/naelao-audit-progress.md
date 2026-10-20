@@ -794,3 +794,10 @@ Validation: focused template-catalog suite passed 5/5; plan gate + space creatio
 
 
 Refreshed the tracked tree after adding the template catalogue regression suite; it now reflects code commit `24eb5d45`, with checked rows preserved and remaining files pending.
+
+
+## Authentication tokens and timestamp expiry checks (2026-10-20)
+
+A cross-cutting review found several SQL expiry comparisons mixing ISO timestamps (`YYYY-MM-DDTHH:...Z`) with SQLite `datetime('now')` (`YYYY-MM-DD HH:...`). Text ordering differs at the separator, so a credential or reservation that expired earlier the same day could still compare as live until the following day. Updated business-invite pending/cleanup/redemption queries, WhatsApp challenge lookup/consume, LLM token holds, workflow budget holds, API-key usage counts, and sweeper API-key cleanup to compare with `julianday()`. Password-reset and email-verification token reads now reject invalid timestamps and require the expiry in SQL; conditional updates consume each token once before applying the change. Added signup email/name/password bounds, duplicate-email conflict handling, and fixed outbound WhatsApp request IDs, payload bounds, and deadlines.
+
+Validation: product-end-user routes + air-gap tests passed 12/12; business route tests passed 11/11; full Spaces suite passed 64 files / 240 tests with Spaces typecheck and `git diff --check` clean. Billing reservation, sweeper cleanup, and entitlement expiry tests passed 5/5; billing, sweeper, and entitlements typechecks passed. Password reset and email verification were raced concurrently in SQLite-backed tests and each returned one success / one invalid-token response. No live provider, deployed D1 clock, concurrent real request, or real quota reservation workload was exercised. The product end-user source and tests received scoped full-module review; billing, entitlement, and sweeper changes are limited to expiry expressions and remain unchecked as full files.

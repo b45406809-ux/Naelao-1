@@ -124,9 +124,9 @@ async function cleanDeletedSpaces(db: D1Database, bucket: R2Bucket, vectors: Vec
   return cleaned;
 }
 
-async function cleanExpiredApiKeys(db: D1Database): Promise<number> {
+export async function cleanExpiredApiKeys(db: D1Database): Promise<number> {
   const result = await db.prepare(
-    "DELETE FROM api_keys WHERE expires_at IS NOT NULL AND expires_at < datetime('now')"
+    "DELETE FROM api_keys WHERE expires_at IS NOT NULL AND julianday(expires_at) < julianday('now')"
   ).run();
   return result.meta.changes ?? 0;
 }

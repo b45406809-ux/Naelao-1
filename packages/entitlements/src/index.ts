@@ -168,7 +168,7 @@ export class EntitlementsChecker {
     const [spaces, seats, apiKeys] = await Promise.all([
       this.db.prepare("SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND status != 'deleted'").bind(tenantId).first<{ count: number }>(),
       this.db.prepare("SELECT COUNT(*) as count FROM users WHERE org_id = ? AND status = 'active'").bind(tenantId).first<{ count: number }>(),
-      this.db.prepare("SELECT COUNT(*) as count FROM api_keys WHERE org_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))").bind(tenantId).first<{ count: number }>(),
+      this.db.prepare("SELECT COUNT(*) as count FROM api_keys WHERE org_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR julianday(expires_at) > julianday('now'))").bind(tenantId).first<{ count: number }>(),
     ]);
     return {
       tier,

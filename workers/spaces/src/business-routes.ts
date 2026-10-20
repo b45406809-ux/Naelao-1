@@ -240,10 +240,10 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
       return c.json({ error_code: "not_found", message: "Business not found" }, 404);
     }
     await env.PLATFORM_DB.prepare(
-      "DELETE FROM business_invites WHERE business_space_id = ? AND ((accepted_at IS NOT NULL AND accepted_at < datetime('now', '-30 days')) OR expires_at < datetime('now', '-30 days'))"
+      "DELETE FROM business_invites WHERE business_space_id = ? AND ((accepted_at IS NOT NULL AND julianday(accepted_at) < julianday('now', '-30 days')) OR julianday(expires_at) < julianday('now', '-30 days'))"
     ).bind(businessSpaceId).run();
     const pending = await env.PLATFORM_DB.prepare(
-      "SELECT COUNT(*) AS count FROM business_invites WHERE business_space_id = ? AND accepted_at IS NULL AND expires_at > datetime('now')"
+      "SELECT COUNT(*) AS count FROM business_invites WHERE business_space_id = ? AND accepted_at IS NULL AND julianday(expires_at) > julianday('now')"
     ).bind(businessSpaceId).first<{ count: number }>();
     if ((pending?.count ?? 0) >= 100) return c.json({ error_code: "invite_limit_reached", message: "This business has reached its pending invite limit" }, 429);
     const history = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM business_invites WHERE business_space_id = ?")
@@ -340,7 +340,7 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     if ((memberCount?.count ?? 0) >= 1000) return c.json({ error_code: "business_member_limit_reached", message: "This business has reached its member limit" }, 429);
 
     const claimed = await env.PLATFORM_DB.prepare(
-      "UPDATE business_invites SET accepted_at = datetime('now'), accepted_by = ? WHERE id = ? AND accepted_at IS NULL AND expires_at > datetime('now')"
+      "UPDATE business_invites SET accepted_at = datetime('now'), accepted_by = ? WHERE id = ? AND accepted_at IS NULL AND julianday(expires_at) > julianday('now')"
     ).bind(userId, invite.id).run();
     if (claimed.meta.changes === 0) return c.json({ error_code: "already_accepted", message: "This invite has already been used" }, 409);
     try {

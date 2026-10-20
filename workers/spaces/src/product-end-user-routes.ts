@@ -46,6 +46,11 @@ const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour, same order of magnitude as
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours — long enough that a slow inbox doesn't lock a legitimate signup out of its free credits
 const WHATSAPP_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 const WHATSAPP_MAX_ATTEMPTS = 5;
+const OUTBOUND_MESSAGE_TIMEOUT_MS = 10_000;
+
+function isValidEmail(email: string): boolean {
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
 
 export function normalizeE164(input: string): string | null {
   const compact = input.trim().replace(/[\s().-]/g, "");
@@ -59,24 +64,30 @@ function whatsappChallengeDigest(env: ProductEndUserRoutesEnv, kind: "otp" | "ma
 
 export async function sendWhatsApp(env: ProductEndUserRoutesEnv, spaceId: string, to: string, text: string): Promise<boolean> {
   if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, spaceId)) return false;
+  const phone = normalizeE164(to);
+  if (!phone || text.length > 4096) return false;
   if (env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_WHATSAPP_NUMBER) {
+    if (!/^AC[a-f0-9]{32}$/i.test(env.TWILIO_ACCOUNT_SID)) return false;
     const body = new URLSearchParams({
       From: `whatsapp:${normalizeE164(env.TWILIO_WHATSAPP_NUMBER) ?? `+${env.TWILIO_WHATSAPP_NUMBER.replace(/^\+/, "")}`}`,
-      To: `whatsapp:${to}`,
+      To: `whatsapp:${phone}`,
       Body: text,
     });
     const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, {
       method: "POST",
       headers: { authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`, "content-type": "application/x-www-form-urlencoded" },
       body,
+      signal: AbortSignal.timeout(OUTBOUND_MESSAGE_TIMEOUT_MS),
     });
     return response.ok;
   }
   if (env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
+    if (!/^\d{5,32}$/.test(env.WHATSAPP_PHONE_NUMBER_ID)) return false;
     const response = await fetch(`https://graph.facebook.com/v21.0/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
       method: "POST",
       headers: { authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify({ messaging_product: "whatsapp", to: to.slice(1), type: "text", text: { body: text } }),
+      body: JSON.stringify({ messaging_product: "whatsapp", to: phone.slice(1), type: "text", text: { body: text } }),
+      signal: AbortSignal.timeout(OUTBOUND_MESSAGE_TIMEOUT_MS),
     });
     return response.ok;
   }
@@ -188,10 +199,14 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     }
 
     const body = await c.req.json<{ email: string; password: string; display_name?: string }>();
-    if (!body.email || !body.password || body.password.length < 8) {
+    if (typeof body.email !== "string" || typeof body.password !== "string" || body.password.length < 8 || new TextEncoder().encode(body.password).byteLength > 4096) {
       return c.json({ error_code: "bad_request", message: "email and a password (min 8 chars) are required" }, 400);
     }
     const email = body.email.trim().toLowerCase();
+    if (!isValidEmail(email)) return c.json({ error_code: "bad_request", message: "Enter a valid email address" }, 400);
+    if (body.display_name !== undefined && (typeof body.display_name !== "string" || body.display_name.length > 100)) {
+      return c.json({ error_code: "bad_request", message: "display_name must be at most 100 characters" }, 400);
+    }
 
     if (resolved.authConfig.allowedEmailDomains?.length) {
       const domain = email.split("@")[1] ?? "";
@@ -207,10 +222,15 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
 
     const endUserId = crypto.randomUUID();
     const hashed = await hashPassword(body.password);
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO product_end_users (product_space_id, end_user_id, email, display_name, password_hash, first_seen_at, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
-    ).bind(productId, endUserId, email, body.display_name ?? null, JSON.stringify(hashed)).run();
+    try {
+      await env.PLATFORM_DB.prepare(
+        `INSERT INTO product_end_users (product_space_id, end_user_id, email, display_name, password_hash, first_seen_at, last_seen_at)
+         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+      ).bind(productId, endUserId, email, body.display_name?.trim() || null, JSON.stringify(hashed)).run();
+    } catch (err) {
+      if ((err as Error).message?.includes("UNIQUE")) return c.json({ error_code: "conflict", message: "An account with this email already exists" }, 409);
+      throw err;
+    }
 
     const stub = await productUserDoStub(env, productId, endUserId, resolved.product.tenant_id);
     const sessionRes = await stub.fetch(new Request("http://do/sessions", {
@@ -251,10 +271,11 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     }
 
     const body = await c.req.json<{ email: string; password: string }>();
-    if (!body.email || !body.password) {
+    if (typeof body.email !== "string" || typeof body.password !== "string" || new TextEncoder().encode(body.password).byteLength > 4096) {
       return c.json({ error_code: "bad_request", message: "email and password are required" }, 400);
     }
     const email = body.email.trim().toLowerCase();
+    if (!isValidEmail(email)) return c.json({ error_code: "bad_request", message: "Incorrect email or password" }, 401);
 
     const row = await env.PLATFORM_DB.prepare(
       "SELECT end_user_id, password_hash, suspended_at FROM product_end_users WHERE product_space_id = ? AND email = ?"
@@ -348,12 +369,12 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     if (body.token) {
       row = await env.PLATFORM_DB.prepare(
         `SELECT id, end_user_id, phone_e164, otp_hash, attempts FROM whatsapp_auth_challenges
-         WHERE product_space_id = ? AND magic_hash = ? AND used_at IS NULL AND expires_at > datetime('now')`
+         WHERE product_space_id = ? AND magic_hash = ? AND used_at IS NULL AND julianday(expires_at) > julianday('now')`
       ).bind(productId, await whatsappChallengeDigest(env, "magic", body.token)).first<{ id: string; end_user_id: string; phone_e164: string; otp_hash: string; attempts: number }>();
     } else if (phone && /^\d{6}$/.test(body.code ?? "")) {
       row = await env.PLATFORM_DB.prepare(
         `SELECT id, end_user_id, phone_e164, otp_hash, attempts FROM whatsapp_auth_challenges
-         WHERE product_space_id = ? AND phone_e164 = ? AND used_at IS NULL AND expires_at > datetime('now')
+         WHERE product_space_id = ? AND phone_e164 = ? AND used_at IS NULL AND julianday(expires_at) > julianday('now')
          ORDER BY created_at DESC LIMIT 1`
       ).bind(productId, phone).first<{ id: string; end_user_id: string; phone_e164: string; otp_hash: string; attempts: number }>();
       if (row && !(await verifyHmac(`whatsapp-auth:otp:${row.id}:${body.code}`, row.otp_hash, env.PLATFORM_SECRET))) {
@@ -368,7 +389,7 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     }
 
     const consumed = await env.PLATFORM_DB.prepare(
-      "UPDATE whatsapp_auth_challenges SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL AND expires_at > datetime('now')"
+      "UPDATE whatsapp_auth_challenges SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL AND julianday(expires_at) > julianday('now')"
     ).bind(row.id).run();
     if ((consumed.meta.changes ?? 0) !== 1) {
       return c.json({ error_code: "invalid_challenge", message: "That code or link is invalid or has expired" }, 400);
@@ -415,8 +436,8 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
       return c.json({ error_code: "unsupported_provider", message: `This product uses ${resolved.authConfig?.provider ?? "an external"} sign-in, not email/password` }, 400);
     }
 
-    const body = await c.req.json<{ email: string }>();
-    const email = (body.email ?? "").trim().toLowerCase();
+    const body = await c.req.json<{ email?: string }>().catch(() => ({} as { email?: string }));
+    const email = (typeof body.email === "string" ? body.email : "").trim().toLowerCase();
     const ALWAYS_OK = c.json({ ok: true, message: "If an account with that email exists, a reset link has been sent." });
     if (!email) return ALWAYS_OK;
 
@@ -445,28 +466,32 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
   app.post("/spaces/:spaceId/end-users/reset-password", async (c) => {
     const env = c.env as ProductEndUserRoutesEnv;
     const productId = c.req.param("spaceId");
-    const body = await c.req.json<{ token: string; new_password: string }>();
-    if (!body.token || !body.new_password || body.new_password.length < 8) {
+    const body = await c.req.json<{ token?: string; new_password?: string }>().catch(() => ({} as { token?: string; new_password?: string }));
+    if (typeof body.token !== "string" || body.token.length < 32 || body.token.length > 128 ||
+        typeof body.new_password !== "string" || body.new_password.length < 8 || new TextEncoder().encode(body.new_password).byteLength > 4096) {
       return c.json({ error_code: "bad_request", message: "token and a new_password (min 8 chars) are required" }, 400);
     }
 
     const tokenHash = await sha256Hex(body.token);
     const row = await env.PLATFORM_DB.prepare(
       `SELECT id, end_user_id, expires_at, used_at FROM password_reset_tokens
-       WHERE product_space_id = ? AND token_hash = ?`
+       WHERE product_space_id = ? AND token_hash = ? AND used_at IS NULL AND julianday(expires_at) > julianday('now')`
     ).bind(productId, tokenHash).first<{ id: string; end_user_id: string; expires_at: string; used_at: string | null }>();
-    if (!row || row.used_at || new Date(row.expires_at) < new Date()) {
+    const expiresMs = row ? Date.parse(row.expires_at) : NaN;
+    if (!row || row.used_at || !Number.isFinite(expiresMs) || expiresMs <= Date.now()) {
       return c.json({ error_code: "invalid_token", message: "This reset link is invalid or has expired" }, 400);
     }
 
     const hashed = await hashPassword(body.new_password);
+    const consumed = await env.PLATFORM_DB.prepare(
+      "UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL AND julianday(expires_at) > julianday('now')"
+    ).bind(row.id).run();
+    if ((consumed.meta.changes ?? 0) !== 1) {
+      return c.json({ error_code: "invalid_token", message: "This reset link is invalid or has expired" }, 400);
+    }
     await env.PLATFORM_DB.prepare(
       "UPDATE product_end_users SET password_hash = ? WHERE product_space_id = ? AND end_user_id = ?"
     ).bind(JSON.stringify(hashed), productId, row.end_user_id).run();
-    // Single-use: mark consumed so this exact token can never be replayed.
-    await env.PLATFORM_DB.prepare(
-      "UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ?"
-    ).bind(row.id).run();
 
     // Revoke ALL existing sessions — a stolen session must not survive a password reset.
     // Best-effort: failure must not block the reset itself (the password is already changed).
@@ -488,24 +513,28 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
   app.post("/spaces/:spaceId/end-users/verify-email", async (c) => {
     const env = c.env as ProductEndUserRoutesEnv;
     const productId = c.req.param("spaceId");
-    const body = await c.req.json<{ token: string }>();
-    if (!body.token) return c.json({ error_code: "bad_request", message: "token is required" }, 400);
+    const body = await c.req.json<{ token?: string }>().catch(() => ({} as { token?: string }));
+    if (typeof body.token !== "string" || body.token.length < 32 || body.token.length > 128) return c.json({ error_code: "bad_request", message: "token is required" }, 400);
 
     const tokenHash = await sha256Hex(body.token);
     const row = await env.PLATFORM_DB.prepare(
       `SELECT id, end_user_id, expires_at, used_at FROM email_verification_tokens
-       WHERE product_space_id = ? AND token_hash = ?`
+       WHERE product_space_id = ? AND token_hash = ? AND used_at IS NULL AND julianday(expires_at) > julianday('now')`
     ).bind(productId, tokenHash).first<{ id: string; end_user_id: string; expires_at: string; used_at: string | null }>();
-    if (!row || row.used_at || new Date(row.expires_at) < new Date()) {
+    const expiresMs = row ? Date.parse(row.expires_at) : NaN;
+    if (!row || row.used_at || !Number.isFinite(expiresMs) || expiresMs <= Date.now()) {
       return c.json({ error_code: "invalid_token", message: "This verification link is invalid or has expired" }, 400);
     }
 
+    const consumed = await env.PLATFORM_DB.prepare(
+      "UPDATE email_verification_tokens SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL AND julianday(expires_at) > julianday('now')"
+    ).bind(row.id).run();
+    if ((consumed.meta.changes ?? 0) !== 1) {
+      return c.json({ error_code: "invalid_token", message: "This verification link is invalid or has expired" }, 400);
+    }
     await env.PLATFORM_DB.prepare(
       "UPDATE product_end_users SET email_verified_at = COALESCE(email_verified_at, datetime('now')) WHERE product_space_id = ? AND end_user_id = ?"
     ).bind(productId, row.end_user_id).run();
-    await env.PLATFORM_DB.prepare(
-      "UPDATE email_verification_tokens SET used_at = datetime('now') WHERE id = ?"
-    ).bind(row.id).run();
 
     // Grant whatever the product's CURRENT pricing config says a signup should receive — reads
     // fresh rather than storing the amount at signup time, same "current config wins" posture
