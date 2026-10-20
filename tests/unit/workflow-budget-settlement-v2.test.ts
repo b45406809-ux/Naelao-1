@@ -28,6 +28,27 @@ describe("workflow budget v2 settlement", () => {
         expires_at: new Date(Date.now() + 60_000).toISOString() }),
     }), env, ctx);
     expect(reserved.status).toBe(201);
+    const identicalReplay = await billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/reserve", {
+      method: "POST", headers, body: JSON.stringify({ reservation_id: "run-a", workflow_id: "run-a", space_id: "space-a",
+        budget_key: "workflow:vertical_extension:project-a", credits: 9, project_id: "project-a", installation_id: "install-a", runtime_tier: 5,
+        expires_at: new Date(Date.now() + 60_000).toISOString() }),
+    }), env, ctx);
+    expect(identicalReplay.status).toBe(200);
+
+    const fractional = await billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/reserve", {
+      method: "POST", headers, body: JSON.stringify({ reservation_id: "fractional", workflow_id: "fractional", space_id: "space-a", budget_key: "test", credits: 1.5 }),
+    }), env, ctx);
+    expect(fractional.status).toBe(400);
+    const mismatchedIds = await billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/reserve", {
+      method: "POST", headers, body: JSON.stringify({ reservation_id: "reservation-x", workflow_id: "run-x", space_id: "space-a", budget_key: "test", credits: 1 }),
+    }), env, ctx);
+    expect(mismatchedIds.status).toBe(400);
+
+    const concurrentRequests = await Promise.all(["run-race", "run-race"].map((runId) => billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/reserve", {
+      method: "POST", headers, body: JSON.stringify({ reservation_id: runId, workflow_id: runId, space_id: "space-a", budget_key: "race", credits: 1,
+        expires_at: new Date(Date.now() + 60_000).toISOString() }),
+    }), env, ctx)));
+    expect(concurrentRequests.map((response) => response.status).sort()).toEqual([200, 201]);
     const mismatchedReplay = await billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/reserve", {
       method: "POST", headers, body: JSON.stringify({ reservation_id: "run-a", workflow_id: "run-a", space_id: "space-a",
         budget_key: "workflow:vertical_extension:project-b", credits: 9, project_id: "project-b", installation_id: "install-a", runtime_tier: 5,
@@ -44,6 +65,19 @@ describe("workflow budget v2 settlement", () => {
         installation_id: "install-a", run_id: "run-a", runtime_tier: 5, payer_kind: "plan_quota", decision: "charged" });
     expect(metered).toHaveLength(1);
     expect(metered[0]).toMatchObject({ schema_version: 2, unit: "credits", project_id: "project-a", installation_id: "install-a", runtime_tier: 5 });
+
+    await billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/reserve", {
+      method: "POST", headers, body: JSON.stringify({ reservation_id: "run-release", workflow_id: "run-release", space_id: "space-a", budget_key: "release", credits: 2,
+        expires_at: new Date(Date.now() + 60_000).toISOString() }),
+    }), env, ctx);
+    await billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/release", {
+      method: "POST", headers, body: JSON.stringify({ reservation_id: "run-release" }),
+    }), env, ctx);
+    const settleReleased = await billingWorker.fetch(new Request("https://billing.naelao.com/internal/workflows/budget/settle", {
+      method: "POST", headers, body: JSON.stringify({ reservation_id: "run-release", quantity: 2 }),
+    }), env, ctx);
+    expect(await settleReleased.json()).toMatchObject({ settled: false });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE run_id='run-release'").get()).toEqual({ count: 0 });
     db.db.close();
   });
 });
