@@ -23,4 +23,49 @@ describe("ProductUserDO inference-credit reservations", () => {
     const restarted = new ProductUserDO({ storage } as never, {} as never);
     expect(await (await restarted.fetch(new Request("https://user/credits/balance"))).json()).toMatchObject({ balance_credits: 45 });
   });
+
+  it("bounds session growth and rejects malformed or lossy credit ledger inputs", async () => {
+    const user = new ProductUserDO({ storage: createDOStorage() } as never, {} as never);
+    const post = (path: string, body: string) => user.fetch(new Request(`https://user${path}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    }));
+
+    expect((await post("/sessions", "{" )).status).toBe(400);
+    expect((await post("/sessions", JSON.stringify({ auth_provider: "x".repeat(65) }))).status).toBe(400);
+    for (let i = 0; i < 100; i++) expect((await post("/sessions", "{}" )).status).toBe(201);
+    expect((await post("/sessions", "{}" )).status).toBe(429);
+    expect((await post("/credits/grant", "{" )).status).toBe(400);
+    for (const credits of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.MAX_VALUE]) {
+      expect((await post("/credits/grant", JSON.stringify({ credits }))).status).toBe(400);
+    }
+    expect((await post("/credits/grant", JSON.stringify({ credits: 1, reason: "x".repeat(129) }))).status).toBe(400);
+  });
+
+  it("paginates conversation metadata and bounds user-controlled stored values", async () => {
+    const user = new ProductUserDO({ storage: createDOStorage() } as never, {} as never);
+    const post = (path: string, body: unknown) => user.fetch(new Request(`https://user${path}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }));
+    for (const thread_id of ["thread-a", "thread-b", "thread-c"]) {
+      expect((await post("/conversation-refs", { thread_id, space_id: "space-a", title: "title" })).status).toBe(201);
+    }
+    expect((await user.fetch(new Request("https://user/conversation-refs?limit=101"))).status).toBe(400);
+    const first = await (await user.fetch(new Request("https://user/conversation-refs?limit=2"))).json() as { data: Array<{ thread_id: string }>; next_cursor: string };
+    expect(first.data).toHaveLength(2);
+    const second = await (await user.fetch(new Request(`https://user/conversation-refs?limit=2&cursor=${encodeURIComponent(first.next_cursor)}`))).json() as { data: Array<{ thread_id: string }> };
+    expect(second.data).toHaveLength(1);
+    expect(new Set([...first.data, ...second.data].map((row) => row.thread_id)).size).toBe(3);
+    expect((await user.fetch(new Request("https://user/conversation-refs?cursor=not-base64!"))).status).toBe(400);
+    const pref = (value: unknown) => user.fetch(new Request("https://user/preferences", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(value) }));
+    expect((await pref({ key: "x".repeat(129), value: true })).status).toBe(400);
+    expect((await pref({ key: "large", value: "x".repeat(16 * 1024) })).status).toBe(413);
+    for (let i = 0; i < 500; i++) expect((await pref({ key: `key-${i}`, value: i })).status).toBe(200);
+    expect((await pref({ key: "key-overflow", value: true })).status).toBe(429);
+    const notify = (payload: unknown) => user.fetch(new Request("https://user/notifications", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload }) }));
+    for (let i = 0; i < 3; i++) expect((await notify({ i })).status).toBe(201);
+    const notificationPage = await (await user.fetch(new Request("https://user/notifications?limit=2"))).json() as { data: Array<{ id: string }>; next_cursor: string };
+    expect(notificationPage.data).toHaveLength(2);
+    const notificationTail = await (await user.fetch(new Request(`https://user/notifications?cursor=${encodeURIComponent(notificationPage.next_cursor)}`))).json() as { data: Array<{ id: string }> };
+    expect(notificationTail.data).toHaveLength(1);
+  });
 });

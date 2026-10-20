@@ -177,6 +177,29 @@ function getCallerIdentity(c: { req: { header: (h: string) => string | undefined
     role: c.req.header("x-naelao-role") ?? "viewer",
   };
 }
+async function authorizeProductEndUserSpace(
+  c: { env: Env; req: { header: (h: string) => string | undefined } },
+  spaceId: string,
+  requestedUserId: string,
+): Promise<string | null> {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const token = c.req.header("x-naelao-internal-token");
+  const identity = getCallerIdentity(c);
+  if (!tenantId || !await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET) ||
+      identity.role !== "product_end_user" || !identity.userId || identity.userId !== requestedUserId) return null;
+  const space = await c.env.PLATFORM_DB.prepare("SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(spaceId).first<{ tenant_id: string; parent_space_id: string | null }>();
+  if (!space || space.tenant_id !== tenantId) return null;
+  if (space.parent_space_id) {
+    if (!await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)) return null;
+  } else {
+    const roster = await c.env.PLATFORM_DB.prepare(
+      "SELECT 1 AS active FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL"
+    ).bind(spaceId, identity.userId).first();
+    if (!roster) return null;
+  }
+  return identity.userId;
+}
 async function canExportBlueprint(c: { env: Env; req: { header(h: string): string | undefined } }, spaceId: string): Promise<boolean> {
   const { role, userId } = getCallerIdentity(c);
   if (role === "product_end_user") {
@@ -484,8 +507,9 @@ app.delete("/spaces/:id", async (c) => {
 // returns a presigned URL valid 24 hours.
 app.get("/spaces/:spaceId/me/export", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const endUserId = c.req.query("end_user_id") ?? c.req.header("x-naelao-end-user-id") ?? "";
-  if (!endUserId) return c.json({ error_code: "bad_request", message: "end_user_id is required" }, 400);
+  const requestedUserId = c.req.query("end_user_id") ?? c.req.header("x-naelao-end-user-id") ?? "";
+  const endUserId = requestedUserId ? await authorizeProductEndUserSpace(c, spaceId, requestedUserId) : null;
+  if (!endUserId) return c.json({ error_code: "forbidden", message: "A valid product-user session for this space is required" }, 403);
 
   const doId = c.env.SPACE_DO.idFromName(
     await getDOName("space", spaceId, c.req.header("x-naelao-tenant-id") ?? "", c.env.PLATFORM_SECRET)
@@ -560,8 +584,9 @@ app.get("/spaces/:spaceId/me/export/download", async (c) => {
 // DELETE /spaces/:spaceId/me/data?end_user_id=xxx
 app.delete("/spaces/:spaceId/me/data", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const endUserId = c.req.query("end_user_id") ?? c.req.header("x-naelao-end-user-id") ?? "";
-  if (!endUserId) return c.json({ error_code: "bad_request", message: "end_user_id is required" }, 400);
+  const requestedUserId = c.req.query("end_user_id") ?? c.req.header("x-naelao-end-user-id") ?? "";
+  const endUserId = requestedUserId ? await authorizeProductEndUserSpace(c, spaceId, requestedUserId) : null;
+  if (!endUserId) return c.json({ error_code: "forbidden", message: "A valid product-user session for this space is required" }, 403);
 
   const doId = c.env.SPACE_DO.idFromName(
     await getDOName("space", spaceId, c.req.header("x-naelao-tenant-id") ?? "", c.env.PLATFORM_SECRET)

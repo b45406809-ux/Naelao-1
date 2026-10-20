@@ -39,3 +39,13 @@ describe("product session routes for composed project extensions", () => {
     ]) expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(false);
   });
 });
+
+describe("product session routes for self-service data rights", () => {
+  it.each(["/spaces/s/me/export", "/spaces/s/me/data", "/spaces/s/product-users/me"])("requires product-session identity for %s", path => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
+  });
+
+  it("does not route signed export downloads through product-session resolution", () => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/me/export/download"))).toBe(false);
+  });
+});

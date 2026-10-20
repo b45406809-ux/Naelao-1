@@ -797,15 +797,21 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
     // All three gates passed — fetch METADATA ONLY from ProductUserDO, never message content.
     const stub = await productUserDoStubFor(env, product.id, userId, auth.tenantId);
-    const doRes = await stub.fetch(new Request("http://do/conversation-refs"));
-    const refs = await doRes.json<{ data: unknown[] }>();
+    const query = new URLSearchParams();
+    const limit = c.req.query("limit");
+    const cursor = c.req.query("cursor");
+    if (limit !== undefined) query.set("limit", limit);
+    if (cursor !== undefined) query.set("cursor", cursor);
+    const doRes = await stub.fetch(new Request(`http://do/conversation-refs${query.size ? `?${query}` : ""}`));
+    if (!doRes.ok) return new Response(doRes.body, { status: doRes.status, headers: { "content-type": "application/json" } });
+    const refs = await doRes.json<{ data: unknown[]; next_cursor?: string }>();
 
     // Audit AFTER a successful disclosure only — a denied attempt discloses nothing to audit.
     await env.PLATFORM_DB.prepare(
       "INSERT INTO conversation_access_audit (id, product_space_id, end_user_id, accessed_by, purpose) VALUES (?, ?, ?, ?, ?)"
     ).bind(crypto.randomUUID(), product.id, userId, auth.tenantId, c.req.query("purpose") ?? null).run();
 
-    return c.json({ data: refs.data });
+    return c.json({ data: refs.data, ...(refs.next_cursor ? { next_cursor: refs.next_cursor } : {}) });
   });
 
   // ── /builder/products/:id/analytics — honest, not fabricated: only what's really aggregatable

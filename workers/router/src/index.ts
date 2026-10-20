@@ -631,6 +631,8 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/shell\/manifest$/,
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
   /^\/spaces\/([^/]+)\/product-users\/me$/,
+  /^\/spaces\/([^/]+)\/me\/export$/,
+  /^\/spaces\/([^/]+)\/me\/data$/,
   /^\/spaces\/([^/]+)\/projects(\/[^/]+)?$/,
   // Phase T (§A1.17): project collaboration — real per-project membership + the exclusive-mode
   // thread lock. Additionally gated by requireBusinessMembership on the spaces worker exactly
@@ -1169,9 +1171,10 @@ async function proxyTo(
   // WS-7 (audit plan): x-naelao-end-user-id was never stripped here — a latent client-controlled
   // identity header (not an active authz bypass today, since the business gate keys off
   // x-naelao-user-id, but closed for defense in depth). Genuinely-public routes that accept an
-  // end_user_id with no JWT at all (GDPR /me/export) already read it from the query string first
-  // (`?end_user_id=`), same precedent as the SSE stream endpoint's ?session_token=&end_user_id=
-  // — so stripping the header here doesn't break their intended, documented usage.
+  // end_user_id with no JWT at all used to be accepted by the GDPR /me/export and /me/data
+  // handlers. Those paths now participate in product-session resolution and the Spaces worker
+  // binds the target ID to verified claims; callers may still supply it in the query while the
+  // router uses it only to locate and verify the matching session.
   headers.delete("x-naelao-end-user-id");
   // Never accept this private planner context from a caller. It is populated only after
   // authentication, from the product end user's own roster row, for the agent-run request.

@@ -22,4 +22,13 @@ describe("Spaces Worker request boundary", () => {
       message: "Request body exceeds the 8 MiB limit",
     });
   });
+
+  it.each([
+    ["GET", "/spaces/product-space/me/export?end_user_id=victim"],
+    ["DELETE", "/spaces/product-space/me/data?end_user_id=victim"],
+  ] as const)("denies unauthenticated personal-data %s requests", async (method, path) => {
+    const response = await worker.fetch(new Request(`https://spaces.test${path}`, { method }),
+      { PLATFORM_SECRET: "test-secret" } as never, {} as never);
+    expect(response.status).toBe(403);
+  });
 });

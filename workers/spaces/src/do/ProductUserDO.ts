@@ -47,6 +47,19 @@ interface LedgerRow {
 }
 
 const SESSION_TTL_MS = 30 * 86_400_000; // 30 days, refreshed on each verify
+const MAX_ACTIVE_SESSIONS = 100;
+const MAX_LEDGER_CREDITS = Number.MAX_SAFE_INTEGER;
+const MAX_CONVERSATION_REFS = 10_000;
+const MAX_PREFERENCES = 500;
+const MAX_PENDING_NOTIFICATIONS = 1_000;
+
+function validLedgerAmount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_LEDGER_CREDITS;
+}
+
+function validOptionalText(value: unknown, maxLength: number): value is string | undefined {
+  return value === undefined || (typeof value === "string" && value.length > 0 && value.length <= maxLength);
+}
 
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
@@ -185,11 +198,16 @@ export class ProductUserDO extends DurableObject {
     // POST /sessions — open a product-scoped session. Caller has already verified the end user's
     // identity via the product's auth_provider; this mints an opaque token, stores only its hash.
     if (method === "POST" && url.pathname === "/sessions") {
-      const body = await request.json<{ auth_provider?: string }>().catch(() => ({} as { auth_provider?: string }));
+      const body = await request.json<{ auth_provider?: string }>().catch(() => null);
+      if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error_code: "session_invalid" }, { status: 400 });
+      if (!validOptionalText(body.auth_provider, 64)) return Response.json({ error_code: "session_invalid" }, { status: 400 });
+      const now = new Date();
+      this.ctx.storage.sql.exec("DELETE FROM session_state WHERE expires_at <= ? OR revoked_at IS NOT NULL", now.toISOString());
+      const active = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM session_state WHERE expires_at > ? AND revoked_at IS NULL", now.toISOString()).toArray() as Array<{ count: number }>;
+      if ((active[0]?.count ?? 0) >= MAX_ACTIVE_SESSIONS) return Response.json({ error_code: "session_limit_reached" }, { status: 429 });
       const sessionId = crypto.randomUUID();
       const rawToken = `nps_${crypto.randomUUID().replace(/-/g, "")}${crypto.randomUUID().replace(/-/g, "")}`;
       const tokenHash = await sha256Hex(rawToken);
-      const now = new Date();
       const expiresAt = new Date(now.getTime() + SESSION_TTL_MS).toISOString();
       this.ctx.storage.sql.exec(
         `INSERT INTO session_state (session_id, token_hash, auth_provider, created_at, expires_at)
@@ -208,7 +226,7 @@ export class ProductUserDO extends DurableObject {
     // POST /sessions/verify — resolve a session token (sliding-window refresh on success).
     if (method === "POST" && url.pathname === "/sessions/verify") {
       const body = await request.json<{ session_token: string }>().catch(() => ({ session_token: "" }));
-      if (!body.session_token) return Response.json({ valid: false }, { status: 400 });
+      if (typeof body.session_token !== "string" || !body.session_token || body.session_token.length > 256) return Response.json({ valid: false }, { status: 400 });
       const tokenHash = await sha256Hex(body.session_token);
       const rows = this.ctx.storage.sql
         .exec(
@@ -218,7 +236,7 @@ export class ProductUserDO extends DurableObject {
         .toArray() as unknown as { session_id: string; expires_at: string; revoked_at: string | null }[];
       const row = rows[0];
       if (!row || row.revoked_at) return Response.json({ valid: false });
-      if (new Date(row.expires_at) < new Date()) return Response.json({ valid: false });
+      if (new Date(row.expires_at) <= new Date()) return Response.json({ valid: false });
       // Sliding-window: extend the session on active use.
       const newExpiry = new Date(Date.now() + SESSION_TTL_MS).toISOString();
       this.ctx.storage.sql.exec(
@@ -333,9 +351,9 @@ export class ProductUserDO extends DurableObject {
     // by a webhook that Lemon Squeezy may redeliver (Phase E credit-pack purchases) — a repeat
     // call with the same key is a no-op, returning the balance as of the original grant.
     if (method === "POST" && url.pathname === "/credits/grant") {
-      const body = await request.json<{ credits: number; reason?: string; idempotency_key?: string }>();
-      if (!Number.isFinite(body.credits) || body.credits <= 0) {
-        return Response.json({ error: "credits must be a positive number" }, { status: 400 });
+      const body = await request.json<{ credits: number; reason?: string; idempotency_key?: string }>().catch(() => null);
+      if (!body || !validLedgerAmount(body.credits) || !validOptionalText(body.reason, 128) || !validOptionalText(body.idempotency_key, 200)) {
+        return Response.json({ error: "credits must be a positive safe integer and metadata must be bounded" }, { status: 400 });
       }
       if (body.idempotency_key) {
         const existing = this.ctx.storage.sql
@@ -364,9 +382,9 @@ export class ProductUserDO extends DurableObject {
     // prefixed e.g. "credit_pack:...."; deduct keys are prefixed "run:") so the two can never
     // collide with each other.
     if (method === "POST" && url.pathname === "/credits/deduct") {
-      const body = await request.json<{ credits: number; reason?: string; model?: string; idempotency_key?: string }>();
-      if (!Number.isFinite(body.credits) || body.credits <= 0) {
-        return Response.json({ error: "credits must be a positive number" }, { status: 400 });
+      const body = await request.json<{ credits: number; reason?: string; model?: string; idempotency_key?: string }>().catch(() => null);
+      if (!body || !validLedgerAmount(body.credits) || !validOptionalText(body.reason, 128) || !validOptionalText(body.model, 128) || !validOptionalText(body.idempotency_key, 200)) {
+        return Response.json({ error: "credits must be a positive safe integer and metadata must be bounded" }, { status: 400 });
       }
       if (body.idempotency_key) {
         const existing = this.ctx.storage.sql
@@ -411,9 +429,9 @@ export class ProductUserDO extends DurableObject {
     // refunded credits, the balance goes negative (they were refunded the money, so they genuinely
     // owe the value) rather than leaving free credits behind. Idempotent on idempotency_key.
     if (method === "POST" && url.pathname === "/credits/clawback") {
-      const body = await request.json<{ credits: number; reason?: string; idempotency_key: string }>();
-      if (!Number.isFinite(body.credits) || body.credits <= 0 || !body.idempotency_key) {
-        return Response.json({ error: "credits (positive) and idempotency_key are required" }, { status: 400 });
+      const body = await request.json<{ credits: number; reason?: string; idempotency_key: string }>().catch(() => null);
+      if (!body || !validLedgerAmount(body.credits) || !validOptionalText(body.reason, 128) || !validOptionalText(body.idempotency_key, 200)) {
+        return Response.json({ error: "credits must be a positive safe integer and idempotency_key is required" }, { status: 400 });
       }
       const existing = this.ctx.storage.sql
         .exec("SELECT balance_after FROM credit_ledger WHERE idempotency_key = ?", body.idempotency_key)
@@ -431,10 +449,15 @@ export class ProductUserDO extends DurableObject {
 
     // ── Conversation refs (metadata only — the builder's gated conversation access reads these) ──
     if (method === "POST" && url.pathname === "/conversation-refs") {
-      const body = await request.json<{ thread_id: string; space_id: string; session_id?: string; title?: string }>();
-      if (!body.thread_id || !body.space_id) {
-        return Response.json({ error: "thread_id and space_id are required" }, { status: 400 });
+      const body = await request.json<{ thread_id: string; space_id: string; session_id?: string; title?: string }>().catch(() => null);
+      if (!body || typeof body.thread_id !== "string" || !body.thread_id || body.thread_id.length > 256 ||
+          typeof body.space_id !== "string" || !body.space_id || body.space_id.length > 256 ||
+          !validOptionalText(body.session_id, 256) || !validOptionalText(body.title, 512)) {
+        return Response.json({ error: "conversation reference fields are invalid" }, { status: 400 });
       }
+      const existing = this.ctx.storage.sql.exec("SELECT 1 AS found FROM conversation_refs WHERE space_id = ? AND thread_id = ?", body.space_id, body.thread_id).toArray();
+      const count = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM conversation_refs").toArray() as Array<{ count: number }>;
+      if (!existing.length && (count[0]?.count ?? 0) >= MAX_CONVERSATION_REFS) return Response.json({ error_code: "conversation_ref_limit_reached" }, { status: 429 });
       this.ctx.storage.sql.exec(
         `INSERT OR REPLACE INTO conversation_refs (thread_id, space_id, session_id, title, created_at)
          VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM conversation_refs WHERE space_id = ? AND thread_id = ?), datetime('now')))`,
@@ -443,19 +466,37 @@ export class ProductUserDO extends DurableObject {
       return Response.json({ ok: true }, { status: 201 });
     }
     if (method === "GET" && url.pathname === "/conversation-refs") {
-      const rows = this.ctx.storage.sql
-        .exec("SELECT thread_id, space_id, session_id, title, created_at FROM conversation_refs ORDER BY created_at DESC")
-        .toArray();
-      return Response.json({ data: rows });
+      const limitValue = Number(url.searchParams.get("limit") ?? "50");
+      const cursor = url.searchParams.get("cursor");
+      if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 100) return Response.json({ error_code: "invalid_limit" }, { status: 400 });
+      let cursorParts: string[] | null = null;
+      if (cursor !== null) {
+        try { cursorParts = JSON.parse(decodeURIComponent(atob(cursor))) as string[]; } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
+        if (!Array.isArray(cursorParts) || cursorParts.length !== 3 || cursorParts.some((part) => typeof part !== "string" || !part) || cursor.length > 2048) return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
+      }
+      const rows = (cursorParts
+        ? this.ctx.storage.sql.exec("SELECT thread_id, space_id, session_id, title, created_at FROM conversation_refs WHERE created_at < ? OR (created_at = ? AND space_id < ?) OR (created_at = ? AND space_id = ? AND thread_id < ?) ORDER BY created_at DESC, space_id DESC, thread_id DESC LIMIT ?", cursorParts[0], cursorParts[0], cursorParts[1], cursorParts[0], cursorParts[1], cursorParts[2], limitValue + 1)
+        : this.ctx.storage.sql.exec("SELECT thread_id, space_id, session_id, title, created_at FROM conversation_refs ORDER BY created_at DESC, space_id DESC, thread_id DESC LIMIT ?", limitValue + 1))
+        .toArray() as Array<{ thread_id: string; space_id: string; session_id: string | null; title: string | null; created_at: string }>;
+      const hasMore = rows.length > limitValue;
+      const data = rows.slice(0, limitValue);
+      const last = data[data.length - 1];
+      return Response.json({ data, ...(hasMore && last ? { next_cursor: btoa(encodeURIComponent(JSON.stringify([last.created_at, last.space_id, last.thread_id]))) } : {}) });
     }
 
     // ── Preferences ─────────────────────────────────────────────────────────────
     if (method === "PUT" && url.pathname === "/preferences") {
-      const body = await request.json<{ key: string; value: unknown }>();
-      if (!body.key) return Response.json({ error: "key is required" }, { status: 400 });
+      const body = await request.json<{ key: string; value: unknown }>().catch(() => null);
+      if (!body || typeof body.key !== "string" || !body.key || body.key.length > 128) return Response.json({ error: "key must be a non-empty string up to 128 characters" }, { status: 400 });
+      let value: string;
+      try { value = JSON.stringify(body.value ?? null); } catch { return Response.json({ error: "value must be JSON serializable" }, { status: 400 }); }
+      if (value.length > 16 * 1024) return Response.json({ error: "preference value is too large" }, { status: 413 });
+      const exists = this.ctx.storage.sql.exec("SELECT 1 AS found FROM preferences WHERE key = ?", body.key).toArray();
+      const count = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM preferences").toArray() as Array<{ count: number }>;
+      if (!exists.length && (count[0]?.count ?? 0) >= MAX_PREFERENCES) return Response.json({ error_code: "preference_limit_reached" }, { status: 429 });
       this.ctx.storage.sql.exec(
         "INSERT OR REPLACE INTO preferences (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-        body.key, JSON.stringify(body.value ?? null)
+        body.key, value
       );
       return Response.json({ ok: true });
     }
@@ -470,18 +511,36 @@ export class ProductUserDO extends DurableObject {
 
     // ── Notifications ─────────────────────────────────────────────────────────
     if (method === "POST" && url.pathname === "/notifications") {
-      const body = await request.json<{ payload: unknown }>();
+      const body = await request.json<{ payload: unknown }>().catch(() => null);
+      if (!body || typeof body !== "object") return Response.json({ error_code: "notification_invalid" }, { status: 400 });
+      let payload: string;
+      try { payload = JSON.stringify(body.payload ?? {}); } catch { return Response.json({ error_code: "notification_invalid" }, { status: 400 }); }
+      if (payload.length > 64 * 1024) return Response.json({ error_code: "notification_too_large" }, { status: 413 });
+      const count = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM notification_queue WHERE status='pending'").toArray() as Array<{ count: number }>;
+      if ((count[0]?.count ?? 0) >= MAX_PENDING_NOTIFICATIONS) return Response.json({ error_code: "notification_queue_full" }, { status: 429 });
       this.ctx.storage.sql.exec(
         "INSERT INTO notification_queue (id, payload) VALUES (?, ?)",
-        crypto.randomUUID(), JSON.stringify(body.payload ?? {})
+        crypto.randomUUID(), payload
       );
       return Response.json({ ok: true }, { status: 201 });
     }
     if (method === "GET" && url.pathname === "/notifications") {
-      const rows = this.ctx.storage.sql
-        .exec("SELECT id, payload, status, created_at FROM notification_queue WHERE status = 'pending' ORDER BY created_at ASC")
+      const limitValue = Number(url.searchParams.get("limit") ?? "50");
+      const cursor = url.searchParams.get("cursor");
+      if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 100) return Response.json({ error_code: "invalid_limit" }, { status: 400 });
+      let cursorParts: string[] | null = null;
+      if (cursor !== null) {
+        try { cursorParts = JSON.parse(decodeURIComponent(atob(cursor))) as string[]; } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
+        if (!Array.isArray(cursorParts) || cursorParts.length !== 2 || cursorParts.some((part) => typeof part !== "string" || !part) || cursor.length > 2048) return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
+      }
+      const rows = (cursorParts
+        ? this.ctx.storage.sql.exec("SELECT id, payload, status, created_at FROM notification_queue WHERE status = 'pending' AND (created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at ASC, id ASC LIMIT ?", cursorParts[0], cursorParts[0], cursorParts[1], limitValue + 1)
+        : this.ctx.storage.sql.exec("SELECT id, payload, status, created_at FROM notification_queue WHERE status = 'pending' ORDER BY created_at ASC, id ASC LIMIT ?", limitValue + 1))
         .toArray() as unknown as { id: string; payload: string; status: string; created_at: string }[];
-      return Response.json({ data: rows.map((r) => ({ ...r, payload: JSON.parse(r.payload) as unknown })) });
+      const hasMore = rows.length > limitValue;
+      const data = rows.slice(0, limitValue);
+      const last = data[data.length - 1];
+      return Response.json({ data: data.map((r) => ({ ...r, payload: JSON.parse(r.payload) as unknown })), ...(hasMore && last ? { next_cursor: btoa(encodeURIComponent(JSON.stringify([last.created_at, last.id]))) } : {}) });
     }
 
     // ── GDPR Art. 20 — data portability. Full machine-readable dump of everything this DO holds

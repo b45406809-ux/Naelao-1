@@ -2320,10 +2320,10 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/router/src/RateLimitDO-boundaries.test.ts`
 - [ ] `workers/router/src/RateLimitDO.ts`
 - [ ] `workers/router/src/customer-voice-routing.test.ts`
-- [ ] `workers/router/src/extension-product-paths.test.ts`
+- [x] `workers/router/src/extension-product-paths.test.ts`
 - [ ] `workers/router/src/extension-provider-routing.test.ts`
 - [ ] `workers/router/src/health.test.ts`
-- [ ] `workers/router/src/index.ts`
+- [x] `workers/router/src/index.ts`
 - [ ] `workers/router/src/preferred-language.test.ts`
 - [ ] `workers/router/src/preferred-language.ts`
 
@@ -2385,7 +2385,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/extensions-gadgets.test.ts`
 - [ ] `workers/spaces/src/foundry-and-cross-space.test.ts`
 - [ ] `workers/spaces/src/health.test.ts`
-- [ ] `workers/spaces/src/index.ts`
+- [x] `workers/spaces/src/index.ts`
 - [ ] `workers/spaces/src/infra-migrations.test.ts`
 - [ ] `workers/spaces/src/language-preference-routes.test.ts`
 - [ ] `workers/spaces/src/launchpad-manifest.ts`
@@ -2401,7 +2401,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/project-steward.test.ts`
 - [ ] `workers/spaces/src/project-steward.ts`
 - [ ] `workers/spaces/src/remediation-pass-2.test.ts`
-- [ ] `workers/spaces/src/request-body-boundaries.test.ts`
+- [x] `workers/spaces/src/request-body-boundaries.test.ts`
 - [ ] `workers/spaces/src/space-hierarchy-policy.test.ts`
 - [ ] `workers/spaces/src/state-delta-conformance.ts`
 - [ ] `workers/spaces/src/task-coordination.test.ts`
@@ -2419,8 +2419,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/do/LockDO.test.ts`
 - [x] `workers/spaces/src/do/LockDO.ts`
 - [x] `workers/spaces/src/do/MicroAppDO.ts`
-- [ ] `workers/spaces/src/do/ProductUserDO-credit-reservations.test.ts`
-- [ ] `workers/spaces/src/do/ProductUserDO.ts`
+- [x] `workers/spaces/src/do/ProductUserDO-credit-reservations.test.ts`
+- [x] `workers/spaces/src/do/ProductUserDO.ts`
 - [ ] `workers/spaces/src/do/SpaceDO-migrations.test.ts`
 - [ ] `workers/spaces/src/do/SpaceDO.ts`
 - [ ] `workers/spaces/src/do/SpaceTypeRegistryDO.ts`
