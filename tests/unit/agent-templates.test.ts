@@ -15,13 +15,33 @@ const TENANT_ID = "tenant-1";
 
 function makeFakeR2() {
   const store = new Map<string, string>();
+  const etags = new Map<string, string>();
+  const metadata = new Map<string, Record<string, string>>();
+  let revision = 0;
   return {
     store,
     async get(key: string) {
-      const v = store.get(key);
-      return v === undefined ? null : ({ text: async () => v } as unknown as R2ObjectBody);
+      const value = store.get(key);
+      if (value === undefined) return null;
+      const bytes = new TextEncoder().encode(value);
+      return { size: bytes.byteLength, etag: etags.get(key), customMetadata: metadata.get(key), text: async () => value, arrayBuffer: async () => bytes.buffer } as unknown as R2ObjectBody;
     },
-    async put(key: string, value: string) { store.set(key, value); },
+    async head(key: string) {
+      const value = store.get(key);
+      return value === undefined ? null : ({ size: new TextEncoder().encode(value).byteLength, etag: etags.get(key) ?? `legacy-${key}`, customMetadata: metadata.get(key) } as unknown as R2Object);
+    },
+    async put(key: string, value: unknown, options?: { onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata?: Record<string, string> }) {
+      const current = store.get(key);
+      const currentEtag = current === undefined ? undefined : etags.get(key) ?? `legacy-${key}`;
+      if (options?.onlyIf?.etagDoesNotMatch === "*" && current !== undefined) return null;
+      if (options?.onlyIf?.etagMatches !== undefined && currentEtag !== options.onlyIf.etagMatches) return null;
+      const bytes = typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value as ArrayBuffer | ArrayBufferView);
+      const etag = `etag-${++revision}`;
+      store.set(key, new TextDecoder().decode(bytes));
+      etags.set(key, etag);
+      metadata.set(key, options?.customMetadata ?? {});
+      return { etag };
+    },
   } as unknown as R2Bucket & { store: Map<string, string> };
 }
 

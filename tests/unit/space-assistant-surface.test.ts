@@ -63,10 +63,12 @@ function makeEnv(opts: { spacesOk: boolean; withR2?: boolean }): AgentsEnv & { _
     ...(opts.withR2 ? {
       SCRIPTS_R2: {
         list: async () => ({ objects: r2Objects, truncated: false }),
+        head: async (key: string) => r2Store[key] ? ({ size: r2Store[key]!.size } as R2Object) : null,
         get: async (key: string) => {
           const found = r2Store[key];
           if (!found) return null;
-          return { size: found.size, text: async () => found.text };
+          const bytes = new TextEncoder().encode(found.text);
+          return { size: found.size, text: async () => found.text, arrayBuffer: async () => bytes.buffer };
         },
       } as unknown as R2Bucket,
     } : {}),

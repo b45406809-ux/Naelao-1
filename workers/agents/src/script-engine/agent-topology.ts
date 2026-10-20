@@ -1,16 +1,12 @@
 /** The public capability boundary between persistent planners and leaf workers. */
 export type PlannerScope = "space" | "project";
 
-/** Installed on every persistent agent so each one can lead work and use the execution ladder. */
+/** Installed on persistent planners; domain execution tools are granted by explicit profiles/tasks. */
 export const UNIVERSAL_PLANNER_PREBUILTS = [
   "goal-planner", "sub-agent", "project-coordination", "model-race", "executive-cabinet",
 ] as const;
 
-/** The Bash implementation that routes commands across the configured execution ceiling. */
-export const UNIVERSAL_EXECUTION_PREBUILTS = ["code-exec", "runtime-discovery"] as const;
-
 export const UNIVERSAL_AGENT_BASELINE_PREBUILTS = [
-  ...UNIVERSAL_EXECUTION_PREBUILTS,
   ...UNIVERSAL_PLANNER_PREBUILTS,
   "plan",
   "attachments",

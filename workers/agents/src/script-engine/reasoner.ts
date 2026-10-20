@@ -394,10 +394,8 @@ export function coerceOperationToolCall(toolCall: { name: string; arguments?: un
 /**
  * Read a tool call's `params` argument, accepting either shape any provider can hand back.
  *
- * See decisionTools/PARAMS_PARAM_STRING/PARAMS_PARAM_OBJECT for why the DECLARED schema differs
- * by provider. A model that sends the other shape anyway is still honoured — a real object when
- * a string was declared, or vice versa — so this stays correct regardless of which schema a
- * given call was actually made under. Anything unusable (a bare array, a string that isn't JSON,
+ * Older provider envelopes may encode params as an object or JSON string. Both are accepted for
+ * backward compatibility. Anything unusable (a bare array, a string that isn't JSON,
  * a missing field) degrades to no arguments, which is exactly what the caller would have seen
  * before.
  */
@@ -539,67 +537,9 @@ const SAY_PARAM = {
  * what belongs in it rather than silently skipping it. An operation that genuinely takes no
  * arguments costs two characters.
  */
-const PARAMS_HINT_TEXT =
-  "Many groups carry \"param_hints\", keyed by exact operation name, naming each field and which " +
-  "are required: READ the hint for the operation you chose before writing this. A field left out " +
-  "is often not an error — it silently does the WRONG thing instead, e.g. creating a thread with " +
-  "no project attached because project_id was omitted, rather than failing loudly. Fill it from " +
-  "what you already have: an id you looked up a step ago, the text you were asked to send. When " +
-  "no hint exists, infer the fields from the operation's name.";
-
 /**
- * `params` as a JSON object STRING — the shape that fixed the Gemini/Workers-AI failure above.
- * Used ONLY for Google AI Studio models, whose native function-calling schema is an OpenAPI-3.0
- * subset requiring exactly one `type` string (not an array) — this is the one declared shape this
- * provider is proven, live, to accept and act on correctly (see PARAMS_PARAM_STRING's own header
- * and the two live traces it cites).
- */
-const PARAMS_PARAM_STRING = {
-  type: "string",
-  description:
-    "REQUIRED. Arguments for that op/script as a JSON object STRING — e.g. " +
-    "{\"project_id\":\"9d67a69a-981a-4c3e-b50d-83c3f51c679c\",\"title\":\"Kickoff\"}. Use {} only " +
-    `when the operation genuinely takes no arguments. ${PARAMS_HINT_TEXT}`,
-};
-
-/**
- * `params` as a real JSON OBJECT — for every provider that isn't Google AI Studio (Groq,
- * Anthropic, OpenAI, Workers AI's more capable models).
- *
- * A second, real, previously-unfixed failure — found live, on a Groq-dispatched heartbeat wake —
- * is why this exists as its own schema rather than sharing PARAMS_PARAM_STRING for every
- * non-Gemini provider too. Groq's own server validates a model's tool-call output against the
- * DECLARED schema and REJECTS the call outright when they don't match
- * ("tool call validation failed: parameters for tool run did not match schema: errors:
- * [`/params`: expected string, but got object]") — on both the streamed attempt and its
- * non-streamed retry, confirmed live. The model's own natural instinct on this provider is to
- * emit a real object, and Groq's own validator will not let a string-typed field through that.
- *
- * `additionalProperties: true` is what makes this SAFE to declare with no enumerable
- * `properties` — the exact defect PARAMS_PARAM_STRING's own header documents (a bare
- * `{type:"object"}` with neither `properties` nor `additionalProperties` gives a
- * schema-constrained decoder no permitted keys, so the only value it can emit is `{}`). This is
- * a DIFFERENT, more portable fix for that same underlying problem — explicitly allowing arbitrary
- * keys — which Google's OWN function-calling schema has historically not accepted (its
- * OpenAPI-3.0-subset `FunctionDeclaration.parameters` wants exactly one declared `type`, and this
- * platform's Gemini routing has not been verified against that shape) — which is why Gemini keeps
- * its own separately-declared string schema rather than sharing this one. readParams() already
- * accepts either shape from either provider, so this only widens what a valid decision can be.
- */
-const PARAMS_PARAM_OBJECT = {
-  type: "object",
-  additionalProperties: true,
-  description:
-    "REQUIRED. Arguments for that op/script, as a plain JSON object — e.g. " +
-    `{"project_id":"9d67a69a-981a-4c3e-b50d-83c3f51c679c","title":"Kickoff"}. Use {} only when ` +
-    `the operation genuinely takes no arguments. ${PARAMS_HINT_TEXT}`,
-};
-
-/**
- * The declared action space, built per-model so `run`/`distill`'s `params` field gets whichever
- * of PARAMS_PARAM_STRING/PARAMS_PARAM_OBJECT that model's provider actually accepts — see both
- * schemas' own headers for why this can't be one shared shape. `answer`/`give_up` never touch
- * `params`, so they're identical either way.
+ * The planner tool schema is intentionally provider-independent and limited to the CLI/file
+ * orchestration surface. Direct operation envelopes are parsed below only for compatibility.
  */
 export function decisionTools(_model: string | undefined, availableOperations?: readonly string[]): ToolSpec[] {
   return [
@@ -664,15 +604,17 @@ export function decisionTools(_model: string | undefined, availableOperations?: 
   ].filter((tool) => tool.name === "AskUser" || !availableOperations || availableOperations.includes(tool.name));
 }
 
-/** Action names are identical across both schema variants — build once from either. */
-const DECISION_ACTIONS = new Set(decisionTools(undefined).map((t) => t.name));
+// Keep accepting terminal and legacy operation envelopes emitted by older/provider-specific
+// decoders, but do not advertise them as tools: planners see only the CLI coordination surface.
+const DECISION_ACTIONS = new Set([
+  ...decisionTools(undefined).map((t) => t.name),
+  "run", "answer", "give_up", "distill", "patch",
+]);
 
 /**
- * Turn a provider tool call into a ReasonDecision, validating that the action is one we declared
- * and that its load-bearing fields are actually present. A tool call naming an action we never
- * offered, or missing the field that action needs to do anything, is rejected here rather than
- * flowing into the loop as a half-formed decision — the loop's own error path then surfaces a real
- * reason instead of failing obscurely later.
+ * Turn a provider tool call into a ReasonDecision, validating that the action is declared or
+ * covered by a legacy compatibility alias and its load-bearing fields are present. Unknown
+ * actions and incomplete calls are rejected instead of passing as half-formed decisions.
  */
 function decisionFromToolCall(call: ToolCall): ReasonDecision | null {
   // Older prompts could still make the model call the internal worker operation directly. Keep

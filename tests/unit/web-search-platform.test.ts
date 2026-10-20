@@ -110,7 +110,14 @@ describe("web-search prebuilt — download_file", () => {
         const row = store.get(key);
         if (!row) return null;
         const text = typeof row.content === "string" ? row.content : new TextDecoder().decode(row.content);
-        return { size: text.length, uploaded: new Date(), async text() { return text; } } as unknown as R2ObjectBody;
+        const bytes = typeof row.content === "string" ? new TextEncoder().encode(row.content) : row.content;
+        return { size: bytes.byteLength, uploaded: new Date(), async text() { return text; }, async arrayBuffer() { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); } } as unknown as R2ObjectBody;
+      },
+      async head(key: string) {
+        const row = store.get(key);
+        if (!row) return null;
+        const bytes = typeof row.content === "string" ? new TextEncoder().encode(row.content) : row.content;
+        return { size: bytes.byteLength } as R2Object;
       },
     };
     return { bucket: bucket as unknown as R2Bucket, store };
@@ -152,7 +159,7 @@ describe("web-search prebuilt — download_file", () => {
     // The content itself must never appear in the tool result — only in R2.
     expect(JSON.stringify(out)).not.toContain("a,b,c");
     const written = [...store.entries()].find(([k]) => k.endsWith("downloads/report.csv"));
-    expect(written?.[1].content).toBe("a,b,c\n1,2,3");
+    expect(new TextDecoder().decode(written?.[1].content as Uint8Array)).toBe("a,b,c\n1,2,3");
   });
 
   it("sanitizes an explicit filename and falls back to the URL's own last segment otherwise", async () => {
@@ -265,6 +272,6 @@ describe("web-search prebuilt — download_file", () => {
     const out = (await webSearch.operations["download_file"]!({ url: "https://x.com/a.csv" }, { env, run: noopRun })) as { binary: boolean };
     expect(out.binary).toBe(false);
     const written = [...store.entries()].find(([k]) => k.endsWith("downloads/a.csv"));
-    expect(written![1].content).toBe("a,b\n1,2");
+    expect(new TextDecoder().decode(written![1].content as Uint8Array)).toBe("a,b\n1,2");
   });
 });

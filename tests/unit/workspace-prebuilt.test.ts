@@ -10,16 +10,36 @@ import type { ScriptEngineEnv, ContainerWorkspaceGateway } from "../../workers/a
 
 function makeFakeR2() {
   const store = new Map<string, string>();
+  const etags = new Map<string, string>();
+  const metadata = new Map<string, Record<string, string>>();
+  let revision = 0;
   return {
     store,
     async get(key: string) {
-      const v = store.get(key);
-      return v === undefined ? null : ({ text: async () => v, size: v.length } as unknown as R2ObjectBody);
+      const value = store.get(key);
+      if (value === undefined) return null;
+      const bytes = new TextEncoder().encode(value);
+      return { text: async () => value, size: bytes.byteLength, etag: etags.get(key), customMetadata: metadata.get(key), arrayBuffer: async () => bytes.buffer } as unknown as R2ObjectBody;
     },
-    async put(key: string, value: string) { store.set(key, value); },
+    async head(key: string) {
+      const value = store.get(key);
+      return value === undefined ? null : ({ size: new TextEncoder().encode(value).byteLength, etag: etags.get(key) ?? `legacy-${key}`, customMetadata: metadata.get(key) } as unknown as R2Object);
+    },
+    async put(key: string, value: unknown, options?: { onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata?: Record<string, string> }) {
+      const current = store.get(key);
+      const currentEtag = current === undefined ? undefined : etags.get(key) ?? `legacy-${key}`;
+      if (options?.onlyIf?.etagDoesNotMatch === "*" && current !== undefined) return null;
+      if (options?.onlyIf?.etagMatches !== undefined && currentEtag !== options.onlyIf.etagMatches) return null;
+      const bytes = typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value as ArrayBuffer | ArrayBufferView);
+      const etag = `etag-${++revision}`;
+      store.set(key, new TextDecoder().decode(bytes));
+      etags.set(key, etag);
+      metadata.set(key, options?.customMetadata ?? {});
+      return { etag };
+    },
     async delete(key: string) { store.delete(key); },
     async list({ prefix }: { prefix: string }) {
-      const objects = [...store.entries()].filter(([k]) => k.startsWith(prefix)).map(([key, value]) => ({ key, size: value.length, uploaded: new Date() }));
+      const objects = [...store.keys()].filter(key => key.startsWith(prefix)).map(key => ({ key, size: new TextEncoder().encode(store.get(key)!).byteLength, uploaded: new Date(), etag: etags.get(key), customMetadata: metadata.get(key) }));
       return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
     },
   } as unknown as R2Bucket & { store: Map<string, string> };
@@ -139,7 +159,8 @@ describe("workspace prebuilt", () => {
       await call(ctx, "workspace.move", { from: "r2", to: "container", path: "notes.txt" });
 
       expect(container.store.get("notes.txt")).toBe("draft");
-      expect(r2.store.has("spaces/space-1/workspace/notes.txt")).toBe(false);
+      expect(r2.store.has("spaces/space-1/workspace/notes.txt")).toBe(true);
+      expect((await r2.head("spaces/space-1/workspace/notes.txt"))?.customMetadata?.deleted).toBe("true");
     });
 
     it("moves a file container -> r2, deleting the container source", async () => {

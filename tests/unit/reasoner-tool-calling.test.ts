@@ -2,12 +2,12 @@
 //
 // Published production figures put prompted-JSON parsing at roughly 70-85% action success vs
 // 95-99% for native tool calling, and the gap is widest on the small/cheap models a free-tier
-// business runs on. The reasoner now declares its five actions as real provider tools and reads a
-// real tool call back, keeping the text parse ONLY as a fallback so this is strictly additive.
+// business runs on. The planner exposes only its CLI coordination surface; legacy action envelopes remain parseable
+// for provider compatibility without advertising direct worker operations.
 
 import { describe, it, expect } from "vitest";
 import { buildUniversalBody, normalizeUniversalResponse } from "../../workers/agents/src/shared/ai-client.js";
-import { GatewayReasoner } from "../../workers/agents/src/script-engine/reasoner.js";
+import { GatewayReasoner, decisionTools } from "../../workers/agents/src/script-engine/reasoner.js";
 import { contextWindowForModel, computeTokenCostMicro } from "../../packages/billing-core/src/index.js";
 
 const GATEWAY = { accountId: "acct", gatewayId: "gw", aigToken: "aig-token" };
@@ -752,94 +752,15 @@ describe("stripNamespacePrefix — a colon-namespaced op guess resolves to the r
   });
 });
 
-/**
- * The `params` argument reaches the model as a JSON STRING, not a property-less object.
- *
- * This is the fix for the failure that made the assistant look incapable of basic multi-step
- * work. `{type:"object"}` with no `properties` gives a schema-constrained decoder no permitted
- * keys, so the only value it can emit is `{}` — which is exactly what two full live traces show,
- * on every single tool call, without one exception, including calls where the model demonstrably
- * held the value it needed (its own closing answer quoted a project id it had looked up a step
- * earlier and could never pass in). It then repeated the same argument-less call five more times,
- * because the one action the grammar let it express was the wrong one.
- *
- * The wire-shape assertion below is the real regression guard: reverting PARAMS_PARAM to an
- * object schema fails it immediately, at the point the schema is actually sent.
- */
-describe("run.params is expressible by a constrained decoder", () => {
-  const GATEWAY = { accountId: "acct", gatewayId: "gw" };
-  const CTX = { spaceId: "s", agentId: "a" };
-
-  async function capturedTools(model?: string): Promise<Array<Record<string, any>>> {
-    let body: string | undefined;
-    const original = globalThis.fetch;
-    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
-      body = init?.body as string;
-      return new Response(
-        JSON.stringify({ content: [{ type: "tool_use", name: "answer", input: { text: "ok" } }] }),
-        { status: 200 }
-      );
-    }) as typeof fetch;
-    try {
-      // A BYOK model (Gemini/Groq) needs its own key present in gateway or canAuthenticateLlm
-      // refuses before ever calling fetch — see byokKeyFieldForModel.
-      const gateway =
-        model?.startsWith("google-ai-studio/") ? { ...GATEWAY, googleAiStudioApiKey: "g-key" }
-        : model?.startsWith("groq/") ? { ...GATEWAY, groqApiKey: "grok-key" }
-        : GATEWAY;
-      const reasoner = new GatewayReasoner({ apiKey: "k", gateway, ctx: CTX, ...(model ? { model } : {}) });
-      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [] } as never);
-      return (JSON.parse(body!) as { tools: Array<Record<string, any>> }).tools;
-    } finally {
-      globalThis.fetch = original;
-    }
-  }
-
-  // The precise defect this whole describe block guards against: an object type whose keys are
-  // unenumerable to a schema-constrained decoder — neither declared `properties` nor
-  // `additionalProperties`, so the only value it can legally emit is `{}`.
-  const isUnenumerableObject = (params: Record<string, any>) =>
-    params.type === "object" && !params.properties && params.additionalProperties === undefined;
-
-  it("Gemini gets the JSON-string schema — the one shape its own decoder is proven to accept", async () => {
-    const tools = await capturedTools("google-ai-studio/gemini-flash-lite-latest");
-    const run = tools.find((t) => t.function?.name === "run");
-    expect(run).toBeDefined();
-    const params = run!.function.parameters.properties.params;
-    expect(isUnenumerableObject(params)).toBe(false);
-    expect(params.type).toBe("string");
+/** The model sees the orchestration protocol; operation names are selected per worker instance. */
+describe("planner tool surface keeps execution behind workers", () => {
+  it("advertises only the bounded command and file coordination tools", () => {
+    expect(decisionTools(undefined).map((tool) => tool.name)).toEqual(["Bash", "AskUser", "Read", "Edit"]);
   });
 
-  // Groq's own server validates a model's tool-call output against the DECLARED schema and
-  // REJECTS the call outright when they mismatch — observed live, on a real heartbeat wake:
-  // "tool call validation failed: parameters for tool run did not match schema: errors:
-  // [`/params`: expected string, but got object]", on both the streamed attempt and its
-  // non-streamed retry. Groq's own model naturally wants to emit a real object; the string
-  // schema that fixed Gemini is precisely what a Groq-dispatched run must NOT declare.
-  it("Groq (and every non-Gemini provider) gets a real object schema, not a string", async () => {
-    const tools = await capturedTools("groq/llama-3.3-70b-versatile");
-    const run = tools.find((t) => t.function?.name === "run");
-    const params = run!.function.parameters.properties.params;
-    expect(params.type).toBe("object");
-    // additionalProperties:true is what keeps this SAFE despite having no properties — the same
-    // enumerability defect the Gemini fix exists to avoid, closed a different, more portable way.
-    expect(params.additionalProperties).toBe(true);
-    expect(isUnenumerableObject(params)).toBe(false);
-  });
-
-  it("an unset model defaults to the object schema (every non-Gemini caller today)", async () => {
-    const tools = await capturedTools();
-    const run = tools.find((t) => t.function?.name === "run");
-    const params = run!.function.parameters.properties.params;
-    expect(params.type).toBe("object");
-    expect(isUnenumerableObject(params)).toBe(false);
-  });
-
-  it("requires params on both schema variants, so the decoder must emit it either way", async () => {
-    for (const model of [undefined, "google-ai-studio/gemini-flash-lite-latest", "groq/llama-3.3-70b-versatile"]) {
-      const tools = await capturedTools(model);
-      const run = tools.find((t) => t.function?.name === "run");
-      expect(run!.function.parameters.required).toContain("params");
+  it("does not expose direct worker operation or script authoring actions", () => {
+    for (const name of ["run", "distill", "patch"]) {
+      expect(decisionTools(undefined).some((tool) => tool.name === name)).toBe(false);
     }
   });
 
