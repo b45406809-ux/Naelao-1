@@ -1079,3 +1079,14 @@ Reviewed the SDK CustomerBotContext projection and the Agents customer-bot/attac
 Validation: Agents suite passed 149 files / 666 tests; targeted customer-bot and customer-attachment tests passed 10/10; SDK capability-context tests passed 3/3; Agents and Agent SDK typechecks passed. Regressions cover the calendar query contract, invalid date ranges, FAQ limits, prototype-property canned keys, escalation length, oversized downstream responses, and malformed language hints.
 
 Refreshed the tracked tree after customer-bot code and test commits `aa0e90c0` / `b7f907f6`: 1,971 tracked files and 1,765 source/config files; included and checked the new customer-bot regression test.
+
+
+## Document processing and ScaleDown boundaries (2026-10-20)
+
+Traced the Agent SDK document gateway and chunked summarizer through the Agents worker dispatcher, durable document workflow, PDF/text partitioner, and ScaleDown provider adapter. Existing host boundaries cap workspace text at 2 MiB, partition sources at 10 MiB, extracted text at 1.5 MiB, PDF pages at 100, workflow partitions at 24, document calls at 48 per workflow, provider request/response bytes at 2 MiB, and provider work at an abort timeout. The SDK chunk helper also preserves original UTF-16 text across boundaries and rejects inputs that require durable partitioning.
+
+Found two remaining SDK edge cases: a gateway adapter could return malformed or oversized summary text that the helper would forward into the merge request, and finite inputs to the cost estimator could overflow to `Infinity`. The helper now validates runtime text/options, rejects malformed or over-16k-character partial/final summaries, and the estimator returns `null` for non-finite arithmetic. Added regression tests for invalid instructions, oversized model results, and numeric overflow.
+
+Validation: Agent SDK suite passed 27 files / 143 tests; document-files, ScaleDown, and worker document-dispatch suites passed 19/19; Agent SDK and Agents typechecks passed; Biome check passed. `pnpm` preflight could not run these commands because it repeatedly resolved the full workspace, exceeded its 2 GiB heap in one concurrent invocation, and separately rejected an ignored dependency build script; direct local binaries succeeded.
+
+Reviewed and checked only the SDK document-processing implementation/test, shared document-files implementation/test, ScaleDown implementation/test, and worker document-processing implementation/test. The large `NaelaoAgentDO.ts` integration was traced to the document processor and call-budget methods but remains unchecked pending full-file review.

@@ -37,6 +37,26 @@ describe("document-processing SDK", () => {
     ).rejects.toThrow("partitioned_workflow");
     expect(summarize).not.toHaveBeenCalled();
   });
+  it("validates summary options and rejects oversized or malformed gateway results", async () => {
+    const summarize = vi.fn(async (_input: SummarizeDocumentInput) => ({
+      text: "ok",
+      usage: { model: "test", inputTokens: 1, outputTokens: 1 },
+    }));
+    await expect(
+      summarizeDocumentInChunks(
+        { summarize },
+        { text: "source", instructions: "x".repeat(8_001) }
+      )
+    ).rejects.toThrow("document_summary_options_invalid");
+    expect(summarize).not.toHaveBeenCalled();
+    summarize.mockResolvedValueOnce({
+      text: "x".repeat(16_001),
+      usage: { model: "test", inputTokens: 1, outputTokens: 1 },
+    });
+    await expect(
+      summarizeDocumentInChunks({ summarize }, { text: "source" })
+    ).rejects.toThrow("document_summary_result_invalid");
+  });
   it("does not assume preprocessing saves money on a cheap or cached downstream model", () => {
     const input = {
       originalTokens: 100_000,
@@ -50,6 +70,14 @@ describe("document-processing SDK", () => {
     );
     expect(
       documentProcessingSavings({ ...input, downstreamInputUsdPerToken: null })
+    ).toBeNull();
+    expect(
+      documentProcessingSavings({
+        originalTokens: Number.MAX_SAFE_INTEGER,
+        processedTokens: 0,
+        processingCostUsd: 0,
+        downstreamInputUsdPerToken: Number.MAX_VALUE,
+      })
     ).toBeNull();
   });
   it("generates a resumable extension workflow using scoped host document operations", () => {

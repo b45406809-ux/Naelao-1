@@ -769,8 +769,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/agent-sdk/src/customer-bot-context.ts`
 - [ ] `packages/agent-sdk/src/display-mode.ts`
 - [ ] `packages/agent-sdk/src/document-node.ts`
-- [ ] `packages/agent-sdk/src/document-processing.test.ts`
-- [ ] `packages/agent-sdk/src/document-processing.ts`
+- [x] `packages/agent-sdk/src/document-processing.test.ts`
+- [x] `packages/agent-sdk/src/document-processing.ts`
 - [ ] `packages/agent-sdk/src/extension-publisher-signatures.test.ts`
 - [ ] `packages/agent-sdk/src/extension-publisher-signatures.ts`
 - [x] `packages/agent-sdk/src/extensions.test.ts`
@@ -1949,8 +1949,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/agents/src/script-engine/prebuilt/customer-attachments.ts`
 - [x] `workers/agents/src/script-engine/prebuilt/customer-bot.test.ts`
 - [x] `workers/agents/src/script-engine/prebuilt/customer-bot.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/document-processing.test.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/document-processing.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/document-processing.test.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/document-processing.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/dynamic-workflow.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/executive-cabinet.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/executive-cabinet.ts`
@@ -2006,8 +2006,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/shared/ai-client.ts`
 - [ ] `workers/agents/src/shared/bounded-response-text.test.ts`
 - [ ] `workers/agents/src/shared/bounded-response-text.ts`
-- [ ] `workers/agents/src/shared/document-files.test.ts`
-- [ ] `workers/agents/src/shared/document-files.ts`
+- [x] `workers/agents/src/shared/document-files.test.ts`
+- [x] `workers/agents/src/shared/document-files.ts`
 - [ ] `workers/agents/src/shared/openrouter-entitlement.test.ts`
 - [ ] `workers/agents/src/shared/openrouter-entitlement.ts`
 - [ ] `workers/agents/src/shared/openrouter-model-catalog.test.ts`
