@@ -5,6 +5,7 @@ import { scriptFind } from "../../workers/agents/src/script-engine/script-find.j
 import { runScriptLoop, type Reasoner, type ReasonDecision } from "../../workers/agents/src/script-engine/loop.js";
 import { observeFilesystem } from "../../workers/agents/src/script-engine/observe.js";
 import { writeAgentConfig, loadAgentConfig, mergeMissingPrebuilt } from "../../workers/agents/src/script-engine/agent-config.js";
+import { putTextCas } from "../../workers/agents/src/script-engine/r2-cas.js";
 import { launchpadAgentToProfile, DEFAULT_NAELAO_AGENT, SPACE_ASSISTANT_PROFILE } from "../../workers/agents/src/script-engine/profiles.js";
 import { LAUNCHPAD_CORE_AGENTS } from "../../workers/agents/src/launchpad/spacetype.js";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
@@ -101,6 +102,19 @@ describe("SkillLibrary (R2 versioned store, spec §4/§10)", () => {
 });
 
 describe("ScriptToolSurface — the 6-op surface (spec §3)", () => {
+  it("keeps CAS write revision metadata strictly increasing for same-content policy restores", async () => {
+    const bucket = makeR2();
+    const key = "spaces/space-1/agents/agent-1/scripts.json";
+    const first = await putTextCas(bucket, key, "{\"mode\":\"yolo\"}", null);
+    const firstRevision = Number((await bucket.head(key))?.customMetadata?.["updatedAt"]);
+    const changed = await putTextCas(bucket, key, "{\"mode\":\"ask\"}", first.hash);
+    const second = await putTextCas(bucket, key, "{\"mode\":\"yolo\"}", changed.hash);
+    const secondRevision = Number((await bucket.head(key))?.customMetadata?.["updatedAt"]);
+
+    expect(second.hash).toBe(first.hash);
+    expect(secondRevision).toBeGreaterThan(firstRevision);
+  });
+
   it("runs prebuilt r2-workspace ops (write then read) at Tier 1", async () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);

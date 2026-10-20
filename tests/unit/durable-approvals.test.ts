@@ -314,6 +314,36 @@ describe("resuming after a human approves", () => {
     expect(result.deferred_approvals?.[0]?.action_name).toBe("write_file");
   });
 
+  it("requires a fresh approval when policy version changes even if its values return to the same settings", async () => {
+    const env = makeEnv();
+    let approvalCount = 0;
+    env.hitlGateway = { async requestApproval() {
+      approvalCount++;
+      return { approvalId: "new-policy-version", approved: false, pending: true };
+    } };
+    const result = await runScriptLoop(env, new ScriptToolSurface(env, ["r2-workspace"]), {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
+      },
+    }, ["r2-workspace"], {
+      goal: "write a file",
+      startupObserve: "observe_filesystem",
+      requiresApprovalFor: [],
+      approvalMode: "gate_unless_listed",
+      preApprovedActions: [{
+        actionName: "write_file",
+        actionInputJson: stableStringify({ path: "a.txt", content: "x", expectedHash: null }),
+        approvalPolicyFingerprint: approvalPolicyFingerprint("gate_unless_listed", [], "version-1"),
+      }],
+      async refreshApprovalPolicy() {
+        return { requiresApprovalFor: [], approvalMode: "gate_unless_listed", policyVersion: "version-3" };
+      },
+    });
+
+    expect(approvalCount).toBe(1);
+    expect(result.deferred_approvals?.[0]?.action_name).toBe("write_file");
+  });
+
   it("hands the suspended pass's steps back to the model as work already done", async () => {
     const env = makeEnv();
     env.hitlGateway = pendingGateway().gateway;

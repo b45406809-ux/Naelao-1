@@ -9,6 +9,12 @@ import { channelSessionStorageUsageEvent } from "../channels/channel-session-usa
 import { createScaleDownProcessor } from "../shared/scaledown.js";
 import { DOCUMENT_MODELS, summarizeDocumentInChunks, type DocumentProcessingGateway } from "@naelao/agent-sdk";
 import { opaqueExternalSubject } from "../channel-external-quota.js";
+
+type AssistantApprovalPolicySnapshot = {
+  approval_mode: "always_ask" | "yolo";
+  auto_approved_actions: string[];
+  updated_at?: string;
+};
 // ── NaelaoAgentDO — ReAct Agent Durable Object ───────────────────────────────
 // Fulfills G-D01 through G-D20: Agent runtime with ReAct loop, tool dispatch,
 // timeout watchdog, and SQLite-persisted run state.
@@ -5051,6 +5057,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             const latestConfig = this.env.SCRIPTS_R2
               ? await loadAgentConfig(this.env.SCRIPTS_R2, spaceId, agentId)
               : null;
+            const policyFiles = this.env.SCRIPTS_R2
+              ? await Promise.all([
+                  this.env.SCRIPTS_R2.head(`spaces/${spaceId}/agents/${agentId}/scripts.json`),
+                  this.env.SCRIPTS_R2.head(`spaces/${spaceId}/agents/${agentId}/agents.md`),
+                ])
+              : [null, null];
+            const policyVersion = `${policyFiles[0]?.etag ?? "missing"}:${policyFiles[0]?.customMetadata?.["updatedAt"] ?? "legacy"}:${policyFiles[1]?.etag ?? "missing"}:${policyFiles[1]?.customMetadata?.["updatedAt"] ?? "legacy"}`;
             if (!latestConfig) {
               requiresApprovalFor = [];
               approvalMode = "gate_unless_listed";
@@ -5058,8 +5071,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               requiresApprovalFor = latestConfig.requiresApprovalFor ?? [...parseRequiresApprovalFor(latestConfig.agentsMd)];
               approvalMode = "gate_listed";
             }
-            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor);
-            return { requiresApprovalFor, approvalMode };
+            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor, policyVersion);
+            return { requiresApprovalFor, approvalMode, policyVersion };
           },
         } : {
           refreshApprovalPolicy: async () => {
@@ -5069,8 +5082,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             const latestPlan = resolveAssistantApprovalPlan(latestPolicy, callerRole, businessRole);
             requiresApprovalFor = latestPlan.requiresApprovalFor;
             approvalMode = latestPlan.approvalMode;
-            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor);
-            return { requiresApprovalFor, approvalMode };
+            const policyVersion = latestPolicy?.updated_at;
+            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor, policyVersion);
+            return { requiresApprovalFor, approvalMode, ...(policyVersion ? { policyVersion } : {}) };
           },
         }),
         runId,
@@ -6805,7 +6819,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * (always_ask, nothing pre-approved), never as "assume yolo." This is a security-relevant
    * control: failures fail CLOSED (ask more), not open.
    */
-  private async fetchAssistantPolicy(spaceId: string, tenantId: string, forceFresh = false): Promise<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } | null> {
+  private async fetchAssistantPolicy(spaceId: string, tenantId: string, forceFresh = false): Promise<AssistantApprovalPolicySnapshot | null> {
     if (!this.env.SPACES_WORKER || !tenantId) return null;
 
     // Short-lived in-DO cache. This fetch sits on the hot path of EVERY Space Assistant run, and
@@ -6841,8 +6855,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private async readAssistantPolicyOnce(
     spaceId: string,
     tenantId: string,
-    cached: { spaceId: string; policy: { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }; at: number } | undefined
-  ): Promise<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } | null | undefined> {
+    cached: { spaceId: string; policy: AssistantApprovalPolicySnapshot; at: number } | undefined
+  ): Promise<AssistantApprovalPolicySnapshot | null | undefined> {
     if (!this.env.SPACES_WORKER) return null;
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/assistant-policy`, {
@@ -6859,7 +6873,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
         return null;
       }
-      const policy = await resp.json<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }>();
+      const policy = await resp.json<AssistantApprovalPolicySnapshot>();
       this.assistantPolicyCache = { spaceId, policy, at: Date.now() };
       return policy;
     } catch {
@@ -6874,7 +6888,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   /** Last successfully-read assistant policy — see fetchAssistantPolicy. In-memory only: DO
    *  hibernation clears it, which just means the next run re-reads it. */
-  private assistantPolicyCache: { spaceId: string; policy: { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }; at: number } | undefined;
+  private assistantPolicyCache: { spaceId: string; policy: AssistantApprovalPolicySnapshot; at: number } | undefined;
 
   /**
    * F-36 enforcement — resolve the clamp SpaceDO defines (`resolveAssistantEffectiveRole`:

@@ -9649,9 +9649,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const existing = queryOne<{
       approval_mode: string;
       auto_approved_actions: string;
+      updated_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT approval_mode, auto_approved_actions FROM assistant_policy WHERE space_id = ?",
+      "SELECT approval_mode, auto_approved_actions, updated_at FROM assistant_policy WHERE space_id = ?",
       spaceId
     );
     const approvalMode =
@@ -9659,7 +9660,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const autoApproved =
       body.auto_approved_actions ??
       (existing ? safeJsonParseArr(existing.auto_approved_actions) : []);
-    const now = new Date().toISOString();
+    const previousUpdatedAt = existing?.updated_at ? Date.parse(existing.updated_at) : 0;
+    const now = new Date(Math.max(Date.now(), Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0)).toISOString();
 
     execute(
       this.ctx.storage.sql as never,

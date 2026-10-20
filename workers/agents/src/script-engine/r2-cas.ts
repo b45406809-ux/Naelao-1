@@ -144,12 +144,25 @@ export async function putBytesCas(
   if (currentHash !== expectedHash) throw new R2CasConflictError(key);
   const hash = await sha256Bytes(bytes);
   const written = await bucket.put(key, bytes, {
-    customMetadata: { ...metadata, updatedAt: Date.now().toString(), sha256: hash },
+    // Keep a strictly increasing per-object revision timestamp even when two legitimate writes
+    // happen within one clock millisecond. Consumers such as approval fingerprints can detect a
+    // policy edit followed by a restore to the same content, despite an identical content ETag.
+    customMetadata: {
+      ...metadata,
+      updatedAt: Math.max(Date.now(), nextMetadataTimestamp(head?.customMetadata?.["updatedAt"])).toString(),
+      sha256: hash,
+    },
     ...(httpMetadata ? { httpMetadata } : {}),
     ...(head ? { onlyIf: { etagMatches: head.etag } } : { onlyIf: { etagDoesNotMatch: "*" } }),
   });
   if (!written) throw new R2CasConflictError(key);
   return { hash, etag: written.etag };
+}
+
+function nextMetadataTimestamp(value: string | undefined): number {
+  if (!value) return 0;
+  const numeric = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
+  return Number.isFinite(numeric) ? numeric + 1 : 0;
 }
 
 /** R2 has conditional PUT but no conditional DELETE. A tombstone is therefore published with
