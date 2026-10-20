@@ -658,4 +658,10 @@ After the targeted route pass, the complete Spaces worker suite passed **57 test
 
 The per-object artifact size was bounded, but repeated workflow steps could create an unbounded number of R2 results. The journal now tracks unique artifact keys and cumulative bytes per run, initialized with the input artifact. Checkpoint writes reserve quota transactionally before R2 writes; identical content-addressed artifacts do not double-count. Runs are capped at 256 artifacts and 64 MiB total. Agent-task step results and dynamic workflow results now pass through the same quota boundary.
 
-Validation: workflow-state, WorkflowRunDO, and agent-task checkpoint suites passed 12/12; Agents TypeScript and `git diff --check` passed. Tests cover idempotent duplicate artifact reservation and both count and byte limits. R2 artifact retention after run expiry is still unimplemented: quota bounds each run, but expired artifacts and immutable code objects need an explicit cleanup/retention policy that preserves replay protection and result access.
+Validation: workflow-state, WorkflowRunDO, and agent-task checkpoint suites passed 12/12; Agents TypeScript and `git diff --check` passed. Tests cover idempotent duplicate artifact reservation and both count and byte limits. Per-run artifact deletion at expiry is handled below; immutable shared workflow-code objects remain open for reference-aware garbage collection.
+
+### Workflow artifact expiry cleanup
+
+Terminal runs now retain an alarm at their configured expiry. At expiry the DO deletes all R2 objects under that run's artifact prefix in bounded 256-object pages; artifact reads reject once the run expires. The run journal remains as a tombstone so the deterministic start ID cannot be reused to execute side effects again. If R2 cleanup fails, the alarm remains available for retry.
+
+Validation: WorkflowRunDO and journal suites passed 11/11; Agents TypeScript and `git diff --check` passed. A fake-clock alarm regression confirms expiry transitions, artifact deletion, and retention of the expired run record. Immutable content-addressed workflow code under `workflow-code/` is shared by runs and can accumulate across code versions; safe reference-aware collection is not yet implemented.

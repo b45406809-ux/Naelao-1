@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { DurableWorkflowIdentity, WorkflowCheckpointPointer } from "@naelao/agent-sdk";
 import { readWorkflowGrant } from "../workflows/workflow-host.js";
 import type { WorkflowJournalRecord } from "../workflows/workflow-state.js";
@@ -6,6 +6,7 @@ import { WorkflowRunDO } from "./WorkflowRunDO.js";
 
 function harness() {
   const values = new Map<string, unknown>();
+  const artifacts = new Set<string>();
   const alarms: number[] = [];
   let member = true;
   const storage = {
@@ -20,6 +21,8 @@ function harness() {
       if (!key.startsWith("spaces/space-a/agents/agent-a/")) return null;
       return { size: 7, async text() { return "fixture"; } };
     },
+    async list({ prefix }: { prefix: string }) { return { objects: [...artifacts].filter((key) => key.startsWith(prefix)).map((key) => ({ key, size: 1 })), truncated: false }; },
+    async delete(keys: string[]) { for (const key of keys) artifacts.delete(key); },
   };
   const env: Record<string, any> = {
     PLATFORM_SECRET: "workflow-run-test-secret",
@@ -30,6 +33,7 @@ function harness() {
     instance: new WorkflowRunDO({ storage } as never, env as never),
     env,
     values,
+    artifacts,
     alarms,
     revoke() { member = false; },
   };
@@ -119,5 +123,31 @@ describe("WorkflowRunDO persisted authorization", () => {
     await h.instance.finish("run-a", "failed", "workflow failed");
     expect(h.values.get("effect:effect-a")).toMatchObject({ status: "indeterminate" });
     expect(requests[0]).toMatchObject({ path: "/internal/workflows/budget/settle", body: { reservation_id: "reservation-a", quantity: 5 } });
+  });
+
+  it("deletes run artifacts at expiry while retaining an expired replay tombstone", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      const expiresAt = Date.now() + 100;
+      const identity = {
+        schema: 1, runId: "run-a", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+        grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-a",
+        startKey: "start-a", expiresAt, workflowClass: "ephemeral_task", capabilities: [],
+      } as DurableWorkflowIdentity;
+      identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+      const input: WorkflowCheckpointPointer = { schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-a/input.json", sha256: "b".repeat(64), bytes: 2 };
+      h.artifacts.add(input.r2_key);
+      h.artifacts.add("workflow-artifacts/tenant-a/space-a/run-a/step.json");
+      await h.instance.initialize(identity, input, {});
+      await vi.advanceTimersByTimeAsync(101);
+
+      await h.instance.alarm();
+      expect(h.artifacts.size).toBe(0);
+      expect((await h.instance.existing())?.status).toBe("expired");
+      await expect(h.instance.authorize("run-a")).rejects.toThrow("workflow_expired");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -28,9 +28,11 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
   async authorize(runId: string): Promise<DurableWorkflowIdentity> {
     const record = await this.journal.read();
     if (record.identity.runId !== runId) throw new Error("workflow_run_scope_mismatch");
-    if (record.identity.expiresAt <= Date.now() && !isTerminalWorkflow(record.status)) {
-      await this.journal.transition("expired");
-      await this.cleanup();
+    if (record.identity.expiresAt <= Date.now()) {
+      if (!isTerminalWorkflow(record.status)) {
+        await this.journal.transition("expired");
+        await this.cleanup();
+      }
       throw new Error("workflow_expired");
     }
     if (["cancelled", "expired"].includes(record.status)) throw new Error("workflow_" + record.status);
@@ -193,11 +195,32 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     const settlement = record.usageUncertain ? record.budgetCredits : record.usedCredits;
     await finalizeWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.reservationId, "settle", settlement);
     await this.journal.patch({ cleanupPending: false });
-    await this.ctx.storage.deleteAlarm();
+    if (record.identity.expiresAt > Date.now()) await this.ctx.storage.setAlarm(record.identity.expiresAt);
+    else {
+      await this.deleteExpiredArtifacts(record.identity);
+      await this.ctx.storage.deleteAlarm();
+    }
   }
   async alarm(): Promise<void> {
     const record = await this.journal.read();
     if (!isTerminalWorkflow(record.status) && record.identity.expiresAt <= Date.now()) await this.journal.transition("expired");
     await this.cleanup();
+    const latest = await this.journal.read();
+    if (isTerminalWorkflow(latest.status) && latest.identity.expiresAt <= Date.now() && !latest.cleanupPending) {
+      await this.deleteExpiredArtifacts(latest.identity);
+      await this.ctx.storage.deleteAlarm();
+    }
+  }
+  private async deleteExpiredArtifacts(identity: DurableWorkflowIdentity): Promise<void> {
+    const bucket = this.env.SCRIPTS_R2;
+    if (!bucket) throw new Error("workflow_artifacts_unavailable");
+    const prefix = "workflow-artifacts/" + identity.tenantId + "/" + identity.spaceId + "/" + identity.runId + "/";
+    let cursor: string | undefined;
+    do {
+      const page = await bucket.list({ prefix, ...(cursor ? { cursor } : {}), limit: 256 });
+      if (page.objects.length) await bucket.delete(page.objects.map((object) => object.key));
+      if (page.truncated && !page.cursor) throw new Error("workflow_artifact_cleanup_cursor_missing");
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
   }
 }
