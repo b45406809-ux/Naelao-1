@@ -38,4 +38,33 @@ describe("ConcurrencyDO and RiskGuardDO ingress limits", () => {
       storage.sql.exec("SELECT id FROM guarded_orders").toArray()
     ).toHaveLength(0);
   });
+
+  it("returns bounded client errors for malformed limits and order JSON", async () => {
+    const storage = createDOStorage();
+    const object = new RiskGuardDO({ storage } as never, {} as never);
+    const limits = await object.fetch(new Request("http://do/limits", {
+      method: "PUT", headers: { "content-type": "application/json" }, body: "null",
+    }));
+    const order = await object.fetch(new Request("http://do/orders/evaluate", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{",
+    }));
+    expect(limits.status).toBe(400);
+    expect(order.status).toBe(400);
+  });
+
+  it("rejects orders whose JSON values exceed safe integer bounds", async () => {
+    const storage = createDOStorage();
+    const object = new RiskGuardDO({ storage } as never, {} as never);
+    const limits = await object.fetch(new Request("http://do/limits", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ stopLossBps: 500, maxDrawdownBps: 1000, peakEquityMinor: 100_000 }),
+    }));
+    expect(limits.status).toBe(200);
+    const order = await object.fetch(new Request("http://do/orders/evaluate", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: '{"id":"x","side":"buy","quantity":1,"priceMinor":1,"currentEquityMinor":9007199254740992,"projectedLossMinor":0}',
+    }));
+    expect(order.status).toBe(400);
+    expect(storage.sql.exec("SELECT id FROM guarded_orders").toArray()).toHaveLength(0);
+  });
 });

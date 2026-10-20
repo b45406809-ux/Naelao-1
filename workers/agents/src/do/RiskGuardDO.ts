@@ -14,13 +14,42 @@ interface RiskGuardEnv {
 
 /** Deterministic integer risk evaluation. Prompt/model text is deliberately not an input. */
 export function evaluateOrderRisk(order: OrderRequest, limits: RiskLimits): { allowed: boolean; reason?: string } {
-  if (!order.id || !Number.isSafeInteger(order.quantity) || order.quantity <= 0 || !Number.isSafeInteger(order.priceMinor) || order.priceMinor <= 0) return { allowed: false, reason: "invalid_order" };
-  if (limits.peakEquityMinor <= 0 || order.currentEquityMinor < 0 || order.projectedLossMinor < 0) return { allowed: false, reason: "invalid_equity" };
-  const drawdown = limits.peakEquityMinor - order.currentEquityMinor;
-  if (drawdown * 10_000 >= limits.peakEquityMinor * limits.maxDrawdownBps) return { allowed: false, reason: "max_drawdown" };
-  if (order.projectedLossMinor * 10_000 > order.currentEquityMinor * limits.stopLossBps) return { allowed: false, reason: "stop_loss" };
+  if (typeof order.id !== "string" || order.id.length === 0 || order.id.length > 128
+    || (order.side !== "buy" && order.side !== "sell")
+    || !Number.isSafeInteger(order.quantity) || order.quantity <= 0
+    || !Number.isSafeInteger(order.priceMinor) || order.priceMinor <= 0) return { allowed: false, reason: "invalid_order" };
+  if (!Number.isSafeInteger(limits.peakEquityMinor) || limits.peakEquityMinor <= 0
+    || !Number.isSafeInteger(limits.stopLossBps) || limits.stopLossBps < 1 || limits.stopLossBps > 10_000
+    || !Number.isSafeInteger(limits.maxDrawdownBps) || limits.maxDrawdownBps < 1 || limits.maxDrawdownBps > 10_000
+    || !Number.isSafeInteger(order.currentEquityMinor) || order.currentEquityMinor < 0
+    || !Number.isSafeInteger(order.projectedLossMinor) || order.projectedLossMinor < 0) return { allowed: false, reason: "invalid_equity" };
+  const peak = BigInt(limits.peakEquityMinor);
+  const current = BigInt(order.currentEquityMinor);
+  const loss = BigInt(order.projectedLossMinor);
+  if (current < peak && (peak - current) * 10_000n >= peak * BigInt(limits.maxDrawdownBps)) return { allowed: false, reason: "max_drawdown" };
+  if (loss * 10_000n > current * BigInt(limits.stopLossBps)) return { allowed: false, reason: "stop_loss" };
   const decision = deterministicNoul(true, "risk_limits_satisfied");
   return { allowed: decision.value };
+}
+
+function isRiskLimits(value: unknown): value is RiskLimits {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const limits = value as Partial<RiskLimits>;
+  return Number.isSafeInteger(limits.stopLossBps) && limits.stopLossBps! >= 1 && limits.stopLossBps! <= 10_000
+    && Number.isSafeInteger(limits.maxDrawdownBps) && limits.maxDrawdownBps! >= 1 && limits.maxDrawdownBps! <= 10_000
+    && Number.isSafeInteger(limits.peakEquityMinor) && limits.peakEquityMinor! > 0;
+}
+
+function isOrderRequest(value: unknown): value is OrderRequest & { airGappedOnly?: boolean } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const order = value as Partial<OrderRequest> & { airGappedOnly?: unknown };
+  return typeof order.id === "string" && order.id.length > 0 && order.id.length <= 128
+    && (order.side === "buy" || order.side === "sell")
+    && Number.isSafeInteger(order.quantity) && order.quantity! > 0
+    && Number.isSafeInteger(order.priceMinor) && order.priceMinor! > 0
+    && Number.isSafeInteger(order.currentEquityMinor) && order.currentEquityMinor! >= 0
+    && Number.isSafeInteger(order.projectedLossMinor) && order.projectedLossMinor! >= 0
+    && (order.airGappedOnly === undefined || typeof order.airGappedOnly === "boolean");
 }
 
 /** Advisory System One score. Deterministic integer limits remain the authorization boundary. */
@@ -64,13 +93,17 @@ export class RiskGuardDO extends DurableObject<RiskGuardEnv> {
     }
     const path = new URL(request.url).pathname;
     if (path === "/limits" && request.method === "PUT") {
-      const b = await request.json<RiskLimits>();
-      if (![b.stopLossBps,b.maxDrawdownBps,b.peakEquityMinor].every(Number.isSafeInteger) || b.stopLossBps < 1 || b.stopLossBps > 10_000 || b.maxDrawdownBps < 1 || b.maxDrawdownBps > 10_000 || b.peakEquityMinor <= 0) return Response.json({ error: "invalid_limits" }, { status: 400 });
+      let b: unknown;
+      try { b = await request.json(); } catch { return Response.json({ error: "invalid_limits" }, { status: 400 }); }
+      if (!isRiskLimits(b)) return Response.json({ error: "invalid_limits" }, { status: 400 });
       this.ctx.storage.sql.exec("INSERT INTO risk_limits VALUES(1,?,?,?,0) ON CONFLICT(id) DO UPDATE SET stop_loss_bps=excluded.stop_loss_bps,max_drawdown_bps=excluded.max_drawdown_bps,peak_equity_minor=MAX(risk_limits.peak_equity_minor,excluded.peak_equity_minor)", b.stopLossBps,b.maxDrawdownBps,b.peakEquityMinor);
       return Response.json({ ok: true });
     }
     if (path === "/orders/evaluate" && request.method === "POST") {
-      const started = performance.now(); const order = await request.json<OrderRequest & { airGappedOnly?: boolean }>();
+      let value: unknown;
+      try { value = await request.json(); } catch { return Response.json({ error: "invalid_order" }, { status: 400 }); }
+      if (!isOrderRequest(value)) return Response.json({ error: "invalid_order" }, { status: 400 });
+      const started = performance.now(); const order = value;
       const row = this.ctx.storage.sql.exec("SELECT stop_loss_bps,max_drawdown_bps,peak_equity_minor,frozen FROM risk_limits WHERE id=1").one() as { stop_loss_bps:number; max_drawdown_bps:number; peak_equity_minor:number; frozen:number } | null;
       const verdict = !row ? { allowed:false, reason:"limits_not_configured" } : row.frozen ? { allowed:false, reason:"emergency_frozen" } : evaluateOrderRisk(order,{ stopLossBps:row.stop_loss_bps,maxDrawdownBps:row.max_drawdown_bps,peakEquityMinor:row.peak_equity_minor });
       const limits = row ? { stopLossBps:row.stop_loss_bps,maxDrawdownBps:row.max_drawdown_bps,peakEquityMinor:row.peak_equity_minor } : undefined;
