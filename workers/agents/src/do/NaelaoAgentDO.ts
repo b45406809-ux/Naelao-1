@@ -5043,7 +5043,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(memoryContext ? { memoryContext } : {}),
         requiresApprovalFor,
         approvalMode,
-        ...(!projectId ? {
+        ...(projectId ? {
+          refreshApprovalPolicy: async () => {
+            // Project agents store their approval list in the versioned agent config, not the
+            // Space Assistant policy row. Re-read that source before each action too; a missing
+            // or unreadable config must never turn an existing allowlist into implicit trust.
+            const latestConfig = this.env.SCRIPTS_R2
+              ? await loadAgentConfig(this.env.SCRIPTS_R2, spaceId, agentId)
+              : null;
+            if (!latestConfig) {
+              requiresApprovalFor = [];
+              approvalMode = "gate_unless_listed";
+            } else {
+              requiresApprovalFor = latestConfig.requiresApprovalFor ?? [...parseRequiresApprovalFor(latestConfig.agentsMd)];
+              approvalMode = "gate_listed";
+            }
+            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor);
+            return { requiresApprovalFor, approvalMode };
+          },
+        } : {
           refreshApprovalPolicy: async () => {
             // Approval is checked per action, not just at run admission. Bypass the 30-second
             // ingress cache so an owner revoking autonomy affects the next action in this run.
@@ -5054,7 +5072,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor);
             return { requiresApprovalFor, approvalMode };
           },
-        } : {}),
+        }),
         runId,
         sessionId,
         ...(config.pipelines ? { pipeline: config.pipelines } : {}),
