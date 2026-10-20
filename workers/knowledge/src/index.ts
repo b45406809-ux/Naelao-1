@@ -7,7 +7,7 @@
 
 import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger, readBoundedResponseJson } from "@naelao/http";
-import { chunkText, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope } from "@naelao/rag";
+import { chunkText, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope, type StructuralChunk } from "@naelao/rag";
 import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNetworkEgressDenied, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
@@ -337,13 +337,16 @@ function docR2Prefix(spaceId: string, projectId: string | null | undefined, docI
   return `kb/${spaceId}/${projectId ?? "_space"}/${docId}/`;
 }
 
-function chunkCoordinates(document: string, chunks: string[]): Array<{ byteStart: number; byteEnd: number; lineStart: number; lineEnd: number }> {
+function chunkCoordinates(document: string, chunks: string[], sourceChunks?: StructuralChunk[]): Array<{ byteStart: number; byteEnd: number; lineStart: number; lineEnd: number }> {
   const encoder = new TextEncoder();
   let cursor = 0;
-  return chunks.map((chunk) => {
-    const characterStart = document.indexOf(chunk, cursor);
-    const start = characterStart < 0 ? cursor : characterStart;
-    const end = start + chunk.length;
+  return chunks.map((chunk, index) => {
+    const sourceChunk = sourceChunks?.[index];
+    const characterStart = sourceChunk ? sourceChunk.charOffset : document.indexOf(chunk, cursor);
+    const start = Math.max(0, Math.min(document.length, characterStart < 0 ? cursor : characterStart));
+    const end = sourceChunk
+      ? Math.max(start, Math.min(document.length, sourceChunk.charEnd))
+      : Math.min(document.length, start + chunk.length);
     cursor = end;
     return {
       byteStart: encoder.encode(document.slice(0, start)).byteLength,
@@ -573,7 +576,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       // Content too short to chunk — treat as one chunk
       chunks.push(sanitizedContent.trim());
     }
-    const coordinates = chunkCoordinates(sanitizedContent, chunks);
+    const coordinates = chunkCoordinates(sanitizedContent, chunks, structuralChunks.length ? structuralChunks : undefined);
 
     // ── Embedding (batch, 50 chunks per CF AI call) ─────────────────────────
     const EMBED_BATCH_SIZE = 50;

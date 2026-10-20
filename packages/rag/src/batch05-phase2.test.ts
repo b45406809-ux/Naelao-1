@@ -20,6 +20,30 @@ describe("Batch 05 phase 2", () => {
     ).toEqual(["Lease"]);
   });
 
+  it("bounds oversized tables, repeats their headers, and keeps UTF-16 source coordinates", () => {
+    const rows = Array.from({ length: 30 }, (_, index) => `| row ${index} | value ${index} |`).join("\r\n");
+    const table = `| Name | Value |\r\n| --- | --- |\r\n${rows}`;
+    const document = `# Records\r\n\r\n${table}`;
+    const chunks = chunkStructuredMarkdown(document, 100);
+    const tableChunks = chunks.filter((chunk) => chunk.content.startsWith("| Name | Value |"));
+
+    expect(tableChunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.content.length <= 100)).toBe(true);
+    expect(tableChunks.every((chunk) => chunk.content.startsWith("| Name | Value |\n| --- | --- |"))).toBe(true);
+    expect(tableChunks.every((chunk) => JSON.stringify(chunk.headingPath) === JSON.stringify(["Records"]))).toBe(true);
+    for (const chunk of tableChunks) {
+      expect(document.slice(chunk.charOffset, chunk.charEnd)).toContain("| row ");
+    }
+  });
+
+  it("rejects invalid structured chunk limits and preserves emoji at split points", () => {
+    expect(() => chunkStructuredMarkdown("text", 0)).toThrow(RangeError);
+    expect(() => chunkStructuredMarkdown("text", 32_769)).toThrow(RangeError);
+    const chunks = chunkStructuredMarkdown(`${"a".repeat(9)}😀${"b".repeat(9)}`, 10);
+    expect(chunks.map((chunk) => chunk.content).join("")).toBe(`${"a".repeat(9)}😀${"b".repeat(9)}`);
+    expect(chunks.every((chunk) => chunk.content.length <= 10)).toBe(true);
+  });
+
   it("only accepts semantic similarity strictly above .96", async () => {
     const query = vi.fn().mockResolvedValue({
       matches: [

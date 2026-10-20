@@ -1123,3 +1123,14 @@ Found that the prebuilt used the same 4 MiB response cap for every operation eve
 Validation: Agents full suite passed 150 files / 673 tests; Knowledge Worker suite passed 7 files / 29 tests; Security suite passed 21 files / 111 tests; Agent, Knowledge, and Security typechecks passed; `git diff --check` passed. Added a 5 MB Base64 response regression proving a 3.75 MB binary file reaches R2 as decoded bytes, along with URL/query/result/name bounds and DNS timeout coverage.
 
 Checked only the web-search prebuilt, the web-fetch test module, and shared SSRF checker. The large Knowledge Worker `index.ts` was inspected only around web-search endpoints and remains unchecked pending full-file review.
+
+
+## RAG document ingestion and oversized Markdown tables (2026-10-20)
+
+Traced PDF content through `chunkStructuredMarkdown`, the Knowledge Worker embedding batches, Vectorize metadata, and R2 citation chunks. Found that Markdown tables were treated as atomic at any size. A single large table could exceed the embedding model's per-input limit and fail indexing; CRLF-normalized structural chunks could also lose accurate source positions when the worker searched for their text in the original document.
+
+Structured Markdown now splits oversized tables at row boundaries, repeats the table header in each bounded chunk, splits unusually long rows without cutting UTF-16 surrogate pairs, validates chunk limits, and records source spans in the original text. The Knowledge Worker now uses those spans to derive byte and line citation coordinates. Added regression coverage for oversized CRLF tables, repeated headers, source ranges, bad limits, and emoji boundary splits.
+
+Validation: RAG package suite passed 4 files / 25 tests; Knowledge Worker suite passed 7 files / 29 tests; RAG and Knowledge Worker TypeScript checks passed; `git diff --check` passed. The repository-local Biome binary was unavailable in this workspace, so formatting checks were not run.
+
+This is a focused review of the RAG chunker and the Knowledge Worker document-ingestion coordinate path. `workers/knowledge/src/index.ts` remains unchecked overall; its many other route, authorization, database, external-fetch, and storage paths still need caller-by-caller review.
