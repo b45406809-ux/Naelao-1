@@ -337,6 +337,8 @@ Browser `see` previously called `arrayBuffer()` before checking its 4 MiB screen
 
 The adjacent container virtual-display screenshot adapter also called `arrayBuffer()` on container output. It now enforces a 16 MiB stream cap matching the container screenshot command's existing maxBuffer ceiling. Added an unknown-Content-Length overflow regression; Launchpad runtime suite passed 13/13, Agent SDK typecheck and `git diff --check` passed.
 
+Durable extension workflow release verification accumulated listed artifact bodies before checking its 2 MiB total. It now rejects from R2 listing-size metadata before fetching a file that would exceed the total, confirms fetched object size still matches listing metadata, and verifies decoded UTF-8 bytes before hashing. Regression proves an oversized artifact is rejected without `get()`. Workflow extension scope suite passed 6/6, Agents typecheck and `git diff --check` passed.
+
 Before validation, the pnpm 11 install tool rewrote lockfile patch metadata and added an ignored-build policy block. Both repository files were restored to their original committed contents after dependencies installed. `node_modules` is ignored. `git diff --check` is run before commit.
 
 ## Not yet reviewed

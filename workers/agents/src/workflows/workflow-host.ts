@@ -65,10 +65,13 @@ export async function verifyExtensionArtifactSet(bucket: R2Bucket, input: { spac
     const page = await bucket.list({ prefix, ...(cursor ? { cursor } : {}), limit: 256 });
     if (entries.length + page.objects.length > 256) return false;
     for (const item of page.objects) {
+      if (!Number.isSafeInteger(item.size) || item.size < 0 || totalBytes + item.size > 2_000_000) return false;
       const object = await bucket.get(item.key);
-      if (!object) return false;
-      const source = await object.text(); totalBytes += new TextEncoder().encode(source).byteLength;
-      if (totalBytes > 2_000_000) return false;
+      if (!object || object.size !== item.size) return false;
+      const source = await object.text();
+      const sourceBytes = new TextEncoder().encode(source).byteLength;
+      if (sourceBytes !== object.size || totalBytes + sourceBytes > 2_000_000) return false;
+      totalBytes += sourceBytes;
       entries.push([`./${item.key.slice(prefix.length)}`, source]);
     }
     cursor = page.truncated ? page.cursor : undefined;

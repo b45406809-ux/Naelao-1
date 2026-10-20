@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { assertDeclaredExtensionWorkflow, extensionWorkflowName, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowHash, workflowWorkspaceExtensionId, type WorkflowInstallationGrant } from "./workflow-host.js";
 
 const installation: WorkflowInstallationGrant = {
@@ -11,14 +11,30 @@ describe("verified extension workflow identity", () => {
     const prefix = "spaces/space/extensions/ext_customs/1.0.0/";
     const files = new Map([[`${prefix}place-order.ts`, "export function run() { return 1; }"], [`${prefix}console.html`, "<main>Hi</main>"]]);
     const bucket = {
-      list: async ({ prefix: requested }: { prefix: string }) => ({ objects: [...files.keys()].filter(key => key.startsWith(requested)).map(key => ({ key })), truncated: false }),
-      get: async (key: string) => { const value = files.get(key); return value === undefined ? null : { text: async () => value }; },
+      list: async ({ prefix: requested }: { prefix: string }) => ({ objects: [...files.keys()].filter(key => key.startsWith(requested)).map(key => ({ key, size: new TextEncoder().encode(files.get(key)!).byteLength })), truncated: false }),
+      get: async (key: string) => { const value = files.get(key); return value === undefined ? null : { size: new TextEncoder().encode(value).byteLength, text: async () => value }; },
     } as never;
     const entries = [...files].map(([key, value]) => [`./${key.slice(prefix.length)}`, value] as [string, string]).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     const expectedSha256 = await workflowHash(JSON.stringify(entries));
     expect(await verifyExtensionArtifactSet(bucket, { spaceId: "space", extensionId: "ext_customs", version: "1.0.0", expectedSha256 })).toBe(true);
     files.set(`${prefix}place-order.ts`, "export function run() { return 2; }");
     expect(await verifyExtensionArtifactSet(bucket, { spaceId: "space", extensionId: "ext_customs", version: "1.0.0", expectedSha256 })).toBe(false);
+  });
+
+  it("rejects an oversized artifact from listing metadata before fetching its body", async () => {
+    const get = vi.fn(async () => null);
+    const bucket = {
+      list: async () => ({ objects: [{ key: "spaces/space/extensions/ext_customs/1.0.0/large.ts", size: 2_000_001 }], truncated: false }),
+      get,
+    } as never;
+
+    await expect(verifyExtensionArtifactSet(bucket, {
+      spaceId: "space",
+      extensionId: "ext_customs",
+      version: "1.0.0",
+      expectedSha256: "0".repeat(64),
+    })).resolves.toBe(false);
+    expect(get).not.toHaveBeenCalled();
   });
 
   it("maps a manifest-declared script and exact extension ID to an installed instance", () => {
