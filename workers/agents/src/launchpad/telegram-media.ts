@@ -1,4 +1,5 @@
 import type { DownloadedChannelAttachment } from "./whatsapp-media.js";
+import { readBoundedProviderJson } from "./bounded-provider-json.js";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
@@ -76,11 +77,11 @@ export async function downloadTelegramAttachments(
       redirect: "manual", signal: AbortSignal.timeout(10_000),
     });
     if (!infoResponse.ok) throw new Error(`telegram_file_lookup_failed:${infoResponse.status}`);
-    const payload = await infoResponse.json() as JsonObject;
+    const payload = await readBoundedProviderJson(infoResponse);
     const result = object(payload.result);
     const path = typeof result?.file_path === "string" ? result.file_path : "";
     const declaredBytes = Number(result?.file_size ?? item.file_size ?? -1);
-    if (!payload.ok || !path || path.startsWith("/") || path.split("/").some((part) => !part || part === "." || part === "..") ||
+    if (!payload.ok || !path || path.length > 1024 || path.startsWith("/") || path.split("/").some((part) => !part || part === "." || part === "..") ||
         !Number.isSafeInteger(declaredBytes) || declaredBytes === 0 || declaredBytes > MAX_FILE_BYTES) {
       throw new Error("telegram_media_rejected");
     }

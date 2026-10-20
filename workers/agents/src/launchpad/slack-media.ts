@@ -1,4 +1,5 @@
 import type { DownloadedChannelAttachment } from "./whatsapp-media.js";
+import { readBoundedProviderJson } from "./bounded-provider-json.js";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
@@ -10,7 +11,7 @@ function object(value: unknown): JsonObject | undefined {
 }
 
 function files(raw: JsonObject): JsonObject[] {
-  return (Array.isArray(raw.files) ? raw.files : []).map(object).filter((file): file is JsonObject => Boolean(file)).slice(0, 5);
+  return (Array.isArray(raw.files) ? raw.files : []).slice(0, 5).map(object).filter((file): file is JsonObject => Boolean(file));
 }
 
 export function hasSlackFiles(raw: JsonObject): boolean {
@@ -58,7 +59,7 @@ export async function downloadSlackAttachments(raw: JsonObject, input: { botToke
       redirect: "manual", signal: AbortSignal.timeout(10_000),
     });
     if (!infoResponse.ok) throw new Error(`slack_file_lookup_failed:${infoResponse.status}`);
-    const payload = await infoResponse.json() as JsonObject;
+    const payload = await readBoundedProviderJson(infoResponse);
     const file = object(payload.file);
     const size = Number(file?.size);
     const downloadUrl = file?.url_private_download ?? file?.url_private;

@@ -1,5 +1,6 @@
 import type { VoiceAi } from "../voice/voice-pipeline.js";
 import { runModalityTask } from "../media/modality-task.js";
+import { readBoundedProviderJson } from "./bounded-provider-json.js";
 
 const MAX_VOICE_NOTE_BYTES = 8 * 1024 * 1024;
 const MAX_INBOUND_CHANNEL_MEDIA_BYTES = 5 * 1024 * 1024;
@@ -79,7 +80,7 @@ export async function downloadWhatsAppAttachments(raw: JsonObject, env: WhatsApp
       redirect: "manual", signal: AbortSignal.timeout(10_000),
     });
     if (!metadataResponse.ok) throw new Error(`whatsapp_media_metadata_failed:${metadataResponse.status}`);
-    const metadata = await metadataResponse.json() as JsonObject;
+    const metadata = await readBoundedProviderJson(metadataResponse);
     const mimeType = typeof metadata.mime_type === "string" ? metadata.mime_type.toLowerCase().split(";")[0]!.trim() : "";
     const declaredBytes = Number(metadata.file_size);
     const urlValue = metadata.url;
@@ -190,10 +191,10 @@ export async function transcribeWhatsAppVoiceNote(raw: JsonObject, env: WhatsApp
   if (!/^v\d+\.\d+$/.test(graphApiVersion)) throw new Error("whatsapp_graph_api_version_invalid");
   const metadataResponse = await fetcher(`https://graph.facebook.com/${graphApiVersion}/${encodeURIComponent(detected.id)}`, {
     headers: { authorization: `Bearer ${env.accessToken}`, accept: "application/json" },
-    signal: AbortSignal.timeout(10_000),
+    redirect: "manual", signal: AbortSignal.timeout(10_000),
   });
   if (!metadataResponse.ok) throw new Error(`whatsapp_media_metadata_failed:${metadataResponse.status}`);
-  const metadata = await metadataResponse.json() as JsonObject;
+  const metadata = await readBoundedProviderJson(metadataResponse);
   const urlValue = metadata.url;
   const mimeType = typeof metadata.mime_type === "string" ? metadata.mime_type.toLowerCase().split(";")[0]!.trim() : "";
   const declaredBytes = Number(metadata.file_size);

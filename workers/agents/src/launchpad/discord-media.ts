@@ -10,7 +10,7 @@ function object(value: unknown): JsonObject | undefined {
 }
 
 function attachments(raw: JsonObject): JsonObject[] {
-  return (Array.isArray(raw.attachments) ? raw.attachments : []).map(object).filter((item): item is JsonObject => Boolean(item)).slice(0, 5);
+  return (Array.isArray(raw.attachments) ? raw.attachments : []).slice(0, 5).map(object).filter((item): item is JsonObject => Boolean(item));
 }
 
 export function hasDiscordAttachments(raw: JsonObject): boolean {
