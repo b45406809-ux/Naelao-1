@@ -9767,13 +9767,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private resolveAgentPolicy(
     spaceId: string,
     agentId: string
-  ): { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } {
+  ): { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[]; updated_at?: string } {
     const override = queryOne<{
       approval_mode: string;
       auto_approved_actions: string;
+      updated_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT approval_mode, auto_approved_actions FROM agent_policy_overrides WHERE space_id = ? AND agent_id = ?",
+      "SELECT approval_mode, auto_approved_actions, updated_at FROM agent_policy_overrides WHERE space_id = ? AND agent_id = ?",
       spaceId,
       agentId
     );
@@ -9783,14 +9784,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         auto_approved_actions: safeJsonParseArr(
           override.auto_approved_actions
         ) as string[],
+        updated_at: override.updated_at,
       };
     }
     const spaceWide = queryOne<{
       approval_mode: string;
       auto_approved_actions: string;
+      updated_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT approval_mode, auto_approved_actions FROM assistant_policy WHERE space_id = ?",
+      "SELECT approval_mode, auto_approved_actions, updated_at FROM assistant_policy WHERE space_id = ?",
       spaceId
     );
     if (spaceWide) {
@@ -9799,6 +9802,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         auto_approved_actions: safeJsonParseArr(
           spaceWide.auto_approved_actions
         ) as string[],
+        updated_at: spaceWide.updated_at,
       };
     }
     return { approval_mode: "always_ask", auto_approved_actions: [] };
@@ -9837,7 +9841,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const approvalMode = body.approval_mode ?? existing.approval_mode;
     const autoApproved =
       body.auto_approved_actions ?? existing.auto_approved_actions;
-    const now = new Date().toISOString();
+    const previousUpdatedAt = existing.updated_at ? Date.parse(existing.updated_at) : 0;
+    const now = new Date(Math.max(Date.now(), Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0)).toISOString();
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO agent_policy_overrides (space_id, agent_id, approval_mode, auto_approved_actions, updated_at) VALUES (?, ?, ?, ?, ?)

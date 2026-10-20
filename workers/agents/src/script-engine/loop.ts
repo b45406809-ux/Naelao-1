@@ -153,6 +153,7 @@ async function hitlGate(
   actionInput: Record<string, unknown>,
   gatedActions: Set<string>,
   mode: ApprovalMode,
+  alwaysGatedActions: ReadonlySet<string>,
   gateway: HITLGateway | undefined,
   runId: string,
   sessionId: string,
@@ -160,7 +161,7 @@ async function hitlGate(
   preApproved: ReadonlyMap<string, ApprovedActionEvidence>,
   currentPolicyFingerprint: string,
 ): Promise<GateOutcome> {
-  if (!isGated(actionName, gatedActions, mode)) return { verdict: "proceed" };
+  if (!alwaysGatedActions.has(actionName) && !isGated(actionName, gatedActions, mode)) return { verdict: "proceed" };
   if (!gateway) {
     notes.push(`HITL unavailable: '${actionName}' is gated and cannot run without an approval service`);
     return { verdict: "denied", reason: "approval service unavailable" };
@@ -483,7 +484,8 @@ export interface RunLoopOptions {
   requiresApprovalFor?: string[];
   approvalMode?: ApprovalMode;
   /** Re-read the host's authoritative approval policy immediately before each action gate. */
-  refreshApprovalPolicy?: () => Promise<{ requiresApprovalFor: string[]; approvalMode: ApprovalMode; policyVersion?: string }>;
+  alwaysGatedActions?: string[];
+  refreshApprovalPolicy?: () => Promise<{ requiresApprovalFor: string[]; approvalMode: ApprovalMode; alwaysGatedActions?: string[]; policyVersion?: string }>;
   /**
    * Resuming a run that suspended waiting on a human: the actions a human has since approved.
    * The gate lets these through once without re-asking — otherwise every resume would open a
@@ -598,10 +600,11 @@ export async function runScriptLoop(
   const notes: string[] = [];
   let gatedActions = new Set(opts.requiresApprovalFor ?? []);
   let approvalMode: ApprovalMode = opts.approvalMode ?? "gate_listed";
+  let alwaysGatedActions = new Set(opts.alwaysGatedActions ?? []);
   const runId = opts.runId ?? crypto.randomUUID();
   const sessionId = opts.sessionId ?? "unknown";
   const preApproved = new Map((opts.preApprovedActions ?? []).map((evidence) => [evidence.actionName, evidence]));
-  let currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, opts.requiresApprovalFor ?? []);
+  let currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, opts.requiresApprovalFor ?? [], undefined, opts.alwaysGatedActions ?? []);
   const ledgerKey = opts.ledgerKey ?? runId;
   if(env.artifactValidationState) { env.artifactValidationState.workKey=ledgerKey;env.artifactValidationState.sessionId=sessionId; }
 
@@ -624,17 +627,19 @@ export async function runScriptLoop(
         const latest = await opts.refreshApprovalPolicy();
         gatedActions = new Set(latest.requiresApprovalFor);
         approvalMode = latest.approvalMode;
-        currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, latest.requiresApprovalFor, latest.policyVersion);
+        alwaysGatedActions = new Set(latest.alwaysGatedActions ?? []);
+        currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, latest.requiresApprovalFor, latest.policyVersion, [...alwaysGatedActions]);
       } catch {
         // An unknown policy must never preserve a previously broader grant. Gate every action;
         // the host can retry after its policy service recovers.
         gatedActions = new Set();
         approvalMode = "gate_unless_listed";
+        alwaysGatedActions = new Set();
         currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, [], "unavailable");
         notes.push("HITL: current approval policy could not be refreshed; requiring approval");
       }
     }
-    return hitlGate(name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
+    return hitlGate(name, params, gatedActions, approvalMode, alwaysGatedActions, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
   };
   const runOnce = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
     const injected = await runBeforeStep(opts.pipeline, env.pipelineRuntime);
@@ -1531,8 +1536,8 @@ export function stableStringify(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
 }
 
-export function approvalPolicyFingerprint(mode: ApprovalMode, actionNames: readonly string[], policyVersion?: string): string {
-  return stableStringify({ mode, actionNames: [...actionNames].sort(), ...(policyVersion ? { policyVersion } : {}) });
+export function approvalPolicyFingerprint(mode: ApprovalMode, actionNames: readonly string[], policyVersion?: string, alwaysGatedActions: readonly string[] = []): string {
+  return stableStringify({ mode, actionNames: [...actionNames].sort(), alwaysGatedActions: [...alwaysGatedActions].sort(), ...(policyVersion ? { policyVersion } : {}) });
 }
 
 /** Reads the reasoner's most recently reported usage; zeros when unreported. */

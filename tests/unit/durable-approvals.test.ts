@@ -441,4 +441,27 @@ describe("resuming after a human approves", () => {
     const listed = await env.scriptsBucket.list({ prefix: "spaces/space-1/" });
     expect(listed.objects.some((object) => object.key.includes("a.txt"))).toBe(false);
   });
+
+  it("keeps profile-mandated approval gates even when autonomy pre-approves the action", async () => {
+    const env = makeEnv();
+    let approvalCount = 0;
+    env.hitlGateway = { async requestApproval() {
+      approvalCount++;
+      return { approvalId: "mandatory-profile-gate", approved: false, pending: true };
+    } };
+    const result = await runScriptLoop(env, new ScriptToolSurface(env, ["r2-workspace"]), {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
+      },
+    }, ["r2-workspace"], {
+      goal: "write a file",
+      startupObserve: "observe_filesystem",
+      requiresApprovalFor: ["write_file"],
+      approvalMode: "gate_unless_listed",
+      alwaysGatedActions: ["write_file"],
+    });
+
+    expect(approvalCount).toBe(1);
+    expect(result.deferred_approvals?.[0]?.action_name).toBe("write_file");
+  });
 });

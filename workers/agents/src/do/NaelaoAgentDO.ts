@@ -4774,6 +4774,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // yolo skips asking entirely. See loop.ts's ApprovalMode.
     let requiresApprovalFor: string[];
     let approvalMode: "gate_listed" | "gate_unless_listed" = "gate_listed";
+    let alwaysGatedActions: string[] = [];
     if (projectId) {
       // Structural config.requiresApprovalFor (agent-config.ts, written by
       // launchpadAgentToProfile from def.requires_approval_for) is the enforced source of
@@ -4781,7 +4782,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // markdown heading no profile actually writes — agentsMd carries the gates as prose under
       // "# Approval Gates (HITL)" instead — so relying on it alone silently gated nothing.
       // Fall back to the markdown parse only for agents provisioned before this field existed.
-      requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
+      alwaysGatedActions = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
+      const policy = await this.fetchAgentPolicy(spaceId, agentId, tenantId);
+      const plan = resolveAssistantApprovalPlan(policy, callerRole, businessRole);
+      requiresApprovalFor = plan.requiresApprovalFor;
+      approvalMode = plan.approvalMode;
     } else {
       const policy = await this.fetchAssistantPolicy(spaceId, tenantId);
       // F-36 enforcement (policy half): the space-wide policy is intersected with the VERIFIED
@@ -4800,7 +4805,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       requiresApprovalFor = plan.requiresApprovalFor;
       approvalMode = plan.approvalMode;
     }
-    let currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor);
+    let currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor, undefined, alwaysGatedActions);
     // Template mode controls presentation and seeded work only. Approval policy and autonomous
     // kernel capabilities are identical for Cowork and Venture OS projects.
 
@@ -5063,16 +5068,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                   this.env.SCRIPTS_R2.head(`spaces/${spaceId}/agents/${agentId}/agents.md`),
                 ])
               : [null, null];
-            const policyVersion = `${policyFiles[0]?.etag ?? "missing"}:${policyFiles[0]?.customMetadata?.["updatedAt"] ?? "legacy"}:${policyFiles[1]?.etag ?? "missing"}:${policyFiles[1]?.customMetadata?.["updatedAt"] ?? "legacy"}`;
+            const latestPolicy = latestConfig ? await this.fetchAgentPolicy(spaceId, agentId, tenantId) : null;
+            const policyPlan = resolveAssistantApprovalPlan(latestPolicy, callerRole, businessRole);
+            const policyVersion = `${latestPolicy?.updated_at ?? "missing"}:${policyFiles[0]?.etag ?? "missing"}:${policyFiles[0]?.customMetadata?.["updatedAt"] ?? "legacy"}:${policyFiles[1]?.etag ?? "missing"}:${policyFiles[1]?.customMetadata?.["updatedAt"] ?? "legacy"}`;
             if (!latestConfig) {
-              requiresApprovalFor = [];
-              approvalMode = "gate_unless_listed";
+              const failClosed = resolveAssistantApprovalPlan(null, callerRole, businessRole);
+              requiresApprovalFor = failClosed.requiresApprovalFor;
+              approvalMode = failClosed.approvalMode;
+              alwaysGatedActions = [];
             } else {
-              requiresApprovalFor = latestConfig.requiresApprovalFor ?? [...parseRequiresApprovalFor(latestConfig.agentsMd)];
-              approvalMode = "gate_listed";
+              alwaysGatedActions = latestConfig.requiresApprovalFor ?? [...parseRequiresApprovalFor(latestConfig.agentsMd)];
+              requiresApprovalFor = policyPlan.requiresApprovalFor;
+              approvalMode = policyPlan.approvalMode;
             }
-            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor, policyVersion);
-            return { requiresApprovalFor, approvalMode, policyVersion };
+            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor, policyVersion, alwaysGatedActions);
+            return { requiresApprovalFor, approvalMode, policyVersion, alwaysGatedActions };
           },
         } : {
           refreshApprovalPolicy: async () => {
@@ -5083,8 +5093,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             requiresApprovalFor = latestPlan.requiresApprovalFor;
             approvalMode = latestPlan.approvalMode;
             const policyVersion = latestPolicy?.updated_at;
-            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor, policyVersion);
-            return { requiresApprovalFor, approvalMode, ...(policyVersion ? { policyVersion } : {}) };
+            currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor, policyVersion, alwaysGatedActions);
+            return { requiresApprovalFor, approvalMode, ...(policyVersion ? { policyVersion } : {}), alwaysGatedActions };
           },
         }),
         runId,
@@ -6848,6 +6858,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (policy !== undefined) return policy;
     }
     return cached && cached.spaceId === spaceId ? cached.policy : null;
+  }
+
+  /** Resolve the project agent's owner-configured autonomy override from SpaceDO. An unavailable
+   * policy is represented as null and the shared resolver compiles that to ask-first for every
+   * action; the agent profile's mandatory approval actions remain separate hard gates. */
+  private async fetchAgentPolicy(spaceId: string, agentId: string, tenantId: string): Promise<AssistantApprovalPolicySnapshot | null> {
+    if (!this.env.SPACES_WORKER || !tenantId) return null;
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/agents/${encodeURIComponent(agentId)}/policy`,
+        { headers: await this.internalHeaders(tenantId) },
+      ));
+      if (!resp.ok) return null;
+      return await resp.json<AssistantApprovalPolicySnapshot>();
+    } catch {
+      return null;
+    }
   }
 
   /** One attempt at reading the policy. `undefined` means "transient failure, worth retrying";
