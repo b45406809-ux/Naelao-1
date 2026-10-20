@@ -431,12 +431,17 @@ async function verifyCredentialToken(
   expectedTenantId: string,
 ): Promise<{ ok: boolean; reason?: string; projectId?: string; tenantId?: string; agentId?: string; actorId?: string; runId?: string; taskId?: string; traceId?: string; spanId?: string }> {
   const TOKEN_MAX_AGE_SECONDS = 60;
+  if (token.length > 2048) return { ok: false, reason: "Malformed credential token" };
   const parts: Record<string, string> = {};
   for (const segment of token.split(",")) {
     const eq = segment.indexOf("=");
-    if (eq > 0) parts[segment.slice(0, eq)] = segment.slice(eq + 1);
+    if (eq <= 0) return { ok: false, reason: "Malformed credential token" };
+    const key = segment.slice(0, eq);
+    if (Object.hasOwn(parts, key)) return { ok: false, reason: "Malformed credential token" };
+    parts[key] = segment.slice(eq + 1);
   }
-  const timestamp = parseInt(parts["t"] ?? "0", 10);
+  const timestampValue = parts["t"] ?? "";
+  const timestamp = /^\d{1,12}$/.test(timestampValue) ? Number(timestampValue) : Number.NaN;
   const agentId = parts["aid"] ?? "";
   const projectId = parts["pid"] || undefined;
   const tenantId = parts["tid"] || undefined;
@@ -446,13 +451,16 @@ async function verifyCredentialToken(
   const traceId = parts["tr"] || undefined;
   const spanId = parts["sp"] || undefined;
   const hasRunContext = Boolean(actorId || runId || taskId || traceId || spanId);
-  const receivedHex = hasRunContext ? parts["v4"] ?? "" : tenantId ? parts["v3"] ?? "" : projectId ? parts["v2"] ?? "" : parts["v1"] ?? "";
+  const signatureKey = hasRunContext ? "v4" : tenantId ? "v3" : projectId ? "v2" : "v1";
+  const versionKeys = Object.keys(parts).filter((key) => /^v\d+$/.test(key));
+  const allowedKeys = new Set(["t", "aid", "pid", "tid", "uid", "rid", "task", "tr", "sp", signatureKey]);
+  const receivedHex = parts[signatureKey] ?? "";
 
-  if (!agentId || !receivedHex) return { ok: false, reason: "Malformed credential token" };
+  if (Object.keys(parts).some((key) => !allowedKeys.has(key)) || versionKeys.length !== 1 || versionKeys[0] !== signatureKey || !agentId || !/^[a-f0-9]{64}$/i.test(receivedHex)) return { ok: false, reason: "Malformed credential token" };
   if (tenantId && tenantId !== expectedTenantId) return { ok: false, reason: "Credential token tenant scope mismatch" };
 
   const age = Math.floor(Date.now() / 1000) - timestamp;
-  if (age < 0 || age > TOKEN_MAX_AGE_SECONDS) {
+  if (!Number.isSafeInteger(timestamp) || age < 0 || age > TOKEN_MAX_AGE_SECONDS) {
     return { ok: false, reason: `Credential token expired (age=${age}s)` };
   }
 
@@ -947,7 +955,7 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
 
   // G-F06: Verify short-lived HMAC token — prevents cross-space exfiltration
   const tokenCheck = await verifyCredentialToken(credentialToken, c.env.PLATFORM_SECRET, spaceId, tenantId);
-  if (!tokenCheck.ok) {
+  if (!tokenCheck.ok || tokenCheck.tenantId !== tenantId) {
     throw forbidden(tokenCheck.reason ?? "Invalid credential token");
   }
 
@@ -1023,7 +1031,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   const spaceId = c.req.param("spaceId");
   if (!tenantId || !credentialToken) throw forbidden("Authenticated outbound request required");
   const tokenCheck = await verifyCredentialToken(credentialToken, c.env.PLATFORM_SECRET, spaceId, tenantId);
-  if (!tokenCheck.ok) throw forbidden(tokenCheck.reason ?? "Invalid credential token");
+  if (!tokenCheck.ok || tokenCheck.tenantId !== tenantId) throw forbidden(tokenCheck.reason ?? "Credential token tenant scope mismatch");
   // This is the final bearer-secret egress boundary. Check the immutable space policy before
   // resolving or decrypting a credential, before SSRF validation, and before the first fetch.
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) {

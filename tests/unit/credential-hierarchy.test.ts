@@ -241,8 +241,17 @@ describe("credential hierarchy", () => {
 
   describe("resolution order (internal plaintext endpoint)", () => {
     async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
-      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId);
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1");
     }
+
+    it("rejects legacy tenantless tokens before plaintext credential resolution", async () => {
+      const token = await generateCredentialToken(env.PLATFORM_SECRET, "space-1", "agent-1");
+      const response = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/SECRET/plaintext", { method: "POST", credToken: token }),
+        env, execCtx,
+      );
+      expect(response.status).toBe(403);
+    });
 
     it("resolves the space-shared credential when no personal credential exists", async () => {
       await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "EMAIL", value: "company@x.com", scope: "space" } }), env, execCtx);
@@ -326,7 +335,7 @@ describe("credential hierarchy", () => {
   // the chat session's own toggle) override the implicit "personal always wins" default above.
   describe("prefer_scope override", () => {
     async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
-      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId);
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1");
     }
 
     it("prefer_scope='business' skips the personal credential even when one is connected", async () => {
@@ -411,7 +420,7 @@ describe("credential hierarchy", () => {
   // a business with no local match falls through to its PRODUCT ROOT's own shared credential.
   describe("product-root tier (business -> product fallback)", () => {
     async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
-      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId);
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1");
     }
 
     it("a business with nothing of its own falls through to the product root's shared credential", async () => {
@@ -468,7 +477,7 @@ describe("credential hierarchy", () => {
 
   describe("selective business sharing (shared_with_user_ids)", () => {
     async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
-      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId);
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1");
     }
 
     it("a non-admin cannot set shared_with_user_ids", async () => {

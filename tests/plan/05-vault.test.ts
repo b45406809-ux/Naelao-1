@@ -289,7 +289,7 @@ describe("Step 05 encrypted credential vault and zero-leak boundary", () => {
     const secret = "STEP05_AAD_TAMPER_SECRET_b2d5";
     await publicRequest(env, "/spaces/vault-space/credentials", { method: "POST", body: { name: "BOUND_KEY", value: secret, scope: "space" } });
     db.prepare("UPDATE space_credentials SET name = ? WHERE name = ?").run("RENAMED_KEY", "BOUND_KEY");
-    const token = await generateCredentialToken(env.PLATFORM_SECRET, "vault-space", "agent-step05");
+    const token = await generateCredentialToken(env.PLATFORM_SECRET, "vault-space", "agent-step05", undefined, "tenant-step05");
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     const response = await credentialWorker.fetch!(new Request("https://credentials.test/v1/internal/spaces/vault-space/credentials/RENAMED_KEY/plaintext", {
       method: "POST", headers: { "x-naelao-tenant-id": "tenant-step05", "x-naelao-credential-token": token },
