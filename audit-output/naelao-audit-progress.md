@@ -1055,3 +1055,9 @@ Reviewed the shared extension manifest and bundle parsers and traced them to Spa
 Validation: Agent SDK suite passed 27 files / 138 tests; Spaces extension/gadget route tests passed 7/7; Agents channel extension/media tests passed 27/27; Agent SDK, Spaces, and Agents typechecks passed; `git diff --check` passed. Added regressions exercise traversal across legacy and composed paths, deep/cyclic manifests, and collection overages. Existing dogfood manifests and published starter bundle tests continue to pass.
 
 Refreshed the tracked tree after code commit `5691ee75`: 1,970 tracked files and 1,764 source/config files; checked only the extension validator and its stress suite in this slice.
+
+## Artifact linter memory and output ceilings (2026-10-20)
+
+Traced structural artifact linting through the SpaceDO validation endpoint. The endpoint already rejected content above 2 MiB of JavaScript string length, but the exported `lintArtifact` helper could be called directly with unlimited content. It also built a diagnostic object for every unexpected key before truncating to 128, multiplying memory use on a malformed large JSON object. The helper now rejects over-limit input before `JSON.parse`, bounds configured linter paths to 512 characters, and stops allocating diagnostics at the 128-item limit. Policy cardinality bounds remain in effect (32 linters, 64 fields each).
+
+Validation: Agent SDK artifact-linter tests passed 4/4; SpaceDO artifact-linter route test passed 1/1; Agent SDK and Spaces typechecks passed; `git diff --check` passed. New cases exercise oversized input, path traversal/path length, and a JSON object with 10,000 unexpected fields. The SpaceDO endpoint's existing body boundary and workflow storage remain separately checked in their own file rows.

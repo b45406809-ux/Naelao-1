@@ -749,8 +749,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `packages/agent-sdk/src/artifact-client.test.ts`
 - [ ] `packages/agent-sdk/src/artifact-client.ts`
-- [ ] `packages/agent-sdk/src/artifact-linters.test.ts`
-- [ ] `packages/agent-sdk/src/artifact-linters.ts`
+- [x] `packages/agent-sdk/src/artifact-linters.test.ts`
+- [x] `packages/agent-sdk/src/artifact-linters.ts`
 - [ ] `packages/agent-sdk/src/autonomy-policy.test.ts`
 - [ ] `packages/agent-sdk/src/autonomy-policy.ts`
 - [ ] `packages/agent-sdk/src/avos-features.ts`

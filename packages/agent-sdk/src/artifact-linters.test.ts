@@ -25,5 +25,22 @@ describe("structural artifact linters", () => {
     expect(() => parseArtifactLinters([{ id: "x", path: "/workspace/x.json", fields: { constructor: { type: "string" } } }])).toThrow();
     expect(() => parseArtifactLinters([{ id: "x", path: "/workspace/x.json", fields: { active: { type: "boolean", min: 0 } } }])).toThrow();
     expect(() => parseArtifactLinters([{ id: "x", path: "/workspace/x.json", fields: { amount: { type: "number", min: 0.5 } } }])).toThrow();
+    expect(() => parseArtifactLinters([{ id: "x", path: `/workspace/${"a".repeat(600)}.json`, fields: {} }])).toThrow("invalid_artifact_linter");
+    expect(() => parseArtifactLinters([{ id: "x", path: "/workspace/../escape.json", fields: {} }])).toThrow("invalid_artifact_linter");
+  });
+
+  it("rejects oversized artifact content before parsing", () => {
+    const parsed = parseArtifactLinters(spec);
+    const diagnostics = lintArtifact("/workspace/invoice.json", " ".repeat(2 * 1024 * 1024 + 1), parsed);
+    expect(diagnostics).toEqual([{ ruleId: "invoice", field: "", message: "Artifact exceeds the structural validation size limit" }]);
+  });
+
+  it("caps diagnostics while scanning highly malformed objects", () => {
+    const parsed = parseArtifactLinters(spec);
+    const content = JSON.stringify(Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [`unexpected_${index}`, index])));
+    const diagnostics = lintArtifact("/workspace/invoice.json", content, parsed);
+    expect(diagnostics).toHaveLength(128);
+    expect(diagnostics[0]).toMatchObject({ field: "amount", message: "Required field is missing" });
+    expect(diagnostics.slice(1).every(item => item.message === "Unexpected field")).toBe(true);
   });
 });
