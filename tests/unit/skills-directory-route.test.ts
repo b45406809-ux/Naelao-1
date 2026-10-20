@@ -21,7 +21,7 @@ function fakeBucket() {
     async get(key: string) {
       if (!store.has(key)) return null;
       const v = store.get(key)!;
-      return { async text() { return v; } };
+      return { size: new TextEncoder().encode(v).byteLength, async text() { return v; }, async arrayBuffer() { return new TextEncoder().encode(v).buffer; } };
     },
     async put(key: string, value: string) { store.set(key, value); },
     async delete(keys: string | string[]) {

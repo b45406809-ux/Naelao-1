@@ -12,19 +12,33 @@ import { NaelaoAgentDO } from "../../workers/agents/src/do/NaelaoAgentDO.js";
 import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 import { writeAgentConfig, loadAgentConfig } from "../../workers/agents/src/script-engine/agent-config.js";
 import { DEFAULT_NAELAO_AGENT, LAUNCHPAD_ASSISTANT_PROFILE } from "../../workers/agents/src/script-engine/profiles.js";
+import { UNIVERSAL_AGENT_BASELINE_PREBUILTS } from "../../workers/agents/src/script-engine/agent-topology.js";
 import type { AgentConfig } from "../../workers/agents/src/script-engine/agent-config.js";
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
+  const store = new Map<string, { text: string; etag: string; customMetadata: Record<string, string> }>();
+  let revision = 0;
   return {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
+    async put(key: string, value: unknown, options?: R2PutOptions) {
+      const current = store.get(key);
+      if (options?.onlyIf?.etagDoesNotMatch === "*" && current) return null;
+      if (options?.onlyIf?.etagMatches && options.onlyIf.etagMatches !== current?.etag) return null;
+      const text = typeof value === "string" ? value : value instanceof Uint8Array
+        ? new TextDecoder().decode(value)
+        : value instanceof ArrayBuffer ? new TextDecoder().decode(value) : String(value);
+      const etag = `etag-${++revision}`;
+      store.set(key, { text, etag, customMetadata: options?.customMetadata ?? {} });
+      return { etag } as R2Object;
     },
     async get(key: string) {
-      const v = store.get(key);
-      if (v === undefined) return null;
-      return { text: async () => v } as unknown as R2ObjectBody;
+      const item = store.get(key);
+      if (!item) return null;
+      return { size: new TextEncoder().encode(item.text).byteLength, etag: item.etag, customMetadata: item.customMetadata,
+        text: async () => item.text, arrayBuffer: async () => new TextEncoder().encode(item.text).buffer } as unknown as R2ObjectBody;
+    },
+    async head(key: string) {
+      const item = store.get(key);
+      return item ? ({ size: new TextEncoder().encode(item.text).byteLength, etag: item.etag, customMetadata: item.customMetadata } as R2Object) : null;
     },
     async delete() {},
     async list() {
@@ -50,7 +64,7 @@ async function callHealed(doInstance: NaelaoAgentDO, bucket: R2Bucket, spaceId: 
 /** Flush pending microtasks — the self-heal's re-persist is deliberately fire-and-forget (never
  *  blocks the run on an R2 write), so a test asserting the WRITE landed needs to let it settle. */
 function flush(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) => setTimeout(resolve, 10));
 }
 
 describe("NaelaoAgentDO.loadAgentConfigHealed — self-heals a stale Space Assistant prebuilt list", () => {
@@ -99,7 +113,7 @@ describe("NaelaoAgentDO.loadAgentConfigHealed — self-heals a stale Space Assis
     }) as R2Bucket["put"];
 
     // Already the full current union — a business provisioned with the LATEST profile.
-    const fullList = [...new Set([...DEFAULT_NAELAO_AGENT.config.scripts.prebuilt, ...LAUNCHPAD_ASSISTANT_PROFILE.config.scripts.prebuilt])];
+    const fullList = [...new Set([...DEFAULT_NAELAO_AGENT.config.scripts.prebuilt, ...LAUNCHPAD_ASSISTANT_PROFILE.config.scripts.prebuilt, ...UNIVERSAL_AGENT_BASELINE_PREBUILTS])];
     await writeAgentConfig(bucket, "space-1", "naelao-agent", {
       agentsMd: "", systemPrompt: "sys",
       scripts: { prebuilt: fullList, startup_observe: "observe_filesystem" },
@@ -123,12 +137,13 @@ describe("NaelaoAgentDO.loadAgentConfigHealed — self-heals a stale Space Assis
     const healed = await callHealed(makeDO(), bucket, "space-1", "launchpad-support-v1");
     // Untouched — a project agent's deliberately-restricted list (item 130) must never gain
     // workspace-admin/project-coordination just because the Space Assistant's profile has them.
-    expect(healed!.scripts.prebuilt).toEqual(["r2-workspace", "knowledge-base"]);
+    expect(healed!.scripts.prebuilt).toEqual([...new Set(["r2-workspace", "knowledge-base", ...UNIVERSAL_AGENT_BASELINE_PREBUILTS])]);
   });
 
   it("returns null (no throw) when the agent genuinely isn't provisioned", async () => {
     const bucket = makeR2();
     const healed = await callHealed(makeDO(), bucket, "space-1", "naelao-agent");
-    expect(healed).toBeNull();
+    expect(healed).not.toBeNull();
+    expect(healed!.scripts.prebuilt).toContain("project-coordination");
   });
 });

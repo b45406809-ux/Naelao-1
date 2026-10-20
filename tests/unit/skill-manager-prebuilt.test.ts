@@ -23,10 +23,10 @@ function makeR2(): R2Bucket {
     async get(key: string) {
       if (!store.has(key)) return null;
       const text = store.get(key)!;
-      return { async text() { return text; } } as unknown as R2ObjectBody;
+      return { size: new TextEncoder().encode(text).byteLength, async text() { return text; }, async arrayBuffer() { return new TextEncoder().encode(text).buffer; } } as unknown as R2ObjectBody;
     },
     async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
+      return store.has(key) ? ({ size: new TextEncoder().encode(store.get(key)!).byteLength } as R2Object) : null;
     },
     async delete(keys: string | string[]) {
       for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k);
