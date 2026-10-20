@@ -33,6 +33,8 @@ import { deleteBytesCas, putBytesCas } from "../script-engine/r2-cas.js";
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // spec: "auto-release abandoned slots" via DO Alarms
 const DEFAULT_TTL_MS = 30 * 60 * 1000; // a slot no one explicitly releases within 30m is stale
+const MAX_SLOT_KEY_LENGTH = 512;
+const MAX_HOLDER_ID_LENGTH = 128;
 const FILE_LOCK_TTL_MS = 30_000;
 export const SLOT_HOLD_TTL_MS = 15_000;
 export const NODE_LEASE_TTL_MS = 15_000;
@@ -104,7 +106,9 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
         return this.handleRelease(request);
       }
       if (request.method === "GET" && url.pathname === "/status") {
-        return this.handleStatus(url.searchParams.get("key") ?? "");
+        const key = url.searchParams.get("key") ?? "";
+        if (!key || key.length > MAX_SLOT_KEY_LENGTH) return Response.json({ error_code: "bad_request" }, { status: 400 });
+        return this.handleStatus(key);
       }
       if (request.method === "POST" && (url.pathname === "/lock/acquire" || url.pathname === "/locks/acquire")) {
         return this.acquireLock(request);
@@ -389,19 +393,24 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   private async handleAcquire(request: Request): Promise<Response> {
-    const body = await request.json<{ key?: string; holder_id?: string; limit?: number; ttl_ms?: number }>().catch(() => ({}) as Record<string, never>);
-    const key = String(body.key ?? "");
-    const holderId = String(body.holder_id ?? "");
-    const limit = Number.isSafeInteger(body.limit) && body.limit! > 0
-      ? Math.min(body.limit!, 100)
-      : 3; // spec default maxConcurrentRuns; one key cannot be configured above 100 slots
-    // Only fall back to the default when the caller omitted ttl_ms entirely — an explicit
-    // non-positive value (e.g. a test simulating an already-expired slot) is honored, not
-    // silently overridden.
-    const ttlMs = typeof body.ttl_ms === "number" ? body.ttl_ms : DEFAULT_TTL_MS;
-    if (!key || !holderId) {
-      return Response.json({ error_code: "bad_request", message: "key and holder_id are required" }, { status: 400 });
+    let value: unknown;
+    try { value = await request.json(); } catch { return Response.json({ error_code: "bad_request" }, { status: 400 }); }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const body = value as { key?: unknown; holder_id?: unknown; limit?: unknown; ttl_ms?: unknown };
+    const key = body.key;
+    const holderId = body.holder_id;
+    if (typeof key !== "string" || !key || key.length > MAX_SLOT_KEY_LENGTH
+      || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH) {
+      return Response.json({ error_code: "bad_request", message: "key and holder_id must be bounded non-empty strings" }, { status: 400 });
     }
+    if (body.limit !== undefined && (!Number.isSafeInteger(body.limit) || (body.limit as number) < 1)) {
+      return Response.json({ error_code: "bad_request", message: "limit must be a positive integer" }, { status: 400 });
+    }
+    const limit = body.limit === undefined ? 3 : Math.min(body.limit as number, 100); // one key cannot be configured above 100 slots
+    if (body.ttl_ms !== undefined && (!Number.isSafeInteger(body.ttl_ms) || (body.ttl_ms as number) <= 0)) {
+      return Response.json({ error_code: "bad_request", message: "ttl_ms must be a positive integer" }, { status: 400 });
+    }
+    const ttlMs = body.ttl_ms === undefined ? DEFAULT_TTL_MS : Math.min(body.ttl_ms as number, DEFAULT_TTL_MS);
 
     const now = Date.now();
     // Sweep this key's own stale slots inline too — bounds worst-case staleness to one
@@ -429,12 +438,15 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   private async handleRelease(request: Request): Promise<Response> {
-    const body = await request.json<{ key?: string; holder_id?: string }>().catch(() => ({}) as Record<string, never>);
-    const key = String(body.key ?? "");
-    const holderId = String(body.holder_id ?? "");
-    if (key && holderId) {
-      this.ctx.storage.sql.exec(`DELETE FROM slots WHERE key = ? AND holder_id = ?`, key, holderId);
-    }
+    let value: unknown;
+    try { value = await request.json(); } catch { return Response.json({ error_code: "bad_request" }, { status: 400 }); }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const body = value as { key?: unknown; holder_id?: unknown };
+    const key = body.key;
+    const holderId = body.holder_id;
+    if (typeof key !== "string" || !key || key.length > MAX_SLOT_KEY_LENGTH
+      || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    this.ctx.storage.sql.exec(`DELETE FROM slots WHERE key = ? AND holder_id = ?`, key, holderId);
     return Response.json({ released: true });
   }
 

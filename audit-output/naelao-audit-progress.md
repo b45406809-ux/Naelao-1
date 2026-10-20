@@ -523,3 +523,7 @@ Validation: reconciliation/risk tests and RiskGuard ingress-boundary tests passe
 ## Decisions API retry ceiling (2026-10-20)
 
 The OpenRouter Decisions client accepted an arbitrary `maxRetries` override, so a bad deployment value could create unbounded request amplification and latency during provider outages. Retry overrides are now clamped to zero through two; invalid non-integer values use the default ceiling. Validation: full Decisions client suite passed 22/22 and Agent SDK TypeScript passed. Provider outage timing was exercised with mocked 503 responses only.
+
+## Concurrency slot input and lease bounds (2026-10-20)
+
+The concurrency slot endpoint converted arbitrary JSON values to string IDs, treated malformed limits as defaults, and accepted unbounded/negative TTL values. Slot acquisition and release now require bounded non-empty string IDs, reject malformed JSON and invalid/fractional limits or TTLs, and cap the lease at the existing 30-minute reclaim window. Oversized positive limits remain capped at 100 slots. Validation: ConcurrencyDO and ingress-boundary suites passed 12/12; Agents TypeScript passed. Other ConcurrencyDO operations (locks, pacer, appointment holds, node leases, and workspace publication) still require their own scoped audit.

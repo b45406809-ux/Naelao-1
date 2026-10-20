@@ -180,7 +180,27 @@ describe("ConcurrencyDO slot admission bounds", () => {
     const overflow = await acquire("holder-overflow", 1_000_000);
     expect(await overflow.json()).toMatchObject({ granted: false, active: 100, limit: 100 });
     const fractional = await acquire("holder-fractional", 0.5);
-    expect(await fractional.json()).toMatchObject({ granted: false, active: 100, limit: 3 });
+    expect(fractional.status).toBe(400);
+  });
+
+  it("rejects malformed slot input and clamps leases to the stale-slot ceiling", async () => {
+    const storage = Object.assign(createDOStorage(), {
+      getAlarm: async () => null,
+      setAlarm: async () => {},
+      deleteAlarm: async () => {},
+    });
+    const object = new ConcurrencyDO({ storage } as never, {});
+    const send = (body: string) => object.fetch(new Request("http://do/acquire", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    }));
+    expect((await send("null")).status).toBe(400);
+    expect((await send(JSON.stringify({ key: "x".repeat(513), holder_id: "worker" }))).status).toBe(400);
+    expect((await send(JSON.stringify({ key: "resource", holder_id: "worker", ttl_ms: 1.5 }))).status).toBe(400);
+    expect((await send(JSON.stringify({ key: "resource", holder_id: 42 }))).status).toBe(400);
+    const accepted = await send(JSON.stringify({ key: "resource", holder_id: "worker", ttl_ms: Number.MAX_SAFE_INTEGER }));
+    expect(accepted.status).toBe(200);
+    const row = storage.sql.exec("SELECT expires_at - acquired_at AS ttl FROM slots WHERE key = ?", "resource").toArray()[0] as { ttl: number };
+    expect(row.ttl).toBe(30 * 60 * 1000);
   });
 });
 
