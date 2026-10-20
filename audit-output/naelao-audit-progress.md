@@ -1031,3 +1031,9 @@ Reviewed `spawnSubagentVerb` and its RuntimeFileSystem/RuntimeAi contracts. Work
 Validation: Agent SDK suite passed 26 files / 129 tests; SDK typecheck passed; `git diff --check` passed. Regressions cover invalid/NaN/fractional budgets, file-count and total-size ceilings, bounded snapshot concurrency, and preservation of the existing changed-file reporting. The exported helper currently has no production call site in this repository; this hardens the public SDK contract but does not establish that a production planner uses this local helper.
 
 Refreshed the tracked tree after code commit `2695b1c8`: 1,969 tracked files and 1,763 source/config files; only the subagent helper and its focused test were checked in this slice.
+
+## Provider token-usage sanity ceiling (2026-10-20)
+
+Reviewed the Agent SDK usage parser and its Agents worker consumers. `validProviderUsage` accepted any nonnegative safe integer and returned it for use in run token totals and billing; two maximum safe integers could overflow when consumers summed them, and a single bogus report could manufacture an implausible charge. It now accepts only plain non-array objects whose input+output sum is at most 10 million tokens per call, rejects hostile property access cleanly, and exposes the ceiling as SDK metadata. This ceiling is deliberately above current provider context sizes; reports above it are treated as invalid and omitted from provider usage accounting.
+
+Validation: Agent SDK suite passed 27 files / 132 tests; its build and typecheck passed; Agents suite passed 148 files / 661 tests and Agents typecheck passed; root token-accounting regression module passed 4/4; `git diff --check` passed. Focused cases cover exact ceiling, over-ceiling totals, maximum-safe-integer overflow, arrays, throwing getters, and large estimate arithmetic.
