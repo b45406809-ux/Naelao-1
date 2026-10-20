@@ -631,3 +631,9 @@ Refreshed the tracked inventory after adding `workers/agents/src/workflows/workf
 
 
 Refreshed the tracked inventory after adding `workers/agents/src/workflows/agent-task-checkpoints.test.ts`: 1,943 tracked files and 1,737 source/config files. The tree snapshot is tied to code commit `e29bed43`; 191 scoped file checks remain recorded.
+
+The Agents worker suite subsequently passed **145 test files / 634 tests** with the workflow changes included. Agents TypeScript also passed in the focused validation cycle. This does not close the Agents file checklist.
+
+### Open workflow settlement race
+
+The effect receipt and usage counter now commit atomically, but another interleaving remains to verify/fix: `cancel()`/`finish()` can persist a terminal status and run budget cleanup while an already-authorized `effect()` is awaiting the external worker. If the effect returns after finalization, its receipt/usage can be committed too late for settlement (or final authorization can fail after the external action already completed). No production concurrency test currently covers terminal transition versus in-flight effects. Keep this as an open workflow correctness/billing finding; the current unit tests model concurrent journal updates, not interleaved DO RPCs or billing finalization.
