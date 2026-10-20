@@ -27,6 +27,18 @@ export const GADGET_STORAGE_LIMIT_BYTES: Record<GadgetTier, number> = {
 };
 export const TIER_ONE_IDLE_TTL_MS = 14 * 86_400 * 1000;
 const PUBLIC_ACTION_TTL_MS = 15 * 60 * 1000;
+const GADGET_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const PLATFORM_TABLES = new Set([
+  "gadget_metadata",
+  "gadget_schema_migrations",
+  "gadget_public_pages",
+  "consumed_public_action_nonces",
+  "canvas_collaboration_events",
+  "canvas_presence",
+  "gadget_action_audit",
+  "gadget_data",
+]);
+function isGadgetId(value: unknown): value is string { return typeof value === "string" && GADGET_ID_PATTERN.test(value); }
 
 interface PublicPageAction { key: string; fields: string[] }
 interface PublicPageClaims { spaceId: string; appId: string; slug: string; action: string; key: string; fields: string[]; nonce: string; exp: number }
@@ -40,24 +52,24 @@ function decodeToken(value: string): string {
 
 /** The exact stable name passed to DurableObjectNamespace.idFromName. */
 export function gadgetStorageKey(input: GadgetActorScope): string {
-  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.appId)) throw new Error("invalid_gadget_app_id");
-  if (!input.spaceId) throw new Error("gadget_space_id_required");
+  if (!isGadgetId(input.appId)) throw new Error("invalid_gadget_app_id");
+  if (!isGadgetId(input.spaceId)) throw new Error("invalid_gadget_space_id");
   if (input.scope === "SPACE_WIDE" || input.scope === "SPACE_SHARED") return `gadget:${input.appId}:space:${input.spaceId}`;
   if (input.scope === "SPACE_USER" || input.scope === "USER_PRIVATE") {
-    if (!input.userId) throw new Error("gadget_user_id_required");
+    if (!isGadgetId(input.userId)) throw new Error("invalid_gadget_user_id");
     return `gadget:${input.appId}:space:${input.spaceId}:user:${input.userId}`;
   }
   if (input.scope === "PROJECT_BOUND") {
-    if (!input.projectId) throw new Error("gadget_project_id_required");
+    if (!isGadgetId(input.projectId)) throw new Error("invalid_gadget_project_id");
     return `gadget:${input.appId}:project:${input.projectId}`;
   }
   if (input.scope === "PROJECT_SHARED") {
-    if (!input.projectId) throw new Error("gadget_project_id_required");
+    if (!isGadgetId(input.projectId)) throw new Error("invalid_gadget_project_id");
     return `gadget:${input.appId}:space:${input.spaceId}:project:${input.projectId}`;
   }
   if (input.scope === "PROJECT_USER") {
-    if (!input.projectId) throw new Error("gadget_project_id_required");
-    if (!input.userId) throw new Error("gadget_user_id_required");
+    if (!isGadgetId(input.projectId)) throw new Error("invalid_gadget_project_id");
+    if (!isGadgetId(input.userId)) throw new Error("invalid_gadget_user_id");
     return `gadget:${input.appId}:space:${input.spaceId}:project:${input.projectId}:user:${input.userId}`;
   }
   throw new Error("invalid_gadget_scope");
@@ -155,7 +167,9 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
   }
 
   private userTables(): string[] {
-    return [...this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('gadget_metadata') ORDER BY name")].map(row => row.name);
+    return [...this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+      .map(row => row.name)
+      .filter(name => !PLATFORM_TABLES.has(name));
   }
 
   private columns(table: string): Array<{ name: string; type: string; pk: number; notnull: number }> {

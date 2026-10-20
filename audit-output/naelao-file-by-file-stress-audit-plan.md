@@ -2382,7 +2382,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/domain-glossary.ts`
 - [ ] `workers/spaces/src/extension-storage-usage.test.ts`
 - [ ] `workers/spaces/src/extension-storage-usage.ts`
-- [ ] `workers/spaces/src/extensions-gadgets.test.ts`
+- [x] `workers/spaces/src/extensions-gadgets.test.ts`
 - [ ] `workers/spaces/src/foundry-and-cross-space.test.ts`
 - [ ] `workers/spaces/src/health.test.ts`
 - [ ] `workers/spaces/src/index.ts`
@@ -2418,7 +2418,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/do/FeatureFlagDO.ts`
 - [x] `workers/spaces/src/do/LockDO.test.ts`
 - [x] `workers/spaces/src/do/LockDO.ts`
-- [ ] `workers/spaces/src/do/MicroAppDO.ts`
+- [x] `workers/spaces/src/do/MicroAppDO.ts`
 - [ ] `workers/spaces/src/do/ProductUserDO-credit-reservations.test.ts`
 - [ ] `workers/spaces/src/do/ProductUserDO.ts`
 - [ ] `workers/spaces/src/do/SpaceDO-migrations.test.ts`
@@ -2437,7 +2437,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/do/domain-glossary.test.ts`
 - [ ] `workers/spaces/src/do/executive-contacts.test.ts`
 - [ ] `workers/spaces/src/do/extension-runtime-install.test.ts`
-- [ ] `workers/spaces/src/do/gadget-mcp-crud.test.ts`
+- [x] `workers/spaces/src/do/gadget-mcp-crud.test.ts`
 - [ ] `workers/spaces/src/do/project-spend-reservations.test.ts`
 - [ ] `workers/spaces/src/do/project-subspace-migration-preflight.test.ts`
 - [ ] `workers/spaces/src/do/provenance-ledger.test.ts`

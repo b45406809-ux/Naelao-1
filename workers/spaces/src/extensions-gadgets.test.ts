@@ -25,4 +25,10 @@ describe("gadget actor scope", () => {
     expect(gadgetStorageKey({ appId: "todo", scope: "PROJECT_SHARED", spaceId: "other", projectId: "p" })).not.toBe(projectShared);
     expect(gadgetStorageKey({ appId: "todo", scope: "PROJECT_USER", spaceId: "s", projectId: "p", userId: "v" })).not.toBe(projectUser);
   });
+
+  it("rejects identifiers containing namespace separators that can alias another scope", () => {
+    expect(() => gadgetStorageKey({ appId: "todo", scope: "SPACE_WIDE", spaceId: "s:user:u" })).toThrow("invalid_gadget_space_id");
+    expect(() => gadgetStorageKey({ appId: "todo", scope: "SPACE_USER", spaceId: "s", userId: "u:project:p" })).toThrow("invalid_gadget_user_id");
+    expect(() => gadgetStorageKey({ appId: "todo", scope: "PROJECT_SHARED", spaceId: "s", projectId: "p:other" })).toThrow("invalid_gadget_project_id");
+  });
 });

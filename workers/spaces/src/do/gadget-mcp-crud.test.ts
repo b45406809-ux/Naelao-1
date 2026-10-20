@@ -38,6 +38,11 @@ describe("Gadget MCP record operations", () => {
     const initialized = await gadget.fetch(new Request("http://gadget/initialize", { method: "POST", body: JSON.stringify({ appId: "journal", scope: "PROJECT_BOUND", gadgetTier: 2,
       defaultSchemaSql: "CREATE TABLE journal(id TEXT PRIMARY KEY, status TEXT NOT NULL, quantity REAL NOT NULL)" }) }));
     expect(initialized.status).toBe(201);
+    const listedTools = await gadget.fetch(new Request("http://gadget/mcp", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "list", method: "tools/list" }) }));
+    const listedBody = await listedTools.json() as { result: { schema: Array<{ table: string }> } };
+    expect(listedBody.result.schema.map(item => item.table)).toEqual(["journal"]);
+    expect(JSON.stringify(listedBody)).not.toContain("gadget_data");
     const call = async (name: string, args: Record<string, unknown>) => gadget.fetch(new Request("http://gadget/mcp", { method: "POST", headers: { "content-type": "application/json", "x-naelao-user-id": "owner-a" },
       body: JSON.stringify({ jsonrpc: "2.0", id: "test", method: "tools/call", params: { name: `app_journal_${name}`, arguments: args } }) }));
     const inserted = await call("insert", { table: "journal", record: { id: "trade-1", status: "open", quantity: 2 } });
@@ -50,6 +55,9 @@ describe("Gadget MCP record operations", () => {
     const boundedList = await call("list", { table: "journal", limit: "Infinity" });
     expect((await boundedList.json() as { result: { structuredContent: unknown[] } }).result.structuredContent).toHaveLength(1);
     expect((await call("update", { table: "journal", id: "trade-1", record: { unapproved: true } })).status).toBe(400);
+    const internalTable = await gadget.fetch(new Request("http://gadget/mcp", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "internal", method: "tools/call", params: { name: "app_journal_list", arguments: { table: "gadget_data" } } }) }));
+    expect(internalTable.status).toBe(400);
     expect((await call("delete", { table: "journal", id: "trade-1" })).status).toBe(200);
     const missing = await call("get", { table: "journal", id: "trade-1" });
     expect((await missing.json() as { result: { structuredContent: unknown } }).result.structuredContent).toBeNull();
