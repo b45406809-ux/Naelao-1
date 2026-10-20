@@ -95,7 +95,7 @@ function harness() {
     },
   };
   const ctx = { storage: { sql, getAlarm: async () => alarm, setAlarm: async (value: number) => { alarm = value; }, deleteAlarm: async () => { alarm = null; } } };
-  return { instance: new ConcurrencyDO(ctx as never, {}), locks, holds, nodeLeases, getAlarm: () => alarm };
+  return { instance: new ConcurrencyDO(ctx as never, {}), locks, holds, nodeLeases, pacers, getAlarm: () => alarm };
 }
 
 describe("ConcurrencyDO file mutexes", () => {
@@ -263,5 +263,29 @@ describe("ConcurrencyDO outbound pacing", () => {
     const releases = (await Promise.all(pending)).map((result) => result.releasedAt);
     expect(releases[5]! - releases[0]!).toBe(1_000);
     vi.useRealTimers();
+  });
+
+  it("rejects malformed pacing domains and rates before reserving state", async () => {
+    const h = harness();
+    const send = (body: string) => h.instance.fetch(new Request("http://do/outbound/pace", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    }));
+    expect((await send("null")).status).toBe(400);
+    expect((await send(JSON.stringify({ domain: 42 }))).status).toBe(400);
+    expect((await send(JSON.stringify({ domain: "ftp://example.com" }))).status).toBe(400);
+    expect((await send(JSON.stringify({ domain: "https://user:secret@example.com" }))).status).toBe(400);
+    expect((await send(JSON.stringify({ domain: "example.com", maxPerSecond: 1.5 }))).status).toBe(400);
+    expect(h.pacers.size).toBe(0);
+  });
+
+  it("rejects malformed appointment hold identifiers without storing rows", async () => {
+    const h = harness();
+    const send = (body: string) => h.instance.fetch(new Request("http://do/slot-holds/acquire", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    }));
+    expect((await send("null")).status).toBe(400);
+    expect((await send(JSON.stringify({ slotKey: "slot", holderId: 4 }))).status).toBe(400);
+    expect((await send(JSON.stringify({ calendarId: "cal", slotIsoTime: "tomorrow", holderId: "worker" }))).status).toBe(400);
+    expect(h.holds.size).toBe(0);
   });
 });

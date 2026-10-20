@@ -131,13 +131,17 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       if (request.method === "POST" && url.pathname === "/node-leases/release") return this.releaseNodeLease(request);
       if (request.method === "GET" && url.pathname === "/node-leases/status") return this.nodeLeaseStatus(url);
       if (request.method === "POST" && url.pathname === "/outbound/pace") {
-        const body = await request.json<{ domain?: string; maxPerSecond?: number }>().catch(() => ({} as { domain?: string; maxPerSecond?: number }));
-        if (!body.domain) return Response.json({ error_code: "bad_request", message: "domain is required" }, { status: 400 });
-        return Response.json(await this.paceOutboundRequest({ domain: body.domain, ...(body.maxPerSecond === undefined ? {} : { maxPerSecond: body.maxPerSecond }) }));
+        let body: unknown;
+        try { body = await request.json(); } catch { return Response.json({ error_code: "bad_request" }, { status: 400 }); }
+        if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+        const input = body as { domain?: unknown; maxPerSecond?: unknown };
+        if (typeof input.domain !== "string" || (input.maxPerSecond !== undefined && typeof input.maxPerSecond !== "number")) return Response.json({ error_code: "bad_request" }, { status: 400 });
+        try { return Response.json(await this.paceOutboundRequest({ domain: input.domain, ...(input.maxPerSecond === undefined ? {} : { maxPerSecond: input.maxPerSecond }) })); }
+        catch { return Response.json({ error_code: "bad_request" }, { status: 400 }); }
       }
-      if (request.method === "POST" && url.pathname === "/slot-holds/acquire") return this.acquireSlotHold(await request.json());
-      if (request.method === "POST" && url.pathname === "/slot-holds/confirm") return this.confirmSlotBooking(await request.json());
-      if (request.method === "POST" && url.pathname === "/slot-holds/release") return this.releaseSlotHold(await request.json());
+      if (request.method === "POST" && url.pathname === "/slot-holds/acquire") return this.acquireSlotHold(await request.json().catch(() => undefined));
+      if (request.method === "POST" && url.pathname === "/slot-holds/confirm") return this.confirmSlotBooking(await request.json().catch(() => undefined));
+      if (request.method === "POST" && url.pathname === "/slot-holds/release") return this.releaseSlotHold(await request.json().catch(() => undefined));
       return Response.json({ error_code: "not_found" }, { status: 404 });
     } catch (err) {
       return Response.json({ error_code: "internal_error", message: String(err) }, { status: 500 });
@@ -148,11 +152,17 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   async paceOutboundRequest(input: { domain: string; maxPerSecond?: number }): Promise<{ releasedAt: number; delayedMs: number }> {
     this.ensureInit();
     let domain: string;
-    try { domain = new URL(input.domain.includes("://") ? input.domain : `https://${input.domain}`).hostname.toLowerCase(); }
+    if (typeof input.domain !== "string" || !input.domain || input.domain.length > 512
+      || (input.maxPerSecond !== undefined && (!Number.isSafeInteger(input.maxPerSecond) || input.maxPerSecond < 1))) throw new Error("invalid_pacer_input");
+    try {
+      const parsed = new URL(input.domain.includes("://") ? input.domain : `https://${input.domain}`);
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || !parsed.hostname) throw new Error("invalid_domain");
+      domain = parsed.hostname.toLowerCase();
+    }
     catch { throw new Error("invalid_domain"); }
     // Five requests/second is a platform safety ceiling, not merely the default.  In
     // particular, do not let an untrusted connector raise the ceiling by passing 1000 here.
-    const rate = Math.max(1, Math.min(5, Math.floor(input.maxPerSecond ?? 5)));
+    const rate = Math.min(5, input.maxPerSecond ?? 5);
     const interval = Math.ceil(1_000 / rate);
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec(`SELECT next_release_at FROM outbound_pacers WHERE domain = ?`, domain).toArray() as Array<{ next_release_at: number }>;
@@ -349,13 +359,20 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
 
   async acquireSlotHold(input: unknown): Promise<Response> {
     this.ensureInit();
-    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-    const holderId = String(body["holderId"] ?? body["holder_id"] ?? "");
-    const suppliedKey = String(body["slotKey"] ?? body["slot_key"] ?? "");
-    const calendarId = String(body["calendarId"] ?? body["calendar_id"] ?? "");
-    const slotIsoTime = String(body["slotIsoTime"] ?? body["slot_iso_time"] ?? "");
-    const slotKey = suppliedKey || (calendarId && slotIsoTime ? `${calendarId}:${slotIsoTime}` : "");
-    if (!slotKey || !holderId) return Response.json({ success: false, reason: "INVALID_SLOT_HOLD" }, { status: 400 });
+    const body = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+    const holderId = body["holderId"] ?? body["holder_id"];
+    const suppliedKey = body["slotKey"] ?? body["slot_key"];
+    const calendarId = body["calendarId"] ?? body["calendar_id"];
+    const slotIsoTime = body["slotIsoTime"] ?? body["slot_iso_time"];
+    if (holderId !== undefined && (typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH)) return Response.json({ success: false, reason: "INVALID_SLOT_HOLD" }, { status: 400 });
+    if (suppliedKey !== undefined && (typeof suppliedKey !== "string" || !suppliedKey || suppliedKey.length > MAX_SLOT_KEY_LENGTH)) return Response.json({ success: false, reason: "INVALID_SLOT_HOLD" }, { status: 400 });
+    if ((calendarId !== undefined || slotIsoTime !== undefined) && (typeof calendarId !== "string" || !calendarId || calendarId.length > 256 || typeof slotIsoTime !== "string" || !slotIsoTime || slotIsoTime.length > 128 || !Number.isFinite(Date.parse(slotIsoTime)))) return Response.json({ success: false, reason: "INVALID_SLOT_HOLD" }, { status: 400 });
+    const holderIdText = typeof holderId === "string" ? holderId : "";
+    const suppliedKeyText = typeof suppliedKey === "string" ? suppliedKey : "";
+    const calendarIdText = typeof calendarId === "string" ? calendarId : "";
+    const slotIsoTimeText = typeof slotIsoTime === "string" ? slotIsoTime : "";
+    const slotKey = suppliedKeyText || (calendarIdText && slotIsoTimeText ? `${calendarIdText}:${slotIsoTimeText}` : "");
+    if (!slotKey || slotKey.length > MAX_SLOT_KEY_LENGTH || !holderIdText) return Response.json({ success: false, reason: "INVALID_SLOT_HOLD" }, { status: 400 });
     const now = Date.now();
     this.ctx.storage.sql.exec("DELETE FROM appointment_slot_holds WHERE confirmed=0 AND expires_at <= ?", now);
     const current = this.ctx.storage.sql.exec(
@@ -379,16 +396,17 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     this.ctx.storage.sql.exec(
       `INSERT INTO appointment_slot_holds(slot_key,holder_id,acquired_at,expires_at,confirmed) VALUES(?,?,?,?,0)
        ON CONFLICT(slot_key) DO UPDATE SET holder_id=excluded.holder_id,acquired_at=excluded.acquired_at,expires_at=excluded.expires_at,confirmed=0`,
-      slotKey, holderId, now, expiresAt);
+      slotKey, holderIdText, now, expiresAt);
     await this.scheduleNextAlarm();
-    return Response.json({ success: true, slotKey, holderId, ttlMs: SLOT_HOLD_TTL_MS, expiresAt });
+    return Response.json({ success: true, slotKey, holderId: holderIdText, ttlMs: SLOT_HOLD_TTL_MS, expiresAt });
   }
 
   async confirmSlotBooking(input: unknown): Promise<Response> {
     this.ensureInit();
-    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-    const slotKey = String(body["slotKey"] ?? body["slot_key"] ?? "");
-    const holderId = String(body["holderId"] ?? body["holder_id"] ?? "");
+    const body = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+    const slotKey = body["slotKey"] ?? body["slot_key"];
+    const holderId = body["holderId"] ?? body["holder_id"];
+    if (typeof slotKey !== "string" || !slotKey || slotKey.length > MAX_SLOT_KEY_LENGTH || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH) return Response.json({ success: false, reason: "INVALID_SLOT_HOLD" }, { status: 400 });
     const now = Date.now();
     const result = this.ctx.storage.sql.exec(
       "UPDATE appointment_slot_holds SET confirmed=1 WHERE slot_key=? AND holder_id=? AND confirmed=0 AND expires_at>?", slotKey, holderId, now);
@@ -398,9 +416,10 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
 
   async releaseSlotHold(input: unknown): Promise<Response> {
     this.ensureInit();
-    const body = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-    const slotKey = String(body["slotKey"] ?? body["slot_key"] ?? "");
-    const holderId = String(body["holderId"] ?? body["holder_id"] ?? "");
+    const body = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+    const slotKey = body["slotKey"] ?? body["slot_key"];
+    const holderId = body["holderId"] ?? body["holder_id"];
+    if (typeof slotKey !== "string" || !slotKey || slotKey.length > MAX_SLOT_KEY_LENGTH || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH) return Response.json({ success: false, reason: "INVALID_SLOT_HOLD" }, { status: 400 });
     const result = this.ctx.storage.sql.exec(
       "DELETE FROM appointment_slot_holds WHERE slot_key=? AND holder_id=? AND confirmed=0", slotKey, holderId);
     await this.scheduleNextAlarm();

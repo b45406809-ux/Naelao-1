@@ -535,3 +535,9 @@ Tracing ConcurrencyDO lock callers found that several callers discarded the fenc
 Validation: ConcurrencyDO, agent-config, R2 CAS, and workspace CAS tests passed (23 tests across 4 files); Agents TypeScript passed. Fencing tests use the DO SQLite test harness; no concurrent live Durable Object deployment test was run. The remaining ConcurrencyDO endpoints still need scoped review.
 
 The continued lock-endpoint pass also added strict JSON/object, key/holder, fencing-token, and TTL validation to acquire/renew/release. Positive lock TTLs remain capped at the existing 30-second file-lock maximum. Regression tests cover null JSON, string/fractional/unsafe TTLs, missing release tokens, and stale-token replay. Recheck: the same four targeted suites passed 24 tests and Agents TypeScript passed. The outbound pacer, appointment holds, node leases, and workspace publication remain on the ConcurrencyDO audit list.
+
+## Concurrency appointment holds and outbound pacer (2026-10-20)
+
+Continued the DO audit: appointment-hold acquisition/confirmation/release now reject malformed or oversized IDs instead of coercing arbitrary JSON values, and derived slot times must parse as dates. Pacer ingress now validates domain/rate types, accepts only HTTP(S) URLs without userinfo, and responds 400 on invalid requests without recording a reservation.
+
+Validation: ConcurrencyDO suite passed 12/12; Agents TypeScript passed. The 5 req/s cap and 15-second appointment lease behavior remain covered by existing tests. Node-lease and workspace-publication boundaries still require scoped review.
