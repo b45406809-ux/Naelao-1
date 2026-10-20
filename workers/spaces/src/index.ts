@@ -6498,12 +6498,14 @@ app.get("/spaces/:spaceId/product-users/me", async (c) => {
   if (role !== "product_end_user" || !userId) {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
   const row = await c.env.PLATFORM_DB.prepare(
     "SELECT email, display_name, first_seen_at, last_seen_at, suspended_at, email_verified_at, preferred_language FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
-  ).bind(spaceId, userId).first<{ email: string | null; display_name: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null; preferred_language: string | null }>();
+  ).bind(root.id, userId).first<{ email: string | null; display_name: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null; preferred_language: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
 
-  const stub = await productUserDoStub(c.env, spaceId, userId, tenantId);
+  const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
   const balanceRes = await stub.fetch(new Request("http://do/credits/balance"));
   const balance = await balanceRes.json<{ balance_credits: number }>();
 
@@ -6525,10 +6527,12 @@ app.get("/spaces/:spaceId/product-users/me", async (c) => {
 
 app.patch("/spaces/:spaceId/product-users/me", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { role, userId } = getCallerIdentity(c);
+  const { role, userId, tenantId } = getCallerIdentity(c);
   if (role !== "product_end_user" || !userId) {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
   const body = await c.req.json<{ display_name?: string; preferred_language?: string | null }>().catch(() => ({}) as { display_name?: string; preferred_language?: string | null });
   if (body.display_name === undefined && body.preferred_language === undefined) {
     return c.json({ error_code: "bad_request", message: "Nothing to update" }, 400);
@@ -6540,12 +6544,38 @@ app.patch("/spaces/:spaceId/product-users/me", async (c) => {
   const values: unknown[] = [];
   if (body.display_name !== undefined) { sets.push("display_name = ?"); values.push(body.display_name); }
   if (body.preferred_language !== undefined) { sets.push("preferred_language = ?"); values.push(body.preferred_language === null ? null : normalizePreferredLanguage(body.preferred_language)); }
-  values.push(spaceId, userId);
+  values.push(root.id, userId);
   const res = await c.env.PLATFORM_DB.prepare(
     `UPDATE product_end_users SET ${sets.join(", ")} WHERE product_space_id = ? AND end_user_id = ?`
   ).bind(...values).run();
   if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
   return c.json({ ok: true, ...(body.display_name !== undefined ? { display_name: body.display_name } : {}), ...(body.preferred_language !== undefined ? { preferred_language: body.preferred_language === null ? null : normalizePreferredLanguage(body.preferred_language) } : {}) });
+});
+
+// GET /spaces/:spaceId/product-users/me/export — portability export for the authenticated
+// end user. The DO contains session metadata, credits, conversation references, and preferences;
+// D1 contains the user's roster/profile fields. Credentials and password hashes are never returned.
+app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { role, userId, tenantId } = getCallerIdentity(c);
+  if (role !== "product_end_user" || !userId) {
+    return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
+  }
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
+  const profile = await c.env.PLATFORM_DB.prepare(
+    "SELECT email, display_name, phone_e164, phone_verified_at, first_seen_at, last_seen_at, suspended_at, email_verified_at, preferred_language, deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+  ).bind(root.id, userId).first<{ email: string | null; display_name: string | null; phone_e164: string | null; phone_verified_at: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null; preferred_language: string | null; deleted_at: string | null }>();
+  if (!profile) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
+  const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
+  const response = await stub.fetch(new Request("http://do/export"));
+  if (!response.ok) return c.json({ error_code: "data_export_unavailable" }, 502);
+  return c.json({
+    export_version: "1",
+    exported_at: new Date().toISOString(),
+    profile: { end_user_id: userId, ...profile },
+    product_user_data: await response.json(),
+  });
 });
 
 // DELETE /spaces/:spaceId/product-users/me — GDPR Art. 17, the direct inverse of GET (export)
@@ -6564,19 +6594,21 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   if (role !== "product_end_user" || !userId) {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
+  const root = await resolveProductRootSpace(c.env, spaceId);
+  if (!root || !tenantId || root.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
   const row = await c.env.PLATFORM_DB.prepare(
     "SELECT deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
-  ).bind(spaceId, userId).first<{ deleted_at: string | null }>();
+  ).bind(root.id, userId).first<{ deleted_at: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
 
-  const stub = await productUserDoStub(c.env, spaceId, userId, tenantId);
+  const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
   const eraseRes = await stub.fetch(new Request("http://do/erase", { method: "DELETE" }));
   const erased = await eraseRes.json<{ erased_at: string; sessions_deleted: number; conversations_deleted: number }>();
 
   if (!row.deleted_at) {
     await c.env.PLATFORM_DB.prepare(
-      "UPDATE product_end_users SET email = NULL, display_name = NULL, preferred_language = NULL, password_hash = NULL, deleted_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
-    ).bind(spaceId, userId).run();
+      "UPDATE product_end_users SET email = NULL, display_name = NULL, phone_e164 = NULL, phone_verified_at = NULL, email_verified_at = NULL, preferred_language = NULL, password_hash = NULL, last_seen_at = NULL, suspended_at = NULL, deleted_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
+    ).bind(root.id, userId).run();
   }
 
   return c.json({ erased: true, erased_at: erased.erased_at, sessions_deleted: erased.sessions_deleted, conversations_deleted: erased.conversations_deleted });

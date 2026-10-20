@@ -2394,7 +2394,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/health.test.ts`
 - [x] `workers/spaces/src/index.ts`
 - [ ] `workers/spaces/src/infra-migrations.test.ts`
-- [ ] `workers/spaces/src/language-preference-routes.test.ts`
+- [x] `workers/spaces/src/language-preference-routes.test.ts`
 - [ ] `workers/spaces/src/launchpad-manifest.ts`
 - [ ] `workers/spaces/src/private-scratchpad.test.ts`
 - [x] `workers/spaces/src/product-end-user-air-gap.test.ts`

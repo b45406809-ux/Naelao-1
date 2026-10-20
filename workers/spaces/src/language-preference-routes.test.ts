@@ -8,13 +8,22 @@ type Profile = {
   last_seen_at: string | null;
   suspended_at: string | null;
   email_verified_at: string | null;
+  phone_e164?: string | null;
+  phone_verified_at?: string | null;
+  password_hash?: string | null;
   deleted_at: string | null;
   preferred_language: string | null;
 };
 
 function testEnv() {
+  const spaces = new Map([
+    ["product-a", { tenant_id: "tenant-a", parent_space_id: null as string | null }],
+    ["business-a", { tenant_id: "tenant-a", parent_space_id: "product-a" }],
+    ["product-b", { tenant_id: "tenant-a", parent_space_id: null as string | null }],
+    ["product-c", { tenant_id: "tenant-b", parent_space_id: null as string | null }],
+  ]);
   const productProfiles = new Map<string, Profile>([
-    ["product-a:user-a", { email: "a@example.invalid", display_name: null, first_seen_at: "now", last_seen_at: null, suspended_at: null, email_verified_at: "now", deleted_at: null, preferred_language: null }],
+    ["product-a:user-a", { email: "a@example.invalid", display_name: "A", first_seen_at: "now", last_seen_at: "recent", suspended_at: null, email_verified_at: "now", phone_e164: "+14155550100", phone_verified_at: "now", password_hash: "private", deleted_at: null, preferred_language: null }],
     ["product-a:user-b", { email: "b@example.invalid", display_name: null, first_seen_at: "now", last_seen_at: null, suspended_at: null, email_verified_at: "now", deleted_at: null, preferred_language: null }],
     ["product-b:user-a", { email: "a@example.invalid", display_name: null, first_seen_at: "now", last_seen_at: null, suspended_at: null, email_verified_at: "now", deleted_at: null, preferred_language: null }],
   ]);
@@ -25,6 +34,11 @@ function testEnv() {
         bind(...values: unknown[]) {
           return {
             async first() {
+              if (sql.includes("SELECT tenant_id, parent_space_id FROM spaces")) return spaces.get(String(values[0])) ?? null;
+              if (sql.includes("SELECT id, tenant_id FROM spaces")) {
+                const root = [...spaces.entries()].find(([id, row]) => id === String(values[0]) && row.parent_space_id === null);
+                return root ? { id: root[0], tenant_id: root[1].tenant_id } : null;
+              }
               if (sql.includes("FROM users WHERE id")) return members.has(String(values[0])) ? { preferred_language: members.get(String(values[0])) } : null;
               if (sql.includes("FROM product_end_users")) {
                 const key = `${String(values[0])}:${String(values[1])}`;
@@ -45,6 +59,17 @@ function testEnv() {
                 const userId = String(values.at(-1));
                 const profile = productProfiles.get(`${spaceId}:${userId}`);
                 if (!profile) return { meta: { changes: 0 } };
+                if (sql.includes("phone_e164 = NULL")) {
+                  profile.email = null;
+                  profile.display_name = null;
+                  profile.phone_e164 = null;
+                  profile.phone_verified_at = null;
+                  profile.email_verified_at = null;
+                  profile.preferred_language = null;
+                  profile.password_hash = null;
+                  profile.last_seen_at = null;
+                  profile.deleted_at = "now";
+                }
                 if (sql.includes("preferred_language = ?")) profile.preferred_language = values[0] as string | null;
                 return { meta: { changes: 1 } };
               }
@@ -55,31 +80,37 @@ function testEnv() {
       };
     },
   };
+  const productUserCalls: string[] = [];
   const PRODUCT_USER_DO = {
     idFromName: (name: string) => name,
-    get: () => ({ fetch: async () => Response.json({ balance_credits: 4 }) }),
+    get: () => ({ fetch: async (request: Request) => {
+      productUserCalls.push(new URL(request.url).pathname);
+      if (new URL(request.url).pathname === "/export") return Response.json({ credit_ledger: [], credit_balance: 4, conversations: [], preferences: {} });
+      if (new URL(request.url).pathname === "/erase") return Response.json({ erased_at: "now", sessions_deleted: 1, conversations_deleted: 2 });
+      return Response.json({ balance_credits: 4 });
+    } }),
   };
-  return { PLATFORM_DB, PRODUCT_USER_DO, PLATFORM_SECRET: "test-secret" } as never;
+  return { PLATFORM_DB, PRODUCT_USER_DO, productUserCalls, PLATFORM_SECRET: "test-secret" };
 }
 
 const env = testEnv();
 
-async function call(path: string, method: string, role: string, userId: string, body?: unknown) {
+async function call(path: string, method: string, role: string, userId: string, body?: unknown, tenantId = "tenant-a") {
   const request = new Request(`https://worker.test${path}`, {
     method,
-    headers: { "x-naelao-role": role, "x-naelao-user-id": userId, "x-naelao-tenant-id": "tenant-a", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: { "x-naelao-role": role, "x-naelao-user-id": userId, "x-naelao-tenant-id": tenantId, ...(body === undefined ? {} : { "content-type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return worker.fetch(request, env, { waitUntil: () => undefined } as never);
+  return worker.fetch(request, env as never, { waitUntil: () => undefined } as never);
 }
 
 describe("language preference profile routes", () => {
   it("round-trips, clears, rejects malformed tags, and ignores a supplied product user id", async () => {
-    const path = "/spaces/product-a/product-users/me";
+    const path = "/spaces/business-a/product-users/me";
     const updated = await call(path, "PATCH", "product_end_user", "user-a", { preferred_language: "fr-ca", end_user_id: "user-b" });
     expect(updated.status).toBe(200);
     expect(await updated.json()).toMatchObject({ preferred_language: "fr-CA" });
-    const read = await call(path, "GET", "product_end_user", "user-a");
+    const read = await call("/spaces/product-a/product-users/me", "GET", "product_end_user", "user-a");
     expect(await read.json()).toMatchObject({ preferred_language: "fr-CA" });
     const isolated = await call("/spaces/product-a/product-users/me", "GET", "product_end_user", "user-b");
     expect(await isolated.json()).toMatchObject({ preferred_language: null });
@@ -90,6 +121,31 @@ describe("language preference profile routes", () => {
     const cleared = await call(path, "PATCH", "product_end_user", "user-a", { preferred_language: null });
     expect(cleared.status).toBe(200);
     expect(await cleared.json()).toMatchObject({ preferred_language: null });
+  });
+
+  it("exports the authenticated product user's profile and DO data from the product root when called inside a business", async () => {
+    const child = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a");
+    expect(child.status).toBe(200);
+    const data = await child.json() as { profile: { end_user_id: string; email: string; phone_e164: string }; product_user_data: { credit_balance: number } };
+    expect(data.profile).toMatchObject({ end_user_id: "user-a", email: "a@example.invalid", phone_e164: "+14155550100" });
+    expect(data.product_user_data).toMatchObject({ credit_balance: 4 });
+    expect(env.productUserCalls).toContain("/export");
+  });
+
+  it("erases the product-root identity and phone data when requested from a child business", async () => {
+    const response = await call("/spaces/business-a/product-users/me", "DELETE", "product_end_user", "user-a");
+    expect(response.status).toBe(200);
+    expect(env.productUserCalls).toContain("/erase");
+    expect(await response.json()).toMatchObject({ erased: true, sessions_deleted: 1, conversations_deleted: 2 });
+    const readAfterErase = await call("/spaces/product-a/product-users/me/export", "GET", "product_end_user", "user-a");
+    expect(await readAfterErase.json()).toMatchObject({ profile: { email: null, phone_e164: null, phone_verified_at: null } });
+  });
+
+  it("does not resolve a product user's profile across a tenant boundary", async () => {
+    const response = await call("/spaces/product-c/product-users/me/export", "GET", "product_end_user", "user-a");
+    expect(response.status).toBe(404);
+    const noTenant = await call("/spaces/product-a/product-users/me/export", "GET", "product_end_user", "user-a", undefined, "");
+    expect(noTenant.status).toBe(404);
   });
 
   it("round-trips and clears a platform member preference on their own account", async () => {
