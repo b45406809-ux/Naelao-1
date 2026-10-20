@@ -41,7 +41,8 @@ import { inheritTemplateSkills } from "../../agents/src/script-engine/federation
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 import { resolveTenancy } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
-import { isProvisionMessage, type ProvisionMessage } from "./message-contract.js";
+import { type ProvisionMessage } from "./message-contract.js";
+import { handleProvisionQueueMessage } from "./queue-message-handler.js";
 
 async function responseErrorDetail(response: Response): Promise<string> {
   return (await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 500);
@@ -1163,22 +1164,10 @@ async function deprovisionSpace(msg: ProvisionMessage, env: Env): Promise<void> 
 
 export async function queue(batch: MessageBatch<ProvisionMessage>, env: Env): Promise<void> {
   for (const message of batch.messages) {
-    if (!isProvisionMessage(message.body)) {
-      console.warn("[provisioner] Discarding malformed queue message");
-      message.ack();
-      continue;
-    }
-    try {
-      if (message.body.type === "space_provision") {
-        await provisionSpace(message.body, env);
-      } else if (message.body.type === "space_deprovision") {
-        await deprovisionSpace(message.body, env);
-      }
-      message.ack();
-    } catch (err) {
-      console.error("[provisioner] Error processing message:", err);
-      message.retry();
-    }
+    await handleProvisionQueueMessage(message, {
+      provision: (body) => provisionSpace(body, env),
+      deprovision: (body) => deprovisionSpace(body, env),
+    });
   }
 }
 

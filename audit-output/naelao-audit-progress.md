@@ -850,3 +850,9 @@ Refreshed the tracked tree after code commit `6600e188`; tracked/source counts a
 Erasure follow-up: traced the D1 recovery tables and found password-reset tokens, email-verification tokens, and WhatsApp OTP/magic-link challenge records also survived anonymization. The self-service erasure now clears all three user-scoped tables before anonymizing the profile; retries remain safe if a D1 delete or update fails. Regression coverage asserts all three cleanup statements. Focused route tests passed 5/5 and the full Spaces suite passed 64 files / 247 tests with Spaces TypeScript and `git diff --check` clean.
 
 Refreshed the tracked inventory at code commit `cd8cc433`; counts remain 1954 tracked files / 1748 source or executable-configuration files.
+
+## Provisioner queue handling and test wiring (2026-10-20)
+
+Completed the queue-handler slice by separating message dispatch from the Cloudflare batch wrapper so ack/retry decisions can be stress-tested directly. Malformed payloads are acknowledged without side effects; valid provision/deprovision messages are acknowledged only after success; handler failures request retry. Added a Provisioner Vitest project and package `test` script because the workspace previously had no project for this worker, which would have left its tests out of CI's normal test graph.
+
+Validation: standard Provisioner Vitest project passed 2 files / 16 tests; Provisioner TypeScript passed; Wrangler deploy dry-run bundled successfully at 14.2 MB upload / 2.57 MB gzip and showed the configured production bindings; `git diff --check` passed. The full D1/R2/SpaceDO provision, rollback, and dead-letter lifecycle still needs a service-binding harness or staging run. Provisioner package/config files and queue contract/dispatch implementation/tests are checked; the large `index.ts` remains unchecked as a whole.

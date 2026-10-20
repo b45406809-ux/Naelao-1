@@ -2301,9 +2301,9 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/provisioner`
 
-- [ ] `workers/provisioner/package.json`
-- [ ] `workers/provisioner/tsconfig.json`
-- [ ] `workers/provisioner/wrangler.toml`
+- [x] `workers/provisioner/package.json`
+- [x] `workers/provisioner/tsconfig.json`
+- [x] `workers/provisioner/wrangler.toml`
 
 ### `workers/provisioner/src`
 
