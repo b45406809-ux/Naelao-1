@@ -91,7 +91,7 @@ import {
 } from "./channels/agentmail.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 import { seedTemplateProjects, seedGeneralProject } from "./launchpad/bootstrap.js";
-import { onboardingAutonomyPolicy } from "./launchpad/autonomy-policy.js";
+import { applyOnboardingAutonomyPolicy } from "./launchpad/autonomy-policy.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 import { findAgentTemplate, agentTemplateSummaries, agentTemplateToConfig, customAgentToConfig } from "./agent-templates.js";
 import { ARCHETYPE_PRESETS, isKnownArchetype, clampScriptsToArchetype } from "./script-engine/agent-archetypes.js";
@@ -8688,27 +8688,19 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   if (!alreadyComplete) {
     const preferences = (cfg["preferences"] as Record<string, unknown> | undefined) ?? {};
     const autonomyPrompt = promptsForTemplates(bootstrapTemplateIds).find((p) => p.id === "autonomy");
-    const autonomyPolicy = onboardingAutonomyPolicy(autonomyPrompt?.options, preferences["autonomy"]);
-    if (autonomyPolicy) {
-      const policyResponse = await c.env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/assistant-policy`,
-        {
-          method: "PATCH",
-          headers: {
-            "content-type": "application/json",
-            "x-naelao-tenant-id": tenantId,
-            "x-naelao-internal-token": bootstrapInternalToken,
-          },
-          body: JSON.stringify(autonomyPolicy),
-        }
-      ));
-      if (!policyResponse.ok) {
-        console.error(`[bootstrap] autonomy policy update failed for ${spaceId}: ${policyResponse.status}`);
-        return c.json(
-          { error_code: "autonomy_policy_unavailable", message: "Could not apply the selected autonomy setting. Retry setup to continue." },
-          502
-        );
-      }
+    const autonomyResult = await applyOnboardingAutonomyPolicy({
+      options: autonomyPrompt?.options,
+      answer: preferences["autonomy"],
+      policyUrl: `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/assistant-policy`,
+      headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
+      fetch: (request) => c.env.SPACES_WORKER.fetch(request),
+    });
+    if (autonomyResult.configured && !autonomyResult.applied) {
+      console.error(`[bootstrap] autonomy policy update failed for ${spaceId}`);
+      return c.json(
+        { error_code: "autonomy_policy_unavailable", message: "Could not apply the selected autonomy setting. Retry setup to continue." },
+        502
+      );
     }
   }
   const seededProjects = await seedTemplateProjects(bootstrapDeps, spaceId, tenantId, projectSeeds);

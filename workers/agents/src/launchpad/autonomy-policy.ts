@@ -12,3 +12,27 @@ export function onboardingAutonomyPolicy(
   if (selected === 2) return { approval_mode: "yolo" };
   return null;
 }
+
+/** Apply a recognized bootstrap choice to the runtime policy endpoint. Keep the network
+ * operation here so the compiler and fail-closed behavior can be tested without a full
+ * Cloudflare Worker environment. */
+export async function applyOnboardingAutonomyPolicy(input: {
+  options: readonly string[] | undefined;
+  answer: unknown;
+  policyUrl: string;
+  headers: Record<string, string>;
+  fetch: (request: Request) => Promise<Response>;
+}): Promise<{ configured: boolean; applied: boolean }> {
+  const policy = onboardingAutonomyPolicy(input.options, input.answer);
+  if (!policy) return { configured: false, applied: true };
+  try {
+    const response = await input.fetch(new Request(input.policyUrl, {
+      method: "PATCH",
+      headers: { ...input.headers, "content-type": "application/json" },
+      body: JSON.stringify(policy),
+    }));
+    return { configured: true, applied: response.ok };
+  } catch {
+    return { configured: true, applied: false };
+  }
+}
