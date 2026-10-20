@@ -67,7 +67,13 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     const prepared = await this.journal.prepareEffect("agent-run", "agent.run", await workflowHash(taskId));
     return prepared.created;
   }
-  async putArtifact(runId: string, value: unknown): Promise<WorkflowCheckpointPointer> { return putWorkflowArtifact(this.env, await this.authorize(runId), value); }
+  async putArtifact(runId: string, value: unknown): Promise<WorkflowCheckpointPointer> {
+    const identity = await this.authorize(runId);
+    return putWorkflowArtifact(this.env, identity, value, async (pointer) => {
+      validateWorkflowPointer(identity, pointer);
+      await this.journal.reserveArtifact(pointer);
+    });
+  }
   async readArtifact(runId: string, pointer: WorkflowCheckpointPointer): Promise<unknown> { return readWorkflowArtifact(this.env, await this.authorize(runId), pointer); }
   async effect(runId: string, key: string, operation: string, params: Record<string, unknown>): Promise<unknown> {
     const identity = await this.authorize(runId);
@@ -92,7 +98,7 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       let result: unknown;
       try { result = JSON.parse(await readBoundedResponseText(response, 4 * 1024 * 1024)); }
       catch { throw new Error("workflow_effect_result_invalid_or_too_large"); }
-      const pointer = await putWorkflowArtifact(this.env, identity, result);
+      const pointer = await this.putArtifact(runId, result);
       const credits = await reportWorkflowStepInfraUsage(this.env as Env, identity.tenantId, identity.spaceId, Date.now() - started, runId + ":" + key, false,
         { ...(identity.projectId ? { projectId: identity.projectId } : {}), ...(identity.installationId ? { installationId: identity.installationId } : {}), runId });
       // Receipt and measured usage must commit together. If the worker dies after the

@@ -37,7 +37,7 @@ export async function checkpointAgentTask(env: Env, runId: string, params: Agent
         const pointer = await target.do(name, options, async () => {
           await stub.authorize(runId);
           const result = await callback();
-          return putWorkflowArtifact(env, pinned, result === undefined ? null : JSON.parse(JSON.stringify(result)));
+          return stub.putArtifact(runId, result === undefined ? null : JSON.parse(JSON.stringify(result)));
         });
         await stub.authorize(runId);
         return readWorkflowArtifact(env, pinned, pointer);

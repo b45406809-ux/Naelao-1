@@ -653,3 +653,9 @@ The Market Radar route loaded every verified signal from the previous 30 days, s
 Validation: Market Radar suite passed 5/5; Spaces TypeScript and `git diff --check` passed. The regression feeds 120 mixed configured/unconfigured candidates and proves preselection caps eligible work at five. No live DB growth or OpenRouter load was run.
 
 After the targeted route pass, the complete Spaces worker suite passed **57 test files / 196 tests**. The full suite is regression evidence for this worker snapshot; it is not a complete Spaces source-file review.
+
+### Workflow artifact accumulation cap
+
+The per-object artifact size was bounded, but repeated workflow steps could create an unbounded number of R2 results. The journal now tracks unique artifact keys and cumulative bytes per run, initialized with the input artifact. Checkpoint writes reserve quota transactionally before R2 writes; identical content-addressed artifacts do not double-count. Runs are capped at 256 artifacts and 64 MiB total. Agent-task step results and dynamic workflow results now pass through the same quota boundary.
+
+Validation: workflow-state, WorkflowRunDO, and agent-task checkpoint suites passed 12/12; Agents TypeScript and `git diff --check` passed. Tests cover idempotent duplicate artifact reservation and both count and byte limits. R2 artifact retention after run expiry is still unimplemented: quota bounds each run, but expired artifacts and immutable code objects need an explicit cleanup/retention policy that preserves replay protection and result access.

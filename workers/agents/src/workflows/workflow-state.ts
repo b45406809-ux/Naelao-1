@@ -11,11 +11,16 @@ export interface WorkflowJournalRecord extends DurableWorkflowRecord {
   budgetKey?: string;
   budgetCredits?: number;
   usedCredits: number;
+  artifactKeys: string[];
+  artifactBytes: number;
   activeEffects: string[];
   usageUncertain: boolean;
   launched: boolean;
   cleanupPending: boolean;
 }
+
+export const MAX_WORKFLOW_ARTIFACTS = 256;
+export const MAX_WORKFLOW_ARTIFACT_BYTES = 64 * 1024 * 1024;
 
 /** The journal is persisted by WorkflowRunDO. No memory-only replay protection. */
 export class WorkflowJournal {
@@ -34,7 +39,7 @@ export class WorkflowJournal {
         if (JSON.stringify(oldIdentity) !== JSON.stringify(newIdentity) || existing.inputDigest !== input.sha256) throw new Error("workflow_start_key_conflict");
         return existing;
       }
-      const record: WorkflowJournalRecord = { identity, input, inputDigest: input.sha256, ...budget, usedCredits: 0, activeEffects: [], usageUncertain: false, status: "queued", attempt: 1, updatedAt: Date.now(), launched: false, cleanupPending: false };
+      const record: WorkflowJournalRecord = { identity, input, inputDigest: input.sha256, ...budget, usedCredits: 0, artifactKeys: [input.r2_key], artifactBytes: input.bytes, activeEffects: [], usageUncertain: false, status: "queued", attempt: 1, updatedAt: Date.now(), launched: false, cleanupPending: false };
       await storage.put("run", record);
       return record;
     });
@@ -51,6 +56,19 @@ export class WorkflowJournal {
       if (!Number.isFinite(usedCredits)) throw new Error("workflow_usage_overflow");
       await storage.put("run", { ...record, usedCredits, updatedAt: Date.now() });
       return usedCredits;
+    });
+  }
+  async reserveArtifact(pointer: WorkflowCheckpointPointer): Promise<void> {
+    if (!pointer || typeof pointer.r2_key !== "string" || !Number.isSafeInteger(pointer.bytes) || pointer.bytes < 0) throw new Error("workflow_artifact_pointer_invalid");
+    await this.storage.transaction(async (storage) => {
+      const run = await storage.get<WorkflowJournalRecord>("run");
+      if (!run) throw new Error("workflow_not_found");
+      if (isTerminalWorkflow(run.status) || run.cleanupPending) throw new Error("workflow_already_terminal");
+      const keys = run.artifactKeys ?? [run.input.r2_key];
+      if (keys.includes(pointer.r2_key)) return;
+      const bytes = (run.artifactBytes ?? run.input.bytes) + pointer.bytes;
+      if (keys.length >= MAX_WORKFLOW_ARTIFACTS || !Number.isSafeInteger(bytes) || bytes > MAX_WORKFLOW_ARTIFACT_BYTES) throw new Error("workflow_artifact_budget_exceeded");
+      await storage.put("run", { ...run, artifactKeys: [...keys, pointer.r2_key], artifactBytes: bytes, updatedAt: Date.now() });
     });
   }
   async transition(status: WorkflowJournalRecord["status"], result?: WorkflowCheckpointPointer, error?: string): Promise<WorkflowJournalRecord> {

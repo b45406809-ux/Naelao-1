@@ -3,6 +3,7 @@ import { WorkflowJournal, type WorkflowJournalRecord, type WorkflowJournalStorag
 
 function storageFixture() {
   const values = new Map<string, unknown>();
+  const input = { schema: 1 as const, r2_key: "workflow-artifacts/tenant/space/run/input.json", sha256: "b".repeat(64), bytes: 2 };
   let transactionTail: Promise<unknown> = Promise.resolve();
   const storage: WorkflowJournalStorage = {
     get: async <T>(key: string) => values.get(key) as T | undefined,
@@ -13,7 +14,7 @@ function storageFixture() {
       return result;
     },
   };
-  values.set("run", { usedCredits: 0, activeEffects: [], usageUncertain: false } as WorkflowJournalRecord);
+  values.set("run", { usedCredits: 0, activeEffects: [], usageUncertain: false, input, artifactKeys: [input.r2_key], artifactBytes: input.bytes, cleanupPending: false, status: "running" } as WorkflowJournalRecord);
   return { storage, values };
 }
 
@@ -76,5 +77,17 @@ describe("WorkflowJournal usage accounting", () => {
     expect((await journal.read()).usageUncertain).toBe(true);
     await journal.markIndeterminate(effect);
     expect((await journal.read()).usageUncertain).toBe(true);
+  });
+
+  it("caps cumulative artifact count and bytes while treating identical artifacts idempotently", async () => {
+    const fixture = storageFixture();
+    const journal = new WorkflowJournal(fixture.storage);
+    const pointer = (index: number, bytes = 1) => ({ schema: 1 as const, r2_key: `workflow-artifacts/tenant/space/run/${index}.json`, sha256: "a".repeat(64), bytes });
+    await journal.reserveArtifact(pointer(1));
+    await journal.reserveArtifact(pointer(1));
+    expect((await journal.read()).artifactKeys).toHaveLength(2);
+    await expect(journal.reserveArtifact(pointer(2, 64 * 1024 * 1024))).rejects.toThrow("workflow_artifact_budget_exceeded");
+    for (let index = 2; index < 256; index++) await journal.reserveArtifact(pointer(index));
+    await expect(journal.reserveArtifact(pointer(256))).rejects.toThrow("workflow_artifact_budget_exceeded");
   });
 });

@@ -140,11 +140,12 @@ export function assertDeclaredExtensionWorkflow(installation: WorkflowInstallati
   if (!declared.id || !declared.entry || !Array.isArray(declared.toolNames)) throw new Error("workflow_declaration_invalid");
   return { id: declared.id, entry: declared.entry, toolNames: declared.toolNames };
 }
-export async function putWorkflowArtifact(env: DurableWorkflowHostEnv, identity: DurableWorkflowIdentity, value: unknown): Promise<WorkflowCheckpointPointer> {
+export async function putWorkflowArtifact(env: DurableWorkflowHostEnv, identity: DurableWorkflowIdentity, value: unknown, beforePut?: (pointer: WorkflowCheckpointPointer) => Promise<void>): Promise<WorkflowCheckpointPointer> {
   if (!env.SCRIPTS_R2) throw new Error("workflow_artifacts_unavailable");
   const json = serializeWorkflowCheckpoint(value, 4 * 1024 * 1024);
   const hash = await workflowHash(json);
   const pointer: WorkflowCheckpointPointer = { schema: 1, r2_key: workflowArtifactPrefix(identity) + hash + ".json", sha256: hash, bytes: new TextEncoder().encode(json).byteLength };
+  if (beforePut) await beforePut(pointer);
   await env.SCRIPTS_R2.put(pointer.r2_key, json, { httpMetadata: { contentType: "application/json" } });
   serializeWorkflowCheckpoint(pointer);
   return pointer;
