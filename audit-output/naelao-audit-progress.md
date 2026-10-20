@@ -465,3 +465,9 @@ Validation: `tests/unit/credential-hierarchy.test.ts` passed 38/38 and Credentia
 The root code-runner suite still asserted removed guest interfaces: ambient `fetch`, direct `ctx.browser` and `ctx.mcp`, and automatic container promotion for unresolved imports. Those assertions contradicted the current explicit-RPC and host-authorization design. Updated the fake Worker Loader to execute the split `policy.js` / `guest.js` / `main.js` module graph, then replaced obsolete cases with tests proving that ambient egress and direct browser/MCP objects are absent, tool RPC requires an explicitly authorized capability, undeclared imports are rejected before isolate creation, browser execution remains behind the host grant path, and container execution requires actor/run identity. Marketplace requests without host-resolved installations fail closed and never fall back to the base sandbox.
 
 Validation: `tests/unit/code-runner.test.ts` passed 17/17; Agents TypeScript check and focused Biome check passed; `git diff --check` passed. This suite does not exercise a live Worker Loader, browser worker, MCP Hub, or container deployment. The workspace-wide historical root baseline still requires a complete rerun after these fixture corrections.
+
+## Product end-user authentication fixture migration coverage (2026-10-20)
+
+The root product-end-user suite created its own compact D1 schema and omitted the real `users` base migration plus migration 0096, even though current routes write/read `preferred_language` for both platform users and product end users. Added migrations 0001 and 0096 to the fixture. This restores the GDPR erasure route tests and covers current preferred-language schema without changing production behavior.
+
+Validation: `tests/unit/product-end-user-auth.test.ts` passed all 36 tests, including signup/login, session scope, email verification/reset, language preference, and GDPR erasure/idempotence. No live account or production data was accessed.
