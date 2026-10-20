@@ -42,6 +42,7 @@ function makeEnv(opts: {
           total_content_chars: messages.reduce((sum, message) => sum + message.content.length, 0) });
       }
       if (url.pathname.endsWith("/compact-scope")) return Response.json({ project_id: null, owned_by_caller: false, private_scratchpad: false });
+      if (url.pathname.endsWith("/projects/project-private/members")) return Response.json({ data: [] });
       if (url.pathname.endsWith("/members")) return Response.json({ data: [{ user_id: "user-1", role: "owner" }] });
       return new Response("not found", { status: 404 });
     },
@@ -58,12 +59,14 @@ function makeEnv(opts: {
   } as unknown as AgentsEnv;
 }
 
-async function getUsage(env: AgentsEnv, model?: string) {
+async function getUsage(env: AgentsEnv, model?: string, identity: { userId?: string; role?: string } = { userId: "user-1", role: "owner" }) {
   const token = await mintInternalToken(SECRET, "tenant-a");
   const qs = model ? `?model=${model}` : "";
   return app.fetch(
     new Request(`https://agents.naelao.com/spaces/space-1/sessions/sess-1/context-usage${qs}`, {
-      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-user-id": "user-1", "x-naelao-role": "owner" },
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token,
+        ...(identity.userId ? { "x-naelao-user-id": identity.userId } : {}),
+        ...(identity.role ? { "x-naelao-role": identity.role } : {}) },
     }),
     env,
     execCtx
@@ -71,6 +74,36 @@ async function getUsage(env: AgentsEnv, model?: string) {
 }
 
 describe("GET .../sessions/:sessionId/context-usage", () => {
+  it("requires an authenticated user in addition to a verified tenant", async () => {
+    const response = await getUsage(makeEnv({ messages: [] }), undefined, {});
+    expect(response.status).toBe(403);
+  });
+
+  it("requires current Space membership before returning session usage", async () => {
+    const env = makeEnv({ messages: [] });
+    const worker = env.SPACES_WORKER as { fetch: (input: RequestInfo) => Promise<Response> };
+    const fetch = worker.fetch.bind(worker);
+    worker.fetch = async (input) => new URL((input as Request).url).pathname.endsWith("/members")
+      ? Response.json({ data: [] })
+      : fetch(input);
+    const response = await getUsage(env);
+    expect(response.status).toBe(403);
+  });
+
+  it("requires project membership for a project-linked session", async () => {
+    const env = makeEnv({ messages: [] });
+    const worker = env.SPACES_WORKER as { fetch: (input: RequestInfo) => Promise<Response> };
+    worker.fetch = async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path.endsWith("/compact-scope")) return Response.json({ project_id: "project-private", owned_by_caller: false });
+      if (path.endsWith("/projects/project-private/members")) return Response.json({ data: [] });
+      if (path.endsWith("/members")) return Response.json({ data: [{ user_id: "user-1", role: "editor" }] });
+      return new Response("not found", { status: 404 });
+    };
+    const response = await getUsage(env);
+    expect(response.status).toBe(403);
+  });
+
   it("estimates current_tokens from the real message transcript (~chars/4)", async () => {
     const content = "a".repeat(400); // ~104 tokens
     const env = makeEnv({ messages: [{ content }, { content }] }); // ~208 tokens
@@ -93,8 +126,11 @@ describe("GET .../sessions/:sessionId/context-usage", () => {
 
   it("labels legacy page-only responses incomplete instead of implying the whole thread was counted", async () => {
     const env = makeEnv({ messages: [{ content: "a".repeat(500) }, { content: "b".repeat(500) }] });
-    (env.SPACES_WORKER as { fetch: (input: RequestInfo) => Promise<Response> }).fetch = async () =>
-      Response.json({ data: [{ content: "b".repeat(500) }] });
+    const worker = env.SPACES_WORKER as { fetch: (input: RequestInfo) => Promise<Response> };
+    const fetch = worker.fetch.bind(worker);
+    worker.fetch = async (input) => new URL((input as Request).url).pathname.endsWith("/messages")
+      ? Response.json({ data: [{ content: "b".repeat(500) }] })
+      : fetch(input);
     const response = await getUsage(env);
     const body = await response.json() as { current_tokens: number; transcript_complete: boolean };
     expect(body.current_tokens).toBe(Math.ceil(500 / 3.85));
@@ -156,7 +192,11 @@ describe("GET .../sessions/:sessionId/context-usage", () => {
 
   it("reports current_tokens: 0 (not a failure) when the message history fetch fails", async () => {
     const env = makeEnv({ messages: [] });
-    (env.SPACES_WORKER as { fetch: () => Promise<Response> }).fetch = async () => new Response("error", { status: 500 });
+    const worker = env.SPACES_WORKER as { fetch: (input: RequestInfo) => Promise<Response> };
+    const fetch = worker.fetch.bind(worker);
+    worker.fetch = async (input) => new URL((input as Request).url).pathname.endsWith("/messages")
+      ? new Response("error", { status: 500 })
+      : fetch(input);
     const res = await getUsage(env);
     expect(res.status).toBe(200);
     const body = await res.json() as { current_tokens: number };

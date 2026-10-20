@@ -2918,6 +2918,35 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
   const model = c.req.query("model") || DEFAULT_WORKING_MODEL;
+  const { userId, role: callerRole } = getCallerIdentity(c);
+  if (!userId) throw forbidden("Session usage requires an authenticated user");
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "session_scope_unavailable" }, 503);
+  const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": callerRole,
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) };
+  const isEndUser = callerRole === "product_end_user";
+  const role = isEndUser ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  if (!role) throw forbidden("Space membership is required for session usage");
+  const scopeResponse = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`, { headers }));
+  if (!scopeResponse.ok) return c.json({ error_code: "session_unavailable" }, 404);
+  const scope = await scopeResponse.json<{ project_id?: string | null; owned_by_caller?: boolean }>();
+  if (isEndUser && scope.owned_by_caller !== true) return c.json({ error_code: "session_unavailable" }, 404);
+  if (!isEndUser) {
+    const membersResponse = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/members`, { headers }));
+    if (!membersResponse.ok) return c.json({ error_code: "space_membership_unavailable" }, 503);
+    const members = await membersResponse.json<{ data?: Array<{ user_id?: string; role?: string }> }>();
+    const member = members.data?.find((entry) => entry.user_id === userId);
+    if (!member) throw forbidden("Space membership is required for session usage");
+    if (scope.project_id) {
+      const projectResponse = await c.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(scope.project_id)}/members`, { headers }));
+      if (!projectResponse.ok) return c.json({ error_code: "project_membership_unavailable" }, 503);
+      const projectMembers = await projectResponse.json<{ data?: Array<{ user_id?: string }> }>();
+      if (!projectMembers.data?.some((entry) => entry.user_id === userId)
+        && !["owner", "admin"].includes(member.role ?? "")) throw forbidden("Project membership is required for session usage");
+    }
+  }
 
   const space = await c.env.PLATFORM_DB.prepare(
     "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
