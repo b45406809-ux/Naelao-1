@@ -232,7 +232,7 @@ describe("conversation.search", () => {
     expect(result.note).toContain("incomplete");
   });
 
-  it("keeps a continuation cursor across a mid-page byte-budget boundary", async () => {
+  it("keeps the newest suffix and resumes before its oldest row at a mid-page byte-budget boundary", async () => {
     const pageFor = (beforeId: string | null) => {
       const newest = beforeId ? Number(beforeId.replace("message-", "")) - 1 : 99;
       const first = newest - 4;
@@ -255,18 +255,49 @@ describe("conversation.search", () => {
       });
     };
     const firstPage = (await conversation.operations["conversation.search"](
-      { query: "absent term" },
+      { query: "boundary marker" },
       context(fetch)
-    )) as { complete: boolean; next_cursor?: string };
+    )) as { complete: boolean; next_cursor?: string; results: Array<{ message_id: string }> };
     expect(firstPage.complete).toBe(false);
-    expect(firstPage.next_cursor).toBe("message-19");
+    expect(firstPage.next_cursor).toBe("message-17");
 
     const continuation = (await conversation.operations["conversation.search"](
       { query: "boundary marker", before_id: firstPage.next_cursor },
       context(fetch)
+    )) as { complete: boolean; searched_messages: number; results: Array<{ message_id: string }> };
+    expect(continuation.complete).toBe(true);
+    expect(continuation.searched_messages).toBeGreaterThan(0);
+    expect(continuation.results).toEqual([]);
+  });
+
+  it("retains the newest contiguous messages at the byte ceiling and resumes into the dropped older prefix", async () => {
+    const all = Array.from({ length: 100 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      role: "user",
+      content: `boundary marker ${"x".repeat(200_000)}`,
+      created_at: new Date(1_700_000_000_000 + index).toISOString(),
+    }));
+    const fetch = async (request: Request) => {
+      const beforeId = new URL(request.url).searchParams.get("before_id");
+      const beforeIndex = beforeId ? Number(beforeId.replace("message-", "")) - 1 : all.length;
+      return Response.json({
+        data: all.slice(Math.max(0, beforeIndex - 5), beforeIndex),
+        cursor_applied: true,
+        has_more: beforeIndex > 0,
+      });
+    };
+    const first = (await conversation.operations["conversation.search"](
+      { query: "boundary marker" }, context(fetch)
+    )) as { complete: boolean; next_cursor?: string; results: Array<{ message_id: string }> };
+    expect(first.complete).toBe(false);
+    expect(first.results[0]?.message_id).toBe("message-100");
+    expect(first.next_cursor).toBe("message-18");
+
+    const continuation = (await conversation.operations["conversation.search"](
+      { query: "boundary marker", before_id: first.next_cursor }, context(fetch)
     )) as { complete: boolean; results: Array<{ message_id: string }> };
     expect(continuation.complete).toBe(true);
-    expect(continuation.results[0]?.message_id).toBe("message-18");
+    expect(continuation.results[0]?.message_id).toBe("message-17");
   });
 
   it("reports a history scan incomplete when the first host-owned message exceeds the byte budget", async () => {

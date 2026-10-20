@@ -139,20 +139,23 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
       const page = body.data ?? body.messages ?? [];
       if (page.length === 0) break;
       const acceptedPage: StoredMessage[] = [];
-      for (const message of page) {
+      // SpaceDO pages are chronological. Keep the newest contiguous suffix when the byte
+      // budget cuts through a page so before_id can continue toward the dropped older prefix.
+      for (let index = page.length - 1; index >= 0; index--) {
+        const message = page[index];
+        if (!message) continue;
         if (messages.length + acceptedPage.length >= maxMessages) break;
         const messageBytes = new TextEncoder().encode(message.content ?? "").length;
         if (bytes + messageBytes > SEARCH_MAX_BYTES) break;
-        acceptedPage.push(message);
+        acceptedPage.unshift(message);
         bytes += messageBytes;
       }
       messages.unshift(...acceptedPage);
       if (acceptedPage.length < page.length) {
         incomplete = true;
-        // SpaceDO pages are chronological. If the byte ceiling interrupts the middle of this
-        // page, continue before the row just after the first unconsumed row. This can replay a
-        // small accepted tail, but it cannot skip the boundary message.
-        nextCursorOverride = page[acceptedPage.length + 1]?.id ?? beforeId;
+        // Resume before the oldest retained row to read the older prefix next. If even the
+        // newest row did not fit, its exclusive cursor still lets the caller continue older.
+        nextCursorOverride = acceptedPage[0]?.id ?? page[page.length - 1]?.id ?? beforeId;
         break;
       }
       if (messages.length >= maxMessages || bytes >= SEARCH_MAX_BYTES) {

@@ -1090,3 +1090,14 @@ Found two remaining SDK edge cases: a gateway adapter could return malformed or 
 Validation: Agent SDK suite passed 27 files / 143 tests; document-files, ScaleDown, and worker document-dispatch suites passed 19/19; Agent SDK and Agents typechecks passed; Biome check passed. `pnpm` preflight could not run these commands because it repeatedly resolved the full workspace, exceeded its 2 GiB heap in one concurrent invocation, and separately rejected an ignored dependency build script; direct local binaries succeeded.
 
 Reviewed and checked only the SDK document-processing implementation/test, shared document-files implementation/test, ScaleDown implementation/test, and worker document-processing implementation/test. The large `NaelaoAgentDO.ts` integration was traced to the document processor and call-budget methods but remains unchecked pending full-file review.
+
+
+## Conversation transcript pagination at aggregate byte ceiling (2026-10-20)
+
+Reviewed the conversation search and research prebuilt against the SpaceDO message endpoint and the channel transcript reader. Search is scoped to the host-authorized current thread, uses exact `before_id` cursors, scans newest to oldest in 100-row pages, caps total transcript work at 10,000 messages / 16 MiB, bounds each service response, and sends only top matching excerpts into document processing. Both readers report incomplete scans rather than claiming absence; stale cursors fail explicitly.
+
+Found a pagination gap in SpaceDO-backed scans when the 16 MiB ceiling cut through a chronological page. The code retained the page's oldest prefix, while the continuation cursor only moves older, so newer rows dropped from that page could not be recovered. It now retains the newest contiguous suffix and returns the oldest retained row as the continuation cursor; a follow-up search reaches the dropped older prefix. Added regressions spanning an actual simulated 16 MiB boundary with service-sized pages and a mid-page cut.
+
+Validation: conversation search tests passed 16/16; full Agents worker suite passed 149 files / 667 tests; Agents worker typecheck passed; `git diff --check` passed.
+
+Checked only `conversation.ts` and its focused test in this slice. The Agent DO channel reader and SpaceDO transcript endpoint were traced and their focused tests ran in the full suite, but both large files remain unchecked pending full-file review.
