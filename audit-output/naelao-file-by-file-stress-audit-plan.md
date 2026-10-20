@@ -2423,7 +2423,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/do/ProductUserDO.ts`
 - [ ] `workers/spaces/src/do/SpaceDO-migrations.test.ts`
 - [ ] `workers/spaces/src/do/SpaceDO.ts`
-- [ ] `workers/spaces/src/do/SpaceTypeRegistryDO.ts`
+- [x] `workers/spaces/src/do/SpaceTypeRegistryDO.test.ts`
+- [x] `workers/spaces/src/do/SpaceTypeRegistryDO.ts`
 - [x] `workers/spaces/src/do/TransactionCoordinatorDO.test.ts`
 - [x] `workers/spaces/src/do/TransactionCoordinatorDO.ts`
 - [ ] `workers/spaces/src/do/additional-space-do-request-boundaries.test.ts`

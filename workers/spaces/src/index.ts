@@ -6087,13 +6087,14 @@ app.post("/internal/space-types-record-install/:id", async (c) => {
     return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
   }
   const typeId = c.req.param("id");
-  const body = await c.req.json<{ spaceId: string; version: string }>();
+  const body = await c.req.json<{ spaceId: string; version: string }>().catch(() => null);
+  if (!body) return c.json({ error_code: "install_record_invalid" }, 400);
   const registry = getRegistryDO(c.env);
-  await registry.fetch(new Request("http://registry/record-install", {
+  const response = await registry.fetch(new Request("http://registry/record-install", {
     method: "POST",
     body: JSON.stringify({ typeId, spaceId: body.spaceId, version: body.version }),
   }));
-  return c.json({ ok: true });
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
 });
 
 // POST /internal/space-types/seed — Naelao platform use only: seed built-in manifests

@@ -599,15 +599,19 @@ export class SpaceTypeRegistryDO extends DurableObject {
   private registerManifest(manifest: NaelaoSpaceTypeManifestV2, authorId: string): void {
     const now = Date.now();
     this.ctx.storage.sql.exec(
-      `INSERT OR REPLACE INTO space_types
+      `INSERT INTO space_types
          (id, name, description, author, current_version, manifest, status, visible, price_usd, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'approved', 1, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, 'approved', 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description,
+         author=excluded.author, current_version=excluded.current_version, manifest=excluded.manifest,
+         status='approved', visible=1, price_usd=excluded.price_usd, updated_at=excluded.updated_at`,
       manifest.id, manifest.name, manifest.description, authorId,
       manifest.version, JSON.stringify(manifest), manifest.marketplace.priceUsdPerMonth, now
     );
     this.ctx.storage.sql.exec(
-      `INSERT OR REPLACE INTO versions (type_id, version, manifest, change_type, canary_pct, stable, published_at)
-       VALUES (?, ?, ?, 'minor', 100, 1, ?)`,
+      `INSERT INTO versions (type_id, version, manifest, change_type, canary_pct, stable, published_at)
+       VALUES (?, ?, ?, 'minor', 100, 1, ?)
+       ON CONFLICT(type_id, version) DO UPDATE SET manifest=excluded.manifest, stable=1, published_at=excluded.published_at`,
       manifest.id, manifest.version, JSON.stringify(manifest), now
     );
   }
@@ -675,7 +679,10 @@ export class SpaceTypeRegistryDO extends DurableObject {
       const body = await request.json<{
         manifest: NaelaoSpaceTypeManifestV2;
         authorId: string;
-      }>();
+      }>().catch(() => null);
+      if (!body || typeof body !== "object" || !body.manifest || typeof body.manifest !== "object") {
+        return Response.json({ accepted: false, reason: "Invalid registration payload." }, { status: 400 });
+      }
       if (body.authorId !== "naelao") {
         return Response.json(
           { accepted: false, reason: "Space Types are exclusively authored by Naelao." },
@@ -695,22 +702,34 @@ export class SpaceTypeRegistryDO extends DurableObject {
           { status: 400 }
         );
       }
+      if (typeof m.id !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(m.id) || typeof m.name !== "string" || m.name.length < 1 || m.name.length > 120 ||
+          typeof m.description !== "string" || m.description.length > 2000 || typeof m.version !== "string" || m.version.length > 64 ||
+          JSON.stringify(m).length > 1024 * 1024 || !Number.isFinite(m.marketplace?.priceUsdPerMonth) || m.marketplace.priceUsdPerMonth < 0) {
+        return Response.json({ accepted: false, reason: "Manifest fields are invalid or exceed limits." }, { status: 400 });
+      }
       this.registerManifest(m, body.authorId);
       return Response.json({ accepted: true });
     }
 
     // POST /record-install — called at the end of successful provisioning (step 10)
     if (method === "POST" && url.pathname === "/record-install") {
-      const body = await request.json<{ typeId: string; spaceId: string; version: string }>();
-      this.ctx.storage.sql.exec(
-        `INSERT OR REPLACE INTO instances (type_id, space_id, version) VALUES (?, ?, ?)`,
-        body.typeId, body.spaceId, body.version
-      );
-      this.ctx.storage.sql.exec(
-        `UPDATE space_types SET install_count = install_count + 1 WHERE id = ?`,
-        body.typeId
-      );
-      return Response.json({ ok: true });
+      const body = await request.json<{ typeId: string; spaceId: string; version: string }>().catch(() => null);
+      if (!body || typeof body.typeId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(body.typeId) ||
+          typeof body.spaceId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(body.spaceId) ||
+          typeof body.version !== "string" || !/^[A-Za-z0-9.+_-]{1,64}$/.test(body.version)) {
+        return Response.json({ error_code: "install_record_invalid" }, { status: 400 });
+      }
+      const known = this.ctx.storage.sql.exec("SELECT 1 AS found FROM versions WHERE type_id=? AND version=?", body.typeId, body.version).toArray();
+      if (!known.length) return Response.json({ error_code: "space_type_version_not_found" }, { status: 404 });
+      const recorded = this.ctx.storage.transactionSync(() => {
+        const result = this.ctx.storage.sql.exec(
+          "INSERT INTO instances (type_id, space_id, version) VALUES (?, ?, ?) ON CONFLICT(type_id, space_id) DO NOTHING",
+          body.typeId, body.spaceId, body.version
+        );
+        if (result.rowsWritten) this.ctx.storage.sql.exec("UPDATE space_types SET install_count=install_count+1 WHERE id=?", body.typeId);
+        return result.rowsWritten > 0;
+      });
+      return Response.json({ ok: true, deduplicated: !recorded });
     }
 
     return Response.json({ error: "not_found" }, { status: 404 });
