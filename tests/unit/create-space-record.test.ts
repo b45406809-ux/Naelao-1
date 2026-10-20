@@ -59,6 +59,61 @@ describe("createSpaceRecord — quota enforcement queries the REAL orgs table", 
   });
 });
 
+describe("createSpaceRecord — bounded inputs and tenant quota serialization", () => {
+  it("rejects oversized names and config overrides before inserting", async () => {
+    const fakeDb = makeDb();
+    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "x".repeat(101), spacetypeId: "launchpad" }))
+      .rejects.toMatchObject({ error_code: "bad_request", status: 400 });
+    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", configOverrides: { data: "x".repeat(65 * 1024) } }))
+      .rejects.toMatchObject({ error_code: "bad_request", status: 400 });
+    const row = await fakeDb.prepare("SELECT COUNT(*) AS count FROM spaces").first<{ count: number }>();
+    expect(row?.count).toBe(0);
+  });
+
+  it("does not insert when the tenant creation lock is held", async () => {
+    const fakeDb = makeDb();
+    const lockFetch = vi.fn(async () => Response.json({ acquired: false }));
+    const env = {
+      PLATFORM_DB: fakeDb,
+      PLATFORM_SECRET: "secret",
+      LOCK_DO: { idFromName: (name: string) => name, get: () => ({ fetch: lockFetch }) },
+    } as never;
+    await expect(createSpaceRecord(env, { tenantId: "t1", name: "A", spacetypeId: "launchpad" }))
+      .rejects.toMatchObject({ error_code: "creation_busy", status: 429 });
+    expect(lockFetch).toHaveBeenCalledOnce();
+    const row = await fakeDb.prepare("SELECT COUNT(*) AS count FROM spaces").first<{ count: number }>();
+    expect(row?.count).toBe(0);
+  });
+
+  it("releases the tenant lock after a successful insert", async () => {
+    const fakeDb = makeDb();
+    const lockFetch = vi.fn(async (request: Request) => request.url.endsWith("/acquire")
+      ? Response.json({ acquired: true })
+      : Response.json({ released: true }));
+    const env = {
+      PLATFORM_DB: fakeDb,
+      PLATFORM_SECRET: "secret",
+      LOCK_DO: { idFromName: (name: string) => name, get: () => ({ fetch: lockFetch }) },
+    } as never;
+    await createSpaceRecord(env, { tenantId: "t1", name: "A", spacetypeId: "launchpad" });
+    expect(lockFetch).toHaveBeenCalledTimes(2);
+    expect(lockFetch.mock.calls.map(([request]) => new URL(request.url).pathname)).toEqual(["/acquire", "/release"]);
+  });
+
+  it("removes the provisioning row after a rejected queue send so a retry is not blocked", async () => {
+    const fakeDb = makeDb();
+    const env = {
+      PLATFORM_DB: fakeDb,
+      ENVIRONMENT: "production",
+      PROVISION_QUEUE: { send: vi.fn(async () => { throw new Error("queue unavailable"); }) },
+    } as never;
+    await expect(createSpaceRecord(env, { tenantId: "t1", name: "A", spacetypeId: "launchpad" }))
+      .rejects.toMatchObject({ error_code: "provision_queue_unavailable", status: 503 });
+    const row = await fakeDb.prepare("SELECT COUNT(*) AS count FROM spaces").first<{ count: number }>();
+    expect(row?.count).toBe(0);
+  });
+});
+
 describe("createSpaceRecord — product_slug", () => {
   it("rejects a malformed slug before touching the database", async () => {
     const fakeDb = makeDb();

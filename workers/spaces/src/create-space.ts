@@ -6,6 +6,7 @@
 // createSpaceRecord(); there is exactly one space-creation code path.
 
 import { mintInternalToken } from "@naelao/http";
+import { getDOName } from "@naelao/crypto";
 import { checkFreeTierTemplateEligibility } from "./template-catalog.js";
 import { scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 
@@ -47,6 +48,7 @@ export interface CreateSpaceEnv {
    *  unprovisioned until an operator retries (see provisionBusinessWallet). */
   BILLING_WORKER?: Fetcher;
   PLATFORM_SECRET?: string;
+  LOCK_DO?: DurableObjectNamespace;
 }
 
 /**
@@ -251,8 +253,29 @@ export async function deriveAvailableSlug(db: D1Database, name: string): Promise
  *  Throws SpaceCreationError on any validation/quota failure; callers translate to their own
  *  response shape (the plain /spaces route and /builder/products use different JSON shapes). */
 export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpaceParams): Promise<CreateSpaceResult> {
-  if (!params.name || !params.spacetypeId) {
+  if (typeof params.tenantId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(params.tenantId) ||
+      (params.userId !== undefined && (typeof params.userId !== "string" || !/^[A-Za-z0-9._:@-]{1,256}$/.test(params.userId)))) {
+    throw new SpaceCreationError(400, "bad_request", "Invalid tenant or user identifier");
+  }
+  if (typeof params.name !== "string" || !params.name.trim() || params.name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(params.name)) {
+    throw new SpaceCreationError(400, "bad_request", "Space name must contain 1–100 printable characters");
+  }
+  if (!params.spacetypeId) {
     throw new SpaceCreationError(400, "bad_request", "name and spacetype_id are required");
+  }
+  if (params.templateId !== undefined && (typeof params.templateId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(params.templateId))) {
+    throw new SpaceCreationError(400, "bad_request", "Invalid template_id");
+  }
+  if (params.configOverrides !== undefined) {
+    if (!params.configOverrides || typeof params.configOverrides !== "object" || Array.isArray(params.configOverrides)) {
+      throw new SpaceCreationError(400, "bad_request", "config_overrides must be a JSON object");
+    }
+    try {
+      if (JSON.stringify(params.configOverrides).length > 64 * 1024) throw new SpaceCreationError(400, "bad_request", "config_overrides exceeds 64 KiB");
+    } catch (err) {
+      if (err instanceof SpaceCreationError) throw err;
+      throw new SpaceCreationError(400, "bad_request", "config_overrides must be JSON serializable");
+    }
   }
 
   // Launchpad has one deliberately small hierarchy: product roots (depth 0) and their direct
@@ -307,8 +330,6 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     }
   }
 
-  await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
-
   // G-GRW08 (Appendix AJ): on the free plan only free_tier_eligible templates may be
   // instantiated — the flag existed since Phase F but no creation path ever checked it.
   if (params.templateId) {
@@ -331,7 +352,7 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   }
 
   if (params.productSlug) {
-    if (!/^[a-z0-9-]{2,40}$/.test(params.productSlug)) {
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])$/.test(params.productSlug)) {
       throw new SpaceCreationError(400, "bad_request", "product_slug must match ^[a-z0-9-]{2,40}$");
     }
     if (RESERVED_SLUGS.has(params.productSlug)) {
@@ -367,30 +388,78 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   const useProvisioningQueue = Boolean(env.PROVISION_QUEUE) && env.ENVIRONMENT !== "development";
   const initialStatus = useProvisioningQueue ? "provisioning" : "active";
 
-  try {
+  const insertSpace = async (): Promise<void> => {
     await env.PLATFORM_DB.prepare(
       `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, product_slug, parent_space_id, depth, created_at, updated_at, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, params.tenantId, params.spacetypeId, params.name, initialStatus, configJson, params.productSlug ?? null,
+    ).bind(id, params.tenantId, params.spacetypeId, params.name.trim(), initialStatus, configJson, params.productSlug ?? null,
       params.parentSpaceId ?? null, derivedDepth, now, now, params.userId ?? null).run();
-  } catch (err) {
-    if ((err as Error).message?.includes("UNIQUE")) {
-      throw new SpaceCreationError(409, "conflict", "product_slug is already taken");
+  };
+  const checkQuotaAndInsert = async (): Promise<void> => {
+    await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
+    try {
+      await insertSpace();
+    } catch (err) {
+      if ((err as Error).message?.includes("UNIQUE")) {
+        throw new SpaceCreationError(409, "conflict", "product_slug is already taken");
+      }
+      throw err;
     }
-    throw err;
+  };
+
+  if (env.LOCK_DO) {
+    if (!env.PLATFORM_SECRET) throw new SpaceCreationError(503, "creation_lock_unavailable", "Space creation is temporarily unavailable");
+    const lockName = await getDOName("space-create", params.tenantId, params.tenantId, env.PLATFORM_SECRET);
+    const lock = env.LOCK_DO.get(env.LOCK_DO.idFromName(lockName));
+    const callerId = `space-create:${crypto.randomUUID()}`;
+    let acquired = false;
+    try {
+      const response = await lock.fetch(new Request("http://lock/acquire", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ caller_id: callerId, ttl_ms: 30_000 }),
+      }));
+      if (!response.ok) throw new Error("lock unavailable");
+      acquired = (await response.json<{ acquired: boolean }>()).acquired;
+      if (!acquired) throw new SpaceCreationError(429, "creation_busy", "Another space is being created for this tenant. Retry shortly.");
+      await checkQuotaAndInsert();
+    } catch (err) {
+      if (err instanceof SpaceCreationError) throw err;
+      throw new SpaceCreationError(503, "creation_lock_unavailable", "Space creation is temporarily unavailable");
+    } finally {
+      if (acquired) {
+        try {
+          await lock.fetch(new Request("http://lock/release", {
+            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ caller_id: callerId }),
+          }));
+        } catch { /* lock expires automatically if release delivery fails */ }
+      }
+    }
+  } else {
+    await checkQuotaAndInsert();
   }
 
   if (useProvisioningQueue && env.PROVISION_QUEUE) {
-    await env.PROVISION_QUEUE.send({
-      type: "space_provision",
-      spaceId: id,
-      tenantId: params.tenantId,
-      spaceTypeId: params.spacetypeId,
-      spaceName: params.name,
-      ...(params.templateId ? { templateId: params.templateId } : {}),
-      ...(params.userId ? { userId: params.userId } : {}),
-      requestedAt: now,
-    });
+    try {
+      await env.PROVISION_QUEUE.send({
+        type: "space_provision",
+        spaceId: id,
+        tenantId: params.tenantId,
+        spaceTypeId: params.spacetypeId,
+        spaceName: params.name,
+        ...(params.templateId ? { templateId: params.templateId } : {}),
+        ...(params.userId ? { userId: params.userId } : {}),
+        requestedAt: now,
+      });
+    } catch (err) {
+      // Match the business-create path: a definite queue rejection must not leave a permanently
+      // counted `provisioning` row that blocks retries. Queue acceptance followed by a lost error
+      // response is inherently ambiguous across D1 and Queue and remains a production risk.
+      try {
+        await env.PLATFORM_DB.prepare("DELETE FROM spaces WHERE id = ? AND status = 'provisioning'").bind(id).run();
+      } catch { /* retain the original queue failure; the orphan can be reconciled operationally */ }
+      console.error(`[create-space] provision queue rejected space ${id}:`, (err as Error).message);
+      throw new SpaceCreationError(503, "provision_queue_unavailable", "Space provisioning could not be queued. Retry shortly.");
+    }
   }
 
   return { id, status: initialStatus, created_at: now };

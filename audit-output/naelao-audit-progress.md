@@ -774,3 +774,10 @@ Validation: new Cloudflare client tests passed 6/6; full Spaces suite passed 62 
 
 
 Refreshed the tracked repository tree after adding the two custom-hostname regression files: the inventory now reflects code commit `1d7832d0`; checked coverage is preserved and all other files remain pending.
+
+
+## Shared root and product space creation (2026-10-20)
+
+Reviewed the shared create path, config/schema handling, slug derivation, quota checks, hierarchy validation, and provisioning queue flow used by `/spaces` and `/builder/products`. Added bounds/validation for tenant and user IDs, printable names, template IDs, config override shape/size, and stricter platform slugs. The configured per-tenant LockDO now serializes the quota read and insert so concurrent creates cannot both pass the same stale count; held-lock contention returns 429 and releases on completion. A rejected provisioning enqueue now attempts to remove the newly inserted provisioning row and returns a controlled 503, avoiding a known permanently-counted orphan on definite queue failure.
+
+Validation: `tests/unit/create-space-record.test.ts` passed 36/36; Spaces suite passed 63 files / 232 tests, typecheck passed, and `git diff --check` passed. Regression tests cover the lock-busy case, lock release, oversized input, and queue rejection cleanup. The queue and D1 are not transactional: a queue that accepts then reports an error can still produce an orphaned DO after cleanup; local tests do not reproduce actual cross-isolate concurrency or queue acceptance ambiguity. Lock coverage depends on the deployed `LOCK_DO` binding being present; the checked Wrangler configuration defines it. Scoped review and tests are checked; other files remain pending.

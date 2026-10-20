@@ -1374,7 +1374,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/conversation-access-gate.test.ts`
 - [ ] `tests/unit/conversation-context.test.ts`
 - [ ] `tests/unit/conversation-search.test.ts`
-- [ ] `tests/unit/create-space-record.test.ts`
+- [x] `tests/unit/create-space-record.test.ts`
 - [ ] `tests/unit/credential-hierarchy.test.ts`
 - [ ] `tests/unit/credits-monthly-refresh.test.ts`
 - [ ] `tests/unit/cron-next-run.test.ts`
@@ -2379,7 +2379,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/cf-saas.ts`
 - [ ] `workers/spaces/src/conformance-state.test.ts`
 - [ ] `workers/spaces/src/conformance-state.ts`
-- [ ] `workers/spaces/src/create-space.ts`
+- [x] `workers/spaces/src/create-space.ts`
 - [ ] `workers/spaces/src/customer-voice-bridge.test.ts`
 - [ ] `workers/spaces/src/domain-glossary-routes.test.ts`
 - [ ] `workers/spaces/src/domain-glossary.test.ts`
