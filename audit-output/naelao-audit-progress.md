@@ -563,3 +563,11 @@ Default-worker delegation read metadata only for the first 100 R2 skill names, s
 Validation: worker-capability and skill-role-targeting suites passed 10/10; Agents TypeScript passed. Description-based ranking and the OpenRouter capability filter remain advisory; signed parent tool/skill authority is still the execution boundary.
 
 Marked the worker-capability selector implementation and its complete test file reviewed in the file-by-file plan after tracing the host spawn path, signed child contract, child tool filtering, built-in catalog coverage, and role-limited skills. This is a scoped completion for those two files only; the adjacent `NaelaoAgentDO.ts` and `ConcurrencyDO.ts` remain unchecked because their broader responsibilities are still under review.
+
+## ScaleDown provider-boundary stress pass (2026-10-20)
+
+Reviewed `workers/agents/src/shared/scaledown.ts` and its full test file, including all summarize/extract/compress request shapes, the 2 MiB UTF-8 source and streamed-response caps, host admission before egress, gateway/native credential separation, provider usage settlement before output validation, offset-to-source checks, and cache scope/schema/source validation. Traced the two `NaelaoAgentDO` callers and confirmed the shared processor receives scoped cache identity, model policy, provider pricing, and reserve/settle callbacks; the broader DO file remains unchecked.
+
+Found and fixed two input-integrity gaps: non-string `instructions` passed the length check and were interpolated into the model system message, and malformed UTF-8 provider bytes were silently replacement-decoded before JSON parsing. Runtime null inputs now fail with the documented source validation error, instruction values must be text within the existing limit, and provider JSON decoding rejects malformed UTF-8. Added regressions for each case.
+
+Validation: ScaleDown suite passed 11/11; Agents TypeScript check passed. No live provider call, timeout, Cloudflare gateway, or bill-settlement integration/load test was run. The two ScaleDown files are checked in the plan; this does not complete the document-processing callsite or `NaelaoAgentDO.ts` review.

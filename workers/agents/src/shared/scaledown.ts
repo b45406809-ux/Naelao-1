@@ -38,6 +38,8 @@ export interface ScaleDownOptions {
 }
 const MAX_BYTES = 2 * 1024 * 1024;
 function validateSource(input: DocumentText): void {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("document_text_required_or_too_large");
   if (
     typeof input.text !== "string" ||
     !input.text.trim() ||
@@ -85,7 +87,9 @@ async function boundedJson(
     bytes.set(part, offset);
     offset += part.byteLength;
   }
-  const result: unknown = JSON.parse(new TextDecoder().decode(bytes));
+  const result: unknown = JSON.parse(
+    new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)
+  );
   if (!result || typeof result !== "object" || Array.isArray(result))
     throw new Error("scaledown_invalid_response");
   return result as Record<string, unknown>;
@@ -225,7 +229,9 @@ export function createScaleDownProcessor(
         !Number.isSafeInteger(max) ||
         max < 16 ||
         max > 4000 ||
-        (input.instructions?.length ?? 0) > 8000
+        (input.instructions !== undefined &&
+          (typeof input.instructions !== "string" ||
+            input.instructions.length > 8000))
       )
         throw new Error("document_summary_options_invalid");
       const body = {

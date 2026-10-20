@@ -2000,8 +2000,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/shared/openrouter-model-catalog.ts`
 - [ ] `workers/agents/src/shared/openrouter-model-recommendations.test.ts`
 - [ ] `workers/agents/src/shared/openrouter-model-recommendations.ts`
-- [ ] `workers/agents/src/shared/scaledown.test.ts`
-- [ ] `workers/agents/src/shared/scaledown.ts`
+- [x] `workers/agents/src/shared/scaledown.test.ts`
+- [x] `workers/agents/src/shared/scaledown.ts`
 
 ### `workers/agents/src/telemetry`
 

@@ -77,6 +77,26 @@ describe("ScaleDown task-specific provider contracts", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed runtime inputs and non-text summary instructions before provider egress", async () => {
+    const { processor, fetcher, authorize } = setup(completion("unused"));
+    await expect(processor.summarize(null as never)).rejects.toThrow(
+      "document_text_required_or_too_large"
+    );
+    await expect(
+      processor.summarize({ text: "source", instructions: { inject: true } as never })
+    ).rejects.toThrow("document_summary_options_invalid");
+    expect(authorize).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed UTF-8 provider JSON rather than silently replacing bytes", async () => {
+    const fetcher = vi.fn(async () =>
+      new Response(new Uint8Array([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]))
+    );
+    const { processor } = setup({}, { fetch: fetcher as typeof fetch });
+    await expect(processor.summarize({ text: "source" })).rejects.toThrow();
+  });
+
   it("uses provider-specific entity declarations and checks spans against the source", async () => {
     const { processor, fetcher } = setup(
       completion(
