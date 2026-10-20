@@ -1737,4 +1737,4 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 ### Telegram aggregate media bound (2026-10-20)
 
 - Telegram accepted five individual files up to 5 MiB each but had no 15 MiB aggregate preflight, unlike Slack/Discord/WhatsApp and the shared attachment store. Added a declared-size running-total guard and actual-byte guard for absent size metadata; values below `-1` are rejected rather than treated as unknown.
-- Added a stress case with 5 MiB x 3 actual downloads and a fourth declared 5 MiB file; it fails at the fourth metadata lookup before downloading that body. Telegram tests passed 3/3, Agents typecheck passed, Biome and `git diff --check` passed. No external Bot API call was made.
+- Added stress cases with 5 MiB x 3 actual downloads and a fourth declared or unknown-size file; both fail at the fourth metadata lookup before downloading that body. The bounded stream reader also uses only the remaining aggregate allowance when metadata is unknown. Telegram tests passed 4/4, Agents typecheck passed, Biome and `git diff --check` passed. No external Bot API call was made.

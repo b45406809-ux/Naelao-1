@@ -43,7 +43,10 @@ export function hasTelegramMedia(raw: JsonObject): boolean {
   return mediaEntries(raw).length > 0;
 }
 
-async function readBounded(response: Response): Promise<Uint8Array> {
+async function readBounded(
+  response: Response,
+  maxBytes: number
+): Promise<Uint8Array> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error("telegram_media_body_missing");
   const chunks: Uint8Array[] = [];
@@ -53,7 +56,7 @@ async function readBounded(response: Response): Promise<Uint8Array> {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > MAX_FILE_BYTES) {
+      if (size > maxBytes) {
         await reader.cancel();
         throw new Error("telegram_media_too_large");
       }
@@ -117,7 +120,8 @@ export async function downloadTelegramAttachments(
       declaredBytes < -1 ||
       declaredBytes === 0 ||
       declaredBytes > MAX_FILE_BYTES ||
-      (declaredBytes > 0 && totalBytes + declaredBytes > MAX_TOTAL_BYTES)
+      (declaredBytes > 0 && totalBytes + declaredBytes > MAX_TOTAL_BYTES) ||
+      totalBytes >= MAX_TOTAL_BYTES
     ) {
       throw new Error("telegram_media_rejected");
     }
@@ -139,7 +143,10 @@ export async function downloadTelegramAttachments(
     );
     if (!response.ok)
       throw new Error(`telegram_media_download_failed:${response.status}`);
-    const bytes = await readBounded(response);
+    const bytes = await readBounded(
+      response,
+      Math.min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - totalBytes)
+    );
     if (declaredBytes > 0 && bytes.byteLength !== declaredBytes)
       throw new Error("telegram_media_size_mismatch");
     if (totalBytes + bytes.byteLength > MAX_TOTAL_BYTES)

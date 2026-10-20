@@ -121,4 +121,39 @@ describe("Telegram attachment ingress", () => {
     ).rejects.toThrow("telegram_media_rejected");
     expect(fetcher).toHaveBeenCalledTimes(7);
   });
+
+  it("rejects unknown-size media when the aggregate budget is already exhausted", async () => {
+    const fiveMiB = 5 * 1024 * 1024;
+    const multiFile = {
+      message: {
+        document: { file_id: "doc" },
+        audio: { file_id: "audio" },
+        voice: { file_id: "voice" },
+        video: { file_id: "video" },
+      },
+    };
+    const replies: Response[] = [];
+    for (const filePath of ["doc", "audio", "voice"]) {
+      replies.push(
+        Response.json({
+          ok: true,
+          result: { file_path: `${filePath}.bin`, file_size: fiveMiB },
+        }),
+        new Response(new Uint8Array(fiveMiB))
+      );
+    }
+    replies.push(
+      Response.json({ ok: true, result: { file_path: "video.bin" } })
+    );
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
+      const response = replies.shift();
+      if (!response) throw new Error("unexpected_telegram_test_fetch");
+      return response;
+    });
+
+    await expect(
+      downloadTelegramAttachments(multiFile, { botToken: "token", fetcher })
+    ).rejects.toThrow("telegram_media_rejected");
+    expect(fetcher).toHaveBeenCalledTimes(7);
+  });
 });
