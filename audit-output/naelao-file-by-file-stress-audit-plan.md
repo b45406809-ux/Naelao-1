@@ -795,8 +795,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/agent-sdk/src/runtime-context.ts`
 - [x] `packages/agent-sdk/src/scratchpad.test.ts`
 - [x] `packages/agent-sdk/src/scratchpad.ts`
-- [ ] `packages/agent-sdk/src/subagent-context.test.ts`
-- [ ] `packages/agent-sdk/src/subagent-context.ts`
+- [x] `packages/agent-sdk/src/subagent-context.test.ts`
+- [x] `packages/agent-sdk/src/subagent-context.ts`
 - [ ] `packages/agent-sdk/src/token-accounting.ts`
 - [ ] `packages/agent-sdk/src/tunnel-protocol.ts`
 - [ ] `packages/agent-sdk/src/types.ts`
