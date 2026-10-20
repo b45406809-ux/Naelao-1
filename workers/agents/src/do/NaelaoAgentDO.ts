@@ -8426,7 +8426,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (messageEnv) Object.assign(engineEnv, messageEnv);
       // The channel transcript is local to this Agent DO, unlike web sessions stored in
       // SpaceDO. The callback is closed over the active session and accepts no model-selected ID.
-      engineEnv.loadCurrentConversation = () => this.loadChannelTranscript(msg.session_id);
+      engineEnv.loadCurrentConversation = (options) => this.loadChannelTranscript(msg.session_id, options);
       engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}`;
 
       // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
@@ -9611,36 +9611,47 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   /** Bounded full-history source for conversation.search on channel threads. Channel messages
    *  live in this DO (not SpaceDO), so the ordinary worker-backed reader cannot see them. */
-  private async loadChannelTranscript(sessionId: string): Promise<{
+  private async loadChannelTranscript(sessionId: string, options?: { beforeId?: string; limit?: number }): Promise<{
     messages: Array<{ id: string; role: string; content: string; created_at: string }>;
     complete: boolean;
     error?: string;
   }> {
     const messages: Array<{ id: string; role: string; content: string; created_at: string }> = [];
+    const pageLimit = Math.max(1, Math.min(10_000, Math.floor(options?.limit ?? 10_000)));
     let beforeRowid: number | undefined;
+    if (options?.beforeId) {
+      beforeRowid = (this.ctx.storage.sql.exec(
+        "SELECT rowid AS rid FROM channel_messages WHERE session_id = ? AND id = ?",
+        sessionId,
+        options.beforeId,
+      ).toArray() as Array<{ rid: number }>)[0]?.rid;
+      if (beforeRowid === undefined) {
+        return { messages, complete: false, error: "The history cursor is no longer valid; restart the search from the newest page." };
+      }
+    }
     let contentBytes = 0;
     try {
       while (true) {
-        const atLimit = messages.length >= 10_000 || contentBytes >= 20 * 1024 * 1024;
-        const limit = atLimit ? 1 : 100;
+        const atLimit = messages.length >= pageLimit || contentBytes >= 16 * 1024 * 1024;
+        const queryLimit = atLimit ? 1 : Math.min(100, pageLimit - messages.length);
         const rows = this.ctx.storage.sql.exec(
           `SELECT rowid AS rid, id, direction, text, created_at FROM channel_messages
            WHERE session_id = ? ${beforeRowid === undefined ? "" : "AND rowid < ?"}
            ORDER BY rowid DESC LIMIT ?`,
-          ...(beforeRowid === undefined ? [sessionId, limit] : [sessionId, beforeRowid, limit]),
+          ...(beforeRowid === undefined ? [sessionId, queryLimit] : [sessionId, beforeRowid, queryLimit]),
         ).toArray() as Array<{ rid: number; id: string; direction: string; text: string; created_at: number }>;
         if (rows.length === 0) return { messages, complete: true };
         if (atLimit) return { messages, complete: false };
         for (const row of rows) {
           const size = new TextEncoder().encode(row.text ?? "").byteLength;
-          if (messages.length >= 10_000 || contentBytes + size > 20 * 1024 * 1024) {
+          if (messages.length >= pageLimit || contentBytes + size > 16 * 1024 * 1024) {
             return { messages, complete: false };
           }
           contentBytes += size;
           messages.unshift({ id: row.id, role: row.direction === "inbound" ? "user" : "assistant",
             content: row.text, created_at: new Date(row.created_at).toISOString() });
         }
-        if (rows.length < limit) return { messages, complete: true };
+        if (rows.length < queryLimit) return { messages, complete: true };
         beforeRowid = rows[rows.length - 1]!.rid;
       }
     } catch {

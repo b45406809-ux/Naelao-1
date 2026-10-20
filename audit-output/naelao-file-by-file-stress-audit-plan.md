@@ -1749,7 +1749,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/do/WorkflowRunDO.test.ts`
 - [ ] `workers/agents/src/do/WorkflowRunDO.ts`
 - [ ] `workers/agents/src/do/additional-do-request-boundaries.test.ts`
-- [ ] `workers/agents/src/do/channel-conversation-transcript.test.ts`
+- [x] `workers/agents/src/do/channel-conversation-transcript.test.ts`
 - [ ] `workers/agents/src/do/channel-extension-inbox.test.ts`
 - [ ] `workers/agents/src/do/citation-metadata.test.ts`
 - [ ] `workers/agents/src/do/conversation-compaction.test.ts`
@@ -1932,8 +1932,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/prebuilt/code-exec.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/commerce.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/computer-use.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/conversation.test.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/conversation.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/conversation.test.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/conversation.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/customer-attachments.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/customer-attachments.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/customer-bot.ts`

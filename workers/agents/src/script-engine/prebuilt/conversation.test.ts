@@ -173,6 +173,25 @@ describe("conversation.search", () => {
     expect(spacesCalls).toBe(0);
   });
 
+  it("passes older-page cursors to the host-owned channel transcript reader", async () => {
+    let received: { beforeId?: string; limit?: number } | undefined;
+    const ctx = context(async () => Response.json({ data: [] }));
+    ctx.env.loadCurrentConversation = async (options) => {
+      received = options;
+      return {
+        messages: [{ id: "channel-event-4", role: "user", content: "An old renewal reference" }],
+        complete: true,
+      };
+    };
+    const result = (await conversation.operations["conversation.search"](
+      { query: "renewal reference", before_id: "channel-event-5", scan_limit: 200 },
+      ctx
+    )) as { complete: boolean; results: Array<{ message_id: string }> };
+    expect(received).toEqual({ beforeId: "channel-event-5", limit: 200 });
+    expect(result.complete).toBe(true);
+    expect(result.results[0]?.message_id).toBe("channel-event-4");
+  });
+
   it("does not report an incomplete or failed scan as proof that a topic was never discussed", async () => {
     let call = 0;
     const result = (await conversation.operations["conversation.search"](
@@ -196,6 +215,58 @@ describe("conversation.search", () => {
     expect(result.ok).toBe(false);
     expect(result.complete).toBe(false);
     expect(result.reason).toContain("cursor is no longer valid");
+  });
+
+  it("does not mark the scan complete when the overflow probe reports a stale cursor", async () => {
+    let call = 0;
+    const result = (await conversation.operations["conversation.search"](
+      { query: "missing topic", scan_limit: 50 },
+      context(async () => {
+        call++;
+        return call === 1
+          ? Response.json({ data: messages(50), has_more: true })
+          : Response.json({ data: [], cursor_applied: false });
+      })
+    )) as { ok: boolean; complete: boolean; note: string };
+    expect(result).toMatchObject({ ok: true, complete: false });
+    expect(result.note).toContain("incomplete");
+  });
+
+  it("keeps a continuation cursor across a mid-page byte-budget boundary", async () => {
+    const pageFor = (beforeId: string | null) => {
+      const newest = beforeId ? Number(beforeId.replace("message-", "")) - 1 : 99;
+      const first = newest - 4;
+      return Array.from({ length: 5 }, (_, offset) => {
+        const id = first + offset;
+        return {
+          id: `message-${id}`,
+          role: "user",
+          content: id === 18 ? `boundary marker ${"x".repeat(199_980)}` : "x".repeat(200_000),
+        };
+      }).filter((message) => Number(message.id.replace("message-", "")) >= 0);
+    };
+    const fetch = async (request: Request) => {
+      const beforeId = new URL(request.url).searchParams.get("before_id");
+      const page = pageFor(beforeId);
+      return Response.json({
+        data: page,
+        has_more: page.length > 0 && Number(page[0]!.id.replace("message-", "")) > 0,
+        cursor_applied: true,
+      });
+    };
+    const firstPage = (await conversation.operations["conversation.search"](
+      { query: "absent term" },
+      context(fetch)
+    )) as { complete: boolean; next_cursor?: string };
+    expect(firstPage.complete).toBe(false);
+    expect(firstPage.next_cursor).toBe("message-19");
+
+    const continuation = (await conversation.operations["conversation.search"](
+      { query: "boundary marker", before_id: firstPage.next_cursor },
+      context(fetch)
+    )) as { complete: boolean; results: Array<{ message_id: string }> };
+    expect(continuation.complete).toBe(true);
+    expect(continuation.results[0]?.message_id).toBe("message-18");
   });
 
   it("reports a history scan incomplete when the first host-owned message exceeds the byte budget", async () => {

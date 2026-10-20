@@ -35,7 +35,7 @@ describe("channel conversation transcript paging", () => {
     }
     const read = (
       agent as unknown as {
-        loadChannelTranscript: (sessionId: string) => Promise<{
+        loadChannelTranscript: (sessionId: string, options?: { beforeId?: string; limit?: number }) => Promise<{
           messages: Array<{ id: string; role: string; content: string }>;
           complete: boolean;
         }>;
@@ -51,5 +51,46 @@ describe("channel conversation transcript paging", () => {
       content: "The customer mentioned the old renewal reference.",
     });
     expect(result.messages.at(-1)?.id).toBe("event-1205");
+
+    const olderPage = await read("channel-thread-a", { beforeId: "event-100", limit: 50 });
+    expect(olderPage.complete).toBe(false);
+    expect(olderPage.messages).toHaveLength(50);
+    expect(olderPage.messages[0]?.id).toBe("event-50");
+    expect(olderPage.messages.at(-1)?.id).toBe("event-99");
+  });
+
+  it("continues beyond the initial 10,000-message window using an exact message cursor", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO(
+      { storage, id: { toString: () => "agent" } } as never,
+      { PLATFORM_SECRET: "channel-conversation-test-secret" } as never
+    );
+    await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    storage.sql.exec(
+      "INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES(?,?,?,?)",
+      "channel-thread-b", "telegram", "customer-b", "project-a"
+    );
+    for (let i = 1; i <= 10_005; i++) {
+      storage.sql.exec(
+        "INSERT INTO channel_messages(id,session_id,direction,text,created_at) VALUES(?,?,?,?,?)",
+        `long-event-${i}`, "channel-thread-b", "inbound", `Message ${i}`, 1_700_000_000_000 + i
+      );
+    }
+    const read = (agent as unknown as {
+      loadChannelTranscript: (sessionId: string, options?: { beforeId?: string; limit?: number }) => Promise<{
+        messages: Array<{ id: string; content: string }>;
+        complete: boolean;
+      }>;
+    }).loadChannelTranscript.bind(agent);
+
+    const newest = await read("channel-thread-b", { limit: 10_000 });
+    expect(newest.complete).toBe(false);
+    expect(newest.messages).toHaveLength(10_000);
+    expect(newest.messages[0]?.id).toBe("long-event-6");
+    const older = await read("channel-thread-b", { beforeId: "long-event-6", limit: 10 });
+    expect(older).toMatchObject({ complete: true });
+    expect(older.messages.map(({ id }) => id)).toEqual([
+      "long-event-1", "long-event-2", "long-event-3", "long-event-4", "long-event-5",
+    ]);
   });
 });

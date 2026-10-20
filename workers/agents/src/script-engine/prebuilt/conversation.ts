@@ -88,25 +88,25 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
   // the active session and deliberately accepts no model-selected session identifier.
   if (ctx.env.loadCurrentConversation) {
     try {
-      const loaded = await ctx.env.loadCurrentConversation();
-      let available = loaded.messages;
-      if (startBeforeId) {
-        const cursorIndex = available.findIndex((message) => message.id === startBeforeId);
-        if (cursorIndex < 0) return { messages: [], incomplete: true, unavailable: false };
-        available = available.slice(0, cursorIndex);
-      }
+      const loaded = await ctx.env.loadCurrentConversation({ ...(startBeforeId ? { beforeId: startBeforeId } : {}), limit: maxMessages });
       const selected: StoredMessage[] = [];
       let bytes = 0;
-      for (let i = available.length - 1; i >= 0 && selected.length < maxMessages; i--) {
-        const message = available[i]!;
-        const size = new TextEncoder().encode(message.content ?? "").length;
+      for (let i = loaded.messages.length - 1; i >= 0 && selected.length < maxMessages; i--) {
+        const message = loaded.messages[i]!;
+        const size = new TextEncoder().encode(message.content ?? "").byteLength;
         if (bytes + size > SEARCH_MAX_BYTES) break;
         bytes += size;
         selected.unshift(message);
       }
-      const incomplete = !loaded.complete || selected.length < available.length;
+      const incomplete = !loaded.complete || selected.length < loaded.messages.length;
       const nextCursor = incomplete ? selected[0]?.id : undefined;
-      return { messages: selected, incomplete, unavailable: Boolean(loaded.error && selected.length === 0), ...(loaded.error ? { error: loaded.error } : {}), ...(nextCursor ? { nextCursor } : {}) };
+      return {
+        messages: selected,
+        incomplete,
+        unavailable: Boolean(loaded.error && selected.length === 0),
+        ...(loaded.error ? { error: loaded.error } : {}),
+        ...(nextCursor ? { nextCursor } : {}),
+      };
     } catch {
       return { messages: [], incomplete: false, unavailable: true };
     }
@@ -117,6 +117,7 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
   let beforeId: string | undefined = startBeforeId;
   let bytes = 0;
   let incomplete = false;
+  let nextCursorOverride: string | undefined;
   const seenCursors = new Set<string>();
   try {
     while (messages.length < maxMessages && bytes < SEARCH_MAX_BYTES) {
@@ -148,6 +149,10 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
       messages.unshift(...acceptedPage);
       if (acceptedPage.length < page.length) {
         incomplete = true;
+        // SpaceDO pages are chronological. If the byte ceiling interrupts the middle of this
+        // page, continue before the row just after the first unconsumed row. This can replay a
+        // small accepted tail, but it cannot skip the boundary message.
+        nextCursorOverride = page[acceptedPage.length + 1]?.id ?? beforeId;
         break;
       }
       if (messages.length >= maxMessages || bytes >= SEARCH_MAX_BYTES) {
@@ -161,7 +166,11 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
         probeUrl.searchParams.set("scope_thread_id", sessionId);
         const probe = await ctx.env.spacesWorker.fetch(new Request(probeUrl, { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } }));
         if (!probe.ok) { incomplete = true; break; }
-        const probeBody = await readBoundedResponseJson<{ data?: StoredMessage[]; messages?: StoredMessage[] }>(probe, 2 * 1024 * 1024);
+        const probeBody = await readBoundedResponseJson<{ data?: StoredMessage[]; messages?: StoredMessage[]; cursor_applied?: boolean }>(probe, 2 * 1024 * 1024);
+        if (probeBody.cursor_applied === false) {
+          incomplete = true;
+          break;
+        }
         incomplete = (probeBody.data ?? probeBody.messages ?? []).length > 0;
         break;
       }
@@ -181,7 +190,7 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
   } catch {
     return { messages, incomplete: true, unavailable: messages.length === 0, error: "Transcript service could not be reached.", ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
   }
-  const nextCursor = incomplete ? messages[0]?.id : undefined;
+  const nextCursor = incomplete ? nextCursorOverride ?? messages[0]?.id : undefined;
   return { messages, incomplete, unavailable: false, ...(nextCursor ? { nextCursor } : {}) };
 }
 

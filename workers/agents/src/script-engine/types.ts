@@ -1121,7 +1121,7 @@ export interface ScriptEngineEnv {
   /** Optional host-owned transcript source for channel threads stored locally by the Agent DO.
    *  It takes no caller-selected session argument, so it can only expose the active channel
    *  conversation. */
-  loadCurrentConversation?: () => Promise<{
+  loadCurrentConversation?: (options?: { beforeId?: string; limit?: number }) => Promise<{
     messages: Array<{ id?: string; role: string; content: string; created_at?: string }>;
     complete: boolean;
     error?: string;
