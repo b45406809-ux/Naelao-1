@@ -975,3 +975,9 @@ Audited the shared request/response stream readers and their call sites. `readBo
 Validation: `packages/http` suite passed 30/30 and typecheck passed; Agents suite passed 148 files / 661 tests, Agents typecheck and Wrangler dry-run passed; Credentials suite passed 10/10 and typecheck passed. New cases cover NaN, Infinity, unsafe integers, and negative ceilings for request and response reads. Call-site search across packages/workers/apps/tests shows the consumed limits are fixed values or module constants; broader individual call-site feature reviews remain in the file-by-file plan.
 
 Refreshed the tracked tree after code commit `97dd605d`: 1,966 tracked files / 1,760 source and executable-configuration files. Marked the bounded-reader implementation and focused regression module reviewed; their larger worker call sites remain separately unchecked.
+
+## Shared bounded pagination parser coverage (2026-10-20)
+
+Reviewed `parseBoundedInteger` and enumerated its callers across Agents, Spaces/DOs, Knowledge, Threads, Search, Marketplace, Admin, and Mini-AGI. Bounds validation is explicit, parsing rejects fractions/exponents/unsafe integers, and values clamp to endpoint-specific limits. There was no focused regression module for this shared parser, so added coverage for missing/malformed/unsafe values, whitespace, negative values, both clamp edges, and invalid fallback/bounds. No implementation defect was found in this helper; endpoint-specific pagination semantics remain part of each worker review.
+
+Validation: `packages/http` suite passed 33/33 and typecheck passed; `git diff --check` passed.
