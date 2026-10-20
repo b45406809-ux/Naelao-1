@@ -1145,3 +1145,14 @@ Added a 10 MiB direct upload cap, a 30 second request timeout, sanitized network
 Validation: Knowledge Worker suite passed 7 files / 32 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
 
 Checked `parse-v5.ts` and `parse-v5.test.ts`. Its sole in-repository caller is the PDF ingestion route in `workers/knowledge/src/index.ts`; that large module remains unchecked overall.
+
+
+## Knowledge Worker sparse reranking boundaries (2026-10-20)
+
+Traced `sparseRank` from the grounded retrieval route. It receives only the ACL-filtered Vectorize/SQL candidates, currently at most twice the requested top-k (up to 100 hits). Its standalone helper nevertheless accepted arbitrarily large query strings, candidate populations, and candidate text, leaving future callers or legacy oversized chunks able to create unbounded tokenization work.
+
+Added explicit 1,000-character query and 200-candidate ceilings, capped text scanned per candidate at 16,384 characters while preserving full hit content in results, and validated candidate IDs/content. Also filtered zero-score BM25 results: the underlying implementation returns candidates with score zero despite its documented “zero-score docs excluded” contract, causing irrelevant sparse hits to enter RRF. Added tests for ranking, caps, malformed candidates, long content, and omitted late matches.
+
+Validation: Knowledge Worker suite passed 8 files / 35 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
+
+Checked `search.ts` and the new `search.test.ts`. Repository search found `sparseRank` called only from the grounded retrieval route; `hybridRank` currently has no production caller. The authorization adapter in `auth.ts` also has no discovered in-repository caller and remains pending a separate contract and dead-code review.

@@ -2248,7 +2248,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/knowledge/src/kb-search-boundaries.test.ts`
 - [x] `workers/knowledge/src/parse-v5.test.ts`
 - [x] `workers/knowledge/src/parse-v5.ts`
-- [ ] `workers/knowledge/src/search.ts`
+- [x] `workers/knowledge/src/search.test.ts`
+- [x] `workers/knowledge/src/search.ts`
 - [ ] `workers/knowledge/src/storage-usage.test.ts`
 - [ ] `workers/knowledge/src/storage-usage.ts`
 - [x] `workers/knowledge/src/web-fetch.test.ts`
