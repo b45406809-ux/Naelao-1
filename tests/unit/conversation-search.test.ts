@@ -11,7 +11,7 @@ import type { PrebuiltOpContext } from "../../workers/agents/src/script-engine/p
 
 const search = conversation.operations["conversation.search"]!;
 
-function makeCtx(messages: Array<{ role: string; content: string }>, opts: { failing?: boolean } = {}) {
+function makeCtx(messages: Array<{ role: string; content: string }>, opts: { failing?: boolean; noSession?: boolean } = {}) {
   const calls: string[] = [];
   const stored = messages.map((message, i) => ({ ...message, id: `m-${i}` }));
   const ctx = {
@@ -21,6 +21,7 @@ function makeCtx(messages: Array<{ role: string; content: string }>, opts: { fai
       tenantId: "tenant-1",
       platformSecret: "secret",
       scriptsBucket: {} as R2Bucket,
+      ...(!opts.noSession ? { currentSessionId: "sess-1" } : {}),
       spacesWorker: {
         async fetch(req: Request) {
           const url = new URL(req.url);
@@ -110,8 +111,8 @@ describe("conversation.search — finds what the summary dropped", () => {
     expect(r.searched_messages).toBe(126);
     expect(r.results[0]?.excerpt).toContain("blue lantern");
     expect(r.results[0]?.position).toBe("4 of 126");
-    expect(calls).toHaveLength(3);
-    expect(calls[1]).toContain("before_id=m-76");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain("before_id=m-26");
   });
 
   it("does not claim a miss is conclusive after reaching its transcript safety bound", async () => {
@@ -170,10 +171,10 @@ describe("conversation.search — degrades honestly", () => {
   });
 
   it("explains what it needs when no session is given", async () => {
-    const { ctx, calls } = makeCtx(TRANSCRIPT);
+    const { ctx, calls } = makeCtx(TRANSCRIPT, { noSession: true });
     const r = (await search({ query: "anything" }, ctx)) as { ok: boolean; reason: string };
     expect(r.ok).toBe(false);
-    expect(r.reason).toContain("session_id");
+    expect(r.reason).toContain("host-authorized conversation thread");
     expect(calls).toHaveLength(0);
   });
 
@@ -182,13 +183,13 @@ describe("conversation.search — degrades honestly", () => {
     const { ctx } = makeCtx(TRANSCRIPT, { failing: true });
     const r = (await search({ query: "Revolut", session_id: "sess-1" }, ctx)) as {
       ok: boolean;
-      results: unknown[];
-      note?: string;
+      searched_messages: number;
+      reason: string;
     };
     expect(r.ok).toBe(false);
-    expect(r.results).toHaveLength(0);
-    expect(r.note).toContain("unavailable");
-    expect(r.note).toContain("does not mean");
+    expect(r.searched_messages).toBe(0);
+    expect(r.reason).toContain("Transcript service returned 500");
+    expect(r.reason).toContain("does not mean");
   });
 });
 

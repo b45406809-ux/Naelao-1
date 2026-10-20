@@ -133,16 +133,17 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
       const body = await readBoundedResponseJson<{ data?: StoredMessage[]; messages?: StoredMessage[] }>(resp, 2 * 1024 * 1024);
       const page = body.data ?? body.messages ?? [];
       if (page.length === 0) break;
-      const acceptedPage: StoredMessage[] = [];
-      for (const message of page) {
-        if (messages.length + acceptedPage.length >= maxMessages) break;
+      const acceptedPageNewestFirst: StoredMessage[] = [];
+      for (let i = page.length - 1; i >= 0 && messages.length + acceptedPageNewestFirst.length < maxMessages; i--) {
+        const message = page[i]!;
         const messageBytes = new TextEncoder().encode(message.content ?? "").length;
-        if (bytes + messageBytes > SEARCH_MAX_BYTES) break;
-        acceptedPage.push(message);
+        if (bytes + messageBytes > SEARCH_MAX_BYTES) { incomplete = true; break; }
+        acceptedPageNewestFirst.push(message);
         bytes += messageBytes;
       }
+      const acceptedPage = acceptedPageNewestFirst.reverse();
       messages.unshift(...acceptedPage);
-      if (acceptedPage.length < page.length) {
+      if (acceptedPage.length < page.length || incomplete) {
         incomplete = true;
         break;
       }
@@ -195,10 +196,10 @@ async function search(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
   }
   const requestedLimit = Number(args["limit"] ?? 5);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 20) : 5;
-  const scanLimit = parseBoundedInteger(String(args["scan_limit"] ?? SEARCH_MAX_MESSAGES), SEARCH_MAX_MESSAGES, SEARCH_PAGE_SIZE, SEARCH_MAX_MESSAGES);
+  const scanLimit = parseBoundedInteger(String(args["scan_limit"] ?? SEARCH_MAX_MESSAGES), SEARCH_MAX_MESSAGES, 50, SEARCH_MAX_MESSAGES);
   const beforeId = typeof args["before_id"] === "string" ? args["before_id"].trim().slice(0, 160) : undefined;
   const { messages, incomplete, unavailable, error, nextCursor } = await loadMessages(ctx, sessionId, beforeId || undefined, scanLimit);
-  if (unavailable || error) return { ok: false, query, searched_messages: messages.length, complete: false, reason: error ?? "History search is unavailable. An empty result does not mean this was never discussed." };
+  if (unavailable || error) return { ok: false, query, searched_messages: messages.length, complete: false, reason: `${error ?? "History search is unavailable."} An empty or incomplete result does not mean this was never discussed.` };
   if (messages.length === 0) return unavailable
     ? { ok: false, query, results: [], searched_messages: 0, note: "History search is unavailable. An empty result does not mean this was never discussed." }
     : { ok: true, query, results: [], searched_messages: 0, exhausted: true, note: "No stored messages to search." };
