@@ -137,6 +137,31 @@ describe("VirtualCliDispatcher", () => {
       body: { from: "sender@example.com", to: "customer@example.com", subject: "Hello", html: "<p>Hello</p>" },
     }));
   });
+  it("uses Twilio account-scoped endpoints and delegates Basic auth to the vault", async () => {
+    const fetchWithAuth = vi.fn(async () => Response.json({ sid: "AC123" }));
+    const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space" });
+    const accountSid = `AC${"a".repeat(32)}`;
+    await cli.execute(["twilio", accountSid, "incomingPhoneNumbers", "list", "--page-size", "20"]);
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/IncomingPhoneNumbers.json?page_size=20`,
+      expect.objectContaining({
+        credentialName: "TWILIO_AUTH_TOKEN",
+        method: "GET",
+        auth: { type: "basic", username: accountSid },
+      }),
+    );
+    await expect(cli.execute(["twilio", accountSid, "incomingPhoneNumbers", "delete", "PN/123", "--idempotency-key", "delete-1"]))
+      .resolves.toMatchObject({ exit_code: 0 });
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/IncomingPhoneNumbers/PN%2F123.json`,
+      expect.objectContaining({ method: "DELETE", idempotencyKey: "delete-1", auth: { type: "basic", username: accountSid } }),
+    );
+    await expect(cli.execute(["twilio", "not-a-sid", "incomingPhoneNumbers", "list"]))
+      .rejects.toThrow("usage: twilio");
+    await expect(cli.execute(["twilio", accountSid, "incomingPhoneNumbers", "get"]))
+      .rejects.toThrow("twilio_resource_id_required");
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
   it("rejects oversized API replies while streaming", async () => {
     const fetchWithAuth = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024)); } })));
     const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space" });

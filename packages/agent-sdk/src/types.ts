@@ -346,6 +346,8 @@ export interface RuntimeSpace {
 
 export interface VaultFetchOptions {
   credentialName: string;
+  /** Optional provider auth shape. Basic auth uses the vaulted secret as the password. */
+  auth?: { type: "basic"; username: string };
   method?: string;
   /** Required for non-read methods so replay never repeats an external mutation. */
   idempotencyKey?: string;

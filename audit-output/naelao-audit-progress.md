@@ -925,3 +925,11 @@ Validation: virtual CLI suite passed 14/14 including list, retrieve, form-encode
 Refreshed the tracked tree after code commit `eb2e761f`; counts remain 1,964 tracked files / 1,758 source/config files, with prior review rows preserved before marking the CLI regression module complete.
 
 Refreshed the tracked tree after code commit `cc2e2b97`; it contains 1,962 tracked files and the checklist has 1,756 source/config files, preserving 250 reviewed rows before marking the new focused regression module reviewed.
+
+## Twilio virtual CLI auth and outbound credential containment (2026-10-20)
+
+Continued the provider CLI pass and traced Twilio through the signed Vault proxy into Credentials. Found the command could not succeed: it generated a non-account-scoped URL and the final egress layer always replaced Authorization with Bearer, while Twilio REST requires account-scoped URLs and Basic auth. Added a narrow explicit Basic mode where the username is validated and the password remains the vaulted secret; Twilio now requires an Account SID, maps supported collection/item actions, and encodes GET parameters and write fields correctly. The Credentials worker still owns secret resolution and header construction.
+
+The same boundary review found two security gaps: an upstream could reflect the injected Basic Authorization header into its response, and cross-origin read redirects kept forwarding credentials. Responses now redact both the raw secret and injected Authorization value, and redirect handling strips Authorization when the origin changes. The request receipt input hash now includes auth mode so replay checks bind to the effective auth shape.
+
+Validation: Agents suite passed 148 files / 659 tests; focused Virtual CLI and Vault proxy tests passed 18/18; Credentials focused suite passed 6/6; Agents and Credentials TypeScript passed; Wrangler dry-run succeeded for both workers; `git diff --check` passed. Tests cover Twilio account URL/action mapping, auth-mode forwarding, Basic header construction/validation, reflected-secret redaction, and cross-origin redirect credential stripping. This pass reviewed the Twilio dispatch and selected Credentials outbound-auth/redirect/response handling; `virtual-cli.ts` and Credentials `index.ts` remain unchecked as full files. GitHub and R2 command endpoint grammars remain under review.

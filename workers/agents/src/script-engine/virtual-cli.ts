@@ -217,7 +217,7 @@ export function interceptPlatformWords(words: string[], command?: string): CliDi
 }
 
 export interface VirtualCliVault {
-  fetchWithAuth(url: string, options: { credentialName: string; method?: string; idempotencyKey?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response>;
+  fetchWithAuth(url: string, options: { credentialName: string; method?: string; idempotencyKey?: string; body?: unknown; headers?: Record<string, string>; auth?: { type: "basic"; username: string } }): Promise<Response>;
 }
 export interface SynthesizedCliStore { read(path: string): Promise<string | null>; write(path: string, source: string): Promise<void> }
 export interface VirtualCliDaemonRegistry { execute(name: string, argv: string[]): Promise<unknown> }
@@ -361,10 +361,19 @@ export class VirtualCliDispatcher {
       url = `https://api.cloudflare.com/client/v4/r2/buckets/${encodeURIComponent(bucket)}/${encodeURIComponent(action!)}`;
       credentialName = "CLOUDFLARE_API_TOKEN"; method = action === "list" || action === "get" ? "GET" : "POST";
     } else {
-      const [resource, action] = positional;
-      if (!resource || !action) throw new Error("usage: twilio <resource> <action> [--field value]");
-      url = `https://api.twilio.com/2010-04-01/${encodeURIComponent(resource)}/${encodeURIComponent(action)}.json`;
-      credentialName = "TWILIO_AUTH_TOKEN"; method = action === "list" || action === "get" ? "GET" : "POST";
+      const [accountSid, resource, action] = positional;
+      if (!accountSid || !resource || !action || !/^AC[a-fA-F0-9]{32}$/.test(accountSid) || !/^[A-Za-z][A-Za-z0-9]*$/.test(resource)) {
+        throw new Error("usage: twilio <account-sid> <resource> <list|get|create|update|delete> [id] [--field value]");
+      }
+      const allowedActions = ["list", "get", "create", "update", "delete"];
+      if (!allowedActions.includes(action)) throw new Error("usage: twilio <account-sid> <resource> <list|get|create|update|delete> [id] [--field value]");
+      const id = positional[3];
+      if (positional.length > 4 || (["get", "update", "delete"].includes(action) !== Boolean(id))) throw new Error("twilio_resource_id_required");
+      const collection = resource[0]!.toUpperCase() + resource.slice(1);
+      url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/${collection}${id ? `/${encodeURIComponent(id)}` : ""}.json`;
+      credentialName = "TWILIO_AUTH_TOKEN";
+      method = ["list", "get"].includes(action) ? "GET" : action === "delete" ? "DELETE" : "POST";
+      providerHeaders = { "content-type": "application/x-www-form-urlencoded" };
     }
     if (!this.ctx.vault) throw new Error("virtual_cli_credentials_unavailable");
     const idempotencyKey = typeof body["idempotency_key"] === "string" ? body["idempotency_key"] : undefined;
@@ -373,7 +382,7 @@ export class VirtualCliDispatcher {
       throw new Error("api_idempotency_key_required");
     }
     let providerBody: unknown = body;
-    if (command === "stripe") {
+    if (command === "stripe" || command === "twilio") {
       const fields = new URLSearchParams();
       for (const [key, value] of Object.entries(body)) {
         if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") fields.append(key, String(value));
@@ -392,6 +401,7 @@ export class VirtualCliDispatcher {
       ...(idempotencyKey ? { idempotencyKey } : {}),
       ...(providerBody !== undefined && method !== "GET" && method !== "HEAD" ? { body: providerBody } : {}),
       headers: providerHeaders,
+      ...(command === "twilio" ? { auth: { type: "basic" as const, username: positional[0]! } } : {}),
     });
     return { exit_code: 0, stdout: await responseText(response) };
   }

@@ -143,15 +143,18 @@ async function readBoundedResponse(response: Response, limit = 8 * 1024 * 1024):
   return result;
 }
 
-function redactBytes(input: Uint8Array, secret: string): Uint8Array {
-  const needle = new TextEncoder().encode(secret);
-  if (!needle.length || needle.length > input.length) return input;
+export function redactOutboundSecrets(input: Uint8Array, secrets: string[]): Uint8Array {
+  const needles = secrets.map((secret) => new TextEncoder().encode(secret)).filter((needle) => needle.length > 0);
+  if (!needles.some((needle) => needle.length <= input.length)) return input;
   const replacement = new TextEncoder().encode("[REDACTED]");
   const output: number[] = [];
   for (let i = 0; i < input.length;) {
-    let match = true;
-    for (let j = 0; j < needle.length; j++) if (input[i + j] !== needle[j]) { match = false; break; }
-    if (match) { output.push(...replacement); i += needle.length; }
+    const needle = needles.find((candidate) => {
+      if (i + candidate.length > input.length) return false;
+      for (let j = 0; j < candidate.length; j++) if (input[i + j] !== candidate[j]) return false;
+      return true;
+    });
+    if (needle) { output.push(...replacement); i += needle.length; }
     else output.push(input[i++]!);
   }
   return Uint8Array.from(output);
@@ -465,6 +468,21 @@ function validateCredentialName(name: string): void {
       "Credential name must be 1–64 characters (alphanumeric/underscore), optionally followed by ::slot (1–32 alphanumeric/underscore)"
     );
   }
+}
+
+/** Build provider authorization only after the vault resolves the secret. Caller headers never control this value. */
+export function buildOutboundAuthorization(secret: string, auth?: { type: "basic"; username: string }): string {
+  if (auth?.type === "basic") {
+    if (!/^[\x20-\x7e]{1,128}$/.test(auth.username) || auth.username.includes(":")) throw new Error("egress_auth_invalid");
+    return `Basic ${btoa(`${auth.username}:${secret}`)}`;
+  }
+  return `Bearer ${secret}`;
+}
+
+export function headersForEgressRedirect(current: URL, next: URL, headers: Headers): Headers {
+  const forwarded = new Headers(headers);
+  if (current.origin !== next.origin) forwarded.delete("authorization");
+  return forwarded;
 }
 
 function isPrivileged(role: string): boolean {
@@ -982,8 +1000,11 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
 
   const body = await c.req.json<{
     url: string; credentialName: string; method?: string; idempotencyKey?: string; body?: unknown;
-    headers?: Record<string, string>; onBehalfOfUserId?: string; projectId?: string;
+    headers?: Record<string, string>; auth?: { type: "basic"; username: string }; onBehalfOfUserId?: string; projectId?: string;
   }>();
+  if (body.auth !== undefined && (body.auth?.type !== "basic" || typeof body.auth.username !== "string" || !/^[\x20-\x7e]{1,128}$/.test(body.auth.username) || body.auth.username.includes(":"))) {
+    return c.json({ error_code: "egress_auth_invalid", message: "The requested authentication mode is invalid" }, 400);
+  }
   if (body.projectId && body.projectId !== tokenCheck.projectId) throw forbidden("Project scope does not match the signed credential token");
   validateCredentialName(body.credentialName);
   const method = (body.method ?? (body.body === undefined ? "GET" : "POST")).toUpperCase();
@@ -1016,7 +1037,8 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   supplied.delete("host");
   supplied.delete("cookie");
   supplied.delete("content-length");
-  supplied.set("authorization", `Bearer ${secret}`);
+  const authorization = buildOutboundAuthorization(secret, body.auth);
+  supplied.set("authorization", authorization);
   if (isWrite) supplied.set("idempotency-key", body.idempotencyKey!);
   let destination = approvedUrl;
   let receiptContext: OutboundReceiptContext | undefined;
@@ -1028,7 +1050,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
       ...(tokenCheck.taskId ? { taskId: tokenCheck.taskId } : {}), agentId: tokenCheck.agentId!,
       traceId: tokenCheck.traceId!, spanId: tokenCheck.spanId!, actionId, idempotencyKey: body.idempotencyKey!,
     };
-    inputHash = await sha256Hex(JSON.stringify([method, approvedUrl.toString(), body.credentialName, body.body ?? null, [...supplied.entries()].filter(([name]) => !/^(authorization|idempotency-key)$/i.test(name))]));
+    inputHash = await sha256Hex(JSON.stringify([method, approvedUrl.toString(), body.credentialName, body.auth ?? { type: "bearer" }, body.body ?? null, [...supplied.entries()].filter(([name]) => !/^(authorization|idempotency-key)$/i.test(name))]));
     let pending;
     try {
       pending = await recordOutboundReceipt(c.env, receiptContext, "pending", inputHash, await sha256Hex("pending"), "Authorized external write; outcome pending");
@@ -1043,11 +1065,12 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
     }, 409);
   }
   let response: Response | undefined;
+  let outboundHeaders = new Headers(supplied);
   for (let redirects = 0; redirects <= 5; redirects++) {
     try {
       response = await fetch(destination, {
         method,
-        headers: supplied,
+        headers: outboundHeaders,
         ...(body.body === undefined ? {} : { body: typeof body.body === "string" ? body.body : JSON.stringify(body.body) }),
         redirect: "manual",
       });
@@ -1069,6 +1092,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
     let next: URL;
     try { next = await authorizeEgressRedirect(destination, location, await readSpaceEgressPolicy(c.env.PLATFORM_DB, spaceId)); }
     catch { return c.json({ error_code: "egress_redirect_denied", message: "The destination redirected outside the approved network policy" }, 502); }
+    outboundHeaders = headersForEgressRedirect(destination, next, outboundHeaders);
     destination = next;
     response = undefined;
   }
@@ -1076,19 +1100,22 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
 
   const safeHeaders = new Headers();
   for (const [name, value] of response.headers) {
-    if (!/^(set-cookie|authorization|proxy-authenticate|www-authenticate)$/i.test(name) && !value.includes(secret)) safeHeaders.append(name, value);
+    if (!/^(set-cookie|authorization|proxy-authenticate|www-authenticate)$/i.test(name) && ![secret, authorization].some((sensitive) => value.includes(sensitive))) safeHeaders.append(name, value);
   }
   let bytes: Uint8Array;
-  try { bytes = redactBytes(await readBoundedResponse(response), secret); }
+  try { bytes = redactOutboundSecrets(await readBoundedResponse(response), [secret, authorization]); }
   catch {
     if (receiptContext) {
       try { await recordOutboundReceipt(c.env, receiptContext, "unknown", inputHash, await sha256Hex("response exceeded safe limit"), "Response was too large to safely record"); } catch { /* pending receipt remains fail-closed */ }
     }
     return c.json({ error_code: "egress_response_unavailable", message: "The external response exceeded the safe limit; the action will not be retried automatically." }, 502);
   }
-  // Defend against an origin reflecting the bearer value into textual output and binary bodies.
+  // Defend against an origin reflecting the injected authorization value into output bodies.
   const contentType = safeHeaders.get("content-type") ?? "";
-  if (/^(text\/|application\/(json|xml|javascript))/.test(contentType)) bytes = new TextEncoder().encode(new TextDecoder().decode(bytes).split(secret).join("[REDACTED]"));
+  if (/^(text\/|application\/(json|xml|javascript))/.test(contentType)) {
+    const text = new TextDecoder().decode(bytes);
+    bytes = new TextEncoder().encode([secret, authorization].reduce((value, sensitive) => value.split(sensitive).join("[REDACTED]"), text));
+  }
   if (receiptContext) {
     const outcome = response.ok ? "succeeded" : "failed";
     try {

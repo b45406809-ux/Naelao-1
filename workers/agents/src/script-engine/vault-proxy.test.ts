@@ -26,6 +26,26 @@ describe("vault proxy", () => {
     expect(JSON.stringify(vault)).not.toContain("platform");
   });
 
+  it("forwards an explicit Basic-auth mode and username through the signed vault boundary", async () => {
+    const fetch = vi.fn(async (request: Request) => {
+      const payload = await request.json<Record<string, unknown>>();
+      expect(payload.auth).toEqual({ type: "basic", username: "AC123" });
+      expect(payload.credentialName).toBe("TWILIO_AUTH_TOKEN");
+      return new Response("ok");
+    });
+    const vault = createVaultProxy({
+      credentialsWorker: { fetch } as unknown as Fetcher,
+      platformSecret: "platform",
+      tenantId: "t",
+      spaceId: "s",
+      agentId: "agent",
+    });
+    await vault.fetchWithAuth("https://api.twilio.com/2010-04-01/Accounts/AC123/IncomingPhoneNumbers.json", {
+      credentialName: "TWILIO_AUTH_TOKEN",
+      auth: { type: "basic", username: "AC123" },
+    });
+  });
+
   it("bounds error responses from the Credentials Worker", async () => {
     const vault = createVaultProxy({
       credentialsWorker: {
