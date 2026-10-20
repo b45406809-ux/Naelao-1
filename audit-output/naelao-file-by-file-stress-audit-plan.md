@@ -759,8 +759,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/agent-sdk/src/browser-runtime.ts`
 - [ ] `packages/agent-sdk/src/canvas-runtime.test.ts`
 - [ ] `packages/agent-sdk/src/canvas-runtime.ts`
-- [ ] `packages/agent-sdk/src/channel-envelope.test.ts`
-- [ ] `packages/agent-sdk/src/channel-envelope.ts`
+- [x] `packages/agent-sdk/src/channel-envelope.test.ts`
+- [x] `packages/agent-sdk/src/channel-envelope.ts`
 - [ ] `packages/agent-sdk/src/cockpit-promotion.test.ts`
 - [ ] `packages/agent-sdk/src/cockpit-promotion.ts`
 - [ ] `packages/agent-sdk/src/connector-provider.test.ts`

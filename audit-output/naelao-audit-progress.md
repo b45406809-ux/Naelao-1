@@ -1039,3 +1039,9 @@ Reviewed the Agent SDK usage parser and its Agents worker consumers. `validProvi
 Validation: Agent SDK suite passed 27 files / 132 tests; its build and typecheck passed; Agents suite passed 148 files / 661 tests and Agents typecheck passed; root token-accounting regression module passed 4/4; `git diff --check` passed. Focused cases cover exact ceiling, over-ceiling totals, maximum-safe-integer overflow, arrays, throwing getters, and large estimate arithmetic.
 
 Refreshed the tracked tree after code commit `d7c8773c`: 1,970 tracked files and 1,764 source/config files; added the new accounting regression test to the checklist and checked the two reviewed token-accounting files.
+
+## Normalized inbound channel envelope validation (2026-10-20)
+
+Traced `toNormalizedInboundMessage` into `NaelaoAgentDO.handleChannelInbound`; provider adapters perform their own webhook parsing and this helper builds the shared envelope used for normalized text. The helper previously checked sender/external IDs only for truthiness, accepted arbitrary finite timestamps, passed caller attachment arrays through by reference, and had no text or attachment bounds. It now requires bounded control-free string IDs, safe integer timestamps within the JavaScript date range, caps UTF-8 message text at 1 MiB and attachments at 20, validates attachment type/MIME/HTTP(S) URL shape, and copies attachment metadata into the envelope. Provider signature verification and provider-specific attachment fetching remain separately audited.
+
+Validation: Agent SDK channel-envelope tests passed 5/5; Agent SDK and Agents typechecks passed; `git diff --check` passed. Regressions cover wrong-type/control/oversized identities, invalid timestamps, exact and over-limit Unicode payloads, malformed URLs, attachment count limits, and source-object mutation after normalization.
