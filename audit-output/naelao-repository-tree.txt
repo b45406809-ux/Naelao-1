@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1968
-Files with source or executable-configuration extensions: 1762
-Inventory revision: 2026-10-20 audit refresh at 4e6eabba
+Files: 1969
+Files with source or executable-configuration extensions: 1763
+Inventory revision: 2026-10-20 audit refresh at 56e8cd70
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -715,6 +715,7 @@ packages/
       recipes.ts
       runtime-context.test.ts
       runtime-context.ts
+      scratchpad.test.ts
       scratchpad.ts
       subagent-context.test.ts
       subagent-context.ts
