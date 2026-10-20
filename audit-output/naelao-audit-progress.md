@@ -471,3 +471,9 @@ Validation: `tests/unit/code-runner.test.ts` passed 17/17; Agents TypeScript che
 The root product-end-user suite created its own compact D1 schema and omitted the real `users` base migration plus migration 0096, even though current routes write/read `preferred_language` for both platform users and product end users. Added migrations 0001 and 0096 to the fixture. This restores the GDPR erasure route tests and covers current preferred-language schema without changing production behavior.
 
 Validation: `tests/unit/product-end-user-auth.test.ts` passed all 36 tests, including signup/login, session scope, email verification/reset, language preference, and GDPR erasure/idempotence. No live account or production data was accessed.
+
+## Steward routes, workflow task fixtures, and strict UTF-8 typecheck (2026-10-20)
+
+Project-steward review tests omitted extension-provider connection migrations 0112–0113, which current read-only steward routes query. Applied both migrations in the isolated fixture; all five route tests now pass. AgentTaskWorkflow failure and identity tests were also missing the current durable journal requirements (actor, pinned build, provisioned R2 config, and workflow namespace) and their fake WorkflowStep lacked Cloudflare's two-argument callback overload. Added those current contracts to the test doubles; all nine failure/identity tests pass. During follow-up typechecking, Spaces exposed a strict TextDecoder option mismatch in the conformance request parser; set `ignoreBOM` explicitly to keep strict UTF-8 decoding type-safe.
+
+Validation: project-steward route tests 5/5; task workflow tests 9/9; Agents TypeScript check passed; Spaces TypeScript check passed after the TextDecoder fix; `git diff --check` passed. The workflow tests use a fake D1/R2/DO boundary and do not exercise deployed Cloudflare Workflows. Remaining root-suite failures still need a refreshed full run and cluster-by-cluster triage.

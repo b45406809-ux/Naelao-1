@@ -18,6 +18,8 @@ function database() {
     readFileSync(join(__dirname, "../../infra/migrations/0043_scheduled_jobs_agent_goal.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0107_project_steward_daily_runs.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0108_project_steward_decisions.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../infra/migrations/0112_extension_provider_connections.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../infra/migrations/0113_whatsapp_extension_phone_routing.sql"), "utf8"),
   ]);
   db.db.exec(`INSERT INTO spaces (id,tenant_id,status,name,spacetype_id) VALUES ('${SPACE}','${TENANT}','active','Test Space','launchpad')`);
   db.db.exec(`INSERT INTO scheduled_jobs (id,space_id,tenant_id,project_id,name,cron_expression,script_name,consecutive_failures) VALUES

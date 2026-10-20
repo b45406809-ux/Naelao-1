@@ -18,7 +18,10 @@ function makeFakeStep() {
   const attempts: Record<string, number> = {};
   return {
     attempts,
-    async do(name: string, config: { retries?: { limit?: number } } | undefined, cb: () => Promise<unknown>) {
+    async do(name: string, configOrCallback: { retries?: { limit?: number } } | (() => Promise<unknown>) | undefined, possibleCallback?: () => Promise<unknown>) {
+      const config = typeof configOrCallback === "function" ? undefined : configOrCallback;
+      const cb = typeof configOrCallback === "function" ? configOrCallback : possibleCallback;
+      if (!cb) throw new Error(`workflow_step_callback_required:${name}`);
       const limit = config?.retries?.limit ?? 0;
       let lastErr: unknown;
       for (let i = 0; i <= limit; i++) {
@@ -64,9 +67,37 @@ function makeFakeTaskDO() {
 }
 
 function makeEnv(opts: { taskDoStub: ReturnType<typeof makeFakeTaskDO>["stub"]; agentsWorkerFetch: (req: Request) => Promise<Response> }) {
+  const r2 = new Map<string, string>();
+  for (const file of ["agents.md", "system-prompt.md", "scripts.json", "skills.json"]) {
+    r2.set(`spaces/space-1/agents/naelao-agent/${file}`, "{}");
+  }
+  const scriptsBucket = {
+    async put(key: string, value: string) { r2.set(key, value); },
+    async get(key: string) {
+      const value = r2.get(key);
+      return value === undefined ? null : { size: new TextEncoder().encode(value).byteLength, text: async () => value };
+    },
+  };
+  let journal: { identity: unknown; status: string } | null = null;
+  const runStub = {
+    async existing() { return journal; },
+    async initialize(identity: unknown) { journal = { identity, status: "running" }; },
+    async authorize() { return (journal as { identity: unknown } | null)?.identity; },
+    async claimAgentRun() { return true; },
+    async putArtifact() { return { r2_key: "workflow-artifact", sha256: "a".repeat(64), bytes: 0 }; },
+    async state(_runId: string, status: string) { if (journal) journal.status = status; },
+    async finish(_runId: string, status: string) { if (journal) journal.status = status; },
+  };
   return {
     TASK_DO: { idFromName: (name: string) => name, get: () => opts.taskDoStub },
     AGENTS_WORKER: { fetch: opts.agentsWorkerFetch },
+    SPACES_WORKER: { async fetch(request: Request) {
+      const userId = request.headers.get("x-naelao-user-id") ?? "test-user";
+      return Response.json({ data: [{ user_id: userId, role: "owner" }] });
+    } },
+    WORKFLOW_RUN_DO: { idFromName: (name: string) => name, get: () => runStub },
+    SCRIPTS_R2: scriptsBucket,
+    WORKFLOW_BUILD_ID: "a".repeat(64),
     PLATFORM_SECRET: "test-secret",
     // reportWorkflowStepInfraUsage degrades to a no-op when BILLING_WORKER is absent.
   } as unknown as ConstructorParameters<typeof AgentTaskWorkflow>[1];
@@ -81,6 +112,7 @@ const baseParams: AgentTaskParams = {
   agentId: "naelao-agent",
   model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
   taskDoName: "task-do-1",
+  userId: "test-user",
 };
 
 describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO status", () => {
