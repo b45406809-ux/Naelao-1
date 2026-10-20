@@ -2414,8 +2414,8 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/spaces/src/do`
 
 - [ ] `workers/spaces/src/do/BuilderAccountDO.ts`
-- [ ] `workers/spaces/src/do/FeatureFlagDO.test.ts`
-- [ ] `workers/spaces/src/do/FeatureFlagDO.ts`
+- [x] `workers/spaces/src/do/FeatureFlagDO.test.ts`
+- [x] `workers/spaces/src/do/FeatureFlagDO.ts`
 - [ ] `workers/spaces/src/do/LockDO.ts`
 - [ ] `workers/spaces/src/do/MicroAppDO.ts`
 - [ ] `workers/spaces/src/do/ProductUserDO-credit-reservations.test.ts`

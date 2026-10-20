@@ -44,6 +44,8 @@ interface EvalContext {
 const FLAG_STATES = new Set(["on", "off", "rollout"]);
 const TARGET_ATTRIBUTES = new Set(["account_id", "plan_tier", "tenant_id"]);
 const MAX_TARGETING_RULES = 32;
+const MAX_FLAGS_PAGE_SIZE = 100;
+const FLAG_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 function validTargetingRules(value: unknown): value is TargetingRule[] {
   return Array.isArray(value) && value.length <= MAX_TARGETING_RULES && value.every((rule) => {
@@ -127,7 +129,7 @@ export class FeatureFlagDO extends DurableObject {
         enabled_pct?: number;
         targeting_rules?: TargetingRule[];
       }>().catch(() => null);
-      if (!body || typeof body.flag_id !== "string" || !body.flag_id.trim() || body.flag_id.length > 128 || !FLAG_STATES.has(body.state)) {
+      if (!body || typeof body.flag_id !== "string" || !FLAG_ID_PATTERN.test(body.flag_id) || !FLAG_STATES.has(body.state)) {
         return Response.json({ error: "flag_id and valid state required" }, { status: 400 });
       }
       const enabledPct = body.enabled_pct ?? 0;
@@ -166,16 +168,25 @@ export class FeatureFlagDO extends DurableObject {
 
     // GET /flags — list all flags
     if (method === "GET" && url.pathname === "/flags") {
+      const rawLimit = url.searchParams.get("limit");
+      const limit = rawLimit === null ? 50 : Number(rawLimit);
+      const after = url.searchParams.get("after");
+      if (!Number.isInteger(limit) || limit < 1 || limit > MAX_FLAGS_PAGE_SIZE ||
+          (after !== null && !FLAG_ID_PATTERN.test(after))) {
+        return Response.json({ error: "invalid_pagination" }, { status: 400 });
+      }
       const rows = this.ctx.storage.sql
-        .exec(`SELECT flag_id, state, enabled_pct, updated_at FROM flags ORDER BY flag_id`)
+        .exec(`SELECT flag_id, state, enabled_pct, updated_at FROM flags WHERE (? IS NULL OR flag_id > ?) ORDER BY flag_id LIMIT ?`, after, after, limit + 1)
         .toArray() as unknown as Pick<FlagRow, "flag_id" | "state" | "enabled_pct" | "updated_at">[];
-      return Response.json({ flags: rows });
+      const hasMore = rows.length > limit;
+      const flags = hasMore ? rows.slice(0, limit) : rows;
+      return Response.json({ flags, next_cursor: hasMore ? flags.at(-1)?.flag_id ?? null : null });
     }
 
     // POST /evaluate — evaluate a flag for a given context
     if (method === "POST" && url.pathname === "/evaluate") {
       const body = await request.json<{ flag_id: string; context: EvalContext }>().catch(() => null);
-      if (!body || typeof body.flag_id !== "string" || !body.flag_id.trim()) return Response.json({ error: "flag_id required" }, { status: 400 });
+      if (!body || typeof body.flag_id !== "string" || !FLAG_ID_PATTERN.test(body.flag_id)) return Response.json({ error: "flag_id required" }, { status: 400 });
       const context = safeEvalContext(body.context);
       if (!context) return Response.json({ error: "invalid_evaluation_context" }, { status: 400 });
 

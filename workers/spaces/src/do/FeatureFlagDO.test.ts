@@ -23,6 +23,30 @@ describe("FeatureFlagDO input bounds", () => {
     expect(await response.json()).toMatchObject({ enabled: true, reason: "rollout_pct_100" });
   });
 
+  it("paginates the global flag listing and caps page size", async () => {
+    const flags = harness();
+    const put = (flag_id: string) => flags.fetch(new Request("http://flags/flags", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ flag_id, state: "on" }),
+    }));
+    for (const id of ["gamma", "alpha", "delta", "beta"]) expect((await put(id)).status).toBe(201);
+
+    const first = await (await flags.fetch(new Request("http://flags/flags?limit=2"))).json() as {
+      flags: Array<{ flag_id: string }>;
+      next_cursor: string | null;
+    };
+    expect(first.flags.map((flag) => flag.flag_id)).toEqual(["alpha", "beta"]);
+    expect(first.next_cursor).toBe("beta");
+    const second = await (await flags.fetch(new Request(`http://flags/flags?limit=2&after=${first.next_cursor}`))).json() as {
+      flags: Array<{ flag_id: string }>;
+      next_cursor: string | null;
+    };
+    expect(second.flags.map((flag) => flag.flag_id)).toEqual(["delta", "gamma"]);
+    expect(second.next_cursor).toBeNull();
+    expect((await flags.fetch(new Request("http://flags/flags?limit=101"))).status).toBe(400);
+    expect((await put("not/a/path-safe-id")).status).toBe(400);
+  });
+
   it("limits targeting to the documented context fields and validates rule shape", async () => {
     const flags = harness();
     const invalidRule = await flags.fetch(new Request("http://flags/flags", {
