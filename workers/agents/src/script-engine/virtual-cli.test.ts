@@ -97,6 +97,30 @@ describe("VirtualCliDispatcher", () => {
       .rejects.toThrow("api_idempotency_key_required");
     expect(fetchWithAuth).toHaveBeenCalledTimes(2);
   });
+  it("maps Stripe actions to resource URLs and form-encodes writes", async () => {
+    const fetchWithAuth = vi.fn(async () => Response.json({ id: "cus_1" }));
+    const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space" });
+    await cli.execute(["stripe", "customers", "list", "--limit", "5"]);
+    expect(fetchWithAuth).toHaveBeenLastCalledWith("https://api.stripe.com/v1/customers?limit=5", expect.objectContaining({ method: "GET" }));
+
+    await cli.execute(["stripe", "customers", "retrieve", "cus_123"]);
+    expect(fetchWithAuth).toHaveBeenLastCalledWith("https://api.stripe.com/v1/customers/cus_123", expect.objectContaining({ method: "GET" }));
+
+    await expect(cli.execute(["stripe", "customers", "create", "--name", "A & B", "--idempotency-key", "stripe-run-1"]))
+      .resolves.toMatchObject({ exit_code: 0 });
+    expect(fetchWithAuth).toHaveBeenLastCalledWith("https://api.stripe.com/v1/customers", expect.objectContaining({
+      method: "POST",
+      idempotencyKey: "stripe-run-1",
+      body: "name=A+%26+B",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    }));
+    await expect(cli.execute(["stripe", "customers", "retrieve"]))
+      .rejects.toThrow("stripe_resource_id_required");
+    await expect(cli.execute(["stripe", "customers", "create", "--name", "Missing key"]))
+      .rejects.toThrow("api_idempotency_key_required");
+    expect(fetchWithAuth).toHaveBeenCalledTimes(3);
+  });
+
   it("requires and forwards idempotency for built-in provider writes without sending it in the provider body", async () => {
     const fetchWithAuth = vi.fn(async () => Response.json({ id: "email_1" }));
     const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space" });

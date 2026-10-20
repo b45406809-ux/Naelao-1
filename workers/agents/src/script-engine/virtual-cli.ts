@@ -299,6 +299,7 @@ export class VirtualCliDispatcher {
     if (!API_COMMANDS.has(command)) return null;
     const { positional, body } = bodyAndFlags(args);
     let url: string; let credentialName: string; let method = "GET";
+    let providerHeaders: Record<string, string> = { "content-type": "application/json" };
     if (command === "api") {
       if (positional[0] !== "request" || positional.length !== 3) throw new Error("usage: api request <method> <https-url> --credential <vault-name> [--body <json>] [--headers <json>] [--idempotency-key <key>]");
       method = positional[1]!.toUpperCase();
@@ -335,10 +336,17 @@ export class VirtualCliDispatcher {
       });
       return { exit_code: response.ok ? 0 : 1, stdout: await responseText(response) };
     } else if (command === "stripe") {
-      const [resource, action = "list"] = positional;
+      const [resource, action = "list", id, ...extra] = positional;
       if (!resource) throw new Error("usage: stripe <resource> <action>");
-      url = `https://api.stripe.com/v1/${encodeURIComponent(resource)}${action === "list" ? "" : `/${encodeURIComponent(action!)}`}`;
-      credentialName = "STRIPE_KEY"; method = action === "list" || action === "retrieve" ? "GET" : "POST";
+      if (!/^[A-Za-z0-9_/-]+$/.test(resource) || resource.split("/").some((part) => !part || part === "." || part === "..")) throw new Error("stripe_resource_invalid");
+      if (extra.length || !["list", "create", "retrieve", "get", "update", "delete"].includes(action)) throw new Error("usage: stripe <resource> list|create|retrieve|update|delete [id] [--field value]");
+      const needsId = ["retrieve", "get", "update", "delete"].includes(action);
+      if (needsId !== Boolean(id)) throw new Error("stripe_resource_id_required");
+      const resourcePath = resource.split("/").map(encodeURIComponent).join("/");
+      url = `https://api.stripe.com/v1/${resourcePath}${id ? `/${encodeURIComponent(id)}` : ""}`;
+      credentialName = "STRIPE_KEY";
+      method = ["list", "retrieve", "get"].includes(action) ? "GET" : action === "delete" ? "DELETE" : "POST";
+      providerHeaders = { "content-type": "application/x-www-form-urlencoded" };
     } else if (command === "gh") {
       const [resource, action, id] = positional;
       if (!resource) throw new Error("usage: gh <resource> <action>");
@@ -364,12 +372,26 @@ export class VirtualCliDispatcher {
     if (!["GET", "HEAD"].includes(method) && (!idempotencyKey || !/^[A-Za-z0-9._:-]{1,120}$/.test(idempotencyKey))) {
       throw new Error("api_idempotency_key_required");
     }
+    let providerBody: unknown = body;
+    if (command === "stripe") {
+      const fields = new URLSearchParams();
+      for (const [key, value] of Object.entries(body)) {
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") fields.append(key, String(value));
+      }
+      if (method === "GET") {
+        const target = new URL(url);
+        fields.forEach((value, key) => target.searchParams.append(key, value));
+        url = target.toString();
+      } else {
+        providerBody = method === "POST" && fields.size ? fields.toString() : undefined;
+      }
+    }
     const response = await this.ctx.vault.fetchWithAuth(url, {
       credentialName,
       method,
       ...(idempotencyKey ? { idempotencyKey } : {}),
-      ...(method !== "GET" ? { body } : {}),
-      headers: { "content-type": "application/json" },
+      ...(providerBody !== undefined && method !== "GET" && method !== "HEAD" ? { body: providerBody } : {}),
+      headers: providerHeaders,
     });
     return { exit_code: 0, stdout: await responseText(response) };
   }

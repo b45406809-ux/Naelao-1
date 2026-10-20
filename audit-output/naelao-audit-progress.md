@@ -916,4 +916,10 @@ Validation: focused virtual CLI tests passed 13/13, including missing-key denial
 
 Refreshed the tracked tree after code commit `94355922`; it remains 1,964 tracked files and 1,758 source/config files, preserving 253 checked rows.
 
+## Stripe virtual CLI action grammar (2026-10-20)
+
+Continued the provider command pass and found Stripe actions were inserted into the URL (`/customers/retrieve`) instead of mapping verbs to resource/item endpoints. The command now has explicit supported actions and ID requirements, resource path segments are encoded independently, GET flags become query parameters, and writes use Stripe's URL-encoded form format. The earlier built-in write idempotency requirement applies to POST/DELETE actions here as well.
+
+Validation: virtual CLI suite passed 14/14 including list, retrieve, form-encoded create, missing ID, and missing idempotency cases; full Agent suite passed 148 files / 657 tests; Agent TypeScript, Wrangler dry-run, and `git diff --check` passed. This implementation covers the declared generic Stripe command grammar; it does not validate every Stripe API resource/action against Stripe's live schema. `virtual-cli.ts` remains unchecked as a full file.
+
 Refreshed the tracked tree after code commit `cc2e2b97`; it contains 1,962 tracked files and the checklist has 1,756 source/config files, preserving 250 reviewed rows before marking the new focused regression module reviewed.
