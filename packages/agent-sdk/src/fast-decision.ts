@@ -133,10 +133,11 @@ export const CLEF_FLASH_MODEL = "cloudflare/clef-flash";
 export const CLEF_FLASH_MAX_ESTIMATED_TOKENS = 16_000;
 export const DECIDER_MAX_ESTIMATED_TOKENS = 200_000;
 const MAX_DECISION_RESPONSE_BYTES = 1024 * 1024;
+const MAX_DECISION_ERROR_BYTES = 8 * 1024;
 
-async function readBoundedDecisionJson(response: Response): Promise<unknown> {
+async function readBoundedDecisionText(response: Response, maxBytes: number): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_DECISION_RESPONSE_BYTES) {
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     throw new Error("system_one_response_too_large");
   }
   const reader = response.body?.getReader();
@@ -148,7 +149,7 @@ async function readBoundedDecisionJson(response: Response): Promise<unknown> {
       const { done, value } = await reader.read();
       if (done) break;
       byteLength += value.byteLength;
-      if (byteLength > MAX_DECISION_RESPONSE_BYTES) {
+      if (byteLength > maxBytes) {
         void reader.cancel();
         throw new Error("system_one_response_too_large");
       }
@@ -164,8 +165,17 @@ async function readBoundedDecisionJson(response: Response): Promise<unknown> {
     offset += chunk.byteLength;
   }
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
+    throw new Error("system_one_invalid_response_json");
+  }
+}
+
+async function readBoundedDecisionJson(response: Response): Promise<unknown> {
+  try {
+    return JSON.parse(await readBoundedDecisionText(response, MAX_DECISION_RESPONSE_BYTES));
+  } catch (error) {
+    if (error instanceof Error && error.message === "system_one_response_too_large") throw error;
     throw new Error("system_one_invalid_response_json");
   }
 }
@@ -257,7 +267,9 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
     }
     if (!response?.ok) {
-      const detail = await response?.text().catch(() => "");
+      const detail = response
+        ? await readBoundedDecisionText(response, MAX_DECISION_ERROR_BYTES).catch((error) => error instanceof Error ? error.message : "")
+        : "";
       throw new Error(`system_one_http_${response?.status ?? "network"}${detail ? `:${detail.slice(0, 200)}` : ""}`);
     }
     const payload = await readBoundedDecisionJson(response) as Partial<SystemOneResponse>;
@@ -281,7 +293,9 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
     }
     if (!response?.ok) {
-      const detail = await response?.text().catch(() => "");
+      const detail = response
+        ? await readBoundedDecisionText(response, MAX_DECISION_ERROR_BYTES).catch((error) => error instanceof Error ? error.message : "")
+        : "";
       throw new Error(`system_one_http_${response?.status ?? "network"}${detail ? `:${detail.slice(0, 200)}` : ""}`);
     }
     const raw = await readBoundedDecisionJson(response) as { answers?: Record<string, unknown>; model?: string; usage?: unknown };
