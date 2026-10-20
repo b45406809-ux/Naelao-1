@@ -1,15 +1,20 @@
-import type { DownloadedChannelAttachment } from "./whatsapp-media.js";
 import { readBoundedProviderJson } from "./bounded-provider-json.js";
+import type { DownloadedChannelAttachment } from "./whatsapp-media.js";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
 
 type JsonObject = Record<string, unknown>;
 
 function object(value: unknown): JsonObject | undefined {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : undefined;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject)
+    : undefined;
 }
 
-function mediaEntries(raw: JsonObject): Array<{ item: JsonObject; kind: string }> {
+function mediaEntries(
+  raw: JsonObject
+): Array<{ item: JsonObject; kind: string }> {
   const message = object(raw.message);
   if (!message) return [];
   const result: Array<{ item: JsonObject; kind: string }> = [];
@@ -19,7 +24,15 @@ function mediaEntries(raw: JsonObject): Array<{ item: JsonObject; kind: string }
     const item = object(largest);
     if (item) result.push({ item, kind: "photo" });
   }
-  for (const kind of ["document", "audio", "voice", "video", "animation", "video_note", "sticker"]) {
+  for (const kind of [
+    "document",
+    "audio",
+    "voice",
+    "video",
+    "animation",
+    "video_note",
+    "sticker",
+  ]) {
     const item = object(message[kind]);
     if (item) result.push({ item, kind });
   }
@@ -51,12 +64,19 @@ async function readBounded(response: Response): Promise<Uint8Array> {
   }
   const bytes = new Uint8Array(size);
   let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
   return bytes;
 }
 
 function safeFilename(value: string): string {
-  return value.replace(/[\\/\0-\x1f\x7f]/g, "_").replace(/^\.+/, "").slice(0, 120) || "telegram-attachment";
+  const sanitized = Array.from(value.replace(/[\\/]/g, "_"), (character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f ? "_" : character;
+  }).join("");
+  return sanitized.replace(/^\.+/, "").slice(0, 120) || "telegram-attachment";
 }
 
 /** Download bounded Telegram Bot API files using the platform bot token.
@@ -65,40 +85,78 @@ function safeFilename(value: string): string {
  */
 export async function downloadTelegramAttachments(
   raw: JsonObject,
-  input: { botToken?: string; fetcher?: typeof fetch },
+  input: { botToken?: string; fetcher?: typeof fetch }
 ): Promise<DownloadedChannelAttachment[]> {
   if (!input.botToken) throw new Error("telegram_media_unavailable");
   const fetcher = input.fetcher ?? fetch;
   const files: DownloadedChannelAttachment[] = [];
+  let totalBytes = 0;
   for (const { item, kind } of mediaEntries(raw)) {
     const fileId = typeof item.file_id === "string" ? item.file_id : "";
     if (!fileId) continue;
-    const infoResponse = await fetcher(`https://api.telegram.org/bot${input.botToken}/getFile?file_id=${encodeURIComponent(fileId)}`, {
-      redirect: "manual", signal: AbortSignal.timeout(10_000),
-    });
-    if (!infoResponse.ok) throw new Error(`telegram_file_lookup_failed:${infoResponse.status}`);
+    const infoResponse = await fetcher(
+      `https://api.telegram.org/bot${input.botToken}/getFile?file_id=${encodeURIComponent(fileId)}`,
+      {
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
+    if (!infoResponse.ok)
+      throw new Error(`telegram_file_lookup_failed:${infoResponse.status}`);
     const payload = await readBoundedProviderJson(infoResponse);
     const result = object(payload.result);
     const path = typeof result?.file_path === "string" ? result.file_path : "";
     const declaredBytes = Number(result?.file_size ?? item.file_size ?? -1);
-    if (!payload.ok || !path || path.length > 1024 || path.startsWith("/") || path.split("/").some((part) => !part || part === "." || part === "..") ||
-        !Number.isSafeInteger(declaredBytes) || declaredBytes === 0 || declaredBytes > MAX_FILE_BYTES) {
+    if (
+      !payload.ok ||
+      !path ||
+      path.length > 1024 ||
+      path.startsWith("/") ||
+      path.split("/").some((part) => !part || part === "." || part === "..") ||
+      !Number.isSafeInteger(declaredBytes) ||
+      declaredBytes < -1 ||
+      declaredBytes === 0 ||
+      declaredBytes > MAX_FILE_BYTES ||
+      (declaredBytes > 0 && totalBytes + declaredBytes > MAX_TOTAL_BYTES)
+    ) {
       throw new Error("telegram_media_rejected");
     }
     const pathUrl = new URL(path, "https://api.telegram.org/file/");
-    if (pathUrl.hostname !== "api.telegram.org" || pathUrl.protocol !== "https:" || pathUrl.username || pathUrl.password) {
+    if (
+      pathUrl.hostname !== "api.telegram.org" ||
+      pathUrl.protocol !== "https:" ||
+      pathUrl.username ||
+      pathUrl.password
+    ) {
       throw new Error("telegram_media_url_rejected");
     }
-    const response = await fetcher(`https://api.telegram.org/file/bot${input.botToken}/${path.split("/").map(encodeURIComponent).join("/")}`, {
-      redirect: "manual", signal: AbortSignal.timeout(15_000),
-    });
-    if (!response.ok) throw new Error(`telegram_media_download_failed:${response.status}`);
+    const response = await fetcher(
+      `https://api.telegram.org/file/bot${input.botToken}/${path.split("/").map(encodeURIComponent).join("/")}`,
+      {
+        redirect: "manual",
+        signal: AbortSignal.timeout(15_000),
+      }
+    );
+    if (!response.ok)
+      throw new Error(`telegram_media_download_failed:${response.status}`);
     const bytes = await readBounded(response);
-    if (declaredBytes > 0 && bytes.byteLength !== declaredBytes) throw new Error("telegram_media_size_mismatch");
-    const rawName = typeof item.file_name === "string" ? item.file_name : `${kind}-${String(item.file_unique_id ?? files.length + 1)}`;
-    const mimeType = typeof item.mime_type === "string" && /^[\w.+-]+\/[\w.+-]+$/.test(item.mime_type)
-      ? item.mime_type.toLowerCase() : kind === "photo" ? "image/jpeg" : "application/octet-stream";
+    if (declaredBytes > 0 && bytes.byteLength !== declaredBytes)
+      throw new Error("telegram_media_size_mismatch");
+    if (totalBytes + bytes.byteLength > MAX_TOTAL_BYTES)
+      throw new Error("telegram_media_too_large");
+    const rawName =
+      typeof item.file_name === "string"
+        ? item.file_name
+        : `${kind}-${String(item.file_unique_id ?? files.length + 1)}`;
+    const mimeType =
+      typeof item.mime_type === "string" &&
+      /^[\w.+-]+\/[\w.+-]+$/.test(item.mime_type)
+        ? item.mime_type.toLowerCase()
+        : kind === "photo"
+          ? "image/jpeg"
+          : "application/octet-stream";
     files.push({ filename: safeFilename(rawName), mimeType, bytes });
+    totalBytes += bytes.byteLength;
   }
   return files;
 }
