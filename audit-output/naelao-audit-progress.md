@@ -866,3 +866,5 @@ The provisioner fetched a registry response using an unchecked typed `response.j
 Validation: Provisioner suite passed 3 files / 27 tests including 11 manifest-contract adversarial cases; Provisioner TypeScript and Wrangler dry-run passed (14.25 MB upload / 2.57 MB gzip); `git diff --check` passed. The tests cover the pure manifest guard, not malformed responses from a real KV/registry service binding. Manifest loading/failure handling is reviewed; `workers/provisioner/src/index.ts` remains unchecked as a complete file.
 
 Provisioner manifest/queue boundary follow-up: the runtime manifest guard now validates the full required top-level manifest shape and all provisioner-consumed arrays/limits, and queue identifiers reject path separators and header control characters while preserving provider subject IDs such as `auth0|...`. Final Provisioner suite result is 3 files / 32 tests; typecheck and Wrangler dry-run pass.
+
+Refreshed the tracked tree after manifest/queue validation commit `0838ba1c`; counts now include the two new manifest-contract files and the checklist marks their review complete.
