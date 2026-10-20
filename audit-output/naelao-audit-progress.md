@@ -676,3 +676,5 @@ The Billing worker had existing tests but no Vitest project config, so workspace
 Refreshed the tracked inventory after adding the Billing worker Vitest project config: 1,944 tracked files and 1,738 source/config files. The tree snapshot is tied to code commit `36389ec2`; 191 scoped file checks remain recorded.
 
 Effect receipts were another unbounded per-run storage surface. The journal now limits each workflow to 1,024 unique effect keys (including the agent-run claim), keeps duplicate-key replay idempotent at the limit, and removes receipt rows when the run expires while retaining the run tombstone. Validation: WorkflowRunDO and journal suites passed 12/12; Agents TypeScript and `git diff --check` passed. The regression checks count enforcement, idempotent existing-key replay, and receipt deletion at expiry. Shared pinned code under `workflow-code/` remains the storage-GC follow-up.
+
+After the artifact and receipt changes, the complete Agents worker suite passed **145 test files / 640 tests**. The Agents TypeScript check also passed; this remains worker-level regression evidence, not a complete repository audit.
