@@ -10,7 +10,7 @@ class MemoryBucket {
   async head(key: string) { return this.objects.has(key) ? {} : null; }
   async get(key: string) {
     const value = this.objects.get(key);
-    return value === undefined ? null : { text: async () => value, arrayBuffer: async () => new TextEncoder().encode(value).buffer };
+    return value === undefined ? null : { size: new TextEncoder().encode(value).byteLength, text: async () => value, arrayBuffer: async () => new TextEncoder().encode(value).buffer };
   }
   async put(key: string, value: string | ArrayBuffer) { this.objects.set(key, typeof value === "string" ? value : new TextDecoder().decode(value)); }
   async list({ prefix = "" }: { prefix?: string } = {}) { return { objects: [...this.objects.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })), truncated: false }; }

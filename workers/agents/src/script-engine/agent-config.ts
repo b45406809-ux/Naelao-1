@@ -17,6 +17,17 @@ import type { LockGateway } from "./types.js";
 
 export type { UniversalAgentManifest } from "@naelao/agent-sdk";
 
+const MAX_AGENT_CONFIG_OBJECT_BYTES = 1024 * 1024;
+
+async function readAgentConfigText(object: R2ObjectBody, label: string): Promise<string> {
+  if (!Number.isSafeInteger(object.size) || object.size < 0 || object.size > MAX_AGENT_CONFIG_OBJECT_BYTES)
+    throw new Error(`agent_config_${label}_too_large`);
+  const bytes = await object.arrayBuffer();
+  if (bytes.byteLength !== object.size || bytes.byteLength > MAX_AGENT_CONFIG_OBJECT_BYTES)
+    throw new Error(`agent_config_${label}_size_mismatch`);
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+}
+
 /**
  * Build the lock adapter used by every agent-config writer. The namespace is keyed by space,
  * while the lock key remains agent-specific, so independent agents in one space do not block
@@ -157,14 +168,14 @@ export async function loadAgentConfig(
   ]);
   if (!scriptsJson || !systemPrompt) return null;
 
-  const { requires_approval_for, pipelines, ...scripts } = JSON.parse(await scriptsJson.text()) as PersistedScriptsConfig;
+  const { requires_approval_for, pipelines, ...scripts } = JSON.parse(await readAgentConfigText(scriptsJson, "scripts")) as PersistedScriptsConfig;
   if (pipelines) validateStepPipeline(pipelines);
 
   return {
-    agentsMd: agentsMd ? await agentsMd.text() : "",
-    systemPrompt: await systemPrompt.text(),
+    agentsMd: agentsMd ? await readAgentConfigText(agentsMd, "agents_md") : "",
+    systemPrompt: await readAgentConfigText(systemPrompt, "system_prompt"),
     scripts,
-    skills: skillsJson ? (JSON.parse(await skillsJson.text()) as SkillsConfig) : { skills: [] },
+    skills: skillsJson ? (JSON.parse(await readAgentConfigText(skillsJson, "skills")) as SkillsConfig) : { skills: [] },
     ...(requires_approval_for ? { requiresApprovalFor: requires_approval_for } : {}),
     ...(pipelines ? { pipelines } : {}),
   };
@@ -191,6 +202,8 @@ export async function writeAgentConfig(
     [`${dir}/scripts.json`, JSON.stringify(persistedScripts, null, 2)],
     [`${dir}/skills.json`, JSON.stringify(config.skills, null, 2)],
   ];
+  if (files.some(([, text]) => new TextEncoder().encode(text).byteLength > MAX_AGENT_CONFIG_OBJECT_BYTES))
+    throw new Error("agent_config_object_too_large");
   let locked = false;
   const lockKey = `agent-config:${spaceId}:${agentId}`;
   if (options.lockGateway) {

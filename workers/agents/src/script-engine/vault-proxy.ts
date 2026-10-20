@@ -1,4 +1,5 @@
 import type { VaultFetchOptions } from "@naelao/agent-sdk";
+import { readBoundedResponseText } from "@naelao/http";
 import { scanAndScrubEgress } from "@naelao/security";
 import { formatTraceparent, generateSpanId, generateTraceId } from "@naelao/tracing";
 
@@ -59,8 +60,8 @@ export function createVaultProxy(options: VaultProxyOptions) {
         }
       ));
       if (!response.ok) {
-        const message = await response.clone().text();
-        throw new Error(`Vault egress failed (${response.status}): ${message.slice(0, 300)}`);
+        const message = (await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 300);
+        throw new Error(`Vault egress failed (${response.status}): ${message}`);
       }
       return response;
     },

@@ -12,7 +12,9 @@ function memoryBucket() {
     }),
     get: vi.fn(async (key: string) => {
       const value = objects.get(key);
-      return value === undefined ? null : { text: async () => value };
+      if (value === undefined) return null;
+      const bytes = new TextEncoder().encode(value);
+      return { size: bytes.byteLength, text: async () => value, arrayBuffer: async () => bytes.buffer };
     }),
     head: vi.fn(async (key: string) => objects.has(key) ? {} : null),
     list: vi.fn(async ({ prefix = "" }: { prefix?: string } = {}) => ({

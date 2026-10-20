@@ -15,7 +15,7 @@
 // CLAUDE.md's item on naelao-wide fallback billing).
 // See resolveCredential() below and infra/migrations/0040_space_credentials.sql +
 // infra/migrations/0069_credential_sharing_and_product_tier.sql.
-import { badRequest, errorResponse, forbidden, mintInternalToken, notFound, requestId, requireInternalHmac } from "@naelao/http";
+import { badRequest, errorResponse, forbidden, mintInternalToken, notFound, requestId, requireInternalHmac, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { decryptAuthenticated, encryptAuthenticated, generateDek, unwrapDek, wrapDek, type EncryptedEnvelope } from "@naelao/crypto";
 import { Hono } from "hono";
 import { authorizeEgressRedirect, authorizeEgressUrl, isSpaceNetworkEgressDenied, readSpaceEgressPolicy, scanAndScrubEgress } from "@naelao/security";
@@ -1104,6 +1104,18 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 
 // ── Export ────────────────────────────────────────────────────────────────────
+const MAX_CREDENTIALS_REQUEST_BYTES = 1024 * 1024;
+
 export default {
-  fetch: app.fetch,
+  async fetch(request: Request, env: CredentialsEnv, ctx: ExecutionContext): Promise<Response> {
+    if (!request.body || request.method === "GET" || request.method === "HEAD") return app.fetch(request, env, ctx);
+    try {
+      const bytes = await readBoundedRequestBytes(request, MAX_CREDENTIALS_REQUEST_BYTES);
+      return app.fetch(new Request(request, { body: bytes }), env, ctx);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError)
+        return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+      return errorResponse(error, "unknown");
+    }
+  },
 } satisfies ExportedHandler<CredentialsEnv>;

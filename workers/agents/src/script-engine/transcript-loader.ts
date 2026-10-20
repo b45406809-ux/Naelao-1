@@ -7,6 +7,8 @@
  * empty transcript suitable for a successful compaction.
  */
 
+import { readBoundedResponseJson } from "@naelao/http";
+
 export interface TranscriptPageMessage {
   id?: string;
   content: string;
@@ -26,7 +28,7 @@ export async function loadTranscriptPages<T extends TranscriptPageMessage>(
     while (true) {
       const response = await fetchPage(beforeId);
       if (!response.ok) return undefined;
-      const body = (await response.json()) as { data?: T[]; messages?: T[] };
+      const body = await readBoundedResponseJson<{ data?: T[]; messages?: T[] }>(response, TRANSCRIPT_MAX_BYTES + 256 * 1024);
       const page = body.data ?? body.messages ?? [];
       if (page.length === 0) break;
       for (const message of page)

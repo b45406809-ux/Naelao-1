@@ -19,6 +19,18 @@ import type { ScriptMetadata, StoredScript, PatchRecord } from "./types.js";
 import { recordRecentOutcome } from "./skill-health.js";
 import { MAX_SKILL_MANUAL_CHARS } from "./skill-markdown.js";
 
+const MAX_SKILL_METADATA_BYTES = 512 * 1024;
+const MAX_SKILL_CODE_BYTES = 1024 * 1024;
+
+async function readSkillText(object: R2ObjectBody, maximumBytes: number, label: string): Promise<string> {
+  if (!Number.isSafeInteger(object.size) || object.size < 0 || object.size > maximumBytes)
+    throw new Error(`skill_${label}_too_large`);
+  const bytes = await object.arrayBuffer();
+  if (bytes.byteLength !== object.size || bytes.byteLength > maximumBytes)
+    throw new Error(`skill_${label}_size_mismatch`);
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+}
+
 /** Derive stability_score in [0,1] from health counters (spec §4 "Health"). */
 export function computeStabilityScore(m: Pick<ScriptMetadata, "success_count" | "failure_count" | "patch_history">): number {
   const runs = m.success_count + m.failure_count;
@@ -92,16 +104,16 @@ export class SkillLibrary {
       this.bucket.get(`${this.dir(name)}/code.ts`),
     ]);
     if (!metaObj) return null;
-    const metadata = JSON.parse(await metaObj.text()) as ScriptMetadata;
+    const metadata = JSON.parse(await readSkillText(metaObj, MAX_SKILL_METADATA_BYTES, "metadata")) as ScriptMetadata;
     const result: StoredScript = { metadata };
-    if (codeObj) result.code = await codeObj.text();
+    if (codeObj) result.code = await readSkillText(codeObj, MAX_SKILL_CODE_BYTES, "code");
     return result;
   }
 
   async readMetadata(name: string): Promise<ScriptMetadata | null> {
     if (!this.isUsableName(name)) return null;
     const object = await this.bucket.get(`${this.dir(name)}/SCRIPT.md`);
-    return object ? JSON.parse(await object.text()) as ScriptMetadata : null;
+    return object ? JSON.parse(await readSkillText(object, MAX_SKILL_METADATA_BYTES, "metadata")) as ScriptMetadata : null;
   }
 
   /**
@@ -224,8 +236,8 @@ export class SkillLibrary {
       this.bucket.get(`${this.dir(name)}/versions/v${toVersion}.ts`),
     ]);
     if (!metaObj) throw new Error(`Version ${toVersion} of ${name} not found`);
-    const metadata = JSON.parse(await metaObj.text()) as ScriptMetadata;
-    const code = codeObj ? await codeObj.text() : undefined;
+    const metadata = JSON.parse(await readSkillText(metaObj, MAX_SKILL_METADATA_BYTES, "metadata")) as ScriptMetadata;
+    const code = codeObj ? await readSkillText(codeObj, MAX_SKILL_CODE_BYTES, "code") : undefined;
     // Write the rolled-back content as the current pointer (history is preserved as-is).
     await Promise.all([
       this.bucket.put(`${this.dir(name)}/SCRIPT.md`, JSON.stringify(metadata, null, 2)),
@@ -316,11 +328,15 @@ export class SkillLibrary {
 
   /** Write current pointers + archive the new version. */
   private async persistVersion(name: string, metadata: ScriptMetadata, code?: string): Promise<void> {
+    const serializedMetadata = JSON.stringify(metadata, null, 2);
+    if (new TextEncoder().encode(serializedMetadata).byteLength > MAX_SKILL_METADATA_BYTES
+      || code !== undefined && new TextEncoder().encode(code).byteLength > MAX_SKILL_CODE_BYTES)
+      throw new Error("skill_artifact_too_large");
     const dir = this.dir(name);
     const v = metadata.version;
     const writes: Promise<unknown>[] = [
-      this.bucket.put(`${dir}/SCRIPT.md`, JSON.stringify(metadata, null, 2)),
-      this.bucket.put(`${dir}/versions/v${v}.meta.json`, JSON.stringify(metadata, null, 2)),
+      this.bucket.put(`${dir}/SCRIPT.md`, serializedMetadata),
+      this.bucket.put(`${dir}/versions/v${v}.meta.json`, serializedMetadata),
     ];
     if (code !== undefined) {
       writes.push(this.bucket.put(`${dir}/code.ts`, code));

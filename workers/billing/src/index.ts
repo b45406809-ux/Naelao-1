@@ -5,6 +5,8 @@ import {
   notFound,
   requestId,
   readBoundedRequestText,
+  readBoundedRequestBytes,
+  RequestBodyTooLargeError,
   mintInternalToken,
   requireInternalHmac,
 } from "@naelao/http";
@@ -1637,7 +1639,17 @@ async function handleQueue(
 }
 
 export default {
-  fetch: app.fetch,
+  async fetch(request: Request, env: BillingEnv, ctx: ExecutionContext): Promise<Response> {
+    if (!request.body || request.method === "GET" || request.method === "HEAD") return app.fetch(request, env, ctx);
+    try {
+      const bytes = await readBoundedRequestBytes(request, 4 * 1024 * 1024);
+      return app.fetch(new Request(request, { body: bytes }), env, ctx);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError)
+        return Response.json({ error_code: "request_body_too_large" }, { status: 413 });
+      return errorResponse(error, "unknown");
+    }
+  },
   async scheduled(event: ScheduledController, env: BillingEnv, ctx: ExecutionContext) { ctx.waitUntil(reconcileDeveloperPayouts(env, Date.now(), event.cron === "0 0 * * *")); },
   queue: handleQueue as unknown as ExportedHandlerQueueHandler<BillingEnv>,
 } satisfies ExportedHandler<BillingEnv>;

@@ -828,9 +828,9 @@ async function dispatchTool(
           return { output: "", error: `KB search failed: HTTP ${resp.status}` };
         }
 
-        const data = await resp.json<{
+        const data = await readBoundedResponseJson<{
           data?: Array<{ content: string; score?: number }>;
-        }>();
+        }>(resp, 2 * 1024 * 1024);
 
         if (!data.data || data.data.length === 0) {
           return { output: "No results found in knowledge base" };
@@ -1229,7 +1229,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       { headers: await this.internalHeaders(scope.tenantId) },
     ));
     if (!policyResponse.ok) throw new Error("document_processing_model_policy_unavailable");
-    const policy = await policyResponse.json<{ policy?: SpaceModelPolicy | null }>();
+    const policy = await readBoundedResponseJson<{ policy?: SpaceModelPolicy | null }>(policyResponse, 2 * 1024 * 1024);
     const process = async <K extends keyof DocumentProcessingGateway>(operation: K, input: Parameters<DocumentProcessingGateway[K]>[0]) => {
       if (operation === "compress") {
         const model = DOCUMENT_MODELS.compress;
@@ -2256,7 +2256,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const post=(action:string,body:unknown)=>this.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/internal/spaces/${spaceId}/artifact-validation/${action}`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-internal-token":token},body:JSON.stringify(body)}));
       const response=await post("check",{project_id:projectId,path,content:new TextDecoder().decode(input.bytes),work_key:commitContext?.taskId??state.workKey??input.runId??"unscoped",...(commitContext?.taskId?{task_id:commitContext.taskId}:{})});
       if(!response.ok) throw new Error("artifact_validation_unavailable");
-      const result=await response.json<{allowed:boolean;status:string;diagnosticId?:string;approvalId?:string;diagnostics?:unknown;correctionAttempts?:number}>();
+      const result=await readBoundedResponseJson<{allowed:boolean;status:string;diagnosticId?:string;approvalId?:string;diagnostics?:unknown;correctionAttempts?:number}>(response, 2 * 1024 * 1024);
       if(result.allowed) return;
       if(result.status==="REQUIRES_HUMAN_INTERVENTION" && result.diagnosticId) {
         let approvalId=result.approvalId;let expiresAt:number|undefined;
@@ -2266,13 +2266,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           approvalId=approval.approvalId;expiresAt=approval.expiresAt;
           waiting=approval.pending===true;
           const attached=await post("approval",{id:result.diagnosticId,approval_id:approvalId});
-          if(attached.ok) approvalId=(await attached.json<{approvalId?:string}>()).approvalId??approvalId;
+          if(attached.ok) approvalId=(await readBoundedResponseJson<{approvalId?:string}>(attached, 2 * 1024 * 1024)).approvalId??approvalId;
           if(approval.approved) await post("resume",{id:result.diagnosticId,approval_id:approvalId});
         }
         if(approvalId && result.approvalId && this.env.HITL_APPROVAL_DO) {
           const stub=this.env.HITL_APPROVAL_DO.get(this.env.HITL_APPROVAL_DO.idFromName(`hitl:${spaceId}`));
           const statusResponse=await stub.fetch(new Request(`http://hitl/requests/${encodeURIComponent(approvalId)}`));
-          const decision=await statusResponse.json<{status:string}>();waiting=decision.status==="pending";
+          const decision=await readBoundedResponseJson<{status:string}>(statusResponse, 2 * 1024 * 1024);waiting=decision.status==="pending";
           if(decision.status==="approved") await post("resume",{id:result.diagnosticId,approval_id:approvalId});
         }
         if(approvalId && waiting) state.pending={approvalId,diagnosticId:result.diagnosticId,...(expiresAt?{expiresAt}:{})};
@@ -2508,7 +2508,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         headers: { "x-naelao-tenant-id": scope.tenantId, "x-naelao-internal-token": internal },
       }));
       if (!response.ok) return false;
-      const members = await response.json<{ data?: Array<{ user_id: string; role: string }> }>();
+      const members = await readBoundedResponseJson<{ data?: Array<{ user_id: string; role: string }> }>(response, 2 * 1024 * 1024);
       const member = members.data?.find((entry) => entry.user_id === scope.userId);
       if (!member || roleRankFor(member.role) < memoryRoleRank.value) return false;
       // Until an installation supplies its own live grant resolver, it cannot inherit an
@@ -2519,7 +2519,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         headers: { "x-naelao-tenant-id": scope.tenantId, "x-naelao-internal-token": internal, "x-naelao-user-id": scope.userId },
       }));
       if (!projectResponse.ok) return false;
-      const projectMembers = await projectResponse.json<{ data?: Array<{ user_id: string; role: string }> }>();
+      const projectMembers = await readBoundedResponseJson<{ data?: Array<{ user_id: string; role: string }> }>(projectResponse, 2 * 1024 * 1024);
       return Boolean(projectMembers.data?.some((entry) => entry.user_id === scope.userId && roleRankFor(entry.role) >= memoryRoleRank.value));
     };
     if (!airGappedOnly && this.env.CREDENTIALS_WORKER) env.codeProxyRequest = async (scope, input, signal) => {
@@ -2554,7 +2554,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         headers: await this.internalHeaders(tenantId, { "x-naelao-user-id": userId }),
       }));
       if (!response.ok) throw new Error("container_installation_lookup_unavailable");
-      const result = await response.json<{ installations: Array<{ instance: { instance_id: string; tenant_id: string; space_id: string; project_id?: string; user_id?: string; scope: InstalledContainer["scope"]; status: string }; manifest: unknown }> }>();
+      const result = await readBoundedResponseJson<{ installations: Array<{ instance: { instance_id: string; tenant_id: string; space_id: string; project_id?: string; user_id?: string; scope: InstalledContainer["scope"]; status: string }; manifest: unknown }> }>(response, 2 * 1024 * 1024);
       const containers: InstalledContainer[] = [];
       const approvedImages = parseApprovedContainerImages(this.env.CONTAINER_IMAGE_REGISTRY);
       for (const record of result.installations) {
@@ -2757,7 +2757,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               resume_do_id: this.ctx.id.toString(),
             }),
           }));
-          const { approval_id } = await createResp.json<{ approval_id: string }>();
+          const { approval_id } = await readBoundedResponseJson<{ approval_id: string }>(createResp, 2 * 1024 * 1024);
 
           // §A1.17 Phase O: "if the agent wants human approval, the assistant is triggered so it
           // always knows what's going on, and uses a channel script to tell the user." Fire this
@@ -2774,7 +2774,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           while (Date.now() < deadline) {
             await new Promise<void>((r) => setTimeout(r, 2_000));
             const pollResp = await stub.fetch(new Request(`http://hitl/requests/${approval_id}`));
-            const row = await pollResp.json<{ status: string; reject_reason?: string | null }>();
+            const row = await readBoundedResponseJson<{ status: string; reject_reason?: string | null }>(pollResp, 2 * 1024 * 1024);
             if (row.status !== "pending") {
               return {
                 approvalId: approval_id,
@@ -2811,13 +2811,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             }),
           }));
           if (!createResp.ok) return { questionId: "", reason: `questionnaire_unavailable: ${createResp.status}` };
-          const { approval_id } = await createResp.json<{ approval_id: string }>();
+          const { approval_id } = await readBoundedResponseJson<{ approval_id: string }>(createResp, 2 * 1024 * 1024);
           this.ctx.waitUntil(this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, "AskUser", params.question));
           const deadline = Date.now() + APPROVAL_INLINE_WAIT_MS;
           while (Date.now() < deadline) {
             await new Promise<void>((r) => setTimeout(r, 2_000));
             const pollResp = await stub.fetch(new Request(`http://hitl/requests/${approval_id}`));
-            const row = await pollResp.json<{ status: string; answer?: string | null; reject_reason?: string | null }>();
+            const row = await readBoundedResponseJson<{ status: string; answer?: string | null; reject_reason?: string | null }>(pollResp, 2 * 1024 * 1024);
             if (row.status !== "pending") {
               return {
                 questionId: approval_id,
@@ -2855,8 +2855,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               this.env.ARTIFACT_WORKER.fetch(new Request(`${base}/tree${branchQuery}`, { headers })),
             ]);
             if (!headResponse.ok || !treeResponse.ok) throw new Error("Repository projection could not read its current revision");
-            const head = await headResponse.json<{ commit_id?: string | null }>();
-            const tree = await treeResponse.json<{ data: Array<{ path: string; hash: string }> }>();
+            const head = await readBoundedResponseJson<{ commit_id?: string | null }>(headResponse, 2 * 1024 * 1024);
+            const tree = await readBoundedResponseJson<{ data: Array<{ path: string; hash: string }> }>(treeResponse, 2 * 1024 * 1024);
             const prior = tree.data.find((entry) => entry.path === change.path);
             const object = await env.scriptsBucket.get(`${workspacePrefix(env)}${change.path}`);
             const liveObject = object && object.customMetadata?.deleted !== "true" ? object : null;
@@ -2955,7 +2955,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           }));
           if (response.status === 409) continue;
           if (!response.ok) throw new Error(`Workspace projection recovery failed (${response.status}): ${(await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 300)}`);
-          const result = await response.json<{ commit_id?: string | null; changed?: number }>();
+          const result = await readBoundedResponseJson<{ commit_id?: string | null; changed?: number }>(response, 2 * 1024 * 1024);
           if (result.changed && result.commit_id) {
             await spacesWorker.fetch(new Request("http://spaces-worker/provenance", {
               method: "POST", headers,
@@ -3023,7 +3023,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             body: JSON.stringify({ ...params, key }),
           }));
           if (!response.ok) {
-            const body: { error_code?: string } = await response.json<{ error_code?: string }>().catch(() => ({}));
+            const body: { error_code?: string } = await readBoundedResponseJson<{ error_code?: string }>(response, 2 * 1024 * 1024).catch(() => ({}));
             throw new Error(body.error_code === "lease_lost" || body.error_code === "stale_fencing_token"
               ? "Workspace lease expired before publication; re-read and retry"
               : "Workspace changed concurrently; re-read before retrying");
@@ -3045,7 +3045,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           body: JSON.stringify({ resourceKey, nodeId, holderId, holderType: "AGENT" }),
         }));
         let result: Record<string, unknown> = {};
-        try { result = await response.json<Record<string, unknown>>(); } catch { /* preserve the lease failure below */ }
+        try { result = await readBoundedResponseJson<Record<string, unknown>>(response, 2 * 1024 * 1024); } catch { /* preserve the lease failure below */ }
         if (!response.ok && response.status !== 409) throw new Error(`document_node_lease_${response.status}`);
         return result;
       };
@@ -3165,7 +3165,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const checkpoint = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/reconcile`, { method: "POST", headers,
           body: JSON.stringify({ branch: "main", metadata }) }));
         if (!checkpoint.ok) throw new Error(`task_branch_base_checkpoint_failed:${checkpoint.status}`);
-        if (!(await checkpoint.json<{ commit_id?: string | null }>()).commit_id) {
+        if (!(await readBoundedResponseJson<{ commit_id?: string | null }>(checkpoint, 2 * 1024 * 1024)).commit_id) {
           const base = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/commit`, { method: "POST", headers,
             body: JSON.stringify({ branch: "main", expected_head: null, metadata, message: "Initialize empty workspace" }) }));
           if (!base.ok) throw new Error(`task_branch_empty_base_failed:${base.status}`);
@@ -3198,7 +3198,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           method: payload ? "POST" : "GET", headers, ...(payload ? { body: JSON.stringify(payload) } : {}),
         }));
         if (!response.ok) throw new Error(`task_publication_${operation.split("?")[0]}_failed:${response.status}`);
-        return response.json<Record<string, unknown>>();
+        return readBoundedResponseJson<Record<string, unknown>>(response, 2 * 1024 * 1024);
       };
       const metadata = { agent_role: agentId, user_goal: "Delegated task work", task_id: parentRunId,
         rationale: "Publish the completed root task", thread_id: parentThreadId ?? parentRunId, tool_turn_id: `${parentRunId}:publication` };
@@ -3214,7 +3214,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         memberCount: async () => {
           const response = await this.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/members`, { headers }));
           if (!response.ok) throw new Error("task_publication_membership_unavailable");
-          const members = await response.json<{ data?: Array<{ user_id: string }> }>();
+          const members = await readBoundedResponseJson<{ data?: Array<{ user_id: string }> }>(response, 2 * 1024 * 1024);
           if (!members.data?.some(member => member.user_id === userId)) throw new Error("task_publication_actor_not_member");
           return members.data.length;
         },
@@ -3231,7 +3231,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             method: "POST", headers, body: JSON.stringify({ project_id: projectId, card: submitted["card"] }),
           }));
           if (!response.ok) throw new Error(`task_review_publication_failed:${response.status}`);
-          const card = await response.json<{ id: string; thread_id: string | null }>();
+          const card = await readBoundedResponseJson<{ id: string; thread_id: string | null }>(response, 2 * 1024 * 1024);
           return { id: card.id, thread_id: card.thread_id, status: "review_required", card: submitted["card"] as Record<string, unknown> };
         },
       });
@@ -3363,7 +3363,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             headers: await this.internalHeaders(tenantId),
           }));
           if (quotaResponse.ok) {
-            const quotaBody = await quotaResponse.json<{ plan_tier?: string }>().catch(() => ({} as { plan_tier?: string }));
+            const quotaBody = await readBoundedResponseJson<{ plan_tier?: string }>(quotaResponse, 2 * 1024 * 1024).catch(() => ({} as { plan_tier?: string }));
             const plan = String(quotaBody.plan_tier ?? "free").toLowerCase();
             if (plan === "starter" || plan === "pro" || plan === "enterprise") racePlan = plan;
           }
@@ -3372,7 +3372,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const response = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/${operation}`, {
             method: "POST", headers, body: JSON.stringify(payload),
           }));
-          const body = await response.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+          const body = await readBoundedResponseJson<Record<string, unknown>>(response, 2 * 1024 * 1024).catch(() => ({} as Record<string, unknown>));
           if (!response.ok) throw new Error(`model race repository ${operation} failed (${response.status}): ${String(body["error"] ?? "unknown error")}`);
           return body;
         };
@@ -3396,14 +3396,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         };
         const headResponse = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/head?branch=main`, { headers }));
         if (!headResponse.ok) throw new Error("race_base_revision_unavailable");
-        const base = await headResponse.json<{ commit_id: string | null }>();
+        const base = await readBoundedResponseJson<{ commit_id: string | null }>(headResponse, 2 * 1024 * 1024);
         if (!base.commit_id) throw new Error("race_requires_committed_base");
         if (!this.env.SPACES_WORKER || !userId) throw new Error("race_member_authority_required");
         const membership = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/members`, {
           headers: await this.internalHeaders(tenantId, { "x-naelao-user-id": userId }),
         }));
         if (!membership.ok) throw new Error("race_member_lookup_unavailable");
-        const members = await membership.json<{ data?: Array<{ user_id: string }> }>();
+        const members = await readBoundedResponseJson<{ data?: Array<{ user_id: string }> }>(membership, 2 * 1024 * 1024);
         if (!members.data?.some(member => member.user_id === userId)) throw new Error("race_actor_not_member");
         const multiUser = members.data.length > 1;
         const result = await runSpeculativeModelRace(
@@ -3445,10 +3445,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               if (!Number.isSafeInteger(output?.exit_code)) throw new Error("oracle_exit_code_required");
               const headResponse = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(branch)}`, { headers }));
               if (!headResponse.ok) throw new Error("oracle_branch_head_unavailable");
-              const head = await headResponse.json<{ commit_id?: string }>();
+              const head = await readBoundedResponseJson<{ commit_id?: string }>(headResponse, 2 * 1024 * 1024);
               const diffResponse = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/pull-request-diff?baseBranch=main&forkBranch=${encodeURIComponent(branch)}`, { headers }));
               if (!diffResponse.ok) throw new Error("oracle_diff_unavailable");
-              const diff = await diffResponse.json<{ additions: number; deletions: number }>();
+              const diff = await readBoundedResponseJson<{ additions: number; deletions: number }>(diffResponse, 2 * 1024 * 1024);
               const linesChanged = diff.additions + diff.deletions;
               if (!Number.isSafeInteger(linesChanged) || linesChanged < 0) throw new Error("oracle_diff_invalid");
               return { exitCode: output!.exit_code as number, linesChanged,
@@ -3466,7 +3466,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 body: JSON.stringify({ space_id: spaceId, project_id: projectId, card: submitted["card"] }),
               }));
               if (!response.ok) throw new Error(`race_review_publication_failed:${response.status}`);
-              const published = await response.json<{ id: string; thread_id: string | null }>();
+              const published = await readBoundedResponseJson<{ id: string; thread_id: string | null }>(response, 2 * 1024 * 1024);
               return { id: published.id, thread_id: published.thread_id, status: "review_required" };
             } } : {}),
             cleanupBranch: async (branch) => { await callRepository("cleanup", { branch }); },
@@ -3504,7 +3504,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ key, holder_id: holderId, limit, ...(typeof ttlMs === "number" ? { ttl_ms: ttlMs } : {}) }),
       }));
-      return await resp.json<{ granted: boolean; active: number; limit?: number }>();
+      return await readBoundedResponseJson<{ granted: boolean; active: number; limit?: number }>(resp, 2 * 1024 * 1024);
     } catch {
       // failClosed=true (lock path): deny — an unreachable ConcurrencyDO must not grant a lock.
       // failClosed=false (sub-agent spawn, default): fail open, unchanged from before this pass.
@@ -3534,7 +3534,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ key, holderId, ...(typeof ttlMs === "number" ? { ttlMs } : {}) }),
       }));
-      const result = await resp.json<{ acquired: boolean; heldBy?: string; remainingMs?: number; fencingToken?: number }>();
+      const result = await readBoundedResponseJson<{ acquired: boolean; heldBy?: string; remainingMs?: number; fencingToken?: number }>(resp, 2 * 1024 * 1024);
       return { ...result, granted: result.acquired, active: result.acquired ? 1 : 0 };
     } catch {
       return { granted: false, acquired: false, active: 0, degraded: true };
@@ -3548,7 +3548,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ key, holderId, fencingToken, ...(ttlMs ? { ttlMs } : {}) }),
     }));
-    const body = await response.json<{ renewed: boolean; expiresAt?: number }>();
+    const body = await readBoundedResponseJson<{ renewed: boolean; expiresAt?: number }>(response, 2 * 1024 * 1024);
     return body;
   }
 
@@ -3567,7 +3567,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
       const resp = await stub.fetch(new Request(`http://concurrency-do/status?key=${encodeURIComponent(key)}`));
-      const body = await resp.json<{ active: number }>();
+      const body = await readBoundedResponseJson<{ active: number }>(resp, 2 * 1024 * 1024);
       return { active: body.active };
     } catch {
       return { active: 0 };
@@ -3730,7 +3730,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           } finally {
             abortSignal?.removeEventListener("abort", cancelChild);
           }
-          const body = await resp.json<{ result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string } }>().catch(() => ({}) as Record<string, never>);
+          const body = await readBoundedResponseJson<{ result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string } }>(resp, 2 * 1024 * 1024).catch(() => ({}) as Record<string, never>);
           const tokensUsed = body.result?.tokens_used ?? 0;
           const ok = resp.ok && !!body.result?.ok;
           const output = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
@@ -3824,7 +3824,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           { headers }
         ));
         if (!threadResp.ok) return { ok: false, error: `consult thread ${threadId} not found` };
-        const thread = await threadResp.json<{ session_id?: string | null }>();
+        const thread = await readBoundedResponseJson<{ session_id?: string | null }>(threadResp, 2 * 1024 * 1024);
         if (!thread.session_id) return { ok: false, error: `consult thread ${threadId} has no session` };
         sessionId = thread.session_id;
       } else {
@@ -3833,7 +3833,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           { method: "POST", headers, body: JSON.stringify({}) }
         ));
         if (!sessionResp.ok) return { ok: false, error: `failed to create consult session: HTTP ${sessionResp.status}` };
-        const session = await sessionResp.json<{ id: string }>();
+        const session = await readBoundedResponseJson<{ id: string }>(sessionResp, 2 * 1024 * 1024);
         sessionId = session.id;
 
         const threadResp = await this.env.SPACES_WORKER.fetch(new Request(
@@ -3851,7 +3851,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           }
         ));
         if (!threadResp.ok) return { ok: false, error: `failed to create consult thread: HTTP ${threadResp.status}` };
-        const thread = await threadResp.json<{ id: string }>();
+        const thread = await readBoundedResponseJson<{ id: string }>(threadResp, 2 * 1024 * 1024);
         threadId = thread.id;
       }
 
@@ -3871,10 +3871,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ...(projectId ? { projectId } : {}),
         }),
       }));
-      const runBody = await resp.json<{
+      const runBody = await readBoundedResponseJson<{
         result?: { ok?: boolean; output?: unknown; error?: unknown };
         pending_approval?: { action_name: string };
-      }>().catch(() => ({}) as Record<string, never>);
+      }>(resp, 2 * 1024 * 1024).catch(() => ({}) as Record<string, never>);
       if (runBody.pending_approval) {
         return { ok: true, thread_id: threadId, session_id: sessionId, reply: `${targetAgentId} needs approval before it can act on this: ${runBody.pending_approval.action_name}` };
       }
@@ -3924,7 +3924,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers }
       ));
       if (!threadResp.ok) return { ok: false, dispatched: false, error: `thread ${threadId} not found` };
-      const thread = await threadResp.json<{ session_id?: string | null; project_id?: string | null }>();
+      const thread = await readBoundedResponseJson<{ session_id?: string | null; project_id?: string | null }>(threadResp, 2 * 1024 * 1024);
 
       let sessionId = thread.session_id ?? undefined;
       if (!sessionId) {
@@ -3933,7 +3933,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           { method: "POST", headers, body: JSON.stringify({ thread_id: threadId }) }
         ));
         if (!sessionResp.ok) return { ok: false, dispatched: false, error: `failed to create a session for thread ${threadId}: HTTP ${sessionResp.status}` };
-        const session = await sessionResp.json<{ id: string }>();
+        const session = await readBoundedResponseJson<{ id: string }>(sessionResp, 2 * 1024 * 1024);
         sessionId = session.id;
       }
 
@@ -3986,10 +3986,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ...(thread.project_id ? { projectId: thread.project_id } : {}),
         }),
       }));
-      const runBody = await resp.json<{
+      const runBody = await readBoundedResponseJson<{
         result?: { ok?: boolean; output?: unknown; error?: unknown };
         pending_approval?: { action_name: string };
-      }>().catch(() => ({}) as Record<string, never>);
+      }>(resp, 2 * 1024 * 1024).catch(() => ({}) as Record<string, never>);
       if (runBody.pending_approval) {
         return { ok: true, session_id: sessionId, dispatched: true, reply: `${params.agentId} needs approval before it can act on this: ${runBody.pending_approval.action_name}` };
       }
@@ -4592,7 +4592,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }),
     }));
     if (!createResp.ok) return Response.json({ error: "failed to create approval" }, { status: 502 });
-    const { approval_id } = await createResp.json<{ approval_id: string }>();
+    const { approval_id } = await readBoundedResponseJson<{ approval_id: string }>(createResp, 2 * 1024 * 1024);
 
     this.ctx.waitUntil(this.notifyApprovalRequested(body.spaceId, body.tenantId, body.agentId, approval_id, body.actionKey, body.description));
 
@@ -4720,7 +4720,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (!policyResponse.ok) {
           return this.finishScriptFailure(runId, "model policy is unavailable; refusing to run", 503, "model_policy_unavailable");
         }
-        const policyBody = await policyResponse.json<{ policy?: SpaceModelPolicy | null }>();
+        const policyBody = await readBoundedResponseJson<{ policy?: SpaceModelPolicy | null }>(policyResponse, 2 * 1024 * 1024);
         modelPolicy = policyBody.policy ?? null;
       } catch {
         return this.finishScriptFailure(runId, "model policy is unavailable; refusing to run", 503, "model_policy_unavailable");
@@ -4765,7 +4765,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const failure = new Response(await readBoundedResponseText(leaseResponse, 8 * 1024).catch(() => ""), { status: leaseResponse.status, headers: { "content-type": "application/json" } });
         return this.finishScriptFailureResponse(runId, failure);
       }
-      const lease = await leaseResponse.json<{ success: boolean; activeLead?: string; leaseExpiresAt?: string }>();
+      const lease = await readBoundedResponseJson<{ success: boolean; activeLead?: string; leaseExpiresAt?: string }>(leaseResponse, 2 * 1024 * 1024);
       if (!lease.success) {
         void this.logAgentActivity(spaceId, tenantId, agentId, "run_completed", { projectId: projectId ?? null, threadId: sessionId, summary: `Spectating ${sharedTaskId}; ${lease.activeLead ?? "another assistant"} holds the active lease.` });
         return Response.json({ status: "SPECTATING", activeLead: lease.activeLead ?? null, taskId: sharedTaskId, leaseExpiresAt: lease.leaseExpiresAt ?? null, tokensConsumed: 0, suggestedAction: "AUDIT_ACTIVE_PULL_REQUEST" });
@@ -4989,7 +4989,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const model = DOCUMENT_MODELS[operation];
         const policyResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/model-policy`, { headers: await this.internalHeaders(tenantId) }));
         if (!policyResponse.ok) throw new Error("document_processing_model_policy_unavailable");
-        const policy = await policyResponse.json<{ policy?: SpaceModelPolicy | null }>();
+        const policy = await readBoundedResponseJson<{ policy?: SpaceModelPolicy | null }>(policyResponse, 2 * 1024 * 1024);
         if (!validateModelForSpacePolicy(model, policy.policy).ok) throw new Error("document_processing_model_policy_denied");
         let credentials: Partial<Pick<GatewayOpts, "openRouterApiKey">> = {};
         let pricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion: string };
@@ -5123,7 +5123,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           `http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/custom-models/${encodeURIComponent(modelId)}`,
           { headers: await this.internalHeaders(tenantId) }
         ));
-        return response.ok ? response.json<{ baseModel: string; loraAdapterId: string }>() : null;
+        return response.ok ? readBoundedResponseJson<{ baseModel: string; loraAdapterId: string }>(response, 2 * 1024 * 1024) : null;
       },
     });
 
@@ -5150,7 +5150,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             body: JSON.stringify({ tenantId, spaceId, taskId: engineEnv.taskId }),
           }));
           if (response.ok) {
-            const result = await response.json<{ attachments?: Array<{ id: string; filename: string; mime_type: string; size_bytes: number }> }>();
+            const result = await readBoundedResponseJson<{ attachments?: Array<{ id: string; filename: string; mime_type: string; size_bytes: number }> }>(response, 2 * 1024 * 1024);
             const descriptors = (result.attachments ?? []).slice(0, 10).map(row => ({ id: row.id, filename: row.filename, mimeType: row.mime_type, sizeBytes: row.size_bytes }));
             if (descriptors.length) {
               let classification: import("@naelao/agent-sdk").AttachmentClassification | undefined;
@@ -5799,7 +5799,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             { method: "POST", headers, body: JSON.stringify({ space_id: input.spaceId, channel: input.channel, contact_id: input.senderId }) },
           ));
           const verification: { verified?: boolean; member?: { user_id?: string; role?: string } } = response.ok
-            ? await response.json<{ verified?: boolean; member?: { user_id?: string; role?: string } }>().catch(() => ({} as { verified?: boolean; member?: { user_id?: string; role?: string } }))
+            ? await readBoundedResponseJson<{ verified?: boolean; member?: { user_id?: string; role?: string } }>(response, 2 * 1024 * 1024).catch(() => ({} as { verified?: boolean; member?: { user_id?: string; role?: string } }))
             : {};
           executiveUserId = verification.verified && (verification.member?.role === "owner" || verification.member?.role === "admin")
             ? verification.member.user_id ?? null : null;
@@ -5856,7 +5856,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             try {
               const response = await invoke();
               if (!response.ok) {
-                const result = await response.json<{ error_code?: string }>().catch(() => ({} as { error_code?: string }));
+                const result = await readBoundedResponseJson<{ error_code?: string }>(response, 2 * 1024 * 1024).catch(() => ({} as { error_code?: string }));
                 const message = response.status === 403
                   ? "The worker request was denied because the verified contact, accepted worker, or source grant is no longer valid."
                   : "The worker could not finish starting. Check the source Space and worker IDs, then try again.";
@@ -5864,7 +5864,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 console.warn(`[foundry-channel] invoke denied/failed code=${result.error_code ?? response.status}`);
                 return;
               }
-              const result = await response.json<{ run_id?: string; task_id?: string; status?: string; final_answer?: string; error?: string; result?: { output?: unknown; error?: string } }>()
+              const result = await readBoundedResponseJson<{ run_id?: string; task_id?: string; status?: string; final_answer?: string; error?: string; result?: { output?: unknown; error?: string } }>(response, 2 * 1024 * 1024)
                 .catch(() => ({} as { run_id?: string; task_id?: string; status?: string; final_answer?: string; error?: string; result?: { output?: unknown; error?: string } }));
               const output = typeof result.final_answer === "string" ? result.final_answer
                 : typeof result.result?.output === "string" ? result.result.output : "";
@@ -5957,7 +5957,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ));
         let output = "";
         if (response.ok) {
-          const result = await response.json<{ result?: { output?: unknown }; final_answer?: unknown }>()
+          const result = await readBoundedResponseJson<{ result?: { output?: unknown }; final_answer?: unknown }>(response, 2 * 1024 * 1024)
             .catch(() => ({} as { result?: { output?: unknown }; final_answer?: unknown }));
           output = typeof result.final_answer === "string" ? result.final_answer : typeof result.result?.output === "string" ? result.result.output : "";
         }
@@ -6585,10 +6585,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       try {
         const stub = this.env.HITL_APPROVAL_DO.get(this.env.HITL_APPROVAL_DO.idFromName(`hitl:${row["space_id"]}`));
         const resp = await stub.fetch(new Request(`http://hitl/requests/${approvalId}`));
-        const state = await resp.json<{
+        const state = await readBoundedResponseJson<{
           status?: string; answer?: string | null; kind?: string; run_id?: string;
           tool_name?: string; tool_input?: string;
-        }>();
+        }>(resp, 2 * 1024 * 1024);
         if (state.status === "answered" && state.kind === "question") approved = true;
         if (state.status === "approved" && (state.kind ?? "approval") === "approval") {
           let exactInputMatches = false;
@@ -6681,7 +6681,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     );
 
     this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'resumed' WHERE approval_id = ?`, approvalId);
-    const result = await resp.json<Record<string, unknown>>();
+    const result = await readBoundedResponseJson<Record<string, unknown>>(resp, 2 * 1024 * 1024);
     return Response.json({ resumed: true, run_id: resumeBody.runId, result });
   }
 
@@ -6886,7 +6886,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: contactHeaders }
       ));
       const mobileContacts = executiveRes.ok
-        ? (await executiveRes.json<{ data?: Array<{ user_id: string; channel: "whatsapp" | "telegram"; contact_id: string }> }>()).data ?? []
+        ? (await readBoundedResponseJson<{ data?: Array<{ user_id: string; channel: "whatsapp" | "telegram"; contact_id: string }> }>(executiveRes, 2 * 1024 * 1024)).data ?? []
         : [];
       // Suppress mobile/email only when a verified executive contact is active. An unrelated
       // viewer in the space must not hide an urgent approval from its owner or admin.
@@ -6909,7 +6909,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: contactHeaders }
       ));
       if (!contactRes.ok) return;
-      const contact = await contactRes.json<{ found: boolean; email?: string }>();
+      const contact = await readBoundedResponseJson<{ found: boolean; email?: string }>(contactRes, 2 * 1024 * 1024);
       if (!contact.found || !contact.email) return;
       await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
         method: "POST",
@@ -6934,7 +6934,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: await this.internalHeaders(tenantId) }
       ));
       if (!resp.ok) return {};
-      const data = await resp.json<{ modes?: Record<string, string> }>();
+      const data = await readBoundedResponseJson<{ modes?: Record<string, string> }>(resp, 2 * 1024 * 1024);
       const out: Record<string, "business" | "personal"> = {};
       for (const [k, v] of Object.entries(data.modes ?? {})) {
         if (v === "personal") out[k] = "personal";
@@ -6954,7 +6954,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: await this.internalHeaders(tenantId) }
       ));
       if (!resp.ok) return false;
-      const data = await resp.json<{ count?: number }>();
+      const data = await readBoundedResponseJson<{ count?: number }>(resp, 2 * 1024 * 1024);
       return (data.count ?? 0) > 0;
     } catch {
       return false;
@@ -7013,7 +7013,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         headers: await this.internalHeaders(tenantId),
       }));
       if (!response.ok) return null;
-      const project = await response.json<{ lead_user_id?: string | null; default_agent_id?: string | null }>();
+      const project = await readBoundedResponseJson<{ lead_user_id?: string | null; default_agent_id?: string | null }>(response, 2 * 1024 * 1024);
       return project.lead_user_id ?? project.default_agent_id ?? null;
     } catch {
       return null;
@@ -7064,7 +7064,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: await this.internalHeaders(tenantId) },
       ));
       if (!resp.ok) return null;
-      return await resp.json<AssistantApprovalPolicySnapshot>();
+      return await readBoundedResponseJson<AssistantApprovalPolicySnapshot>(resp, 2 * 1024 * 1024);
     } catch {
       return null;
     }
@@ -7093,7 +7093,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
         return null;
       }
-      const policy = await resp.json<AssistantApprovalPolicySnapshot>();
+      const policy = await readBoundedResponseJson<AssistantApprovalPolicySnapshot>(resp, 2 * 1024 * 1024);
       this.assistantPolicyCache = { spaceId, policy, at: Date.now() };
       return policy;
     } catch {
@@ -7130,7 +7130,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: await this.internalHeaders(tenantId) }
       ));
       if (!resp.ok) return { status: "error" };
-      const { effective_role } = await resp.json<{ effective_role: AssistantEffectiveRole | null }>();
+      const { effective_role } = await readBoundedResponseJson<{ effective_role: AssistantEffectiveRole | null }>(resp, 2 * 1024 * 1024);
       return { status: "ok", effectiveRole: effective_role ?? null };
     } catch {
       return { status: "error" };
@@ -7172,7 +7172,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const { spaceId, tenantId, projectId, userId, callerRole, sessionId, agentId, runId, sessionCreditCeiling } = opts;
     if (sessionId && this.env.SPACES_WORKER) {
       const sessionResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}`, { headers: await this.internalHeaders(tenantId, userId ? { "x-naelao-user-id": userId } : {}) }));
-      if (sessionResponse.ok && (await sessionResponse.json<{ private_scratchpad?: boolean }>()).private_scratchpad) return { ok: false, response: Response.json({ error_code: "private_scratchpad_client_only", error: "Private scratchpad keys stay in the browser; server-side agent execution is unavailable for this session." }, { status: 403 }) };
+      if (sessionResponse.ok && (await readBoundedResponseJson<{ private_scratchpad?: boolean }>(sessionResponse, 2 * 1024 * 1024)).private_scratchpad) return { ok: false, response: Response.json({ error_code: "private_scratchpad_client_only", error: "Private scratchpad keys stay in the browser; server-side agent execution is unavailable for this session." }, { status: 403 }) };
     }
     let hasSpendCap = false;
     let walletProjectId: string | null = null;
@@ -7303,7 +7303,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           { headers: await this.internalHeaders(tenantId) }
         ));
         if (balRes.ok) {
-          const { balance_credits } = await balRes.json<{ balance_credits: number }>();
+          const { balance_credits } = await readBoundedResponseJson<{ balance_credits: number }>(balRes, 2 * 1024 * 1024);
           if (balance_credits <= 0) {
             return {
               ok: false,
@@ -7339,7 +7339,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             { headers: await this.internalHeaders(tenantId) }
           ));
           if (quotaRes.ok) {
-            const { allowed, current, limit } = await quotaRes.json<{ allowed: boolean; current: number; limit: number }>();
+            const { allowed, current, limit } = await readBoundedResponseJson<{ allowed: boolean; current: number; limit: number }>(quotaRes, 2 * 1024 * 1024);
             if (!allowed) {
               return {
                 ok: false,
@@ -7363,7 +7363,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             { headers: await this.internalHeaders(tenantId) }
           ));
           if (infraQuotaRes.ok) {
-            const { allowed, current, limit } = await infraQuotaRes.json<{ allowed: boolean; current: number; limit: number }>();
+            const { allowed, current, limit } = await readBoundedResponseJson<{ allowed: boolean; current: number; limit: number }>(infraQuotaRes, 2 * 1024 * 1024);
             if (!allowed) {
               return {
                 ok: false,
@@ -7402,7 +7402,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       { headers: await this.internalHeaders(tenantId) }
     ));
     const spend = spendRes.ok
-      ? await spendRes.json<{ credits_used: number; warned_80: boolean }>()
+      ? await readBoundedResponseJson<{ credits_used: number; warned_80: boolean }>(spendRes, 2 * 1024 * 1024)
       : { credits_used: 0, warned_80: false };
 
     if (spend.credits_used < ceiling) {
@@ -7446,7 +7446,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     const hitlStub = this.env.HITL_APPROVAL_DO.get(this.env.HITL_APPROVAL_DO.idFromName(`hitl:${spaceId}`));
     const listResp = await hitlStub.fetch(new Request(`http://hitl/requests?run_id=${encodeURIComponent(sessionId)}`));
-    const { approvals } = await listResp.json<{ approvals: { id: string; tool_name: string; status: string }[] }>();
+    const { approvals } = await readBoundedResponseJson<{ approvals: { id: string; tool_name: string; status: string }[] }>(listResp, 2 * 1024 * 1024);
     const existing = approvals.find((a) => a.tool_name === "session_budget_continue");
 
     if (existing?.status === "approved") {
@@ -7485,7 +7485,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ttl_ms: 24 * 60 * 60 * 1000,
       }),
     }));
-    const { approval_id } = await createResp.json<{ approval_id: string }>();
+    const { approval_id } = await readBoundedResponseJson<{ approval_id: string }>(createResp, 2 * 1024 * 1024);
     this.ctx.waitUntil(this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, "session_budget_continue", `Session ${sessionId} reached its credit budget ceiling`));
     return {
       ok: false,
@@ -7690,7 +7690,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
       ));
       if (!resp.ok) return { capped: true, spent_today: Number.POSITIVE_INFINITY };
-      const data = await resp.json<{ capped: boolean; spent_today: number }>();
+      const data = await readBoundedResponseJson<{ capped: boolean; spent_today: number }>(resp, 2 * 1024 * 1024);
       return data;
     } catch {
       return { capped: true, spent_today: Number.POSITIVE_INFINITY };
@@ -7848,7 +7848,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: await this.internalHeaders(tenantId) }
       ));
       if (!catalogRes.ok) return false;
-      const catalog = await catalogRes.json<{ external_revenue_cut: { enabled: boolean } | null }>();
+      const catalog = await readBoundedResponseJson<{ external_revenue_cut: { enabled: boolean } | null }>(catalogRes, 2 * 1024 * 1024);
       if (!catalog.external_revenue_cut?.enabled) return false;
 
       const revenueRes = await this.env.SPACES_WORKER.fetch(new Request(
@@ -7856,7 +7856,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: await this.internalHeaders(tenantId) }
       ));
       if (!revenueRes.ok) return false;
-      const revenue = await revenueRes.json<{ last_tracked_at: string | null }>();
+      const revenue = await readBoundedResponseJson<{ last_tracked_at: string | null }>(revenueRes, 2 * 1024 * 1024);
       if (!revenue.last_tracked_at) return false; // never tracked yet — not lapsed, just new
 
       const daysSinceTracked = (Date.now() - new Date(revenue.last_tracked_at).getTime()) / 86_400_000;
@@ -7889,7 +7889,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: await this.internalHeaders(tenantId) }
       ));
       if (!res.ok) return FAIL_CLOSED;
-      return await res.json<{ gated: boolean; active: boolean; reason: string }>();
+      return await readBoundedResponseJson<{ gated: boolean; active: boolean; reason: string }>(res, 2 * 1024 * 1024);
     } catch {
       return FAIL_CLOSED;
     }
@@ -7914,14 +7914,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { headers: await this.internalHeaders(tenantId) }
       ));
       if (wpRes.ok) {
-        const { project_id } = await wpRes.json<{ project_id: string | null }>();
+        const { project_id } = await readBoundedResponseJson<{ project_id: string | null }>(wpRes, 2 * 1024 * 1024);
         if (project_id) {
           const balRes = await this.env.SPACES_WORKER.fetch(new Request(
             `http://spaces-worker/spaces/${spaceId}/projects/${project_id}/wallet/balance`,
             { headers: await this.internalHeaders(tenantId) }
           ));
           if (balRes.ok) {
-            const { balance_cents, credited_cents } = await balRes.json<{ balance_cents: number; credited_cents?: number }>();
+            const { balance_cents, credited_cents } = await readBoundedResponseJson<{ balance_cents: number; credited_cents?: number }>(balRes, 2 * 1024 * 1024);
             // A wallet that has NEVER been funded is not a wallet that ran out.
             //
             // Every business auto-provisions an empty wallet project at creation, so blocking on
@@ -8042,7 +8042,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }));
       if (resp.status === 404) return { status: "not_found" };
       if (!resp.ok) return { status: "error" };
-      const data = await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number; external_daily_message_cap?: number }>();
+      const data = await readBoundedResponseJson<{ execution_ceiling: number; daily_spend_cap_credits: number; external_daily_message_cap?: number }>(resp, 2 * 1024 * 1024);
       return { status: "found", execution_ceiling: data.execution_ceiling, daily_spend_cap_credits: data.daily_spend_cap_credits,
         external_daily_message_cap: Number.isInteger(data.external_daily_message_cap) ? Number(data.external_daily_message_cap) : 0 };
     } catch {
@@ -8059,7 +8059,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         headers: await this.internalHeaders(tenantId),
       }));
       if (!resp.ok) return { status: "error" };
-      const { data } = await resp.json<{ data: ProjectRule[] }>();
+      const { data } = await readBoundedResponseJson<{ data: ProjectRule[] }>(resp, 2 * 1024 * 1024);
       return { status: "found", rules: data.filter((r) => r.enabled !== 0) };
     } catch {
       return { status: "error" };
@@ -8163,17 +8163,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       body: JSON.stringify({ spaceId: input.spaceId, projectId: input.projectId, channel: input.channel,
         instanceId: input.instanceId, scriptSha256: input.scriptSha256, providerConnectionId: input.providerConnectionId ?? undefined }),
     }));
-    if (!verifyBinding.ok || !(await verifyBinding.json<{ valid?: boolean }>().catch(() => ({} as { valid?: boolean }))).valid) return null;
+    if (!verifyBinding.ok || !(await readBoundedResponseJson<{ valid?: boolean }>(verifyBinding, 2 * 1024 * 1024).catch(() => ({} as { valid?: boolean }))).valid) return null;
     const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(
       `http://spaces-worker/spaces/${encodeURIComponent(input.spaceId)}/workflow-installations/${encodeURIComponent(input.instanceId)}`,
       { headers: await this.internalHeaders(input.tenantId) },
     ));
     if (!installationResponse.ok) return null;
-    const installation = await installationResponse.json<{
+    const installation = await readBoundedResponseJson<{
       instance: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string };
       manifest: { id?: string; bundle?: { id?: string; version?: string }; channels?: Array<{ kind?: string; provider?: string; handlerScript?: string; context?: string; inboundEvents?: string[]; outboundEvents?: string[]; knowledgeCollections?: string[]; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number }; permissions?: unknown[]; capabilityRequirements?: unknown[]; budget?: { maxDurationSeconds?: number; maxConcurrency?: number } }> };
       release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
-    }>().catch(() => null);
+    }>(installationResponse, 2 * 1024 * 1024).catch(() => null);
     const instance = installation?.instance;
     if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
       || instance.tenant_id !== input.tenantId || instance.space_id !== input.spaceId || instance.project_id !== input.projectId
@@ -8550,7 +8550,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
               body: JSON.stringify({ event_id: msg.id, installation_id: msg.channel_extension_instance_id, provider: msg.channel, subject_hash: subjectHash, legacy_subject_hash: legacySubjectHash }) },
           ));
-          const quotaResult = quota.ok ? await quota.json<{ allowed?: boolean; daily_cap?: number; notifyOwner?: boolean }>() : null;
+          const quotaResult = quota.ok ? await readBoundedResponseJson<{ allowed?: boolean; daily_cap?: number; notifyOwner?: boolean }>(quota, 2 * 1024 * 1024) : null;
           if (quotaResult?.allowed !== true) {
             this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='failed',error_code=? WHERE message_id=?",
               quotaResult?.daily_cap ? "external_daily_message_cap" : "external_quota_unavailable", msg.id);
@@ -8589,7 +8589,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                   body: JSON.stringify({ publication_id: collectionId, query: msg.text.slice(0, 1_000), top_k: 3 }) },
               ));
               if (!search.ok) { knowledgeFailed = true; break; }
-              const result = await search.json<{ data?: Array<{ document_id?: string; title?: string; content?: string }> }>();
+              const result = await readBoundedResponseJson<{ data?: Array<{ document_id?: string; title?: string; content?: string }> }>(search, 2 * 1024 * 1024);
               for (const hit of result.data ?? []) {
                 if (publishedKnowledge.length >= 3 || typeof hit.content !== "string" || typeof hit.document_id !== "string") break;
                 publishedKnowledge.push({ collection_id: collectionId, document_id: hit.document_id,
@@ -8760,7 +8760,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             body: JSON.stringify({ tenantId, spaceId, taskId: attachmentTaskId }),
           }));
           if (response.ok) {
-            const result = await response.json<{ attachments?: Array<{ id: string; filename: string; mime_type: string; size_bytes: number }> }>();
+            const result = await readBoundedResponseJson<{ attachments?: Array<{ id: string; filename: string; mime_type: string; size_bytes: number }> }>(response, 2 * 1024 * 1024);
             attachmentDescriptors = (result.attachments ?? []).slice(0, 10).map((row) => ({ id: row.id, filename: row.filename, mimeType: row.mime_type, sizeBytes: row.size_bytes }));
           }
         } catch {
@@ -9351,7 +9351,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 action_description: `Tool '${toolBlock.name}' requested approval for run ${runId}`,
               }),
             });
-            const approvalData = await approvalResp.json<{ approval_id: string; expires_at: string }>();
+            const approvalData = await readBoundedResponseJson<{ approval_id: string; expires_at: string }>(approvalResp, 2 * 1024 * 1024);
             this.transitionFsm(runId, currentFsmState, "AWAITING_HUMAN");
             currentFsmState = "AWAITING_HUMAN";
             toolResults.push({
@@ -9830,7 +9830,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           console.warn(`[agent] BYOK credential read failed provider=${provider} name=${name} status=${resp.status}`);
           return null;
         }
-        const { value } = await resp.json<{ value?: string }>().catch(() => ({}) as { value?: string });
+        const { value } = await readBoundedResponseJson<{ value?: string }>(resp, 2 * 1024 * 1024).catch(() => ({}) as { value?: string });
         return value ?? null;
       };
 
@@ -9847,7 +9847,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           },
         ));
         if (!resp.ok) return [];
-        const body = await resp.json<{ credentials?: Array<{ name?: string }> }>().catch(() => ({ credentials: [] as Array<{ name?: string }> }));
+        const body = await readBoundedResponseJson<{ credentials?: Array<{ name?: string }> }>(resp, 2 * 1024 * 1024).catch(() => ({ credentials: [] as Array<{ name?: string }> }));
         return (body.credentials ?? []).flatMap((row) => typeof row.name === "string" ? [row.name] : []);
       };
 
