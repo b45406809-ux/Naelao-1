@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1967` tracked files; `1761` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `3ff4c111`.
+Inventory basis: `1967` tracked files; `1761` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `e4db8d7e`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1096,8 +1096,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/rate-limit-do.ts`
 - [x] `packages/security/src/rate-limit-policy.test.ts`
 - [x] `packages/security/src/rate-limit-policy.ts`
-- [ ] `packages/security/src/request-body.test.ts`
-- [ ] `packages/security/src/request-body.ts`
+- [x] `packages/security/src/request-body.test.ts`
+- [x] `packages/security/src/request-body.ts`
 - [x] `packages/security/src/secrets.ts`
 - [x] `packages/security/src/security-phase4.test.ts`
 - [x] `packages/security/src/ssrf-guard.ts`
