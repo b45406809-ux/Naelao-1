@@ -67,6 +67,27 @@ describe("WAF JSON byte limits", () => {
     });
   });
 
+  it("cancels both tee branches after an oversized chunked body", async () => {
+    let cancelled = false;
+    const overLimit = new Request("https://naelao.test/", {
+      method: "POST",
+      body: new ReadableStream({
+        pull(controller) { controller.enqueue(new Uint8Array(9)); },
+        cancel() { cancelled = true; },
+      }),
+      duplex: "half",
+    } as RequestInit);
+    await expect(readBoundedRequestBody(overLimit, 8)).resolves.toEqual({ status: "too_large" });
+    expect(cancelled).toBe(true);
+  });
+
+  it("rejects invalid byte limits rather than disabling WAF buffering bounds", async () => {
+    const request = new Request("https://naelao.test/", { method: "POST", body: "{}" });
+    for (const maximum of [Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, -1]) {
+      await expect(readBoundedRequestBody(request, maximum)).rejects.toThrow("maxBytes must be a non-negative safe integer");
+    }
+  });
+
   it("keeps safe bounded JSON available to downstream handlers", async () => {
     const app = new Hono();
     app.use("*", wafMiddleware());

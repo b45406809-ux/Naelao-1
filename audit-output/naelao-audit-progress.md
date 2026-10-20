@@ -983,3 +983,9 @@ Reviewed `parseBoundedInteger` and enumerated its callers across Agents, Spaces/
 Validation: `packages/http` suite passed 33/33 and typecheck passed; `git diff --check` passed.
 
 Refreshed the tracked tree after code commit `3ff4c111`: 1,967 tracked files and 1,761 source/config files; marked the pagination helper and its new stress module reviewed.
+
+## Security request-body inspections and tee cancellation (2026-10-20)
+
+Traced the two clone-based request inspectors in `packages/security`: the upload-size guard and WAF JSON body reader. Found the WAF helper accepted invalid byte ceilings, so NaN disabled its `total > maxBytes` bound. Also found both inspectors canceled only the cloned tee branch after an oversized chunked body; the untouched original branch could keep the tee's source alive and accumulate unread upload data while the endpoint returned an error. The WAF helper now validates a non-negative safe integer, and both helpers cancel clone and original branches together on an oversized streamed body. Declared-length rejects remain non-consuming.
+
+Validation: Security package suite passed 21 files / 110 tests and typecheck passed; Agents suite passed 148 files / 661 tests, Agent typecheck and Wrangler dry-run passed. New regressions check invalid ceilings and underlying stream cancellation, while existing tests confirm declared-length fast rejection and downstream readability for valid bounded bodies. These are runtime stream simulations; Cloudflare's production request-body source behavior is not load-tested.

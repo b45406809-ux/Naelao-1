@@ -102,6 +102,9 @@ export async function readBoundedRequestBody(
   request: Request,
   maxBytes = MAX_WAF_JSON_BODY_BYTES
 ): Promise<BoundedBodyResult> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new RangeError("maxBytes must be a non-negative safe integer");
+  }
   const declaredLength = request.headers.get("content-length");
   if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
     if (Number(declaredLength) > maxBytes) return { status: "too_large" };
@@ -120,9 +123,12 @@ export async function readBoundedRequestBody(
         if (done) break;
         totalBytes += value.byteLength;
         if (totalBytes > maxBytes) {
-          // A cloned request body is tee'd; cancel can wait for the untouched
-          // original branch. Fire it without awaiting so the limit stays bounded.
-          void reader.cancel().catch(() => undefined);
+          // Both branches are discarded because middleware returns 413. Cancel
+          // both so the tee can stop pulling and queueing the unread upload tail.
+          await Promise.allSettled([
+            reader.cancel(),
+            request.body?.cancel(),
+          ]);
           return { status: "too_large" };
         }
         chunks.push(value);

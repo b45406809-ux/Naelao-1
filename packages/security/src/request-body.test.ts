@@ -31,6 +31,20 @@ describe("request body byte limits", () => {
     );
   });
 
+  it("cancels the original request branch after discovering an oversized chunked body", async () => {
+    let cancelled = false;
+    const request = new Request("https://naelao.test/upload", {
+      method: "POST",
+      body: new ReadableStream({
+        pull(controller) { controller.enqueue(new Uint8Array(9)); },
+        cancel() { cancelled = true; },
+      }),
+      duplex: "half",
+    } as RequestInit);
+    await expect(checkRequestBodyByteLimit(request, 8)).resolves.toBe("too_large");
+    expect(cancelled).toBe(true);
+  });
+
   it("allows a bounded streamed body and preserves the original request", async () => {
     const request = new Request("https://naelao.test/upload", {
       method: "POST",

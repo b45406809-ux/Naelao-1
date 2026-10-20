@@ -32,8 +32,12 @@ export async function checkRequestBodyByteLimit(
         if (done) return "within_limit";
         totalBytes += value.byteLength;
         if (totalBytes > maxBytes) {
-          // A cloned body is tee'd, so cancellation can wait for the original branch.
-          void reader.cancel().catch(() => undefined);
+          // Both branches are discarded because the caller returns an error response.
+          // Cancel them together so the tee can stop pulling and queueing the upload tail.
+          await Promise.allSettled([
+            reader.cancel(),
+            request.body?.cancel(),
+          ]);
           return "too_large";
         }
       }
