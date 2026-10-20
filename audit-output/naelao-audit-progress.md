@@ -885,3 +885,9 @@ Audited the conversation search/research prebuilt against the SpaceDO message ro
 Validation: final Agent worker suite passed 145 files / 644 tests; focused conversation and channel paging tests passed 17/17; Agent TypeScript passed. Regression cases cover a stale overflow cursor, channel pagination beyond 10,000 rows, exact older-page ordering, oversized host transcript input, and continuation across a mid-page 16 MiB byte-budget boundary. Tests use the SQLite DO shim and mocked SpaceDO HTTP response; distributed cursor deletion races and live DO response/storage limits remain unexercised. The conversation prebuilt and its tests plus the channel transcript test module are checked; `NaelaoAgentDO.ts` and `types.ts` remain unchecked as complete files because this was a scoped review of their channel-loading and host-callback sections.
 
 Refreshed the tracked tree after code commit `dab89263`; it contains 1,961 tracked files and the checklist has 1,755 source/config files, preserving 250 reviewed rows.
+
+## Tool result pagination bounds (2026-10-20)
+
+Scoped the ScriptToolSurface result-paging helper and its invocation path. Found that `limit=0` could produce an empty page with an unchanged `next_offset`, and negative or very large limits were not bounded. The helper now normalizes limits to 1–200, floors and bounds offsets, and measures serialized output in UTF-8 bytes. Oversized scalar previews are cut on code-point boundaries within the byte budget.
+
+Validation: tool-result pagination tests passed 5/5, final Agent suite passed 146 files / 649 tests, Agent TypeScript passed, Wrangler dry-run succeeded with all three sandbox images and a 18.1 MiB / 3.4 MiB gzip bundle, and `git diff --check` passed. Tests cover zero/negative/fractional/huge page limits and multibyte Unicode output. `tool-surface.ts` remains unchecked as a complete file; this was a review of its pagination helper and result delivery call site.

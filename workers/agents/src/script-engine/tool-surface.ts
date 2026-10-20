@@ -200,6 +200,7 @@ const RENAMED_OPERATIONS: Record<string, string> = {
 // silently — the note always carries the true total and the next-offset instruction.
 const MAX_TOOL_RESULT_BYTES = 16_000; // ~4k tokens — a safety ceiling, not a hard per-op contract.
 const DEFAULT_TOOL_PAGE_SIZE = 50;
+const MAX_TOOL_PAGE_SIZE = 200;
 
 /** Read a numeric paging arg, accepting both `limit`/`offset` and `_limit`/`_offset` spellings. */
 function pageArg(params: Record<string, unknown>, ...names: string[]): number | undefined {
@@ -244,11 +245,17 @@ function findPrimaryArray(
  * Exported for direct unit testing — it must behave the same in isolation as inside run().
  */
 export function applyToolResultLimit(output: unknown, params: Record<string, unknown>): unknown {
-  const explicitLimit = pageArg(params, "limit", "_limit");
-  const explicitOffset = pageArg(params, "offset", "_offset");
+  const requestedLimit = pageArg(params, "limit", "_limit");
+  const requestedOffset = pageArg(params, "offset", "_offset");
+  const explicitLimit = requestedLimit === undefined
+    ? undefined
+    : Math.max(1, Math.min(MAX_TOOL_PAGE_SIZE, Math.floor(requestedLimit)));
+  const explicitOffset = requestedOffset === undefined
+    ? undefined
+    : Math.max(0, Math.min(Number.MAX_SAFE_INTEGER - MAX_TOOL_PAGE_SIZE, Math.floor(requestedOffset)));
   let bytes: number;
   try {
-    bytes = JSON.stringify(output ?? null).length;
+    bytes = new TextEncoder().encode(JSON.stringify(output ?? null)).byteLength;
   } catch {
     return output; // Non-serializable (shouldn't happen for a real op result) — leave it be.
   }
@@ -263,7 +270,7 @@ export function applyToolResultLimit(output: unknown, params: Record<string, unk
     if (explicitLimit === undefined && oversized && total > 0) {
       // Shrink the page until it fits the byte budget: average per-item bytes → items that fit.
       const perItem = Math.max(1, Math.floor(bytes / total));
-      limit = Math.max(1, Math.floor(MAX_TOOL_RESULT_BYTES / perItem));
+      limit = Math.max(1, Math.min(MAX_TOOL_PAGE_SIZE, Math.floor(MAX_TOOL_RESULT_BYTES / perItem)));
     }
     const offset = Math.max(0, explicitOffset ?? 0);
     const page = primary.arr.slice(offset, offset + limit);
@@ -295,7 +302,7 @@ export function applyToolResultLimit(output: unknown, params: Record<string, unk
     return {
       _truncated: true,
       _total_bytes: bytes,
-      preview: s.slice(0, MAX_TOOL_RESULT_BYTES),
+      preview: utf8Prefix(s, MAX_TOOL_RESULT_BYTES),
       instruction:
         `This result is ${bytes} bytes and was truncated to ${MAX_TOOL_RESULT_BYTES}. ` +
         `Use a search/read operation with a query or offset to fetch only the part you need ` +
@@ -303,6 +310,19 @@ export function applyToolResultLimit(output: unknown, params: Record<string, unk
     };
   }
   return output;
+}
+
+function utf8Prefix(value: string, maxBytes: number): string {
+  let bytes = 0;
+  let prefix = "";
+  for (const character of value) {
+    const point = character.codePointAt(0)!;
+    const size = point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    if (bytes + size > maxBytes) break;
+    prefix += character;
+    bytes += size;
+  }
+  return prefix;
 }
 
 export class ScriptToolSurface {
