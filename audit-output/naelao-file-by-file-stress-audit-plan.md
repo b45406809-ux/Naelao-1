@@ -1742,7 +1742,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/do/LocalTunnelDO.ts`
 - [ ] `workers/agents/src/do/NaelaoAgentDO.ts`
 - [ ] `workers/agents/src/do/RiskGuardDO.ts`
-- [ ] `workers/agents/src/do/TaskDO.ts`
+- [x] `workers/agents/src/do/TaskDO.ts`
 - [ ] `workers/agents/src/do/ToolSandboxDO.test.ts`
 - [ ] `workers/agents/src/do/ToolSandboxDO.ts`
 - [ ] `workers/agents/src/do/WorkflowRunDO.test.ts`
@@ -1753,7 +1753,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/do/citation-metadata.test.ts`
 - [ ] `workers/agents/src/do/conversation-compaction.test.ts`
 - [ ] `workers/agents/src/do/delegation-admission.test.ts`
-- [ ] `workers/agents/src/do/direct-do-request-boundaries.test.ts`
+- [x] `workers/agents/src/do/direct-do-request-boundaries.test.ts`
 - [ ] `workers/agents/src/do/external-channel-spend.test.ts`
 - [ ] `workers/agents/src/do/external-channel-spend.ts`
 - [x] `workers/agents/src/do/hitl-approval-boundaries.test.ts`

@@ -21,10 +21,28 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
+import { checkSsrf } from "@naelao/security";
 
 const TASK_TTL_MS = 24 * 60 * 60 * 1000;
 const LONG_POLL_MAX_MS = 30_000;
 const LONG_POLL_INTERVAL_MS = 500;
+const MAX_TASK_ID_LENGTH = 128;
+const MAX_TASK_TEXT_LENGTH = 32_000;
+const MAX_TASK_RESULT_BYTES = 512 * 1024;
+
+function validTaskId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_TASK_ID_LENGTH && /^[A-Za-z0-9._:-]+$/.test(value);
+}
+
+function parseCallbackUrl(value: unknown): string | null | undefined {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || value.length > 2048) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) return undefined;
+    return url.toString();
+  } catch { return undefined; }
+}
 
 /** `awaiting_approval` is a real, non-terminal state, not a flavour of complete: the run stopped
  *  at a human-in-the-loop gate with its work intact and will continue once someone answers.
@@ -86,25 +104,32 @@ export class TaskDO extends DurableObject {
 
     // POST /tasks — create a new task
     if (method === "POST" && url.pathname === "/tasks") {
-      const body = await request.json<{
-        id: string;
-        space_id: string;
-        session_id: string;
-        tenant_id: string;
-        goal: string;
-        callback_url?: string;
-      }>();
-
-      if (!body.id || !body.space_id || !body.tenant_id || !body.goal) {
+      const value: unknown = await request.json().catch(() => undefined);
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        return Response.json({ error: "invalid_request" }, { status: 400 });
+      const body = value as Record<string, unknown>;
+      const callbackUrl = parseCallbackUrl(body.callback_url);
+      if (!validTaskId(body.id) || typeof body.space_id !== "string" || !body.space_id.trim() || body.space_id.length > 256 ||
+          typeof body.tenant_id !== "string" || !body.tenant_id.trim() || body.tenant_id.length > 256 ||
+          typeof body.session_id !== "string" || !body.session_id.trim() || body.session_id.length > 512 ||
+          typeof body.goal !== "string" || !body.goal.trim() || body.goal.length > MAX_TASK_TEXT_LENGTH ||
+          callbackUrl === undefined) {
         return Response.json({ error: "id, space_id, tenant_id, and goal are required" }, { status: 400 });
       }
+      if (callbackUrl) {
+        const destination = await checkSsrf(callbackUrl);
+        if (destination.blocked) return Response.json({ error: "callback_destination_blocked" }, { status: 400 });
+      }
+
+      const existing = this.ctx.storage.sql.exec(`SELECT * FROM tasks WHERE id = ?`, body.id).toArray() as unknown as TaskRow[];
+      if (existing[0]) return Response.json({ error: "task_id_conflict" }, { status: 409 });
 
       const expiresAt = Date.now() + TASK_TTL_MS;
       this.ctx.storage.sql.exec(
-        `INSERT OR REPLACE INTO tasks (id, space_id, session_id, tenant_id, goal, status, created_at, expires_at, callback_url)
+        `INSERT INTO tasks (id, space_id, session_id, tenant_id, goal, status, created_at, expires_at, callback_url)
          VALUES (?, ?, ?, ?, ?, 'queued', datetime('now'), ?, ?)`,
-        body.id, body.space_id, body.session_id ?? "", body.tenant_id,
-        body.goal, expiresAt, body.callback_url ?? null
+        body.id, body.space_id, body.session_id, body.tenant_id,
+        body.goal, expiresAt, callbackUrl
       );
 
       // Schedule cleanup alarm
@@ -120,7 +145,10 @@ export class TaskDO extends DurableObject {
     const taskMatch = url.pathname.match(/^\/tasks\/([^/]+)$/);
     if (method === "GET" && taskMatch?.[1]) {
       const taskId = taskMatch[1];
-      const timeoutSec = Math.min(parseInt(url.searchParams.get("timeout") ?? "0", 10), 30);
+      const timeoutText = url.searchParams.get("timeout") ?? "0";
+      if (!/^(0|[1-9][0-9]?)$/.test(timeoutText) || Number(timeoutText) > LONG_POLL_MAX_MS / 1000)
+        return Response.json({ error: "invalid_timeout" }, { status: 400 });
+      const timeoutSec = Number(timeoutText);
 
       if (timeoutSec > 0) {
         // Long poll: check every 500ms until done or timeout
@@ -145,8 +173,9 @@ export class TaskDO extends DurableObject {
     if (method === "GET" && url.pathname === "/tasks") {
       const spaceId = url.searchParams.get("space_id");
       if (!spaceId) return Response.json({ error: "space_id required" }, { status: 400 });
+      if (spaceId.length > 256) return Response.json({ error: "invalid_space_id" }, { status: 400 });
       const rows = this.ctx.storage.sql
-        .exec(`SELECT * FROM tasks WHERE space_id = ? ORDER BY created_at DESC LIMIT 50`, spaceId)
+        .exec(`SELECT * FROM tasks WHERE space_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 50`, spaceId, Date.now())
         .toArray() as unknown as TaskRow[];
       return Response.json({ tasks: rows.map(r => this.taskToApi(r)) });
     }
@@ -155,16 +184,41 @@ export class TaskDO extends DurableObject {
     const statusMatch = url.pathname.match(/^\/tasks\/([^/]+)\/status$/);
     if (method === "PUT" && statusMatch?.[1]) {
       const taskId = statusMatch[1];
-      const body = await request.json<{ status: TaskStatus; result?: string; error?: string }>();
+      const value: unknown = await request.json().catch(() => undefined);
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        return Response.json({ error: "invalid_request" }, { status: 400 });
+      const body = value as { status?: unknown; result?: unknown; error?: unknown };
+      if (!(["processing", "awaiting_approval", "complete", "failed"] as unknown[]).includes(body.status) ||
+          (body.result !== undefined && body.result !== null && typeof body.result !== "string") ||
+          (body.error !== undefined && body.error !== null && (typeof body.error !== "string" || body.error.length > 4000)))
+        return Response.json({ error: "invalid_task_status" }, { status: 400 });
+      if (typeof body.result === "string") {
+        if (new TextEncoder().encode(body.result).byteLength > MAX_TASK_RESULT_BYTES)
+          return Response.json({ error: "task_result_too_large" }, { status: 413 });
+        try { JSON.parse(body.result); }
+        catch { return Response.json({ error: "task_result_invalid_json" }, { status: 400 }); }
+      }
 
       const rows = this.ctx.storage.sql
         .exec(`SELECT * FROM tasks WHERE id = ?`, taskId)
         .toArray() as unknown as TaskRow[];
-      if (!rows[0]) return Response.json({ error: "not_found" }, { status: 404 });
+      if (!rows[0] || rows[0].expires_at <= Date.now()) return Response.json({ error: "not_found" }, { status: 404 });
+      const status = body.status as TaskStatus;
+      const current = rows[0].status;
+      const allowed: Record<TaskStatus, readonly TaskStatus[]> = {
+        queued: ["processing", "failed"],
+        processing: ["awaiting_approval", "complete", "failed"],
+        awaiting_approval: ["processing", "complete", "failed"],
+        complete: [],
+        failed: [],
+      };
+      if (current === status) return Response.json({ task_id: taskId, status, idempotent: true });
+      if (!allowed[current]?.includes(status))
+        return Response.json({ error: "invalid_task_transition", current_status: current }, { status: 409 });
 
       this.ctx.storage.sql.exec(
         `UPDATE tasks SET status = ?, result = ?, error = ? WHERE id = ?`,
-        body.status,
+        status,
         body.result ?? null,
         body.error ?? null,
         taskId
@@ -172,20 +226,25 @@ export class TaskDO extends DurableObject {
 
       // Fire callback if provided and task is terminal
       const task = rows[0];
-      if (task.callback_url && (body.status === "complete" || body.status === "failed")) {
-        this.ctx.waitUntil(this.fireCallback(task.callback_url, taskId, body.status, body.result, body.error));
+      if (task.callback_url && (status === "complete" || status === "failed")) {
+        this.ctx.waitUntil(this.fireCallback(task.callback_url, taskId, status, body.result as string | undefined, body.error as string | undefined));
       }
 
-      return Response.json({ task_id: taskId, status: body.status });
+      return Response.json({ task_id: taskId, status });
     }
 
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
   private getTask(id: string): TaskRow | null {
+    if (!validTaskId(id)) return null;
     const rows = this.ctx.storage.sql
       .exec(`SELECT * FROM tasks WHERE id = ?`, id)
       .toArray() as unknown as TaskRow[];
+    if (rows[0] && rows[0].expires_at <= Date.now()) {
+      this.ctx.storage.sql.exec(`DELETE FROM tasks WHERE id = ? AND expires_at <= ?`, id, Date.now());
+      return null;
+    }
     return rows[0] ?? null;
   }
 
@@ -210,13 +269,20 @@ export class TaskDO extends DurableObject {
     error?: string
   ): Promise<void> {
     try {
-      await fetch(callbackUrl, {
+      const parsed = parseCallbackUrl(callbackUrl);
+      if (!parsed) throw new Error("callback_destination_invalid");
+      const destination = await checkSsrf(parsed);
+      if (destination.blocked) throw new Error("callback_destination_blocked");
+      const response = await fetch(parsed, {
         method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ task_id: taskId, status, result: result ? JSON.parse(result) : null, error }),
       });
+      await response.body?.cancel().catch(() => undefined);
     } catch (err) {
-      console.error(`[TaskDO] Callback failed for task ${taskId}: ${err}`);
+      console.error(`[TaskDO] Callback failed for task ${taskId}: ${err instanceof Error ? err.message : "unknown_error"}`);
     }
   }
 
