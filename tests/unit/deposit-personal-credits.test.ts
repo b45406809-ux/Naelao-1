@@ -35,6 +35,10 @@ const SCHEMA = [
     invited_by TEXT, joined_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (business_space_id, end_user_id)
   );`,
+  `CREATE TABLE space_members (
+    id TEXT PRIMARY KEY, space_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member', suspended_at TEXT
+  );`,
 ];
 
 function makeEnv() {

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { NaelaoAgentDO } from "../../workers/agents/src/do/NaelaoAgentDO.js";
 import { writeAgentConfig } from "../../workers/agents/src/script-engine/agent-config.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
+import { makeR2Bucket } from "./helpers/r2-bucket.js";
 
 // Metering enforcement follow-up: a project-scoped run (customer-bot type projects) with no
 // builder-configured daily_spend_cap_credits used to run completely unmetered — no payer of any
@@ -12,30 +13,7 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // or the lookup is transiently unreachable.
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  const bucket = {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
-    },
-    async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; }, get body() { return text; } } as unknown as R2ObjectBody;
-    },
-    async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
-    },
-    async delete(keys: string | string[]) {
-      for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k);
-    },
-    async list(opts?: { prefix?: string }) {
-      const prefix = opts?.prefix ?? "";
-      const objects = [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k, size: store.get(k)!.length, uploaded: new Date(), etag: "x" }));
-      return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
-    },
-  };
-  return bucket as unknown as R2Bucket;
+  return makeR2Bucket();
 }
 
 type WalletState = { projectId: string | null; balanceCents: number | "unreachable" };
@@ -46,6 +24,7 @@ function makeSpacesWorker(wallet: WalletState, project: { execution_ceiling: num
     async fetch(input: RequestInfo) {
       const req = input as Request;
       const url = new URL(typeof input === "string" ? input : req.url);
+      if (url.pathname.endsWith("/model-policy")) return Response.json({ policy: null });
       if (/^\/spaces\/[^/]+\/wallet-project$/.test(url.pathname)) {
         return Response.json({ project_id: wallet.projectId });
       }
@@ -76,7 +55,7 @@ function makeSpacesWorker(wallet: WalletState, project: { execution_ceiling: num
 
 async function makeDO(wallet: WalletState, project?: { execution_ceiling: number; daily_spend_cap_credits: number }) {
   const r2 = makeR2();
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   const { fetcher: spacesWorker, debitCalls } = makeSpacesWorker(wallet, project);
   const env = {
     PLATFORM_SECRET: "test",
@@ -108,7 +87,7 @@ describe("NaelaoAgentDO /script/run — project wallet payer gate", () => {
   it("rejects with 402 when the project's space has a wallet but it's empty, before any reasoning runs", async () => {
     const { spaceDO } = await makeDO({ projectId: "wallet1", balanceCents: 0 });
     const res = await scriptRunForProject(spaceDO, "proj1");
-    expect(res.status).toBe(402);
+    expect(res.status, await res.clone().text()).toBe(402);
     const body = await res.json() as { error_code?: string; balance_cents?: number };
     expect(body.error_code).toBe("insufficient_credits");
     expect(body.balance_cents).toBe(0);

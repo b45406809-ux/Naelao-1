@@ -33,10 +33,17 @@ const BUSINESS_MEMBERSHIPS_SQL = `
     PRIMARY KEY (business_space_id, end_user_id)
   );
 `;
+const SPACE_MEMBERS_SQL = `
+  CREATE TABLE space_members (
+    id TEXT PRIMARY KEY, space_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member', suspended_at TEXT
+  );
+`;
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL, SPACE_MEMBERS_SQL]);
   fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('prod-1', 'tenant-1', 'active', 'Product Root')");
+  fakeDb.db.exec("INSERT INTO space_members (id, space_id, end_user_id, role) VALUES ('member-1', 'prod-1', 'eu-1', 'member')");
   return {
     PLATFORM_SECRET,
     ENVIRONMENT: "test",

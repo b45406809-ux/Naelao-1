@@ -87,10 +87,11 @@ const businessRoleCache = new Map<string, { role: BusinessRole | null; expiresAt
 
 async function resolveEndUserBusinessRoleCached(
   db: D1Database,
+  tenantId: string,
   spaceId: string,
   endUserId: string
 ): Promise<BusinessRole | null> {
-  const cacheKey = `${spaceId}:${endUserId}`;
+  const cacheKey = `${tenantId}:${spaceId}:${endUserId}`;
   const cached = businessRoleCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) return cached.role;
   const role = await resolveEndUserBusinessRole(db, spaceId, endUserId);
@@ -131,10 +132,11 @@ const walletRoleCache = new Map<string, { role: BusinessRole | null; expiresAt: 
 
 async function resolveWalletAccessRoleCached(
   db: D1Database,
+  tenantId: string,
   spaceId: string,
   endUserId: string
 ): Promise<BusinessRole | null> {
-  const cacheKey = `${spaceId}:${endUserId}`;
+  const cacheKey = `${tenantId}:${spaceId}:${endUserId}`;
   const cached = walletRoleCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) return cached.role;
   const role = await resolveWalletAccessRole(db, spaceId, endUserId);
@@ -155,8 +157,9 @@ export function requireBusinessMembership(methodMinRole: Partial<Record<string, 
 
     const spaceId = c.req.param("spaceId") ?? "";
     const endUserId = c.req.header("x-naelao-user-id") ?? "";
+    const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
     const env = c.env as BusinessAuthEnv;
-    const callerRole = await resolveEndUserBusinessRoleCached(env.PLATFORM_DB, spaceId, endUserId);
+    const callerRole = await resolveEndUserBusinessRoleCached(env.PLATFORM_DB, tenantId, spaceId, endUserId);
     if (!callerRole) {
       return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
     }
@@ -181,8 +184,9 @@ export function requireBusinessMembershipForWallet(methodMinRole: Partial<Record
 
     const spaceId = c.req.param("spaceId") ?? "";
     const endUserId = c.req.header("x-naelao-user-id") ?? "";
+    const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
     const env = c.env as BusinessAuthEnv;
-    const callerRole = await resolveWalletAccessRoleCached(env.PLATFORM_DB, spaceId, endUserId);
+    const callerRole = await resolveWalletAccessRoleCached(env.PLATFORM_DB, tenantId, spaceId, endUserId);
     if (!callerRole) {
       return c.json({ error_code: "forbidden", message: "Wallet is not accessible to end users on this space" }, 403);
     }

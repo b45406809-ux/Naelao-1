@@ -31,14 +31,20 @@ const BUSINESS_MEMBERSHIPS_SQL = `
     PRIMARY KEY (business_space_id, end_user_id)
   );
 `;
-
-function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL]);
-  fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('prod-root', 'tenant-1', 'active', 'Product')");
-  fakeDb.db.exec(
-    "INSERT INTO spaces (id, tenant_id, status, name, parent_space_id) VALUES ('biz-1', 'tenant-1', 'active', 'Biz', 'prod-root')"
+const SPACE_MEMBERS_SQL = `
+  CREATE TABLE space_members (
+    id TEXT PRIMARY KEY, space_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member', suspended_at TEXT
   );
+`;
+
+function makeEnv(tenantId = "tenant-1", authorized = true) {
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL, SPACE_MEMBERS_SQL]);
+  fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status, name) VALUES ('prod-root', '${tenantId}', 'active', 'Product')`);
   fakeDb.db.exec(
+    `INSERT INTO spaces (id, tenant_id, status, name, parent_space_id) VALUES ('biz-1', '${tenantId}', 'active', 'Biz', 'prod-root')`
+  );
+  if (authorized) fakeDb.db.exec(
     "INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-1', 'prod-root', 'cache-test-user', 'admin', 'active')"
   );
 
@@ -57,12 +63,12 @@ function makeEnv() {
   };
 }
 
-async function req(path: string, method = "GET"): Promise<Request> {
-  const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+async function req(path: string, method = "GET", tenantId = "tenant-1"): Promise<Request> {
+  const token = await mintInternalToken(PLATFORM_SECRET, tenantId);
   return new Request(`https://spaces.naelao.com${path}`, {
     method,
     headers: {
-      "x-naelao-tenant-id": "tenant-1",
+      "x-naelao-tenant-id": tenantId,
       "x-naelao-internal-token": token,
       "x-naelao-role": "product_end_user",
       "x-naelao-user-id": "cache-test-user",
@@ -88,5 +94,14 @@ describe("requireBusinessMembership — short-TTL role cache (WS-7)", () => {
     ).length;
     // The second call must not have issued any NEW role-lookup queries — same count as after the first.
     expect(queriesAfterSecond).toBe(queriesAfterFirst);
+  });
+
+  it("does not reuse a positive membership cached for another tenant's same space/user IDs", async () => {
+    const authorized = makeEnv("tenant-cache-a", true);
+    const denied = makeEnv("tenant-cache-b", false);
+    const first = await spacesWorker.fetch(await req("/spaces/biz-1/projects", "GET", "tenant-cache-a"), authorized.env as never, execCtx);
+    expect(first.status).toBe(200);
+    const second = await spacesWorker.fetch(await req("/spaces/biz-1/projects", "GET", "tenant-cache-b"), denied.env as never, execCtx);
+    expect(second.status).toBe(403);
   });
 });

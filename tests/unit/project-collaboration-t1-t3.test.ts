@@ -24,9 +24,9 @@ async function call(doInstance: SpaceDO, path: string, method: string, body?: un
 }
 
 describe("Project visibility + membership (§A1.17 Phase T1)", () => {
-  it("a private project (the default) is only visible to its creator, not another space member", async () => {
+  it("a private project is only visible to its creator, not another space member", async () => {
     const doInstance = makeSpaceDO();
-    await call(doInstance, "/projects", "POST", { space_id: "space-1", name: "Secret Plans", created_by: "alice" });
+    await call(doInstance, "/projects", "POST", { space_id: "space-1", name: "Secret Plans", visibility: "private", created_by: "alice" });
 
     const aliceView = await call(doInstance, "/projects?space_id=space-1&viewer_id=alice", "GET");
     expect(aliceView.json.data).toHaveLength(1);
@@ -66,7 +66,7 @@ describe("Project visibility + membership (§A1.17 Phase T1)", () => {
 
   it("explicit project_members CRUD: add, list, and remove", async () => {
     const doInstance = makeSpaceDO();
-    const created = await call(doInstance, "/projects", "POST", { space_id: "space-1", name: "Shared", created_by: "alice" });
+    const created = await call(doInstance, "/projects", "POST", { space_id: "space-1", name: "Shared", visibility: "private", created_by: "alice" });
     const projectId = created.json.id;
 
     const added = await call(doInstance, `/projects/${projectId}/members`, "POST", { user_id: "dave", role: "viewer" });

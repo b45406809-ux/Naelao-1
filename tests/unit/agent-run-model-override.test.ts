@@ -112,12 +112,23 @@ describe("POST /agent/run — per-run model override", () => {
   });
 
   it("accepts every model on the shared allowlist", async () => {
-    for (const model of ALLOWED_MODELS) {
+    // OpenRouter candidates also need fresh provider-catalog evidence; a shared static slug alone
+    // is deliberately insufficient to authorize the dynamic route.
+    for (const model of ALLOWED_MODELS.filter((candidate) => !candidate.startsWith("openrouter/"))) {
       const { env, calls } = makeEnv();
       const res = await runReq(env, { goal: "hello", model });
       expect(res.status, `model ${model} should be accepted`).toBe(200);
       expect(calls[0]!.body["model"]).toBe(model);
     }
+  });
+
+  it("requires fresh catalog evidence before accepting a shared OpenRouter slug", async () => {
+    const model = ALLOWED_MODELS.find((candidate) => candidate.startsWith("openrouter/"));
+    if (!model) return;
+    const { env, calls } = makeEnv();
+    const res = await runReq(env, { goal: "hello", model });
+    expect(res.status).toBe(400);
+    expect(calls).toHaveLength(0);
   });
 });
 

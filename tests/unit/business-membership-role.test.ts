@@ -27,10 +27,18 @@ const BUSINESS_MEMBERSHIPS_SQL = `
     PRIMARY KEY (business_space_id, end_user_id)
   );
 `;
+const SPACE_MEMBERS_SQL = `
+  CREATE TABLE space_members (
+    id TEXT PRIMARY KEY, space_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member', suspended_at TEXT
+  );
+`;
 
 function makeDb() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL, SPACE_MEMBERS_SQL]);
   fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('prod-root', 'root-tenant', 'active', 'Product')");
+  fakeDb.db.exec("INSERT INTO space_members (id, space_id, end_user_id, role) VALUES ('sm-alice', 'prod-root', 'alice', 'member')");
+  fakeDb.db.exec("INSERT INTO space_members (id, space_id, end_user_id, role) VALUES ('sm-bob', 'prod-root', 'bob', 'member')");
   fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name, parent_space_id) VALUES ('biz-alice', 'alice-tenant', 'active', 'Alice Biz', 'prod-root')");
   fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name, parent_space_id) VALUES ('biz-bob', 'bob-tenant', 'active', 'Bob Biz', 'prod-root')");
   fakeDb.db.exec("INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-alice', 'prod-root', 'alice', 'owner', 'active')");
@@ -39,11 +47,11 @@ function makeDb() {
 }
 
 describe("resolveEndUserBusinessRole", () => {
-  it("treats the product root as implicit member for any caller (Phase B behavior preserved)", async () => {
+  it("requires direct membership on the product root and does not admit unrelated callers", async () => {
     const db = makeDb();
     expect(await resolveEndUserBusinessRole(db as never, "prod-root", "alice")).toBe("member");
     expect(await resolveEndUserBusinessRole(db as never, "prod-root", "bob")).toBe("member");
-    expect(await resolveEndUserBusinessRole(db as never, "prod-root", "total-stranger")).toBe("member");
+    expect(await resolveEndUserBusinessRole(db as never, "prod-root", "total-stranger")).toBeNull();
   });
 
   it("a business owner resolves their own real role", async () => {
