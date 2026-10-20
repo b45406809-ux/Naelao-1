@@ -858,3 +858,11 @@ Completed the queue-handler slice by separating message dispatch from the Cloudf
 Validation: standard Provisioner Vitest project passed 2 files / 16 tests; Provisioner TypeScript passed; Wrangler deploy dry-run bundled successfully at 14.2 MB upload / 2.57 MB gzip and showed the configured production bindings; `git diff --check` passed. The full D1/R2/SpaceDO provision, rollback, and dead-letter lifecycle still needs a service-binding harness or staging run. Provisioner package/config files and queue contract/dispatch implementation/tests are checked; the large `index.ts` remains unchecked as a whole.
 
 Refreshed the tracked tree after queue test wiring commit `e0718084`; source/config file counts include the new Provisioner Vitest project and queue dispatch regression module.
+
+## Provisioner manifest loading limits (2026-10-20)
+
+The provisioner fetched a registry response using an unchecked typed `response.json()` and then iterated its resource declarations. Although registry writes are internal and size-limited, malformed/corrupted KV or registry data could still make provisioning do unbounded work or fail after partially seeding resources. The loader now reads at most 1 MiB and validates the requested SpaceType ID, bounded DO/prefix/workflow arrays, safe R2 path segments, optional feature flags, portal slug/template fields, and custom lifecycle URL shape before returning a manifest; malformed and oversized responses become the existing controlled not-found/provision rollback path.
+
+Validation: Provisioner suite passed 3 files / 27 tests including 11 manifest-contract adversarial cases; Provisioner TypeScript and Wrangler dry-run passed (14.25 MB upload / 2.57 MB gzip); `git diff --check` passed. The tests cover the pure manifest guard, not malformed responses from a real KV/registry service binding. Manifest loading/failure handling is reviewed; `workers/provisioner/src/index.ts` remains unchecked as a complete file.
+
+Provisioner manifest/queue boundary follow-up: the runtime manifest guard now validates the full required top-level manifest shape and all provisioner-consumed arrays/limits, and queue identifiers reject path separators and header control characters while preserving provider subject IDs such as `auth0|...`. Final Provisioner suite result is 3 files / 32 tests; typecheck and Wrangler dry-run pass.

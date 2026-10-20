@@ -17,7 +17,7 @@
  */
 
 import { Hono } from "hono";
-import { errorResponse, requestId, mintInternalToken, readBoundedResponseText } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import {
   LAUNCHPAD_CORE_AGENTS,
   agentsForTemplates,
@@ -43,6 +43,7 @@ import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeReg
 import { resolveTenancy } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 import { type ProvisionMessage } from "./message-contract.js";
 import { handleProvisionQueueMessage } from "./queue-message-handler.js";
+import { isProvisionableManifest } from "./manifest-contract.js";
 
 async function responseErrorDetail(response: Response): Promise<string> {
   return (await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 500);
@@ -85,7 +86,8 @@ async function loadManifest(
     })
   );
   if (!resp.ok) return null;
-  return resp.json<NaelaoSpaceTypeManifestV2>();
+  const manifest = await readBoundedResponseJson<unknown>(resp, 1024 * 1024).catch(() => null);
+  return isProvisionableManifest(manifest, spaceTypeId) ? manifest : null;
 }
 
 // ── Step 9: Install SpaceType agents ────────────────────────────────────────
