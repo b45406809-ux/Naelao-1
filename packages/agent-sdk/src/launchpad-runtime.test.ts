@@ -260,4 +260,17 @@ describe("Namespace Boundaries & Execution Routing", () => {
       "https://container/display/type",
     ]);
   });
+
+  it("rejects streamed display frames above the container's 16 MiB response cap", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(8 * 1024 * 1024));
+        controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1));
+        controller.close();
+      },
+    });
+    const display = new ContainerVirtualDisplay("https://container", async () => new Response(body));
+
+    await expect(display.capture()).rejects.toThrow("display_capture_too_large");
+  });
 });

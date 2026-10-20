@@ -335,6 +335,8 @@ The full legacy root config has now completed rather than timing out: 655 files,
 
 Browser `see` previously called `arrayBuffer()` before checking its 4 MiB screenshot cap. It now reads the service response incrementally, rejects streamed or declared over-limit images before retaining the full body, and handles unavailable image streams explicitly. Browser screenshot byte-bound tests passed 2/2, Agents typecheck and `git diff --check` passed. The three SDK decoders also now set the Workers-compatible `ignoreBOM` option; both SDK and Agents typechecks passed after that compatibility fix.
 
+The adjacent container virtual-display screenshot adapter also called `arrayBuffer()` on container output. It now enforces a 16 MiB stream cap matching the container screenshot command's existing maxBuffer ceiling. Added an unknown-Content-Length overflow regression; Launchpad runtime suite passed 13/13, Agent SDK typecheck and `git diff --check` passed.
+
 Before validation, the pnpm 11 install tool rewrote lockfile patch metadata and added an ignored-build policy block. Both repository files were restored to their original committed contents after dependencies installed. `node_modules` is ignored. `git diff --check` is run before commit.
 
 ## Not yet reviewed

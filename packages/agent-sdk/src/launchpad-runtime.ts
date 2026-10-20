@@ -11,6 +11,7 @@ export const LAUNCHPAD_SPACE_TYPE = "launchpad" as const;
 export const WORKSPACE_ROOT = "/workspace" as const;
 export const AVOS_ROOT = "/.avos" as const;
 export const CONTAINER_IDLE_TIMEOUT_MS = 60_000;
+const MAX_CONTAINER_SCREENSHOT_BYTES = 16 * 1024 * 1024;
 
 export type SpaceDepth = 0 | 1;
 export type SpaceRole = "owner" | "admin" | "member";
@@ -519,7 +520,36 @@ export class ContainerVirtualDisplay implements VirtualDisplay {
       method: "POST",
     });
     if (!res.ok) throw new Error(`display_capture_failed:${res.status}`);
-    return new Uint8Array(await res.arrayBuffer());
+    const declaredLength = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_CONTAINER_SCREENSHOT_BYTES) {
+      void res.body?.cancel().catch(() => {});
+      throw new Error("display_capture_too_large");
+    }
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("display_capture_unavailable");
+    const chunks: Uint8Array[] = [];
+    let byteLength = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        byteLength += value.byteLength;
+        if (byteLength > MAX_CONTAINER_SCREENSHOT_BYTES) {
+          void reader.cancel().catch(() => {});
+          throw new Error("display_capture_too_large");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(byteLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
   }
 
   async mouse(
