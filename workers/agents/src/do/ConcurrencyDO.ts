@@ -231,13 +231,34 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   private async publishWorkspaceMutation(request: Request): Promise<Response> {
-    const body = await request.json<{ key?: string; holderId?: string; fencingToken?: number; path?: string; operation?: "write" | "delete"; expectedHash?: string | null; contentBase64?: string; metadata?: Record<string, string>; contentType?: string }>().catch(() => ({} as { key?: string; holderId?: string; fencingToken?: number; path?: string; operation?: "write" | "delete"; expectedHash?: string | null; contentBase64?: string; metadata?: Record<string, string>; contentType?: string }));
-    const lockKey = String(body.key ?? ""); const holderId = String(body.holderId ?? "");
-    const path = String(body.path ?? ""); const token = Number(body.fencingToken);
-    if (!lockKey || !holderId || !path.startsWith("spaces/") || path.includes("\\") || path.split("/").includes("..") ||
-        !Number.isSafeInteger(token) || token < 1 || !["write", "delete"].includes(String(body.operation)) ||
-        !Object.prototype.hasOwnProperty.call(body, "expectedHash") || (body.expectedHash !== null && typeof body.expectedHash !== "string"))
+    let value: unknown;
+    try { value = await request.json(); } catch { return Response.json({ error_code: "bad_request" }, { status: 400 }); }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const body = value as { key?: unknown; holderId?: unknown; fencingToken?: unknown; path?: unknown; operation?: unknown; expectedHash?: unknown; contentBase64?: unknown; metadata?: unknown; contentType?: unknown };
+    const lockKey = body.key; const holderId = body.holderId;
+    const path = body.path; const token = body.fencingToken;
+    const hashValid = body.expectedHash === null || (typeof body.expectedHash === "string" && /^[a-f0-9]{64}$/.test(body.expectedHash));
+    let metadataBytes = 0;
+    const metadataValid = body.metadata === undefined || (!!body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+      && Object.entries(body.metadata as Record<string, unknown>).length <= 20
+      && Object.entries(body.metadata as Record<string, unknown>).every(([key, item]) => {
+        if (!/^[A-Za-z0-9._-]{1,128}$/.test(key) || typeof item !== "string" || item.length > 1024) return false;
+        metadataBytes += new TextEncoder().encode(key).byteLength + new TextEncoder().encode(item).byteLength;
+        return metadataBytes <= 1500;
+      }));
+    if (typeof lockKey !== "string" || !lockKey || lockKey.length > MAX_SLOT_KEY_LENGTH
+      || typeof holderId !== "string" || !holderId || holderId.length > MAX_HOLDER_ID_LENGTH
+      || typeof path !== "string" || !path.startsWith("spaces/") || new TextEncoder().encode(path).byteLength > 1024
+      || path.includes("\\") || path.split("/").some((part) => part === ".." || part === "")
+      || !lockKey.endsWith(`workspace-file:${path}`)
+      || !Number.isSafeInteger(token) || (token as number) < 1
+      || (body.operation !== "write" && body.operation !== "delete")
+      || !Object.prototype.hasOwnProperty.call(body, "expectedHash") || !hashValid || !metadataValid
+      || (body.contentType !== undefined && (typeof body.contentType !== "string" || body.contentType.length > 255 || /[\r\n\0]/.test(body.contentType))))
       return Response.json({ error_code: "bad_request", message: "invalid workspace CAS request" }, { status: 400 });
+    if (body.operation === "write" && (typeof body.contentBase64 !== "string" || body.contentBase64.length > 1024 * 1024
+      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(body.contentBase64)))
+      return Response.json({ error_code: "bad_request", message: "invalid workspace content" }, { status: 400 });
     if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "workspace_storage_unavailable" }, { status: 503 });
     const now = Date.now();
     const lease = this.ctx.storage.sql.exec("SELECT holder_id,expires_at,fencing_token FROM locks WHERE key=?", lockKey).toArray() as Array<{ holder_id: string; expires_at: number; fencing_token: number }>;
@@ -247,13 +268,13 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     const storedFence = Number(current?.customMetadata?.["fencingToken"] ?? 0);
     if (storedFence > token) return Response.json({ error_code: "stale_fencing_token" }, { status: 409 });
     try {
+      const metadata = { ...(body.metadata as Record<string, string> | undefined), fencingToken: String(token) };
       if (body.operation === "delete") {
-        const result = await deleteBytesCas(this.env.SCRIPTS_R2, path, body.expectedHash, { ...(body.metadata ?? {}), fencingToken: String(token) });
+        const result = await deleteBytesCas(this.env.SCRIPTS_R2, path, body.expectedHash as string | null, metadata);
         return Response.json({ ...result, fencingToken: token });
       }
-      if (typeof body.contentBase64 !== "string") return Response.json({ error_code: "bad_request", message: "contentBase64 is required" }, { status: 400 });
-      const bytes = Uint8Array.from(atob(body.contentBase64), (character) => character.charCodeAt(0));
-      const result = await putBytesCas(this.env.SCRIPTS_R2, path, bytes, body.expectedHash, { ...(body.metadata ?? {}), fencingToken: String(token) }, body.contentType ? { contentType: body.contentType } : undefined);
+      const bytes = Uint8Array.from(atob(body.contentBase64 as string), (character) => character.charCodeAt(0));
+      const result = await putBytesCas(this.env.SCRIPTS_R2, path, bytes, body.expectedHash as string | null, metadata, body.contentType ? { contentType: body.contentType as string } : undefined);
       return Response.json({ ...result, fencingToken: token });
     } catch {
       return Response.json({ error_code: "revision_conflict" }, { status: 409 });

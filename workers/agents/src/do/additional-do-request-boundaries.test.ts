@@ -67,4 +67,23 @@ describe("ConcurrencyDO and RiskGuardDO ingress limits", () => {
     expect(order.status).toBe(400);
     expect(storage.sql.exec("SELECT id FROM guarded_orders").toArray()).toHaveLength(0);
   });
+
+  it("rejects malformed workspace publication payloads before storage access", async () => {
+    const storage = Object.assign(createDOStorage(), {
+      getAlarm: async () => null,
+      setAlarm: async () => {},
+      deleteAlarm: async () => {},
+    });
+    const object = new ConcurrencyDO({ storage } as never, {});
+    const send = (body: string) => object.fetch(new Request("http://do/workspace/publish", {
+      method: "POST", headers: { "content-type": "application/json" }, body,
+    }));
+    expect((await send("null")).status).toBe(400);
+    const valid = { key: "lock:s:p:workspace-file:spaces/s/projects/p/workspace/a.txt", holderId: "run", fencingToken: 1, path: "spaces/s/projects/p/workspace/a.txt", operation: "write", expectedHash: null, contentBase64: "" };
+    expect((await send(JSON.stringify({ ...valid, path: "spaces/s/projects/p/workspace/../outside" }))).status).toBe(400);
+    expect((await send(JSON.stringify({ ...valid, path: "spaces/s/projects/p/workspace/b.txt" }))).status).toBe(400);
+    expect((await send(JSON.stringify({ ...valid, fencingToken: "1" }))).status).toBe(400);
+    expect((await send(JSON.stringify({ ...valid, contentBase64: "not base64" }))).status).toBe(400);
+    expect((await send(JSON.stringify(valid))).status).toBe(503);
+  });
 });

@@ -543,3 +543,9 @@ Continued the DO audit: appointment-hold acquisition/confirmation/release now re
 Validation: ConcurrencyDO suite passed 12/12; Agents TypeScript passed. The 5 req/s cap and 15-second appointment lease behavior remain covered by existing tests. Node-lease and workspace-publication boundaries still require scoped review.
 
 The same pass found `/status` included expired concurrency slots until the alarm's next sweep, despite admission treating them as expired. Status now counts only unexpired rows. Regression confirmed a slot reports `active: 0` after TTL but before alarm cleanup; ConcurrencyDO suite passed 13/13.
+
+## Fenced workspace publication validation and Agents suite (2026-10-20)
+
+The shared workspace publisher accepted coercible IDs/tokens, malformed CAS hashes/metadata/content, and request JSON `null` could become a 500. It now validates bounded key/holder/path values, binds the lock key suffix to the exact workspace path, requires a numeric fencing token and SHA-256 CAS value, bounds metadata/content, rejects traversal and malformed Base64, and returns 400 before storage access for invalid requests. Existing project/space path construction remains in the workspace helper and container recovery callers.
+
+Validation: malformed publication/ingress plus ConcurrencyDO tests passed (18 tests); Agents and provisioner TypeScript checks passed. After lock contract changes, the full Agents suite passed 141 files / 605 tests. No live DO or R2 race/load test was run. Remaining unchecked repository files and the rest of ConcurrencyDO are still open.
