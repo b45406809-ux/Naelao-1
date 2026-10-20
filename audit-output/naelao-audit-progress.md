@@ -1156,3 +1156,10 @@ Added explicit 1,000-character query and 200-candidate ceilings, capped text sca
 Validation: Knowledge Worker suite passed 8 files / 35 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
 
 Checked `search.ts` and the new `search.test.ts`. Repository search found `sparseRank` called only from the grounded retrieval route; `hybridRank` currently has no production caller. The authorization adapter in `auth.ts` also has no discovered in-repository caller and remains pending a separate contract and dead-code review.
+
+
+## Knowledge Worker authorization adapter dead-code check (2026-10-20)
+
+Triple-checked `workers/knowledge/src/auth.ts` before removal: full tracked-source search found no import or callsite; `workers/knowledge/wrangler.toml` and `package.json` both identify `src/index.ts` as the only runtime entry; no test imported the adapter. Its only behavior was a pass-through to the shared, still-exported security implementation, which has its own tests. Removed the unreferenced Worker wrapper while retaining the shared security API.
+
+Validation after removal: Knowledge Worker suite passed 8 files / 35 tests; Knowledge Worker TypeScript check and `git diff --check` passed; repository search confirms no remaining Worker adapter references.
