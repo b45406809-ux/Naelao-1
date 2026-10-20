@@ -38,7 +38,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { readBytesWithHash } from "../script-engine/r2-cas.js";
-import { verifyInternalToken } from "@naelao/http";
+import { readBoundedRequestBytes, readBoundedResponseText, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
 import { infraTimeToCredits } from "@naelao/billing-core";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import { validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
@@ -172,7 +172,16 @@ export class ToolSandboxDO extends DurableObject {
   private executionQueue: Promise<void> = Promise.resolve();
   private activeExecution: { id: string; controller: AbortController } | undefined;
 
-  override fetch(request: Request): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
+    if (request.body) {
+      try {
+        request = new Request(request, { body: await readBoundedRequestBytes(request, 4 * 1024 * 1024) });
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError)
+          return Response.json({ ok: false, error: "request_body_too_large" }, { status: 413 });
+        return Response.json({ ok: false, error: "bad_request" }, { status: 400 });
+      }
+    }
     const path = new URL(request.url).pathname;
     if (path === "/output") return this.output(request);
     if (path === "/cancel") return this.cancel(request);
@@ -348,9 +357,8 @@ export class ToolSandboxDO extends DurableObject {
       ]);
       if (controller.signal.aborted) throw new Error("container_cancelled_or_deadline");
       retainSidecarWarm = Boolean(scope.installationId && response.ok);
-      const responseBody = await response.clone().text();
       if (new URL(request.url).pathname !== "/computer/screenshot") {
-        if (new TextEncoder().encode(responseBody).byteLength > 2 * 1024 * 1024) throw new Error("container_output_limit");
+        const responseBody = await readBoundedResponseText(response.clone(), 2 * 1024 * 1024);
         await this.ctx.storage.put(key, { scope, payloadHash, status: "committed", response: { status: response.status, body: responseBody } } satisfies ExecutionRecord);
       } else await this.ctx.storage.put(key, { scope, payloadHash, status: "indeterminate" } satisfies ExecutionRecord);
       return response;

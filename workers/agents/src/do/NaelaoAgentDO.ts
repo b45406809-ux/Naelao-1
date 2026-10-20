@@ -29,7 +29,7 @@ import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
 import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
-import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
+import { mintInternalToken, broadcastSpaceEvent, readBoundedRequestBytes, readBoundedResponseJson, readBoundedResponseText, readResponsePrefixText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { createNamedTunnelGateway } from "../tunnels/host.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
@@ -755,13 +755,10 @@ async function dispatchTool(
         });
         clearTimeout(timeout);
 
-        const text = await resp.text();
-        // Truncate to 100KB
-        const truncated =
-          text.length > MAX_TOOL_OUTPUT_BYTES
-            ? text.slice(0, MAX_TOOL_OUTPUT_BYTES) +
-              `\n[TRUNCATED: output exceeded ${MAX_TOOL_OUTPUT_BYTES} bytes]`
-            : text;
+        const page = await readResponsePrefixText(resp, MAX_TOOL_OUTPUT_BYTES);
+        const truncated = page.truncated
+          ? page.text + `\n[TRUNCATED: output exceeded ${MAX_TOOL_OUTPUT_BYTES} bytes]`
+          : page.text;
 
         // G-AA25 / G-AH45: Scan web content for prompt injection before returning to LLM.
         // Check in 4KB windows across the full response to catch injections in long pages.
@@ -1780,6 +1777,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.body && request.headers.get("Upgrade") !== "websocket") {
+      try {
+        const bytes = await readBoundedRequestBytes(request, 4 * 1024 * 1024);
+        request = new Request(request, { body: bytes });
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError)
+          return Response.json({ error_code: "request_body_too_large", message: "Durable Object request exceeds 4 MiB" }, { status: 413 });
+        return Response.json({ error_code: "bad_request" }, { status: 400 });
+      }
+    }
     this.ensureInit();
 
     const url = new URL(request.url);
@@ -2133,9 +2140,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async forwardVoiceCall(request: Request, action: "start" | "finish"): Promise<Response> {
     if (!this.env.SPACES_WORKER) return Response.json({ error_code: "spaces_unavailable" }, { status: 503 });
-    const body = await request.text();
+    const body = await readBoundedRequestBytes(request, 64 * 1024);
     return this.env.SPACES_WORKER.fetch(new Request(`http://spaces-do/internal/voice/calls/${action}`, {
-      method: "POST", headers: { "content-type": "application/json" }, body,
+      method: "POST", headers: { "content-type": "application/json" }, body: body.buffer as ArrayBuffer,
     }));
   }
 
@@ -2682,22 +2689,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         list: async () => {
           await warmWorkspace();
           const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/list", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: "{}" }));
-          return resp.json();
+          return readBoundedResponseJson(resp, 2 * 1024 * 1024);
         },
         read: async (paths) => {
           await warmWorkspace();
           const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/read", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: JSON.stringify({ paths }) }));
-          return resp.json();
+          return readBoundedResponseJson(resp, 2 * 1024 * 1024);
         },
         write: async (files, expectedHashes) => {
           await warmWorkspace();
           const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/write", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: JSON.stringify({ files, expected_hashes: expectedHashes }) }));
-          return resp.json();
+          return readBoundedResponseJson(resp, 2 * 1024 * 1024);
         },
         remove: async (paths) => {
           await warmWorkspace();
           const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/delete", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: JSON.stringify({ paths }) }));
-          return resp.json();
+          return readBoundedResponseJson(resp, 2 * 1024 * 1024);
         },
       };
     }
@@ -2875,8 +2882,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               metadata: { agent_role: agentId, user_goal: commitContext.goal, task_id: commitContext.taskId, rationale: `${operation} ${change.path}`, thread_id: commitContext.threadId, tool_turn_id: `${commitContext.taskId}:${change.path}:${Date.now()}:${attempt}` },
             }) }));
             if (commitResponse.status === 409) continue;
-            if (!commitResponse.ok) throw new Error(`Repository projection commit failed (${commitResponse.status}): ${await commitResponse.text()}`);
-            const committed = await commitResponse.json<{ commit_id: string }>();
+            if (!commitResponse.ok) throw new Error(`Repository projection commit failed (${commitResponse.status}): ${(await readBoundedResponseText(commitResponse, 8 * 1024).catch(() => "")).slice(0, 300)}`);
+            const committed = await readBoundedResponseJson<{ commit_id: string }>(commitResponse, 2 * 1024 * 1024);
             commitOid = committed.commit_id;
             break;
           }
@@ -2894,8 +2901,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               } }),
             }));
             if (response.status === 409) continue;
-            if (!response.ok) throw new Error(`Workspace projection reconciliation failed (${response.status}): ${await response.text()}`);
-            const reconciled = await response.json<{ commit_id?: string | null }>();
+            if (!response.ok) throw new Error(`Workspace projection reconciliation failed (${response.status}): ${(await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 300)}`);
+            const reconciled = await readBoundedResponseJson<{ commit_id?: string | null }>(response, 2 * 1024 * 1024);
             if (reconciled.commit_id) commitOid = reconciled.commit_id;
             projectionReconciled = true;
             break;
@@ -2947,7 +2954,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             } }),
           }));
           if (response.status === 409) continue;
-          if (!response.ok) throw new Error(`Workspace projection recovery failed (${response.status}): ${await response.text()}`);
+          if (!response.ok) throw new Error(`Workspace projection recovery failed (${response.status}): ${(await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 300)}`);
           const result = await response.json<{ commit_id?: string | null; changed?: number }>();
           if (result.changed && result.commit_id) {
             await spacesWorker.fetch(new Request("http://spaces-worker/provenance", {
@@ -3021,7 +3028,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               ? "Workspace lease expired before publication; re-read and retry"
               : "Workspace changed concurrently; re-read before retrying");
           }
-          return response.json();
+          return readBoundedResponseJson(response, 2 * 1024 * 1024);
         },
         release: (params) => this.releaseFileLock(lockNamespace + params.key, params.holderId, params.fencingToken),
         status: (key) => this.concurrencyStatus(lockNamespace + key),
@@ -4328,7 +4335,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   private async finishScriptFailureResponse(runId: string, response: Response): Promise<Response> {
-    const body = await response.clone().json().catch(() => ({} as Record<string, unknown>)) as Record<string, unknown>;
+    const body = await readBoundedResponseJson<Record<string, unknown>>(response.clone(), 64 * 1024).catch(() => ({} as Record<string, unknown>));
     const error = typeof body.error === "string"
       ? body.error
       : typeof body.message === "string" ? body.message : `HTTP ${response.status}`;
@@ -4755,7 +4762,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         body: JSON.stringify({ assistantId: agentId, ttlMinutes: 15 }),
       }));
       if (!leaseResponse.ok) {
-        const failure = new Response(await leaseResponse.text(), { status: leaseResponse.status, headers: { "content-type": "application/json" } });
+        const failure = new Response(await readBoundedResponseText(leaseResponse, 8 * 1024).catch(() => ""), { status: leaseResponse.status, headers: { "content-type": "application/json" } });
         return this.finishScriptFailureResponse(runId, failure);
       }
       const lease = await leaseResponse.json<{ success: boolean; activeLead?: string; leaseExpiresAt?: string }>();
@@ -6532,7 +6539,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     this.ctx.storage.sql.exec(
       `UPDATE interrupted_runs SET status = 'continued' WHERE run_id = ?`, runId
     );
-    const payload = await res.json().catch(() => ({}));
+    const payload = await readBoundedResponseJson(res, 2 * 1024 * 1024).catch(() => ({}));
     return Response.json({ continued: true, run_id: continuedRunId, result: payload });
   }
 
@@ -8194,7 +8201,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ? `spaces/${input.spaceId}/extensions/${packageId}/${packageVersion}/${handlerFile}`
       : null;
     const artifact = artifactKey ? await this.env.SCRIPTS_R2.get(artifactKey) : null;
-    const script = artifact ? { code: await artifact.text(), metadata: { runtime: "isolate" } }
+    if (artifact && artifact.size > 262_144) return null;
+    const artifactBytes = artifact ? await artifact.arrayBuffer() : null;
+    if (artifact && (!artifactBytes || artifactBytes.byteLength !== artifact.size || artifactBytes.byteLength > 262_144)) return null;
+    const script = artifact && artifactBytes ? { code: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(artifactBytes), metadata: { runtime: "isolate" } }
       : await new SkillLibrary(this.env.SCRIPTS_R2, input.spaceId).read(path[1]!);
     if (!script?.code || script.metadata.runtime === "workflow" || new TextEncoder().encode(script.code).byteLength > 262_144) return null;
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script.code));
@@ -9472,7 +9482,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         url.searchParams.set("scope_thread_id", sessionId);
         const response = await this.env.SPACES_WORKER.fetch(new Request(url, { headers }));
         if (!response.ok) return undefined;
-        const body = (await response.json()) as { data?: ConversationMessage[]; messages?: ConversationMessage[] };
+        const body = await readBoundedResponseJson<{ data?: ConversationMessage[]; messages?: ConversationMessage[] }>(response, 2 * 1024 * 1024);
         const page = body.data ?? body.messages ?? [];
         return Array.isArray(page) ? page : undefined;
       }

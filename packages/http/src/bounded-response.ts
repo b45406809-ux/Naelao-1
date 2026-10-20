@@ -59,6 +59,55 @@ export async function readBoundedResponseJson<T>(
   return JSON.parse(await readBoundedResponseText(response, maximumBytes)) as T;
 }
 
+/** Read only a response prefix, canceling an oversized body without buffering its tail. */
+export async function readResponsePrefixText(
+  response: Response,
+  maximumBytes: number
+): Promise<{ text: string; truncated: boolean }> {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0)
+    throw new RangeError("maximumBytes must be a non-negative safe integer");
+  if (!response.body) return { text: "", truncated: false };
+  const lengthHeader = response.headers.get("content-length");
+  const declaredLength =
+    lengthHeader !== null && /^\d+$/.test(lengthHeader)
+      ? Number(lengthHeader)
+      : null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = declaredLength !== null && declaredLength > maximumBytes;
+  try {
+    while (total < maximumBytes) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const remaining = maximumBytes - total;
+      if (value.byteLength > remaining) {
+        chunks.push(value.subarray(0, remaining));
+        total += remaining;
+        truncated = true;
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+      chunks.push(value);
+      total += value.byteLength;
+    }
+    if (!truncated && total === maximumBytes) {
+      if (declaredLength !== null) truncated = declaredLength > total;
+      else truncated = true;
+      if (truncated) await reader.cancel().catch(() => undefined);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { text: new TextDecoder().decode(bytes), truncated };
+}
+
 export class RequestBodyTooLargeError extends Error {
   constructor() {
     super("request_body_too_large");
@@ -69,7 +118,7 @@ export class RequestBodyTooLargeError extends Error {
 /** Consume a request body once under a hard cap; do not clone/tee the stream. */
 export async function readBoundedRequestBytes(
   request: Request,
-  maximumBytes: number,
+  maximumBytes: number
 ): Promise<Uint8Array> {
   const lengthHeader = request.headers.get("content-length");
   const declaredLength =
@@ -114,9 +163,9 @@ export async function readBoundedRequestBytes(
 
 export async function readBoundedRequestText(
   request: Request,
-  maximumBytes: number,
+  maximumBytes: number
 ): Promise<string> {
   return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
-    await readBoundedRequestBytes(request, maximumBytes),
+    await readBoundedRequestBytes(request, maximumBytes)
   );
 }

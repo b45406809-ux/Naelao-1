@@ -1,6 +1,6 @@
 /** One named, authenticated machine per DO; no most-recent-user-socket routing. */
 import { DurableObject } from "cloudflare:workers";
-import { mintInternalToken, verifyInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestText, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
 import { assertMachineIdentity, machineSocketKey, tunnelHash, type NamedMachine, type MachineProof } from "@naelao/agent-sdk";
 import { TunnelRequestJournal, type TunnelRequestRecord } from "../tunnels/request-journal.js";
 interface LocalTunnelEnv { PLATFORM_SECRET: string; SPACES_WORKER?: Fetcher }
@@ -119,8 +119,7 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
         const generation = await this.ctx.storage.get<number>("socket_generation") ?? 0;
         return Response.json({ connected: machine.status === "active" && machine.sequence === generation && Boolean(this.target(identity, generation)), machineId: machine.machineId, name: machine.name, hardware: machine.hardware });
       }
-      const text = await request.text();
-      if (new TextEncoder().encode(text).byteLength > 65536) throw new Error("tunnel_request_limit");
+      const text = await readBoundedRequestText(request, 65536);
       const body = JSON.parse(text) as { op?: string; params?: Record<string, unknown>; invocation: Invocation };
       this.invocation(body.invocation);
       const existing = await this.journal.get(body.invocation.requestId);
@@ -163,7 +162,9 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
         return this.receipt((await this.journal.get(prepared.record.id))!);
       }
       return Response.json({ error: "not_found" }, { status: 404 });
-    } catch (error) { return Response.json({ ok: false, error: error instanceof Error ? error.message : "tunnel_request_failed" }, { status: 403 }); }
+    } catch (error) {
+      return Response.json({ ok: false, error: error instanceof RequestBodyTooLargeError ? "tunnel_request_limit" : error instanceof Error ? error.message : "tunnel_request_failed" }, { status: error instanceof RequestBodyTooLargeError ? 413 : 403 });
+    }
   }
   private receipt(record: TunnelRequestRecord): Response {
     const complete = ["succeeded", "failed", "cancelled"].includes(record.status);

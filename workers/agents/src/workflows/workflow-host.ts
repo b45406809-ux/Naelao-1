@@ -202,7 +202,9 @@ export async function startDurableWorkflow(env: DurableWorkflowHostEnv, options:
       if (!sourcePath) throw new Error("workflow_script_not_found");
       const source = await env.SCRIPTS_R2.get(`spaces/${options.spaceId}/extensions/${bundleId}/${version}/${sourcePath}`);
       if (!source || source.size > 524_288) throw new Error("workflow_script_not_found");
-      script = { code: await source.text(), metadata: { runtime: "workflow", code_capabilities: declaration.toolNames } };
+      const sourceBytes = await source.arrayBuffer();
+      if (sourceBytes.byteLength !== source.size || sourceBytes.byteLength > 524_288) throw new Error("workflow_script_size_mismatch");
+      script = { code: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(sourceBytes), metadata: { runtime: "workflow", code_capabilities: declaration.toolNames } };
     } else {
       script = await new SkillLibrary(env.SCRIPTS_R2!, options.spaceId).read(options.name);
     }

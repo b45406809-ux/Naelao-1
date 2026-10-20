@@ -3,6 +3,7 @@ import {
   readBoundedRequestBytes,
   readBoundedResponseJson,
   readBoundedResponseText,
+  readResponsePrefixText,
 } from "./bounded-response.js";
 
 describe("bounded response readers", () => {
@@ -32,6 +33,25 @@ describe("bounded response readers", () => {
     ).rejects.toThrow();
   });
 
+  it("returns a bounded prefix and cancels the oversized response tail", async () => {
+    let cancelled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(new TextEncoder().encode("abcdef"));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      })
+    );
+    await expect(readResponsePrefixText(response, 4)).resolves.toEqual({
+      text: "abcd",
+      truncated: true,
+    });
+    expect(cancelled).toBe(true);
+  });
+
   it("bounds request streams without cloning or trusting Content-Length", async () => {
     const request = new Request("https://example.test/upload", {
       method: "POST",
@@ -43,7 +63,7 @@ describe("bounded response readers", () => {
       duplex: "half",
     } as RequestInit);
     await expect(readBoundedRequestBytes(request, 4)).rejects.toThrow(
-      "request_body_too_large",
+      "request_body_too_large"
     );
   });
 });
