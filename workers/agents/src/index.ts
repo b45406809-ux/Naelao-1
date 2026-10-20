@@ -59,7 +59,7 @@ import {
 } from "./connectors/oauth.js";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
 import { airGappedOnlyFromConfig, validateModelForSpacePolicy } from "./model-policy.js";
-import { authorizeEgressUrl, readSpaceEgressPolicy } from "@naelao/security";
+import { authorizeEgressUrl, readSpaceEgressPolicy, checkRequestBodyByteLimit } from "@naelao/security";
 import { OwnerVoiceAgent } from "./voice/owner-voice-agent.js";
 import { mintOwnerVoiceTicket, verifyOwnerVoiceTicket } from "./voice/voice-ticket.js";
 export { validateModelForSpacePolicy } from "./model-policy.js";
@@ -8312,6 +8312,8 @@ app.get("/spaces/:spaceId/assistant/capabilities", async (c) => {
 // name in advance.
 const MAX_UPLOAD_FILES = 6;
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20MB/file — generous for images/docs, bounded against R2 abuse.
+const MAX_UPLOAD_TOTAL_BYTES = 60 * 1024 * 1024;
+const MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_TOTAL_BYTES + 1024 * 1024; // Bounded multipart overhead.
 
 function uploadsPrefix(spaceId: string, sessionId: string, projectId?: string): string {
   const base = projectId ? `spaces/${spaceId}/projects/${projectId}/workspace/` : `spaces/${spaceId}/workspace/`;
@@ -8333,6 +8335,10 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
 
+  const bodyLimit = await checkRequestBodyByteLimit(c.req.raw, MAX_UPLOAD_REQUEST_BYTES);
+  if (bodyLimit === "too_large") return c.json({ error_code: "upload_request_too_large" }, 413);
+  if (bodyLimit === "unavailable") return c.json({ error_code: "upload_inspection_unavailable" }, 503);
+
   let form: Record<string, string | File | (string | File)[]>;
   try {
     form = await c.req.parseBody({ all: true });
@@ -8352,6 +8358,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
       error_code: "file_too_large",
       message: `"${oversized.name}" is over the ${MAX_UPLOAD_BYTES / 1024 / 1024}MB limit`,
     }, 400);
+  }
+  if (incoming.reduce((total, file) => total + file.size, 0) > MAX_UPLOAD_TOTAL_BYTES) {
+    return c.json({ error_code: "upload_total_too_large", message: "Attached files must total no more than 60 MiB" }, 413);
   }
 
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);

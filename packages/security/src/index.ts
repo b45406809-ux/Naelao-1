@@ -24,6 +24,10 @@ export {
 export { checkSsrf, resolveHostnameIps } from "./ssrf-guard.js";
 export type { SsrfCheckResult } from "./ssrf-guard.js";
 export { isPrivateNetworkAddress } from "./ssrf.js";
+export {
+  checkRequestBodyByteLimit,
+  type RequestBodyLimitResult,
+} from "./request-body.js";
 
 export * from "./write-guard.js";
 export * from "./delegation.js";
