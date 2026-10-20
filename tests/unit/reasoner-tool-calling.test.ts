@@ -1,13 +1,9 @@
-// Native tool calling in the reasoner — replaces "ask for JSON in prose, then regex it out".
-//
-// Published production figures put prompted-JSON parsing at roughly 70-85% action success vs
-// 95-99% for native tool calling, and the gap is widest on the small/cheap models a free-tier
-// business runs on. The reasoner now declares its five actions as real provider tools and reads a
-// real tool call back, keeping the text parse ONLY as a fallback so this is strictly additive.
+// Provider response parsing plus the current planner tool contract. Complex operations run through
+// the AVOS Bash surface; direct operation calls remain a bounded compatibility parser.
 
 import { describe, it, expect } from "vitest";
 import { buildUniversalBody, normalizeUniversalResponse } from "../../workers/agents/src/shared/ai-client.js";
-import { GatewayReasoner } from "../../workers/agents/src/script-engine/reasoner.js";
+import { GatewayReasoner, decisionTools } from "../../workers/agents/src/script-engine/reasoner.js";
 import { contextWindowForModel, computeTokenCostMicro } from "../../packages/billing-core/src/index.js";
 
 const GATEWAY = { accountId: "acct", gatewayId: "gw", aigToken: "aig-token" };
@@ -20,7 +16,7 @@ function bodyFor(model: string) {
       gatewayOpts: GATEWAY,
       ctx: CTX,
       query: { model, max_tokens: 1500, system: "sys", messages: [{ role: "user", content: "hi" }] },
-      tools: [{ name: "run", description: "Run a script", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } }],
+      tools: decisionTools(model),
     })
   );
 }
@@ -30,8 +26,8 @@ function bodyFor(model: string) {
 describe("buildUniversalBody — tool declaration", () => {
   it("declares tools in the OpenAI function shape and forces a call", () => {
     const b = bodyFor("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
-    expect(b.tools[0]).toMatchObject({ type: "function", function: { name: "run" } });
-    expect(b.tools[0].function.parameters.required).toEqual(["name"]);
+    expect(b.tools[0]).toMatchObject({ type: "function", function: { name: "Bash" } });
+    expect(b.tools[0].function.parameters.required).toContain("command");
     // The reasoner's action space is exhaustive (answer/give_up cover every terminal case), so a
     // prose reply is never the right output — forcing a tool call is the whole point.
     expect(b.tool_choice).toBe("required");
@@ -203,7 +199,7 @@ async function decideWith(payload: unknown) {
   try {
     const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
     return await reasoner.decide({
-      goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [],
+      goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: ["Bash"],
     } as never);
   } finally {
     globalThis.fetch = original;
@@ -211,27 +207,27 @@ async function decideWith(payload: unknown) {
 }
 
 describe("GatewayReasoner.decide — tool call preferred, text kept as fallback", () => {
-  it("turns a real tool call into a decision", async () => {
+  it("turns the declared Bash tool into a bounded CLI action", async () => {
     const d = await decideWith({
-      result: { response: null, tool_calls: [{ name: "run", arguments: { name: "web-search.search", params: { q: "x" } } }] },
+      result: { response: null, tool_calls: [{ name: "Bash", arguments: { command: "naelao conversation search price", doing: "Checking the transcript" } }] },
     });
-    expect(d).toMatchObject({ action: "run", name: "web-search.search", params: { q: "x" } });
+    expect(d).toMatchObject({ action: "run", name: "Bash", params: { commands: "naelao conversation search price" } });
   });
 
-  it("handles each declared action", async () => {
-    expect(await decideWith({ content: [{ type: "tool_use", name: "answer", input: { text: "42" } }] }))
-      .toMatchObject({ action: "answer", text: "42" });
-    expect(await decideWith({ content: [{ type: "tool_use", name: "give_up", input: { reason: "blocked" } }] }))
-      .toMatchObject({ action: "give_up", reason: "blocked" });
-    expect(await decideWith({ content: [{ type: "tool_use", name: "distill", input: { name: "s", code: "export default 1" } }] }))
-      .toMatchObject({ action: "distill", name: "s", code: "export default 1" });
-    expect(await decideWith({ content: [{ type: "tool_use", name: "patch", input: { name: "s", code: "c", reason: "r" } }] }))
-      .toMatchObject({ action: "patch", name: "s", code: "c", reason: "r" });
+  it("handles each current declared tool", async () => {
+    expect(await decideWith({ content: [{ type: "tool_use", name: "AskUser", input: { question: "Which project?" } }] }))
+      .toMatchObject({ action: "ask", question: "Which project?" });
+    expect(await decideWith({ content: [{ type: "tool_use", name: "Bash", input: { command: "naelao project list" } }] }))
+      .toMatchObject({ action: "run", name: "Bash", params: { commands: "naelao project list" } });
+    expect(await decideWith({ content: [{ type: "tool_use", name: "Read", input: { path: "notes.md" } }] }))
+      .toMatchObject({ action: "run", name: "Read", params: { path: "notes.md" } });
+    expect(await decideWith({ content: [{ type: "tool_use", name: "Edit", input: { path: "notes.md", old_text: "a", new_text: "b" } }] }))
+      .toMatchObject({ action: "run", name: "Edit", params: { path: "notes.md", old_text: "a", new_text: "b" } });
   });
 
   it("still parses prose JSON when a model ignores the tool declaration (the fallback path)", async () => {
     const d = await decideWith({
-      content: [{ type: "text", text: '```json\n{"action":"answer","text":"from prose"}\n```' }],
+      choices: [{ message: { content: '```json\n{"action":"answer","text":"from prose"}\n```' } }],
     });
     expect(d).toMatchObject({ action: "answer", text: "from prose" });
   });
@@ -242,19 +238,14 @@ describe("GatewayReasoner.decide — tool call preferred, text kept as fallback"
   });
 
   it("rejects a tool call missing the field that action needs, rather than passing a half-formed decision on", async () => {
-    // 'run' with no script name can't do anything — better to fail with a real reason here than
-    // to surface obscurely deeper in the loop.
-    const d = await decideWith({ content: [{ type: "tool_use", name: "run", input: {} }] });
+    const d = await decideWith({ content: [{ type: "tool_use", name: "Bash", input: {} }] });
     expect(d.action).toBe("give_up");
     expect((d as { reason: string }).reason).toMatch(/unusable tool call/);
   });
 
   it("falls back to usable prose even when the tool call itself is unusable", async () => {
     const d = await decideWith({
-      content: [
-        { type: "tool_use", name: "run", input: {} },
-        { type: "text", text: '{"action":"answer","text":"recovered"}' },
-      ],
+      choices: [{ message: { content: '{"action":"answer","text":"recovered"}', tool_calls: [{ function: { name: "Bash", arguments: "{}" } }] } }],
     });
     expect(d).toMatchObject({ action: "answer", text: "recovered" });
   });
@@ -267,13 +258,13 @@ describe("GatewayReasoner.decide — tool call preferred, text kept as fallback"
   // a parse failure, and must become the actual answer rather than leak an internal error string.
   it("plain prose with no tool call and no JSON braces becomes the answer, not a give_up", async () => {
     const d = await decideWith({
-      content: [{ type: "text", text: "Polsia AI is an autonomous business operator that runs online businesses for you." }],
+      choices: [{ message: { content: "Polsia AI is an autonomous business operator that runs online businesses for you." } }],
     });
     expect(d).toMatchObject({ action: "answer", text: "Polsia AI is an autonomous business operator that runs online businesses for you." });
   });
 
   it("still gives up honestly when the model returns truly nothing", async () => {
-    const d = await decideWith({ content: [{ type: "text", text: "   " }] });
+    const d = await decideWith({ choices: [{ message: { content: "   " } }] });
     expect(d.action).toBe("give_up");
     expect((d as { reason: string }).reason).toMatch(/unparseable reasoner output/);
   });
@@ -431,14 +422,14 @@ describe("GatewayReasoner — lastNarration capture (mid-run reply alongside a t
     globalThis.fetch = (async () => new Response(JSON.stringify({
       content: [
         { type: "text", text: "I'll check the order list first." },
-        { type: "tool_use", name: "run", input: { name: "commerce.list_orders" } },
+        { type: "tool_use", name: "Bash", input: { command: "naelao commerce list-orders", doing: "Checking the order list" } },
       ],
     }), { status: 200 })) as typeof fetch;
     try {
       expect(reasoner.lastNarration).toBeUndefined();
       const d = await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
-      expect(d).toMatchObject({ action: "run", name: "commerce.list_orders" });
-      expect(reasoner.lastNarration).toBe("I'll check the order list first.");
+      expect(d).toMatchObject({ action: "run", name: "Bash", params: { commands: "naelao commerce list-orders" } });
+      expect(reasoner.lastNarration).toBe("Checking the order list");
     } finally {
       globalThis.fetch = original;
     }
@@ -467,8 +458,7 @@ describe("GatewayReasoner — lastNarration capture (mid-run reply alongside a t
     const original = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({
       content: [
-        { type: "text", text: "Here's my final answer:" },
-        { type: "tool_use", name: "answer", input: { text: "42" } },
+        { type: "text", text: "42" },
       ],
     }), { status: 200 })) as typeof fetch;
     try {
@@ -485,8 +475,7 @@ describe("GatewayReasoner — lastNarration capture (mid-run reply alongside a t
     const original = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({
       content: [
-        { type: "text", text: "I can't do this." },
-        { type: "tool_use", name: "give_up", input: { reason: "blocked" } },
+        { type: "text", text: "I cannot complete this because it is blocked." },
       ],
     }), { status: 200 })) as typeof fetch;
     try {
@@ -504,15 +493,15 @@ describe("GatewayReasoner — lastNarration capture (mid-run reply alongside a t
     globalThis.fetch = (async () => {
       call++;
       const body = call === 1
-        ? { content: [{ type: "text", text: "first call narration" }, { type: "tool_use", name: "run", input: { name: "x" } }] }
-        : { content: [{ type: "tool_use", name: "run", input: { name: "y" } }] };
+        ? { content: [{ type: "text", text: "first call narration" }, { type: "tool_use", name: "Bash", input: { command: "echo x", doing: "first call narration" } }] }
+        : { content: [{ type: "tool_use", name: "Bash", input: { command: "echo y", doing: "Checking again" } }] };
       return new Response(JSON.stringify(body), { status: 200 });
     }) as typeof fetch;
     try {
       await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
       expect(reasoner.lastNarration).toBe("first call narration");
       await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
-      expect(reasoner.lastNarration).toBeUndefined();
+      expect(reasoner.lastNarration).toBe("Checking again");
     } finally {
       globalThis.fetch = original;
     }
@@ -529,7 +518,7 @@ describe("GatewayReasoner — `doing` is a status, `say` is a message, and they 
     const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
     const original = globalThis.fetch;
     globalThis.fetch = (async () => new Response(JSON.stringify({
-      content: [{ type: "tool_use", name: "run", input: { name: "commerce.list_orders", ...input } }],
+      content: [{ type: "tool_use", name: "Bash", input: { command: "naelao commerce list-orders", ...input } }],
     }), { status: 200 })) as typeof fetch;
     try {
       await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
@@ -557,7 +546,7 @@ describe("GatewayReasoner — `doing` is a status, `say` is a message, and they 
     globalThis.fetch = (async () => new Response(JSON.stringify({
       content: [
         { type: "text", text: "some incidental prose" },
-        { type: "tool_use", name: "run", input: { name: "x", doing: "Reading your orders" } },
+        { type: "tool_use", name: "Bash", input: { command: "echo x", doing: "Reading your orders" } },
       ],
     }), { status: 200 })) as typeof fetch;
     try {
@@ -577,9 +566,9 @@ describe("GatewayReasoner — `doing` is a status, `say` is a message, and they 
     globalThis.fetch = (async () => {
       call++;
       const input = call === 1
-        ? { name: "x", doing: "Checking", say: "Here's what I'm starting with." }
-        : { name: "y", doing: "Creating it" };
-      return new Response(JSON.stringify({ content: [{ type: "tool_use", name: "run", input }] }), { status: 200 });
+        ? { command: "echo x", doing: "Checking", say: "Here's what I'm starting with." }
+        : { command: "echo y", doing: "Creating it" };
+      return new Response(JSON.stringify({ content: [{ type: "tool_use", name: "Bash", input }] }), { status: 200 });
     }) as typeof fetch;
     try {
       await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
@@ -741,146 +730,22 @@ describe("stripNamespacePrefix — a colon-namespaced op guess resolves to the r
     expect(d).toEqual({ action: "run", name: "thread.create", params: { project_id: "p1" } });
   });
 
-  it("coerceDecision resolves a colon-namespaced name inside a real run action call", async () => {
-    const { coerceDecision } = await import("../../workers/agents/src/script-engine/reasoner.js");
-    const d = coerceDecision({
-      action: "run",
-      name: "project-coordination:thread.create",
-      params: { project_id: "p1" },
-    });
-    expect(d).toEqual({ action: "run", name: "thread.create", params: { project_id: "p1" } });
-  });
 });
 
-/**
- * The `params` argument reaches the model as a JSON STRING, not a property-less object.
- *
- * This is the fix for the failure that made the assistant look incapable of basic multi-step
- * work. `{type:"object"}` with no `properties` gives a schema-constrained decoder no permitted
- * keys, so the only value it can emit is `{}` — which is exactly what two full live traces show,
- * on every single tool call, without one exception, including calls where the model demonstrably
- * held the value it needed (its own closing answer quoted a project id it had looked up a step
- * earlier and could never pass in). It then repeated the same argument-less call five more times,
- * because the one action the grammar let it express was the wrong one.
- *
- * The wire-shape assertion below is the real regression guard: reverting PARAMS_PARAM to an
- * object schema fails it immediately, at the point the schema is actually sent.
- */
-describe("run.params is expressible by a constrained decoder", () => {
-  const GATEWAY = { accountId: "acct", gatewayId: "gw" };
-  const CTX = { spaceId: "s", agentId: "a" };
-
-  async function capturedTools(model?: string): Promise<Array<Record<string, any>>> {
-    let body: string | undefined;
-    const original = globalThis.fetch;
-    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
-      body = init?.body as string;
-      return new Response(
-        JSON.stringify({ content: [{ type: "tool_use", name: "answer", input: { text: "ok" } }] }),
-        { status: 200 }
-      );
-    }) as typeof fetch;
-    try {
-      // A BYOK model (Gemini/Groq) needs its own key present in gateway or canAuthenticateLlm
-      // refuses before ever calling fetch — see byokKeyFieldForModel.
-      const gateway =
-        model?.startsWith("google-ai-studio/") ? { ...GATEWAY, googleAiStudioApiKey: "g-key" }
-        : model?.startsWith("groq/") ? { ...GATEWAY, groqApiKey: "grok-key" }
-        : GATEWAY;
-      const reasoner = new GatewayReasoner({ apiKey: "k", gateway, ctx: CTX, ...(model ? { model } : {}) });
-      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [] } as never);
-      return (JSON.parse(body!) as { tools: Array<Record<string, any>> }).tools;
-    } finally {
-      globalThis.fetch = original;
-    }
-  }
-
-  // The precise defect this whole describe block guards against: an object type whose keys are
-  // unenumerable to a schema-constrained decoder — neither declared `properties` nor
-  // `additionalProperties`, so the only value it can legally emit is `{}`.
-  const isUnenumerableObject = (params: Record<string, any>) =>
-    params.type === "object" && !params.properties && params.additionalProperties === undefined;
-
-  it("Gemini gets the JSON-string schema — the one shape its own decoder is proven to accept", async () => {
-    const tools = await capturedTools("google-ai-studio/gemini-flash-lite-latest");
-    const run = tools.find((t) => t.function?.name === "run");
-    expect(run).toBeDefined();
-    const params = run!.function.parameters.properties.params;
-    expect(isUnenumerableObject(params)).toBe(false);
-    expect(params.type).toBe("string");
+describe("current planner tool schema", () => {
+  it("declares the AVOS command and requires the status field", () => {
+    const bash = decisionTools(undefined).find((tool) => tool.name === "Bash");
+    expect(bash).toBeDefined();
+    expect(bash!.parameters.required).toContain("command");
+    expect(bash!.parameters.required).toContain("doing");
+    expect(bash!.parameters.properties.command).toMatchObject({ type: "string" });
+    expect(decisionTools(undefined).some((tool) => tool.name === "run")).toBe(false);
   });
 
-  // Groq's own server validates a model's tool-call output against the DECLARED schema and
-  // REJECTS the call outright when they mismatch — observed live, on a real heartbeat wake:
-  // "tool call validation failed: parameters for tool run did not match schema: errors:
-  // [`/params`: expected string, but got object]", on both the streamed attempt and its
-  // non-streamed retry. Groq's own model naturally wants to emit a real object; the string
-  // schema that fixed Gemini is precisely what a Groq-dispatched run must NOT declare.
-  it("Groq (and every non-Gemini provider) gets a real object schema, not a string", async () => {
-    const tools = await capturedTools("groq/llama-3.3-70b-versatile");
-    const run = tools.find((t) => t.function?.name === "run");
-    const params = run!.function.parameters.properties.params;
-    expect(params.type).toBe("object");
-    // additionalProperties:true is what keeps this SAFE despite having no properties — the same
-    // enumerability defect the Gemini fix exists to avoid, closed a different, more portable way.
-    expect(params.additionalProperties).toBe(true);
-    expect(isUnenumerableObject(params)).toBe(false);
-  });
-
-  it("an unset model defaults to the object schema (every non-Gemini caller today)", async () => {
-    const tools = await capturedTools();
-    const run = tools.find((t) => t.function?.name === "run");
-    const params = run!.function.parameters.properties.params;
-    expect(params.type).toBe("object");
-    expect(isUnenumerableObject(params)).toBe(false);
-  });
-
-  it("requires params on both schema variants, so the decoder must emit it either way", async () => {
-    for (const model of [undefined, "google-ai-studio/gemini-flash-lite-latest", "groq/llama-3.3-70b-versatile"]) {
-      const tools = await capturedTools(model);
-      const run = tools.find((t) => t.function?.name === "run");
-      expect(run!.function.parameters.required).toContain("params");
-    }
-  });
-
-  it("parses a JSON-string params into the real arguments the loop will act on", async () => {
-    const { coerceDecision } = await import("../../workers/agents/src/script-engine/reasoner.js");
-    const d = coerceDecision({
-      action: "run",
-      name: "thread.create",
-      params: '{"project_id":"9d67a69a-981a-4c3e-b50d-83c3f51c679c","title":"Kickoff"}',
+  it("maps a Bash call to the runtime command shape", async () => {
+    const d = await decideWith({
+      result: { response: null, tool_calls: [{ name: "Bash", arguments: { command: "naelao conversation search invoice", doing: "Searching the thread" } }] },
     });
-    expect(d).toEqual({
-      action: "run",
-      name: "thread.create",
-      params: { project_id: "9d67a69a-981a-4c3e-b50d-83c3f51c679c", title: "Kickoff" },
-    });
-  });
-
-  it("still accepts a real object, so providers that send one do not regress", async () => {
-    const { coerceDecision } = await import("../../workers/agents/src/script-engine/reasoner.js");
-    const d = coerceDecision({ action: "run", name: "thread.create", params: { project_id: "p1" } });
-    expect(d).toEqual({ action: "run", name: "thread.create", params: { project_id: "p1" } });
-  });
-
-  it("degrades to no arguments for an unusable params rather than throwing mid-run", async () => {
-    const { coerceDecision } = await import("../../workers/agents/src/script-engine/reasoner.js");
-    for (const bad of ['{"unclosed', "[1,2,3]", '"just a string"', ""]) {
-      const d = coerceDecision({ action: "run", name: "agent.list", params: bad });
-      expect(d).toEqual({ action: "run", name: "agent.list", params: {} });
-    }
-  });
-
-  it("reads a JSON-string params from a direct operation tool call too", async () => {
-    const { coerceOperationToolCall } = await import("../../workers/agents/src/script-engine/reasoner.js");
-    const d = coerceOperationToolCall({
-      name: "thread.send_message",
-      arguments: { params: '{"thread_id":"t1","message":"hello"}' },
-    });
-    expect(d).toEqual({
-      action: "run",
-      name: "thread.send_message",
-      params: { thread_id: "t1", message: "hello" },
-    });
+    expect(d).toMatchObject({ action: "run", name: "Bash", params: { commands: "naelao conversation search invoice" } });
   });
 });

@@ -20,6 +20,10 @@ const SHARING_MIGRATION_SQL = readFileSync(
   join(__dirname, "../../infra/migrations/0069_credential_sharing_and_product_tier.sql"),
   "utf8"
 );
+const PROJECT_BOUND_CREDENTIALS_SQL = readFileSync(
+  join(__dirname, "../../infra/migrations/0082_project_bound_credentials.sql"),
+  "utf8"
+);
 // Minimal stand-in for the real `spaces` table (see infra/migrations/0003_spaces.sql +
 // 0034_space_hierarchy.sql) — only the columns resolveCredential's product-root walk actually
 // reads. Full spaces-table migration coverage lives in create-space-record.test.ts and friends.
@@ -34,7 +38,7 @@ const SPACES_STUB_SQL = `
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 function makeEnv(): CredentialsEnv & { PLATFORM_DB: unknown; ANALYTICS: unknown } {
-  const fakeDb = createFakeD1([SPACES_STUB_SQL, MIGRATION_SQL, SHARING_MIGRATION_SQL]);
+  const fakeDb = createFakeD1([SPACES_STUB_SQL, MIGRATION_SQL, SHARING_MIGRATION_SQL, PROJECT_BOUND_CREDENTIALS_SQL]);
   const analytics = { writeDataPoint() {} };
   return {
     ENVIRONMENT: "test",

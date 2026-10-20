@@ -782,7 +782,12 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
     expect(threadCreate?.body).toMatchObject({ project_id: "proj-1", thread_kind: "primary", thread_tier: "tier_2_task" });
     expect(sessionCreate?.body).toMatchObject({ thread_id: "project-thread-1", metadata: { session_kind: "heartbeat", project_id: "proj-1" } });
     const run = fireCalls.find((call) => call.url === "http://agent-do/script/run");
-    expect(run?.body).toMatchObject({ projectId: "proj-1", sessionId: "project-session-1", goal: "Review open project priorities" });
+    expect(run?.body).toMatchObject({ projectId: "proj-1", sessionId: "project-session-1" });
+    expect((run?.body as { goal?: string } | undefined)?.goal).toContain("Review open project priorities");
+    // Diagnostics failures must not erase either the scheduled goal or the standing progress
+    // directive; this stub intentionally returns the wrong diagnostics shape and exercises the
+    // graceful fallback path.
+    expect((run?.body as { goal?: string } | undefined)?.goal).toContain("actually do it");
     expect(acked).toHaveLength(1);
     expect(retried).toHaveLength(0);
   });

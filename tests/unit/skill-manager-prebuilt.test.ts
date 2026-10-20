@@ -14,19 +14,32 @@ import type { PrebuiltOpContext } from "../../workers/agents/src/script-engine/p
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
+  const store = new Map<string, { bytes: Uint8Array; etag: string; customMetadata?: Record<string, string> }>();
+  let sequence = 0;
   return {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
+    async put(key: string, value: unknown, options?: R2PutOptions) {
+      const current = store.get(key);
+      const condition = options?.onlyIf as { etagMatches?: string; etagDoesNotMatch?: string } | undefined;
+      if (condition?.etagMatches && current?.etag !== condition.etagMatches) return null;
+      if (condition?.etagDoesNotMatch === "*" && current) return null;
+      const bytes = value instanceof Uint8Array ? value.slice() : new TextEncoder().encode(String(value));
+      const etag = `e${++sequence}`;
+      store.set(key, { bytes, etag, customMetadata: options?.customMetadata });
+      return { etag } as R2Object;
     },
     async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
-      return { async text() { return text; } } as unknown as R2ObjectBody;
+      const object = store.get(key);
+      if (!object) return null;
+      const bytes = object.bytes.slice();
+      return {
+        size: bytes.byteLength, etag: object.etag, customMetadata: object.customMetadata,
+        async arrayBuffer() { return bytes.slice().buffer; },
+        async text() { return new TextDecoder().decode(bytes); },
+      } as unknown as R2ObjectBody;
     },
     async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
+      const object = store.get(key);
+      return object ? { size: object.bytes.byteLength, etag: object.etag, customMetadata: object.customMetadata } as R2Object : null;
     },
     async delete(keys: string | string[]) {
       for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k);

@@ -40,10 +40,10 @@ function makeEnv(opts: { spacesOk: boolean; withR2?: boolean }): AgentsEnv & { _
   const { agentDoStub, calls } = makeAgentDoStub();
   const r2Objects = [
     { key: "spaces/space1/workspace/.keep", size: 0, uploaded: new Date() },
-    { key: "spaces/space1/workspace/notes.txt", size: 42, uploaded: new Date() },
+    { key: "spaces/space1/workspace/notes.txt", size: new TextEncoder().encode("hello from R2").byteLength, uploaded: new Date() },
   ];
   const r2Store: Record<string, { text: string; size: number }> = {
-    "spaces/space1/workspace/notes.txt": { text: "hello from R2", size: 42 },
+    "spaces/space1/workspace/notes.txt": { text: "hello from R2", size: new TextEncoder().encode("hello from R2").byteLength },
     "spaces/space1/workspace/big.bin": { text: "x".repeat(3 * 1024 * 1024), size: 3 * 1024 * 1024 },
   };
   return {
@@ -62,11 +62,16 @@ function makeEnv(opts: { spacesOk: boolean; withR2?: boolean }): AgentsEnv & { _
     } as unknown as D1Database,
     ...(opts.withR2 ? {
       SCRIPTS_R2: {
+        head: async (key: string) => {
+          const found = r2Store[key];
+          return found ? { key, size: new TextEncoder().encode(found.text).byteLength } : null;
+        },
         list: async () => ({ objects: r2Objects, truncated: false }),
         get: async (key: string) => {
           const found = r2Store[key];
           if (!found) return null;
-          return { size: found.size, text: async () => found.text };
+          const bytes = new TextEncoder().encode(found.text);
+          return { size: bytes.byteLength, arrayBuffer: async () => bytes.slice().buffer, text: async () => found.text };
         },
       } as unknown as R2Bucket,
     } : {}),

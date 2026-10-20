@@ -31,7 +31,10 @@ function command(name, command, args, required = false) {
 
 add("Node.js", nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 5) ? "PASS" : "WARN", `${nodeVersion}; package requires >=22.5.0`, true);
 command("pnpm", "pnpm", ["--version"], true);
-command("Wrangler", "pnpm", ["exec", "wrangler", "--version"]);
+// `pnpm exec` can trigger an automatic workspace install when the package manager considers the
+// install state stale. A read-only environment probe must not mutate node_modules or hit the
+// network, so invoke the already-installed CLI through the current Node runtime directly.
+command("Wrangler", process.execPath, [fileURLToPath(new URL("../../node_modules/wrangler/bin/wrangler.js", import.meta.url)), "--version"]);
 for (const [name, executable, args] of [
   ["Docker", "docker", ["--version"]],
   ["WSL2", "wsl", ["--status"]],

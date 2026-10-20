@@ -19,9 +19,20 @@ function makeFakeR2() {
     store,
     async get(key: string) {
       const v = store.get(key);
-      return v === undefined ? null : ({ text: async () => v } as unknown as R2ObjectBody);
+      if (v === undefined) return null;
+      const bytes = new TextEncoder().encode(v);
+      return ({ size: bytes.byteLength, etag: `e${v.length}`, arrayBuffer: async () => bytes.slice().buffer, text: async () => v } as unknown as R2ObjectBody);
     },
-    async put(key: string, value: string) { store.set(key, value); },
+    async head(key: string) {
+      const value = store.get(key);
+      return value === undefined ? null : ({ key, size: new TextEncoder().encode(value).byteLength, etag: `e${value.length}` } as R2Object);
+    },
+    async put(key: string, value: string | ArrayBuffer | ArrayBufferView) {
+      const text = typeof value === "string" ? value
+        : new TextDecoder().decode(value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+      store.set(key, text);
+      return { key, size: new TextEncoder().encode(text).byteLength, etag: `e${text.length}` } as R2Object;
+    },
   } as unknown as R2Bucket & { store: Map<string, string> };
 }
 
@@ -101,11 +112,11 @@ describe("Agent Templates catalogue", () => {
     }
   });
 
-  it("a customer-support agent never gets code-exec — its whole point is staying inside the KB", () => {
+  it("customer support has no vertical-specific code tool while the platform baseline remains universal", () => {
     const support = findAgentTemplate("customer-support")!;
     expect(support.prebuilt_scripts).not.toContain("code-exec");
     const config = agentTemplateToConfig(support);
-    expect(config.scripts.prebuilt).not.toContain("code-exec");
+    expect(config.scripts.prebuilt).toContain("code-exec");
   });
 });
 
@@ -351,7 +362,7 @@ describe("POST /agents/custom (step 17)", () => {
     expect(body.rejected_scripts?.sort()).toEqual(["code-exec", "local-machine"]);
     const scripts = JSON.parse(r2.store.get(`spaces/${SPACE_ID}/agents/${body.agent_id}/scripts.json`)!);
     expect(scripts.prebuilt).toContain("knowledge-base");
-    expect(scripts.prebuilt).not.toContain("code-exec");
+    expect(scripts.prebuilt).toContain("code-exec");
     expect(scripts.prebuilt).not.toContain("local-machine");
   });
 

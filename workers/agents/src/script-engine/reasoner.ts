@@ -423,6 +423,15 @@ export function coerceDecision(parsed: unknown): ReasonDecision | null {
   if (!parsed || typeof parsed !== "object") return null;
   const o = parsed as Record<string, unknown>;
 
+  // Terminal answers are plain assistant output in the current tool contract, but accept the
+  // legacy JSON envelope as a compatibility path for providers that still follow older prompts.
+  if (o["action"] === "answer" && typeof o["text"] === "string" && o["text"].trim()) {
+    return { action: "answer", text: o["text"] };
+  }
+  if (o["action"] === "give_up") {
+    return { action: "give_up", reason: typeof o["reason"] === "string" ? o["reason"] : "no reason given" };
+  }
+
   if (typeof o["action"] === "string" && DECISION_ACTIONS.has(o["action"])) {
     // Still verify the load-bearing field is present — an `{action:"run"}` with no name is not a
     // decision, and passing it on just moves the failure somewhere less legible.

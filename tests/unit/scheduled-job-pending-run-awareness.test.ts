@@ -20,9 +20,9 @@ function makeEnv(opts: {
 }): { env: AgentsEnv; calls: Array<{ url: string; method: string }>; updates: Update[] } {
   const jobRow = {
     id: "job-1", space_id: "space-1", tenant_id: "tenant-1", project_id: null,
-    cron_expression: "0 13 * * *", script_name: "", params: "{}",
+    cron_expression: "* * * * *", script_name: "", params: "{}",
     agent_id: "naelao-agent", goal: "Review revenue and report anything that needs attention.",
-    last_run_at: null, created_at: Date.now(), consecutive_failures: 0,
+    last_run_at: null, created_at: Date.now() - 86_400_000, consecutive_failures: 0,
   };
   const calls: Array<{ url: string; method: string }> = [];
   const updates: Update[] = [];
@@ -33,6 +33,7 @@ function makeEnv(opts: {
       const stmt = {
         bind(...a: unknown[]) { args = a; return stmt; },
         async first() {
+          if (sql.includes("INSERT INTO scheduled_job_dispatches")) return { claim_token: "claim-1" };
           if (sql.includes("FROM scheduled_jobs")) return jobRow;
           return null;
         },
@@ -86,8 +87,8 @@ describe("scheduled_job dispatch — pending-run awareness", () => {
     const { env, calls, updates } = makeEnv({ assistantBusy: true });
     await handleAgentTick(env, { kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-1" } as never);
 
-    expect(calls.some((c) => c.url.endsWith("/active-run"))).toBe(true);
-    expect(calls.some((c) => c.url.endsWith("/script/run"))).toBe(false);
+    expect(calls.some((c) => new URL(c.url).pathname.endsWith("/active-run"))).toBe(true);
+    expect(calls.some((c) => new URL(c.url).pathname.endsWith("/script/run"))).toBe(false);
     // Neither success nor failure is recorded — the row is left exactly as it was so the next
     // due tick retries against a (hopefully) free instance.
     expect(updates).toHaveLength(0);
@@ -97,7 +98,7 @@ describe("scheduled_job dispatch — pending-run awareness", () => {
     const { env, calls, updates } = makeEnv({ assistantBusy: false });
     await handleAgentTick(env, { kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-1" } as never);
 
-    expect(calls.some((c) => c.url.endsWith("/script/run"))).toBe(true);
+    expect(calls.some((c) => new URL(c.url).pathname.endsWith("/script/run"))).toBe(true);
     expect(updates).toHaveLength(1);
     expect(updates[0]!.consecutive_failures).toBe(0);
   });
@@ -107,13 +108,13 @@ describe("scheduled_job dispatch — pending-run awareness", () => {
     await handleAgentTick(env, { kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-1" } as never);
 
     // A transient failure to CHECK must never block a wake that would otherwise run fine.
-    expect(calls.some((c) => c.url.endsWith("/script/run"))).toBe(true);
+    expect(calls.some((c) => new URL(c.url).pathname.endsWith("/script/run"))).toBe(true);
   });
 
   it("fails OPEN when the busy-check returns a non-ok status", async () => {
     const { env, calls } = makeEnv({ activeRunStatus: 500 });
     await handleAgentTick(env, { kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-1" } as never);
 
-    expect(calls.some((c) => c.url.endsWith("/script/run"))).toBe(true);
+    expect(calls.some((c) => new URL(c.url).pathname.endsWith("/script/run"))).toBe(true);
   });
 });

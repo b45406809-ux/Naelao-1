@@ -8,6 +8,8 @@ export default defineConfig({
       "cloudflare:workers": fileURLToPath(new URL("./stubs/cloudflare-workers.ts", import.meta.url)),
       "agents/voice": fileURLToPath(new URL("./stubs/agents-voice.ts", import.meta.url)),
       agents: fileURLToPath(new URL("./stubs/agents.ts", import.meta.url)),
+      // Shell source uses this app-local alias; its components are imported by focused unit tests.
+      "@": fileURLToPath(new URL("../apps/shell/src/", import.meta.url)),
     },
   },
   test: {

@@ -1,24 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { ConcurrencyDO } from "../../workers/agents/src/do/ConcurrencyDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // ConcurrencyDO (spec §28) — account-level concurrency ceiling. Exercises the real DO over a
 // real in-memory SQLite engine, including the alarm-driven stale-slot sweep (spec gap
 // "ConcurrencyDO — Deadlock Scenario": a crashed holder must not leak its slot forever).
 
 function makeConcurrencyDO(): ConcurrencyDO {
-  let alarmAt: number | null = null;
-  const ctx = {
-    storage: {
-      sql: createDOSqlStorage(),
-      async getAlarm() {
-        return alarmAt;
-      },
-      async setAlarm(t: number) {
-        alarmAt = t;
-      },
-    },
-  };
+  const ctx = { storage: createDOStorage() };
   return new ConcurrencyDO(ctx as never, {} as never);
 }
 

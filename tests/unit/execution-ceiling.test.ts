@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { ScriptToolSurface } from "../../workers/agents/src/script-engine/tool-surface.js";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
+import { makeR2Bucket } from "./helpers/r2-bucket.js";
 
 // Customer-bot projects cap which execution tiers their bound agent may use
 // (SpaceDO `projects.execution_ceiling` → ScriptEngineEnv.maxTier). This is the structural
@@ -8,32 +9,7 @@ import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/typ
 // project's reasoner cannot talk its way past it; the gate is in the tool surface, not a
 // prompt.
 
-function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  const bucket = {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
-    },
-    async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; }, get body() { return text; } } as unknown as R2ObjectBody;
-    },
-    async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
-    },
-    async delete(keys: string | string[]) {
-      for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k);
-    },
-    async list(opts?: { prefix?: string }) {
-      const prefix = opts?.prefix ?? "";
-      const objects = [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k, size: store.get(k)!.length, uploaded: new Date(), etag: "x" }));
-      return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
-    },
-  };
-  return bucket as unknown as R2Bucket;
-}
+function makeR2(): R2Bucket { return makeR2Bucket(); }
 
 describe("execution ceiling — script.create / script.update", () => {
   let env: ScriptEngineEnv;

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { NaelaoAgentDO } from "../../workers/agents/src/do/NaelaoAgentDO.js";
 import { writeAgentConfig } from "../../workers/agents/src/script-engine/agent-config.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
+import { makeR2Bucket } from "./helpers/r2-bucket.js";
 
 // P0-3: a builder (owner/admin/editor/viewer — a Team collaborator) chatting with their OWN
 // Space Assistant had NO metering at all — the pre-run credit gate only ever fired for
@@ -11,32 +12,7 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // builder-human roles (never a product_end_user, never a project-scoped run, never an internal/
 // system-initiated call with no role header at all), and degrades honestly on a billing outage.
 
-function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  const bucket = {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
-    },
-    async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; }, get body() { return text; } } as unknown as R2ObjectBody;
-    },
-    async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
-    },
-    async delete(keys: string | string[]) {
-      for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k);
-    },
-    async list(opts?: { prefix?: string }) {
-      const prefix = opts?.prefix ?? "";
-      const objects = [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k, size: store.get(k)!.length, uploaded: new Date(), etag: "x" }));
-      return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
-    },
-  };
-  return bucket as unknown as R2Bucket;
-}
+function makeR2(): R2Bucket { return makeR2Bucket(); }
 
 function makeBillingWorker(quota: { allowed: boolean; current?: number; limit?: number } | "unreachable") {
   const calls: string[] = [];
@@ -61,7 +37,7 @@ function makeBillingWorker(quota: { allowed: boolean; current?: number; limit?: 
 
 async function makeDO(quota: { allowed: boolean; current?: number; limit?: number } | "unreachable") {
   const r2 = makeR2();
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   const { fetcher: billingWorker, calls } = makeBillingWorker(quota);
   const env = {
     PLATFORM_SECRET: "test",
@@ -144,7 +120,7 @@ describe("NaelaoAgentDO /script/run — builder-tier monthly usage gate (P0-3)",
 
   it("degrades honestly (never blocks) when BILLING_WORKER is unbound", async () => {
     const r2 = makeR2();
-    const ctx = { storage: { sql: createDOSqlStorage() } };
+    const ctx = { storage: createDOStorage() };
     const env = {
       PLATFORM_SECRET: "test",
       KNOWLEDGE_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher,

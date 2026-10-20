@@ -19,13 +19,23 @@ function makeR2(): R2Bucket {
   const store = new Map<string, string>();
   const bucket = {
     async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
+      const text = typeof value === "string" ? value
+        : value instanceof Uint8Array ? new TextDecoder().decode(value)
+          : value instanceof ArrayBuffer ? new TextDecoder().decode(value)
+            : ArrayBuffer.isView(value) ? new TextDecoder().decode(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
+              : String(value);
+      store.set(key, text);
       return {} as R2Object;
     },
     async get(key: string) {
       if (!store.has(key)) return null;
       const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; } } as unknown as R2ObjectBody;
+      const bytes = new TextEncoder().encode(text);
+      return { key, size: bytes.byteLength, etag: `e${text.length}`, uploaded: new Date(), async arrayBuffer() { return bytes.slice().buffer; }, async text() { return text; } } as unknown as R2ObjectBody;
+    },
+    async head(key: string) {
+      const text = store.get(key);
+      return text === undefined ? null : { key, size: new TextEncoder().encode(text).byteLength, etag: `e${text.length}` } as R2Object;
     },
   };
   return bucket as unknown as R2Bucket;
