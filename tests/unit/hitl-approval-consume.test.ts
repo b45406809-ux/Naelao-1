@@ -42,7 +42,9 @@ describe("HITLApprovalDO — POST /requests/:id/consume", () => {
     const created = await call(doInstance, "/requests", "POST", {
       run_id: "agent-api:space-1:agent-1", session_id: "space-1", tool_name: "POST:projects", action_description: "test",
     });
-    const consumed = await call(doInstance, `/requests/${created.json.approval_id}/consume`, "POST", {});
+    const consumed = await call(doInstance, `/requests/${created.json.approval_id}/consume`, "POST", {
+      run_id: "agent-api:space-1:agent-1", tool_name: "POST:projects",
+    });
     expect(consumed.json).toEqual({ consumed: false, reason: "not_approved" });
   });
 
@@ -88,13 +90,28 @@ describe("HITLApprovalDO — POST /requests/:id/consume", () => {
       run_id: "agent-api:space-1:agent-1", session_id: "space-1", tool_name: "POST:projects", action_description: "test",
     });
     await call(doInstance, `/requests/${created.json.approval_id}/reject`, "PUT", { reason: "no" });
-    const consumed = await call(doInstance, `/requests/${created.json.approval_id}/consume`, "POST", {});
+    const consumed = await call(doInstance, `/requests/${created.json.approval_id}/consume`, "POST", {
+      run_id: "agent-api:space-1:agent-1", tool_name: "POST:projects",
+    });
     expect(consumed.json).toEqual({ consumed: false, reason: "not_approved" });
   });
 
   it("returns not_found for an unknown approval id", async () => {
     const doInstance = makeDO();
-    const consumed = await call(doInstance, "/requests/does-not-exist/consume", "POST", {});
+    const consumed = await call(doInstance, "/requests/does-not-exist/consume", "POST", {
+      run_id: "agent-api:space-1:agent-1", tool_name: "POST:projects",
+    });
     expect(consumed.json).toEqual({ consumed: false, reason: "not_found" });
+  });
+
+  it("requires both exact action identity fields for redemption", async () => {
+    const doInstance = makeDO();
+    const created = await call(doInstance, "/requests", "POST", {
+      run_id: "agent-api:space-1:agent-1", session_id: "space-1", tool_name: "POST:projects", action_description: "test",
+    });
+    await call(doInstance, `/requests/${created.json.approval_id}/approve`, "PUT");
+    const consumed = await call(doInstance, `/requests/${created.json.approval_id}/consume`, "POST", {});
+    expect(consumed.status).toBe(400);
+    expect(consumed.json).toEqual({ consumed: false, reason: "bad_request" });
   });
 });

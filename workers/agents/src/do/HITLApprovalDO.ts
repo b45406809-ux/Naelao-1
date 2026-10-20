@@ -24,6 +24,9 @@ import { DurableObject } from "cloudflare:workers";
 import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 
 const AUTO_REJECT_MS = 30_000;
+const MAX_APPROVAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_TOOL_INPUT_BYTES = 64 * 1024;
+const MAX_APPROVAL_LIST = 50;
 
 type ApprovalStatus = "pending" | "approved" | "answered" | "rejected" | "timeout";
 
@@ -125,37 +128,47 @@ export class HITLApprovalDO extends DurableObject {
     // human-review window instead of the 30s default the reasoning loop's own synchronous poll
     // was tuned for.
     if (method === "POST" && url.pathname === "/requests") {
-      const body = await request.json<{
-        run_id: string;
-        session_id: string;
-        tool_name: string;
-        tool_input: Record<string, unknown>;
-        action_description: string;
-        kind?: "approval" | "question";
-        question?: string;
-        options?: string[];
-        questions?: Array<{ question: string; options?: string[] }>;
-        ttl_ms?: number;
-        resume_do_id?: string;
-      }>();
-
-      if (!body.run_id || !body.tool_name) {
-        return Response.json({ error: "run_id and tool_name required" }, { status: 400 });
+      const value: unknown = await request.json().catch(() => undefined);
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        return Response.json({ error: "invalid_request" }, { status: 400 });
+      const body = value as Record<string, unknown>;
+      const toolInput = body.tool_input ?? {};
+      let serializedToolInput: string;
+      try { serializedToolInput = JSON.stringify(toolInput); }
+      catch { return Response.json({ error: "invalid_tool_input" }, { status: 400 }); }
+      const validOptions = (options: unknown): options is string[] => options === undefined ||
+        (Array.isArray(options) && options.length <= 8 && options.every((item) => typeof item === "string" && item.length <= 500));
+      const validQuestions = (questions: unknown): questions is Array<{ question: string; options?: string[] }> => questions === undefined ||
+        (Array.isArray(questions) && questions.length <= 5 && questions.every((item) => !!item && typeof item === "object" &&
+          !Array.isArray(item) && typeof item.question === "string" && item.question.trim().length > 0 && item.question.length <= 2000 && validOptions(item.options)));
+      if (typeof body.run_id !== "string" || !body.run_id.trim() || body.run_id.length > 256 ||
+          typeof body.session_id !== "string" || !body.session_id.trim() || body.session_id.length > 256 ||
+          typeof body.tool_name !== "string" || !body.tool_name.trim() || body.tool_name.length > 256 ||
+          typeof body.action_description !== "string" || !body.action_description.trim() || body.action_description.length > 8000 ||
+          new TextEncoder().encode(serializedToolInput).byteLength > MAX_TOOL_INPUT_BYTES ||
+          !toolInput || typeof toolInput !== "object" || Array.isArray(toolInput) ||
+          (body.kind !== undefined && body.kind !== "approval" && body.kind !== "question") ||
+          (body.question !== undefined && (typeof body.question !== "string" || body.question.length > 2000)) ||
+          !validOptions(body.options) || !validQuestions(body.questions) ||
+          (body.ttl_ms !== undefined && (!Number.isSafeInteger(body.ttl_ms) || (body.ttl_ms as number) < 1 || (body.ttl_ms as number) > MAX_APPROVAL_TTL_MS)) ||
+          (body.resume_do_id !== undefined && (typeof body.resume_do_id !== "string" || body.resume_do_id.length > 1024))) {
+        return Response.json({ error: "invalid_request" }, { status: 400 });
       }
 
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
-      const expiresAt = Date.now() + (body.ttl_ms && body.ttl_ms > 0 ? body.ttl_ms : AUTO_REJECT_MS);
+      const ttlMs = body.ttl_ms === undefined ? AUTO_REJECT_MS : body.ttl_ms as number;
+      const expiresAt = Date.now() + ttlMs;
 
       this.ctx.storage.sql.exec(
         `INSERT INTO approvals (id, run_id, session_id, tool_name, tool_input, action_description, status, created_at, expires_at, resume_do_id, kind, question, options_json, questions_json)
          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
         id, body.run_id, body.session_id, body.tool_name,
-        JSON.stringify(body.tool_input ?? {}),
+        serializedToolInput,
         body.action_description, now, expiresAt, body.resume_do_id ?? null,
         body.kind ?? "approval", body.question ?? null,
-        body.options?.length ? JSON.stringify(body.options.slice(0, 8)) : null,
-        body.questions?.length ? JSON.stringify(body.questions.slice(0, 5)) : null
+        Array.isArray(body.options) && body.options.length ? JSON.stringify(body.options) : null,
+        Array.isArray(body.questions) && body.questions.length ? JSON.stringify(body.questions) : null
       );
 
       // Set alarm to auto-reject when TTL expires
@@ -177,7 +190,7 @@ export class HITLApprovalDO extends DurableObject {
 
       const row = rows[0];
       // Check if expired but not yet processed by alarm
-      if (row.status === "pending" && row.expires_at < Date.now()) {
+      if (row.status === "pending" && row.expires_at <= Date.now()) {
         this.expireApproval(row.id);
         return Response.json({ ...row, status: "timeout" as ApprovalStatus });
       }
@@ -187,14 +200,29 @@ export class HITLApprovalDO extends DurableObject {
     // GET /requests — list pending approvals for a run
     if (method === "GET" && url.pathname === "/requests") {
       const runId = url.searchParams.get("run_id");
+      const sessionId = url.searchParams.get("session_id");
+      const offsetText = url.searchParams.get("offset") ?? "0";
+      if (!/^(0|[1-9][0-9]{0,6})$/.test(offsetText))
+        return Response.json({ error: "invalid_offset" }, { status: 400 });
+      const offset = Number(offsetText);
+      this.ctx.storage.sql.exec(
+        `UPDATE approvals SET status = 'timeout', reject_reason = ?, resolved_at = ? WHERE status = 'pending' AND expires_at <= ?`,
+        "No answer yet — this request expired before anyone approved or declined it.", new Date().toISOString(), Date.now()
+      );
       const rows = runId
         ? this.ctx.storage.sql
-            .exec(`SELECT * FROM approvals WHERE run_id = ? ORDER BY created_at DESC`, runId)
+            .exec(`SELECT * FROM approvals WHERE run_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, runId, MAX_APPROVAL_LIST + 1, offset)
+            .toArray() as unknown as ApprovalRow[]
+        : sessionId && sessionId !== "inbox"
+          ? this.ctx.storage.sql
+            .exec(`SELECT * FROM approvals WHERE session_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT ? OFFSET ?`, sessionId, MAX_APPROVAL_LIST + 1, offset)
             .toArray() as unknown as ApprovalRow[]
         : this.ctx.storage.sql
-            .exec(`SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC LIMIT 50`)
+            .exec(`SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC LIMIT ? OFFSET ?`, MAX_APPROVAL_LIST + 1, offset)
             .toArray() as unknown as ApprovalRow[];
-      return Response.json({ approvals: rows });
+      const hasMore = rows.length > MAX_APPROVAL_LIST;
+      return Response.json({ approvals: rows.slice(0, MAX_APPROVAL_LIST), has_more: hasMore,
+        next_offset: hasMore ? offset + MAX_APPROVAL_LIST : null });
     }
 
     // PUT /requests/:approvalId/approve
@@ -206,15 +234,25 @@ export class HITLApprovalDO extends DurableObject {
     // PUT /requests/:approvalId/reject
     const rejectMatch = url.pathname.match(/^\/requests\/([^/]+)\/reject$/);
     if (method === "PUT" && rejectMatch?.[1]) {
-      const body = await request.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
-      return this.resolveApproval(rejectMatch[1], "rejected", (body as { reason?: string }).reason ?? "Builder rejected");
+      let body: unknown;
+      if (request.body) {
+        try { body = await request.json(); }
+        catch { return Response.json({ error: "invalid_request" }, { status: 400 }); }
+      }
+      if (body !== undefined && (!body || typeof body !== "object" || Array.isArray(body) ||
+        ((body as { reason?: unknown }).reason !== undefined &&
+          (typeof (body as { reason?: unknown }).reason !== "string" || (body as { reason: string }).reason.length > 4000))))
+        return Response.json({ error: "invalid_request" }, { status: 400 });
+      const reason = body && typeof body === "object" ? (body as { reason?: string }).reason : undefined;
+      return this.resolveApproval(rejectMatch[1], "rejected", reason ?? "Builder rejected");
     }
 
     // PUT /requests/:questionId/answer — resolve a planner questionnaire.
     const answerMatch = url.pathname.match(/^\/requests\/([^/]+)\/answer$/);
     if (method === "PUT" && answerMatch?.[1]) {
-      const body = await request.json<{ answer?: string }>().catch(() => ({ answer: undefined }));
-      const answer = typeof body.answer === "string" ? body.answer.trim() : "";
+      const body: unknown = await request.json().catch(() => undefined);
+      const answer = body && typeof body === "object" && !Array.isArray(body) && typeof (body as { answer?: unknown }).answer === "string"
+        ? (body as { answer: string }).answer.trim() : "";
       if (!answer) return Response.json({ error: "answer is required" }, { status: 400 });
       const rows = this.ctx.storage.sql
         .exec(`SELECT id, status, kind FROM approvals WHERE id = ?`, answerMatch[1])
@@ -222,6 +260,11 @@ export class HITLApprovalDO extends DurableObject {
       if (!rows[0]) return Response.json({ error: "not_found" }, { status: 404 });
       if (rows[0].kind !== "question") return Response.json({ error: "not_a_question" }, { status: 400 });
       if (rows[0].status !== "pending") return Response.json({ error: "already_resolved", current_status: rows[0].status }, { status: 409 });
+      const expires = this.ctx.storage.sql.exec(`SELECT expires_at FROM approvals WHERE id = ?`, answerMatch[1]).toArray() as unknown as Array<{ expires_at: number }>;
+      if (expires[0] && expires[0].expires_at <= Date.now()) {
+        this.expireApproval(answerMatch[1]);
+        return Response.json({ error: "approval_expired" }, { status: 409 });
+      }
       this.ctx.storage.sql.exec(
         `UPDATE approvals SET status = 'answered', answer = ?, resolved_at = ? WHERE id = ?`,
         answer.slice(0, 4000), new Date().toISOString(), answerMatch[1]
@@ -241,18 +284,23 @@ export class HITLApprovalDO extends DurableObject {
     // so an approval granted for one action can never be replayed against a different one.
     const consumeMatch = url.pathname.match(/^\/requests\/([^/]+)\/consume$/);
     if (method === "POST" && consumeMatch?.[1]) {
-      const body = await request.json<{ run_id?: string; tool_name?: string }>().catch(() => ({}) as Record<string, never>);
+      const bodyValue: unknown = await request.json().catch(() => undefined);
+      if (!bodyValue || typeof bodyValue !== "object" || Array.isArray(bodyValue))
+        return Response.json({ consumed: false, reason: "bad_request" }, { status: 400 });
+      const body = bodyValue as { run_id?: unknown; tool_name?: unknown };
+      if (typeof body.run_id !== "string" || !body.run_id || typeof body.tool_name !== "string" || !body.tool_name)
+        return Response.json({ consumed: false, reason: "bad_request" }, { status: 400 });
       const row = this.ctx.storage.sql
         .exec(`SELECT * FROM approvals WHERE id = ?`, consumeMatch[1])
         .toArray() as unknown as ApprovalRow[];
       const approval = row[0];
       if (!approval) return Response.json({ consumed: false, reason: "not_found" });
-      if (approval.status === "pending" && approval.expires_at < Date.now()) this.expireApproval(approval.id);
+      if (approval.status === "pending" && approval.expires_at <= Date.now()) this.expireApproval(approval.id);
       if (approval.status !== "approved" || approval.consumed_at) {
         return Response.json({ consumed: false, reason: approval.consumed_at ? "already_consumed" : "not_approved" });
       }
-      if (body.run_id && approval.run_id !== body.run_id) return Response.json({ consumed: false, reason: "run_id_mismatch" });
-      if (body.tool_name && approval.tool_name !== body.tool_name) return Response.json({ consumed: false, reason: "action_mismatch" });
+      if (approval.run_id !== body.run_id) return Response.json({ consumed: false, reason: "run_id_mismatch" });
+      if (approval.tool_name !== body.tool_name) return Response.json({ consumed: false, reason: "action_mismatch" });
       this.ctx.storage.sql.exec(
         `UPDATE approvals SET consumed_at = ? WHERE id = ? AND status = 'approved' AND consumed_at IS NULL`,
         new Date().toISOString(), approval.id
@@ -265,11 +313,15 @@ export class HITLApprovalDO extends DurableObject {
 
   private resolveApproval(id: string, status: "approved" | "rejected", reason: string | null): Response {
     const rows = this.ctx.storage.sql
-      .exec(`SELECT id, status FROM approvals WHERE id = ?`, id)
-      .toArray() as unknown as { id: string; status: string }[];
+      .exec(`SELECT id, status, expires_at FROM approvals WHERE id = ?`, id)
+      .toArray() as unknown as { id: string; status: string; expires_at: number }[];
     if (!rows[0]) return Response.json({ error: "not_found" }, { status: 404 });
     if (rows[0].status !== "pending") {
       return Response.json({ error: "already_resolved", current_status: rows[0].status }, { status: 409 });
+    }
+    if (rows[0].expires_at <= Date.now()) {
+      this.expireApproval(id);
+      return Response.json({ error: "approval_expired", current_status: "timeout" }, { status: 409 });
     }
     this.ctx.storage.sql.exec(
       `UPDATE approvals SET status = ?, reject_reason = ?, resolved_at = ? WHERE id = ?`,

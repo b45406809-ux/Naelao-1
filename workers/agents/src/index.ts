@@ -3296,7 +3296,11 @@ app.get("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) => {
   await requireOwnedSpace(c, spaceId);
   const stub = getHitlDo(c.env, spaceId);
   const runId = c.req.query("run_id");
-  const url = runId ? `/requests?run_id=${runId}` : `/requests?session_id=${sessionId}`;
+  const offset = c.req.query("offset");
+  const page = offset === undefined ? "" : `&offset=${encodeURIComponent(offset)}`;
+  const url = runId
+    ? `/requests?run_id=${encodeURIComponent(runId)}${page}`
+    : `/requests?session_id=${encodeURIComponent(sessionId)}${page}`;
   return stub.fetch(`http://do${url}`);
 });
 
