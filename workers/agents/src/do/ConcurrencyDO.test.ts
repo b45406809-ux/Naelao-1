@@ -239,6 +239,25 @@ describe("ConcurrencyDO slot admission bounds", () => {
     const row = storage.sql.exec("SELECT expires_at - acquired_at AS ttl FROM slots WHERE key = ?", "resource").toArray()[0] as { ttl: number };
     expect(row.ttl).toBe(30 * 60 * 1000);
   });
+
+  it("does not count an expired but not-yet-swept slot as active", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const storage = Object.assign(createDOStorage(), {
+      getAlarm: async () => null,
+      setAlarm: async () => {},
+      deleteAlarm: async () => {},
+    });
+    const object = new ConcurrencyDO({ storage } as never, {});
+    await object.fetch(new Request("http://do/acquire", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "brief", holder_id: "worker", ttl_ms: 1000 }),
+    }));
+    vi.advanceTimersByTime(1001);
+    const status = await object.fetch(new Request("http://do/status?key=brief"));
+    expect(await status.json()).toMatchObject({ key: "brief", active: 0 });
+    vi.useRealTimers();
+  });
 });
 
 describe("ConcurrencyDO outbound pacing", () => {

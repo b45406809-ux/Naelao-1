@@ -541,3 +541,5 @@ The continued lock-endpoint pass also added strict JSON/object, key/holder, fenc
 Continued the DO audit: appointment-hold acquisition/confirmation/release now reject malformed or oversized IDs instead of coercing arbitrary JSON values, and derived slot times must parse as dates. Pacer ingress now validates domain/rate types, accepts only HTTP(S) URLs without userinfo, and responds 400 on invalid requests without recording a reservation.
 
 Validation: ConcurrencyDO suite passed 12/12; Agents TypeScript passed. The 5 req/s cap and 15-second appointment lease behavior remain covered by existing tests. Node-lease and workspace-publication boundaries still require scoped review.
+
+The same pass found `/status` included expired concurrency slots until the alarm's next sweep, despite admission treating them as expired. Status now counts only unexpired rows. Regression confirmed a slot reports `active: 0` after TTL but before alarm cleanup; ConcurrencyDO suite passed 13/13.

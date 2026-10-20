@@ -489,7 +489,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   private countActive(key: string): number {
-    const rows = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS c FROM slots WHERE key = ?`, key).toArray() as Array<{ c: number }>;
+    const rows = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS c FROM slots WHERE key = ? AND expires_at > ?`, key, Date.now()).toArray() as Array<{ c: number }>;
     return rows[0]?.c ?? 0;
   }
 
