@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { GadgetActorScope, GadgetScope, GadgetTier } from "@naelao/agent-sdk";
 import { signHmac, verifyHmac } from "@naelao/crypto";
+import { parseBoundedInteger } from "@naelao/http";
 
 export interface MicroAppDOEnv { PLATFORM_SECRET: string }
 
@@ -223,7 +224,8 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       const filter = args.filter && typeof args.filter === "object" && !Array.isArray(args.filter) ? args.filter as Record<string, unknown> : {};
       const allowed = new Set(columns.map(c => c.name)); const pairs = Object.entries(filter).filter(([key]) => allowed.has(key));
       const where = pairs.length ? ` WHERE ${pairs.map(([key]) => `"${key.replaceAll('"','""')}" = ?`).join(" AND ")}` : "";
-      data = [...this.ctx.storage.sql.exec(`SELECT * FROM ${quoted}${where} LIMIT ?`, ...pairs.map(([,v]) => v as SqlStorageValue), Math.min(Math.max(Number(args.limit ?? 100), 1), 500))];
+      const limit = parseBoundedInteger(String(args.limit ?? 100), 100, 1, 500);
+      data = [...this.ctx.storage.sql.exec(`SELECT * FROM ${quoted}${where} LIMIT ?`, ...pairs.map(([,v]) => v as SqlStorageValue), limit)];
     } else if (name === `app_${appId}_insert`) {
       if (!args.record || typeof args.record !== "object" || Array.isArray(args.record)) throw new Error("record_required");
       const record = args.record as Record<string, unknown>, allowed = new Set(columns.map(c => c.name)); const entries = Object.entries(record).filter(([key]) => allowed.has(key));

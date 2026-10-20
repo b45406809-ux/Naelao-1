@@ -28,4 +28,13 @@ describe("standard credit table", () => {
     expect(() => estimateRequestCostCredits(-1, 10, "test")).toThrow("serializedRequestBytes");
     expect(() => estimateRequestCostCredits(100, 200_001, "test")).toThrow("maxOutputTokens");
   });
+  it("uses explicit host pricing for native task providers outside the model catalog", () => {
+    const estimate = estimateRequestCostCredits(10_000, 0, "scaledown/compress", {
+      inputUsdPerToken: 0.000004,
+      outputUsdPerToken: 0,
+    });
+    expect(estimate.estimatedInputTokens).toBe(10_000);
+    expect(estimate.reservedOutputTokens).toBe(0);
+    expect(estimate.estimatedCredits).toBe(tokensToCreditsAtPrice(10_000, 0, 0.000004, 0));
+  });
 });

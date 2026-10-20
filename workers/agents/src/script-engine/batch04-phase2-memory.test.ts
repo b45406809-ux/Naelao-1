@@ -9,6 +9,7 @@ import {
 } from "./conversation-context.js";
 import { cosineSimilarity, gateMemory, renderRecalledMemory } from "./memory/gate-memory.js";
 import { emptyJournal, parseJournal, renderJournal } from "./project-journal.js";
+import { boundedMemoryLimit } from "./memory-os.js";
 
 const messages = (turns: number) => Array.from({ length: turns * 2 }, (_, index) => ({
   role: index % 2 ? "assistant" : "user",
@@ -16,6 +17,13 @@ const messages = (turns: number) => Array.from({ length: turns * 2 }, (_, index)
 }));
 
 describe("Batch 04 phase 2 hybrid memory", () => {
+  it("clamps model supplied memory limits before SQL and Vectorize calls", () => {
+    expect(boundedMemoryLimit(-1)).toBe(1);
+    expect(boundedMemoryLimit(100_000)).toBe(100);
+    expect(boundedMemoryLimit(1.5)).toBe(5);
+    expect(boundedMemoryLimit(Number.NaN)).toBe(5);
+  });
+
   it("round-trips deterministic project truth sections across storage wakes", () => {
     const journal = emptyJournal("Launch");
     journal.goal = "Ship safely";

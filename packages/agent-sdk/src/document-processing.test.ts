@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   type SummarizeDocumentInput,
+  createDocumentSummaryWorkflowSource,
   createDocumentTools,
   documentProcessingSavings,
   summarizeDocumentInChunks,
@@ -50,5 +51,17 @@ describe("document-processing SDK", () => {
     expect(
       documentProcessingSavings({ ...input, downstreamInputUsdPerToken: null })
     ).toBeNull();
+  });
+  it("generates a resumable extension workflow using scoped host document operations", () => {
+    const source = createDocumentSummaryWorkflowSource();
+    expect(source).toContain(
+      'ctx.tools.call("partition-source", "document.partition"'
+    );
+    expect(source).toContain('"summarize-" + chunk.index');
+    expect(source).toContain(
+      'ctx.tools.call("merge-summary", "document.summarize"'
+    );
+    expect(source).toContain("sourceHash: manifest.sourceHash");
+    expect(source).not.toContain("apiKey");
   });
 });

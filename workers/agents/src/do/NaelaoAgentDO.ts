@@ -1080,6 +1080,9 @@ export interface AgentDOEnv {
    *  holds the Anthropic/OpenAI key itself (BYOK / stored keys), so no ANTHROPIC_API_KEY is needed
    *  on the worker. Set via `wrangler secret put NAELAO_AIG_TOKEN`. */
   NAELAO_AIG_TOKEN?: string;
+  SCALEDOWN_API_KEY?: string;
+  SCALEDOWN_INPUT_USD_PER_MILLION?: string;
+  SCALEDOWN_DERIVATIVE_CACHE_ENABLED?: string;
   /** Optional since the vendor cutover — see NAELAO_AIG_TOKEN. */
   ANTHROPIC_API_KEY?: string;
   /** A real Google AI Studio (Gemini) API key, BYOK — lets the model switcher offer Gemini models
@@ -1173,6 +1176,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const config = this.env.SCRIPTS_R2 ? await loadAgentConfig(this.env.SCRIPTS_R2, identity.spaceId, identity.agentId) : null;
     if (!config) return Response.json({ error: "workflow_agent_unavailable" }, { status: 503 });
     if (config.requiresApprovalFor?.includes(body.operation)) return Response.json({ error: "workflow_human_approval_required" }, { status: 409 });
+    if (body.operation.startsWith("document.") && !this.consumeWorkflowDocumentCall(identity.runId))
+      return Response.json({ error_code: "document_workflow_call_limit" }, { status: 429 });
     if (["extension.gadget.list", "extension.gadget.get", "extension.gadget.insert", "extension.gadget.update", "extension.gadget.delete"].includes(body.operation)) {
       if (identity.workflowClass !== "vertical_extension" || !identity.projectId || !identity.installationId || !identity.definitionId || !identity.capabilities.includes(body.operation))
         return Response.json({ error: "workflow_gadget_grant_invalid" }, { status: 403 });
@@ -1201,12 +1206,114 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     env.humanInvokerId = identity.actorId;
     env.effectiveRole = gate.effectiveRole ?? (grant.role === "viewer" ? "viewer" : grant.role === "owner" || grant.role === "admin" ? "owner" : "editor");
     env.maxTier = Math.max(1, Math.min(6, gate.maxTier ?? config.manifest?.capabilities.maxTier ?? 3)) as ExecutionTier;
+    if (body.operation === "document.summarize" || body.operation === "document.extract" || body.operation === "document.compress") {
+      if (body.airGappedOnly) return Response.json({ error_code: "private_document_cloud_processing_denied" }, { status: 403 });
+      env.documentProcessor = await this.createWorkflowDocumentProcessor({
+        tenantId: identity.tenantId, spaceId: identity.spaceId, ...(identity.projectId ? { projectId: identity.projectId } : {}),
+        userId: identity.actorId, callerRole: grant.role, hasSpendCap: gate.hasSpendCap,
+        ...(gate.walletProjectId ? { walletProjectId: gate.walletProjectId } : {}), runId: identity.runId,
+      });
+    }
     const tools = new ScriptToolSurface(env, config.scripts.prebuilt, { role: config.manifest?.role ?? "DEV_OPERATOR" });
     if (!tools.availableOperations().includes(body.operation)) return Response.json({ error: "workflow_operation_not_installed" }, { status: 403 });
     env.orchestration = this.buildOrchestrationHooks(identity.spaceId, identity.agentId, identity.tenantId, "", body.idempotencyKey, identity.runId, identity.projectId, tools, identity.actorId, undefined, undefined, undefined, env);
     const result = await tools.run(body.operation, body.params);
     return Response.json(JSON.parse(JSON.stringify(result)), { status: result.ok ? 200 : 409 });
   }
+
+  /** Specialist calls made by a durable workflow step use the same Space policy, model evidence,
+   * caller budget, and independent provider settlement as calls inside an interactive run. */
+  private async createWorkflowDocumentProcessor(scope: {
+    tenantId: string; spaceId: string; projectId?: string; userId: string; callerRole: string;
+    hasSpendCap: boolean; walletProjectId?: string; runId: string;
+  }): Promise<DocumentProcessingGateway> {
+    const policyResponse = await this.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/internal/spaces/${encodeURIComponent(scope.spaceId)}/model-policy`,
+      { headers: await this.internalHeaders(scope.tenantId) },
+    ));
+    if (!policyResponse.ok) throw new Error("document_processing_model_policy_unavailable");
+    const policy = await policyResponse.json<{ policy?: SpaceModelPolicy | null }>();
+    const process = async <K extends keyof DocumentProcessingGateway>(operation: K, input: Parameters<DocumentProcessingGateway[K]>[0]) => {
+      if (operation === "compress") {
+        const model = DOCUMENT_MODELS.compress;
+        if (!validateModelForSpacePolicy(model, policy.policy).ok) throw new Error("document_processing_model_policy_denied");
+        const millionRate = Number(this.env.SCALEDOWN_INPUT_USD_PER_MILLION);
+        if (!this.env.SCALEDOWN_API_KEY || !Number.isFinite(millionRate) || millionRate <= 0 || millionRate > 1000)
+          throw new Error("native_compression_provider_or_rate_unconfigured");
+        const pricing = { inputUsdPerToken: millionRate / 1_000_000, outputUsdPerToken: 0,
+          rateCardVersion: `scaledown-native-input-usd-per-million:${millionRate}` };
+        return this.runWorkflowDocumentOperation({ ...scope, model, pricing, input, nativeApiKey: this.env.SCALEDOWN_API_KEY,
+          cacheScope: JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId ?? "_space", scope.userId,
+            policy.policy?.mode, [...(policy.policy?.allowedModelIds ?? [])].sort()]) });
+      }
+      const model = DOCUMENT_MODELS[operation];
+      if (!validateModelForSpacePolicy(model, policy.policy).ok) throw new Error("document_processing_model_policy_denied");
+      const credentials = await this.resolveBusinessLlmOverride(scope.spaceId, scope.tenantId, model);
+      if (!credentials.openRouterApiKey) throw new Error("document_processing_space_openrouter_key_required");
+      const catalog = await fetchOpenRouterCatalog(credentials.openRouterApiKey);
+      const candidate = catalog.find((entry) => entry.model === model);
+      if (!candidate?.inputModalities?.includes("text") || !candidate.outputModalities?.includes("text")
+        || candidate.promptPriceUsdPerToken === undefined || candidate.completionPriceUsdPerToken !== 0 || !candidate.contextLength)
+        throw new Error("document_processing_catalog_evidence_unavailable");
+      return this.runWorkflowDocumentOperation({ ...scope, model, credentials, contextLength: candidate.contextLength,
+        pricing: { inputUsdPerToken: candidate.promptPriceUsdPerToken, outputUsdPerToken: candidate.completionPriceUsdPerToken,
+          rateCardVersion: `openrouter:${candidate.catalogObservedAt}` }, input,
+        cacheScope: JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId ?? "_space", scope.userId,
+          policy.policy?.mode, [...(policy.policy?.allowedModelIds ?? [])].sort()]) });
+    };
+    return {
+      summarize: (input) => process("summarize", input) as unknown as ReturnType<DocumentProcessingGateway["summarize"]>,
+      extract: (input) => process("extract", input) as unknown as ReturnType<DocumentProcessingGateway["extract"]>,
+      compress: (input) => process("compress", input) as unknown as ReturnType<DocumentProcessingGateway["compress"]>,
+    };
+  }
+
+  private async runWorkflowDocumentOperation<K extends keyof DocumentProcessingGateway>(args: {
+    tenantId: string; spaceId: string; projectId?: string; userId: string; callerRole: string;
+    hasSpendCap: boolean; walletProjectId?: string | null; runId: string; model: string;
+    pricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion: string };
+    contextLength?: number; credentials?: Partial<Pick<GatewayOpts, "openRouterApiKey">>; nativeApiKey?: string; cacheScope: string;
+    input: Parameters<DocumentProcessingGateway[K]>[0];
+  }): Promise<Awaited<ReturnType<DocumentProcessingGateway[K]>>> {
+    const processingRunId = `document:${args.runId}:${crypto.randomUUID()}`;
+    let reserved = false;
+    const processor = createScaleDownProcessor({
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
+        ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...args.credentials },
+      ...(args.nativeApiKey ? { nativeApiKey: args.nativeApiKey } : {}),
+      ...(this.env.SCALEDOWN_DERIVATIVE_CACHE_ENABLED === "true" && this.env.AGENT_CACHE ? {
+        cache: this.env.AGENT_CACHE,
+        cacheScope: args.cacheScope,
+      } : {}),
+      authorize: async (request) => {
+        if (args.contextLength && request.requestBytes + request.maxOutputTokens > args.contextLength) throw new Error("document_processing_context_limit");
+        const allowed = await this.reserveRunInferenceCost({ spaceId: args.spaceId, tenantId: args.tenantId, projectId: args.projectId,
+          userId: args.userId, callerRole: args.callerRole, hasSpendCap: args.hasSpendCap, runId: processingRunId, model: args.model,
+          serializedRequestBytes: request.requestBytes, maxOutputTokens: request.maxOutputTokens, sequence: 1,
+          modelPricing: args.pricing, onReserved: () => { reserved = true; } });
+        if (!allowed) throw new Error("document_processing_budget_exhausted");
+      },
+      recordUsage: async (usage) => this.settleRunBilling({ spaceId: args.spaceId, tenantId: args.tenantId, projectId: args.projectId,
+        userId: args.userId, callerRole: args.callerRole, hasSpendCap: args.hasSpendCap, walletProjectId: args.walletProjectId ?? null,
+        runId: processingRunId, model: args.model, modelPricing: args.pricing, tokensUsed: usage.inputTokens + (usage.outputTokens ?? 0),
+        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens ?? 0, notes: [], projectSpendReserved: Boolean(args.projectId && args.hasSpendCap && reserved),
+        endUserCreditReserved: Boolean(!args.projectId && args.callerRole === "product_end_user" && reserved),
+        llmQuotaReserved: Boolean(!args.projectId && BUILDER_CALLER_ROLES.has(args.callerRole) && reserved) }),
+    });
+    return processor[args.model === DOCUMENT_MODELS.compress ? "compress" : args.model === DOCUMENT_MODELS.extract ? "extract" : "summarize"](args.input as never) as Awaited<ReturnType<DocumentProcessingGateway[K]>>;
+  }
+
+  private consumeWorkflowDocumentCall(runId: string): boolean {
+    const now = Date.now();
+    this.ctx.storage.sql.exec("DELETE FROM workflow_document_budget WHERE updated_at < ?", now - 90 * 86_400_000);
+    const rows = this.ctx.storage.sql.exec(
+      `INSERT INTO workflow_document_budget(run_id,call_count,updated_at) VALUES(?,1,?)
+       ON CONFLICT(run_id) DO UPDATE SET call_count=call_count+1,updated_at=excluded.updated_at
+       WHERE workflow_document_budget.call_count < 48 RETURNING call_count`, runId, now,
+    ).toArray();
+    return rows.length === 1;
+  }
+
   /** Normalize every assistant/operator into the one kernel configuration used by this DO. */
   assembleUniversalAgent(manifest: UniversalAgentManifest, businessContext?: BusinessContext) {
     const maxTier = Math.max(1, Math.min(6, Number(manifest.capabilities.maxTier ?? 1))) as ExecutionTier;
@@ -1342,15 +1449,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     // Compacted-conversation summaries. Kept in the agent DO rather than SpaceDO because this is
     // derived reasoning context, not conversation data of record — SpaceDO still holds every
-    // message verbatim, which is what conversation.search reads. `covered_messages` is how many
-    // of the oldest messages the summary already accounts for, so it is only regenerated when the
-    // conversation has actually grown past it, not on every turn.
+    // message verbatim, which is what conversation.search reads. `covered_through_id` anchors the
+    // exact oldest-prefix message included in the summary; the count is informational/migration
+    // metadata only and is never used to skip source messages.
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS conversation_summaries (
         session_id      TEXT PRIMARY KEY,
         summary         TEXT NOT NULL,
         covered_messages INTEGER NOT NULL,
+        covered_through_id TEXT,
         updated_at      TEXT NOT NULL
+      )
+    `);
+    // Existing DOs predate the stable message cursor. Legacy coverage is rebuilt from the
+    // current transcript the next time compaction runs; a numeric count is not a safe cursor if
+    // a user truncates or edits history.
+    try { this.ctx.storage.sql.exec("ALTER TABLE conversation_summaries ADD COLUMN covered_through_id TEXT"); } catch { /* already migrated */ }
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_document_budget (
+        run_id TEXT PRIMARY KEY, call_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
       )
     `);
 
@@ -2098,6 +2215,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       agentId,
       tenantId,
       airGappedOnly,
+      ...(commitContext?.threadId ? { currentSessionId: commitContext.threadId } : {}),
       specialistCompactionEnabled: this.env.SCALEDOWN_AUTO_COMPACTION_ENABLED === "true",
       ...(templateMode ? { templateMode: resolveOperatingMode({ templateMode }).templateMode } : {}),
       platformSecret: this.env.PLATFORM_SECRET,
@@ -4859,29 +4977,46 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let llmQuotaReserved = false;
     if (!engineEnv.airGappedOnly && !engineEnv.localModelMachine && !requestedModel.startsWith("local/") && !requestedModel.startsWith("custom/")) {
       let documentCalls = 0;
-      const processDocument = async <K extends "summarize" | "extract">(operation: K, input: Parameters<DocumentProcessingGateway[K]>[0]) => {
+      const processDocument = async <K extends keyof DocumentProcessingGateway>(operation: K, input: Parameters<DocumentProcessingGateway[K]>[0]) => {
         if (++documentCalls > 12) throw new Error("document_processing_run_limit");
         const model = DOCUMENT_MODELS[operation];
-        // The Space's own OpenRouter route is explicit: never substitute the platform key.
-        const credentials = await this.resolveBusinessLlmOverride(spaceId, tenantId, model);
-        if (!credentials.openRouterApiKey) throw new Error("document_processing_space_openrouter_key_required");
         const policyResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/model-policy`, { headers: await this.internalHeaders(tenantId) }));
         if (!policyResponse.ok) throw new Error("document_processing_model_policy_unavailable");
         const policy = await policyResponse.json<{ policy?: SpaceModelPolicy | null }>();
         if (!validateModelForSpacePolicy(model, policy.policy).ok) throw new Error("document_processing_model_policy_denied");
-        const catalog = await fetchOpenRouterCatalog(credentials.openRouterApiKey);
-        const candidate = catalog.find(candidate => candidate.model === model);
-        if (!candidate?.inputModalities?.includes("text") || !candidate.outputModalities?.includes("text")
-          || candidate.promptPriceUsdPerToken === undefined || candidate.completionPriceUsdPerToken !== 0 || !candidate.contextLength) throw new Error("document_processing_catalog_evidence_unavailable");
-        const pricing = { inputUsdPerToken: candidate.promptPriceUsdPerToken, outputUsdPerToken: candidate.completionPriceUsdPerToken,
-          rateCardVersion: `openrouter:${candidate.catalogObservedAt}` };
+        let credentials: Partial<Pick<GatewayOpts, "openRouterApiKey">> = {};
+        let pricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion: string };
+        let contextLength: number | undefined;
+        if (operation === "compress") {
+          const millionRate = Number(this.env.SCALEDOWN_INPUT_USD_PER_MILLION);
+          if (!this.env.SCALEDOWN_API_KEY || !Number.isFinite(millionRate) || millionRate <= 0 || millionRate > 1000)
+            throw new Error("native_compression_provider_or_rate_unconfigured");
+          pricing = { inputUsdPerToken: millionRate / 1_000_000, outputUsdPerToken: 0,
+            rateCardVersion: `scaledown-native-input-usd-per-million:${millionRate}` };
+        } else {
+          // The Space's own OpenRouter route is explicit: never substitute the platform key.
+          credentials = await this.resolveBusinessLlmOverride(spaceId, tenantId, model);
+          if (!credentials.openRouterApiKey) throw new Error("document_processing_space_openrouter_key_required");
+          const catalog = await fetchOpenRouterCatalog(credentials.openRouterApiKey);
+          const candidate = catalog.find(candidate => candidate.model === model);
+          if (!candidate?.inputModalities?.includes("text") || !candidate.outputModalities?.includes("text")
+            || candidate.promptPriceUsdPerToken === undefined || candidate.completionPriceUsdPerToken !== 0 || !candidate.contextLength) throw new Error("document_processing_catalog_evidence_unavailable");
+          contextLength = candidate.contextLength;
+          pricing = { inputUsdPerToken: candidate.promptPriceUsdPerToken, outputUsdPerToken: candidate.completionPriceUsdPerToken,
+            rateCardVersion: `openrouter:${candidate.catalogObservedAt}` };
+        }
         const processingRunId = `document:${runId}:${crypto.randomUUID()}`;
         let reserved = false;
         const processor = createScaleDownProcessor({ gateway: {
           accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
           ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...credentials,
-        }, authorize: async request => {
-          if (request.requestBytes + request.maxOutputTokens > candidate.contextLength!) throw new Error("document_processing_context_limit");
+        }, ...(this.env.SCALEDOWN_API_KEY ? { nativeApiKey: this.env.SCALEDOWN_API_KEY } : {}),
+        ...(this.env.SCALEDOWN_DERIVATIVE_CACHE_ENABLED === "true" && this.env.AGENT_CACHE ? {
+          cache: this.env.AGENT_CACHE,
+          cacheScope: JSON.stringify([tenantId, spaceId, projectId ?? "_space", userId ?? "system", policy.policy?.mode,
+            [...(policy.policy?.allowedModelIds ?? [])].sort()]),
+        } : {}), authorize: async request => {
+          if (contextLength && request.requestBytes + request.maxOutputTokens > contextLength) throw new Error("document_processing_context_limit");
           const allowed = await this.reserveRunInferenceCost({ spaceId, tenantId, projectId, userId, callerRole, hasSpendCap,
             runId: processingRunId, model, serializedRequestBytes: request.requestBytes, maxOutputTokens: request.maxOutputTokens,
             sequence: 1, modelPricing: pricing, onReserved: () => { reserved = true; } });
@@ -4896,13 +5031,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         } });
         // The specialized operation settles its own model usage above; the enclosing planner
         // must not reprice these tokens using the planner's model or charge them twice.
-        return operation === "summarize" ? processor.summarize(input as Parameters<DocumentProcessingGateway["summarize"]>[0])
-          : processor.extract(input as Parameters<DocumentProcessingGateway["extract"]>[0]);
+        return processor[operation](input as never);
       };
       engineEnv.documentProcessor = {
         summarize: input => processDocument("summarize", input) as ReturnType<DocumentProcessingGateway["summarize"]>,
         extract: input => processDocument("extract", input) as ReturnType<DocumentProcessingGateway["extract"]>,
-        compress: async () => { throw new Error("native_compression_requires_host_credential_and_budget_configuration"); },
+        compress: input => processDocument("compress", input) as ReturnType<DocumentProcessingGateway["compress"]>,
       };
     }
     const reasoner = new GatewayReasoner({
@@ -5437,20 +5571,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async handleMemoryMaintenance(request: Request): Promise<Response> {
     this.ensureInit();
-    const body = await request.json<{ spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string }>()
-      .catch(() => ({}) as { spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string });
+    const body = await request.json<{ spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string;
+      userId?: string; callerRole?: string; runSpaceMaintenance?: boolean }>()
+      .catch(() => ({}) as { spaceId?: string; projectId?: string; sessionId?: string; tenantId?: string;
+        userId?: string; callerRole?: string; runSpaceMaintenance?: boolean });
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
     const tenantId = body.tenantId ?? request.headers.get("x-naelao-tenant-id") ?? "";
-    const result = await this.runMemoryMaintenanceForSpace(spaceId, tenantId);
+    if (!tenantId || !body.userId || !body.sessionId || !body.callerRole)
+      return Response.json({ error_code: "compaction_identity_required" }, { status: 400 });
+    const runId = `compact:${crypto.randomUUID()}`;
+    const gate = await this.enforceRunGates({ spaceId, tenantId, projectId: body.projectId || undefined,
+      userId: body.userId, callerRole: body.callerRole, agentId: "naelao-agent", sessionId: body.sessionId, runId });
+    if (!gate.ok) return gate.response;
+    const result = body.runSpaceMaintenance ? await this.runMemoryMaintenanceForSpace(spaceId, tenantId) : undefined;
     // Memory OS maintenance (fact decay/prune/promote) does not shrink the CONTEXT WINDOW, which
     // is what someone pressing "Compact" at 85% full is actually asking for. When a session is
     // named, also fold its older messages into a stored summary — that summary is what
     // loadConversationContext serves on the next turn IN PLACE of those messages, so the window
     // genuinely gets smaller. Without this, Compact ran and visibly did nothing.
-    const conversation = body.sessionId && tenantId
-      ? await this.compactConversationForSession(spaceId, body.projectId ?? "", body.sessionId, tenantId)
-      : undefined;
+    let documentProcessor: DocumentProcessingGateway | undefined;
+    try {
+      documentProcessor = await this.createWorkflowDocumentProcessor({ tenantId, spaceId,
+        ...(body.projectId ? { projectId: body.projectId } : {}), userId: body.userId, callerRole: body.callerRole,
+        hasSpendCap: gate.hasSpendCap, ...(gate.walletProjectId ? { walletProjectId: gate.walletProjectId } : {}), runId });
+    } catch {
+      // Provider or model policy may be unavailable. The existing deterministic local summary
+      // remains available; missing specialist configuration never blocks compaction.
+    }
+    const conversation = await this.compactConversationForSession(spaceId, body.projectId ?? "", body.sessionId, tenantId, documentProcessor);
     return Response.json({ ...result, ...(conversation ? { conversation } : {}) });
   }
 
@@ -5465,53 +5614,93 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     sessionId: string,
     tenantId: string,
     documentProcessor?: DocumentProcessingGateway,
-  ): Promise<{ summarized_messages: number; summary_chars: number; already_current: boolean } | undefined> {
+    sourceMessages?: ConversationMessage[],
+  ): Promise<{ summarized_messages: number; summary_chars: number; already_current: boolean; remaining_messages: number; complete: boolean } | undefined> {
     try {
-      const messages = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
+      const messages = sourceMessages ?? await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
       if (!messages || messages.length === 0) return undefined;
 
       const toSummarize = messagesToSummarize(messages);
       if (toSummarize.length === 0) {
         // Nothing has fallen outside the recent window yet — honest "nothing to do", not a
         // fabricated success.
-        return { summarized_messages: 0, summary_chars: 0, already_current: true };
+        return { summarized_messages: 0, summary_chars: 0, already_current: true, remaining_messages: 0, complete: true };
       }
 
       let existing = "";
       let covered = 0;
+      let coveredThroughId: string | undefined;
       try {
         const row = this.ctx.storage.sql
-          .exec("SELECT summary, covered_messages FROM conversation_summaries WHERE session_id = ?", sessionId)
-          .toArray()[0] as { summary?: string; covered_messages?: number } | undefined;
+          .exec("SELECT summary, covered_messages, covered_through_id FROM conversation_summaries WHERE session_id = ?", sessionId)
+          .toArray()[0] as { summary?: string; covered_messages?: number; covered_through_id?: string | null } | undefined;
         if (row) {
           existing = String(row.summary ?? "");
           covered = Number(row.covered_messages ?? 0);
+          coveredThroughId = row.covered_through_id ?? undefined;
         }
       } catch {
         /* no stored summary is a valid state */
       }
-      if (toSummarize.length <= covered && existing) {
-        return { summarized_messages: covered, summary_chars: existing.length, already_current: true };
+      let cursorIndex = coveredThroughId ? toSummarize.findIndex((message) => message.id === coveredThroughId) : -1;
+      // A count-only legacy summary or an anchor removed by transcript truncation is unsafe to
+      // advance. Rebuild from the remaining source messages instead of skipping or retaining
+      // claims for deleted messages.
+      if ((coveredThroughId && cursorIndex < 0) || (!coveredThroughId && covered > 0)) {
+        existing = "";
+        covered = 0;
+        coveredThroughId = undefined;
+        cursorIndex = -1;
       }
+      const pending = toSummarize.slice(cursorIndex + 1);
+      if (pending.length === 0 && existing) {
+        return { summarized_messages: covered, summary_chars: existing.length, already_current: true, remaining_messages: 0, complete: true };
+      }
+      if (pending.length === 0) return { summarized_messages: 0, summary_chars: 0, already_current: true, remaining_messages: 0, complete: true };
 
-      const regenerated = await this.summarizeConversation(documentProcessor && existing ? toSummarize.slice(covered) : toSummarize, existing, documentProcessor);
-      if (!regenerated) return undefined; // summariser unavailable — never claim it compacted
-      try {
-        this.ctx.storage.sql.exec(
-          `INSERT OR REPLACE INTO conversation_summaries (session_id, summary, covered_messages, updated_at)
-           VALUES (?, ?, ?, ?)`,
-          sessionId, regenerated, toSummarize.length, new Date().toISOString()
-        );
-      } catch {
-        return undefined;
+      // Summarize in bounded batches and checkpoint each successful one. Threads with a backlog
+      // larger than this invocation's allowance continue on the next turn without one giant paid
+      // prompt or a false claim that messages beyond the 500-row API default were covered.
+      let regenerated = existing;
+      let summarizedNow = 0;
+      for (let offset = 0, batches = 0; offset < pending.length && batches < 20; batches++) {
+        let end = offset;
+        let chars = 0;
+        while (end < pending.length && end - offset < 80) {
+          const size = pending[end]!.content.length;
+          if (end > offset && chars + size > 80_000) break;
+          chars += size;
+          end++;
+        }
+        const batch = pending.slice(offset, end);
+        const batchLast = batch[batch.length - 1];
+        if (!batchLast?.id) return undefined;
+        const nextSummary = await this.summarizeConversation(batch, regenerated, documentProcessor);
+        if (!nextSummary) break;
+        regenerated = nextSummary;
+        covered += batch.length;
+        coveredThroughId = batchLast.id;
+        const sourceIndex = toSummarize.findIndex((message) => message.id === coveredThroughId);
+        try {
+          this.ctx.storage.sql.exec(
+            `INSERT OR REPLACE INTO conversation_summaries (session_id, summary, covered_messages, covered_through_id, updated_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            sessionId, regenerated, sourceIndex + 1, coveredThroughId, new Date().toISOString()
+          );
+        } catch {
+          return undefined;
+        }
+        summarizedNow += batch.length;
+        offset = end;
       }
+      if (summarizedNow === 0) return undefined;
       const { archive } = splitForCompaction(messages);
       const archivedAt = new Date().toISOString();
       for (let i = 0; i < archive.length; i++) {
         const message = archive[i]!;
         this.ctx.storage.sql.exec(
           `INSERT OR IGNORE INTO archived_messages (id, session_id, role, content, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?)`,
-          `${sessionId}:${i}`, sessionId, message.role, message.content, message.created_at ?? null, archivedAt
+          `${sessionId}:${message.id ?? i}`, sessionId, message.role, message.content, message.created_at ?? null, archivedAt
         );
       }
       if (projectId && this.env.SCRIPTS_R2) {
@@ -5524,7 +5713,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const updated = await appendActivity(journal, {
             at: archivedAt,
             actor: "context-compactor",
-            summary: `Compacted ${archive.length} earlier messages into project truth: ${milestone}`,
+            summary: `Summarized ${covered} of ${toSummarize.length} older messages so far: ${milestone}`,
             threadId: sessionId,
           });
           try {
@@ -5537,7 +5726,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
         if (!mirrored) throw new Error("Project journal changed repeatedly during memory compaction");
       }
-      return { summarized_messages: toSummarize.length, summary_chars: regenerated.length, already_current: false };
+      const remainingMessages = pending.length - summarizedNow;
+      return { summarized_messages: covered, summary_chars: regenerated.length, already_current: false,
+        remaining_messages: remainingMessages, complete: remainingMessages === 0 };
     } catch {
       return undefined;
     }
@@ -7559,7 +7750,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }): Promise<boolean> {
     if (args.projectId && args.hasSpendCap) {
       if (!this.env.SPACES_WORKER) throw new Error("spaces_worker_unavailable");
-      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.model.startsWith("openrouter/") ? args.modelPricing : undefined);
+      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.modelPricing);
       const response = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/spaces/${encodeURIComponent(args.spaceId)}/projects/${encodeURIComponent(args.projectId)}/spend`,
         { method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
@@ -7572,7 +7763,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     if (!args.projectId && args.userId && args.callerRole === "product_end_user") {
       if (!this.env.SPACES_WORKER) throw new Error("spaces_worker_unavailable");
-      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.model.startsWith("openrouter/") ? args.modelPricing : undefined);
+      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.modelPricing);
       const response = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/internal/product-users/${encodeURIComponent(args.spaceId)}/${encodeURIComponent(args.userId)}/credits/reservations`,
         { method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
@@ -7585,7 +7776,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     if (!args.projectId && BUILDER_CALLER_ROLES.has(args.callerRole ?? "")) {
       if (!this.env.BILLING_WORKER) throw new Error("monthly_llm_quota_reservation_unavailable");
-      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.model.startsWith("openrouter/") ? args.modelPricing : undefined);
+      const estimate = estimateRequestCostCredits(args.serializedRequestBytes, args.maxOutputTokens, args.model, args.modelPricing);
       const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/llm-tokens/reservations/reserve", {
         method: "POST", headers: await this.internalHeaders(args.tenantId, { "content-type": "application/json" }),
         body: JSON.stringify({ reservation_id: `${args.runId}:${args.sequence}`, run_id: args.runId, space_id: args.spaceId, estimated_tokens: estimate.estimatedInputTokens + estimate.reservedOutputTokens }),
@@ -8027,7 +8218,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
     const agentId = body.agentId ?? "naelao-agent";
     const tenantId = body.tenantId ?? "";
-    const limit = Math.min(body.max ?? 5, 20);
+    const limit = Number.isSafeInteger(body.max)
+      ? Math.max(1, Math.min(body.max!, 20))
+      : 5;
 
     // human_takeover sessions are correctly left alone — a human is already handling them,
     // this is not an escalation/failure, so it's tracked separately from `escalated`.
@@ -8070,7 +8263,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // browser and container handlers do not exist in this object at all.
     // Customer attachments are message-scoped read operations. Copy-to-workspace is intentionally
     // absent here because the project workspace is shared across customers.
-    const tools = new ScriptToolSurface(engineEnv, ["customer-bot", "customer-attachments"]);
+    const tools = new ScriptToolSurface(engineEnv, ["customer-bot", "customer-attachments", "conversation"]);
     // Kept out of the model-facing surface; only platform code below can dispatch the resulting
     // reply to the same conversation address.
     const deliveryTools = new ScriptToolSurface(engineEnv, ["notifications"]);
@@ -8216,6 +8409,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { goal: msg.text, taskId: msg.task_id ?? msg.id, threadId: msg.session_id },
       );
       if (messageEnv) Object.assign(engineEnv, messageEnv);
+      // The channel transcript is local to this Agent DO, unlike web sessions stored in
+      // SpaceDO. The callback is closed over the active session and accepts no model-selected ID.
+      engineEnv.loadCurrentConversation = () => this.loadChannelTranscript(msg.session_id);
       engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}`;
 
       // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
@@ -9262,11 +9458,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     spaceId: string,
     projectId: string,
     sessionId: string,
-    tenantId: string
+    tenantId: string,
+    fullHistory = true
   ): Promise<ConversationMessage[] | undefined> {
     if (!sessionId || !this.env.SPACES_WORKER) return undefined;
     try {
       const headers = await this.internalHeaders(tenantId);
+      if (!fullHistory) {
+        const url = new URL(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`);
+        url.searchParams.set("limit", "500");
+        url.searchParams.set("scope_space_id", spaceId);
+        url.searchParams.set("scope_project_id", projectId);
+        url.searchParams.set("scope_thread_id", sessionId);
+        const response = await this.env.SPACES_WORKER.fetch(new Request(url, { headers }));
+        if (!response.ok) return undefined;
+        const body = (await response.json()) as { data?: ConversationMessage[]; messages?: ConversationMessage[] };
+        const page = body.data ?? body.messages ?? [];
+        return Array.isArray(page) ? page : undefined;
+      }
       return await loadTranscriptPages<ConversationMessage & { id?: string }>((beforeId) => {
         const url = new URL(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`);
         url.searchParams.set("limit", String(TRANSCRIPT_PAGE_SIZE));
@@ -9292,7 +9501,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!sessionId || !this.env.SPACES_WORKER) return undefined;
     const workingKey = `${spaceId}\0${projectId}\0${sessionId}`;
     try {
-      const messages = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
+      // Most turns need only the newest page. Fetching 10,000 rows every time made thread cost
+      // grow linearly with its lifetime. Load the complete transcript only when the recent page
+      // shows that compaction is due.
+      let messages = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId, false);
       if (!messages || messages.length === 0) {
         this.workingContexts.delete(workingKey);
         return undefined;
@@ -9300,47 +9512,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       const threadTurns = messages.filter((message) => message.role === "user").length;
       const tokenUsageRatio = messages.reduce((sum, message) => sum + estimateTokens(message.content), 0) / modelContextTokens;
-      const attemptedSpecialistCompaction = Boolean(documentProcessor && shouldCompactContext(threadTurns, tokenUsageRatio));
-      if (shouldCompactContext(threadTurns, tokenUsageRatio)) {
-        await this.compactConversationForSession(spaceId, projectId, sessionId, tenantId, documentProcessor);
+      const compactionDue = shouldCompactContext(threadTurns, tokenUsageRatio) || messagesToSummarize(messages).length > 0;
+      let historyIncomplete = false;
+      if (compactionDue) {
+        const fullTranscript = await this.fetchSessionMessages(spaceId, projectId, sessionId, tenantId);
+        if (fullTranscript && fullTranscript.length > 0) {
+          messages = fullTranscript;
+          await this.compactConversationForSession(spaceId, projectId, sessionId, tenantId, documentProcessor, fullTranscript);
+        } else {
+          // A history beyond the safe materialization ceiling must not erase the recent thread
+          // from the planner context. Keep the bounded newest page and disclose the gap.
+          historyIncomplete = true;
+        }
       }
 
-      // The stored summary covers the oldest `covered_messages`; reuse it unless the conversation
-      // has grown enough that more messages now fall outside the recent window.
+      // Summary coverage is anchored to a transcript message ID. Counts alone drift when a user
+      // truncates history, so compaction resumes from the exact source row it last summarized.
       let summary = "";
-      let covered = 0;
       try {
         const row = this.ctx.storage.sql
-          .exec("SELECT summary, covered_messages FROM conversation_summaries WHERE session_id = ?", sessionId)
+          .exec("SELECT summary FROM conversation_summaries WHERE session_id = ?", sessionId)
           .toArray()[0] as { summary?: string; covered_messages?: number } | undefined;
-        if (row) {
-          summary = String(row.summary ?? "");
-          covered = Number(row.covered_messages ?? 0);
-        }
+        if (row) summary = String(row.summary ?? "");
       } catch {
         // No summary is a valid state — the context is simply less informative.
       }
 
-      const toSummarize = messagesToSummarize(messages);
-      if (toSummarize.length > covered && !attemptedSpecialistCompaction) {
-        const regenerated = await this.summarizeConversation(documentProcessor && summary ? toSummarize.slice(covered) : toSummarize, summary, documentProcessor);
-        if (regenerated) {
-          summary = regenerated;
-          try {
-            this.ctx.storage.sql.exec(
-              `INSERT OR REPLACE INTO conversation_summaries (session_id, summary, covered_messages, updated_at)
-               VALUES (?, ?, ?, ?)`,
-              sessionId,
-              summary,
-              toSummarize.length,
-              new Date().toISOString()
-            );
-          } catch {
-            // Losing the cache costs a regeneration next turn, nothing more.
-          }
-        }
+      if (historyIncomplete) {
+        summary = "Older transcript history exceeds the automatic compaction scan limit. Details may be missing; do not infer that an absent fact was never discussed.";
       }
-
       const context = buildConversationContext(messages, summary);
       this.workingContexts.set(workingKey, context);
       return context;
@@ -9382,6 +9582,45 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return buildConversationContext(messages);
     } catch {
       return undefined;
+    }
+  }
+
+  /** Bounded full-history source for conversation.search on channel threads. Channel messages
+   *  live in this DO (not SpaceDO), so the ordinary worker-backed reader cannot see them. */
+  private async loadChannelTranscript(sessionId: string): Promise<{
+    messages: Array<{ id: string; role: string; content: string; created_at: string }>;
+    complete: boolean;
+    error?: string;
+  }> {
+    const messages: Array<{ id: string; role: string; content: string; created_at: string }> = [];
+    let beforeRowid: number | undefined;
+    let contentBytes = 0;
+    try {
+      while (true) {
+        const atLimit = messages.length >= 10_000 || contentBytes >= 20 * 1024 * 1024;
+        const limit = atLimit ? 1 : 100;
+        const rows = this.ctx.storage.sql.exec(
+          `SELECT rowid AS rid, id, direction, text, created_at FROM channel_messages
+           WHERE session_id = ? ${beforeRowid === undefined ? "" : "AND rowid < ?"}
+           ORDER BY rowid DESC LIMIT ?`,
+          ...(beforeRowid === undefined ? [sessionId, limit] : [sessionId, beforeRowid, limit]),
+        ).toArray() as Array<{ rid: number; id: string; direction: string; text: string; created_at: number }>;
+        if (rows.length === 0) return { messages, complete: true };
+        if (atLimit) return { messages, complete: false };
+        for (const row of rows) {
+          const size = new TextEncoder().encode(row.text ?? "").byteLength;
+          if (messages.length >= 10_000 || contentBytes + size > 20 * 1024 * 1024) {
+            return { messages, complete: false };
+          }
+          contentBytes += size;
+          messages.unshift({ id: row.id, role: row.direction === "inbound" ? "user" : "assistant",
+            content: row.text, created_at: new Date(row.created_at).toISOString() });
+        }
+        if (rows.length < limit) return { messages, complete: true };
+        beforeRowid = rows[rows.length - 1]!.rid;
+      }
+    } catch {
+      return { messages, complete: false, error: "The channel transcript could not be read." };
     }
   }
 

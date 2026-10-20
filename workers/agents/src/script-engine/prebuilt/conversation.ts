@@ -18,7 +18,7 @@
  * contract does not change.
  */
 
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, parseBoundedInteger } from "@naelao/http";
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 
 interface StoredMessage {
@@ -79,11 +79,38 @@ function snippet(content: string, queryTokens: string[], radius = 160): string {
   return `${start > 0 ? "…" : ""}${content.slice(start, end)}${end < content.length ? "…" : ""}`;
 }
 
-const SEARCH_PAGE_SIZE = 50;
+const SEARCH_PAGE_SIZE = 100;
 const SEARCH_MAX_MESSAGES = 10_000;
 const SEARCH_MAX_BYTES = 16 * 1024 * 1024;
 
-async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBeforeId?: string, maxMessages = SEARCH_MAX_MESSAGES): Promise<{ messages: StoredMessage[]; incomplete: boolean; unavailable: boolean; nextCursor?: string }> {
+async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBeforeId?: string, maxMessages = SEARCH_MAX_MESSAGES): Promise<{ messages: StoredMessage[]; incomplete: boolean; unavailable: boolean; error?: string; nextCursor?: string }> {
+  // Channel transcripts are stored by the owning Agent DO. The host callback is closed over
+  // the active session and deliberately accepts no model-selected session identifier.
+  if (ctx.env.loadCurrentConversation) {
+    try {
+      const loaded = await ctx.env.loadCurrentConversation();
+      let available = loaded.messages;
+      if (startBeforeId) {
+        const cursorIndex = available.findIndex((message) => message.id === startBeforeId);
+        if (cursorIndex < 0) return { messages: [], incomplete: true, unavailable: false };
+        available = available.slice(0, cursorIndex);
+      }
+      const selected: StoredMessage[] = [];
+      let bytes = 0;
+      for (let i = available.length - 1; i >= 0 && selected.length < maxMessages; i--) {
+        const message = available[i]!;
+        const size = new TextEncoder().encode(message.content ?? "").length;
+        if (bytes + size > SEARCH_MAX_BYTES) break;
+        bytes += size;
+        selected.unshift(message);
+      }
+      const incomplete = !loaded.complete || selected.length < available.length;
+      const nextCursor = incomplete ? selected[0]?.id : undefined;
+      return { messages: selected, incomplete, unavailable: Boolean(loaded.error && selected.length === 0), ...(loaded.error ? { error: loaded.error } : {}), ...(nextCursor ? { nextCursor } : {}) };
+    } catch {
+      return { messages: [], incomplete: false, unavailable: true };
+    }
+  }
   if (!ctx.env.spacesWorker) return { messages: [], incomplete: false, unavailable: true };
   const token = await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId);
   const messages: StoredMessage[] = [];
@@ -95,20 +122,43 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
     while (messages.length < maxMessages && bytes < SEARCH_MAX_BYTES) {
       const url = new URL(`http://spaces-worker/spaces/${encodeURIComponent(ctx.env.spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`);
       url.searchParams.set("limit", String(SEARCH_PAGE_SIZE));
+      url.searchParams.set("scope_space_id", ctx.env.spaceId);
+      url.searchParams.set("scope_project_id", ctx.env.projectId ?? "");
+      url.searchParams.set("scope_thread_id", sessionId);
       if (beforeId) url.searchParams.set("before_id", beforeId);
       const resp = await ctx.env.spacesWorker.fetch(
         new Request(url, { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } })
       );
-      if (!resp.ok) return { messages, incomplete: messages.length > 0, unavailable: messages.length === 0, ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
+      if (!resp.ok) return { messages, incomplete: true, unavailable: messages.length === 0, error: `Transcript service returned ${resp.status}.`, ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
       const body = (await resp.json()) as { data?: StoredMessage[]; messages?: StoredMessage[] };
       const page = body.data ?? body.messages ?? [];
       if (page.length === 0) break;
-      const remainingMessages = maxMessages - messages.length;
-      const acceptedPage = page.length > remainingMessages ? page.slice(page.length - remainingMessages) : page;
-      for (const message of acceptedPage) bytes += new TextEncoder().encode(message.content ?? "").length;
+      const acceptedPage: StoredMessage[] = [];
+      for (const message of page) {
+        if (messages.length + acceptedPage.length >= maxMessages) break;
+        const messageBytes = new TextEncoder().encode(message.content ?? "").length;
+        if (bytes + messageBytes > SEARCH_MAX_BYTES) break;
+        acceptedPage.push(message);
+        bytes += messageBytes;
+      }
       messages.unshift(...acceptedPage);
+      if (acceptedPage.length < page.length) {
+        incomplete = true;
+        break;
+      }
       if (messages.length >= maxMessages || bytes >= SEARCH_MAX_BYTES) {
-        incomplete = page.length === SEARCH_PAGE_SIZE || acceptedPage.length < page.length;
+        const oldestId = messages[0]?.id;
+        if (!oldestId) { incomplete = true; break; }
+        const probeUrl = new URL(`http://spaces-worker/spaces/${encodeURIComponent(ctx.env.spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`);
+        probeUrl.searchParams.set("limit", "1");
+        probeUrl.searchParams.set("before_id", oldestId);
+        probeUrl.searchParams.set("scope_space_id", ctx.env.spaceId);
+        probeUrl.searchParams.set("scope_project_id", ctx.env.projectId ?? "");
+        probeUrl.searchParams.set("scope_thread_id", sessionId);
+        const probe = await ctx.env.spacesWorker.fetch(new Request(probeUrl, { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } }));
+        if (!probe.ok) { incomplete = true; break; }
+        const probeBody = (await probe.json()) as { data?: StoredMessage[]; messages?: StoredMessage[] };
+        incomplete = (probeBody.data ?? probeBody.messages ?? []).length > 0;
         break;
       }
       if (page.length < SEARCH_PAGE_SIZE) break;
@@ -125,7 +175,7 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
       beforeId = oldestId;
     }
   } catch {
-    return { messages, incomplete: messages.length > 0, unavailable: messages.length === 0, ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
+    return { messages, incomplete: true, unavailable: messages.length === 0, error: "Transcript service could not be reached.", ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
   }
   const nextCursor = incomplete ? messages[0]?.id : undefined;
   return { messages, incomplete, unavailable: false, ...(nextCursor ? { nextCursor } : {}) };
@@ -138,14 +188,17 @@ function queryText(args: Record<string, unknown>): string {
 async function search(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
   const query = queryText(args);
   if (!query) throw new Error("conversation.search requires 'query' — what are you looking for?");
-  const sessionId = String(args["session_id"] ?? "").trim();
-  if (!sessionId) return { ok: false, reason: "conversation.search needs 'session_id' — pass the active thread id." };
+  const sessionId = ctx.env.currentSessionId;
+  if (!sessionId) return { ok: false, reason: "conversation.search is only available when this run has a host-authorized conversation thread." };
+  if (args["session_id"] !== undefined && String(args["session_id"]).trim() !== sessionId) {
+    return { ok: false, reason: "conversation.search can only read the current authorized conversation." };
+  }
   const requestedLimit = Number(args["limit"] ?? 5);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 20) : 5;
-  const requestedScanLimit = Number(args["scan_limit"] ?? SEARCH_MAX_MESSAGES);
-  const scanLimit = Number.isFinite(requestedScanLimit) ? Math.min(Math.max(Math.floor(requestedScanLimit), SEARCH_PAGE_SIZE), SEARCH_MAX_MESSAGES) : SEARCH_MAX_MESSAGES;
+  const scanLimit = parseBoundedInteger(String(args["scan_limit"] ?? SEARCH_MAX_MESSAGES), SEARCH_MAX_MESSAGES, SEARCH_PAGE_SIZE, SEARCH_MAX_MESSAGES);
   const beforeId = typeof args["before_id"] === "string" ? args["before_id"].trim().slice(0, 160) : undefined;
-  const { messages, incomplete, unavailable, nextCursor } = await loadMessages(ctx, sessionId, beforeId || undefined, scanLimit);
+  const { messages, incomplete, unavailable, error, nextCursor } = await loadMessages(ctx, sessionId, beforeId || undefined, scanLimit);
+  if (unavailable || error) return { ok: false, query, searched_messages: messages.length, complete: false, reason: error ?? "History search is unavailable. An empty result does not mean this was never discussed." };
   if (messages.length === 0) return unavailable
     ? { ok: false, query, results: [], searched_messages: 0, note: "History search is unavailable. An empty result does not mean this was never discussed." }
     : { ok: true, query, results: [], searched_messages: 0, exhausted: true, note: "No stored messages to search." };
@@ -153,13 +206,13 @@ async function search(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
   const scored = messages.map((m, i) => ({ m, i, score: scoreMessage(m, queryTokens) }))
     .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.i - a.i).slice(0, limit);
   return {
-    ok: true, query, searched_messages: messages.length,
+    ok: true, query, searched_messages: messages.length, complete: !incomplete,
     results: scored.map((r) => ({ role: r.m.role, position: incomplete ? `${r.i + 1} of scanned page (${messages.length} messages)` : `${r.i + 1} of ${messages.length}`, created_at: r.m.created_at ?? null, message_id: r.m.id ?? null, excerpt: snippet(r.m.content, queryTokens), relevance: Number(r.score.toFixed(3)) })),
     exhausted: !incomplete,
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     ...(incomplete ? { note: nextCursor
-      ? `Search covered ${messages.length} messages in this page. Search older history by passing before_id=${nextCursor}.`
-      : `Search covered ${messages.length} messages but could not continue because a stable message cursor was unavailable. The search is incomplete.` }
+      ? `The search was incomplete after ${messages.length} messages in this page. Search older history by passing before_id=${nextCursor}.`
+      : `The search was incomplete after ${messages.length} messages because a stable message cursor was unavailable.` }
       : scored.length === 0 ? { note: beforeId
         ? `Nothing in this older conversation page matches "${query}".`
         : `Nothing in this conversation matches "${query}". It was not discussed here.` } : {}),

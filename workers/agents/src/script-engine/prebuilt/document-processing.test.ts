@@ -4,11 +4,14 @@ import type { PrebuiltOpContext } from "./index.js";
 
 const summarizeOperation = documentProcessing.operations["document.summarize"];
 if (!summarizeOperation) throw new Error("document summarizer missing");
+const partitionOperation = documentProcessing.operations["document.partition"];
+if (!partitionOperation) throw new Error("document partitioner missing");
 
 function fixture(privateRun = false) {
   const text = "Vendor: Acme";
   const get = vi.fn(async () => ({
     size: text.length,
+    httpMetadata: { contentType: "text/plain" },
     arrayBuffer: async () => new TextEncoder().encode(text).buffer,
   }));
   const summarize = vi.fn(async () => ({
@@ -61,5 +64,37 @@ describe("document workspace input boundary", () => {
       summarizeOperation({ path: "other.txt" }, c.ctx)
     ).rejects.toThrow("worker_file_scope_denied");
     expect(c.get).not.toHaveBeenCalled();
+  });
+  it("partitions the authorized source with stable hash, offsets, and page metadata", async () => {
+    const state = fixture();
+    const result = (await partitionOperation(
+      { path: "/workspace/report.txt" },
+      state.ctx
+    )) as {
+      sourceId: string;
+      sourceHash: string;
+      chunks: Array<{
+        text: string;
+        start: number;
+        end: number;
+        offsetEncoding: string;
+      }>;
+    };
+    expect(result.sourceId).toMatch(
+      /^workspace:report\.txt#sha256:[a-f0-9]{64}$/
+    );
+    expect(result.sourceHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.chunks).toEqual([
+      {
+        index: 0,
+        text: "Vendor: Acme",
+        start: 0,
+        end: 12,
+        offsetEncoding: "utf16",
+      },
+    ]);
+    expect(state.get).toHaveBeenCalledWith(
+      "spaces/s/projects/p/workspace/branches/task-a/report.txt"
+    );
   });
 });

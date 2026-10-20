@@ -118,7 +118,7 @@ export function interceptPlatformWords(words: string[], command?: string): CliDi
   if (plannerCommand) return plannerCommand;
   if (words[0] === "document") {
     const action = words[1];
-    if (!["summarize", "extract", "compress"].includes(action ?? "")) throw new Error("usage: document summarize|extract|compress --path <workspace-file> [--entities <json>] [--query <question>]");
+    if (!["summarize", "extract", "compress", "partition"].includes(action ?? "")) throw new Error("usage: document summarize|extract|compress|partition --path <workspace-file> [--entities <json>] [--query <question>]");
     const { body } = bodyAndFlags(words.slice(2));
     const input = words.includes("--json") ? rawJsonFlag(command, "--json") : body;
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("document --json requires an object");

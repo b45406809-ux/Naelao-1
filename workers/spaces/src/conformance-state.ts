@@ -18,11 +18,14 @@ export class ConformanceSandboxDO extends DurableObject<Environment> {
     const path = new URL(request.url).pathname;
     if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY) return Response.json({ error: "fixture_size_limit" }, { status: 413 });
     const raw = await request.text(); if (raw.length > MAX_BODY) return Response.json({ error: "fixture_size_limit" }, { status: 413 });
-    const body = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+    let body: Record<string, unknown>;
+    try { body = raw ? JSON.parse(raw) as Record<string, unknown> : {}; }
+    catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
     const sql = this.ctx.storage.sql;
     if (path === "/prepare") {
       const seed = body as unknown as FixtureSeed;
       if (!Array.isArray(seed.schema) || seed.schema.length > 16 || !Array.isArray(seed.statements) || seed.statements.length > 500 || !seed.files || Object.keys(seed.files).length > 64) return Response.json({ error: "invalid_fixture_seed" }, { status: 400 });
+      if (sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='__oracle_budget'").toArray().length) return Response.json({ error: "fixture_already_prepared" }, { status: 409 });
       this.ctx.storage.transactionSync(() => {
         sql.exec("CREATE TABLE __oracle_budget (id INTEGER PRIMARY KEY, operations INTEGER NOT NULL, rows_written INTEGER NOT NULL, sealed INTEGER NOT NULL, failures INTEGER NOT NULL)");
         sql.exec("INSERT INTO __oracle_budget VALUES (1,0,0,0,0)");
@@ -48,16 +51,17 @@ export class ConformanceSandboxDO extends DurableObject<Environment> {
     }
     if (path === "/cleanup") { await this.ctx.storage.deleteAll(); return Response.json({ cleaned: true }); }
     if (path === "/assert") {
-      sql.exec("UPDATE __oracle_budget SET sealed=1 WHERE id=1");
       const assertions = body.assertions as StateAssertion[];
-      if (!Array.isArray(assertions) || assertions.length > 32) return Response.json({ error: "invalid_assertions" }, { status: 400 });
-      const rows = assertions.map(assertion => {
-        if (!safeSql(assertion.sql, true)) throw new Error("invalid_oracle_query");
-        return sql.exec(assertion.sql, ...(assertion.args ?? [])).toArray();
-      });
-      const files = Object.fromEntries(sql.exec("SELECT path, content FROM __oracle_files ORDER BY path").toArray().map(row => [row.path, row.content]));
-      const budget = sql.exec("SELECT operations, rows_written, failures FROM __oracle_budget WHERE id=1").toArray()[0];
-      return Response.json({ rows, files, budget });
+      if (!Array.isArray(assertions) || assertions.length > 32 || assertions.some(assertion => !assertion || !safeSql(assertion.sql, true) || !Array.isArray(assertion.args ?? []))) return Response.json({ error: "invalid_assertions" }, { status: 400 });
+      try {
+        const rows = assertions.map(assertion => sql.exec(assertion.sql, ...(assertion.args ?? [])).toArray());
+        sql.exec("UPDATE __oracle_budget SET sealed=1 WHERE id=1");
+        const files = Object.fromEntries(sql.exec("SELECT path, content FROM __oracle_files ORDER BY path").toArray().map(row => [row.path, row.content]));
+        const budget = sql.exec("SELECT operations, rows_written, failures FROM __oracle_budget WHERE id=1").toArray()[0];
+        return Response.json({ rows, files, budget });
+      } catch {
+        return Response.json({ error: "invalid_oracle_query" }, { status: 400 });
+      }
     }
     if (!['/sql','/files/read','/files/write','/files/validate'].includes(path)) return Response.json({ error: "capability_denied" }, { status: 403 });
     const budget = sql.exec("SELECT operations, rows_written, sealed FROM __oracle_budget WHERE id=1").toArray()[0] as { operations: number; rows_written: number; sealed: number };

@@ -23,7 +23,7 @@ import type {
   TriggerCondition,
   TriggerRule,
 } from "@naelao/events";
-import { broadcastSpaceEvent, mintInternalToken, verifyInternalToken } from "@naelao/http";
+import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
 import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
@@ -2956,6 +2956,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/sessions") {
         return this.listSessions(url.searchParams);
       }
+      // Internal compaction scope lookup. The Spaces Worker has already verified the caller's
+      // tenant HMAC and, for product end users, injects their identity-derived end_user_id.
+      // Return only the canonical project/thread scope and ownership result; never expose the
+      // session's owner identifier to the Agents Worker.
+      const compactScopeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/compact-scope$/);
+      if (method === "GET" && compactScopeMatch?.[1]) {
+        const session = queryOne<SessionRow>(this.ctx.storage.sql as never,
+          "SELECT * FROM sessions WHERE id = ?", compactScopeMatch[1]);
+        const endUserId = url.searchParams.get("end_user_id");
+        if (!session || (endUserId && session.end_user_id !== endUserId))
+          return Response.json({ error_code: "not_found" }, { status: 404 });
+        const thread = queryOne<{ project_id: string | null; thread_tier: string; created_by: string | null }>(
+          this.ctx.storage.sql as never,
+          "SELECT project_id, thread_tier, created_by FROM threads WHERE session_id = ? LIMIT 1",
+          compactScopeMatch[1]);
+        const actorId = request.headers.get("x-naelao-user-id");
+        if (thread?.thread_tier === "tier_4_scratchpad" && thread.created_by !== actorId)
+          return Response.json({ error_code: "not_found" }, { status: 404 });
+        return Response.json({ project_id: thread?.project_id ?? null,
+          owned_by_caller: endUserId ? session.end_user_id === endUserId : undefined,
+          private_scratchpad: thread?.thread_tier === "tier_4_scratchpad" });
+      }
       // GET /sessions/:id
       const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
       if (method === "GET" && sessionMatch?.[1]) {
@@ -4762,12 +4784,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // instead of being silently clamped: that caller sums every message's length to report "% of
     // context used", and clamping made it UNDER-report on exactly the long conversations where the
     // number matters, which in turn suppressed the auto-compaction it drives.
-    const requestedLimit = Number(params.get("limit") ?? "50");
-    // SQLite treats LIMIT -1 as unlimited. Clamp both ends and fall back for malformed values so
-    // an extreme or invalid query cannot turn a bounded transcript page into an unbounded read.
-    const limit = Number.isFinite(requestedLimit)
-      ? Math.min(Math.max(Math.floor(requestedLimit), 1), 500)
-      : 50;
+    const limit = parseBoundedInteger(params.get("limit"), 50, 1, 500);
     const before = params.get("before");
     // `before` is a created_at timestamp, which is only millisecond-granular — several messages
     // written in the same millisecond share one value, so `created_at < before` drops every one of
@@ -7291,10 +7308,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     params: URLSearchParams
   ): Response {
     const q = params.get("q") ?? "";
-    const limit = Math.min(
-      Number.parseInt(params.get("limit") ?? "5", 10) || 5,
-      50
-    );
+    const limit = parseBoundedInteger(params.get("limit"), 5, 1, 50);
     const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
     const tokens = q
       .toLowerCase()
@@ -7391,10 +7405,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     params: URLSearchParams
   ): Response {
     const q = (params.get("q") ?? "").toLowerCase().trim();
-    const limit = Math.min(
-      Number.parseInt(params.get("limit") ?? "5", 10) || 5,
-      50
-    );
+    const limit = parseBoundedInteger(params.get("limit"), 5, 1, 50);
     const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
     const rows = queryAll<{
       id: string;
@@ -7434,10 +7445,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     projectId: string,
     params: URLSearchParams
   ): Response {
-    const limit = Math.min(
-      Number.parseInt(params.get("limit") ?? "5", 10) || 5,
-      50
-    );
+    const limit = parseBoundedInteger(params.get("limit"), 5, 1, 50);
     const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
     const rows = queryAll<{
       id: string;
@@ -7516,10 +7524,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     params: URLSearchParams
   ): Response {
     const q = params.get("q") ?? "";
-    const limit = Math.min(
-      Number.parseInt(params.get("limit") ?? "5", 10) || 5,
-      50
-    );
+    const limit = parseBoundedInteger(params.get("limit"), 5, 1, 50);
     const roleRank = Math.max(0, Math.min(3, Number.parseInt(params.get("role_rank") ?? "0", 10) || 0));
     const like = `%${q.replace(/[%_]/g, (c) => `\\${c}`)}%`;
     const rows = queryAll<{
@@ -7760,10 +7765,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // builder-only at the spaces-worker route (product_end_user callers never reach this).
   private listAgentActivity(params: URLSearchParams): Response {
     const projectId = params.get("project_id");
-    const limit = Math.min(
-      Math.max(Number.parseInt(params.get("limit") ?? "50", 10) || 50, 1),
-      200
-    );
+    const limit = parseBoundedInteger(params.get("limit"), 50, 1, 200);
     // failure_kind / event_type are the drill-down the diagnostics summary points at: the summary
     // says "4 tool_error failures in Lead Generation", and this is how the assistant then reads
     // those four rows specifically instead of paging the whole log looking for them.
@@ -7899,19 +7901,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listNotifications(params: URLSearchParams): Response {
     const status = params.get("status");
     const projectId = params.get("project_id");
-    const limit = Math.min(
-      Math.max(Number.parseInt(params.get("limit") ?? "50", 10) || 50, 1),
-      200
-    );
+    const limit = parseBoundedInteger(params.get("limit"), 50, 1, 200);
     if (params.get("undelivered_only") === "true") {
-      const staleMinutesRaw = Number.parseInt(
-        params.get("stale_after_minutes") ?? "15",
-        10
-      );
-      const staleMinutes =
-        Number.isFinite(staleMinutesRaw) && staleMinutesRaw >= 0
-          ? staleMinutesRaw
-          : 15;
+      const staleMinutes = parseBoundedInteger(params.get("stale_after_minutes"), 15, 0, 43_200);
       const rows = queryAll(
         this.ctx.storage.sql as never,
         `SELECT * FROM notifications
@@ -8458,10 +8450,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listSignalEvents(params: URLSearchParams): Response {
     const projectId = params.get("project_id");
     const signalType = params.get("signal_type");
-    const limit = Math.min(
-      Math.max(Number.parseInt(params.get("limit") ?? "50", 10) || 50, 1),
-      200
-    );
+    const limit = parseBoundedInteger(params.get("limit"), 50, 1, 200);
     const clauses: string[] = [];
     const args: unknown[] = [];
     if (projectId) {
@@ -9225,10 +9214,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { error_code: "not_found", message: "Not a wallet project" },
         { status: 404 }
       );
-    const limit = Math.min(
-      Number.parseInt(params.get("limit") ?? "50", 10) || 50,
-      200
-    );
+    const limit = parseBoundedInteger(params.get("limit"), 50, 1, 200);
     const rows = queryAll<{
       id: string;
       delta_cents: number;

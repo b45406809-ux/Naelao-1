@@ -19,6 +19,7 @@
     "verify:system-one": "node infra/scripts/verify-system-one.mjs",
     "capture:runtime-economics": "node infra/scripts/capture-runtime-economics.mjs",
     "evaluate:runtime-economics": "node infra/scripts/evaluate-runtime-economics.mjs",
+    "evaluate:scaledown": "node infra/scripts/evaluate-scaledown-pipeline.mjs",
     "evaluate:unit-economics": "node infra/scripts/evaluate-unit-economics.mjs"
   },
   "devDependencies": {

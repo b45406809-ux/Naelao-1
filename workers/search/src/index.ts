@@ -1,6 +1,6 @@
 // G-BE03: Platform-wide Semantic Search Worker — hybrid dense + sparse retrieval
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, parseBoundedInteger, requestId } from "@naelao/http";
 import { embedText, bm25Score, reciprocalRankFusion } from "@naelao/rag";
 
 interface Env {
@@ -34,7 +34,7 @@ app.get("/search/spacetypes", async (c) => {
 
   const url = new URL(c.req.url);
   const query = url.searchParams.get("q")?.trim() ?? "";
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10), 100);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, 1, 100);
   const category = url.searchParams.get("category") ?? "";
 
   if (!query) return c.json({ error_code: "bad_request", message: "q parameter required" }, 400);

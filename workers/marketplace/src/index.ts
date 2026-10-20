@@ -1,5 +1,5 @@
 import { validateMarketplacePricing, type MarketplacePricingModel } from "@naelao/billing-core";
-import { errorResponse, mintInternalToken, requestId } from "@naelao/http";
+import { errorResponse, mintInternalToken, parseBoundedInteger, requestId } from "@naelao/http";
 import { verifyArtifactCertificate, type ConformanceCertificate } from "@naelao/security";
 import { Hono } from "hono";
 
@@ -48,7 +48,9 @@ app.use("*", async (c, next) => { if (!c.env.PLATFORM_SECRET) throw new Error("M
 app.get("/v1/marketplace", async (c) => {
   const page = positive(c.req.query("page"), 1, 10000);
   const limit = positive(c.req.query("per_page") ?? c.req.query("limit"), 20, 100);
-  const offset = c.req.query("offset") === undefined ? (page - 1) * limit : Math.max(0, Number(c.req.query("offset")) || 0);
+  const offset = c.req.query("offset") === undefined
+    ? (page - 1) * limit
+    : parseBoundedInteger(c.req.query("offset"), 0, 0, 100_000);
   const clauses = ["status = 'published'"]; const values: unknown[] = [];
   if (c.req.query("category")) { clauses.push("category = ?"); values.push(c.req.query("category")); }
   if (c.req.query("q")) {

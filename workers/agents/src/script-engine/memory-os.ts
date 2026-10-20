@@ -91,6 +91,11 @@ const DECAY_TICK_MS = 24 * 60 * 60 * 1000; // a fact decays at most once per day
 // Keep the comparison below as `<=` so the boundary itself is denied rather than rounded up.
 const FABRIC_SCORE_FLOOR = 0.7; // spec's surgicalRecall threshold for Fabric specifically
 
+/** LLM supplied memory limits must stay finite; SQLite LIMIT -1 means every row. */
+export function boundedMemoryLimit(value: number | undefined, fallback = 5, maximum = 100): number {
+  return Number.isSafeInteger(value) ? Math.max(1, Math.min(maximum, value!)) : fallback;
+}
+
 export function initMemorySchema(sql: SqlStorageLike): void {
   sql.exec(`
     CREATE TABLE IF NOT EXISTS structured_facts (
@@ -292,7 +297,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
 
     async recall(query) {
       const userId = scope(query.userId);
-      const limit = query.limit ?? 5;
+      const limit = boundedMemoryLimit(query.limit);
       const roleRank = Math.max(0, Math.min(3, Math.trunc(opts.roleRank?.() ?? 0)));
       const like = `%${query.text.replace(/[%_]/g, (c) => `\\${c}`)}%`;
       const now = Date.now();
@@ -458,7 +463,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
 
     async recallFabric(query) {
       const userId = scope(query.userId);
-      const limit = query.limit ?? 5;
+      const limit = boundedMemoryLimit(query.limit);
       const rows = opts.sql
         .exec(
           `SELECT * FROM fabric_store WHERE user_id IN (?, ?) ORDER BY created_at DESC LIMIT 100`,
@@ -472,7 +477,8 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
         .slice(0, limit);
     },
 
-    async briefFabric(userId, limit = 5) {
+    async briefFabric(userId, requestedLimit = 5) {
+      const limit = boundedMemoryLimit(requestedLimit);
       const scoped = scope(userId);
       const rows = opts.sql
         .exec(
@@ -520,7 +526,7 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
 
     async searchWiki(query) {
       const userId = scope(query.userId);
-      const limit = query.limit ?? 5;
+      const limit = boundedMemoryLimit(query.limit);
       const like = `%${query.text.replace(/[%_]/g, (c) => `\\${c}`)}%`;
       const rows = opts.sql
         .exec(

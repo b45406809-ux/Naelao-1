@@ -68,6 +68,7 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   // knowledge-base
   "knowledge.search",
   "knowledge.search_brief",
+  "document.partition",
   "document.summarize",
   "document.extract",
   "document.compress",
