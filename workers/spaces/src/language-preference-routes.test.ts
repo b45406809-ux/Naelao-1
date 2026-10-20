@@ -28,6 +28,7 @@ function testEnv() {
     ["product-b:user-a", { email: "a@example.invalid", display_name: null, first_seen_at: "now", last_seen_at: null, suspended_at: null, email_verified_at: "now", deleted_at: null, preferred_language: null }],
   ]);
   const members = new Map([["member-a", null as string | null], ["member-b", null as string | null]]);
+  const clearedAuthData: string[] = [];
   const PLATFORM_DB = {
     prepare(sql: string) {
       return {
@@ -73,6 +74,10 @@ function testEnv() {
                 if (sql.includes("preferred_language = ?")) profile.preferred_language = values[0] as string | null;
                 return { meta: { changes: 1 } };
               }
+              if (sql.startsWith("DELETE FROM ")) {
+                clearedAuthData.push(sql);
+                return { meta: { changes: 1 } };
+              }
               return { meta: { changes: 0 } };
             },
           };
@@ -90,7 +95,7 @@ function testEnv() {
       return Response.json({ balance_credits: 4 });
     } }),
   };
-  return { PLATFORM_DB, PRODUCT_USER_DO, productUserCalls, PLATFORM_SECRET: "test-secret" };
+  return { PLATFORM_DB, PRODUCT_USER_DO, productUserCalls, clearedAuthData, PLATFORM_SECRET: "test-secret" };
 }
 
 const env = testEnv();
@@ -137,6 +142,9 @@ describe("language preference profile routes", () => {
     expect(response.status).toBe(200);
     expect(env.productUserCalls).toContain("/erase");
     expect(await response.json()).toMatchObject({ erased: true, sessions_deleted: 1, conversations_deleted: 2 });
+    expect(env.clearedAuthData.map((sql) => sql.split(" ")[2])).toEqual([
+      "password_reset_tokens", "email_verification_tokens", "whatsapp_auth_challenges",
+    ]);
     const readAfterErase = await call("/spaces/product-a/product-users/me/export", "GET", "product_end_user", "user-a");
     expect(await readAfterErase.json()).toMatchObject({ profile: { email: null, phone_e164: null, phone_verified_at: null } });
   });

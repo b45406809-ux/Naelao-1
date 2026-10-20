@@ -6606,6 +6606,14 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   const erased = await eraseRes.json<{ erased_at: string; sessions_deleted: number; conversations_deleted: number }>();
 
   if (!row.deleted_at) {
+    // Remove outstanding recovery/verification material as part of account erasure. These
+    // token hashes and WhatsApp challenge rows remain sensitive even though they are not usable
+    // once the profile is anonymized.
+    await Promise.all([
+      c.env.PLATFORM_DB.prepare("DELETE FROM password_reset_tokens WHERE product_space_id = ? AND end_user_id = ?").bind(root.id, userId).run(),
+      c.env.PLATFORM_DB.prepare("DELETE FROM email_verification_tokens WHERE product_space_id = ? AND end_user_id = ?").bind(root.id, userId).run(),
+      c.env.PLATFORM_DB.prepare("DELETE FROM whatsapp_auth_challenges WHERE product_space_id = ? AND end_user_id = ?").bind(root.id, userId).run(),
+    ]);
     await c.env.PLATFORM_DB.prepare(
       "UPDATE product_end_users SET email = NULL, display_name = NULL, phone_e164 = NULL, phone_verified_at = NULL, email_verified_at = NULL, preferred_language = NULL, password_hash = NULL, last_seen_at = NULL, suspended_at = NULL, deleted_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
     ).bind(root.id, userId).run();
