@@ -80,6 +80,7 @@ import { downloadSlackAttachments, hasSlackFiles } from "./launchpad/slack-media
 import { downloadDiscordAttachments, hasDiscordAttachments } from "./launchpad/discord-media.js";
 import { storeChannelAttachments } from "./channels/channel-attachment-store.js";
 import { indexChatUploads } from "./channels/chat-upload-attachments.js";
+import { resolveChatUploadScope } from "./channels/chat-upload-scope.js";
 import { runModalityTask, ModalityTaskError } from "./media/modality-task.js";
 import {
   isPairableChannel, issuePairingToken, consumePairingToken, buildPairing,
@@ -1145,6 +1146,25 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }
   const body = { ...rawBody, goal: resolvedGoal };
 
+  let attachmentProjectId: string | undefined;
+  if (rawBody.upload_names?.length) {
+    const identity = getCallerIdentity(c);
+    const uploadScope = await resolveChatUploadScope({
+      platformSecret: c.env.PLATFORM_SECRET,
+      tenantId,
+      spaceId,
+      sessionId,
+      userId: identity.userId,
+      callerRole: identity.role,
+      fetchSpaces: (request) => c.env.SPACES_WORKER.fetch(request),
+    });
+    if (!uploadScope) return c.json({ error_code: "chat_attachment_scope_unavailable" }, 404);
+    if (rawBody.project_id !== undefined && rawBody.project_id !== uploadScope.projectId) {
+      return c.json({ error_code: "chat_attachment_project_scope_mismatch" }, 403);
+    }
+    attachmentProjectId = uploadScope.projectId;
+  }
+
   // Security audit follow-up: `moderateText`/content-policy blocking was imported but never
   // actually called anywhere on this path — the ONLY input-side check on a chat message was
   // the injection detector below, which is deliberately silent (no oracle) so a jailbreak
@@ -1436,7 +1456,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
       if (!c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_storage_unavailable" }, 503);
       try {
         await indexChatUploads({ bucket: c.env.SCRIPTS_R2, db: c.env.PLATFORM_DB, platformSecret: c.env.PLATFORM_SECRET,
-          tenantId, spaceId, sessionId, ...(rawBody.project_id ? { projectId: rawBody.project_id } : {}), taskId, names: rawBody.upload_names });
+          tenantId, spaceId, sessionId, ...(attachmentProjectId ? { projectId: attachmentProjectId } : {}), taskId, names: rawBody.upload_names });
       } catch (error) {
         const code = error instanceof Error ? error.message : "chat_attachment_index_failed";
         const status = code.includes("not_found") ? 404 : code.includes("size_limit") || code.includes("count_limit") ? 413 : 400;
@@ -1534,7 +1554,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     if (!c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_storage_unavailable" }, 503);
     try {
       await indexChatUploads({ bucket: c.env.SCRIPTS_R2, db: c.env.PLATFORM_DB, platformSecret: c.env.PLATFORM_SECRET,
-        tenantId, spaceId, sessionId, ...(rawBody.project_id ? { projectId: rawBody.project_id } : {}), taskId: scriptRunId, names: rawBody.upload_names });
+        tenantId, spaceId, sessionId, ...(attachmentProjectId ? { projectId: attachmentProjectId } : {}), taskId: scriptRunId, names: rawBody.upload_names });
     } catch (error) {
       const code = error instanceof Error ? error.message : "chat_attachment_index_failed";
       const status = code.includes("not_found") ? 404 : code.includes("size_limit") || code.includes("count_limit") ? 413 : 400;
@@ -8331,8 +8351,14 @@ function safeUploadName(name: string): string {
 
 app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
   const { spaceId, sessionId } = c.req.param();
-  await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  const tenantId = await requireVerifiedTenant(c);
+  const identity = getCallerIdentity(c);
+  const uploadScope = await resolveChatUploadScope({
+    platformSecret: c.env.PLATFORM_SECRET, tenantId, spaceId, sessionId,
+    userId: identity.userId, callerRole: identity.role,
+    fetchSpaces: (request) => c.env.SPACES_WORKER.fetch(request),
+  });
+  if (!uploadScope) return c.json({ error_code: "session_upload_scope_unavailable" }, 404);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
 
   const bodyLimit = await checkRequestBodyByteLimit(c.req.raw, MAX_UPLOAD_REQUEST_BYTES);
@@ -8345,7 +8371,11 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
   } catch {
     return c.json({ error_code: "bad_request", message: "Expected multipart/form-data with a 'files' field" }, 400);
   }
-  const projectId = typeof form.project_id === "string" && form.project_id ? form.project_id : undefined;
+  const requestedProjectId = typeof form.project_id === "string" && form.project_id ? form.project_id : undefined;
+  if (requestedProjectId !== undefined && requestedProjectId !== uploadScope.projectId) {
+    return c.json({ error_code: "session_upload_project_scope_mismatch" }, 403);
+  }
+  const projectId = uploadScope.projectId;
   const raw = form.files;
   const incoming = (Array.isArray(raw) ? raw : raw ? [raw] : []).filter((f): f is File => f instanceof File);
   if (incoming.length === 0) return c.json({ error_code: "bad_request", message: "No files attached" }, 400);
@@ -8380,10 +8410,20 @@ app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
 
 app.get("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
   const { spaceId, sessionId } = c.req.param();
-  await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  const tenantId = await requireVerifiedTenant(c);
+  const identity = getCallerIdentity(c);
+  const uploadScope = await resolveChatUploadScope({
+    platformSecret: c.env.PLATFORM_SECRET, tenantId, spaceId, sessionId,
+    userId: identity.userId, callerRole: identity.role,
+    fetchSpaces: (request) => c.env.SPACES_WORKER.fetch(request),
+  });
+  if (!uploadScope) return c.json({ error_code: "session_upload_scope_unavailable" }, 404);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
-  const projectId = c.req.query("project_id") || undefined;
+  const requestedProjectId = c.req.query("project_id") || undefined;
+  if (requestedProjectId !== undefined && requestedProjectId !== uploadScope.projectId) {
+    return c.json({ error_code: "session_upload_project_scope_mismatch" }, 403);
+  }
+  const projectId = uploadScope.projectId;
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
   const listed = await c.env.SCRIPTS_R2.list({ prefix, limit: MAX_UPLOAD_FILES + 10 });
   const files = listed.objects.filter((o) => o.customMetadata?.deleted !== "true").map((o) => ({
@@ -8398,10 +8438,20 @@ app.get("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
 
 app.delete("/spaces/:spaceId/sessions/:sessionId/uploads/:filename", async (c) => {
   const { spaceId, sessionId, filename } = c.req.param();
-  await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  const tenantId = await requireVerifiedTenant(c);
+  const identity = getCallerIdentity(c);
+  const uploadScope = await resolveChatUploadScope({
+    platformSecret: c.env.PLATFORM_SECRET, tenantId, spaceId, sessionId,
+    userId: identity.userId, callerRole: identity.role,
+    fetchSpaces: (request) => c.env.SPACES_WORKER.fetch(request),
+  });
+  if (!uploadScope) return c.json({ error_code: "session_upload_scope_unavailable" }, 404);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
-  const projectId = c.req.query("project_id") || undefined;
+  const requestedProjectId = c.req.query("project_id") || undefined;
+  if (requestedProjectId !== undefined && requestedProjectId !== uploadScope.projectId) {
+    return c.json({ error_code: "session_upload_project_scope_mismatch" }, 403);
+  }
+  const projectId = uploadScope.projectId;
   const prefix = uploadsPrefix(spaceId, sessionId, projectId);
   const key = `${prefix}${safeUploadName(filename)}`;
   const current = await readBytesWithHash(c.env.SCRIPTS_R2, key);
