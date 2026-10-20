@@ -678,3 +678,9 @@ Refreshed the tracked inventory after adding the Billing worker Vitest project c
 Effect receipts were another unbounded per-run storage surface. The journal now limits each workflow to 1,024 unique effect keys (including the agent-run claim), keeps duplicate-key replay idempotent at the limit, and removes receipt rows when the run expires while retaining the run tombstone. Validation: WorkflowRunDO and journal suites passed 12/12; Agents TypeScript and `git diff --check` passed. The regression checks count enforcement, idempotent existing-key replay, and receipt deletion at expiry. Shared pinned code under `workflow-code/` remains the storage-GC follow-up.
 
 After the artifact and receipt changes, the complete Agents worker suite passed **145 test files / 640 tests**. The Agents TypeScript check also passed; this remains worker-level regression evidence, not a complete repository audit.
+
+## System One shared decision client review (2026-10-20)
+
+Completed a scoped review of the entire `packages/agent-sdk/src/fast-decision.ts` implementation and its test file, and traced the runtime constructors in Agents and Spaces. The review covers typed choice/score/noul validation, probability/usage parsing, attachment metadata and advisory-only capability selection, work-plan/runtime caps, context-based Clef/Decider routing, bounded response streaming, retries, and the new wall-clock deadline. Only the decision client and its tests are checked in the file plan; the broader SDK and every downstream decision callsite still require their own passes.
+
+Validation: `fast-decision.test.ts` passed 24/24, including request and response-body stalls, response-size limits, retry caps, model selection, malformed provider payloads, and typed decision bounds. Agent SDK TypeScript passed. No provider live benchmarking or network-load test was performed.
