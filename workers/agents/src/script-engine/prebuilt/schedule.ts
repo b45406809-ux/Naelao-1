@@ -17,7 +17,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 
 async function spacesCall(
   ctx: PrebuiltOpContext,
@@ -39,7 +39,7 @@ async function spacesCall(
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
   );
-  const json = await resp.json().catch(() => ({}));
+  const json = await readBoundedResponseJson(resp, 2 * 1024 * 1024).catch(() => ({}));
   return { ok: resp.ok, status: resp.status, json };
 }
 

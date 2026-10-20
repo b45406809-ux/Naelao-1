@@ -17,7 +17,7 @@
  */
 
 import { Hono } from "hono";
-import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken, readBoundedResponseText } from "@naelao/http";
 import {
   LAUNCHPAD_CORE_AGENTS,
   agentsForTemplates,
@@ -41,6 +41,10 @@ import { inheritTemplateSkills } from "../../agents/src/script-engine/federation
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 import { resolveTenancy } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
+
+async function responseErrorDetail(response: Response): Promise<string> {
+  return (await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 500);
+}
 
 export interface Env {
   ENVIRONMENT: string;
@@ -234,7 +238,7 @@ export async function seedLaunchpadAssistantPolicy(spaceId: string, tenantId: st
     return null;
   });
   if (!resp || !resp.ok) {
-    console.warn(`[provisioner] assistant policy seed failed for ${spaceId}${resp ? `: ${await resp.text()}` : ""}`);
+  console.warn(`[provisioner] assistant policy seed failed for ${spaceId}${resp ? `: ${await responseErrorDetail(resp)}` : ""}`);
     return false;
   }
   return true;
@@ -297,7 +301,7 @@ async function installAgentTrigger(
       })
     );
     if (!resp.ok) {
-      console.warn(`[provisioner] scheduled-job install failed for agent '${agentDef.id}' in space '${spaceId}': ${await resp.text()}`);
+      console.warn(`[provisioner] scheduled-job install failed for agent '${agentDef.id}' in space '${spaceId}': ${await responseErrorDetail(resp)}`);
     }
   } catch (err) {
     console.warn(`[provisioner] scheduled-job install threw for agent '${agentDef.id}' in space '${spaceId}':`, (err as Error).message);
@@ -388,7 +392,7 @@ export async function seedWebStudioHandoffRules(
         })
       );
       if (!resp.ok) {
-        console.warn(`[provisioner] handoff rule seed failed for ${spaceId}: ${await resp.text()}`);
+        console.warn(`[provisioner] handoff rule seed failed for ${spaceId}: ${await responseErrorDetail(resp)}`);
       }
     } catch (err) {
       console.warn(`[provisioner] handoff rule seed threw for ${spaceId}:`, (err as Error).message);
@@ -424,7 +428,7 @@ export async function seedDefaultRevenueReviewCron(spaceId: string, tenantId: st
       })
     );
     if (!resp.ok) {
-      console.warn(`[provisioner] default revenue-review cron seed failed for ${spaceId}: ${await resp.text()}`);
+      console.warn(`[provisioner] default revenue-review cron seed failed for ${spaceId}: ${await responseErrorDetail(resp)}`);
     }
   } catch (err) {
     console.warn(`[provisioner] default revenue-review cron seed threw for ${spaceId}:`, (err as Error).message);
@@ -496,7 +500,7 @@ async function registerAgentIndex(
     })
   );
   if (!resp.ok) {
-    throw new Error(`Failed to register agent '${agentId}' in space '${spaceId}': ${await resp.text()}`);
+    throw new Error(`Failed to register agent '${agentId}' in space '${spaceId}': ${await responseErrorDetail(resp)}`);
   }
 }
 
@@ -591,7 +595,7 @@ export async function seedOwnerMember(
     })
   );
   if (!memberResp.ok) {
-    console.warn(`[provisioner] owner member seed failed for ${spaceId}: ${await memberResp.text()}`);
+      console.warn(`[provisioner] owner member seed failed for ${spaceId}: ${await responseErrorDetail(memberResp)}`);
     return false;
   }
   return true;
@@ -646,7 +650,7 @@ export async function seedWallet(env: Env, spaceId: string, tenantId: string, us
         const dup = await createResp.json<{ existing_project_id?: string }>().catch(() => ({}) as { existing_project_id?: string });
         if (dup.existing_project_id) return true; // wallet already provisioned
       }
-      console.warn(`[provisioner] wallet project creation failed for ${spaceId}: ${await createResp.text()}`);
+      console.warn(`[provisioner] wallet project creation failed for ${spaceId}: ${await responseErrorDetail(createResp)}`);
       return false;
     }
     const { id: projectId } = await createResp.json<{ id: string }>();
@@ -661,7 +665,7 @@ export async function seedWallet(env: Env, spaceId: string, tenantId: string, us
         { method: "POST", headers, body: JSON.stringify({ cents: WALLET_STARTER_BALANCE_CENTS, reason: "starter_grant", idempotency_key: `starter:${spaceId}` }) }
       ));
       if (!creditResp.ok) {
-        console.warn(`[provisioner] wallet starter grant failed for ${spaceId}/${projectId}: ${await creditResp.text()}`);
+        console.warn(`[provisioner] wallet starter grant failed for ${spaceId}/${projectId}: ${await responseErrorDetail(creditResp)}`);
         // The wallet project itself was created successfully — don't report the whole step as
         // failed over the starter grant alone; a $0 wallet still gives project runs a real payer
         // to gate against (just an immediate 402 until topped up), which is still strictly better
@@ -737,7 +741,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         })
       );
       if (!initResp.ok) {
-        console.warn(`[provisioner] SpaceDO init hook failed for ${spaceId}: ${await initResp.text()}`);
+        console.warn(`[provisioner] SpaceDO init hook failed for ${spaceId}: ${await responseErrorDetail(initResp)}`);
       }
       provisioned.push("spacedo_init_hook");
     }
@@ -770,7 +774,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         })
       );
       if (!rootResp.ok) {
-        console.warn(`[provisioner] root-space registry seed failed for ${spaceId}: ${await rootResp.text()}`);
+        console.warn(`[provisioner] root-space registry seed failed for ${spaceId}: ${await responseErrorDetail(rootResp)}`);
       }
       provisioned.push("space_registry");
     }
@@ -822,7 +826,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         })
       );
       if (!workerResp.ok) {
-        throw new Error(`Custom provisioner worker failed: ${await workerResp.text()}`);
+        throw new Error(`Custom provisioner worker failed: ${await responseErrorDetail(workerResp)}`);
       }
       provisioned.push("custom_provisioner");
     }
@@ -901,7 +905,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
             body: JSON.stringify({ space_id: spaceId, template_id: "local-access" }),
           }));
           if (localWorkerResp.ok) provisioned.push("local-access-worker");
-          else console.warn(`[provisioner] local-access worker seed failed for ${spaceId}: ${await localWorkerResp.text()}`);
+          else console.warn(`[provisioner] local-access worker seed failed for ${spaceId}: ${await responseErrorDetail(localWorkerResp)}`);
         } catch (err) {
           console.warn(`[provisioner] local-access worker seed failed for ${spaceId}:`, (err as Error).message);
         }
@@ -1111,7 +1115,7 @@ export async function rollbackSpace(
           );
         }
       } else {
-        console.warn(`[provisioner] rollback: agent-definitions list failed for ${spaceId}: ${await listResp.text()}`);
+        console.warn(`[provisioner] rollback: agent-definitions list failed for ${spaceId}: ${await responseErrorDetail(listResp)}`);
       }
     }
     if (has("owner_member") && userId) {
@@ -1128,7 +1132,7 @@ export async function rollbackSpace(
         )
       );
       if (!memberResp.ok) {
-        console.warn(`[provisioner] rollback: owner member removal failed for ${spaceId}: ${await memberResp.text()}`);
+        console.warn(`[provisioner] rollback: owner member removal failed for ${spaceId}: ${await responseErrorDetail(memberResp)}`);
       }
     }
   } catch (rollbackErr) {

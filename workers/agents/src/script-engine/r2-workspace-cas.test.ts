@@ -13,11 +13,11 @@ function makeContext() {
   const bucket = {
     async head(key: string) {
       const file = files.get(key);
-      return file ? { customMetadata: file.customMetadata ?? { sha256: file.hash }, etag: file.etag, size: file.content.length } : null;
+      return file ? { customMetadata: file.customMetadata ?? { sha256: file.hash }, etag: file.etag, size: new TextEncoder().encode(file.content).byteLength } : null;
     },
     async get(key: string) {
       const file = files.get(key);
-      return file && file.customMetadata?.deleted !== "true" ? { text: async () => file.content, arrayBuffer: async () => new TextEncoder().encode(file.content).buffer, customMetadata: file.customMetadata, httpEtag: file.etag } : null;
+      return file && file.customMetadata?.deleted !== "true" ? { size: new TextEncoder().encode(file.content).byteLength, text: async () => file.content, arrayBuffer: async () => new TextEncoder().encode(file.content).buffer, customMetadata: file.customMetadata, httpEtag: file.etag } : null;
     },
     async put(key: string, value: string, options?: { onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string }; customMetadata?: Record<string, string> }) {
       const current = files.get(key);

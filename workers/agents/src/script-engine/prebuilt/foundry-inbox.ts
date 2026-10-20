@@ -1,7 +1,7 @@
 /** Owner-reviewed feature requests for a worker's current Space. Submission records a request;
  * it never changes code, publishes a template, or creates a worker. */
 import type { PrebuiltScript } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 
 const boundedText = (value: unknown, name: string, max: number, required = true): string => {
   if (typeof value !== "string") {
@@ -46,7 +46,7 @@ export const foundryInbox: PrebuiltScript = {
         body: JSON.stringify({ ...actor, title, problem, workflow, evidence: evidenceValue ?? [] }),
       }));
       if (!response.ok) throw new Error(`foundry request failed: HTTP ${response.status}`);
-      return response.json();
+      return readBoundedResponseJson(response, 2 * 1024 * 1024);
     },
   },
 };

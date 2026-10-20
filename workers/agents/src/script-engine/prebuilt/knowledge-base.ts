@@ -8,7 +8,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import { wrapContextChunk } from "@naelao/rag";
 
 function reqWorker(ctx: PrebuiltOpContext): Fetcher {
@@ -71,7 +71,7 @@ export const knowledgeBase: PrebuiltScript = {
         )
       );
       if (!resp.ok) throw new Error(`knowledge.search failed: ${resp.status}`);
-      return await resp.json();
+      return await readBoundedResponseJson(resp, 2 * 1024 * 1024);
     },
 
     async "knowledge.index"(args, ctx) {
@@ -96,10 +96,10 @@ export const knowledgeBase: PrebuiltScript = {
         })
       );
       if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
+        const body = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
         throw new Error(`knowledge.index failed: ${resp.status}${body ? ` — ${body}` : ""}`);
       }
-      return await resp.json();
+      return await readBoundedResponseJson(resp, 2 * 1024 * 1024);
     },
 
     async "knowledge.delete"(args, ctx) {
@@ -112,7 +112,7 @@ export const knowledgeBase: PrebuiltScript = {
         })
       );
       if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
+        const body = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
         throw new Error(`knowledge.delete failed: ${resp.status}${body ? ` — ${body}` : ""}`);
       }
       return { ok: true };

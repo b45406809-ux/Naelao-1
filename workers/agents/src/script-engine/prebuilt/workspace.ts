@@ -129,10 +129,19 @@ async function readAllR2(
       const obj = await bucket(ctx).get(o.key);
       if (!obj) continue;
       if (obj.customMetadata?.["deleted"] === "true") continue;
+      if (obj.size !== o.size || totalBytes + obj.size > SYNC_MAX_TOTAL_BYTES) {
+        skippedCount++;
+        continue;
+      }
       const relativePath = o.key.slice(wsPrefix.length);
-      const text = await obj.text();
+      const bytes = await obj.arrayBuffer();
+      if (bytes.byteLength !== obj.size || bytes.byteLength > SYNC_MAX_TOTAL_BYTES - totalBytes) {
+        skippedCount++;
+        continue;
+      }
+      const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
       files[relativePath] = text;
-      totalBytes += text.length;
+      totalBytes += bytes.byteLength;
     }
     cursor = listing.truncated ? listing.cursor : undefined;
   } while (cursor);

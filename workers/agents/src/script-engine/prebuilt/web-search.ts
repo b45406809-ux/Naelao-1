@@ -25,7 +25,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import { workspacePrefix } from "../types.js";
 import { publishWorkspaceBytesCas, readBytesWithHash } from "../r2-cas.js";
 
@@ -47,7 +47,7 @@ async function proxy(ctx: PrebuiltOpContext, path: string, body: unknown): Promi
     })
   );
   if (!resp.ok) throw new Error(`web-search ${path} failed: ${resp.status}`);
-  return await resp.json();
+  return readBoundedResponseJson(resp, 4 * 1024 * 1024);
 }
 
 export const webSearch: PrebuiltScript = {

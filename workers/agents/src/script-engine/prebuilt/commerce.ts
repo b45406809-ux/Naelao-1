@@ -14,7 +14,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 
 async function billing(ctx: PrebuiltOpContext, path: string, body: Record<string, unknown>): Promise<unknown> {
   if (!ctx.env.billingWorker) {
@@ -34,8 +34,8 @@ async function billing(ctx: PrebuiltOpContext, path: string, body: Record<string
       body: JSON.stringify({ space_id: ctx.env.spaceId, ...body }),
     })
   );
-  if (!resp.ok) throw new Error(`commerce ${path} failed: ${resp.status} ${await resp.text()}`);
-  return resp.json();
+  if (!resp.ok) throw new Error(`commerce ${path} failed: ${resp.status} ${(await readBoundedResponseText(resp, 8 * 1024).catch(() => "")).slice(0, 300)}`);
+  return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
 async function spaces(ctx: PrebuiltOpContext, path: string): Promise<unknown> {
@@ -49,7 +49,7 @@ async function spaces(ctx: PrebuiltOpContext, path: string): Promise<unknown> {
     })
   );
   if (!resp.ok) throw new Error(`commerce read ${path} failed: ${resp.status}`);
-  return resp.json();
+  return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
 /**
@@ -78,8 +78,8 @@ async function spacesWrite(
       body: JSON.stringify(body),
     })
   );
-  if (!resp.ok) throw new Error(`commerce ${method} ${path} failed: ${resp.status} ${await resp.text()}`);
-  return resp.json();
+  if (!resp.ok) throw new Error(`commerce ${method} ${path} failed: ${resp.status} ${(await readBoundedResponseText(resp, 8 * 1024).catch(() => "")).slice(0, 300)}`);
+  return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
 export const commerce: PrebuiltScript = {

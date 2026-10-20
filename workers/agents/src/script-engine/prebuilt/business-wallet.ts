@@ -30,7 +30,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 
 async function billingCall(
   ctx: PrebuiltOpContext,
@@ -52,8 +52,8 @@ async function billingCall(
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     })
   );
-  if (!resp.ok) throw new Error(`business-wallet ${path} failed: ${resp.status} ${await resp.text()}`);
-  return resp.json();
+  if (!resp.ok) throw new Error(`business-wallet ${path} failed: ${resp.status} ${(await readBoundedResponseText(resp, 8 * 1024).catch(() => "")).slice(0, 300)}`);
+  return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
 export const businessWallet: PrebuiltScript = {

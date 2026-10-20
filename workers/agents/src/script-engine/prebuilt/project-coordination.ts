@@ -29,7 +29,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import {
   ALLOWED_MODELS,
   DEFAULT_WORKING_MODEL,
@@ -172,8 +172,8 @@ async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, 
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
   );
-  if (!resp.ok) throw new Error(`project-coordination ${method} ${path} failed: ${resp.status} ${await resp.text()}`);
-  return resp.json();
+  if (!resp.ok) throw new Error(`project-coordination ${method} ${path} failed: ${resp.status} ${(await readBoundedResponseText(resp, 8 * 1024).catch(() => "")).slice(0, 300)}`);
+  return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
 async function repositoryCall(ctx: PrebuiltOpContext, operation: string, method: "GET" | "POST", payload: Record<string, unknown>): Promise<unknown> {
@@ -184,8 +184,8 @@ async function repositoryCall(ctx: PrebuiltOpContext, operation: string, method:
     `http://artifact-worker/spaces/${encodeURIComponent(ctx.env.spaceId)}/projects/${encodeURIComponent(ctx.env.projectId)}/repository/${operation}${query}`,
     { method, headers: { "content-type": "application/json", "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token }, ...(method === "POST" ? { body: JSON.stringify(payload) } : {}) },
   ));
-  if (!response.ok) throw new Error(`repository ${operation} failed: ${response.status} ${await response.text()}`);
-  return response.json();
+  if (!response.ok) throw new Error(`repository ${operation} failed: ${response.status} ${(await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 300)}`);
+  return readBoundedResponseJson(response, 2 * 1024 * 1024);
 }
 
 export const projectCoordination: PrebuiltScript = {

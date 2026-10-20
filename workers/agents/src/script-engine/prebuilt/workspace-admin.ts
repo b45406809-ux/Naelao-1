@@ -34,7 +34,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import { getProjectTemplate } from "../../launchpad/project-templates.js";
 
 async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, body?: Record<string, unknown>): Promise<unknown> {
@@ -56,8 +56,8 @@ async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, 
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
   );
-  if (!resp.ok) throw new Error(`workspace-admin ${method} ${path} failed: ${resp.status} ${await resp.text()}`);
-  return resp.json();
+  if (!resp.ok) throw new Error(`workspace-admin ${method} ${path} failed: ${resp.status} ${(await readBoundedResponseText(resp, 8 * 1024).catch(() => "")).slice(0, 300)}`);
+  return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
 async function createFromTemplate(ctx: PrebuiltOpContext, templateId: string, name?: string): Promise<unknown> {

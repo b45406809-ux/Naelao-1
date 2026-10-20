@@ -21,7 +21,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import { classifyFailure, FAILURE_KINDS } from "@naelao/events";
 
 async function spacesCall(ctx: PrebuiltOpContext, path: string): Promise<unknown> {
@@ -41,8 +41,8 @@ async function spacesCall(ctx: PrebuiltOpContext, path: string): Promise<unknown
       },
     })
   );
-  if (!resp.ok) throw new Error(`business-diagnostics GET ${path} failed: ${resp.status} ${await resp.text()}`);
-  return resp.json();
+  if (!resp.ok) throw new Error(`business-diagnostics GET ${path} failed: ${resp.status} ${(await readBoundedResponseText(resp, 8 * 1024).catch(() => "")).slice(0, 300)}`);
+  return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
 function windowHours(a: Record<string, unknown>, fallback = 24): number {

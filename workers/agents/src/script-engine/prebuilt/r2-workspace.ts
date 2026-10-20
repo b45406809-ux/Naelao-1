@@ -443,9 +443,12 @@ export const r2Workspace: PrebuiltScript = {
         if (off >= total) {
           return { exists: true, content: "", offset: off, length: 0, total_size: total, has_more: false };
         }
-        const content = await obj.text();
+        const rangeBytes = await obj.arrayBuffer();
+        if (rangeBytes.byteLength > len) throw new Error("workspace read exceeded requested range");
+        if (rangeBytes.byteLength === 0) throw new Error("workspace range read returned no bytes before end of file; retry the read");
+        const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(rangeBytes);
         // Byte-accurate next offset (content.length is chars, which drifts for multibyte UTF-8).
-        const bytesRead = Math.min(len, total - off);
+        const bytesRead = rangeBytes.byteLength;
         const end = off + bytesRead;
         const hasMore = end < total;
         return {
@@ -474,7 +477,11 @@ export const r2Workspace: PrebuiltScript = {
           message: `This file is ${obj.size} bytes, over the ${MAX_READABLE_FILE_BYTES}-byte limit for a single read. Read it in chunks with read_file(path, offset, length) — start at offset 0, then use the next_offset it returns — or use search_file(path, query) to jump straight to the part you need.`,
         };
       }
-      return { exists: true, content: await obj.text(), size: obj.size, hash: obj.customMetadata?.["sha256"] };
+      const fileBytes = await obj.arrayBuffer();
+      if (fileBytes.byteLength > MAX_READABLE_FILE_BYTES || fileBytes.byteLength !== obj.size)
+        throw new Error("workspace file changed size during read; retry the read");
+      const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(fileBytes);
+      return { exists: true, content, size: obj.size, hash: obj.customMetadata?.["sha256"] };
     },
     // Step 3: search WITHIN a file and get back only the matching lines (with line numbers, and
     // optional surrounding context) instead of pulling the whole file. Many matches are paged by
@@ -496,7 +503,12 @@ export const r2Workspace: PrebuiltScript = {
       }
       const obj = await bucket(ctx).get(k);
       if (!obj) return { exists: false };
-      const text = await obj.text();
+      if (obj.size > MAX_SEARCHABLE_FILE_BYTES || obj.size !== head.size)
+        return { exists: true, too_large: true, size: obj.size, message: "File changed while it was being read; retry search_file." };
+      const fileBytes = await obj.arrayBuffer();
+      if (fileBytes.byteLength > MAX_SEARCHABLE_FILE_BYTES || fileBytes.byteLength !== obj.size)
+        return { exists: true, too_large: true, size: obj.size, message: "File changed while it was being read; retry search_file." };
+      const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(fileBytes);
       const q = query.toLowerCase();
       const contextLines = Math.max(0, Math.min(numArg(args, "context") ?? 0, 10));
       const lines = text.split(/\r?\n/);

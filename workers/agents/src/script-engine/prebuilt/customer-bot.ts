@@ -1,6 +1,6 @@
 import { assertCustomerBotToolAllowed } from "@naelao/agent-sdk";
 import type { PrebuiltScript } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 
 async function headers(
   ctx: Parameters<NonNullable<PrebuiltScript["operations"][string]>>[1]
@@ -33,7 +33,7 @@ export const customerBot: PrebuiltScript = {
         )
       );
       if (!response.ok) throw new Error(`faq_search_failed:${response.status}`);
-      return response.json();
+      return readBoundedResponseJson(response, 2 * 1024 * 1024);
     },
     async "customer.canned_response"(args) {
       assertCustomerBotToolAllowed("canned_response.get", 1);
@@ -65,7 +65,7 @@ export const customerBot: PrebuiltScript = {
       );
       if (!response.ok)
         throw new Error(`calendar_availability_failed:${response.status}`);
-      return response.json();
+      return readBoundedResponseJson(response, 2 * 1024 * 1024);
     },
     async "customer.escalate"(args) {
       assertCustomerBotToolAllowed("human.escalate", 1);

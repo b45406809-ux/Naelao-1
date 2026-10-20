@@ -18,7 +18,7 @@
  * contract does not change.
  */
 
-import { mintInternalToken, parseBoundedInteger } from "@naelao/http";
+import { mintInternalToken, parseBoundedInteger, readBoundedResponseJson } from "@naelao/http";
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 
 interface StoredMessage {
@@ -130,7 +130,7 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
         new Request(url, { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } })
       );
       if (!resp.ok) return { messages, incomplete: true, unavailable: messages.length === 0, error: `Transcript service returned ${resp.status}.`, ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
-      const body = (await resp.json()) as { data?: StoredMessage[]; messages?: StoredMessage[] };
+      const body = await readBoundedResponseJson<{ data?: StoredMessage[]; messages?: StoredMessage[] }>(resp, 2 * 1024 * 1024);
       const page = body.data ?? body.messages ?? [];
       if (page.length === 0) break;
       const acceptedPage: StoredMessage[] = [];
@@ -157,7 +157,7 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
         probeUrl.searchParams.set("scope_thread_id", sessionId);
         const probe = await ctx.env.spacesWorker.fetch(new Request(probeUrl, { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } }));
         if (!probe.ok) { incomplete = true; break; }
-        const probeBody = (await probe.json()) as { data?: StoredMessage[]; messages?: StoredMessage[] };
+        const probeBody = await readBoundedResponseJson<{ data?: StoredMessage[]; messages?: StoredMessage[] }>(probe, 2 * 1024 * 1024);
         incomplete = (probeBody.data ?? probeBody.messages ?? []).length > 0;
         break;
       }

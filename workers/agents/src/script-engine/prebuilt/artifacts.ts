@@ -9,7 +9,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 
 function reqWorker(ctx: PrebuiltOpContext): Fetcher {
   if (!ctx.env.artifactWorker) {
@@ -52,10 +52,10 @@ export const artifacts: PrebuiltScript = {
         })
       );
       if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
+        const body = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
         throw new Error(`artifacts.create failed: ${resp.status}${body ? ` — ${body}` : ""}`);
       }
-      return await resp.json();
+      return await readBoundedResponseJson(resp, 2 * 1024 * 1024);
     },
 
     async "artifacts.list"(_args, ctx) {
@@ -65,7 +65,7 @@ export const artifacts: PrebuiltScript = {
         })
       );
       if (!resp.ok) throw new Error(`artifacts.list failed: ${resp.status}`);
-      return await resp.json();
+      return await readBoundedResponseJson(resp, 2 * 1024 * 1024);
     },
 
     async "artifacts.get"(args, ctx) {
@@ -82,7 +82,7 @@ export const artifacts: PrebuiltScript = {
       // Text content types come back readable; anything else reports metadata only (a script's
       // own return value is JSON — raw binary bytes have nowhere useful to go in this contract).
       if (/^text\/|json|xml/.test(contentType)) {
-        return { artifact_id: artifactId, filename, content_type: contentType, content: await resp.text() };
+        return { artifact_id: artifactId, filename, content_type: contentType, content: await readBoundedResponseText(resp, 2 * 1024 * 1024) };
       }
       return { artifact_id: artifactId, filename, content_type: contentType, binary: true };
     },

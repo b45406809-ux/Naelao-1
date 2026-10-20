@@ -29,7 +29,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { hubFetch, resolveServerId } from "./mcp-connector.js";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 
 interface WhopPayment {
   status?: string;
@@ -138,7 +138,7 @@ async function postSnapshot(ctx: PrebuiltOpContext, period: string, revenueCents
     })
   );
   if (!resp.ok) throw new Error(`revenue-tracker: failed to record snapshot (${resp.status})`);
-  return resp.json();
+  return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
 export const revenueTracker: PrebuiltScript = {
