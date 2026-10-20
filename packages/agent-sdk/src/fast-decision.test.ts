@@ -86,16 +86,34 @@ describe("typed fast decisions", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
-  it("caps streamed Decisions API error bodies", async () => {
-    const fetcher = vi.fn(async () => new Response(new Uint8Array(8 * 1024 + 1), { status: 500 }));
+  it("does not expose provider error bodies that could echo prompt data", async () => {
+    const fetcher = vi.fn(async () => new Response("rejected prompt: private-customer-secret", { status: 500 }));
     const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0 });
 
-    await expect(client.choice({
-      state: "small decision",
-      instructions: "Choose a result",
-      criteria: { keep: null, discard: null },
-      policyCode: "error_size_limit",
-    })).rejects.toThrow("system_one_http_500:system_one_response_too_large");
+    let failure = "";
+    try {
+      await client.choice({
+        state: "small decision",
+        instructions: "Choose a result",
+        criteria: { keep: null, discard: null },
+        policyCode: "error_body_redaction",
+      });
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    expect(failure).toBe("system_one_http_500");
+    expect(failure).not.toContain("private-customer-secret");
+  });
+
+  it("redacts provider error bodies from batched capability decisions too", async () => {
+    const client = new SystemOneDecisionClient({
+      fetch: vi.fn(async () => new Response("rejected prompt: private-customer-secret", { status: 500 })) as typeof fetch,
+      maxRetries: 0,
+    });
+    await expect(client.classifyWorkerCapabilities({
+      task: "inspect a transcript",
+      capabilities: [{ capability: "conversation_research", description: "Search bounded conversation history" }],
+    })).rejects.toThrow(/^system_one_http_500$/);
   });
 
   it("bundles container and browser preflight in one Decisions API request", async () => {

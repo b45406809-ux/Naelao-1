@@ -491,3 +491,7 @@ The context-usage endpoint verified only tenant ownership before returning per-s
 ## Compaction prompt provenance hardening (2026-10-20)
 
 The local fallback summarizer truncated each older message at 1,500 characters without marking the omission and omitted message IDs. It now includes source message IDs, explicit omitted-character counts, and an instruction to treat transcript text as untrusted data. This keeps prompt-injection text from being elevated to instructions and makes partial evidence visible in the summarization input. Regression, transcript paging, and conversation-compaction checks passed (11 tests); Agents TypeScript passed. The entire audit remains open.
+
+## Decisions API error redaction (2026-10-20)
+
+The OpenRouter Decisions client copied up to 200 characters from provider error bodies into thrown errors. A provider could echo request fragments, placing user conversation text or account metadata in logs. Both single and batched decision paths now expose only the HTTP status. Regressions verify prompt-like provider error text is absent. Agent SDK decision tests passed 21/21 and its TypeScript check passed. Decisions remain OpenRouter-only, Clef Flash is the ordinary route, and Decider is reserved for long-context overflow; no provider benchmark/live request was run in this pass.

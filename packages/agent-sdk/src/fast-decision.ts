@@ -133,7 +133,6 @@ export const CLEF_FLASH_MODEL = "cloudflare/clef-flash";
 export const CLEF_FLASH_MAX_ESTIMATED_TOKENS = 16_000;
 export const DECIDER_MAX_ESTIMATED_TOKENS = 200_000;
 const MAX_DECISION_RESPONSE_BYTES = 1024 * 1024;
-const MAX_DECISION_ERROR_BYTES = 8 * 1024;
 
 async function readBoundedDecisionText(response: Response, maxBytes: number): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
@@ -267,10 +266,9 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
     }
     if (!response?.ok) {
-      const detail = response
-        ? await readBoundedDecisionText(response, MAX_DECISION_ERROR_BYTES).catch((error) => error instanceof Error ? error.message : "")
-        : "";
-      throw new Error(`system_one_http_${response?.status ?? "network"}${detail ? `:${detail.slice(0, 200)}` : ""}`);
+      // Provider errors may echo prompt fragments or account metadata. Preserve the status for
+      // diagnosis, but never copy untrusted response text into errors that can reach logs/UI.
+      throw new Error(`system_one_http_${response?.status ?? "network"}`);
     }
     const payload = await readBoundedDecisionJson(response) as Partial<SystemOneResponse>;
     if (typeof payload.model !== "string" || !payload.answers || typeof payload.answers !== "object") throw new Error("system_one_invalid_response");
@@ -293,10 +291,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
     }
     if (!response?.ok) {
-      const detail = response
-        ? await readBoundedDecisionText(response, MAX_DECISION_ERROR_BYTES).catch((error) => error instanceof Error ? error.message : "")
-        : "";
-      throw new Error(`system_one_http_${response?.status ?? "network"}${detail ? `:${detail.slice(0, 200)}` : ""}`);
+      throw new Error(`system_one_http_${response?.status ?? "network"}`);
     }
     const raw = await readBoundedDecisionJson(response) as { answers?: Record<string, unknown>; model?: string; usage?: unknown };
     if (!raw.answers || typeof raw.answers !== "object") throw new Error("system_one_invalid_response");
