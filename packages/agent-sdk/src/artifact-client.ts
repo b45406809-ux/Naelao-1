@@ -1,4 +1,44 @@
 /** Typed service-binding adapter for the Artifact worker's Git-for-agents API. */
+const MAX_ARTIFACT_RESPONSE_BYTES = 16 * 1024 * 1024;
+const MAX_ARTIFACT_ERROR_BYTES = 8 * 1024;
+
+async function readBoundedResponseText(response: Response, maxBytes: number): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    void response.body?.cancel().catch(() => {});
+    throw new Error("repository_response_too_large");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > maxBytes) {
+        void reader.cancel().catch(() => {});
+        throw new Error("repository_response_too_large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("repository_invalid_response_encoding");
+  }
+}
+
 export interface RepositoryCommitMetadata {
   agent_role: string;
   user_goal: string;
@@ -47,8 +87,21 @@ export class ArtifactRepositoryClient {
     const headers = await this.headers();
     if (init.body) headers.set("content-type", "application/json");
     const response = await this.binding.fetch(new Request(`${this.base}/${operation}${query ? `?${query}` : ""}`, { ...init, headers }));
-    if (!response.ok) throw new Error(`repository_${operation}_failed:${response.status}:${await response.text()}`);
-    return response.json() as Promise<T>;
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = await readBoundedResponseText(response, MAX_ARTIFACT_ERROR_BYTES);
+      } catch (error) {
+        detail = error instanceof Error ? error.message : "response_unreadable";
+      }
+      throw new Error(`repository_${operation}_failed:${response.status}:${detail.slice(0, 200)}`);
+    }
+    const text = await readBoundedResponseText(response, MAX_ARTIFACT_RESPONSE_BYTES);
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new Error("repository_invalid_response_json");
+    }
   }
 
   createRepo() { return this.request<{ branch: string; commit_id: string | null }>("createRepo", { method: "POST", body: "{}" }); }

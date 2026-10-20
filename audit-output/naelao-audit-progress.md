@@ -327,6 +327,8 @@ The System One client bounded request context but parsed OpenRouter Decisions re
 
 The same bounded-response review found the project-to-project MCP client parsed arbitrary JSON result bodies. It now applies a 1 MiB streaming cap and rejects oversized or malformed responses before returning tool results. Its regression tests the missing-Content-Length overflow case. The full Agent SDK suite passed 24 files / 111 tests after both client changes, SDK typecheck passed, and `git diff --check` passed. No live inter-project MCP request was made.
 
+The Artifact Repository SDK client also parsed unbounded successful JSON and read full error bodies into exception messages. Successful responses now have a 16 MiB streamed cap; error reads stop at 8 KiB and diagnostics include at most 200 characters. Tests cover valid results, streamed overflow without Content-Length, and oversized error bodies. Agent SDK suite passed 25 files / 114 tests; SDK typecheck and `git diff --check` passed. No live Artifact Worker binding was exercised.
+
 Before validation, the pnpm 11 install tool rewrote lockfile patch metadata and added an ignored-build policy block. Both repository files were restored to their original committed contents after dependencies installed. `node_modules` is ignored. `git diff --check` is run before commit.
 
 ## Not yet reviewed
