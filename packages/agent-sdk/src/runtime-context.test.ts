@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actorAddress, scopedInstallationId } from "./runtime-context.js";
+import { actorAddress, createProjectMcpClient, scopedInstallationId } from "./runtime-context.js";
 
 describe("actorAddress", () => {
   it("structurally isolates private, project and space actors", () => {
@@ -17,5 +17,27 @@ describe("scopedInstallationId instance keys", () => {
   });
   it("rejects invalid instance keys", () => {
     expect(() => scopedInstallationId({ ...base, instanceKey: "../shared" })).toThrow("invalid_instance_key");
+  });
+});
+
+describe("project MCP response bounds", () => {
+  it("rejects streamed oversized responses without relying on Content-Length", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+        controller.close();
+      },
+    });
+    const fetch = async () => new Response(body);
+    const client = createProjectMcpClient({
+      spacesWorker: { fetch },
+      spaceId: "space-1",
+      tenantId: "tenant-1",
+      internalToken: "internal",
+    });
+
+    await expect(client.listTools("project-1")).rejects.toThrow(
+      "project_mcp_response_too_large"
+    );
   });
 });

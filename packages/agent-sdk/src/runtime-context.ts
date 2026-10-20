@@ -160,6 +160,43 @@ export function createScopedCodeRpc(options: ScopedCodeRpcOptions): (capability:
 }
 
 const CONNECTOR_ALIAS_RE = /^[a-z][a-z0-9_]{1,63}$/;
+const MAX_PROJECT_MCP_RESPONSE_BYTES = 1024 * 1024;
+
+async function readProjectMcpResponse(response: Response): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_PROJECT_MCP_RESPONSE_BYTES) {
+    throw new Error("project_mcp_response_too_large");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("project_mcp_invalid_response");
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > MAX_PROJECT_MCP_RESPONSE_BYTES) {
+        void reader.cancel();
+        throw new Error("project_mcp_response_too_large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new Error("project_mcp_invalid_response");
+  }
+}
 
 /** Stateless Streamable HTTP connector for the inter-project MCP mesh. It deliberately creates
  * a fresh JSON-RPC request per operation and keeps no session/socket state. */
@@ -182,7 +219,7 @@ export function createProjectMcpClient(options: ProjectMcpClientOptions): Runtim
       },
     ));
     if (!response.ok) throw new Error(`Project MCP request failed: ${response.status}`);
-    const envelope = await response.json() as { result?: unknown; error?: { message?: string } };
+    const envelope = await readProjectMcpResponse(response) as { result?: unknown; error?: { message?: string } };
     if (envelope.error) throw new Error(envelope.error.message ?? "Project MCP error");
     return envelope.result;
   };

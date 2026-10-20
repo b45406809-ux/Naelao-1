@@ -325,6 +325,8 @@ Fresh workspace validation after the 2026-10-20 WAF and channel-attachment follo
 
 The System One client bounded request context but parsed OpenRouter Decisions responses with unbounded `response.json()`. Both single- and multi-question paths now read at most 1 MiB from the response stream before parsing, including when Content-Length is missing or understated. Oversized responses fail closed with `system_one_response_too_large`. The regression confirms streamed oversize rejection; Agent SDK tests passed 24 files / 110 tests, SDK typecheck passed, and `git diff --check` passed. The configured full workspace run above predates this specific SDK change. No live OpenRouter request was made.
 
+The same bounded-response review found the project-to-project MCP client parsed arbitrary JSON result bodies. It now applies a 1 MiB streaming cap and rejects oversized or malformed responses before returning tool results. Its regression tests the missing-Content-Length overflow case. The full Agent SDK suite passed 24 files / 111 tests after both client changes, SDK typecheck passed, and `git diff --check` passed. No live inter-project MCP request was made.
+
 Before validation, the pnpm 11 install tool rewrote lockfile patch metadata and added an ignored-build policy block. Both repository files were restored to their original committed contents after dependencies installed. `node_modules` is ignored. `git diff --check` is run before commit.
 
 ## Not yet reviewed
