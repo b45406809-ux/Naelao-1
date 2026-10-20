@@ -896,7 +896,7 @@ Validation: tool-result pagination tests passed 5/5, final Agent suite passed 14
 
 Traced tool-output offload admission and found it estimated tokens from UTF-16 string length divided by 3.85. That undercounted CJK text by several times, allowing a multilingual result to exceed the context threshold without being offloaded. The estimate now counts UTF-8 widths and uses a conservative three-byte-per-token divisor, including astral characters.
 
-Validation: new estimator tests passed 2/2; final Agent suite passed 147 files / 651 tests; Agent TypeScript and Wrangler dry-run passed; `git diff --check` passed. This is a deterministic estimate rather than tokenizer parity, and model-specific tokenization can still vary. `tool-output.ts` and its regression test remain pending full-file checklist recording; the change reviewed and exercised estimate/offload admission only.
+Validation: new estimator tests passed 2/2; final Agent suite passed 147 files / 651 tests; Agent TypeScript and Wrangler dry-run passed; `git diff --check` passed. This is a deterministic estimate rather than tokenizer parity, and model-specific tokenization can still vary. `tool-output.ts` remains pending full-file checklist recording; its regression module is reviewed, and the change exercised estimate/offload admission only.
 
 Refreshed the tracked tree after code commit `6705612d`; it contains 1,963 tracked files and the checklist has 1,757 source/config files, preserving 251 checked rows before marking the new estimator regression module reviewed.
 
