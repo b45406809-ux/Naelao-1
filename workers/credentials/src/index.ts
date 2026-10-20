@@ -147,17 +147,49 @@ export function redactOutboundSecrets(input: Uint8Array, secrets: string[]): Uin
   const needles = secrets.map((secret) => new TextEncoder().encode(secret)).filter((needle) => needle.length > 0);
   if (!needles.some((needle) => needle.length <= input.length)) return input;
   const replacement = new TextEncoder().encode("[REDACTED]");
-  const output: number[] = [];
-  for (let i = 0; i < input.length;) {
-    const needle = needles.find((candidate) => {
-      if (i + candidate.length > input.length) return false;
-      for (let j = 0; j < candidate.length; j++) if (input[i + j] !== candidate[j]) return false;
-      return true;
-    });
-    if (needle) { output.push(...replacement); i += needle.length; }
-    else output.push(input[i++]!);
-  }
-  return Uint8Array.from(output);
+  const redact = (source: Uint8Array, needle: Uint8Array): Uint8Array => {
+    if (needle.length > source.length) return source;
+    const table = new Uint32Array(needle.length);
+    for (let i = 1, prefix = 0; i < needle.length; i++) {
+      while (prefix > 0 && needle[i] !== needle[prefix]) prefix = table[prefix - 1]!;
+      if (needle[i] === needle[prefix]) prefix++;
+      table[i] = prefix;
+    }
+    let matched = 0;
+    let count = 0;
+    for (let i = 0; i < source.length; i++) {
+      while (matched > 0 && source[i] !== needle[matched]) matched = table[matched - 1]!;
+      if (source[i] === needle[matched]) matched++;
+      if (matched === needle.length) {
+        count++;
+        matched = 0;
+      }
+    }
+    if (count === 0) return source;
+    const outputLength = source.length + count * (replacement.length - needle.length);
+    if (outputLength > 16 * 1024 * 1024) return new TextEncoder().encode("[REDACTED: upstream response omitted]");
+    const output = new Uint8Array(outputLength);
+    let cursor = 0;
+    let offset = 0;
+    matched = 0;
+    for (let i = 0; i < source.length; i++) {
+      while (matched > 0 && source[i] !== needle[matched]) matched = table[matched - 1]!;
+      if (source[i] === needle[matched]) matched++;
+      if (matched === needle.length) {
+        const end = i + 1;
+        const start = end - needle.length;
+        output.set(source.subarray(cursor, start), offset);
+        offset += start - cursor;
+        output.set(replacement, offset);
+        offset += replacement.length;
+        cursor = end;
+        matched = 0;
+      }
+    }
+    output.set(source.subarray(cursor), offset);
+    return output;
+  };
+  return needles.reduce((source, needle) => redact(source, needle), input);
 }
 
 function validateEnv(env: CredentialsEnv): void {

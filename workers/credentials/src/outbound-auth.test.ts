@@ -27,4 +27,18 @@ describe("credential outbound authorization", () => {
     expect(headersForEgressRedirect(new URL("https://api.example.test/path"), new URL("https://api.example.test/other"), original).get("authorization"))
       .toBe("Bearer secret");
   });
+
+  it("redacts long secrets with repeated prefixes in large responses", () => {
+    const secret = `${"a".repeat(512)}b`;
+    const input = new TextEncoder().encode(`${"a".repeat(256 * 1024)}${secret}`);
+    const output = new TextDecoder().decode(redactOutboundSecrets(input, [secret]));
+    expect(output.endsWith("[REDACTED]")).toBe(true);
+    expect(output.length).toBe(256 * 1024 + "[REDACTED]".length);
+  });
+
+  it("bounds expansion when a short secret repeats through a large response", () => {
+    const input = new TextEncoder().encode("x".repeat(2 * 1024 * 1024));
+    expect(new TextDecoder().decode(redactOutboundSecrets(input, ["x"])))
+      .toBe("[REDACTED: upstream response omitted]");
+  });
 });

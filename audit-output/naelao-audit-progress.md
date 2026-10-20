@@ -945,3 +945,9 @@ The R2 shortcut previously called a bucket/action path without an account ID. Re
 Validation: full Agents suite passed 148 files / 661 tests; focused virtual CLI tests passed 17/17; Agent TypeScript and Wrangler dry-run passed; `git diff --check` passed. Mocked transport assertions cover GitHub nested path/query/write mapping and traversal/method rejection, plus each R2 bucket operation and invalid account/bucket rejection. No live GitHub, Cloudflare, Stripe, Resend, or Twilio credentials were used; provider behavior beyond request construction is not live-verified. `virtual-cli.ts` remains open for full-file audit; API provider mappings still have future gaps to review (including whether each CLI intentionally exposes a sufficiently documented subset).
 
 Refreshed the tracked tree after code commit `c5dffcd1`: 1,965 tracked files and 1,759 source/config files; prior checked rows were preserved. This provider pass added no source files.
+
+## Bounded linear-time credential response redaction (2026-10-20)
+
+Stress testing the new auth redaction uncovered a resource issue in its original matcher: a large secret compared against an 8 MiB response could trigger quadratic byte comparisons, while many short-secret matches could allocate millions of output chunks. Replaced it with a KMP byte matcher (linear time per secret), two-pass exact output sizing, and a 16 MiB post-redaction ceiling. If repeated secret matches would expand a response past that ceiling, the response is replaced with a fixed safe omission marker. This applies to the raw vaulted secret and the injected Authorization value.
+
+Validation: Credentials suite passed all 8 tests, including a repeated-prefix adversarial case and 2 MiB short-secret repetition; Credentials TypeScript and Wrangler dry-run passed; `git diff --check` passed. These are deterministic matcher and handler-adjacent tests; no live provider echo behavior was exercised.
