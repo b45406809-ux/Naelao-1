@@ -133,6 +133,7 @@ const CORE_OPERATIONS = new Set<string>([
   "project_journal.read", // project-journal.ts
   "notify.email",         // notifications.ts
   "conversation.search",  // conversation.ts
+  "conversation.research", // conversation.ts — bounded excerpt + specialist chain
   // Claude-Code-shaped REPL primitives (r2-workspace.ts / code-exec.ts) — kept visible even under
   // reduced disclosure since these are the most-used verbs in any multi-step run, mirroring how a
   // coding agent's own default tool list always shows its file/search/exec primitives. This only

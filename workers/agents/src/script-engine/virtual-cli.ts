@@ -116,6 +116,30 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
 export function interceptPlatformWords(words: string[], command?: string): CliDispatch | null {
   const plannerCommand = plannerCoordinationCli(words, command);
   if (plannerCommand) return plannerCommand;
+  if (words[0] === "conversation") {
+    const action = words[1] ?? "search";
+    if (action !== "search" && action !== "research")
+      throw new Error("usage: conversation search|research <query> [--limit 1..20] [--scan-limit 50..10000] [--before-id <cursor>] [--process summarize|extract|compress]");
+    const { positional, body } = bodyAndFlags(words.slice(2));
+    const input = words.includes("--json") ? rawJsonFlag(command, "--json") : body;
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("conversation --json requires an object");
+    const params = { ...(input as Record<string, unknown>) };
+    const query = params.query ?? positional.join(" ").trim();
+    if (typeof query !== "string" || !query.trim()) throw new Error("usage: conversation search|research <query>");
+    params.query = query.trim();
+    for (const key of ["limit", "scan_limit"] as const) {
+      if (typeof params[key] === "string") params[key] = Number(params[key]);
+    }
+    if (typeof params.entities === "string") {
+      try { params.entities = rawJsonFlag(command, "--entities") ?? JSON.parse(params.entities); }
+      catch { throw new Error("conversation --entities requires a JSON object"); }
+    }
+    if (action === "search") {
+      delete params.process;
+      delete params.entities;
+    }
+    return { operation: `conversation.${action}`, params };
+  }
   if (words[0] === "document") {
     const action = words[1];
     if (!["summarize", "extract", "compress", "partition"].includes(action ?? "")) throw new Error("usage: document summarize|extract|compress|partition --path <workspace-file> [--entities <json>] [--query <question>]");

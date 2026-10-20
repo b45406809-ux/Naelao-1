@@ -252,6 +252,7 @@ The user’s standing delivery preference is to checkpoint successful work in fo
 - Re-read repository instructions and current plans/transcript reconciliation; record the latest direct user decisions and contradictions.
 - Map current project/Bot/assistant records, policy evaluators, routine/heartbeat entry points, budget reservations, extension schema/runtime, credential tables, inbox, template catalog and UI routes.
 - Audit operation declarations against the executable parameter hints exposed to planners; keep these hints complete as the tool surface grows. A 2026-10-20 regression found eight project-coordination operations missing documented inputs and a stale R2 CAS test fixture; hints were completed and the fixture repaired.
+- Keep the CLI contract aligned with those operations: `conversation search` now exposes bounded page limits/cursors, and `conversation research` can route only matched excerpts to summarize/extract/compress while the host fixes the active thread scope.
 - Mark obsolete AVE/Cowork/customer-bot concepts and their data/API dependencies; identify first-party domain experiences to migrate.
 - Output: ADR/data flow diagrams, migration inventory, open decisions, baseline tests. No user data/schema deletion.
 

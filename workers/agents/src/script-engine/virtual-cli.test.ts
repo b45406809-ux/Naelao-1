@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { interceptPlatformCli, VirtualCliDispatcher } from "./virtual-cli.js";
 
 describe("VirtualCliDispatcher", () => {
+  it("supports bounded conversation search pagination and document research chains", () => {
+    expect(interceptPlatformCli('conversation search "launch decision" --limit 8 --scan-limit 400 --before-id msg-200'))
+      .toEqual({ operation: "conversation.search", params: { query: "launch decision", limit: 8, scan_limit: 400, before_id: "msg-200" } });
+    expect(interceptPlatformCli(`conversation research "retention window" --process extract --entities '{"duration":"retention period"}' --before-id msg-50`))
+      .toEqual({ operation: "conversation.research", params: { query: "retention window", process: "extract", entities: { duration: "retention period" }, before_id: "msg-50" } });
+    expect(() => interceptPlatformCli("conversation export --all")).toThrow("usage: conversation");
+    expect(() => interceptPlatformCli("conversation search")).toThrow("usage: conversation");
+  });
+
   it("routes document tasks through authorized operations without executing a shell/provider command", () => {
     expect(interceptPlatformCli("document summarize --path /workspace/report.txt --max-output-tokens 300")).toEqual({ operation: "document.summarize", params: { path: "/workspace/report.txt", maxOutputTokens: 300 } });
     expect(interceptPlatformCli(`document extract --path /workspace/report.txt --entities '{"vendor":"vendor name"}'`)).toEqual({ operation: "document.extract", params: { path: "/workspace/report.txt", entities: { vendor: "vendor name" } } });
