@@ -80,7 +80,8 @@ describe("Agent API keys", () => {
       body: JSON.stringify({ approval_mode: "yolo", auto_approved_actions: ["POST:projects"] }),
     }));
     const policy = await call(doInstance, "/agents/agent-1/policy?space_id=space-1", "GET");
-    expect(policy.json).toEqual({ space_id: "space-1", agent_id: "agent-1", approval_mode: "yolo", auto_approved_actions: ["POST:projects"] });
+    expect(policy.json).toMatchObject({ space_id: "space-1", agent_id: "agent-1", approval_mode: "yolo", auto_approved_actions: ["POST:projects"] });
+    expect(policy.json.updated_at).toBeTruthy();
   });
 
   it("a per-agent override takes precedence over the space-wide assistant_policy", async () => {
@@ -91,7 +92,8 @@ describe("Agent API keys", () => {
     }));
     await call(doInstance, "/agents/agent-1/policy?space_id=space-1", "PATCH", { approval_mode: "always_ask", auto_approved_actions: ["GET:threads"] });
     const policy = await call(doInstance, "/agents/agent-1/policy?space_id=space-1", "GET");
-    expect(policy.json).toEqual({ space_id: "space-1", agent_id: "agent-1", approval_mode: "always_ask", auto_approved_actions: ["GET:threads"] });
+    expect(policy.json).toMatchObject({ space_id: "space-1", agent_id: "agent-1", approval_mode: "always_ask", auto_approved_actions: ["GET:threads"] });
+    expect(policy.json.updated_at).toBeTruthy();
 
     // A DIFFERENT agent in the same space is unaffected by agent-1's override.
     const other = await call(doInstance, "/agents/agent-2/policy?space_id=space-1", "GET");

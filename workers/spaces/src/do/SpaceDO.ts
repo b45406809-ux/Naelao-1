@@ -9756,7 +9756,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       new Date().toISOString(),
       row.id
     );
-    const policy = this.resolveAgentPolicy(body.space_id, row.agent_id);
+    const { updated_at: _policyVersion, ...policy } = this.resolveAgentPolicy(body.space_id, row.agent_id);
     return Response.json({ valid: true, agent_id: row.agent_id, ...policy });
   }
 

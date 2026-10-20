@@ -23,26 +23,39 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 
 // ── Minimal in-memory R2 (same subset as script-engine.test.ts) ───────────────
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
+  const store = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string>; uploaded: Date }>();
+  let revision = 0;
   const bucket = {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
+    async put(key: string, value: unknown, options?: R2PutOptions) {
+      const previous = store.get(key);
+      const onlyIf = options?.onlyIf as { etagMatches?: string; etagDoesNotMatch?: string } | undefined;
+      if (onlyIf?.etagMatches !== undefined && previous?.etag !== onlyIf.etagMatches) return null;
+      if (onlyIf?.etagDoesNotMatch === "*" && previous) return null;
+      const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(typeof value === "string" ? value : String(value));
+      const etag = String(++revision);
+      store.set(key, { bytes: bytes.slice(), etag, customMetadata: options?.customMetadata ?? {}, uploaded: new Date() });
+      return { etag } as R2Object;
     },
     async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; }, get body() { return text; } } as unknown as R2ObjectBody;
+      const item = store.get(key);
+      if (!item || item.customMetadata["deleted"] === "true") return null;
+      return {
+        size: item.bytes.byteLength, etag: item.etag, uploaded: item.uploaded, customMetadata: item.customMetadata,
+        async text() { return new TextDecoder().decode(item.bytes); },
+        async arrayBuffer() { return item.bytes.slice().buffer; },
+      } as unknown as R2ObjectBody;
     },
     async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
+      const item = store.get(key);
+      return item ? { key, size: item.bytes.byteLength, etag: item.etag, uploaded: item.uploaded, customMetadata: item.customMetadata } as R2Object : null;
     },
     async delete(keys: string | string[]) {
       for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k);
     },
     async list(opts?: { prefix?: string }) {
       const prefix = opts?.prefix ?? "";
-      const objects = [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k, size: store.get(k)!.length, uploaded: new Date(), etag: "x" }));
+      const objects = [...store.entries()].filter(([key, item]) => key.startsWith(prefix) && item.customMetadata["deleted"] !== "true")
+        .map(([key, item]) => ({ key, size: item.bytes.byteLength, uploaded: item.uploaded, etag: item.etag, customMetadata: item.customMetadata }));
       return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
     },
   };
@@ -70,7 +83,7 @@ describe("ScriptToolSurface — F-36 viewer clamp makes the six-op surface read-
     // user's own role — so at this layer "viewer" IS the read_only-owner case.
     const env = makeEngineEnv();
     const unclamped = new ScriptToolSurface(env, ["r2-workspace"]);
-    const w = await unclamped.run("write_file", { path: "notes/a.txt", content: "hello" });
+    const w = await unclamped.run("write_file", { path: "notes/a.txt", content: "hello", expectedHash: null });
     expect(w.ok).toBe(true);
 
     env.effectiveRole = "viewer";
@@ -81,7 +94,7 @@ describe("ScriptToolSurface — F-36 viewer clamp makes the six-op surface read-
     const ls = await clamped.run("list_directory", { path: "notes" });
     expect(ls.ok).toBe(true);
 
-    const w2 = await clamped.run("write_file", { path: "notes/b.txt", content: "nope" });
+    const w2 = await clamped.run("write_file", { path: "notes/b.txt", content: "nope", expectedHash: null });
     expect(w2.ok).toBe(false);
     expect(w2.error).toMatch(/read-only/);
     const del = await clamped.run("delete_file", { path: "notes/a.txt" });
@@ -109,7 +122,7 @@ describe("ScriptToolSurface — F-36 viewer clamp makes the six-op surface read-
     const env = makeEngineEnv();
     env.effectiveRole = "editor";
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
-    const w = await tools.run("write_file", { path: "x.txt", content: "ok" });
+    const w = await tools.run("write_file", { path: "x.txt", content: "ok", expectedHash: null });
     expect(w.ok).toBe(true);
     const meta = await tools.create({ name: "s2", metadata: { description: "x", domain: "compute", requires_tier: 1 } });
     expect(meta.name).toBe("s2");
@@ -164,6 +177,10 @@ function makeSpacesWorker(access: AccessBehavior) {
         if (access === "http_error") return new Response("boom", { status: 500 });
         return Response.json({ project_id: "proj1", user_id: url.searchParams.get("user_id"), effective_role: access.effective_role });
       }
+      if (/\/agents\/[^/]+\/policy$/.test(url.pathname)) {
+        return Response.json({ approval_mode: "yolo", auto_approved_actions: [], updated_at: "2026-10-20T00:00:00.000Z" });
+      }
+      if (url.pathname === "/internal/spaces/space1/model-policy") return Response.json({ policy: null });
       if (/\/projects\/[^/]+\/spend$/.test(url.pathname)) {
         return Response.json({ project_id: "proj1", day: "d", spent_today: 0, cap: 0, capped: false });
       }
@@ -180,7 +197,7 @@ function makeSpacesWorker(access: AccessBehavior) {
 
 async function makeDO(access: AccessBehavior) {
   const r2 = makeR2();
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: { sql: createDOSqlStorage(), async setAlarm() {}, async deleteAlarm() {} } };
   const { fetcher: spacesWorker, calls } = makeSpacesWorker(access);
   const env = {
     PLATFORM_SECRET: "test",
