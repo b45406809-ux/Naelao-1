@@ -2313,6 +2313,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/provisioner/src/manifest-contract.ts`
 - [x] `workers/provisioner/src/message-contract.test.ts`
 - [x] `workers/provisioner/src/message-contract.ts`
+- [ ] `workers/provisioner/src/provisioning-state.test.ts`
+- [ ] `workers/provisioner/src/provisioning-state.ts`
 - [ ] `workers/provisioner/src/queue-message-handler.test.ts`
 - [ ] `workers/provisioner/src/queue-message-handler.ts`
 

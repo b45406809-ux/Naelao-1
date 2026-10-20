@@ -875,3 +875,5 @@ Refreshed the tracked tree after manifest/queue validation commit `0838ba1c`; co
 The saga previously set a space to `provisioning` by ID/tenant alone, so a delayed retry could reactivate a soft-deleted space; duplicate delivery after success could also rerun seeding. Provisioning now starts only when the D1 row exists in `provisioning` or retryable `error` state, conditions the start/activation/error writes on the allowed states, and ignores stale active/deleted/deleting requests. Deprovisioning marks the D1 row deleted before external cleanup, making cleanup retries idempotent and preventing a concurrent provisioning completion from restoring it.
 
 Validation: Provisioner suite passed 4 files / 41 tests including status allow/deny cases; Provisioner TypeScript, Wrangler dry-run (14.25 MB / 2.57 MB gzip), and `git diff --check` passed. The state predicate is unit-tested; real concurrent D1 delivery and cleanup retry behavior still require a deployed queue/D1 exercise.
+
+Refreshed tracked inventory after stale-message state guards in commit `7abe5a37`; the status guard and regression file are included in the checklist.
