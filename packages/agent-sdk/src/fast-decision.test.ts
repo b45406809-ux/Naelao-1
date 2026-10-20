@@ -24,6 +24,13 @@ describe("typed fast decisions", () => {
     expect(onDecision).toHaveBeenCalledWith(expect.objectContaining({ provider: "openrouter", policyCode: "execution_preflight", model: CLEF_FLASH_MODEL, usage: { inputTokens: 42, outputTokens: 0 } }));
   });
 
+  it("caps deployment retry overrides to two retries", async () => {
+    const fetcher = vi.fn(async () => new Response("busy", { status: 503 }));
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 100 });
+    await expect(client.choice({ state: "small", instructions: "Choose", criteria: { yes: null, no: null }, policyCode: "retry_bound" })).rejects.toThrow("system_one_http_503");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
   it("maps legacy and Clef aliases to Clef Flash and permits only full Decider as overflow", () => {
     expect(resolveDecisionModel(undefined, "jev")).toBe(CLEF_FLASH_MODEL);
     expect(resolveDecisionModel("jev-latest")).toBe(CLEF_FLASH_MODEL);

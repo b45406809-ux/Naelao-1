@@ -519,3 +519,7 @@ Validation: worker-capability selector suite passed 7/7; Agents TypeScript check
 Stress-tested the deterministic order gate with malformed and near-maximum JSON numbers. The evaluator previously accepted fractional/unsafe equity values and multiplied potentially huge integers as floating-point numbers; malformed `null` JSON could also escape the limits/order handlers as an exception. It now validates IDs, sides, integer amounts, equity, and basis-point bounds before storage or scoring, uses exact `BigInt` cross-products for ratio checks, and returns 400 for invalid JSON/object shapes.
 
 Validation: reconciliation/risk tests and RiskGuard ingress-boundary tests passed (11/11); Agents TypeScript check passed. The guard is a worker-internal DO namespace and its emergency freeze caller is the verified executive-channel path; external deployment routing has not been exercised here. The full repository audit remains open.
+
+## Decisions API retry ceiling (2026-10-20)
+
+The OpenRouter Decisions client accepted an arbitrary `maxRetries` override, so a bad deployment value could create unbounded request amplification and latency during provider outages. Retry overrides are now clamped to zero through two; invalid non-integer values use the default ceiling. Validation: full Decisions client suite passed 22/22 and Agent SDK TypeScript passed. Provider outage timing was exercised with mocked 503 responses only.

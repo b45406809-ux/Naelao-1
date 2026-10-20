@@ -236,7 +236,9 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     resolveDecisionModel(options.model, options.legacyProvider); // Validate deployment override; Decider is only ever selected on context overflow.
     this.longContextModel = DECIDER_MODEL;
     this.fetcher = options.fetch ?? globalThis.fetch;
-    this.maxRetries = options.maxRetries ?? 2;
+    this.maxRetries = Number.isSafeInteger(options.maxRetries)
+      ? Math.max(0, Math.min(2, options.maxRetries!))
+      : 2;
     this.onDecision = options.onDecision;
   }
 
