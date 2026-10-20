@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1888` tracked/non-ignored files; `1682` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt`.
+Inventory basis: `1939` tracked files; `1733` files with source or executable-configuration extensions (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `kt`, `swift`, `sql`, `sh`, `yaml`, `yml`, `toml`, `json`, `jsonc`), matching `naelao-repository-tree.txt`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -50,13 +50,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `ai_studio_code.sh`
 - [ ] `biome.json`
 - [ ] `create_patch.js`
-- [ ] `naelao_expanded_gaps_resolved.html`
-- [ ] `naelao_whop_businesses_spec.html`
 - [ ] `package.json`
 - [ ] `pnpm-lock.yaml`
 - [ ] `pnpm-workspace.yaml`
-- [ ] `prompts.xml`
-- [ ] `repomix-output.xml`
 - [ ] `repomix.shell.config.json`
 - [ ] `run-phase (1).mjs`
 - [ ] `run-phase.mjs`
@@ -76,12 +72,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `.github/workflows/manual-cmd.yml`
 - [ ] `.github/workflows/pr-checks.yml`
 
-### `_BUILD_PLAN/AVOS Master Architectural Blueprint 1.json`
+### `_BUILD_PLAN`
 
 - [ ] `_BUILD_PLAN/AVOS Master Architectural Blueprint 1.json`
-
-### `_BUILD_PLAN/avos1.json`
-
 - [ ] `_BUILD_PLAN/avos1.json`
 
 ### `apps/dashboard`
@@ -89,149 +82,400 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `apps/dashboard/next.config.mjs`
 - [ ] `apps/dashboard/package.json`
 - [ ] `apps/dashboard/postcss.config.js`
+- [ ] `apps/dashboard/tailwind.config.ts`
+- [ ] `apps/dashboard/tsconfig.json`
+
+### `apps/dashboard/src/app`
+
+- [ ] `apps/dashboard/src/app/layout.tsx`
+- [ ] `apps/dashboard/src/app/page.tsx`
+
+### `apps/dashboard/src/app/catalog`
+
 - [ ] `apps/dashboard/src/app/catalog/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/api-keys/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/clients/page.tsx`
+
+### `apps/dashboard/src/app/dashboard`
+
 - [ ] `apps/dashboard/src/app/dashboard/layout.tsx`
 - [ ] `apps/dashboard/src/app/dashboard/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/api-keys`
+
+- [ ] `apps/dashboard/src/app/dashboard/api-keys/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/clients`
+
+- [ ] `apps/dashboard/src/app/dashboard/clients/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products`
+
+- [ ] `apps/dashboard/src/app/dashboard/products/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/OnboardingChecklist.tsx`
+- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/layout.tsx`
+- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/page.tsx`
+- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/productContext.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/activity`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/activity/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/agents`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/agents/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/analytics`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/analytics/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/billing`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/billing/PaymentsAccountCard.tsx`
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/billing/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/configuration`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/configuration/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/danger-zone`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/danger-zone/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/domain`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/domain/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/feature-flags`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/feature-flags/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/layout.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/legal`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/legal/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/local-machine`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/local-machine/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/pricing`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/pricing/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/productContext.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/users`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/users/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/[productId]/wallet`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/wallet/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/products/new`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/new/page.tsx`
+- [ ] `apps/dashboard/src/app/dashboard/products/new/wizardTypes.ts`
+
+### `apps/dashboard/src/app/dashboard/products/new/steps`
+
 - [ ] `apps/dashboard/src/app/dashboard/products/new/steps/AuthConfigStep.tsx`
 - [ ] `apps/dashboard/src/app/dashboard/products/new/steps/DomainStep.tsx`
 - [ ] `apps/dashboard/src/app/dashboard/products/new/steps/IdentityStep.tsx`
 - [ ] `apps/dashboard/src/app/dashboard/products/new/steps/PricingStep.tsx`
 - [ ] `apps/dashboard/src/app/dashboard/products/new/steps/ReviewStep.tsx`
 - [ ] `apps/dashboard/src/app/dashboard/products/new/steps/SpaceTypeStep.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/new/wizardTypes.ts`
-- [ ] `apps/dashboard/src/app/dashboard/products/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/settings`
+
 - [ ] `apps/dashboard/src/app/dashboard/settings/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/commerce/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/connectors/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/credentials/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/eval/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/kb/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/onboarding/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/sessions/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/webhooks/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/spaces`
+
 - [ ] `apps/dashboard/src/app/dashboard/spaces/page.tsx`
-- [ ] `apps/dashboard/src/app/globals.css`
-- [ ] `apps/dashboard/src/app/layout.tsx`
+
+### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/commerce`
+
+- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/commerce/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/connectors`
+
+- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/connectors/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/credentials`
+
+- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/credentials/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/eval`
+
+- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/eval/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/kb`
+
+- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/kb/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/onboarding`
+
+- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/onboarding/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/sessions`
+
+- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/sessions/page.tsx`
+
+### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/webhooks`
+
+- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/webhooks/page.tsx`
+
+### `apps/dashboard/src/app/login`
+
 - [ ] `apps/dashboard/src/app/login/page.tsx`
-- [ ] `apps/dashboard/src/app/page.tsx`
+
+### `apps/dashboard/src/app/reset-password`
+
 - [ ] `apps/dashboard/src/app/reset-password/page.tsx`
+
+### `apps/dashboard/src/components`
+
 - [ ] `apps/dashboard/src/components/ByokKeysPanel.tsx`
 - [ ] `apps/dashboard/src/components/ConfirmByTypingDialog.tsx`
+
+### `apps/dashboard/src/lib`
+
 - [ ] `apps/dashboard/src/lib/api.ts`
 - [ ] `apps/dashboard/src/lib/auth-provider.tsx`
 - [ ] `apps/dashboard/src/lib/auth.ts`
 - [ ] `apps/dashboard/src/lib/product-url.ts`
 - [ ] `apps/dashboard/src/lib/temples.ts`
-- [ ] `apps/dashboard/tailwind.config.ts`
-- [ ] `apps/dashboard/tsconfig.json`
-
-### `apps/launchpad`
-
-- [ ] `apps/launchpad/src/index.html`
 
 ### `apps/marketplace-web`
 
 - [ ] `apps/marketplace-web/next.config.mjs`
 - [ ] `apps/marketplace-web/package.json`
 - [ ] `apps/marketplace-web/postcss.config.js`
-- [ ] `apps/marketplace-web/src/app/categories/[category]/page.tsx`
-- [ ] `apps/marketplace-web/src/app/globals.css`
-- [ ] `apps/marketplace-web/src/app/layout.tsx`
-- [ ] `apps/marketplace-web/src/app/listing/[id]/page.tsx`
-- [ ] `apps/marketplace-web/src/app/page.tsx`
-- [ ] `apps/marketplace-web/src/lib/api.ts`
 - [ ] `apps/marketplace-web/tailwind.config.ts`
 - [ ] `apps/marketplace-web/tsconfig.json`
+
+### `apps/marketplace-web/src/app`
+
+- [ ] `apps/marketplace-web/src/app/layout.tsx`
+- [ ] `apps/marketplace-web/src/app/page.tsx`
+
+### `apps/marketplace-web/src/app/categories/[category]`
+
+- [ ] `apps/marketplace-web/src/app/categories/[category]/page.tsx`
+
+### `apps/marketplace-web/src/app/listing/[id]`
+
+- [ ] `apps/marketplace-web/src/app/listing/[id]/page.tsx`
+
+### `apps/marketplace-web/src/lib`
+
+- [ ] `apps/marketplace-web/src/lib/api.ts`
 
 ### `apps/portal`
 
 - [ ] `apps/portal/next.config.mjs`
 - [ ] `apps/portal/package.json`
 - [ ] `apps/portal/postcss.config.js`
-- [ ] `apps/portal/src/app/[spaceId]/auth/page.tsx`
+- [ ] `apps/portal/tailwind.config.ts`
+- [ ] `apps/portal/tsconfig.json`
+- [ ] `apps/portal/wrangler.toml`
+
+### `apps/portal/src/app`
+
+- [ ] `apps/portal/src/app/layout.tsx`
+- [ ] `apps/portal/src/app/page.tsx`
+
+### `apps/portal/src/app/[spaceId]`
+
 - [ ] `apps/portal/src/app/[spaceId]/layout.tsx`
 - [ ] `apps/portal/src/app/[spaceId]/page.tsx`
+
+### `apps/portal/src/app/[spaceId]/auth`
+
+- [ ] `apps/portal/src/app/[spaceId]/auth/page.tsx`
+
+### `apps/portal/src/app/catalog`
+
 - [ ] `apps/portal/src/app/catalog/page.tsx`
+
+### `apps/portal/src/app/embed/[spaceId]`
+
 - [ ] `apps/portal/src/app/embed/[spaceId]/page.tsx`
-- [ ] `apps/portal/src/app/globals.css`
+
+### `apps/portal/src/app/launch`
+
 - [ ] `apps/portal/src/app/launch/page.tsx`
-- [ ] `apps/portal/src/app/layout.tsx`
+
+### `apps/portal/src/app/login`
+
 - [ ] `apps/portal/src/app/login/page.tsx`
-- [ ] `apps/portal/src/app/page.tsx`
+
+### `apps/portal/src/lib`
+
 - [ ] `apps/portal/src/lib/account.ts`
 - [ ] `apps/portal/src/lib/api.ts`
 - [ ] `apps/portal/src/lib/i18n.ts`
 - [ ] `apps/portal/src/lib/productAccount.ts`
 - [ ] `apps/portal/src/lib/session.ts`
-- [ ] `apps/portal/tailwind.config.ts`
-- [ ] `apps/portal/tsconfig.json`
-- [ ] `apps/portal/wrangler.toml`
 
 ### `apps/shell`
 
 - [ ] `apps/shell/next.config.mjs`
 - [ ] `apps/shell/package.json`
+- [ ] `apps/shell/tsconfig.json`
+
+### `apps/shell/public`
+
 - [ ] `apps/shell/public/sw.js`
-- [ ] `apps/shell/src/app/api/naelao/[...path]/route.ts`
-- [ ] `apps/shell/src/app/globals.css`
+
+### `apps/shell/src/app`
+
 - [ ] `apps/shell/src/app/layout.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/agents/[agentId]/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/agents/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/analytics/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/approvals/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/bots/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/connectors/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/dashboard/assistant/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/dashboard/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/foundry/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/knowledge/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/layout.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/new/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/notifications/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/plugins/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/projects/[projectId]/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/projects/[projectId]/threads/[threadId]/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/projects/all/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/projects/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/sessions/[sessionId]/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/sessions/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/settings/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/accept-invite/[token]/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/departments/[departmentId]/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/onboarding/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/threads/[threadId]/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/threads/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/(shell)/workflows/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/layout.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/login/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/signup/page.tsx`
-- [ ] `apps/shell/src/app/p/[slug]/verify-email/page.tsx`
-- [ ] `apps/shell/src/app/p/error.tsx`
 - [ ] `apps/shell/src/app/page.tsx`
+
+### `apps/shell/src/app/api/naelao/[...path]`
+
+- [ ] `apps/shell/src/app/api/naelao/[...path]/route.ts`
+
+### `apps/shell/src/app/p`
+
+- [ ] `apps/shell/src/app/p/error.tsx`
+
+### `apps/shell/src/app/p/[slug]`
+
+- [ ] `apps/shell/src/app/p/[slug]/layout.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/layout.tsx`
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/agents`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/agents/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/agents/[agentId]`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/agents/[agentId]/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/analytics`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/analytics/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/approvals`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/approvals/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/bots`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/bots/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/connectors`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/connectors/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/dashboard`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/dashboard/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/dashboard/assistant`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/dashboard/assistant/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/foundry`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/foundry/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/knowledge`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/knowledge/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/new`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/new/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/notifications`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/notifications/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/plugins`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/plugins/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/projects`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/projects/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/projects/[projectId]`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/projects/[projectId]/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/projects/[projectId]/threads/[threadId]`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/projects/[projectId]/threads/[threadId]/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/projects/all`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/projects/all/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/sessions`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/sessions/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/sessions/[sessionId]`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/sessions/[sessionId]/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/settings`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/settings/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/spaces`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/accept-invite/[token]`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/accept-invite/[token]/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/departments/[departmentId]`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/departments/[departmentId]/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/onboarding`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/spaces/[businessId]/onboarding/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/threads`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/threads/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/threads/[threadId]`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/threads/[threadId]/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/(shell)/workflows`
+
+- [ ] `apps/shell/src/app/p/[slug]/(shell)/workflows/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/login`
+
+- [ ] `apps/shell/src/app/p/[slug]/login/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/signup`
+
+- [ ] `apps/shell/src/app/p/[slug]/signup/page.tsx`
+
+### `apps/shell/src/app/p/[slug]/verify-email`
+
+- [ ] `apps/shell/src/app/p/[slug]/verify-email/page.tsx`
+
+### `apps/shell/src/components`
+
 - [ ] `apps/shell/src/components/ActivityFeed.tsx`
 - [ ] `apps/shell/src/components/AgentPolicyPanel.tsx`
 - [ ] `apps/shell/src/components/AppCard.tsx`
@@ -278,13 +522,22 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `apps/shell/src/components/TerminalStreamBlock.tsx`
 - [ ] `apps/shell/src/components/UpgradeDialog.tsx`
 - [ ] `apps/shell/src/components/WorkflowPlanComposer.tsx`
+
+### `apps/shell/src/components/viewports`
+
 - [ ] `apps/shell/src/components/viewports/ContainerTerminalCanvas.tsx`
 - [ ] `apps/shell/src/components/viewports/DocumentRedlineCanvas.tsx`
 - [ ] `apps/shell/src/components/viewports/DomainCanvases.tsx`
 - [ ] `apps/shell/src/components/viewports/MicroAppCanvas.tsx`
 - [ ] `apps/shell/src/components/viewports/SpreadsheetFormulaGrid.tsx`
 - [ ] `apps/shell/src/components/viewports/VirtualDesktopGuiCanvas.tsx`
+
+### `apps/shell/src/components/widgets`
+
 - [ ] `apps/shell/src/components/widgets/GeneratedWidget.tsx`
+
+### `apps/shell/src/lib`
+
 - [ ] `apps/shell/src/lib/active-space-context.tsx`
 - [ ] `apps/shell/src/lib/api.ts`
 - [ ] `apps/shell/src/lib/auth-provider.tsx`
@@ -299,14 +552,19 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `apps/shell/src/lib/roles.ts`
 - [ ] `apps/shell/src/lib/terminal-output.ts`
 - [ ] `apps/shell/src/lib/user-facing-errors.ts`
+
+### `apps/shell/src/types`
+
 - [ ] `apps/shell/src/types/mammoth-browser.d.ts`
-- [ ] `apps/shell/tsconfig.json`
 
 ### `apps/widget`
 
 - [ ] `apps/widget/package.json`
-- [ ] `apps/widget/src/naelao-chat.ts`
 - [ ] `apps/widget/tsconfig.json`
+
+### `apps/widget/src`
+
+- [ ] `apps/widget/src/naelao-chat.ts`
 
 ### `harness/conformance`
 
@@ -315,14 +573,14 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `harness/conformance/index.ts`
 - [ ] `harness/conformance/vitest.config.ts`
 
+### `infra`
+
+- [ ] `infra/gen-spec-index.py`
+
 ### `infra/deployment`
 
 - [ ] `infra/deployment/eu-residency-manifest.example.json`
 - [ ] `infra/deployment/unit-economics-input.example.json`
-
-### `infra/gen-spec-index.py`
-
-- [ ] `infra/gen-spec-index.py`
 
 ### `infra/migrations`
 
@@ -449,6 +707,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/scripts/dev-topology.mjs`
 - [ ] `infra/scripts/evaluate-runtime-economics.mjs`
 - [ ] `infra/scripts/evaluate-runtime-economics.test.mjs`
+- [ ] `infra/scripts/evaluate-scaledown-pipeline.mjs`
+- [ ] `infra/scripts/evaluate-scaledown-pipeline.test.mjs`
 - [ ] `infra/scripts/evaluate-unit-economics.mjs`
 - [ ] `infra/scripts/evaluate-unit-economics.test.mjs`
 - [ ] `infra/scripts/matrix-results-to-benchmarks.mjs`
@@ -468,28 +728,26 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/scripts/verify-system-one.mjs`
 - [ ] `infra/scripts/verify-system-one.test.mjs`
 
-### `infra/terraform`
-
-- [ ] `infra/terraform/main.tf`
-- [ ] `infra/terraform/outputs.tf`
-- [ ] `infra/terraform/providers.tf`
-- [ ] `infra/terraform/variables.tf`
-
-### `new plan/extract_ai_studio_messages.py`
+### `new plan`
 
 - [ ] `new plan/extract_ai_studio_messages.py`
-
-### `new plan/test_extract_ai_studio_messages.py`
-
 - [ ] `new plan/test_extract_ai_studio_messages.py`
 
 ### `packages/agent-sdk`
 
-- [ ] `packages/agent-sdk/examples/trading-mentor-channel/console.html`
+- [ ] `packages/agent-sdk/package.json`
+- [ ] `packages/agent-sdk/tsconfig.json`
+- [ ] `packages/agent-sdk/vitest.config.ts`
+
+### `packages/agent-sdk/examples/trading-mentor-channel`
+
 - [ ] `packages/agent-sdk/examples/trading-mentor-channel/manifest.json`
 - [ ] `packages/agent-sdk/examples/trading-mentor-channel/place-order.ts`
 - [ ] `packages/agent-sdk/examples/trading-mentor-channel/student-answer.ts`
-- [ ] `packages/agent-sdk/package.json`
+
+### `packages/agent-sdk/src`
+
+- [ ] `packages/agent-sdk/src/artifact-client.test.ts`
 - [ ] `packages/agent-sdk/src/artifact-client.ts`
 - [ ] `packages/agent-sdk/src/artifact-linters.test.ts`
 - [ ] `packages/agent-sdk/src/artifact-linters.ts`
@@ -513,8 +771,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/agent-sdk/src/document-node.ts`
 - [ ] `packages/agent-sdk/src/document-processing.test.ts`
 - [ ] `packages/agent-sdk/src/document-processing.ts`
-- [ ] `packages/agent-sdk/src/dogfood-extensions/index.test.ts`
-- [ ] `packages/agent-sdk/src/dogfood-extensions/index.ts`
 - [ ] `packages/agent-sdk/src/extension-publisher-signatures.test.ts`
 - [ ] `packages/agent-sdk/src/extension-publisher-signatures.ts`
 - [ ] `packages/agent-sdk/src/extensions.test.ts`
@@ -540,8 +796,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/agent-sdk/src/scratchpad.ts`
 - [ ] `packages/agent-sdk/src/subagent-context.test.ts`
 - [ ] `packages/agent-sdk/src/subagent-context.ts`
-- [ ] `packages/agent-sdk/src/templates/dev-foundry.test.ts`
-- [ ] `packages/agent-sdk/src/templates/dev-foundry.ts`
 - [ ] `packages/agent-sdk/src/token-accounting.ts`
 - [ ] `packages/agent-sdk/src/tunnel-protocol.ts`
 - [ ] `packages/agent-sdk/src/types.ts`
@@ -550,28 +804,46 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/agent-sdk/src/workflow-taxonomy.test.ts`
 - [ ] `packages/agent-sdk/src/workflow-taxonomy.ts`
 - [ ] `packages/agent-sdk/src/write-guard-sentry.test.ts`
-- [ ] `packages/agent-sdk/tsconfig.json`
-- [ ] `packages/agent-sdk/vitest.config.ts`
+
+### `packages/agent-sdk/src/dogfood-extensions`
+
+- [ ] `packages/agent-sdk/src/dogfood-extensions/index.test.ts`
+- [ ] `packages/agent-sdk/src/dogfood-extensions/index.ts`
+
+### `packages/agent-sdk/src/templates`
+
+- [ ] `packages/agent-sdk/src/templates/dev-foundry.test.ts`
+- [ ] `packages/agent-sdk/src/templates/dev-foundry.ts`
 
 ### `packages/analytics-schema`
 
 - [ ] `packages/analytics-schema/package.json`
-- [ ] `packages/analytics-schema/src/index.ts`
 - [ ] `packages/analytics-schema/tsconfig.json`
+
+### `packages/analytics-schema/src`
+
+- [ ] `packages/analytics-schema/src/index.ts`
 
 ### `packages/auth`
 
-- [x] `packages/auth/vitest.config.ts`
-- [x] `packages/auth/src/rbac.test.ts`
 - [x] `packages/auth/package.json`
+- [x] `packages/auth/tsconfig.json`
+- [x] `packages/auth/vitest.config.ts`
+
+### `packages/auth/src`
+
 - [x] `packages/auth/src/index.ts`
 - [x] `packages/auth/src/jwt.ts`
+- [x] `packages/auth/src/rbac.test.ts`
 - [x] `packages/auth/src/rbac.ts`
-- [x] `packages/auth/tsconfig.json`
 
 ### `packages/billing-core`
 
 - [ ] `packages/billing-core/package.json`
+- [ ] `packages/billing-core/tsconfig.json`
+
+### `packages/billing-core/src`
+
 - [ ] `packages/billing-core/src/credits.test.ts`
 - [ ] `packages/billing-core/src/credits.ts`
 - [ ] `packages/billing-core/src/effort.ts`
@@ -585,6 +857,10 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/billing-core/src/plans.ts`
 - [ ] `packages/billing-core/src/price-floor.test.ts`
 - [ ] `packages/billing-core/src/price-floor.ts`
+- [ ] `packages/billing-core/src/reseller.ts`
+
+### `packages/billing-core/src/providers`
+
 - [ ] `packages/billing-core/src/providers/index.ts`
 - [ ] `packages/billing-core/src/providers/lemon-squeezy.test.ts`
 - [ ] `packages/billing-core/src/providers/lemon-squeezy.ts`
@@ -592,124 +868,168 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/billing-core/src/providers/whop-oauth-checkout.ts`
 - [ ] `packages/billing-core/src/providers/whop-platform-plan.ts`
 - [ ] `packages/billing-core/src/providers/whop.ts`
-- [ ] `packages/billing-core/src/reseller.ts`
-- [ ] `packages/billing-core/tsconfig.json`
 
 ### `packages/bridge`
 
 - [ ] `packages/bridge/package.json`
-- [ ] `packages/bridge/services/start-windows.ps1`
+- [ ] `packages/bridge/tsconfig.json`
+
+### `packages/bridge/src`
+
 - [ ] `packages/bridge/src/cli.ts`
 - [ ] `packages/bridge/src/index.ts`
 - [ ] `packages/bridge/src/runtime.mjs`
+
+### `packages/bridge/test`
+
 - [ ] `packages/bridge/test/model-discovery.test.mjs`
-- [ ] `packages/bridge/tsconfig.json`
 
 ### `packages/client-sdk`
 
 - [ ] `packages/client-sdk/package.json`
-- [ ] `packages/client-sdk/src/index.ts`
 - [ ] `packages/client-sdk/tsconfig.json`
+
+### `packages/client-sdk/src`
+
+- [ ] `packages/client-sdk/src/index.ts`
 
 ### `packages/config`
 
 - [ ] `packages/config/package.json`
-- [ ] `packages/config/src/index.ts`
 - [ ] `packages/config/tsconfig.json`
+
+### `packages/config/src`
+
+- [ ] `packages/config/src/index.ts`
 
 ### `packages/crypto`
 
 - [x] `packages/crypto/package.json`
-- [x] `packages/crypto/src/index.ts`
-- [x] `packages/crypto/src/index.test.ts` (added stress coverage)
-- [x] `packages/crypto/vitest.config.ts` (added package test discovery)
 - [x] `packages/crypto/tsconfig.json`
+- [x] `packages/crypto/vitest.config.ts`
+
+### `packages/crypto/src`
+
+- [x] `packages/crypto/src/index.test.ts`
+- [x] `packages/crypto/src/index.ts`
 
 ### `packages/db`
 
 - [x] `packages/db/package.json`
-- [x] `packages/db/src/index.ts`
-- [x] `packages/db/src/migrate.ts`
-- [x] `packages/db/src/sql.ts`
-- [x] `packages/db/src/migrate.test.ts` (added stress coverage)
-- [x] `packages/db/src/sql.test.ts` (added helper boundary coverage)
-- [x] `packages/db/vitest.config.ts` (added package test discovery)
 - [x] `packages/db/tsconfig.json`
+- [x] `packages/db/vitest.config.ts`
+
+### `packages/db/src`
+
+- [x] `packages/db/src/index.ts`
+- [x] `packages/db/src/migrate.test.ts`
+- [x] `packages/db/src/migrate.ts`
+- [x] `packages/db/src/sql.test.ts`
+- [x] `packages/db/src/sql.ts`
 
 ### `packages/entitlements`
 
 - [ ] `packages/entitlements/package.json`
-- [ ] `packages/entitlements/src/index.ts`
 - [ ] `packages/entitlements/tsconfig.json`
+
+### `packages/entitlements/src`
+
+- [ ] `packages/entitlements/src/index.ts`
 
 ### `packages/events`
 
 - [ ] `packages/events/package.json`
+- [ ] `packages/events/tsconfig.json`
+
+### `packages/events/src`
+
 - [ ] `packages/events/src/business-feature-kinds.ts`
 - [ ] `packages/events/src/failure-classification.ts`
 - [ ] `packages/events/src/index.ts`
-- [ ] `packages/events/tsconfig.json`
 
 ### `packages/http`
 
 - [x] `packages/http/package.json`
-- [x] `packages/http/src/cors.ts`
-- [x] `packages/http/src/desk-drop-cookie.ts`
-- [x] `packages/http/src/errors.ts`
-- [x] `packages/http/src/index.ts`
-- [x] `packages/http/src/kv.ts`
-- [x] `packages/http/src/middleware.ts`
-- [x] `packages/http/src/realtime.ts`
-- [x] `packages/http/src/cors.test.ts` (added)
-- [x] `packages/http/src/desk-drop-cookie.test.ts` (added)
-- [x] `packages/http/src/errors.test.ts` (added)
-- [x] `packages/http/src/index.test.ts` (added)
-- [x] `packages/http/src/kv.test.ts` (added)
-- [x] `packages/http/src/middleware.test.ts` (added)
-- [x] `packages/http/src/realtime.test.ts` (added)
-- [x] `packages/http/vitest.config.ts` (added test discovery)
 - [x] `packages/http/tsconfig.json`
+- [x] `packages/http/vitest.config.ts`
+
+### `packages/http/src`
+
+- [ ] `packages/http/src/bounded-response.test.ts`
+- [ ] `packages/http/src/bounded-response.ts`
+- [x] `packages/http/src/cors.test.ts`
+- [x] `packages/http/src/cors.ts`
+- [x] `packages/http/src/desk-drop-cookie.test.ts`
+- [x] `packages/http/src/desk-drop-cookie.ts`
+- [x] `packages/http/src/errors.test.ts`
+- [x] `packages/http/src/errors.ts`
+- [x] `packages/http/src/index.test.ts`
+- [x] `packages/http/src/index.ts`
+- [x] `packages/http/src/kv.test.ts`
+- [x] `packages/http/src/kv.ts`
+- [x] `packages/http/src/middleware.test.ts`
+- [x] `packages/http/src/middleware.ts`
+- [ ] `packages/http/src/pagination.ts`
+- [x] `packages/http/src/realtime.test.ts`
+- [x] `packages/http/src/realtime.ts`
 
 ### `packages/idempotency`
 
-- [x] `packages/idempotency/vitest.config.ts`
-- [x] `packages/idempotency/src/index.test.ts`
 - [x] `packages/idempotency/package.json`
-- [x] `packages/idempotency/src/index.ts`
 - [x] `packages/idempotency/tsconfig.json`
+- [x] `packages/idempotency/vitest.config.ts`
+
+### `packages/idempotency/src`
+
+- [x] `packages/idempotency/src/index.test.ts`
+- [x] `packages/idempotency/src/index.ts`
 
 ### `packages/llm-gateway`
 
 - [x] `packages/llm-gateway/package.json`
+- [x] `packages/llm-gateway/tsconfig.json`
+- [x] `packages/llm-gateway/vitest.config.ts`
+
+### `packages/llm-gateway/src`
+
+- [x] `packages/llm-gateway/src/gateway.test.ts`
 - [x] `packages/llm-gateway/src/gateway.ts`
-- [x] `packages/llm-gateway/src/gateway.test.ts` (added)
 - [x] `packages/llm-gateway/src/index.ts`
 - [x] `packages/llm-gateway/src/types.ts`
-- [x] `packages/llm-gateway/vitest.config.ts` (added test discovery)
-- [x] `packages/llm-gateway/tsconfig.json`
 
 ### `packages/logger`
 
 - [x] `packages/logger/package.json`
-- [x] `packages/logger/src/index.ts`
-- [x] `packages/logger/src/index.test.ts` (added stress coverage)
-- [x] `packages/logger/vitest.config.ts` (added test discovery)
 - [x] `packages/logger/tsconfig.json`
+- [x] `packages/logger/vitest.config.ts`
+
+### `packages/logger/src`
+
+- [x] `packages/logger/src/index.test.ts`
+- [x] `packages/logger/src/index.ts`
 
 ### `packages/moderation`
 
 - [x] `packages/moderation/package.json`
-- [x] `packages/moderation/src/index.ts`
-- [x] `packages/moderation/src/index.test.ts` (added stress coverage)
-- [x] `packages/moderation/vitest.config.ts` (includes package and existing unit tests)
 - [x] `packages/moderation/tsconfig.json`
+- [x] `packages/moderation/vitest.config.ts`
+
+### `packages/moderation/src`
+
+- [x] `packages/moderation/src/index.test.ts`
+- [x] `packages/moderation/src/index.ts`
 
 ### `packages/rag`
 
 - [x] `packages/rag/package.json`
+- [x] `packages/rag/tsconfig.json`
+- [x] `packages/rag/vitest.config.ts`
+
+### `packages/rag/src`
+
 - [x] `packages/rag/src/batch05-permissions.test.ts`
 - [x] `packages/rag/src/batch05-phase2.test.ts`
-- [x] `packages/rag/src/batch05-stress.test.ts` (added stress coverage)
+- [x] `packages/rag/src/batch05-stress.test.ts`
 - [x] `packages/rag/src/chunk.ts`
 - [x] `packages/rag/src/chunking.ts`
 - [x] `packages/rag/src/citations.ts`
@@ -719,13 +1039,16 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/rag/src/index.ts`
 - [x] `packages/rag/src/semantic-cache.ts`
 - [x] `packages/rag/src/vectorize.ts`
-- [x] `packages/rag/vitest.config.ts` (includes package and existing unit tests)
-- [x] `packages/rag/tsconfig.json`
 
 ### `packages/sdk`
 
 - [x] `packages/sdk/package.json`
-- [x] `packages/sdk/src/canvas.test.ts` (added pagination/body stress cases)
+- [x] `packages/sdk/tsconfig.json`
+- [x] `packages/sdk/vitest.config.ts`
+
+### `packages/sdk/src`
+
+- [x] `packages/sdk/src/canvas.test.ts`
 - [x] `packages/sdk/src/canvas.ts`
 - [x] `packages/sdk/src/channel.ts`
 - [x] `packages/sdk/src/index.ts`
@@ -733,26 +1056,33 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/sdk/src/testing.ts`
 - [x] `packages/sdk/src/workflow.test.ts`
 - [x] `packages/sdk/src/workflow.ts`
-- [x] `packages/sdk/vitest.config.ts` (includes SDK and plan contract tests)
-- [x] `packages/sdk/tsconfig.json`
 
 ### `packages/security`
 
 - [x] `packages/security/package.json`
+- [x] `packages/security/tsconfig.json`
+- [x] `packages/security/vitest.config.ts`
+
+### `packages/security/src`
+
 - [x] `packages/security/src/air-gap.test.ts`
 - [x] `packages/security/src/air-gap.ts`
+- [x] `packages/security/src/audit-blueprint-bounds.test.ts`
 - [x] `packages/security/src/audit.ts`
 - [x] `packages/security/src/blueprint-scrubber.ts`
 - [x] `packages/security/src/blueprint-security.test.ts`
 - [x] `packages/security/src/blueprint-validator.ts`
-- [x] `packages/security/src/capability-policy.ts` (capability boundary suites registered and passed)
+- [x] `packages/security/src/bounded-recursion.test.ts`
+- [x] `packages/security/src/capability-policy.ts`
 - [x] `packages/security/src/circuit-breaker.test.ts`
 - [x] `packages/security/src/circuit-breaker.ts`
+- [x] `packages/security/src/control-boundaries.test.ts`
 - [x] `packages/security/src/data-residency.test.ts`
 - [x] `packages/security/src/data-residency.ts`
 - [x] `packages/security/src/delegation.test.ts`
 - [x] `packages/security/src/delegation.ts`
 - [x] `packages/security/src/dlp.ts`
+- [x] `packages/security/src/egress-policy.test.ts`
 - [x] `packages/security/src/egress-policy.ts`
 - [x] `packages/security/src/ephemeral-grant.ts`
 - [x] `packages/security/src/headers.test.ts`
@@ -763,58 +1093,76 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/marketplace-conformance.test.ts`
 - [x] `packages/security/src/marketplace-conformance.ts`
 - [x] `packages/security/src/rate-limit-do.ts`
-- [x] `packages/security/src/rate-limit-policy.ts`
 - [x] `packages/security/src/rate-limit-policy.test.ts`
-- [x] `packages/security/src/waf-stress.test.ts`
-- [x] `packages/security/src/ssrf-stress.test.ts`
-- [x] `packages/security/src/egress-policy.test.ts`
-- [x] `packages/security/src/bounded-recursion.test.ts`
-- [x] `packages/security/src/write-guard-stress.test.ts`
-- [x] `packages/security/src/audit-blueprint-bounds.test.ts`
-- [x] `packages/security/src/control-boundaries.test.ts`
-- [x] `packages/security/vitest.config.ts`
+- [x] `packages/security/src/rate-limit-policy.ts`
+- [ ] `packages/security/src/request-body.test.ts`
+- [ ] `packages/security/src/request-body.ts`
 - [x] `packages/security/src/secrets.ts`
 - [x] `packages/security/src/security-phase4.test.ts`
 - [x] `packages/security/src/ssrf-guard.ts`
+- [x] `packages/security/src/ssrf-stress.test.ts`
 - [x] `packages/security/src/ssrf.ts`
+- [x] `packages/security/src/waf-stress.test.ts`
 - [x] `packages/security/src/waf.ts`
+- [x] `packages/security/src/write-guard-stress.test.ts`
 - [x] `packages/security/src/write-guard.ts`
-- [x] `packages/security/tsconfig.json`
 
 ### `packages/testing`
 
 - [x] `packages/testing/package.json`
-- [x] `packages/testing/src/index.test.ts`
-- [x] `packages/testing/src/index.ts`
 - [x] `packages/testing/tsconfig.json`
 - [x] `packages/testing/vitest.config.ts`
+
+### `packages/testing/src`
+
+- [x] `packages/testing/src/index.test.ts`
+- [x] `packages/testing/src/index.ts`
 
 ### `packages/tool-runtime`
 
 - [x] `packages/tool-runtime/package.json`
-- [x] `packages/tool-runtime/src/index.test.ts`
-- [x] `packages/tool-runtime/src/index.ts`
 - [x] `packages/tool-runtime/tsconfig.json`
 - [x] `packages/tool-runtime/vitest.config.ts`
+
+### `packages/tool-runtime/src`
+
+- [x] `packages/tool-runtime/src/index.test.ts`
+- [x] `packages/tool-runtime/src/index.ts`
 
 ### `packages/tracing`
 
 - [x] `packages/tracing/package.json`
-- [x] `packages/tracing/src/index.test.ts`
-- [x] `packages/tracing/src/index.ts`
 - [x] `packages/tracing/tsconfig.json`
 - [x] `packages/tracing/vitest.config.ts`
+
+### `packages/tracing/src`
+
+- [x] `packages/tracing/src/index.test.ts`
+- [x] `packages/tracing/src/index.ts`
 
 ### `packages/types`
 
 - [ ] `packages/types/package.json`
+- [ ] `packages/types/tsconfig.json`
+
+### `packages/types/src`
+
 - [ ] `packages/types/src/index.ts`
 - [ ] `packages/types/src/scheduled-quiet-hours.test.ts`
-- [ ] `packages/types/tsconfig.json`
 
 ### `packages/ui`
 
 - [ ] `packages/ui/package.json`
+- [ ] `packages/ui/tsconfig.json`
+
+### `packages/ui/src`
+
+- [ ] `packages/ui/src/index.ts`
+- [ ] `packages/ui/src/qr.ts`
+- [ ] `packages/ui/src/useTheme.ts`
+
+### `packages/ui/src/components`
+
 - [ ] `packages/ui/src/components/Avatar.tsx`
 - [ ] `packages/ui/src/components/Badge.tsx`
 - [ ] `packages/ui/src/components/Button.tsx`
@@ -829,109 +1177,57 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/ui/src/components/Toast.tsx`
 - [ ] `packages/ui/src/components/TopBar.tsx`
 - [ ] `packages/ui/src/components/icons.tsx`
-- [ ] `packages/ui/src/index.ts`
-- [ ] `packages/ui/src/qr.ts`
-- [ ] `packages/ui/src/styles.css`
-- [ ] `packages/ui/src/tokens.css`
-- [ ] `packages/ui/src/useTheme.ts`
-- [ ] `packages/ui/tsconfig.json`
 
 ### `packages/webhooks`
 
-- [x] `packages/webhooks/vitest.config.ts`
-- [x] `packages/webhooks/src/index.test.ts`
-- [x] `packages/webhooks/src/lenient-zod.test.ts`
-- [x] `packages/webhooks/src/replay-lake.test.ts`
-- [x] `packages/webhooks/src/schema-repair.test.ts`
 - [x] `packages/webhooks/package.json`
+- [x] `packages/webhooks/tsconfig.json`
+- [x] `packages/webhooks/vitest.config.ts`
+
+### `packages/webhooks/src`
+
+- [x] `packages/webhooks/src/index.test.ts`
 - [x] `packages/webhooks/src/index.ts`
 - [x] `packages/webhooks/src/ingress.test.ts`
 - [x] `packages/webhooks/src/ingress.ts`
+- [x] `packages/webhooks/src/lenient-zod.test.ts`
 - [x] `packages/webhooks/src/lenient-zod.ts`
+- [x] `packages/webhooks/src/replay-lake.test.ts`
 - [x] `packages/webhooks/src/replay-lake.ts`
+- [x] `packages/webhooks/src/schema-repair.test.ts`
 - [x] `packages/webhooks/src/schema-repair.ts`
-- [x] `packages/webhooks/tsconfig.json`
 
-### `repomix/apply-batch-patch.mjs`
+### `repomix`
 
 - [ ] `repomix/apply-batch-patch.mjs`
-
-### `repomix/batch-01-foundation-storage.json`
-
 - [ ] `repomix/batch-01-foundation-storage.json`
-
-### `repomix/batch-02-runtime-vault-cli.json`
-
 - [ ] `repomix/batch-02-runtime-vault-cli.json`
-
-### `repomix/batch-03-connectors-delegation.json`
-
 - [ ] `repomix/batch-03-connectors-delegation.json`
-
-### `repomix/batch-04-agent-memory-context.json`
-
 - [ ] `repomix/batch-04-agent-memory-context.json`
-
-### `repomix/batch-05-retrieval-citations-mcp.json`
-
 - [ ] `repomix/batch-05-retrieval-citations-mcp.json`
-
-### `repomix/batch-06-threads-artifact-concurrency.json`
-
 - [ ] `repomix/batch-06-threads-artifact-concurrency.json`
-
-### `repomix/batch-07-task-provenance-presence.json`
-
 - [ ] `repomix/batch-07-task-provenance-presence.json`
-
-### `repomix/batch-08-model-policy-airgap-sleep.json`
-
 - [ ] `repomix/batch-08-model-policy-airgap-sleep.json`
-
-### `repomix/batch-09-canvas-extensions-widgets.json`
-
 - [ ] `repomix/batch-09-canvas-extensions-widgets.json`
-
-### `repomix/batch-10-workflows-webhooks-scheduling.json`
-
 - [ ] `repomix/batch-10-workflows-webhooks-scheduling.json`
-
-### `repomix/batch-11-voice-customer-channels.json`
-
 - [ ] `repomix/batch-11-voice-customer-channels.json`
-
-### `repomix/batch-12-billing-export.json`
-
 - [ ] `repomix/batch-12-billing-export.json`
-
-### `repomix/batch-13-marketplace-distribution.json`
-
 - [ ] `repomix/batch-13-marketplace-distribution.json`
-
-### `repomix/build-prompts.mjs`
-
 - [ ] `repomix/build-prompts.mjs`
-
-### `repomix/outputs`
-
-- [ ] `repomix/outputs/batch-01-context.xml`
-- [ ] `repomix/outputs/batch-02-context.xml`
-
-### `repomix/prepare-authority-context.mjs`
-
 - [ ] `repomix/prepare-authority-context.mjs`
-
-### `repomix/verify-configs.mjs`
-
 - [ ] `repomix/verify-configs.mjs`
 
-### `scripts/codex-goals.sh`
+### `scripts`
 
 - [ ] `scripts/codex-goals.sh`
-
-### `scripts/plan-syntax-check.cjs`
-
 - [ ] `scripts/plan-syntax-check.cjs`
+
+### `tests`
+
+- [ ] `tests/package.json`
+- [ ] `tests/playwright.plan.config.ts`
+- [ ] `tests/vitest.config.ts`
+- [ ] `tests/vitest.plan.config.ts`
 
 ### `tests/contract`
 
@@ -952,16 +1248,12 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `tests/load/platform-health.js`
 
-### `tests/package.json`
-
-- [ ] `tests/package.json`
-
 ### `tests/plan`
 
 - [ ] `tests/plan/01-baseline.test.ts`
 - [ ] `tests/plan/02-contracts.test.ts`
 - [ ] `tests/plan/03-tenancy.test.ts`
-- [x] `tests/plan/04-authorization.test.ts` (included in security package project)
+- [x] `tests/plan/04-authorization.test.ts`
 - [ ] `tests/plan/05-vault.test.ts`
 - [ ] `tests/plan/06-egress-receipts.test.ts`
 - [ ] `tests/plan/07-git-mesh.test.ts`
@@ -973,13 +1265,15 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/plan/13-browser-runtime.test.ts`
 - [ ] `tests/plan/14-containers.test.ts`
 - [ ] `tests/plan/15-tunnel-mesh.test.ts`
+
+### `tests/plan/browser`
+
 - [ ] `tests/plan/browser/01-shell.spec.ts`
+
+### `tests/plan/support`
+
 - [ ] `tests/plan/support/browser-fixtures.mjs`
 - [ ] `tests/plan/support/runtime.ts`
-
-### `tests/playwright.plan.config.ts`
-
-- [ ] `tests/playwright.plan.config.ts`
 
 ### `tests/stubs`
 
@@ -1051,7 +1345,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/business-subscription-status.test.ts`
 - [ ] `tests/unit/business-subscriptions-billing.test.ts`
 - [ ] `tests/unit/canvas-extension-security.test.ts`
-- [x] `tests/unit/capability-scope-boundary.test.ts` (included in security package project)
+- [x] `tests/unit/capability-scope-boundary.test.ts`
 - [ ] `tests/unit/channel-connect-business-gate.test.ts`
 - [ ] `tests/unit/channel-external-quota.test.ts`
 - [ ] `tests/unit/channel-heartbeat-wallet-gate.test.ts`
@@ -1087,7 +1381,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/cross-project-handoff.test.ts`
 - [ ] `tests/unit/customer-bot-rules-business-membership.test.ts`
 - [ ] `tests/unit/daily-digest.test.ts`
-- [x] `tests/unit/db-migrations.test.ts` (included in the DB package project)
+- [x] `tests/unit/db-migrations.test.ts`
 - [ ] `tests/unit/deposit-personal-credits.test.ts`
 - [ ] `tests/unit/desk-drop.test.ts`
 - [ ] `tests/unit/developer-payout-reconciliation.test.ts`
@@ -1111,8 +1405,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/gemini-provider-routing.test.ts`
 - [ ] `tests/unit/grounded-search-contract.test.ts`
 - [ ] `tests/unit/handlescriptrun-spend-cap.test.ts`
-- [ ] `tests/unit/helpers/fake-do-namespace.ts`
-- [ ] `tests/unit/helpers/sqlite-do-shim.ts`
 - [ ] `tests/unit/hitl-approval-consume.test.ts`
 - [ ] `tests/unit/implicit-signals.test.ts`
 - [ ] `tests/unit/infra-usage-metering.test.ts`
@@ -1176,24 +1468,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/onboarding-business-membership.test.ts`
 - [ ] `tests/unit/onboarding-oauth-availability.test.ts`
 - [ ] `tests/unit/owner-voice-ticket-route.test.ts`
-- [ ] `tests/unit/packages/analytics-schema.test.ts`
-- [x] `tests/unit/packages/auth.test.ts`
-- [ ] `tests/unit/packages/billing-core.test.ts`
-- [x] `tests/unit/packages/crypto.test.ts` (included in crypto workspace project)
-- [ ] `tests/unit/packages/entitlements.test.ts`
-- [ ] `tests/unit/packages/events-cron.test.ts`
-- [ ] `tests/unit/packages/events.test.ts`
-- [ ] `tests/unit/packages/http-internal-hmac.test.ts`
-- [x] `tests/unit/packages/idempotency.test.ts`
-- [ ] `tests/unit/packages/llm-gateway-native-web-search.test.ts`
-- [x] `tests/unit/packages/llm-gateway.test.ts` (included in the LLM gateway package project)
-- [ ] `tests/unit/packages/mentions.test.ts`
-- [ ] `tests/unit/packages/model-benchmarks-and-effort.test.ts`
-- [x] `tests/unit/packages/moderation.test.ts` (included in moderation package project)
-- [ ] `tests/unit/packages/rag.test.ts`
-- [ ] `tests/unit/packages/realtime-broadcast.test.ts`
-- [x] `tests/unit/packages/security.test.ts` (included in security package project)
-- [x] `tests/unit/packages/webhooks.test.ts`
+- [ ] `tests/unit/parse-bounded-integer.test.ts`
 - [ ] `tests/unit/personal-plan-whop-checkout.test.ts`
 - [ ] `tests/unit/pipedream-connector-connect.test.ts`
 - [ ] `tests/unit/plan-tool.test.ts`
@@ -1327,22 +1602,51 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/wrangler-binding-parity.test.ts`
 - [ ] `tests/unit/wrangler-vars-parity.test.ts`
 
-### `tests/vitest.config.ts`
+### `tests/unit/helpers`
 
-- [ ] `tests/vitest.config.ts`
+- [ ] `tests/unit/helpers/fake-do-namespace.ts`
+- [ ] `tests/unit/helpers/r2-bucket.ts`
+- [ ] `tests/unit/helpers/sqlite-do-shim.ts`
 
-### `tests/vitest.plan.config.ts`
+### `tests/unit/packages`
 
-- [ ] `tests/vitest.plan.config.ts`
+- [ ] `tests/unit/packages/analytics-schema.test.ts`
+- [x] `tests/unit/packages/auth.test.ts`
+- [ ] `tests/unit/packages/billing-core.test.ts`
+- [x] `tests/unit/packages/crypto.test.ts`
+- [ ] `tests/unit/packages/entitlements.test.ts`
+- [ ] `tests/unit/packages/events-cron.test.ts`
+- [ ] `tests/unit/packages/events.test.ts`
+- [ ] `tests/unit/packages/http-internal-hmac.test.ts`
+- [x] `tests/unit/packages/idempotency.test.ts`
+- [ ] `tests/unit/packages/llm-gateway-native-web-search.test.ts`
+- [x] `tests/unit/packages/llm-gateway.test.ts`
+- [ ] `tests/unit/packages/mentions.test.ts`
+- [ ] `tests/unit/packages/model-benchmarks-and-effort.test.ts`
+- [x] `tests/unit/packages/moderation.test.ts`
+- [ ] `tests/unit/packages/rag.test.ts`
+- [ ] `tests/unit/packages/realtime-broadcast.test.ts`
+- [x] `tests/unit/packages/security.test.ts`
+- [x] `tests/unit/packages/webhooks.test.ts`
 
 ### `workers/admin`
 
 - [ ] `workers/admin/package.json`
-- [ ] `workers/admin/src/index.ts`
 - [ ] `workers/admin/tsconfig.json`
 - [ ] `workers/admin/wrangler.toml`
 
+### `workers/admin/src`
+
+- [ ] `workers/admin/src/index.ts`
+
 ### `workers/agents`
+
+- [ ] `workers/agents/package.json`
+- [ ] `workers/agents/tsconfig.json`
+- [ ] `workers/agents/vitest.config.ts`
+- [ ] `workers/agents/wrangler.toml`
+
+### `workers/agents/container`
 
 - [ ] `workers/agents/container/artifact-fs.mjs`
 - [ ] `workers/agents/container/artifact-fs.test.mjs`
@@ -1352,8 +1656,13 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/container/process-supervisor.mjs`
 - [ ] `workers/agents/container/server.mjs`
 - [ ] `workers/agents/container/start.sh`
+
+### `workers/agents/local-agent`
+
 - [ ] `workers/agents/local-agent/naelao-local-agent.mjs`
-- [ ] `workers/agents/package.json`
+
+### `workers/agents/src`
+
 - [ ] `workers/agents/src/agent-templates.test.ts`
 - [ ] `workers/agents/src/agent-templates.ts`
 - [ ] `workers/agents/src/batch09-foundations.test.ts`
@@ -1362,6 +1671,23 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/channel-extension-session-route.test.ts`
 - [ ] `workers/agents/src/channel-extension-source-validation.test.ts`
 - [ ] `workers/agents/src/channel-external-quota.ts`
+- [ ] `workers/agents/src/env.ts`
+- [ ] `workers/agents/src/extension-provider-auth.test.ts`
+- [ ] `workers/agents/src/index.ts`
+- [ ] `workers/agents/src/model-policy.test.ts`
+- [ ] `workers/agents/src/model-policy.ts`
+- [ ] `workers/agents/src/project-steward-dispatch.ts`
+- [ ] `workers/agents/src/prompt-injection-quarantine.test.ts`
+- [ ] `workers/agents/src/pull-request-review.test.ts`
+- [ ] `workers/agents/src/reconciliation-b2.test.ts`
+- [ ] `workers/agents/src/request-body-boundaries.test.ts`
+- [ ] `workers/agents/src/safety.ts`
+- [ ] `workers/agents/src/scheduled-air-gap.test.ts`
+- [ ] `workers/agents/src/scheduled-job-dispatch.test.ts`
+- [ ] `workers/agents/src/scheduled-job-dispatch.ts`
+
+### `workers/agents/src/channels`
+
 - [ ] `workers/agents/src/channels/agentmail.ts`
 - [ ] `workers/agents/src/channels/attachment-copy-route.test.ts`
 - [ ] `workers/agents/src/channels/attachment-index-route.test.ts`
@@ -1374,6 +1700,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/channels/channel-session-usage.ts`
 - [ ] `workers/agents/src/channels/chat-upload-attachments.test.ts`
 - [ ] `workers/agents/src/channels/chat-upload-attachments.ts`
+- [ ] `workers/agents/src/channels/chat-upload-route.test.ts`
+- [ ] `workers/agents/src/channels/chat-upload-scope.test.ts`
+- [ ] `workers/agents/src/channels/chat-upload-scope.ts`
 - [ ] `workers/agents/src/channels/cloudflare-email.test.ts`
 - [ ] `workers/agents/src/channels/cloudflare-email.ts`
 - [ ] `workers/agents/src/channels/email-attachment-route.test.ts`
@@ -1387,6 +1716,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/channels/executive-channel.ts`
 - [ ] `workers/agents/src/channels/foundry-command.test.ts`
 - [ ] `workers/agents/src/channels/foundry-command.ts`
+
+### `workers/agents/src/connectors`
+
 - [ ] `workers/agents/src/connectors/calendar-connector.ts`
 - [ ] `workers/agents/src/connectors/catalogue.ts`
 - [ ] `workers/agents/src/connectors/composio.ts`
@@ -1395,8 +1727,14 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/connectors/oauth.ts`
 - [ ] `workers/agents/src/connectors/pipedream.ts`
 - [ ] `workers/agents/src/connectors/webhook-normalizer.ts`
+
+### `workers/agents/src/container-bridge`
+
 - [ ] `workers/agents/src/container-bridge/framing.test.ts`
 - [ ] `workers/agents/src/container-bridge/framing.ts`
+
+### `workers/agents/src/do`
+
 - [ ] `workers/agents/src/do/ConcurrencyDO.test.ts`
 - [ ] `workers/agents/src/do/ConcurrencyDO.ts`
 - [ ] `workers/agents/src/do/HITLApprovalDO.ts`
@@ -1407,10 +1745,15 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/do/TaskDO.ts`
 - [ ] `workers/agents/src/do/ToolSandboxDO.test.ts`
 - [ ] `workers/agents/src/do/ToolSandboxDO.ts`
+- [ ] `workers/agents/src/do/WorkflowRunDO.test.ts`
 - [ ] `workers/agents/src/do/WorkflowRunDO.ts`
+- [ ] `workers/agents/src/do/additional-do-request-boundaries.test.ts`
+- [ ] `workers/agents/src/do/channel-conversation-transcript.test.ts`
 - [ ] `workers/agents/src/do/channel-extension-inbox.test.ts`
 - [ ] `workers/agents/src/do/citation-metadata.test.ts`
+- [ ] `workers/agents/src/do/conversation-compaction.test.ts`
 - [ ] `workers/agents/src/do/delegation-admission.test.ts`
+- [ ] `workers/agents/src/do/direct-do-request-boundaries.test.ts`
 - [ ] `workers/agents/src/do/external-channel-spend.test.ts`
 - [ ] `workers/agents/src/do/external-channel-spend.ts`
 - [ ] `workers/agents/src/do/ingress-memory.test.ts`
@@ -1419,10 +1762,14 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/do/specialized-workspaces.test.ts`
 - [ ] `workers/agents/src/do/usage-event-outbox.test.ts`
 - [ ] `workers/agents/src/do/usage-event-outbox.ts`
-- [ ] `workers/agents/src/env.ts`
-- [ ] `workers/agents/src/extension-provider-auth.test.ts`
-- [ ] `workers/agents/src/index.ts`
+
+### `workers/agents/src/launchpad`
+
+- [ ] `workers/agents/src/launchpad/autonomy-policy.test.ts`
+- [ ] `workers/agents/src/launchpad/autonomy-policy.ts`
 - [ ] `workers/agents/src/launchpad/bootstrap.ts`
+- [ ] `workers/agents/src/launchpad/bounded-provider-json.test.ts`
+- [ ] `workers/agents/src/launchpad/bounded-provider-json.ts`
 - [ ] `workers/agents/src/launchpad/business-context.ts`
 - [ ] `workers/agents/src/launchpad/channel-pairing.ts`
 - [ ] `workers/agents/src/launchpad/channels.ts`
@@ -1442,20 +1789,16 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/launchpad/whatsapp-extension-webhook.ts`
 - [ ] `workers/agents/src/launchpad/whatsapp-media.test.ts`
 - [ ] `workers/agents/src/launchpad/whatsapp-media.ts`
+
+### `workers/agents/src/media`
+
 - [ ] `workers/agents/src/media/attachment-capabilities.test.ts`
 - [ ] `workers/agents/src/media/attachment-capabilities.ts`
 - [ ] `workers/agents/src/media/modality-task.test.ts`
 - [ ] `workers/agents/src/media/modality-task.ts`
-- [ ] `workers/agents/src/model-policy.test.ts`
-- [ ] `workers/agents/src/model-policy.ts`
-- [ ] `workers/agents/src/project-steward-dispatch.ts`
-- [ ] `workers/agents/src/prompt-injection-quarantine.test.ts`
-- [ ] `workers/agents/src/pull-request-review.test.ts`
-- [ ] `workers/agents/src/reconciliation-b2.test.ts`
-- [ ] `workers/agents/src/safety.ts`
-- [ ] `workers/agents/src/scheduled-air-gap.test.ts`
-- [ ] `workers/agents/src/scheduled-job-dispatch.test.ts`
-- [ ] `workers/agents/src/scheduled-job-dispatch.ts`
+
+### `workers/agents/src/script-engine`
+
 - [ ] `workers/agents/src/script-engine/agent-archetypes.ts`
 - [ ] `workers/agents/src/script-engine/agent-config.test.ts`
 - [ ] `workers/agents/src/script-engine/agent-config.ts`
@@ -1464,6 +1807,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/assistant-access.ts`
 - [ ] `workers/agents/src/script-engine/batch04-kernel.test.ts`
 - [ ] `workers/agents/src/script-engine/batch04-phase2-memory.test.ts`
+- [ ] `workers/agents/src/script-engine/browser-perception.test.ts`
 - [ ] `workers/agents/src/script-engine/browser-perception.ts`
 - [ ] `workers/agents/src/script-engine/code-rpc-broker.ts`
 - [ ] `workers/agents/src/script-engine/code-runner.ts`
@@ -1473,11 +1817,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/conversation-context.ts`
 - [ ] `workers/agents/src/script-engine/customer-triage.test.ts`
 - [ ] `workers/agents/src/script-engine/customer-triage.ts`
-- [ ] `workers/agents/src/script-engine/daemons/daemon-mcp.test.ts`
-- [ ] `workers/agents/src/script-engine/daemons/daemon-mcp.ts`
-- [ ] `workers/agents/src/script-engine/daemons/daemons.test.ts`
-- [ ] `workers/agents/src/script-engine/daemons/durable-daemon.ts`
-- [ ] `workers/agents/src/script-engine/daemons/tree-sitter-indexer.ts`
 - [ ] `workers/agents/src/script-engine/delegation-contract.test.ts`
 - [ ] `workers/agents/src/script-engine/delegation-contract.ts`
 - [ ] `workers/agents/src/script-engine/delegation.test.ts`
@@ -1500,7 +1839,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/loop-evaluator.ts`
 - [ ] `workers/agents/src/script-engine/loop.ts`
 - [ ] `workers/agents/src/script-engine/memory-os.ts`
-- [ ] `workers/agents/src/script-engine/memory/gate-memory.ts`
 - [ ] `workers/agents/src/script-engine/mention-router.ts`
 - [ ] `workers/agents/src/script-engine/observe.ts`
 - [ ] `workers/agents/src/script-engine/package-egress.test.ts`
@@ -1509,6 +1847,75 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/perception.ts`
 - [ ] `workers/agents/src/script-engine/phase4-security.test.ts`
 - [ ] `workers/agents/src/script-engine/planner-first.ts`
+- [ ] `workers/agents/src/script-engine/profiles.ts`
+- [ ] `workers/agents/src/script-engine/project-journal-hibernation.test.ts`
+- [ ] `workers/agents/src/script-engine/project-journal.ts`
+- [ ] `workers/agents/src/script-engine/project-memory-client.test.ts`
+- [ ] `workers/agents/src/script-engine/project-memory-client.ts`
+- [ ] `workers/agents/src/script-engine/prompt-assembly.ts`
+- [ ] `workers/agents/src/script-engine/r2-cas.test.ts`
+- [ ] `workers/agents/src/script-engine/r2-cas.ts`
+- [ ] `workers/agents/src/script-engine/r2-workspace-cas.test.ts`
+- [ ] `workers/agents/src/script-engine/r2-workspace.test.ts`
+- [ ] `workers/agents/src/script-engine/r2-workspace.ts`
+- [ ] `workers/agents/src/script-engine/reasoner-depth.test.ts`
+- [ ] `workers/agents/src/script-engine/reasoner.ts`
+- [ ] `workers/agents/src/script-engine/request-context-budget.test.ts`
+- [ ] `workers/agents/src/script-engine/request-context-budget.ts`
+- [ ] `workers/agents/src/script-engine/reserved-capabilities.ts`
+- [ ] `workers/agents/src/script-engine/runtime-context.test.ts`
+- [ ] `workers/agents/src/script-engine/script-find.ts`
+- [ ] `workers/agents/src/script-engine/shell-parser.ts`
+- [ ] `workers/agents/src/script-engine/skill-health.ts`
+- [ ] `workers/agents/src/script-engine/skill-library-boundaries.test.ts`
+- [ ] `workers/agents/src/script-engine/skill-library.ts`
+- [ ] `workers/agents/src/script-engine/skill-markdown.test.ts`
+- [ ] `workers/agents/src/script-engine/skill-markdown.ts`
+- [ ] `workers/agents/src/script-engine/skill-role-targeting.test.ts`
+- [ ] `workers/agents/src/script-engine/ssrf.test.ts`
+- [ ] `workers/agents/src/script-engine/step-context.test.ts`
+- [ ] `workers/agents/src/script-engine/step-context.ts`
+- [ ] `workers/agents/src/script-engine/step-pipeline.ts`
+- [ ] `workers/agents/src/script-engine/sub-agent-output.ts`
+- [ ] `workers/agents/src/script-engine/task-publication.test.ts`
+- [ ] `workers/agents/src/script-engine/task-publication.ts`
+- [ ] `workers/agents/src/script-engine/terminal-stream.test.ts`
+- [ ] `workers/agents/src/script-engine/tool-output-expiry.test.ts`
+- [ ] `workers/agents/src/script-engine/tool-output-expiry.ts`
+- [ ] `workers/agents/src/script-engine/tool-output.ts`
+- [ ] `workers/agents/src/script-engine/tool-surface.ts`
+- [ ] `workers/agents/src/script-engine/transcript-loader.test.ts`
+- [ ] `workers/agents/src/script-engine/transcript-loader.ts`
+- [ ] `workers/agents/src/script-engine/types.ts`
+- [ ] `workers/agents/src/script-engine/typescript-runtime.ts`
+- [ ] `workers/agents/src/script-engine/vault-proxy.test.ts`
+- [ ] `workers/agents/src/script-engine/vault-proxy.ts`
+- [ ] `workers/agents/src/script-engine/video-distill.ts`
+- [ ] `workers/agents/src/script-engine/virtual-cli.test.ts`
+- [ ] `workers/agents/src/script-engine/virtual-cli.ts`
+- [ ] `workers/agents/src/script-engine/virtual-posix.test.ts`
+- [ ] `workers/agents/src/script-engine/virtual-posix.ts`
+- [ ] `workers/agents/src/script-engine/worker-capabilities.test.ts`
+- [ ] `workers/agents/src/script-engine/worker-capabilities.ts`
+- [ ] `workers/agents/src/script-engine/worker-model-routing.test.ts`
+- [ ] `workers/agents/src/script-engine/worker-model-routing.ts`
+- [ ] `workers/agents/src/script-engine/workspace-paths.ts`
+- [ ] `workers/agents/src/script-engine/write-guard.test.ts`
+
+### `workers/agents/src/script-engine/daemons`
+
+- [ ] `workers/agents/src/script-engine/daemons/daemon-mcp.test.ts`
+- [ ] `workers/agents/src/script-engine/daemons/daemon-mcp.ts`
+- [ ] `workers/agents/src/script-engine/daemons/daemons.test.ts`
+- [ ] `workers/agents/src/script-engine/daemons/durable-daemon.ts`
+- [ ] `workers/agents/src/script-engine/daemons/tree-sitter-indexer.ts`
+
+### `workers/agents/src/script-engine/memory`
+
+- [ ] `workers/agents/src/script-engine/memory/gate-memory.ts`
+
+### `workers/agents/src/script-engine/prebuilt`
+
 - [ ] `workers/agents/src/script-engine/prebuilt/approvals.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/artifacts.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/attachments.test.ts`
@@ -1523,6 +1930,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/prebuilt/code-exec.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/commerce.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/computer-use.ts`
+- [ ] `workers/agents/src/script-engine/prebuilt/conversation.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/conversation.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/customer-attachments.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/customer-attachments.ts`
@@ -1561,6 +1969,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/prebuilt/project-coordination-capabilities.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/project-coordination.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/project-journal.ts`
+- [ ] `workers/agents/src/script-engine/prebuilt/r2-workspace-boundaries.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/r2-workspace.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/revenue-tracker.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/runtime-discovery.test.ts`
@@ -1576,60 +1985,15 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/prebuilt/wiki.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/workspace-admin.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/workspace.ts`
-- [ ] `workers/agents/src/script-engine/profiles.ts`
-- [ ] `workers/agents/src/script-engine/project-journal-hibernation.test.ts`
-- [ ] `workers/agents/src/script-engine/project-journal.ts`
-- [ ] `workers/agents/src/script-engine/project-memory-client.test.ts`
-- [ ] `workers/agents/src/script-engine/project-memory-client.ts`
-- [ ] `workers/agents/src/script-engine/prompt-assembly.ts`
-- [ ] `workers/agents/src/script-engine/r2-cas.test.ts`
-- [ ] `workers/agents/src/script-engine/r2-cas.ts`
-- [ ] `workers/agents/src/script-engine/r2-workspace-cas.test.ts`
-- [ ] `workers/agents/src/script-engine/r2-workspace.test.ts`
-- [ ] `workers/agents/src/script-engine/r2-workspace.ts`
-- [ ] `workers/agents/src/script-engine/reasoner-depth.test.ts`
-- [ ] `workers/agents/src/script-engine/reasoner.ts`
-- [ ] `workers/agents/src/script-engine/request-context-budget.test.ts`
-- [ ] `workers/agents/src/script-engine/request-context-budget.ts`
-- [ ] `workers/agents/src/script-engine/reserved-capabilities.ts`
-- [ ] `workers/agents/src/script-engine/runtime-context.test.ts`
-- [ ] `workers/agents/src/script-engine/script-find.ts`
-- [ ] `workers/agents/src/script-engine/shell-parser.ts`
-- [ ] `workers/agents/src/script-engine/skill-health.ts`
-- [ ] `workers/agents/src/script-engine/skill-library.ts`
-- [ ] `workers/agents/src/script-engine/skill-markdown.test.ts`
-- [ ] `workers/agents/src/script-engine/skill-markdown.ts`
-- [ ] `workers/agents/src/script-engine/skill-role-targeting.test.ts`
-- [ ] `workers/agents/src/script-engine/ssrf.test.ts`
-- [ ] `workers/agents/src/script-engine/step-context.test.ts`
-- [ ] `workers/agents/src/script-engine/step-context.ts`
-- [ ] `workers/agents/src/script-engine/step-pipeline.ts`
-- [ ] `workers/agents/src/script-engine/sub-agent-output.ts`
-- [ ] `workers/agents/src/script-engine/task-publication.test.ts`
-- [ ] `workers/agents/src/script-engine/task-publication.ts`
-- [ ] `workers/agents/src/script-engine/terminal-stream.test.ts`
-- [ ] `workers/agents/src/script-engine/tool-output-expiry.test.ts`
-- [ ] `workers/agents/src/script-engine/tool-output-expiry.ts`
-- [ ] `workers/agents/src/script-engine/tool-output.ts`
-- [ ] `workers/agents/src/script-engine/tool-surface.ts`
-- [ ] `workers/agents/src/script-engine/transcript-loader.ts`
-- [ ] `workers/agents/src/script-engine/types.ts`
-- [ ] `workers/agents/src/script-engine/typescript-runtime.ts`
-- [ ] `workers/agents/src/script-engine/vault-proxy.test.ts`
-- [ ] `workers/agents/src/script-engine/vault-proxy.ts`
-- [ ] `workers/agents/src/script-engine/video-distill.ts`
-- [ ] `workers/agents/src/script-engine/virtual-cli.test.ts`
-- [ ] `workers/agents/src/script-engine/virtual-cli.ts`
-- [ ] `workers/agents/src/script-engine/virtual-posix.test.ts`
-- [ ] `workers/agents/src/script-engine/virtual-posix.ts`
-- [ ] `workers/agents/src/script-engine/worker-capabilities.test.ts`
-- [ ] `workers/agents/src/script-engine/worker-capabilities.ts`
-- [ ] `workers/agents/src/script-engine/worker-model-routing.test.ts`
-- [ ] `workers/agents/src/script-engine/worker-model-routing.ts`
-- [ ] `workers/agents/src/script-engine/workspace-paths.ts`
-- [ ] `workers/agents/src/script-engine/write-guard.test.ts`
+
+### `workers/agents/src/shared`
+
 - [ ] `workers/agents/src/shared/ai-client.test.ts`
 - [ ] `workers/agents/src/shared/ai-client.ts`
+- [ ] `workers/agents/src/shared/bounded-response-text.test.ts`
+- [ ] `workers/agents/src/shared/bounded-response-text.ts`
+- [ ] `workers/agents/src/shared/document-files.test.ts`
+- [ ] `workers/agents/src/shared/document-files.ts`
 - [ ] `workers/agents/src/shared/openrouter-entitlement.test.ts`
 - [ ] `workers/agents/src/shared/openrouter-entitlement.ts`
 - [ ] `workers/agents/src/shared/openrouter-model-catalog.test.ts`
@@ -1638,9 +2002,18 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/shared/openrouter-model-recommendations.ts`
 - [ ] `workers/agents/src/shared/scaledown.test.ts`
 - [ ] `workers/agents/src/shared/scaledown.ts`
+
+### `workers/agents/src/telemetry`
+
 - [ ] `workers/agents/src/telemetry/customer-telemetry.ts`
+
+### `workers/agents/src/tunnels`
+
 - [ ] `workers/agents/src/tunnels/host.ts`
 - [ ] `workers/agents/src/tunnels/request-journal.ts`
+
+### `workers/agents/src/voice`
+
 - [ ] `workers/agents/src/voice/call-reconciliation.test.ts`
 - [ ] `workers/agents/src/voice/call-reconciliation.ts`
 - [ ] `workers/agents/src/voice/customer-telephony.test.ts`
@@ -1658,12 +2031,16 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/voice/voice-ticket.test.ts`
 - [ ] `workers/agents/src/voice/voice-ticket.ts`
 - [ ] `workers/agents/src/voice/voice.test.ts`
+
+### `workers/agents/src/workflows`
+
 - [ ] `workers/agents/src/workflows/AgentTaskWorkflow.ts`
 - [ ] `workers/agents/src/workflows/ScriptRunWorkflow.ts`
 - [ ] `workers/agents/src/workflows/agent-task-checkpoints.ts`
 - [ ] `workers/agents/src/workflows/chunked-subagent-workflow.ts`
 - [ ] `workers/agents/src/workflows/company-automation-workflow.ts`
 - [ ] `workers/agents/src/workflows/customer-analytics-workflow.ts`
+- [ ] `workers/agents/src/workflows/document-processing-workflow.test.ts`
 - [ ] `workers/agents/src/workflows/dynamic-script-workflow.ts`
 - [ ] `workers/agents/src/workflows/generic-subagent-workflow.ts`
 - [ ] `workers/agents/src/workflows/outbound-reminder-workflow.ts`
@@ -1678,52 +2055,68 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/workflows/workflow-orchestration.test.ts`
 - [ ] `workers/agents/src/workflows/workflow-orchestration.ts`
 - [ ] `workers/agents/src/workflows/workflow-state.ts`
-- [ ] `workers/agents/tsconfig.json`
-- [ ] `workers/agents/vitest.config.ts`
-- [ ] `workers/agents/wrangler.toml`
 
 ### `workers/analytics`
 
 - [ ] `workers/analytics/package.json`
-- [ ] `workers/analytics/src/events.ts`
-- [ ] `workers/analytics/src/index.ts`
-- [ ] `workers/analytics/src/query.test.ts`
-- [ ] `workers/analytics/src/query.ts`
 - [ ] `workers/analytics/tsconfig.json`
 - [ ] `workers/analytics/vitest.config.ts`
 - [ ] `workers/analytics/wrangler.toml`
 
+### `workers/analytics/src`
+
+- [ ] `workers/analytics/src/events.ts`
+- [ ] `workers/analytics/src/index.ts`
+- [ ] `workers/analytics/src/query.test.ts`
+- [ ] `workers/analytics/src/query.ts`
+
 ### `workers/artifact`
 
 - [ ] `workers/artifact/package.json`
+- [ ] `workers/artifact/tsconfig.json`
+- [ ] `workers/artifact/vitest.config.ts`
+- [ ] `workers/artifact/wrangler.toml`
+
+### `workers/artifact/src`
+
+- [ ] `workers/artifact/src/RepositoryDO-boundaries.test.ts`
 - [ ] `workers/artifact/src/RepositoryDO.ts`
 - [ ] `workers/artifact/src/index.ts`
 - [ ] `workers/artifact/src/repository-token.test.ts`
 - [ ] `workers/artifact/src/repository-token.ts`
 - [ ] `workers/artifact/src/repository.test.ts`
 - [ ] `workers/artifact/src/repository.ts`
-- [ ] `workers/artifact/tsconfig.json`
-- [ ] `workers/artifact/vitest.config.ts`
-- [ ] `workers/artifact/wrangler.toml`
+- [ ] `workers/artifact/src/request-body-boundaries.test.ts`
 
 ### `workers/assistant`
 
 - [ ] `workers/assistant/package.json`
-- [ ] `workers/assistant/src/index.ts`
 - [ ] `workers/assistant/tsconfig.json`
 - [ ] `workers/assistant/wrangler.toml`
+
+### `workers/assistant/src`
+
+- [ ] `workers/assistant/src/index.ts`
 
 ### `workers/auth`
 
 - [ ] `workers/auth/package.json`
-- [ ] `workers/auth/src/health.test.ts`
-- [ ] `workers/auth/src/index.ts`
 - [ ] `workers/auth/tsconfig.json`
 - [ ] `workers/auth/wrangler.toml`
+
+### `workers/auth/src`
+
+- [ ] `workers/auth/src/health.test.ts`
+- [ ] `workers/auth/src/index.ts`
 
 ### `workers/billing`
 
 - [ ] `workers/billing/package.json`
+- [ ] `workers/billing/tsconfig.json`
+- [ ] `workers/billing/wrangler.toml`
+
+### `workers/billing/src`
+
 - [ ] `workers/billing/src/index.ts`
 - [ ] `workers/billing/src/lemon-squeezy.ts`
 - [ ] `workers/billing/src/llm-quota-reservations.test.ts`
@@ -1732,72 +2125,101 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/billing/src/partner-portal.ts`
 - [ ] `workers/billing/src/payout-reconciliation.ts`
 - [ ] `workers/billing/src/quota.ts`
+- [ ] `workers/billing/src/request-body-boundaries.test.ts`
 - [ ] `workers/billing/src/settlement.test.ts`
 - [ ] `workers/billing/src/settlement.ts`
 - [ ] `workers/billing/src/wallet-checkout.ts`
 - [ ] `workers/billing/src/whop-oauth-billing.ts`
 - [ ] `workers/billing/src/whop-wallet.ts`
-- [ ] `workers/billing/tsconfig.json`
-- [ ] `workers/billing/wrangler.toml`
 
 ### `workers/browser`
 
 - [ ] `workers/browser/package.json`
-- [ ] `workers/browser/src/BrowserSessionDO.ts`
-- [ ] `workers/browser/src/browser-session-state.ts`
-- [ ] `workers/browser/src/index.ts`
 - [ ] `workers/browser/tsconfig.json`
 - [ ] `workers/browser/wrangler.local.toml`
 - [ ] `workers/browser/wrangler.toml`
 
+### `workers/browser/src`
+
+- [ ] `workers/browser/src/BrowserSessionDO-boundaries.test.ts`
+- [ ] `workers/browser/src/BrowserSessionDO.test.ts`
+- [ ] `workers/browser/src/BrowserSessionDO.ts`
+- [ ] `workers/browser/src/browser-session-state.ts`
+- [ ] `workers/browser/src/index.ts`
+
 ### `workers/channels`
 
 - [ ] `workers/channels/package.json`
-- [ ] `workers/channels/src/index.ts`
 - [ ] `workers/channels/tsconfig.json`
 - [ ] `workers/channels/wrangler.toml`
+
+### `workers/channels/src`
+
+- [ ] `workers/channels/src/index.ts`
 
 ### `workers/connector-gumroad`
 
 - [ ] `workers/connector-gumroad/package.json`
-- [ ] `workers/connector-gumroad/src/index.ts`
 - [ ] `workers/connector-gumroad/tsconfig.json`
 - [ ] `workers/connector-gumroad/wrangler.toml`
+
+### `workers/connector-gumroad/src`
+
+- [ ] `workers/connector-gumroad/src/index.ts`
 
 ### `workers/connector-whop`
 
 - [ ] `workers/connector-whop/package.json`
-- [ ] `workers/connector-whop/src/index.ts`
 - [ ] `workers/connector-whop/tsconfig.json`
 - [ ] `workers/connector-whop/wrangler.toml`
+
+### `workers/connector-whop/src`
+
+- [ ] `workers/connector-whop/src/index.ts`
 
 ### `workers/credentials`
 
 - [ ] `workers/credentials/package.json`
-- [ ] `workers/credentials/src/air-gap.test.ts`
-- [ ] `workers/credentials/src/index.ts`
 - [ ] `workers/credentials/tsconfig.json`
 - [ ] `workers/credentials/vitest.config.ts`
 - [ ] `workers/credentials/wrangler.toml`
 
+### `workers/credentials/src`
+
+- [ ] `workers/credentials/src/air-gap.test.ts`
+- [ ] `workers/credentials/src/index.ts`
+- [ ] `workers/credentials/src/request-body-boundaries.test.ts`
+
 ### `workers/eval`
 
 - [ ] `workers/eval/package.json`
-- [ ] `workers/eval/src/index.ts`
-- [ ] `workers/eval/src/trace-checks.ts`
 - [ ] `workers/eval/tsconfig.json`
 - [ ] `workers/eval/wrangler.toml`
+
+### `workers/eval/src`
+
+- [ ] `workers/eval/src/index.ts`
+- [ ] `workers/eval/src/trace-checks.ts`
 
 ### `workers/feedback`
 
 - [ ] `workers/feedback/package.json`
-- [ ] `workers/feedback/src/index.ts`
 - [ ] `workers/feedback/tsconfig.json`
 - [ ] `workers/feedback/wrangler.toml`
+
+### `workers/feedback/src`
+
+- [ ] `workers/feedback/src/index.ts`
 
 ### `workers/knowledge`
 
 - [ ] `workers/knowledge/package.json`
+- [ ] `workers/knowledge/tsconfig.json`
+- [ ] `workers/knowledge/vitest.config.ts`
+- [ ] `workers/knowledge/wrangler.toml`
+
+### `workers/knowledge/src`
+
 - [ ] `workers/knowledge/src/air-gap.test.ts`
 - [ ] `workers/knowledge/src/auth.ts`
 - [ ] `workers/knowledge/src/external-publications.test.ts`
@@ -1809,20 +2231,25 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/knowledge/src/storage-usage.test.ts`
 - [ ] `workers/knowledge/src/storage-usage.ts`
 - [ ] `workers/knowledge/src/web-fetch.test.ts`
-- [ ] `workers/knowledge/tsconfig.json`
-- [ ] `workers/knowledge/vitest.config.ts`
-- [ ] `workers/knowledge/wrangler.toml`
 
 ### `workers/marketplace`
 
 - [ ] `workers/marketplace/package.json`
-- [ ] `workers/marketplace/src/index.ts`
 - [ ] `workers/marketplace/tsconfig.json`
 - [ ] `workers/marketplace/wrangler.toml`
+
+### `workers/marketplace/src`
+
+- [ ] `workers/marketplace/src/index.ts`
 
 ### `workers/mcp-hub`
 
 - [ ] `workers/mcp-hub/package.json`
+- [ ] `workers/mcp-hub/tsconfig.json`
+- [ ] `workers/mcp-hub/wrangler.toml`
+
+### `workers/mcp-hub/src`
+
 - [ ] `workers/mcp-hub/src/air-gap.test.ts`
 - [ ] `workers/mcp-hub/src/composio.test.ts`
 - [ ] `workers/mcp-hub/src/composio.ts`
@@ -1830,45 +2257,62 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/mcp-hub/src/connector-policy.ts`
 - [ ] `workers/mcp-hub/src/index.ts`
 - [ ] `workers/mcp-hub/src/pipedream.ts`
-- [ ] `workers/mcp-hub/tsconfig.json`
-- [ ] `workers/mcp-hub/wrangler.toml`
 
 ### `workers/mini-agi`
 
 - [ ] `workers/mini-agi/package.json`
-- [ ] `workers/mini-agi/src/index.ts`
 - [ ] `workers/mini-agi/tsconfig.json`
 - [ ] `workers/mini-agi/wrangler.toml`
+
+### `workers/mini-agi/src`
+
+- [ ] `workers/mini-agi/src/index.ts`
 
 ### `workers/notifications`
 
 - [ ] `workers/notifications/package.json`
+- [ ] `workers/notifications/tsconfig.json`
+- [ ] `workers/notifications/vitest.config.ts`
+- [ ] `workers/notifications/wrangler.toml`
+
+### `workers/notifications/src`
+
 - [ ] `workers/notifications/src/air-gap.test.ts`
 - [ ] `workers/notifications/src/index.ts`
 - [ ] `workers/notifications/src/interactive.test.ts`
 - [ ] `workers/notifications/src/web-push.test.ts`
 - [ ] `workers/notifications/src/web-push.ts`
-- [ ] `workers/notifications/tsconfig.json`
-- [ ] `workers/notifications/vitest.config.ts`
-- [ ] `workers/notifications/wrangler.toml`
 
 ### `workers/portal-router`
 
 - [ ] `workers/portal-router/package.json`
-- [ ] `workers/portal-router/src/index.ts`
 - [ ] `workers/portal-router/tsconfig.json`
 - [ ] `workers/portal-router/wrangler.toml`
+
+### `workers/portal-router/src`
+
+- [ ] `workers/portal-router/src/index.ts`
 
 ### `workers/provisioner`
 
 - [ ] `workers/provisioner/package.json`
-- [ ] `workers/provisioner/src/index.ts`
 - [ ] `workers/provisioner/tsconfig.json`
 - [ ] `workers/provisioner/wrangler.toml`
+
+### `workers/provisioner/src`
+
+- [ ] `workers/provisioner/src/index.ts`
 
 ### `workers/router`
 
 - [ ] `workers/router/package.json`
+- [ ] `workers/router/tsconfig.json`
+- [ ] `workers/router/vitest.config.ts`
+- [ ] `workers/router/wrangler.toml`
+
+### `workers/router/src`
+
+- [ ] `workers/router/src/RateLimitDO-boundaries.test.ts`
 - [ ] `workers/router/src/RateLimitDO.ts`
 - [ ] `workers/router/src/customer-voice-routing.test.ts`
 - [ ] `workers/router/src/extension-product-paths.test.ts`
@@ -1877,74 +2321,57 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/router/src/index.ts`
 - [ ] `workers/router/src/preferred-language.test.ts`
 - [ ] `workers/router/src/preferred-language.ts`
+
+### `workers/router/src/routes`
+
+- [ ] `workers/router/src/routes/bounded-ingress.test.ts`
+- [ ] `workers/router/src/routes/bounded-request-body.ts`
 - [ ] `workers/router/src/routes/ogg-opus.test.ts`
 - [ ] `workers/router/src/routes/ogg-opus.ts`
 - [ ] `workers/router/src/routes/transcribe.test.ts`
 - [ ] `workers/router/src/routes/transcribe.ts`
-- [ ] `workers/router/tsconfig.json`
-- [ ] `workers/router/vitest.config.ts`
-- [ ] `workers/router/wrangler.toml`
 
 ### `workers/search`
 
 - [ ] `workers/search/package.json`
-- [ ] `workers/search/src/index.ts`
 - [ ] `workers/search/tsconfig.json`
 - [ ] `workers/search/wrangler.toml`
+
+### `workers/search/src`
+
+- [ ] `workers/search/src/index.ts`
 
 ### `workers/security-gateway`
 
 - [x] `workers/security-gateway/package.json`
-- [x] `workers/security-gateway/src/index.test.ts`
-- [x] `workers/security-gateway/src/index.ts`
 - [x] `workers/security-gateway/tsconfig.json`
 - [x] `workers/security-gateway/vitest.config.ts`
 - [x] `workers/security-gateway/wrangler.toml`
 
+### `workers/security-gateway/src`
+
+- [x] `workers/security-gateway/src/index.test.ts`
+- [x] `workers/security-gateway/src/index.ts`
+
 ### `workers/spaces`
 
 - [ ] `workers/spaces/package.json`
+- [ ] `workers/spaces/tsconfig.json`
+- [ ] `workers/spaces/vitest.config.ts`
+- [ ] `workers/spaces/wrangler.toml`
+
+### `workers/spaces/src`
+
 - [ ] `workers/spaces/src/BlueprintConformanceWorkflow.ts`
 - [ ] `workers/spaces/src/builder-routes.ts`
 - [ ] `workers/spaces/src/business-auth.ts`
 - [ ] `workers/spaces/src/business-create.ts`
 - [ ] `workers/spaces/src/business-routes.ts`
 - [ ] `workers/spaces/src/cf-saas.ts`
+- [ ] `workers/spaces/src/conformance-state.test.ts`
 - [ ] `workers/spaces/src/conformance-state.ts`
 - [ ] `workers/spaces/src/create-space.ts`
 - [ ] `workers/spaces/src/customer-voice-bridge.test.ts`
-- [ ] `workers/spaces/src/do/BuilderAccountDO.ts`
-- [ ] `workers/spaces/src/do/FeatureFlagDO.ts`
-- [ ] `workers/spaces/src/do/LockDO.ts`
-- [ ] `workers/spaces/src/do/MicroAppDO.ts`
-- [ ] `workers/spaces/src/do/ProductUserDO-credit-reservations.test.ts`
-- [ ] `workers/spaces/src/do/ProductUserDO.ts`
-- [ ] `workers/spaces/src/do/SpaceDO-migrations.test.ts`
-- [ ] `workers/spaces/src/do/SpaceDO.ts`
-- [ ] `workers/spaces/src/do/SpaceTypeRegistryDO.ts`
-- [ ] `workers/spaces/src/do/TransactionCoordinatorDO.test.ts`
-- [ ] `workers/spaces/src/do/TransactionCoordinatorDO.ts`
-- [ ] `workers/spaces/src/do/artifact-linter.test.ts`
-- [ ] `workers/spaces/src/do/custom-model-lifecycle-do.test.ts`
-- [ ] `workers/spaces/src/do/custom-model-lifecycle.test.ts`
-- [ ] `workers/spaces/src/do/custom-model-lifecycle.ts`
-- [ ] `workers/spaces/src/do/custom-model-test-vault.test.ts`
-- [ ] `workers/spaces/src/do/custom-model-test-vault.ts`
-- [ ] `workers/spaces/src/do/customer-voice-calls.test.ts`
-- [ ] `workers/spaces/src/do/domain-glossary.test.ts`
-- [ ] `workers/spaces/src/do/executive-contacts.test.ts`
-- [ ] `workers/spaces/src/do/extension-runtime-install.test.ts`
-- [ ] `workers/spaces/src/do/gadget-mcp-crud.test.ts`
-- [ ] `workers/spaces/src/do/project-spend-reservations.test.ts`
-- [ ] `workers/spaces/src/do/project-subspace-migration-preflight.test.ts`
-- [ ] `workers/spaces/src/do/provenance-ledger.test.ts`
-- [ ] `workers/spaces/src/do/public-dynamic-pages.test.ts`
-- [ ] `workers/spaces/src/do/pull-request-cards.test.ts`
-- [ ] `workers/spaces/src/do/space-backup.test.ts`
-- [ ] `workers/spaces/src/do/space-backup.ts`
-- [ ] `workers/spaces/src/do/space-data-ops.test.ts`
-- [ ] `workers/spaces/src/do/space-retention.test.ts`
-- [ ] `workers/spaces/src/do/space-retention.ts`
 - [ ] `workers/spaces/src/domain-glossary-routes.test.ts`
 - [ ] `workers/spaces/src/domain-glossary.test.ts`
 - [ ] `workers/spaces/src/domain-glossary.ts`
@@ -1969,6 +2396,58 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/project-steward.test.ts`
 - [ ] `workers/spaces/src/project-steward.ts`
 - [ ] `workers/spaces/src/remediation-pass-2.test.ts`
+- [ ] `workers/spaces/src/request-body-boundaries.test.ts`
+- [ ] `workers/spaces/src/space-hierarchy-policy.test.ts`
+- [ ] `workers/spaces/src/state-delta-conformance.ts`
+- [ ] `workers/spaces/src/task-coordination.test.ts`
+- [ ] `workers/spaces/src/template-catalog.ts`
+- [ ] `workers/spaces/src/tenancy.ts`
+- [ ] `workers/spaces/src/thread-hierarchy.test.ts`
+- [ ] `workers/spaces/src/webhook-defense.test.ts`
+- [ ] `workers/spaces/src/workflow-plan-authoring.test.ts`
+
+### `workers/spaces/src/do`
+
+- [ ] `workers/spaces/src/do/BuilderAccountDO.ts`
+- [ ] `workers/spaces/src/do/FeatureFlagDO.test.ts`
+- [ ] `workers/spaces/src/do/FeatureFlagDO.ts`
+- [ ] `workers/spaces/src/do/LockDO.ts`
+- [ ] `workers/spaces/src/do/MicroAppDO.ts`
+- [ ] `workers/spaces/src/do/ProductUserDO-credit-reservations.test.ts`
+- [ ] `workers/spaces/src/do/ProductUserDO.ts`
+- [ ] `workers/spaces/src/do/SpaceDO-migrations.test.ts`
+- [ ] `workers/spaces/src/do/SpaceDO.ts`
+- [ ] `workers/spaces/src/do/SpaceTypeRegistryDO.ts`
+- [ ] `workers/spaces/src/do/TransactionCoordinatorDO.test.ts`
+- [ ] `workers/spaces/src/do/TransactionCoordinatorDO.ts`
+- [ ] `workers/spaces/src/do/additional-space-do-request-boundaries.test.ts`
+- [ ] `workers/spaces/src/do/artifact-linter.test.ts`
+- [ ] `workers/spaces/src/do/custom-model-lifecycle-do.test.ts`
+- [ ] `workers/spaces/src/do/custom-model-lifecycle.test.ts`
+- [ ] `workers/spaces/src/do/custom-model-lifecycle.ts`
+- [ ] `workers/spaces/src/do/custom-model-test-vault.test.ts`
+- [ ] `workers/spaces/src/do/custom-model-test-vault.ts`
+- [ ] `workers/spaces/src/do/customer-voice-calls.test.ts`
+- [ ] `workers/spaces/src/do/domain-glossary.test.ts`
+- [ ] `workers/spaces/src/do/executive-contacts.test.ts`
+- [ ] `workers/spaces/src/do/extension-runtime-install.test.ts`
+- [ ] `workers/spaces/src/do/gadget-mcp-crud.test.ts`
+- [ ] `workers/spaces/src/do/project-spend-reservations.test.ts`
+- [ ] `workers/spaces/src/do/project-subspace-migration-preflight.test.ts`
+- [ ] `workers/spaces/src/do/provenance-ledger.test.ts`
+- [ ] `workers/spaces/src/do/public-dynamic-pages.test.ts`
+- [ ] `workers/spaces/src/do/pull-request-cards.test.ts`
+- [ ] `workers/spaces/src/do/session-compact-scope.test.ts`
+- [ ] `workers/spaces/src/do/session-message-pagination.test.ts`
+- [ ] `workers/spaces/src/do/space-backup.test.ts`
+- [ ] `workers/spaces/src/do/space-backup.ts`
+- [ ] `workers/spaces/src/do/space-data-ops.test.ts`
+- [ ] `workers/spaces/src/do/space-do-request-boundaries.test.ts`
+- [ ] `workers/spaces/src/do/space-retention.test.ts`
+- [ ] `workers/spaces/src/do/space-retention.ts`
+
+### `workers/spaces/src/routes`
+
 - [ ] `workers/spaces/src/routes/channel-extensions.test.ts`
 - [ ] `workers/spaces/src/routes/desk-drop.ts`
 - [ ] `workers/spaces/src/routes/dynamic-pages.test.ts`
@@ -1987,78 +2466,93 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/routes/project-subspaces.test.ts`
 - [ ] `workers/spaces/src/routes/recipes.test.ts`
 - [ ] `workers/spaces/src/routes/recipes.ts`
-- [ ] `workers/spaces/src/space-hierarchy-policy.test.ts`
-- [ ] `workers/spaces/src/state-delta-conformance.ts`
-- [ ] `workers/spaces/src/task-coordination.test.ts`
-- [ ] `workers/spaces/src/template-catalog.ts`
-- [ ] `workers/spaces/src/tenancy.ts`
-- [ ] `workers/spaces/src/thread-hierarchy.test.ts`
-- [ ] `workers/spaces/src/webhook-defense.test.ts`
-- [ ] `workers/spaces/src/workflow-plan-authoring.test.ts`
-- [ ] `workers/spaces/tsconfig.json`
-- [ ] `workers/spaces/vitest.config.ts`
-- [ ] `workers/spaces/wrangler.toml`
 
 ### `workers/sweeper`
 
-- [x] `workers/sweeper/vitest.config.ts`
-- [x] `workers/sweeper/src/index.test.ts`
 - [x] `workers/sweeper/package.json`
-- [ ] `workers/sweeper/src/index.ts`
 - [ ] `workers/sweeper/tsconfig.json`
+- [x] `workers/sweeper/vitest.config.ts`
 - [ ] `workers/sweeper/wrangler.toml`
+
+### `workers/sweeper/src`
+
+- [x] `workers/sweeper/src/index.test.ts`
+- [ ] `workers/sweeper/src/index.ts`
 
 ### `workers/synthetics`
 
 - [ ] `workers/synthetics/package.json`
-- [ ] `workers/synthetics/src/index.test.ts`
-- [ ] `workers/synthetics/src/index.ts`
 - [ ] `workers/synthetics/tsconfig.json`
 - [ ] `workers/synthetics/wrangler.toml`
+
+### `workers/synthetics/src`
+
+- [ ] `workers/synthetics/src/index.test.ts`
+- [ ] `workers/synthetics/src/index.ts`
 
 ### `workers/threads`
 
 - [ ] `workers/threads/package.json`
-- [ ] `workers/threads/src/index.ts`
 - [ ] `workers/threads/tsconfig.json`
 - [ ] `workers/threads/wrangler.toml`
+
+### `workers/threads/src`
+
+- [ ] `workers/threads/src/index.test.ts`
+- [ ] `workers/threads/src/index.ts`
 
 ### `workers/together-ai`
 
 - [ ] `workers/together-ai/package.json`
-- [ ] `workers/together-ai/src/index.ts`
 - [ ] `workers/together-ai/tsconfig.json`
 - [ ] `workers/together-ai/wrangler.toml`
+
+### `workers/together-ai/src`
+
+- [ ] `workers/together-ai/src/bounded-response.test.ts`
+- [ ] `workers/together-ai/src/index.ts`
 
 ### `workers/triggers`
 
 - [ ] `workers/triggers/package.json`
-- [ ] `workers/triggers/src/index.ts`
 - [ ] `workers/triggers/tsconfig.json`
 - [ ] `workers/triggers/wrangler.toml`
+
+### `workers/triggers/src`
+
+- [ ] `workers/triggers/src/index.ts`
 
 ### `workers/workflows`
 
 - [ ] `workers/workflows/package.json`
+- [ ] `workers/workflows/tsconfig.json`
+- [ ] `workers/workflows/wrangler.toml`
+
+### `workers/workflows/src`
+
 - [ ] `workers/workflows/src/env.ts`
 - [ ] `workers/workflows/src/index.ts`
 - [ ] `workers/workflows/src/queue-consumer.ts`
+
+### `workers/workflows/src/workflows`
+
 - [ ] `workers/workflows/src/workflows/DataErasureWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/DunningWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/KbIngestionWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/QueueHealthWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/SpaceProvisioningWorkflow.ts`
-- [ ] `workers/workflows/tsconfig.json`
-- [ ] `workers/workflows/wrangler.toml`
 
 ### `workers/ws-gateway`
 
 - [ ] `workers/ws-gateway/package.json`
+- [ ] `workers/ws-gateway/tsconfig.json`
+- [ ] `workers/ws-gateway/wrangler.toml`
+
+### `workers/ws-gateway/src`
+
 - [ ] `workers/ws-gateway/src/index.ts`
 - [ ] `workers/ws-gateway/src/node-lease-gate.test.ts`
 - [ ] `workers/ws-gateway/src/node-lease-gate.ts`
 - [ ] `workers/ws-gateway/src/session-meta.test.ts`
 - [ ] `workers/ws-gateway/src/session-meta.ts`
 - [ ] `workers/ws-gateway/src/ui-action-delegation.test.ts`
-- [ ] `workers/ws-gateway/tsconfig.json`
-- [ ] `workers/ws-gateway/wrangler.toml`
