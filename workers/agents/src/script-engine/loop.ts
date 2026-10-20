@@ -483,7 +483,7 @@ export interface RunLoopOptions {
   requiresApprovalFor?: string[];
   approvalMode?: ApprovalMode;
   /** Re-read the host's authoritative approval policy immediately before each action gate. */
-  refreshApprovalPolicy?: () => Promise<{ requiresApprovalFor: string[]; approvalMode: ApprovalMode }>;
+  refreshApprovalPolicy?: () => Promise<{ requiresApprovalFor: string[]; approvalMode: ApprovalMode; policyVersion?: string }>;
   /**
    * Resuming a run that suspended waiting on a human: the actions a human has since approved.
    * The gate lets these through once without re-asking — otherwise every resume would open a
@@ -624,13 +624,13 @@ export async function runScriptLoop(
         const latest = await opts.refreshApprovalPolicy();
         gatedActions = new Set(latest.requiresApprovalFor);
         approvalMode = latest.approvalMode;
-        currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, latest.requiresApprovalFor);
+        currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, latest.requiresApprovalFor, latest.policyVersion);
       } catch {
         // An unknown policy must never preserve a previously broader grant. Gate every action;
         // the host can retry after its policy service recovers.
         gatedActions = new Set();
         approvalMode = "gate_unless_listed";
-        currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, []);
+        currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, [], "unavailable");
         notes.push("HITL: current approval policy could not be refreshed; requiring approval");
       }
     }
@@ -1531,8 +1531,8 @@ export function stableStringify(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
 }
 
-export function approvalPolicyFingerprint(mode: ApprovalMode, actionNames: readonly string[]): string {
-  return stableStringify({ mode, actionNames: [...actionNames].sort() });
+export function approvalPolicyFingerprint(mode: ApprovalMode, actionNames: readonly string[], policyVersion?: string): string {
+  return stableStringify({ mode, actionNames: [...actionNames].sort(), ...(policyVersion ? { policyVersion } : {}) });
 }
 
 /** Reads the reasoner's most recently reported usage; zeros when unreported. */
