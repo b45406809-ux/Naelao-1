@@ -18,10 +18,10 @@ export type Tenancy = "single" | "team" | "saas";
  * hybrid→saas. Defaults to "team".
  */
 export function resolveTenancy(
-  pc: { tenancy?: Tenancy; membershipModel?: string } | null | undefined
+  pc: { tenancy?: unknown; membershipModel?: unknown } | null | undefined
 ): Tenancy {
   if (!pc) return "team";
-  if (pc.tenancy) return pc.tenancy;
+  if (pc.tenancy === "single" || pc.tenancy === "team" || pc.tenancy === "saas") return pc.tenancy;
   if (pc.membershipModel === "tenant" || pc.membershipModel === "hybrid") return "saas";
   return "team";
 }

@@ -1557,7 +1557,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/space-fire-external-event.test.ts`
 - [ ] `tests/unit/space-hierarchy-policy.test.ts`
 - [ ] `tests/unit/space-members-scoping.test.ts`
-- [ ] `tests/unit/space-tenancy.test.ts`
+- [x] `tests/unit/space-tenancy.test.ts`
 - [ ] `tests/unit/spacedo-agent-activity-log.test.ts`
 - [ ] `tests/unit/spacedo-customer-bot-projects.test.ts`
 - [ ] `tests/unit/spacedo-notifications.test.ts`
@@ -2412,7 +2412,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/task-coordination.test.ts`
 - [x] `workers/spaces/src/template-catalog.test.ts`
 - [x] `workers/spaces/src/template-catalog.ts`
-- [ ] `workers/spaces/src/tenancy.ts`
+- [x] `workers/spaces/src/tenancy.ts`
 - [ ] `workers/spaces/src/thread-hierarchy.test.ts`
 - [ ] `workers/spaces/src/webhook-defense.test.ts`
 - [ ] `workers/spaces/src/workflow-plan-authoring.test.ts`

@@ -35,12 +35,18 @@ describe("resolveTenancy (G-Y15)", () => {
     // businesses (hybrid join semantics) without flipping the whole product to saas.
     expect(resolveTenancy({ ...base, membershipModel: "hybrid", tenancy: "team" })).toBe("team");
   });
+
+  it("rejects malformed runtime tenancy values and still infers tenant isolation", () => {
+    expect(resolveTenancy({ ...base, tenancy: "unexpected", membershipModel: "tenant" } as never)).toBe("saas");
+    expect(resolveTenancy({ ...base, tenancy: "unexpected", membershipModel: "unexpected" } as never)).toBe("team");
+    expect(resolveTenancy({ ...base, tenancy: null } as never)).toBe("team");
+  });
 });
 
 describe("Launchpad default tenancy", () => {
-  it("ships as a single shared team business out of the box", () => {
-    expect(LAUNCHPAD_MANIFEST.productConfig?.tenancy).toBe("team");
+  it("ships as a SaaS product with isolated child businesses", () => {
+    expect(LAUNCHPAD_MANIFEST.productConfig?.tenancy).toBe("saas");
     expect(LAUNCHPAD_MANIFEST.productConfig?.agencyShell).toBe(false);
-    expect(resolveTenancy(LAUNCHPAD_MANIFEST.productConfig)).toBe("team");
+    expect(resolveTenancy(LAUNCHPAD_MANIFEST.productConfig)).toBe("saas");
   });
 });
