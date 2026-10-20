@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1969
-Files with source or executable-configuration extensions: 1763
-Inventory revision: 2026-10-20 audit refresh at 2695b1c8
+Files: 1970
+Files with source or executable-configuration extensions: 1764
+Inventory revision: 2026-10-20 audit refresh at d7c8773c
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -722,6 +722,7 @@ packages/
       templates/
         dev-foundry.test.ts
         dev-foundry.ts
+      token-accounting.test.ts
       token-accounting.ts
       tunnel-protocol.ts
       types.ts
