@@ -1895,7 +1895,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/vault-proxy.test.ts`
 - [ ] `workers/agents/src/script-engine/vault-proxy.ts`
 - [ ] `workers/agents/src/script-engine/video-distill.ts`
-- [ ] `workers/agents/src/script-engine/virtual-cli.test.ts`
+- [x] `workers/agents/src/script-engine/virtual-cli.test.ts`
 - [ ] `workers/agents/src/script-engine/virtual-cli.ts`
 - [ ] `workers/agents/src/script-engine/virtual-posix.test.ts`
 - [ ] `workers/agents/src/script-engine/virtual-posix.ts`
