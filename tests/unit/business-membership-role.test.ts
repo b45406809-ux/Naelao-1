@@ -72,6 +72,12 @@ describe("resolveEndUserBusinessRole", () => {
     expect(await resolveEndUserBusinessRole(db as never, "biz-alice", "alice")).toBeNull();
   });
 
+  it("fails closed when a corrupted membership contains an unknown role", async () => {
+    const db = makeDb();
+    db.db.exec("UPDATE business_memberships SET role = 'superuser' WHERE business_space_id = 'biz-alice' AND end_user_id = 'alice'");
+    expect(await resolveEndUserBusinessRole(db as never, "biz-alice", "alice")).toBeNull();
+  });
+
   it("returns null for a nonexistent space, and fails closed on missing ids", async () => {
     const db = makeDb();
     expect(await resolveEndUserBusinessRole(db as never, "no-such-space", "alice")).toBeNull();

@@ -1337,7 +1337,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/business-diagnostics-prebuilt.test.ts`
 - [ ] `tests/unit/business-email-agentmail-routes.test.ts`
 - [ ] `tests/unit/business-feature-kinds.test.ts`
-- [ ] `tests/unit/business-membership-role.test.ts`
+- [x] `tests/unit/business-membership-role.test.ts`
 - [ ] `tests/unit/business-onboarding-flow.test.ts`
 - [ ] `tests/unit/business-role-cache.test.ts`
 - [ ] `tests/unit/business-routes.test.ts`
@@ -2369,7 +2369,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/spaces/src/BlueprintConformanceWorkflow.ts`
 - [x] `workers/spaces/src/builder-routes.ts`
-- [ ] `workers/spaces/src/business-auth.ts`
+- [x] `workers/spaces/src/business-auth.ts`
 - [ ] `workers/spaces/src/business-create.test.ts`
 - [x] `workers/spaces/src/business-create.ts`
 - [x] `workers/spaces/src/business-routes.test.ts`

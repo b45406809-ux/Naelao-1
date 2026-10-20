@@ -27,6 +27,12 @@ export type BusinessRole = "viewer" | "member" | "admin" | "owner";
 
 const ROLE_RANK: Record<BusinessRole, number> = { viewer: 0, member: 1, admin: 2, owner: 3 };
 
+function parseBusinessRole(value: string): BusinessRole | null {
+  return value === "viewer" || value === "member" || value === "admin" || value === "owner"
+    ? value
+    : null;
+}
+
 /** Canonical bit carried into knowledge indexing/query claims for business members. */
 export function businessRoleKnowledgeMask(role: BusinessRole): number {
   return KNOWLEDGE_ROLE_MASK[role as KnowledgeRole];
@@ -66,7 +72,9 @@ export async function resolveEndUserBusinessRole(
       "SELECT role FROM business_memberships WHERE business_space_id = ? AND end_user_id = ? AND status = 'active'"
     ).bind(spaceId, endUserId).first<{ role: string }>();
     if (!membership) return null;
-    return membership.role as BusinessRole;
+    // Never let malformed/legacy database values flow into ROLE_RANK comparisons: an undefined
+    // rank would make `rank < requiredRank` false and accidentally authorize the request.
+    return parseBusinessRole(membership.role);
   } catch {
     return null;
   }
@@ -122,7 +130,7 @@ export async function resolveWalletAccessRole(
       "SELECT role FROM business_memberships WHERE business_space_id = ? AND end_user_id = ? AND status = 'active'"
     ).bind(spaceId, endUserId).first<{ role: string }>();
     if (!membership) return null;
-    return membership.role as BusinessRole;
+    return parseBusinessRole(membership.role);
   } catch {
     return null;
   }
