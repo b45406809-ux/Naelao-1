@@ -41,6 +41,34 @@ describe("ProductUserDO inference-credit reservations", () => {
     expect((await post("/credits/grant", JSON.stringify({ credits: 1, reason: "x".repeat(129) }))).status).toBe(400);
   });
 
+  it("enforces the active-session ceiling under parallel session creation", async () => {
+    const user = new ProductUserDO({ storage: createDOStorage() } as never, {} as never);
+    const responses = await Promise.all(Array.from({ length: 120 }, () => user.fetch(new Request("https://user/sessions", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    }))));
+    expect(responses.filter((response) => response.status === 201)).toHaveLength(100);
+    expect(responses.filter((response) => response.status === 429)).toHaveLength(20);
+    const rows = await Promise.all(responses.filter((response) => response.status === 201).map((response) => response.json()));
+    expect(new Set(rows.map((row) => (row as { session_id: string }).session_id)).size).toBe(100);
+  });
+
+  it("rejects ledger operations that would leave the safe integer range", async () => {
+    const user = new ProductUserDO({ storage: createDOStorage() } as never, {} as never);
+    const post = (path: string, body: unknown) => user.fetch(new Request(`https://user${path}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }));
+    expect((await post("/credits/grant", { credits: Number.MAX_SAFE_INTEGER })).status).toBe(201);
+    expect((await post("/credits/grant", { credits: 1 })).status).toBe(409);
+
+    const debtUser = new ProductUserDO({ storage: createDOStorage() } as never, {} as never);
+    const debtPost = (body: unknown) => debtUser.fetch(new Request("https://user/credits/clawback", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }));
+    await debtUser.fetch(new Request("https://user/credits/grant", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ credits: 1 }) }));
+    expect((await debtPost({ credits: Number.MAX_SAFE_INTEGER, idempotency_key: "clawback-1" })).status).toBe(201);
+    expect((await debtPost({ credits: Number.MAX_SAFE_INTEGER, idempotency_key: "clawback-2" })).status).toBe(409);
+  });
+
   it("paginates conversation metadata and bounds user-controlled stored values", async () => {
     const user = new ProductUserDO({ storage: createDOStorage() } as never, {} as never);
     const post = (path: string, body: unknown) => user.fetch(new Request(`https://user${path}`, {
@@ -56,6 +84,7 @@ describe("ProductUserDO inference-credit reservations", () => {
     expect(second.data).toHaveLength(1);
     expect(new Set([...first.data, ...second.data].map((row) => row.thread_id)).size).toBe(3);
     expect((await user.fetch(new Request("https://user/conversation-refs?cursor=not-base64!"))).status).toBe(400);
+    expect((await user.fetch(new Request(`https://user/conversation-refs?cursor=${"a".repeat(2050)}`))).status).toBe(400);
     const pref = (value: unknown) => user.fetch(new Request("https://user/preferences", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(value) }));
     expect((await pref({ key: "x".repeat(129), value: true })).status).toBe(400);
     expect((await pref({ key: "large", value: "x".repeat(16 * 1024) })).status).toBe(413);
@@ -67,5 +96,6 @@ describe("ProductUserDO inference-credit reservations", () => {
     expect(notificationPage.data).toHaveLength(2);
     const notificationTail = await (await user.fetch(new Request(`https://user/notifications?cursor=${encodeURIComponent(notificationPage.next_cursor)}`))).json() as { data: Array<{ id: string }> };
     expect(notificationTail.data).toHaveLength(1);
+    expect((await user.fetch(new Request(`https://user/notifications?cursor=${"a".repeat(2050)}`))).status).toBe(400);
   });
 });

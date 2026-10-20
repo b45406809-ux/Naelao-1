@@ -202,18 +202,24 @@ export class ProductUserDO extends DurableObject {
       if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ error_code: "session_invalid" }, { status: 400 });
       if (!validOptionalText(body.auth_provider, 64)) return Response.json({ error_code: "session_invalid" }, { status: 400 });
       const now = new Date();
-      this.ctx.storage.sql.exec("DELETE FROM session_state WHERE expires_at <= ? OR revoked_at IS NOT NULL", now.toISOString());
-      const active = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM session_state WHERE expires_at > ? AND revoked_at IS NULL", now.toISOString()).toArray() as Array<{ count: number }>;
-      if ((active[0]?.count ?? 0) >= MAX_ACTIVE_SESSIONS) return Response.json({ error_code: "session_limit_reached" }, { status: 429 });
       const sessionId = crypto.randomUUID();
       const rawToken = `nps_${crypto.randomUUID().replace(/-/g, "")}${crypto.randomUUID().replace(/-/g, "")}`;
       const tokenHash = await sha256Hex(rawToken);
       const expiresAt = new Date(now.getTime() + SESSION_TTL_MS).toISOString();
-      this.ctx.storage.sql.exec(
-        `INSERT INTO session_state (session_id, token_hash, auth_provider, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?)`,
-        sessionId, tokenHash, body.auth_provider ?? "naelao-native", now.toISOString(), expiresAt
-      );
+      // Hashing yields to concurrent requests. Keep cleanup, cap check, and insert in one
+      // synchronous storage transaction so simultaneous logins cannot exceed the hard limit.
+      const created = this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec("DELETE FROM session_state WHERE expires_at <= ? OR revoked_at IS NOT NULL", now.toISOString());
+        const active = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM session_state WHERE expires_at > ? AND revoked_at IS NULL", now.toISOString()).toArray() as Array<{ count: number }>;
+        if ((active[0]?.count ?? 0) >= MAX_ACTIVE_SESSIONS) return false;
+        this.ctx.storage.sql.exec(
+          `INSERT INTO session_state (session_id, token_hash, auth_provider, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          sessionId, tokenHash, body.auth_provider ?? "naelao-native", now.toISOString(), expiresAt
+        );
+        return true;
+      });
+      if (!created) return Response.json({ error_code: "session_limit_reached" }, { status: 429 });
       // F-48: opportunistically prune long-expired sessions (14+ days past expiry) on the mint
       // path — far rarer than verify, so this bounds the session_state table without adding a
       // cron/alarm. An expired session is already unreachable (verify rejects it); this just keeps
@@ -364,6 +370,7 @@ export class ProductUserDO extends DurableObject {
         }
       }
       const balanceAfter = this.currentBalance() + Math.floor(body.credits);
+      if (!Number.isSafeInteger(balanceAfter)) return Response.json({ error_code: "credit_balance_limit_reached" }, { status: 409 });
       this.ctx.storage.sql.exec(
         `INSERT INTO credit_ledger (id, delta_credits, reason, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?)`,
         crypto.randomUUID(), Math.floor(body.credits), body.reason ?? "grant", balanceAfter, body.idempotency_key ?? null
@@ -401,6 +408,7 @@ export class ProductUserDO extends DurableObject {
         return Response.json({ error: "insufficient_credits", balance_credits: balance, reserved_credits: held[0]?.credits ?? 0 }, { status: 402 });
       }
       const balanceAfter = balance - debit;
+      if (!Number.isSafeInteger(balanceAfter)) return Response.json({ error_code: "credit_balance_limit_reached" }, { status: 409 });
       // F-47/F-50: the SELECT-then-INSERT above is already atomic within a single DO instance
       // (DO SQLite .exec is synchronous and there is no `await` between the dedup SELECT and this
       // INSERT, and a DO processes one request to completion before the next), so the audited
@@ -440,6 +448,7 @@ export class ProductUserDO extends DurableObject {
         return Response.json({ balance_credits: existing[0].balance_after, deduplicated: true }, { status: 200 });
       }
       const balanceAfter = this.currentBalance() - Math.ceil(body.credits);
+      if (!Number.isSafeInteger(balanceAfter)) return Response.json({ error_code: "credit_balance_limit_reached" }, { status: 409 });
       this.ctx.storage.sql.exec(
         `INSERT INTO credit_ledger (id, delta_credits, reason, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?)`,
         crypto.randomUUID(), -Math.ceil(body.credits), body.reason ?? "refund_clawback", balanceAfter, body.idempotency_key
@@ -471,8 +480,9 @@ export class ProductUserDO extends DurableObject {
       if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 100) return Response.json({ error_code: "invalid_limit" }, { status: 400 });
       let cursorParts: string[] | null = null;
       if (cursor !== null) {
+        if (cursor.length > 2048) return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
         try { cursorParts = JSON.parse(decodeURIComponent(atob(cursor))) as string[]; } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
-        if (!Array.isArray(cursorParts) || cursorParts.length !== 3 || cursorParts.some((part) => typeof part !== "string" || !part) || cursor.length > 2048) return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
+        if (!Array.isArray(cursorParts) || cursorParts.length !== 3 || cursorParts.some((part) => typeof part !== "string" || !part)) return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
       }
       const rows = (cursorParts
         ? this.ctx.storage.sql.exec("SELECT thread_id, space_id, session_id, title, created_at FROM conversation_refs WHERE created_at < ? OR (created_at = ? AND space_id < ?) OR (created_at = ? AND space_id = ? AND thread_id < ?) ORDER BY created_at DESC, space_id DESC, thread_id DESC LIMIT ?", cursorParts[0], cursorParts[0], cursorParts[1], cursorParts[0], cursorParts[1], cursorParts[2], limitValue + 1)
@@ -530,8 +540,9 @@ export class ProductUserDO extends DurableObject {
       if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > 100) return Response.json({ error_code: "invalid_limit" }, { status: 400 });
       let cursorParts: string[] | null = null;
       if (cursor !== null) {
+        if (cursor.length > 2048) return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
         try { cursorParts = JSON.parse(decodeURIComponent(atob(cursor))) as string[]; } catch { return Response.json({ error_code: "invalid_cursor" }, { status: 400 }); }
-        if (!Array.isArray(cursorParts) || cursorParts.length !== 2 || cursorParts.some((part) => typeof part !== "string" || !part) || cursor.length > 2048) return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
+        if (!Array.isArray(cursorParts) || cursorParts.length !== 2 || cursorParts.some((part) => typeof part !== "string" || !part)) return Response.json({ error_code: "invalid_cursor" }, { status: 400 });
       }
       const rows = (cursorParts
         ? this.ctx.storage.sql.exec("SELECT id, payload, status, created_at FROM notification_queue WHERE status = 'pending' AND (created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at ASC, id ASC LIMIT ?", cursorParts[0], cursorParts[0], cursorParts[1], limitValue + 1)
