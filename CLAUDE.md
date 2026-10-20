@@ -2742,9 +2742,10 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       checkpoint; approving resumes it. **What makes re-entering the loop safe rather than a
       replay hazard is where it stops** — at the gate, before the gated action ran — so the
       checkpoint's `steps_completed` (the ungated work already done) is handed back as
-      `resumeSteps`/`priorSteps` instead of being repeated, and `preApprovedActions` lets the
-      approved action through exactly once (otherwise every resume would open a fresh request for
-      the very thing just approved). Resume routes by a new `approvals.resume_do_id` recorded at
+      `resumeSteps`/`priorSteps` instead of being repeated. Resume approval is now minted only by
+      the trusted internal resume path and bound to the exact canonical action arguments plus the
+      effective approval-policy fingerprint; changed inputs or policy require a fresh approval.
+      Resume routes by a new `approvals.resume_do_id` recorded at
       request time — agent DOs are addressed per space:project:thread, so resuming "the space's
       assistant DO" would silently find no checkpoint for any project-scoped run. Deliberately
       NOT an in-memory continuation: DO hibernation destroys that, which is the exact wait this

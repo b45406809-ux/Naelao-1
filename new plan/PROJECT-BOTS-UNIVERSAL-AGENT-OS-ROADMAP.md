@@ -260,10 +260,11 @@ The user’s standing delivery preference is to checkpoint successful work in fo
 
 - Settle product terminology and user-tested autonomy labels.
 - Define canonical policy object/version, action risk classes, grant inheritance, approval record and revocation semantics.
+- **Fresh security finding (2026-10-20):** resume approvals had been matched by action name alone, and a caller-supplied `preApprovedActions` field could reach the planner. Bind resume approval to the exact canonical action arguments and effective approval-policy fingerprint; mint the evidence only inside the trusted resume path. Add stale-approval and policy-change regression coverage. This slice is implemented locally; full Phase 1 policy unification remains open.
 - Adapt existing template suggestions and server gates through a compatibility adapter; show one autonomy control in Shell.
 - Remove AVE/Cowork segmentation from new user journeys and replace domain-tagged copy with template capabilities/labels. Keep legacy stored values readable.
 
-**Gate:** tests show every UI choice compiles to server-verified policy; a low-privilege template cannot gain tools from a slider; old templates still load.
+**Gate:** tests show every UI choice compiles to server-verified policy; a low-privilege template cannot gain tools from a slider; old templates still load; delayed approvals expire when exact action arguments or the effective approval policy changes.
 
 ### Phase 2 — Project Bot identity and navigation
 

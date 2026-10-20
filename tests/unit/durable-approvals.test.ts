@@ -13,48 +13,46 @@
 // was just approved.
 
 import { describe, it, expect } from "vitest";
-import { runScriptLoop } from "../../workers/agents/src/script-engine/loop.js";
+import { approvalPolicyFingerprint, runScriptLoop, stableStringify } from "../../workers/agents/src/script-engine/loop.js";
 import { ScriptToolSurface } from "../../workers/agents/src/script-engine/tool-surface.js";
 import type { Reasoner, ReasonDecision } from "../../workers/agents/src/script-engine/loop.js";
 import type { HITLGateway, ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  const meta = new Map<string, Date>();
+  const store = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string>; uploaded: Date }>();
+  let revision = 0;
   const bucket = {
-    async put(key: string, value: unknown) {
-      const text = typeof value === "string" ? value : String(value);
-      store.set(key, text);
-      meta.set(key, new Date());
-      return {} as R2Object;
+    async put(key: string, value: unknown, options?: R2PutOptions) {
+      const previous = store.get(key);
+      const onlyIf = options?.onlyIf as { etagMatches?: string; etagDoesNotMatch?: string } | undefined;
+      if (onlyIf?.etagMatches !== undefined && previous?.etag !== onlyIf.etagMatches) return null;
+      if (onlyIf?.etagDoesNotMatch === "*" && previous) return null;
+      const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(typeof value === "string" ? value : String(value));
+      const etag = String(++revision);
+      store.set(key, { bytes: bytes.slice(), etag, customMetadata: options?.customMetadata ?? {}, uploaded: new Date() });
+      return { etag } as R2Object;
     },
     async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
+      const item = store.get(key);
+      if (!item || item.customMetadata["deleted"] === "true") return null;
       return {
-        size: text.length,
-        uploaded: meta.get(key) ?? new Date(),
-        async text() {
-          return text;
-        },
-        get body() {
-          return text;
-        },
+        size: item.bytes.byteLength,
+        etag: item.etag,
+        uploaded: item.uploaded,
+        customMetadata: item.customMetadata,
+        async text() { return new TextDecoder().decode(item.bytes); },
+        async arrayBuffer() { return item.bytes.slice().buffer; },
       } as unknown as R2ObjectBody;
     },
     async head(key: string) {
-      return store.has(key) ? ({} as R2Object) : null;
+      const item = store.get(key);
+      return item ? { key, size: item.bytes.byteLength, etag: item.etag, uploaded: item.uploaded, customMetadata: item.customMetadata } as R2Object : null;
     },
-    async delete(keys: string | string[]) {
-      for (const k of Array.isArray(keys) ? keys : [keys]) {
-        store.delete(k);
-        meta.delete(k);
-      }
+    async delete(key: string | string[]) {
+      for (const item of Array.isArray(key) ? key : [key]) store.delete(item);
     },
-    async list(opts?: { prefix?: string; cursor?: string }) {
-      const prefix = opts?.prefix ?? "";
-      const objects = [...store.keys()]
-        .filter((k) => k.startsWith(prefix))
-        .map((k) => ({ key: k, size: store.get(k)!.length, uploaded: meta.get(k) ?? new Date(), etag: "x" }));
+    async list(options?: { prefix?: string }) {
+      const prefix = options?.prefix ?? "";
+      const objects = [...store.entries()].filter(([key, item]) => key.startsWith(prefix) && item.customMetadata["deleted"] !== "true").map(([key, item]) => ({ key, size: item.bytes.byteLength, etag: item.etag, uploaded: item.uploaded, customMetadata: item.customMetadata }));
       return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
     },
   };
@@ -107,7 +105,7 @@ describe("a pending approval never fails the run", () => {
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
         // Asks for the gated write first, then does something else, then answers.
-        if (step++ === 0) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        if (step++ === 0) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
         if (step === 2) return { action: "run", name: "list_files", params: {} };
         return { action: "answer", text: "Listed the files; the write is waiting on you." };
       },
@@ -136,7 +134,7 @@ describe("a pending approval never fails the run", () => {
     const gateStep = result.trace.find((s) => s.phase === "gate" && s.name === "write_file");
     expect(gateStep).toBeDefined();
     expect(gateStep!.detail).toBe("deferred_pending_approval");
-    expect(gateStep!.params).toEqual({ path: "a.txt", content: "x" });
+    expect(gateStep!.params).toEqual({ path: "a.txt", content: "x", expectedHash: null });
   });
 
   it("opens exactly one request even if the model asks for the same action again", async () => {
@@ -151,7 +149,7 @@ describe("a pending approval never fails the run", () => {
     const reasoner: Reasoner = {
       async decide(input): Promise<ReasonDecision> {
         seenSteps = ((input as { priorSteps?: typeof seenSteps }).priorSteps ?? []) as typeof seenSteps;
-        if (step++ < 2) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        if (step++ < 2) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
         return { action: "answer", text: "done what I could" };
       },
     };
@@ -177,7 +175,7 @@ describe("a pending approval never fails the run", () => {
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
 
     await runScriptLoop(env, tools, { async decide(): Promise<ReasonDecision> {
-      return { action: "run", name: "write_file", params: { path: "gated.txt", content: "x" } };
+      return { action: "run", name: "write_file", params: { path: "gated.txt", content: "x", expectedHash: null } };
     } }, ["r2-workspace"], {
       goal: "write a file",
       startupObserve: "observe_filesystem",
@@ -199,7 +197,7 @@ describe("a pending approval never fails the run", () => {
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
 
     const result = await runScriptLoop(env, tools, { async decide(): Promise<ReasonDecision> {
-      return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+      return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
     } }, ["r2-workspace"], {
       goal: "write a file",
       startupObserve: "observe_filesystem",
@@ -221,7 +219,7 @@ describe("a pending approval never fails the run", () => {
       async decide(): Promise<ReasonDecision> {
         // An ungated read, then the gated write, then an answer around it.
         if (step++ === 0) return { action: "run", name: "list_files", params: {} };
-        if (step === 2) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        if (step === 2) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
         return { action: "answer", text: "listed them; write is pending" };
       },
     };
@@ -252,7 +250,7 @@ describe("resuming after a human approves", () => {
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
         return step++ === 0
-          ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } }
+          ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } }
           : { action: "answer", text: "Wrote a.txt." };
       },
     };
@@ -262,12 +260,58 @@ describe("resuming after a human approves", () => {
       startupObserve: "observe_filesystem",
       requiresApprovalFor: [],
       approvalMode: "gate_unless_listed",
-      preApprovedActions: ["write_file"],
+      preApprovedActions: [{ actionName: "write_file", actionInputJson: stableStringify({ path: "a.txt", content: "x", expectedHash: null }), approvalPolicyFingerprint: approvalPolicyFingerprint("gate_unless_listed", []) }],
     });
 
     expect(asked).toEqual([]);
     expect(result.pending_approval).toBeUndefined();
     expect(result.result?.ok).toBe(true);
+  });
+
+  it("requires a fresh approval when the model changes the approved arguments", async () => {
+    const env = makeEnv();
+    const requestedInputs: Array<Record<string, unknown>> = [];
+    env.hitlGateway = {
+      async requestApproval(params) {
+        requestedInputs.push(params.actionInput);
+        return { approvalId: "fresh-approval", approved: false, pending: true };
+      },
+    };
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const result = await runScriptLoop(env, tools, { async decide(): Promise<ReasonDecision> {
+      return { action: "run", name: "write_file", params: { path: "a.txt", content: "changed after approval", expectedHash: null } };
+    } }, ["r2-workspace"], {
+      goal: "write a file",
+      startupObserve: "observe_filesystem",
+      requiresApprovalFor: [],
+      approvalMode: "gate_unless_listed",
+      preApprovedActions: [{ actionName: "write_file", actionInputJson: stableStringify({ path: "a.txt", content: "approved content", expectedHash: null }), approvalPolicyFingerprint: approvalPolicyFingerprint("gate_unless_listed", []) }],
+    });
+
+    expect(requestedInputs).toEqual([{ path: "a.txt", content: "changed after approval", expectedHash: null }]);
+    expect(result.deferred_approvals?.[0]?.params).toEqual({ path: "a.txt", content: "changed after approval", expectedHash: null });
+    const listed = await env.scriptsBucket.list({ prefix: "spaces/space-1/" });
+    expect(listed.objects.some((object) => object.key.includes("a.txt"))).toBe(false);
+  });
+
+  it("requires a fresh approval when the effective approval policy changed", async () => {
+    const env = makeEnv();
+    let approvalCount = 0;
+    env.hitlGateway = { async requestApproval() {
+      approvalCount++;
+      return { approvalId: "policy-approval", approved: false, pending: true };
+    } };
+    const result = await runScriptLoop(env, new ScriptToolSurface(env, ["r2-workspace"]), {
+      async decide(): Promise<ReasonDecision> { return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } }; },
+    }, ["r2-workspace"], {
+      goal: "write a file",
+      startupObserve: "observe_filesystem",
+      requiresApprovalFor: [],
+      approvalMode: "gate_unless_listed",
+      preApprovedActions: [{ actionName: "write_file", actionInputJson: stableStringify({ path: "a.txt", content: "x", expectedHash: null }), approvalPolicyFingerprint: approvalPolicyFingerprint("gate_listed", ["write_file"]) }],
+    });
+    expect(approvalCount).toBe(1);
+    expect(result.deferred_approvals?.[0]?.action_name).toBe("write_file");
   });
 
   it("hands the suspended pass's steps back to the model as work already done", async () => {
@@ -285,7 +329,6 @@ describe("resuming after a human approves", () => {
     await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
       goal: "finish the job",
       startupObserve: "observe_filesystem",
-      preApprovedActions: ["write_file"],
       resumeSteps: [{ name: "list_files", params: {}, ok: true, output: ["a.txt"] }],
     });
 

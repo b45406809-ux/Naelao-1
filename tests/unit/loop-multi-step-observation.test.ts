@@ -18,20 +18,45 @@ import { ScriptToolSurface } from "../../workers/agents/src/script-engine/tool-s
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
-  return {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
+  const store = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string>; uploaded: Date }>();
+  let revision = 0;
+  const bucket = {
+    async put(key: string, value: unknown, options?: R2PutOptions) {
+      const previous = store.get(key);
+      const onlyIf = options?.onlyIf as { etagMatches?: string; etagDoesNotMatch?: string } | undefined;
+      if (onlyIf?.etagMatches !== undefined && previous?.etag !== onlyIf.etagMatches) return null;
+      if (onlyIf?.etagDoesNotMatch === "*" && previous) return null;
+      const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(typeof value === "string" ? value : String(value));
+      const etag = String(++revision);
+      store.set(key, { bytes: bytes.slice(), etag, customMetadata: options?.customMetadata ?? {}, uploaded: new Date() });
+      return { etag } as R2Object;
     },
     async get(key: string) {
-      const v = store.get(key);
-      if (v === undefined) return null;
-      return { text: async () => v, uploaded: new Date() } as unknown as R2ObjectBody;
+      const item = store.get(key);
+      if (!item || item.customMetadata["deleted"] === "true") return null;
+      return {
+        size: item.bytes.byteLength,
+        etag: item.etag,
+        uploaded: item.uploaded,
+        customMetadata: item.customMetadata,
+        async text() { return new TextDecoder().decode(item.bytes); },
+        async arrayBuffer() { return item.bytes.slice().buffer; },
+      } as unknown as R2ObjectBody;
     },
-    async delete(key: string) { store.delete(key); },
-    async list() { return { objects: [], truncated: false } as unknown as R2Objects; },
-  } as unknown as R2Bucket;
+    async head(key: string) {
+      const item = store.get(key);
+      return item ? { key, size: item.bytes.byteLength, etag: item.etag, uploaded: item.uploaded, customMetadata: item.customMetadata } as R2Object : null;
+    },
+    async delete(key: string | string[]) {
+      for (const item of Array.isArray(key) ? key : [key]) store.delete(item);
+    },
+    async list(options?: { prefix?: string }) {
+      const prefix = options?.prefix ?? "";
+      const objects = [...store.entries()].filter(([key, item]) => key.startsWith(prefix) && item.customMetadata["deleted"] !== "true").map(([key, item]) => ({ key, size: item.bytes.byteLength, etag: item.etag, uploaded: item.uploaded, customMetadata: item.customMetadata }));
+      return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
+    },
+  };
+  return bucket as unknown as R2Bucket;
 }
 
 function makeEnv(): ScriptEngineEnv {
@@ -58,7 +83,7 @@ describe("a successful tool call is a STEP, not the end of the run", () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const { reasoner, seen } = scriptedReasoner([
-      { action: "run", name: "write_file", params: { path: "a.txt", content: "hello" } },
+      { action: "run", name: "write_file", params: { path: "a.txt", content: "hello", expectedHash: null } },
       { action: "run", name: "read_file", params: { path: "a.txt" } },
       { action: "answer", text: "The file contains: hello" },
     ]);
@@ -75,7 +100,7 @@ describe("a successful tool call is a STEP, not the end of the run", () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const { reasoner, seen } = scriptedReasoner([
-      { action: "run", name: "write_file", params: { path: "a.txt", content: "hello" } },
+      { action: "run", name: "write_file", params: { path: "a.txt", content: "hello", expectedHash: null } },
       { action: "answer", text: "done" },
     ]);
 
@@ -87,7 +112,7 @@ describe("a successful tool call is a STEP, not the end of the run", () => {
     expect(prior).toHaveLength(1);
     expect(prior[0]!.name).toBe("write_file");
     expect(prior[0]!.ok).toBe(true);
-    expect(prior[0]!.params).toEqual({ path: "a.txt", content: "hello" });
+    expect(prior[0]!.params).toEqual({ path: "a.txt", content: "hello", expectedHash: null });
   });
 
   it("reports a failed step honestly rather than hiding it", async () => {
@@ -120,7 +145,7 @@ describe("the loop cannot be made to spin on one repeated call", () => {
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     // A model that ignores its observations and re-decides the same call forever.
     const { reasoner, seen } = scriptedReasoner([
-      { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } },
+      { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } },
     ]);
 
     await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 5 });
@@ -139,7 +164,7 @@ describe("the loop cannot be made to spin on one repeated call", () => {
     expect(last.length).toBeGreaterThan(1);
     for (const step of last) {
       expect(step.ok).toBe(true);
-      expect(step.output).toEqual({ ok: true, path: "a.txt" });
+      expect(step.output).toMatchObject({ ok: true, path: "a.txt" });
     }
   });
 
@@ -151,7 +176,7 @@ describe("the loop cannot be made to spin on one repeated call", () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const { reasoner } = scriptedReasoner([
-      { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } },
+      { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } },
     ]);
 
     const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
@@ -164,7 +189,7 @@ describe("the loop cannot be made to spin on one repeated call", () => {
       expect(row.ok).toBe(true);
       expect(row.duration_ms).toBe(0);
       expect(row.detail).toBe("repeated — served the earlier result");
-      expect(row.params).toEqual({ path: "a.txt", content: "x" });
+      expect(row.params).toEqual({ path: "a.txt", content: "x", expectedHash: null });
     }
   });
 
@@ -187,7 +212,7 @@ describe("the loop cannot be made to spin on one repeated call", () => {
       async decide(): Promise<ReasonDecision> {
         // Re-asks for the SAME gated action twice before giving up on it.
         step++;
-        if (step <= 2) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        if (step <= 2) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } };
         return { action: "answer", text: "Still waiting on that write." };
       },
     };
@@ -213,8 +238,8 @@ describe("the loop cannot be made to spin on one repeated call", () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const { reasoner, seen } = scriptedReasoner([
-      { action: "run", name: "write_file", params: { path: "a.txt", content: "one" } },
-      { action: "run", name: "write_file", params: { path: "b.txt", content: "two" } },
+      { action: "run", name: "write_file", params: { path: "a.txt", content: "one", expectedHash: null } },
+      { action: "run", name: "write_file", params: { path: "b.txt", content: "two", expectedHash: null } },
       { action: "answer", text: "wrote both" },
     ]);
 
@@ -238,7 +263,7 @@ describe("running out of steps without an answer", () => {
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
         n++;
-        return { action: "run", name: "write_file", params: { path: `f${n}.txt`, content: "x" } };
+        return { action: "run", name: "write_file", params: { path: `f${n}.txt`, content: "x", expectedHash: null } };
       },
     };
 
@@ -268,8 +293,8 @@ describe("the last step is a real deadline, not a cliff", () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const { reasoner, seen } = scriptedReasoner([
-      { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } },
-      { action: "run", name: "write_file", params: { path: "b.txt", content: "y" } },
+      { action: "run", name: "write_file", params: { path: "a.txt", content: "x", expectedHash: null } },
+      { action: "run", name: "write_file", params: { path: "b.txt", content: "y", expectedHash: null } },
       { action: "answer", text: "done" },
     ]);
 
@@ -296,7 +321,7 @@ describe("the last step is a real deadline, not a cliff", () => {
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
         decided++;
-        return { action: "run", name: "write_file", params: { path: `f${decided}.txt`, content: "x" } };
+        return { action: "run", name: "write_file", params: { path: `f${decided}.txt`, content: "x", expectedHash: null } };
       },
     };
 
@@ -325,7 +350,7 @@ describe("the last step is a real deadline, not a cliff", () => {
         // Ignores its own observations and keeps reaching for a tool — until it is told the
         // deadline has arrived, which is the only thing that makes it report back.
         if (input.finalStep) return { action: "answer", text: "I created the project for you." };
-        return { action: "run", name: "write_file", params: { path: `f${Math.random()}.txt`, content: "x" } };
+        return { action: "run", name: "write_file", params: { path: `f${Math.random()}.txt`, content: "x", expectedHash: null } };
       },
     };
 
@@ -341,7 +366,7 @@ describe("the last step is a real deadline, not a cliff", () => {
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: `f${Math.random()}.txt`, content: "x" } };
+        return { action: "run", name: "write_file", params: { path: `f${Math.random()}.txt`, content: "x", expectedHash: null } };
       },
     };
 
@@ -360,7 +385,7 @@ describe("the last step is a real deadline, not a cliff", () => {
         calls++;
         // The closing-summary call (the one after the loop breaks) throws.
         if (calls > 3) throw new Error("reasoner exploded");
-        return { action: "run", name: "write_file", params: { path: `f${calls}.txt`, content: "x" } };
+        return { action: "run", name: "write_file", params: { path: `f${calls}.txt`, content: "x", expectedHash: null } };
       },
     };
 

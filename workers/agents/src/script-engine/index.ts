@@ -38,6 +38,9 @@ export {
   type EscalationConfig,
   type RunLoopOptions,
   type ApprovalMode,
+  type ApprovedActionEvidence,
+  stableStringify,
+  approvalPolicyFingerprint,
 } from "./loop.js";
 export {
   loadAgentConfig,

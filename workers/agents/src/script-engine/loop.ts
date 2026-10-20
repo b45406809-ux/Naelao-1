@@ -137,6 +137,12 @@ type GateOutcome =
   | { verdict: "denied"; reason?: string }
   | { verdict: "pending"; approvalId: string; expiresAt?: number };
 
+export interface ApprovedActionEvidence {
+  actionName: string;
+  actionInputJson: string;
+  approvalPolicyFingerprint: string;
+}
+
 /**
  * Gate an action against the HITL policy.
  * When hitlGateway is absent, the action isn't gated under the current mode, or the action was
@@ -151,15 +157,19 @@ async function hitlGate(
   runId: string,
   sessionId: string,
   notes: string[],
-  preApproved: Set<string>
+  preApproved: ReadonlyMap<string, ApprovedActionEvidence>,
+  currentPolicyFingerprint: string,
 ): Promise<GateOutcome> {
   if (!isGated(actionName, gatedActions, mode) || !gateway) return { verdict: "proceed" };
-  // A human already said yes to exactly this action on the pass that suspended — asking again
-  // would make an approved action unapprovable, since every resume would re-open a new request.
-  if (preApproved.has(actionName)) {
+  // Approval is bound to the exact input and policy that the approver saw.
+  const evidence = preApproved.get(actionName);
+  if (evidence
+      && evidence.actionInputJson === stableStringify(actionInput)
+      && evidence.approvalPolicyFingerprint === currentPolicyFingerprint) {
     notes.push(`HITL: '${actionName}' was approved before this resume → proceeding`);
     return { verdict: "proceed" };
   }
+  if (evidence) notes.push(`HITL: prior approval for '${actionName}' no longer matches; requesting a fresh approval`);
   notes.push(`HITL gate: requesting approval for '${actionName}'`);
   const { approved, pending, expiresAt, reason, approvalId } = await gateway.requestApproval({
     runId,
@@ -474,7 +484,8 @@ export interface RunLoopOptions {
    * fresh approval request for the very action that was just approved, and no gated action
    * could ever run.
    */
-  preApprovedActions?: string[];
+  /** Internal-only evidence supplied by handleResumeRun after rechecking the HITL record. */
+  preApprovedActions?: ApprovedActionEvidence[];
   /**
    * Ties an original run to its own resumes for the action ledger. A resume mints a fresh runId
    * (so its trace is separately readable), which would otherwise make every already-executed
@@ -583,7 +594,8 @@ export async function runScriptLoop(
   const approvalMode: ApprovalMode = opts.approvalMode ?? "gate_listed";
   const runId = opts.runId ?? crypto.randomUUID();
   const sessionId = opts.sessionId ?? "unknown";
-  const preApproved = new Set(opts.preApprovedActions ?? []);
+  const preApproved = new Map((opts.preApprovedActions ?? []).map((evidence) => [evidence.actionName, evidence]));
+  const currentPolicyFingerprint = approvalPolicyFingerprint(approvalMode, opts.requiresApprovalFor ?? []);
   const ledgerKey = opts.ledgerKey ?? runId;
   if(env.artifactValidationState) { env.artifactValidationState.workKey=ledgerKey;env.artifactValidationState.sessionId=sessionId; }
 
@@ -768,7 +780,7 @@ export async function runScriptLoop(
     case "L1": {
       const params = paramsFor(top!, opts.goal);
       // HITL gate before execution
-      const gate = await hitlGate(top!.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved);
+      const gate = await hitlGate(top!.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
       if (gate.verdict === "pending") return suspend(level, gate, top!.name, params, opts.resumeSteps ?? []);
       if (gate.verdict === "denied") {
         return finish({ level, script_name: top!.name, result: { ok: false, error: gateRejectedMessage(top!.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
@@ -816,7 +828,7 @@ export async function runScriptLoop(
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
         const params = paramsFor(top!, opts.goal);
-        const gate = await hitlGate(decision.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved);
+        const gate = await hitlGate(decision.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
         if (gate.verdict === "pending") return suspend(level, gate, decision.name, params, opts.resumeSteps ?? []);
         if (gate.verdict === "denied") {
           return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
@@ -1233,7 +1245,7 @@ export async function runScriptLoop(
           }
 
           // HITL gate before execution
-          const gate = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved);
+          const gate = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
           if (gate.verdict === "pending") {
             // Park it and CARRY ON. Blocking the whole run here is what made an agent useless the
             // moment it needed permission for one thing: an assistant with five jobs to do would
@@ -1488,11 +1500,15 @@ export async function runScriptLoop(
 
 /** Key-order-independent JSON, so {a:1,b:2} and {b:2,a:1} are recognized as the same call —
  *  a model re-emitting identical arguments in a different order is still a repeat. */
-function stableStringify(value: unknown): string {
+export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value ?? null);
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
+}
+
+export function approvalPolicyFingerprint(mode: ApprovalMode, actionNames: readonly string[]): string {
+  return stableStringify({ mode, actionNames: [...actionNames].sort() });
 }
 
 /** Reads the reasoner's most recently reported usage; zeros when unreported. */

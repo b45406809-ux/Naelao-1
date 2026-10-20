@@ -60,6 +60,9 @@ import {
   type ScriptRunResult,
   type AgentConfig,
   workspacePrefix,
+  type ApprovedActionEvidence,
+  stableStringify,
+  approvalPolicyFingerprint,
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
 import { emitWorkflowReceiptCard, resolveOperatingMode, SystemOneDecisionClient, verifyCapabilityGrant, validateExtensionManifest } from "@naelao/agent-sdk";
@@ -1379,6 +1382,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         model        TEXT,
         goal         TEXT NOT NULL,
         action_name  TEXT NOT NULL,
+        action_input_json TEXT,
+        approval_policy_fingerprint TEXT,
         steps_json   TEXT NOT NULL DEFAULT '[]',
         deliberation_round INTEGER NOT NULL DEFAULT 0,
         status       TEXT NOT NULL DEFAULT 'suspended',
@@ -1426,6 +1431,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // and completion handling instead of the client only ever learning about the answer on reload.
     try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN resumed_run_id TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN deliberation_round INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN action_input_json TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN approval_policy_fingerprint TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE interrupted_runs ADD COLUMN deliberation_round INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
 
     // Background fibers
@@ -4464,7 +4471,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }, { status: 201 });
   }
 
-  private async handleScriptRun(request: Request): Promise<Response> {
+  private async handleScriptRun(request: Request, resumeApprovalEvidence?: ApprovedActionEvidence): Promise<Response> {
     const body = await request.json<{
       goal: string;
       spaceId: string;
@@ -4504,9 +4511,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       /** The id the caller already handed to its client, so the persisted trace is reachable
        *  through GET .../runs/:runId/trace. Optional — direct callers omit it. */
       runId?: string;
-      /** Set only by the resume path (handleResumeRun) — never by an external caller, whose
-       *  request never reaches this DO except through the router's verified proxy. */
-      preApprovedActions?: string[];
       resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
       humanAnswer?: string;
       /** The ORIGINAL run's id, so the action ledger recognises a resume as the same task. */
@@ -4785,6 +4789,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       requiresApprovalFor = plan.requiresApprovalFor;
       approvalMode = plan.approvalMode;
     }
+    const currentApprovalPolicyFingerprint = approvalPolicyFingerprint(approvalMode, requiresApprovalFor);
     // Template mode controls presentation and seeded work only. Approval policy and autonomous
     // kernel capabilities are identical for Cowork and Venture OS projects.
 
@@ -5039,7 +5044,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // Checked once per step, so a Stop button actually stops something. Only wired here —
         // the interactive path — since a cron wake or channel drain has nobody watching it.
         shouldCancel: () => this.isCancelRequested(runId),
-        ...(body.preApprovedActions?.length ? { preApprovedActions: body.preApprovedActions } : {}),
+        ...(resumeApprovalEvidence ? { preApprovedActions: [resumeApprovalEvidence] } : {}),
         ...(body.ledgerKey ? { ledgerKey: body.ledgerKey } : {}),
         ...(body.resumeSteps?.length ? { resumeSteps: body.resumeSteps } : {}),
         ...(body.humanAnswer ? { humanAnswer: body.humanAnswer } : {}),
@@ -5069,6 +5074,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         this.persistSuspendedRun(parked, {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
+          approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
           projectId: projectId ?? null,
@@ -5081,6 +5087,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         this.persistSuspendedRun(result.pending_approval, {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
+          approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
           projectId: projectId ?? null,
@@ -5102,6 +5109,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         this.persistSuspendedRun(result.pending_question, {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
+          approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
           projectId: projectId ?? null,
@@ -6114,6 +6122,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       runId: string; spaceId: string; tenantId: string; agentId: string; sessionId: string;
       projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
       model?: string | undefined; goal: string; deliberationRound?: number | undefined;
+      approvalPolicyFingerprint: string;
     }
   ): void {
     try {
@@ -6123,11 +6132,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       this.ctx.storage.sql.exec(
         `INSERT OR REPLACE INTO suspended_runs
            (approval_id, run_id, space_id, tenant_id, agent_id, session_id, project_id, user_id,
-            caller_role, model, goal, action_name, steps_json, deliberation_round, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suspended', ?)`,
+            caller_role, model, goal, action_name, action_input_json, approval_policy_fingerprint,
+            steps_json, deliberation_round, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suspended', ?)`,
         approvalId, ctx.runId, ctx.spaceId, ctx.tenantId, ctx.agentId, ctx.sessionId,
         ctx.projectId ?? null, ctx.userId ?? null, ctx.callerRole ?? null, ctx.model ?? null,
-        ctx.goal, actionName, JSON.stringify(pending.steps_completed ?? []), ctx.deliberationRound ?? 0,
+        ctx.goal, actionName, stableStringify(params), ctx.approvalPolicyFingerprint,
+        JSON.stringify(pending.steps_completed ?? []), ctx.deliberationRound ?? 0,
         new Date().toISOString()
       );
     } catch {
@@ -6311,12 +6322,37 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     // Trust HITLApprovalDO, not the caller, for whether this was actually approved.
     let approved = false;
+    let approvedActionEvidence: ApprovedActionEvidence | undefined;
     if (this.env.HITL_APPROVAL_DO) {
       try {
         const stub = this.env.HITL_APPROVAL_DO.get(this.env.HITL_APPROVAL_DO.idFromName(`hitl:${row["space_id"]}`));
         const resp = await stub.fetch(new Request(`http://hitl/requests/${approvalId}`));
-      const state = await resp.json<{ status?: string; answer?: string | null }>();
-        approved = state.status === "approved" || state.status === "answered";
+        const state = await resp.json<{
+          status?: string; answer?: string | null; kind?: string; run_id?: string;
+          tool_name?: string; tool_input?: string;
+        }>();
+        if (state.status === "answered" && state.kind === "question") approved = true;
+        if (state.status === "approved" && (state.kind ?? "approval") === "approval") {
+          let exactInputMatches = false;
+          try {
+            exactInputMatches = typeof state.tool_input === "string"
+              && typeof row["action_input_json"] === "string"
+              && stableStringify(JSON.parse(state.tool_input)) === row["action_input_json"];
+          } catch { exactInputMatches = false; }
+          const identityMatches = state.run_id === row["run_id"] && state.tool_name === row["action_name"];
+          if (!identityMatches || !exactInputMatches) {
+            this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'stale' WHERE approval_id = ?`, approvalId);
+            return Response.json({ resumed: false, reason: "approved action no longer matches the exact request; review it again" }, { status: 409 });
+          }
+          approved = true;
+          if (typeof row["action_input_json"] === "string" && typeof row["approval_policy_fingerprint"] === "string") {
+            approvedActionEvidence = {
+              actionName: row["action_name"] ?? "",
+              actionInputJson: row["action_input_json"],
+              approvalPolicyFingerprint: row["approval_policy_fingerprint"],
+            };
+          }
+        }
         if (state.status === "answered" && state.answer) {
           (row as Record<string, string | null>)["human_answer"] = state.answer;
         }
@@ -6358,7 +6394,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // prevented, and the cost of it deciding to redo one is a second real side effect.
       runId: crypto.randomUUID(),
       ledgerKey: row["run_id"] ?? undefined,
-      ...(humanAnswer ? { humanAnswer } : { preApprovedActions: [row["action_name"] ?? ""] }),
+      ...(humanAnswer ? { humanAnswer } : {}),
       resumeSteps: steps,
       deliberationRound: Math.max(0, Math.min(2, Number(row["deliberation_round"] ?? 0))),
     };
@@ -6380,7 +6416,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ...(row["caller_role"] ? { "x-naelao-role": row["caller_role"] } : {}),
         },
         body: JSON.stringify(resumeBody),
-      })
+      }),
+      approvedActionEvidence
     );
 
     this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'resumed' WHERE approval_id = ?`, approvalId);
