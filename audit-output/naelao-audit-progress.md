@@ -649,3 +649,5 @@ Validation: `packages/agent-sdk/src/fast-decision.test.ts` passed 24/24, includi
 The Market Radar route loaded every verified signal from the previous 30 days, scored each concurrently with a decision-model call, and only then filtered to configured stacks and five displayed results. A growing or polluted table could therefore cause unbounded memory and provider fan-out for a route that returns at most five rows. The query now caps database rows at 100, and deterministic preselection keeps only the five highest-scoring rows with configured stacks before any model requests. At most five concurrent decision requests can be made per refresh.
 
 Validation: Market Radar suite passed 5/5; Spaces TypeScript and `git diff --check` passed. The regression feeds 120 mixed configured/unconfigured candidates and proves preselection caps eligible work at five. No live DB growth or OpenRouter load was run.
+
+After the targeted route pass, the complete Spaces worker suite passed **57 test files / 196 tests**. The full suite is regression evidence for this worker snapshot; it is not a complete Spaces source-file review.
