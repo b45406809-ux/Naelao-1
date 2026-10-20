@@ -1,6 +1,6 @@
 // G-I17: MCP Tool Server Registry — registers MCP servers per Space and proxies tool calls
 import { Hono } from "hono";
-import { errorResponse, requestId, requireInternalHmac, mintInternalToken } from "@naelao/http";
+import { errorResponse, requestId, requireInternalHmac, mintInternalToken, readBoundedRequestText, readBoundedResponseText } from "@naelao/http";
 import { checkSsrf, isSpaceNetworkEgressDenied, scanAndScrubEgress } from "@naelao/security";
 import { missingToolScopes } from "./connector-policy";
 import type { ConnectorScope } from "./connector-policy";
@@ -179,7 +179,7 @@ async function composioToolCall(
     }
   );
   if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
+    const text = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
     return { error: `Composio returned ${resp.status}: ${text.slice(0, 200)}` };
   }
   const data = await resp.json<{ data?: unknown; error?: string | null; successful?: boolean }>();
@@ -813,7 +813,7 @@ app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) =>
   headers.set("x-naelao-connector-scope", row.scope === "user" ? "personal" : row.scope === "project" ? "project" : "business");
   return app.fetch(new Request(
     `https://mcp-hub.internal/v1/spaces/${encodeURIComponent(spaceId)}/mcp-servers/${encodeURIComponent(row.server_id)}/tools/call`,
-    { method: "POST", headers, body: await c.req.raw.text() }
+    { method: "POST", headers, body: await readBoundedRequestText(c.req.raw, 1024 * 1024) }
   ), c.env, c.executionCtx);
 });
 

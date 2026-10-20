@@ -16,7 +16,7 @@
 
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { requireInternalHmac } from "@naelao/http";
+import { requireInternalHmac, readBoundedResponseText } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -81,7 +81,7 @@ async function callTool(name: string, args: Record<string, unknown>, token: stri
   for (const [k, v] of Object.entries(def.query?.(args) ?? {})) url.searchParams.set(k, v);
 
   const resp = await fetch(url.toString(), { method: def.method, headers: { Accept: "application/json" } });
-  const text = await resp.text();
+  const text = await readBoundedResponseText(resp, 1024 * 1024);
   let json: unknown;
   try { json = text ? JSON.parse(text) : null; } catch { json = { raw: text }; }
   if (!resp.ok) {

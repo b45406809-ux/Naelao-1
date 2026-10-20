@@ -14,7 +14,7 @@
 // (research finding: ~20% of "solved" SWE-bench entries are reward-hacked; a validation gate that
 // only pattern-matches text is not a real gate).
 import { Hono } from "hono";
-import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken, readBoundedResponseText } from "@naelao/http";
 // The judge calls the SAME AI Gateway client the production reasoner uses, imported directly
 // from the agents worker rather than reimplemented — one implementation so the two can't drift
 // (same precedent as the provisioner importing launchpad/bootstrap.ts).
@@ -249,7 +249,7 @@ async function judgeAnswer(
       signal: AbortSignal.timeout(30_000),
     });
     if (!resp.ok) {
-      const detail = (await resp.text().catch(() => "")).slice(0, 300);
+      const detail = (await readBoundedResponseText(resp, 8 * 1024).catch(() => "")).slice(0, 300);
       const why = `judge gateway ${resp.status}${detail ? `: ${detail}` : ""}`;
       return { score: 0, correctness: 0, semantic_validity: 0, reason: `Judge error: ${why}`, judge_error: why };
     }
@@ -325,7 +325,7 @@ async function runAgentForCase(
     );
 
     if (!resp.ok) {
-      const errText = await resp.text().catch(() => "");
+      const errText = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
       return { answer: "", runId: null, error: `agent/run HTTP ${resp.status}: ${errText.slice(0, 500)}`, latency_ms: Date.now() - startedAt };
     }
 

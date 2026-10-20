@@ -28,7 +28,7 @@
  */
 
 import { Hono } from "hono";
-import { requireInternalHmac, mintInternalToken } from "@naelao/http";
+import { requireInternalHmac, mintInternalToken, readBoundedRequestText, readBoundedResponseText } from "@naelao/http";
 import {
   createSubMerchant,
   getCompanyStatus,
@@ -557,7 +557,10 @@ async function checkPayoutApproval(
  */
 export async function renderPayoutApprovalPage(env: BillingEnv, requestId: string, token: string): Promise<Response> {
   const check = await checkPayoutApproval(env, requestId, token);
-  if (!check.ok) return htmlPage(`<p>${escapeHtml(await check.response.text())}</p>`, check.response.status);
+  if (!check.ok) {
+    const detail = await readBoundedResponseText(check.response, 8 * 1024).catch(() => "Payout approval is unavailable.");
+    return htmlPage(`<p>${escapeHtml(detail.slice(0, 300))}</p>`, check.response.status);
+  }
   const { request } = check;
 
   const destination = await env.PLATFORM_DB.prepare(
@@ -666,7 +669,9 @@ export async function handleWhopWebhook(request: Request, env: BillingEnv): Prom
   if (!env.WHOP_WEBHOOK_SECRET) {
     return Response.json({ error: "whop_not_configured" }, { status: 503 });
   }
-  const rawBody = await request.text();
+  let rawBody: string;
+  try { rawBody = await readBoundedRequestText(request, 1024 * 1024); }
+  catch { return Response.json({ error: "payload_too_large" }, { status: 413 }); }
   const valid = await verifyWhopWebhook(rawBody, request.headers, env.WHOP_WEBHOOK_SECRET);
   if (!valid) {
     console.warn("[billing/whop-wallet] webhook signature verification failed");

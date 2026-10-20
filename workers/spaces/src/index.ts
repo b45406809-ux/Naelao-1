@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken } from "@naelao/http";
+import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import { normalizePreferredLanguage, validateScheduledQuietHours } from "@naelao/types";
 import { compileWorkflowPlan } from "@naelao/sdk/workflow";
@@ -2163,7 +2163,7 @@ app.post("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", as
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const access = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?viewer_id=${encodeURIComponent(identity.userId)}`, "GET");
   if (!access.ok) return new Response(access.body, { status: access.status, headers: { "content-type": "application/json" } });
-  return forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/document-nodes/${encodeURIComponent(nodeId)}/lease?space_id=${encodeURIComponent(spaceId)}&viewer_id=${encodeURIComponent(identity.userId)}`, "POST", await c.req.text());
+  return forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/document-nodes/${encodeURIComponent(nodeId)}/lease?space_id=${encodeURIComponent(spaceId)}&viewer_id=${encodeURIComponent(identity.userId)}`, "POST", await readBoundedRequestText(c.req.raw, 1024 * 1024));
 });
 
 // F-36: the effective role an assistant has in a project when acting for a given user (member GET
@@ -4411,7 +4411,7 @@ app.patch("/spaces/:spaceId/threads/:threadId", async (c) => {
   const { spaceId, threadId } = c.req.param();
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const body = await c.req.text();
+  const body = await readBoundedRequestText(c.req.raw, 1024 * 1024);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/threads/${encodeURIComponent(threadId)}`, "PATCH", body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
@@ -4457,7 +4457,7 @@ app.patch("/spaces/:spaceId/tasks/:taskId", async (c) => {
   const { spaceId, taskId } = c.req.param();
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const body = await c.req.text();
+  const body = await readBoundedRequestText(c.req.raw, 1024 * 1024);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/tasks/${encodeURIComponent(taskId)}`, "PATCH", body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
@@ -4523,7 +4523,7 @@ app.post("/spaces/:spaceId/tasks/:taskId/lease", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id");
   if (!tenantId || !spaceId || !taskId) return c.json({ error_code: "unauthorized" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  return forwardToSpaceDO(stub, `/tasks/${encodeURIComponent(taskId)}/lease`, "POST", await c.req.text());
+  return forwardToSpaceDO(stub, `/tasks/${encodeURIComponent(taskId)}/lease`, "POST", await readBoundedRequestText(c.req.raw, 1024 * 1024));
 });
 
 // GET /spaces/:spaceId/sub-spaces — list the product's space registry (root + departments).
@@ -6777,6 +6777,8 @@ registerProductEndUserRoutes(app);
 // Three-Tier Platform Model, Phase C (docs/spec-appendix A1.17) — businesses, space switcher, invites.
 registerBusinessRoutes(app);
 
-app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
+app.onError((err, c) => err instanceof RequestBodyTooLargeError
+  ? c.json({ error_code: "request_body_too_large", message: "Request body exceeds the 1 MiB limit" }, 413)
+  : errorResponse(err, c.get("requestId") ?? "unknown"));
 
 export default { fetch: app.fetch } satisfies ExportedHandler<Env>;

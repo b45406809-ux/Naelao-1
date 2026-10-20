@@ -2,6 +2,9 @@ import type { Context, Hono } from "hono";
 import type { Env } from "../index.js";
 import { gadgetActorId } from "../do/MicroAppDO.js";
 import { getDOName } from "@naelao/crypto";
+import { readBoundedRequestBytes, readBoundedRequestText } from "@naelao/http";
+
+const MAX_GADGET_REQUEST_BYTES = 1024 * 1024;
 
 export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   const forward = async (c: Context<{ Bindings: Env }>, path: string, method = c.req.method, bodyOverride?: ArrayBuffer) => {
@@ -21,11 +24,13 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       if (!member) return c.json({ error_code: "forbidden", message: "Space membership required" }, 403);
     }
     const id = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_WIDE", spaceId, appId });
-    const request = new Request(`http://micro-app${path}`, {
-      method,
-      headers: c.req.raw.headers,
-      ...(method === "POST" ? { body: bodyOverride ?? await c.req.arrayBuffer() } : {}),
-    });
+    let requestBody: ArrayBuffer | Uint8Array | undefined;
+    if (method === "POST") {
+      try { requestBody = bodyOverride ?? (await readBoundedRequestBytes(c.req.raw, MAX_GADGET_REQUEST_BYTES)).buffer as ArrayBuffer; }
+      catch { return c.json({ error_code: "payload_too_large" }, 413); }
+      if (requestBody.byteLength > MAX_GADGET_REQUEST_BYTES) return c.json({ error_code: "payload_too_large" }, 413);
+    }
+    const request = new Request(`http://micro-app${path}`, { method, headers: c.req.raw.headers, ...(requestBody ? { body: requestBody } : {}) });
     return c.env.MICRO_APP_DO.get(id).fetch(request);
   };
   app.post("/spaces/:spaceId/apps/:appId/mcp", c => forward(c, "/mcp"));
@@ -36,14 +41,16 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   app.delete("/spaces/:spaceId/apps/:appId/api/data", c => forward(c, `/api/data${new URL(c.req.url).search}`, "DELETE"));
   app.post("/spaces/:spaceId/apps/:appId/initialize", async c => {
     if (!["owner", "admin"].includes(c.req.header("x-naelao-role") ?? "")) return c.json({ error_code: "forbidden", message: "Space administrator required" }, 403);
-    const bytes = await c.req.arrayBuffer();
+    let bytes: Uint8Array;
+    try { bytes = await readBoundedRequestBytes(c.req.raw, MAX_GADGET_REQUEST_BYTES); }
+    catch { return c.json({ error_code: "payload_too_large" }, 413); }
     let body: { appId?: unknown; scope?: unknown; gadgetTier?: unknown };
     try { body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body; }
     catch { return c.json({ error_code: "bad_request", message: "Invalid initialization payload" }, 400); }
     if (body.appId !== c.req.param("appId") || body.scope !== "SPACE_SHARED" || body.gadgetTier !== 3) {
       return c.json({ error_code: "bad_request", message: "Only the named SPACE_SHARED tier-3 gadget can be installed on this route" }, 400);
     }
-    return forward(c, "/initialize", "POST", bytes);
+    return forward(c, "/initialize", "POST", bytes.buffer as ArrayBuffer);
   });
 
   const projectAccess = async (c: Context<{ Bindings: Env }>, write: boolean): Promise<Response | null> => {
@@ -84,18 +91,25 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     }
     if (path === "/initialize" && runtimeState.managed) return c.json({ error_code: "project_extension_install_route_required" }, 409);
     const id = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
-    const request = new Request(`http://micro-app${path}`, { method, headers: c.req.raw.headers,
-      ...(method === "POST" ? { body: override ?? await c.req.arrayBuffer() } : {}) });
+    let requestBody: ArrayBuffer | Uint8Array | undefined;
+    if (method === "POST") {
+      try { requestBody = override ?? (await readBoundedRequestBytes(c.req.raw, MAX_GADGET_REQUEST_BYTES)).buffer as ArrayBuffer; }
+      catch { return c.json({ error_code: "payload_too_large" }, 413); }
+      if (requestBody.byteLength > MAX_GADGET_REQUEST_BYTES) return c.json({ error_code: "payload_too_large" }, 413);
+    }
+    const request = new Request(`http://micro-app${path}`, { method, headers: c.req.raw.headers, ...(requestBody ? { body: requestBody } : {}) });
     return c.env.MICRO_APP_DO.get(id).fetch(request);
   };
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/initialize", async c => {
     const blocked = await projectAccess(c, true);
     if (blocked) return blocked;
-    const bytes = await c.req.arrayBuffer();
+    let bytes: Uint8Array;
+    try { bytes = await readBoundedRequestBytes(c.req.raw, MAX_GADGET_REQUEST_BYTES); }
+    catch { return c.json({ error_code: "payload_too_large" }, 413); }
     let body: { appId?: unknown; scope?: unknown; gadgetTier?: unknown };
     try { body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body; } catch { return c.json({ error_code: "bad_request" }, 400); }
     if (body.appId !== c.req.param("appId") || body.scope !== "PROJECT_BOUND" || ![2, 3].includes(Number(body.gadgetTier))) return c.json({ error_code: "gadget_install_contract_invalid" }, 400);
-    return forwardProject(c, "/initialize", "POST", bytes);
+    return forwardProject(c, "/initialize", "POST", bytes.buffer as ArrayBuffer);
   });
   app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/app", c => forwardProject(c, "/app"));
   app.get("/spaces/:spaceId/projects/:projectId/apps/:appId/api/data", c => forwardProject(c, `/api/data${new URL(c.req.url).search}`));
@@ -110,7 +124,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
   });
   app.post("/spaces/:spaceId/projects/:projectId/apps/:appId/collaboration", async c => {
     let body: { kind?: unknown; payload?: unknown };
-    try { body = await c.req.json(); } catch { return c.json({ error_code: "canvas_collaboration_event_invalid" }, 400); }
+    try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 4_500)) as typeof body; } catch { return c.json({ error_code: "canvas_collaboration_event_invalid" }, 400); }
     if (!["cursor", "comment", "operation"].includes(String(body.kind))) return c.json({ error_code: "canvas_collaboration_event_invalid" }, 400);
     // All current project members may publish cursors, comments, and operation traces. This
     // endpoint never mutates Gadget tables or invokes a tool; those retain owner/admin policy.

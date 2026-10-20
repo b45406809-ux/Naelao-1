@@ -1,6 +1,6 @@
 // G-CH01..G-CH08: Channels — inbound email, Slack events, generic webhooks → sessions
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, readBoundedRequestText, requestId } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -196,12 +196,11 @@ app.post("/inbound/webhook/:routingKey", async (c) => {
   if (!config.enabled) return new Response("Channel disabled", { status: 403 });
 
   let body: Record<string, unknown> = {};
-  try {
-    body = await c.req.json<Record<string, unknown>>();
-  } catch {
-    const text = await c.req.text();
-    body = { raw: text };
-  }
+  let raw: string;
+  try { raw = await readBoundedRequestText(c.req.raw, 1024 * 1024); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
+  try { body = JSON.parse(raw) as Record<string, unknown>; }
+  catch { body = { raw }; }
 
   const content = typeof body["content"] === "string"
     ? body["content"]

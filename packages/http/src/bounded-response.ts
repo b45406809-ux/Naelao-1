@@ -58,3 +58,65 @@ export async function readBoundedResponseJson<T>(
 ): Promise<T> {
   return JSON.parse(await readBoundedResponseText(response, maximumBytes)) as T;
 }
+
+export class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super("request_body_too_large");
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
+/** Consume a request body once under a hard cap; do not clone/tee the stream. */
+export async function readBoundedRequestBytes(
+  request: Request,
+  maximumBytes: number,
+): Promise<Uint8Array> {
+  const lengthHeader = request.headers.get("content-length");
+  const declaredLength =
+    lengthHeader !== null && /^\d+$/.test(lengthHeader)
+      ? Number(lengthHeader)
+      : null;
+  if (
+    declaredLength !== null &&
+    Number.isFinite(declaredLength) &&
+    declaredLength > maximumBytes
+  ) {
+    await request.body?.cancel().catch(() => undefined);
+    throw new RequestBodyTooLargeError();
+  }
+  if (request.bodyUsed) throw new Error("request_body_unavailable");
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new RequestBodyTooLargeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+export async function readBoundedRequestText(
+  request: Request,
+  maximumBytes: number,
+): Promise<string> {
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
+    await readBoundedRequestBytes(request, maximumBytes),
+  );
+}

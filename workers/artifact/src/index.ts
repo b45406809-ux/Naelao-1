@@ -15,6 +15,7 @@ import {
   errorResponse,
   notFound,
   requestId,
+  readBoundedRequestBytes,
   requireInternalHmac,
 } from "@naelao/http";
 import { Hono, type Context } from "hono";
@@ -67,6 +68,7 @@ function buildR2Prefix(
 }
 
 const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024;
+const MAX_ARTIFACT_REQUEST_BYTES = 7 * 1024 * 1024;
 
 function requireTenant(c: {
   req: { header: (h: string) => string | undefined };
@@ -214,8 +216,14 @@ app.post("/spaces/:spaceId/artifacts", async (c) => {
   let filename: string;
   let mimeType: string;
 
+  let requestBytes: Uint8Array;
+  try { requestBytes = await readBoundedRequestBytes(c.req.raw, MAX_ARTIFACT_REQUEST_BYTES); }
+  catch { return c.json({ error_code: "artifact_request_too_large" }, 413); }
+
   if (contentType.includes("multipart/form-data")) {
-    const formData = await c.req.formData();
+    const headers = new Headers(c.req.raw.headers);
+    headers.delete("content-length");
+    const formData = await new Request(c.req.url, { method: "POST", headers, body: requestBytes }).formData();
     const fileField = formData.get("file");
     if (!fileField || typeof fileField === "string") {
       throw badRequest("multipart body must contain a 'file' field");
@@ -235,7 +243,7 @@ app.post("/spaces/:spaceId/artifacts", async (c) => {
       filename?: string;
     };
     try {
-      body = await c.req.json();
+      body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(requestBytes));
     } catch {
       throw badRequest("Invalid JSON body or unsupported content type");
     }

@@ -18,10 +18,15 @@
 
 import { LemonSqueezyProvider, computeResellerAttribution, isLedgerEvent, billingPeriod } from "@naelao/billing-core";
 import type { NormalizedBillingEvent, BillingRelationship } from "@naelao/billing-core";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, readBoundedRequestText, readBoundedResponseText } from "@naelao/http";
 import { invalidateQuotaCache } from "./quota.js";
 import { settleTemplateSubscriptionPayment } from "./settlement.js";
 import { settleMarketplaceLicenseEvent } from "./marketplace-licenses.js";
+
+async function responseDetail(response: Response): Promise<string> {
+  try { return (await readBoundedResponseText(response, 8 * 1024)).slice(0, 300); }
+  catch { return "response_body_unavailable"; }
+}
 
 /**
  * ARCH-REVENUE-6: the maximum builder revenue share, in basis points. A builder configures their
@@ -299,7 +304,7 @@ async function settleOrderToWallet(
     // wallet holds, never a negative balance. Return false (no retry). Any OTHER non-2xx on the
     // credit path (a sale settlement) is transient → throw so the webhook retries instead of losing
     // the business's earned revenue.
-    const bodyText = await resp.text();
+    const bodyText = await responseDetail(resp);
     if (op === "debit" && resp.status === 402) {
       console.warn(`[billing/ls] wallet debit insufficient-balance (documented) for space=${spaceId} project=${project_id}: ${bodyText}`);
       return false;
@@ -395,7 +400,7 @@ async function recordNonOrderRefundClawback(
       `http://spaces-worker/spaces/${event.spaceId}/projects/${projectId}/wallet/debit`,
       { method: "POST", headers, body: JSON.stringify({ cents, reason: "refund_clawback", idempotency_key: idempotencyKey }) }
     ));
-    if (!resp.ok) console.warn(`[billing/ls] wallet_topup refund clawback failed space=${event.spaceId} project=${projectId}: ${await resp.text()}`);
+    if (!resp.ok) console.warn(`[billing/ls] wallet_topup refund clawback failed space=${event.spaceId} project=${projectId}: ${await responseDetail(resp)}`);
     return;
   }
 
@@ -408,7 +413,7 @@ async function recordNonOrderRefundClawback(
       method: "POST", headers,
       body: JSON.stringify({ product_space_id: productSpaceId, end_user_id: endUserId, credits, idempotency_key: idempotencyKey }),
     }));
-    if (!resp.ok) console.warn(`[billing/ls] credit_pack refund clawback failed end_user=${endUserId}: ${await resp.text()}`);
+    if (!resp.ok) console.warn(`[billing/ls] credit_pack refund clawback failed end_user=${endUserId}: ${await responseDetail(resp)}`);
     return;
   }
 
@@ -423,7 +428,7 @@ async function recordNonOrderRefundClawback(
     const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/revenue-tracking/unmark-billed`, {
       method: "POST", headers, body: JSON.stringify({ periods, ...(charges ? { charges } : {}) }),
     }));
-    if (!resp.ok) console.warn(`[billing/ls] surcharge refund unmark failed space=${event.spaceId}: ${await resp.text()}`);
+    if (!resp.ok) console.warn(`[billing/ls] surcharge refund unmark failed space=${event.spaceId}: ${await responseDetail(resp)}`);
     return;
   }
 }
@@ -638,7 +643,7 @@ async function grantCreditPackPurchase(
     if (!resp.ok) {
       // Transient — throw so the webhook retries rather than the paying customer getting nothing.
       // The grant is idempotency-keyed, so a retry never double-grants.
-      throw new Error(`credit pack grant ${resp.status} for end_user=${endUserId}: ${await resp.text()}`);
+      throw new Error(`credit pack grant ${resp.status} for end_user=${endUserId}: ${await responseDetail(resp)}`);
     }
     console.log(`[billing/ls] Granted ${credits} credits to end_user=${endUserId} product=${productSpaceId}`);
     return true;
@@ -693,7 +698,7 @@ export async function grantPersonalPlanPurchase(
       body: JSON.stringify({ product_space_id: productSpaceId, end_user_id: endUserId, tier }),
     }));
     if (!resp.ok) {
-      throw new Error(`personal plan grant ${resp.status} for end_user=${endUserId}: ${await resp.text()}`);
+      throw new Error(`personal plan grant ${resp.status} for end_user=${endUserId}: ${await responseDetail(resp)}`);
     }
     console.log(`[billing/ls] Set personal plan tier=${tier} for end_user=${endUserId} product=${productSpaceId}`);
     return true;
@@ -744,7 +749,7 @@ async function grantWalletTopupPurchase(
     if (!resp.ok) {
       // Transient — throw so the webhook retries (idempotency-keyed → safe) rather than silently
       // dropping the business's own topped-up capital.
-      throw new Error(`wallet top-up grant ${resp.status} for space=${event.spaceId} project=${projectId}: ${await resp.text()}`);
+      throw new Error(`wallet top-up grant ${resp.status} for space=${event.spaceId} project=${projectId}: ${await responseDetail(resp)}`);
     }
     console.log(`[billing/ls] Granted ${cents} wallet cents to space=${event.spaceId} project=${projectId}`);
     return true;
@@ -794,7 +799,7 @@ async function recordRevenueCutSurchargePayment(
       body: JSON.stringify({ periods, ...(charges ? { charges } : {}) }),
     }));
     if (!resp.ok) {
-      console.error(`[billing/ls] revenue-cut mark-billed failed for space=${event.spaceId}: ${await resp.text()}`);
+      console.error(`[billing/ls] revenue-cut mark-billed failed for space=${event.spaceId}: ${await responseDetail(resp)}`);
       return false;
     }
     console.log(`[billing/ls] Marked revenue-cut periods billed for space=${event.spaceId}: ${periods.join(",")}`);
@@ -999,7 +1004,7 @@ export async function wakeAgent(
   );
 
   if (!resp.ok) {
-    const body = await resp.text();
+    const body = await responseDetail(resp);
     console.error(`[billing/ls] Failed to wake agent ${agentId} for space ${spaceId}: ${body}`);
   } else {
     console.log(`[billing/ls] Woke agent ${agentId} for space ${spaceId}${projectId ? ` project=${projectId}` : ""} — event=${event.type}`);
@@ -1148,7 +1153,9 @@ export async function handleLemonSqueezyWebhook(
     ...(env.LEMON_SQUEEZY_STORE_ID ? { LEMON_SQUEEZY_STORE_ID: env.LEMON_SQUEEZY_STORE_ID } : {}),
   });
 
-  const rawBody = await request.text();
+  let rawBody: string;
+  try { rawBody = await readBoundedRequestText(request, 1024 * 1024); }
+  catch { return Response.json({ error: "payload_too_large" }, { status: 413 }); }
 
   // 1. Verify HMAC signature
   const valid = await provider.verifyWebhook(rawBody, request.headers);

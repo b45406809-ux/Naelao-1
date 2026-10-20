@@ -20,7 +20,7 @@
 
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { requireInternalHmac } from "@naelao/http";
+import { requireInternalHmac, readBoundedResponseText } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -112,7 +112,7 @@ async function callTool(name: string, args: Record<string, unknown>, bearer: str
     ...(def.body ? { body: JSON.stringify(def.body(args)) } : {}),
   };
   const resp = await fetch(`${WHOP_API}${def.path(args)}`, init);
-  const text = await resp.text();
+  const text = await readBoundedResponseText(resp, 1024 * 1024);
   let json: unknown;
   try { json = text ? JSON.parse(text) : null; } catch { json = { raw: text }; }
   if (!resp.ok) {

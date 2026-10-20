@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  readBoundedRequestBytes,
   readBoundedResponseJson,
   readBoundedResponseText,
 } from "./bounded-response.js";
@@ -29,5 +30,20 @@ describe("bounded response readers", () => {
     await expect(
       readBoundedResponseText(new Response(new Uint8Array([0xff])), 4)
     ).rejects.toThrow();
+  });
+
+  it("bounds request streams without cloning or trusting Content-Length", async () => {
+    const request = new Request("https://example.test/upload", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(new Uint8Array(5));
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+    await expect(readBoundedRequestBytes(request, 4)).rejects.toThrow(
+      "request_body_too_large",
+    );
   });
 });

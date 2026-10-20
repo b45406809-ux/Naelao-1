@@ -1,6 +1,6 @@
 /** Internal task-scoped browser protocol. Provider CDP sessions stay inside the DO. */
 import { Hono } from "hono";
-import { errorResponse, requestId, verifyInternalToken } from "@naelao/http";
+import { errorResponse, readBoundedRequestText, requestId, verifyInternalToken } from "@naelao/http";
 import { validateBrowserScope } from "@naelao/agent-sdk";
 import type { BrowserEnv, BrowserRequest } from "./BrowserSessionDO.js";
 export { BrowserSessionDO } from "./BrowserSessionDO.js";
@@ -19,8 +19,9 @@ app.post("/v1/browser/:operation", async c => {
   const operation = c.req.param("operation");
   if (!["navigate", "observe", "snapshot", "act", "see", "close", "cancel"].includes(operation)) return c.json({ error_code: "not_found" }, 404);
   // Bounded bodies prevent raw images/provider sessions from entering the control surface.
-  const text = await c.req.text();
-  if (new TextEncoder().encode(text).byteLength > 32_768) return c.json({ error_code: "browser_request_limit" }, 413);
+  let text: string;
+  try { text = await readBoundedRequestText(c.req.raw, 32_768); }
+  catch { return c.json({ error_code: "browser_request_limit" }, 413); }
   let body: BrowserRequest;
   try { body = JSON.parse(text) as BrowserRequest; validateBrowserScope(body.scope); }
   catch { return c.json({ error_code: "browser_scope_invalid", message: "A scoped browser session is required" }, 400); }

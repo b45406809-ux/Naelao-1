@@ -1,6 +1,6 @@
 // Portal Router — subdomain + custom-domain routing for Space end-user portals
 import { Hono, type Context } from "hono";
-import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken, readBoundedResponseText } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -312,7 +312,7 @@ app.post("/storefront/checkout", async (c) => {
       body: JSON.stringify({ space_id: sf.spaceId, product_id: productId, ...(email ? { customer_email: email } : {}) }),
     })
   );
-  if (!resp.ok) return c.json({ error_code: "checkout_failed", message: await resp.text() }, 502);
+  if (!resp.ok) return c.json({ error_code: "checkout_failed", message: (await readBoundedResponseText(resp, 8 * 1024).catch(() => "Checkout failed")).slice(0, 300) }, 502);
   const { checkout_url } = await resp.json<{ checkout_url: string }>();
   return c.redirect(checkout_url, 303);
 });

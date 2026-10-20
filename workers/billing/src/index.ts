@@ -4,6 +4,7 @@ import {
   internalError,
   notFound,
   requestId,
+  readBoundedRequestText,
   mintInternalToken,
   requireInternalHmac,
 } from "@naelao/http";
@@ -1505,7 +1506,9 @@ app.post("/webhooks/whop-platform-plan", async (c) => {
     // without full stack) still returns 200 rather than erroring Whop into a retry storm.
     return c.json({ ok: true, skipped: true, reason: "AGENTS_WORKER not bound" });
   }
-  const rawBody = await c.req.text();
+  let rawBody: string;
+  try { rawBody = await readBoundedRequestText(c.req.raw, 1024 * 1024); }
+  catch { return c.json({ error_code: "payload_too_large" }, 413); }
   const { verifyWhopPlatformPlanWebhook, parseWhopPlatformPlanEvent } = await import("@naelao/billing-core");
   if (!c.env.WHOP_PLATFORM_PLAN_WEBHOOK_SECRET || !(await verifyWhopPlatformPlanWebhook(rawBody, c.req.raw.headers, c.env.WHOP_PLATFORM_PLAN_WEBHOOK_SECRET))) {
     return c.json({ error_code: "invalid_signature", message: "Whop-Signature verification failed" }, 401);

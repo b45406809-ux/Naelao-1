@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import type { Env } from "../index.js";
 import { gadgetActorId } from "../do/MicroAppDO.js";
+import { readBoundedRequestBytes } from "@naelao/http";
 
 function identity(c: Context<{ Bindings: Env }>) {
   return { tenantId: c.req.header("x-naelao-tenant-id") ?? "", role: c.req.header("x-naelao-role") ?? "viewer" };
@@ -41,8 +42,11 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     const owned = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
     if (!owned) return c.notFound();
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
+    let body: Uint8Array;
+    try { body = await readBoundedRequestBytes(c.req.raw, 1024 * 1024); }
+    catch { return c.json({ error_code: "payload_too_large" }, 413); }
     const response = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/page/publish", {
-      method: "POST", body: await c.req.arrayBuffer(), headers: { "content-type": "application/json" },
+      method: "POST", body, headers: { "content-type": "application/json" },
     }));
     return new Response(response.body, { status: response.status, headers: response.headers });
   });
@@ -66,8 +70,11 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     if (c.req.header("origin") !== url.origin) return c.json({ error_code: "origin_rejected" }, 403);
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
     const query = new URLSearchParams({ spaceId, slug, action });
+    let body: Uint8Array;
+    try { body = await readBoundedRequestBytes(c.req.raw, 1024 * 1024); }
+    catch { return c.json({ error_code: "payload_too_large" }, 413); }
     return c.env.MICRO_APP_DO.get(actor).fetch(new Request(`http://micro-app/page/action?${query}`, {
-      method: "POST", body: await c.req.arrayBuffer(), headers: { "content-type": "application/json" },
+      method: "POST", body, headers: { "content-type": "application/json" },
     }));
   });
 }
