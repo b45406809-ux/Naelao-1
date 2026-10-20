@@ -1884,6 +1884,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/terminal-stream.test.ts`
 - [ ] `workers/agents/src/script-engine/tool-output-expiry.test.ts`
 - [ ] `workers/agents/src/script-engine/tool-output-expiry.ts`
+- [x] `workers/agents/src/script-engine/tool-output.test.ts`
 - [ ] `workers/agents/src/script-engine/tool-output.ts`
 - [x] `workers/agents/src/script-engine/tool-result-pagination.test.ts`
 - [ ] `workers/agents/src/script-engine/tool-surface.ts`

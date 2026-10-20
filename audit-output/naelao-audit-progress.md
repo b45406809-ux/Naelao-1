@@ -898,4 +898,6 @@ Traced tool-output offload admission and found it estimated tokens from UTF-16 s
 
 Validation: new estimator tests passed 2/2; final Agent suite passed 147 files / 651 tests; Agent TypeScript and Wrangler dry-run passed; `git diff --check` passed. This is a deterministic estimate rather than tokenizer parity, and model-specific tokenization can still vary. `tool-output.ts` and its regression test remain pending full-file checklist recording; the change reviewed and exercised estimate/offload admission only.
 
+Refreshed the tracked tree after code commit `6705612d`; it contains 1,963 tracked files and the checklist has 1,757 source/config files, preserving 251 checked rows before marking the new estimator regression module reviewed.
+
 Refreshed the tracked tree after code commit `cc2e2b97`; it contains 1,962 tracked files and the checklist has 1,756 source/config files, preserving 250 reviewed rows before marking the new focused regression module reviewed.
