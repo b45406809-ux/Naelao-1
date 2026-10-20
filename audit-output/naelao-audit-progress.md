@@ -892,4 +892,10 @@ Scoped the ScriptToolSurface result-paging helper and its invocation path. Found
 
 Validation: tool-result pagination tests passed 5/5, final Agent suite passed 146 files / 649 tests, Agent TypeScript passed, Wrangler dry-run succeeded with all three sandbox images and a 18.1 MiB / 3.4 MiB gzip bundle, and `git diff --check` passed. Tests cover zero/negative/fractional/huge page limits and multibyte Unicode output. `tool-surface.ts` remains unchecked as a complete file; this was a review of its pagination helper and result delivery call site.
 
+## Multilingual tool-output context accounting (2026-10-20)
+
+Traced tool-output offload admission and found it estimated tokens from UTF-16 string length divided by 3.85. That undercounted CJK text by several times, allowing a multilingual result to exceed the context threshold without being offloaded. The estimate now counts UTF-8 widths and uses a conservative three-byte-per-token divisor, including astral characters.
+
+Validation: new estimator tests passed 2/2; final Agent suite passed 147 files / 651 tests; Agent TypeScript and Wrangler dry-run passed; `git diff --check` passed. This is a deterministic estimate rather than tokenizer parity, and model-specific tokenization can still vary. `tool-output.ts` and its regression test remain pending full-file checklist recording; the change reviewed and exercised estimate/offload admission only.
+
 Refreshed the tracked tree after code commit `cc2e2b97`; it contains 1,962 tracked files and the checklist has 1,756 source/config files, preserving 250 reviewed rows before marking the new focused regression module reviewed.

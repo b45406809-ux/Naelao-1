@@ -3,7 +3,15 @@ import { sha256Text } from "./r2-cas.js";
 import type { ScriptEngineEnv } from "./types.js";
 
 export const TOOL_OUTPUT_TOKEN_LIMIT = 1_500;
-export const estimateTokens = (text: string): number => Math.ceil(text.length / 3.85);
+/** Conservative multilingual estimate: UTF-8 bytes undercount neither CJK nor astral text. */
+export function estimateTokens(text: string): number {
+  let bytes = 0;
+  for (const character of text) {
+    const point = character.codePointAt(0)!;
+    bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+  }
+  return Math.ceil(bytes / 3);
+}
 const PREVIEW_CHARS = Math.floor(TOOL_OUTPUT_TOKEN_LIMIT * 3.85) - 600;
 const pathPattern = /^\/\.avos\/tmp\/tool_out_[a-f0-9-]+\.log$/;
 
