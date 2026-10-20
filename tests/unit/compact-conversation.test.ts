@@ -4,15 +4,7 @@ import { mintInternalToken } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 
-// Reported: "memory.compact didn't do anything even in the stat tab on compact button."
-//
-// Two real defects behind it:
-//  1. POST /spaces/:spaceId/sessions/:sessionId/compact had sessionId in the URL and NEVER
-//     forwarded it — so the pass only ever ran Memory OS fact decay, which does not shrink the
-//     context window at all. Pressing Compact at 85% full therefore did nothing observable.
-//  2. It addressed the SPACE-WIDE assistant DO, but `conversation_summaries` is written by the
-//     DO instance that ran the chat — so even a correct compaction would have landed in the
-//     wrong instance.
+// Regression coverage for session-scoped memory maintenance and its tenant/membership gates.
 
 const SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
@@ -43,6 +35,14 @@ function makeEnv() {
         bind: () => ({ first: async () => ({ id: "space1" }) }),
       }),
     },
+    SPACES_WORKER: {
+      async fetch(input: RequestInfo) {
+        const path = new URL((input as Request).url).pathname;
+        if (path.endsWith("/compact-scope")) return Response.json({ project_id: null, owned_by_caller: false, private_scratchpad: false });
+        if (path.endsWith("/members")) return Response.json({ data: [{ user_id: "user-1", role: "owner" }] });
+        return new Response("not found", { status: 404 });
+      },
+    },
   } as unknown as AgentsEnv & { __doNames: string[]; __maintenanceBodies: Array<Record<string, unknown>> };
 }
 
@@ -55,6 +55,7 @@ async function compactReq(spaceId: string, sessionId: string) {
       "x-naelao-internal-token": token,
       "x-naelao-tenant-id": "tenant-1",
       "x-naelao-role": "owner",
+      "x-naelao-user-id": "user-1",
     },
   });
 }

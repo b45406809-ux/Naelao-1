@@ -4821,6 +4821,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
     }
 
+    // Return transcript-wide size metadata alongside the requested page. Context usage needs to
+    // account for every message, while chat clients intentionally fetch only the newest page.
+    // Computing this aggregate in SQLite avoids walking the transcript through hundreds of
+    // worker requests (and avoids transferring the full conversation just to count characters).
+    const transcriptSize = queryOne<{ message_count: number; total_content_chars: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT COUNT(*) AS message_count, COALESCE(SUM(length(content)), 0) AS total_content_chars FROM messages WHERE session_id = ?",
+      sessionId
+    );
+
     // G-D01 wanted a STABLE order when messages share a timestamp, and `id` delivered that — the
     // same input always came back the same way. But `id` is a random UUID, so stable is not the
     // same as CORRECT: two messages written in the same millisecond (a question and the answer
@@ -4837,8 +4847,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // Reproduced live: a 55-message session reloaded to messages 1-50 and every newer turn was
     // invisible, so the conversation could never be continued from the UI. apps/shell sends neither
     // `limit` nor `before`, so that branch is the only one any real client takes.
-    // Resolve before_id to its rowid up front; an id that isn't in this session is treated as no
-    // cursor at all rather than silently returning an empty page.
+    // Resolve before_id to its rowid up front. An id that is not in this session retains the
+    // historical newest-page fallback for chat clients, while cursor_applied makes that fallback
+    // explicit to retrieval clients that must not mistake it for an older page.
     const beforeRowid = beforeId
       ? queryOne<{ rid: number }>(
           this.ctx.storage.sql as never,
@@ -4891,7 +4902,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return { ...r, metadata };
     });
 
-    return Response.json({ data, count: data.length });
+    return Response.json({
+      data,
+      count: data.length,
+      cursor_applied: !beforeId || beforeRowid !== undefined,
+      total_count: transcriptSize?.message_count ?? data.length,
+      total_content_chars: transcriptSize?.total_content_chars ?? data.reduce((sum, message) => sum + message.content.length, 0),
+    });
   }
 
   private async updateSession(

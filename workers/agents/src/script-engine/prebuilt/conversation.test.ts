@@ -50,7 +50,7 @@ function pagedFetch(all: Message[]) {
       ? Number(beforeId.replace("message-", "")) - 1
       : all.length;
     const page = all.slice(Math.max(0, beforeIndex - 100), beforeIndex);
-    return Response.json({ data: page });
+    return Response.json({ data: page, cursor_applied: !beforeId || all.some((message) => message.id === beforeId) });
   };
   return { fetch, requests };
 }
@@ -170,6 +170,32 @@ describe("conversation.search", () => {
     )) as { ok: boolean; complete: boolean; reason: string };
     expect(result).toMatchObject({ ok: false, complete: false });
     expect(result.reason).toContain("503");
+  });
+
+  it("does not silently restart at the newest page when an older-page cursor is stale", async () => {
+    const result = (await conversation.operations["conversation.search"](
+      { query: "copper telescope", before_id: "deleted-message" },
+      context(async () => Response.json({ data: messages(100), cursor_applied: false }))
+    )) as { ok: boolean; complete: boolean; reason: string };
+    expect(result.ok).toBe(false);
+    expect(result.complete).toBe(false);
+    expect(result.reason).toContain("cursor is no longer valid");
+  });
+
+  it("reports a history scan incomplete when the first host-owned message exceeds the byte budget", async () => {
+    const ctx = context(async () => Response.json({ data: [] }));
+    ctx.env.loadCurrentConversation = async () => ({
+      messages: [{ id: "large-message", role: "user", content: "x".repeat(16 * 1024 * 1024 + 1) }],
+      complete: true,
+    });
+    const result = (await conversation.operations["conversation.search"](
+      { query: "anything" },
+      ctx
+    )) as { ok: boolean; complete: boolean; exhausted: boolean; note: string };
+    expect(result.ok).toBe(false);
+    expect(result.complete).toBe(false);
+    expect(result.exhausted).toBe(false);
+    expect(result.note).toContain("stopped before it could read any messages");
   });
 
   it("chains only matched current-thread excerpts into the selected document processor", async () => {

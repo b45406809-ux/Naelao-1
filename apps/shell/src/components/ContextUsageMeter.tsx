@@ -75,7 +75,7 @@ export function ContextUsageMeter({
       // session exists (the full variant lives inside the Stats tab, only mounted when the side
       // panel is open) — letting both fire would risk two overlapping compaction calls for the
       // same crossing.
-      if (compact && result.percent_full >= COMPACT_THRESHOLD && compactedForKeyRef.current !== refreshKey) {
+      if (compact && result.transcript_complete === true && result.percent_full >= COMPACT_THRESHOLD && compactedForKeyRef.current !== refreshKey) {
         compactedForKeyRef.current = refreshKey;
         void compactSession(spaceId, sessionId, session).catch(() => {
           /* best-effort — the meter still shows the real percentage either way */
@@ -123,7 +123,9 @@ export function ContextUsageMeter({
             }}
           />
         </div>
-        <span>{usage.percent_full}% context</span>
+        <span title={usage.transcript_complete === false ? "History count is incomplete; the percentage may be low." : undefined}>
+          {usage.percent_full}% context{usage.transcript_complete === false ? " (partial)" : ""}
+        </span>
         {sessionId && (
           <button
             type="button"
@@ -151,7 +153,9 @@ export function ContextUsageMeter({
   return (
     <div className="context-usage-meter" style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px 0" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: "var(--text3)" }}>
-        <span title="Estimated from characters / 3.85. Provider usage below is billed separately.">Estimated context window</span>
+        <span title="Estimated from characters / 3.85. Provider usage below is billed separately.">
+          Estimated context window{usage.transcript_complete === false ? " · history count incomplete" : ""}
+        </span>
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {formatCount(usage.current_tokens)} / {formatCount(usage.model_window)} ({usage.percent_full}%)
           {sessionId && (

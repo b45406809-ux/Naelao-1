@@ -24,15 +24,22 @@ export async function loadTranscriptPages<T extends TranscriptPageMessage>(
   const messages: T[] = [];
   let beforeId: string | undefined;
   let bytes = 0;
+  const seenIds = new Set<string>();
   try {
     while (true) {
       const response = await fetchPage(beforeId);
       if (!response.ok) return undefined;
-      const body = await readBoundedResponseJson<{ data?: T[]; messages?: T[] }>(response, TRANSCRIPT_MAX_BYTES + 256 * 1024);
+      const body = await readBoundedResponseJson<{ data?: T[]; messages?: T[]; cursor_applied?: boolean }>(response, TRANSCRIPT_MAX_BYTES + 256 * 1024);
+      if (beforeId && body.cursor_applied === false) return undefined;
       const page = body.data ?? body.messages ?? [];
       if (page.length === 0) break;
-      for (const message of page)
+      for (const message of page) {
+        if (message.id) {
+          if (seenIds.has(message.id)) return undefined;
+          seenIds.add(message.id);
+        }
         bytes += new TextEncoder().encode(message.content ?? "").length;
+      }
       if (
         messages.length + page.length > TRANSCRIPT_MAX_MESSAGES ||
         bytes > TRANSCRIPT_MAX_BYTES

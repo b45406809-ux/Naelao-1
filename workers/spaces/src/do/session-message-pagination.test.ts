@@ -38,7 +38,7 @@ describe("session message pagination under long transcripts", () => {
       if (cursor) params.set("before_id", cursor);
       const response = await space.fetch(new Request(`${base}?${params}`));
       expect(response.status).toBe(200);
-      return (await response.json()) as { data: Array<{ id: string }> };
+      return (await response.json()) as { data: Array<{ id: string }>; total_count: number; total_content_chars: number };
     };
     const first = await fetchPage();
     const second = await fetchPage(first.data[0]?.id);
@@ -53,6 +53,17 @@ describe("session message pagination under long transcripts", () => {
     expect(ids[0]).toBe("message-1");
     expect(ids.at(-1)).toBe("message-1105");
     expect(new Set(ids).size).toBe(1_105);
+    expect(first.total_count).toBe(1_105);
+    expect(first.total_content_chars).toBe(
+      Array.from({ length: 1_105 }, (_, i) => `transcript ${i + 1}`).join("").length
+    );
+
+    // The context meter can request one row and still read an exact transcript-wide size.
+    const usagePage = await space.fetch(new Request(`${base}?limit=1&scope_space_id=space-a&scope_project_id=&scope_thread_id=thread-a`));
+    const usage = await usagePage.json<{ data: Array<{ id: string }>; total_count: number; total_content_chars: number }>();
+    expect(usage.data).toHaveLength(1);
+    expect(usage.total_count).toBe(1_105);
+    expect(usage.total_content_chars).toBe(first.total_content_chars);
 
     const negativeLimit = await space.fetch(
       new Request(

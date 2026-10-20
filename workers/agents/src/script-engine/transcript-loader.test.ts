@@ -18,4 +18,28 @@ describe("bounded transcript page loading", () => {
     );
     expect(result).toBeUndefined();
   });
+
+  it("rejects a cursor that the transcript service could not apply", async () => {
+    let calls = 0;
+    const result = await loadTranscriptPages<{ id: string; content: string }>(() => {
+      calls++;
+      return Promise.resolve(Response.json({
+        data: Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, content: "x" })),
+        cursor_applied: false,
+      }));
+    });
+    expect(result).toBeUndefined();
+    expect(calls).toBe(2);
+  });
+
+  it("rejects repeated pages instead of duplicating transcript content", async () => {
+    let calls = 0;
+    const page = Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, content: "x" }));
+    const result = await loadTranscriptPages<{ id: string; content: string }>(() => {
+      calls++;
+      return Promise.resolve(Response.json({ data: page, cursor_applied: true }));
+    });
+    expect(result).toBeUndefined();
+    expect(calls).toBe(2);
+  });
 });

@@ -969,6 +969,8 @@ export interface ContextUsageBreakdown {
 export interface ContextUsage {
   current_tokens: number;
   estimation_method?: string;
+  /** False when the Spaces response could provide only a partial transcript page. */
+  transcript_complete?: boolean;
   model: string;
   model_window: number;
   percent_full: number;

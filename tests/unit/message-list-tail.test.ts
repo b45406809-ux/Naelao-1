@@ -143,10 +143,9 @@ describe("GET /messages returns the TAIL of a long transcript, not the head", ()
     const sessionId = await seedSession(doInstance);
     await seedMessages(doInstance, sessionId, 4);
 
-    const got = contentsOf(
-      (await call(doInstance, `/sessions/${sessionId}/messages?before_id=not-a-real-id`, "GET")).json
-    );
-    expect(got).toEqual(["msg-1", "msg-2", "msg-3", "msg-4"]);
+    const response = (await call(doInstance, `/sessions/${sessionId}/messages?before_id=not-a-real-id`, "GET")).json;
+    expect(contentsOf(response)).toEqual(["msg-1", "msg-2", "msg-3", "msg-4"]);
+    expect(response.cursor_applied).toBe(false);
   });
 
   it("the legacy `before` timestamp cursor still pages backwards for any existing caller", async () => {

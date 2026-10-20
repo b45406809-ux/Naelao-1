@@ -37,8 +37,12 @@ function makeEnv(opts: {
     async fetch(input: RequestInfo) {
       const url = new URL((input as Request).url);
       if (url.pathname.endsWith("/messages")) {
-        return Response.json({ data: opts.messages ?? [] });
+        const messages = opts.messages ?? [];
+        return Response.json({ data: messages.slice(-1), total_count: messages.length,
+          total_content_chars: messages.reduce((sum, message) => sum + message.content.length, 0) });
       }
+      if (url.pathname.endsWith("/compact-scope")) return Response.json({ project_id: null, owned_by_caller: false, private_scratchpad: false });
+      if (url.pathname.endsWith("/members")) return Response.json({ data: [{ user_id: "user-1", role: "owner" }] });
       return new Response("not found", { status: 404 });
     },
   };
@@ -59,7 +63,7 @@ async function getUsage(env: AgentsEnv, model?: string) {
   const qs = model ? `?model=${model}` : "";
   return app.fetch(
     new Request(`https://agents.naelao.com/spaces/space-1/sessions/sess-1/context-usage${qs}`, {
-      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-user-id": "user-1", "x-naelao-role": "owner" },
     }),
     env,
     execCtx
@@ -68,13 +72,33 @@ async function getUsage(env: AgentsEnv, model?: string) {
 
 describe("GET .../sessions/:sessionId/context-usage", () => {
   it("estimates current_tokens from the real message transcript (~chars/4)", async () => {
-    const content = "a".repeat(400); // ~100 tokens
-    const env = makeEnv({ messages: [{ content }, { content }] }); // ~200 tokens
+    const content = "a".repeat(400); // ~104 tokens
+    const env = makeEnv({ messages: [{ content }, { content }] }); // ~208 tokens
     const res = await getUsage(env);
     expect(res.status).toBe(200);
     const body = await res.json() as { current_tokens: number };
-    expect(body.current_tokens).toBeGreaterThanOrEqual(190);
+    expect(body.current_tokens).toBeGreaterThanOrEqual(200);
     expect(body.current_tokens).toBeLessThanOrEqual(210);
+  });
+
+  it("uses transcript-wide aggregate metadata for long threads while fetching only one message", async () => {
+    const many = Array.from({ length: 2_000 }, (_, i) => ({ content: `message-${i}`.repeat(40) }));
+    const env = makeEnv({ messages: many });
+    const response = await getUsage(env);
+    const body = await response.json() as { current_tokens: number; transcript_complete: boolean };
+    const chars = many.reduce((sum, message) => sum + message.content.length, 0);
+    expect(body.current_tokens).toBe(Math.ceil(chars / 3.85));
+    expect(body.transcript_complete).toBe(true);
+  });
+
+  it("labels legacy page-only responses incomplete instead of implying the whole thread was counted", async () => {
+    const env = makeEnv({ messages: [{ content: "a".repeat(500) }, { content: "b".repeat(500) }] });
+    (env.SPACES_WORKER as { fetch: (input: RequestInfo) => Promise<Response> }).fetch = async () =>
+      Response.json({ data: [{ content: "b".repeat(500) }] });
+    const response = await getUsage(env);
+    const body = await response.json() as { current_tokens: number; transcript_complete: boolean };
+    expect(body.current_tokens).toBe(Math.ceil(500 / 3.85));
+    expect(body.transcript_complete).toBe(false);
   });
 
   it("computes percent_full against the selected model's context window", async () => {
@@ -94,8 +118,8 @@ describe("GET .../sessions/:sessionId/context-usage", () => {
       breakdown: Array<{ key: string; label: string; tokens: number; estimated: boolean }>;
     };
     expect(body.breakdown.map((b) => b.key)).toEqual(["conversation", "overhead", "free"]);
-    // Conversation is measured (not estimated); overhead is flagged as an estimate.
-    expect(body.breakdown.find((b) => b.key === "conversation")!.estimated).toBe(false);
+    // Character count is measured; conversion from characters to tokens is an estimate.
+    expect(body.breakdown.find((b) => b.key === "conversation")!.estimated).toBe(true);
     expect(body.breakdown.find((b) => b.key === "overhead")!.estimated).toBe(true);
     expect(body.breakdown.find((b) => b.key === "conversation")!.tokens).toBe(body.current_tokens);
     // The three segments partition the window exactly.
@@ -141,19 +165,25 @@ describe("GET .../sessions/:sessionId/context-usage", () => {
 });
 
 describe("POST .../sessions/:sessionId/compact", () => {
-  it("triggers memory maintenance on the space-wide assistant DO and returns its result", async () => {
+  it("triggers memory maintenance on the session assistant DO and returns its result", async () => {
     const maintenanceResult = { decayed: 2, pruned_facts: 0, promoted: 1, pruned_episodic: 0 };
     const agentDoStub = { async fetch() { return Response.json(maintenanceResult); } };
     const env = {
       PLATFORM_SECRET: SECRET,
       PLATFORM_DB: makeDb(),
+      SPACES_WORKER: { async fetch(input: RequestInfo) {
+        const path = new URL((input as Request).url).pathname;
+        if (path.endsWith("/compact-scope")) return Response.json({ project_id: null, owned_by_caller: false, private_scratchpad: false });
+        if (path.endsWith("/members")) return Response.json({ data: [{ user_id: "user-1", role: "owner" }] });
+        return new Response("not found", { status: 404 });
+      } },
       NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },
     } as unknown as AgentsEnv;
     const token = await mintInternalToken(SECRET, "tenant-a");
     const res = await app.fetch(
       new Request("https://agents.naelao.com/spaces/space-1/sessions/sess-1/compact", {
         method: "POST",
-        headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+        headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-user-id": "user-1", "x-naelao-role": "owner" },
       }),
       env,
       execCtx
@@ -169,13 +199,19 @@ describe("POST .../sessions/:sessionId/compact", () => {
     const env = {
       PLATFORM_SECRET: SECRET,
       PLATFORM_DB: makeDb(),
+      SPACES_WORKER: { async fetch(input: RequestInfo) {
+        const path = new URL((input as Request).url).pathname;
+        if (path.endsWith("/compact-scope")) return Response.json({ project_id: null, owned_by_caller: false, private_scratchpad: false });
+        if (path.endsWith("/members")) return Response.json({ data: [{ user_id: "user-1", role: "owner" }] });
+        return new Response("not found", { status: 404 });
+      } },
       NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },
     } as unknown as AgentsEnv;
     const token = await mintInternalToken(SECRET, "tenant-a");
     const res = await app.fetch(
       new Request("https://agents.naelao.com/spaces/space-1/sessions/sess-1/compact", {
         method: "POST",
-        headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+        headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-user-id": "user-1", "x-naelao-role": "owner" },
       }),
       env,
       execCtx

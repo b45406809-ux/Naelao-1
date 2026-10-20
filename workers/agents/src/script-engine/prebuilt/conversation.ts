@@ -130,7 +130,10 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
         new Request(url, { headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal-token": token } })
       );
       if (!resp.ok) return { messages, incomplete: true, unavailable: messages.length === 0, error: `Transcript service returned ${resp.status}.`, ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
-      const body = await readBoundedResponseJson<{ data?: StoredMessage[]; messages?: StoredMessage[] }>(resp, 2 * 1024 * 1024);
+      const body = await readBoundedResponseJson<{ data?: StoredMessage[]; messages?: StoredMessage[]; cursor_applied?: boolean }>(resp, 2 * 1024 * 1024);
+      if (beforeId && body.cursor_applied === false) {
+        return { messages, incomplete: true, unavailable: false, error: "The history cursor is no longer valid; restart the search from the newest page.", ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
+      }
       const page = body.data ?? body.messages ?? [];
       if (page.length === 0) break;
       const acceptedPage: StoredMessage[] = [];
@@ -202,9 +205,21 @@ async function search(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
     const note = `${error ?? "History search is unavailable."} Search was incomplete; an empty result does not mean this was never discussed.`;
     return { ok: false, query, results: [], searched_messages: messages.length, complete: false, note, reason: note };
   }
-  if (messages.length === 0) return unavailable
-    ? { ok: false, query, results: [], searched_messages: 0, note: "History search is unavailable. An empty result does not mean this was never discussed." }
-    : { ok: true, query, results: [], searched_messages: 0, exhausted: true, note: "No stored messages to search." };
+  if (messages.length === 0) {
+    if (incomplete) return {
+      ok: false,
+      query,
+      results: [],
+      searched_messages: 0,
+      complete: false,
+      exhausted: false,
+      note: error ?? "The history scan stopped before it could read any messages. An empty result does not mean this was never discussed.",
+      ...(nextCursor ? { next_cursor: nextCursor } : {}),
+    };
+    return unavailable
+      ? { ok: false, query, results: [], searched_messages: 0, note: "History search is unavailable. An empty result does not mean this was never discussed." }
+      : { ok: true, query, results: [], searched_messages: 0, exhausted: true, note: "No stored messages to search." };
+  }
   const queryTokens = tokenize(query);
   const scored = messages.map((m, i) => ({ m, i, score: scoreMessage(m, queryTokens) }))
     .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.i - a.i).slice(0, limit);

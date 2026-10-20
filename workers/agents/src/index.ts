@@ -2925,14 +2925,19 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
   if (!space) throw notFound("Space");
 
   let currentTokens = 0;
+  let transcriptComplete = false;
   try {
     const resp = await c.env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages?limit=500`,
+      `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages?limit=1`,
       { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }
     ));
     if (resp.ok) {
-      const data = await resp.json<{ data?: Array<{ content: string }> }>();
-      const totalChars = (data.data ?? []).reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
+      const data = await resp.json<{ data?: Array<{ content: string }>; total_content_chars?: number }>();
+      const aggregateChars = data.total_content_chars;
+      const totalChars = Number.isSafeInteger(aggregateChars) && aggregateChars! >= 0
+        ? aggregateChars!
+        : (data.data ?? []).reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
+      transcriptComplete = Number.isSafeInteger(aggregateChars) && aggregateChars! >= 0;
       currentTokens = Math.ceil(totalChars / 3.85); // calibrated estimate; provider usage is billed separately
     }
   } catch {
@@ -2943,8 +2948,8 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
   const percentFull = modelWindow > 0 ? Math.min(100, Math.round((currentTokens / modelWindow) * 100)) : 0;
 
   // Step 1: a Claude-Code-style per-category breakdown for the Stats tab's segmented bar.
-  // "Conversation" is MEASURED (the session transcript above). "System prompt & tools" is an
-  // ESTIMATE (flagged as such) — the composed system prompt is bounded to ~5k tokens by the
+  // "Conversation" uses the transcript-wide measured character count, converted to an estimated
+  // token count (flagged as such). "System prompt & tools" is also an ESTIMATE — the composed system prompt is bounded to ~5k tokens by the
   // reasoner's own char-budget, and the tool-schema payload adds a couple thousand more; we do
   // not fabricate an exact figure, we report a documented estimate and mark it. "Free space" is
   // the remainder. This is honest per the codebase's anti-fabrication discipline: only what we
@@ -2974,6 +2979,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
   return c.json({
     current_tokens: currentTokens,
     estimation_method: "characters/3.85",
+    transcript_complete: transcriptComplete,
     model,
     model_window: modelWindow,
     percent_full: percentFull,
