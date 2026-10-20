@@ -222,5 +222,12 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       if (page.truncated && !page.cursor) throw new Error("workflow_artifact_cleanup_cursor_missing");
       cursor = page.truncated ? page.cursor : undefined;
     } while (cursor);
+    // The run record remains as a replay tombstone, but effect receipts are no longer
+    // needed once all artifact reads and retries have expired.
+    while (true) {
+      const effects = await this.ctx.storage.list({ prefix: "effect:", limit: 1_000 });
+      if (effects.size === 0) break;
+      await this.ctx.storage.delete([...effects.keys()]);
+    }
   }
 }

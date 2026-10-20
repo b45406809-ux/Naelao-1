@@ -13,6 +13,7 @@ export interface WorkflowJournalRecord extends DurableWorkflowRecord {
   usedCredits: number;
   artifactKeys: string[];
   artifactBytes: number;
+  effectCount: number;
   activeEffects: string[];
   usageUncertain: boolean;
   launched: boolean;
@@ -21,6 +22,7 @@ export interface WorkflowJournalRecord extends DurableWorkflowRecord {
 
 export const MAX_WORKFLOW_ARTIFACTS = 256;
 export const MAX_WORKFLOW_ARTIFACT_BYTES = 64 * 1024 * 1024;
+export const MAX_WORKFLOW_EFFECTS = 1024;
 
 /** The journal is persisted by WorkflowRunDO. No memory-only replay protection. */
 export class WorkflowJournal {
@@ -39,7 +41,7 @@ export class WorkflowJournal {
         if (JSON.stringify(oldIdentity) !== JSON.stringify(newIdentity) || existing.inputDigest !== input.sha256) throw new Error("workflow_start_key_conflict");
         return existing;
       }
-      const record: WorkflowJournalRecord = { identity, input, inputDigest: input.sha256, ...budget, usedCredits: 0, artifactKeys: [input.r2_key], artifactBytes: input.bytes, activeEffects: [], usageUncertain: false, status: "queued", attempt: 1, updatedAt: Date.now(), launched: false, cleanupPending: false };
+      const record: WorkflowJournalRecord = { identity, input, inputDigest: input.sha256, ...budget, usedCredits: 0, artifactKeys: [input.r2_key], artifactBytes: input.bytes, effectCount: 0, activeEffects: [], usageUncertain: false, status: "queued", attempt: 1, updatedAt: Date.now(), launched: false, cleanupPending: false };
       await storage.put("run", record);
       return record;
     });
@@ -84,13 +86,17 @@ export class WorkflowJournal {
   async prepareEffect(key: string, operation: string, inputDigest: string): Promise<{ effect: DurableEffectRecord; created: boolean }> {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(key)) throw new Error("workflow_effect_key_invalid");
     return this.storage.transaction(async (storage) => {
+      const run = await storage.get<WorkflowJournalRecord>("run");
+      if (!run) throw new Error("workflow_not_found");
       const existing = await storage.get<DurableEffectRecord>("effect:" + key);
       if (existing) {
         if (existing.operation !== operation || existing.inputDigest !== inputDigest) throw new Error("workflow_effect_key_conflict");
         return { effect: existing, created: false };
       }
+      if ((run.effectCount ?? 0) >= MAX_WORKFLOW_EFFECTS) throw new Error("workflow_effect_budget_exceeded");
       const record: DurableEffectRecord = { key, operation, inputDigest, status: "prepared" };
       await storage.put("effect:" + key, record);
+      await storage.put("run", { ...run, effectCount: (run.effectCount ?? 0) + 1, updatedAt: Date.now() });
       return { effect: record, created: true };
     });
   }
@@ -105,11 +111,12 @@ export class WorkflowJournal {
         if (existing.operation !== operation || existing.inputDigest !== inputDigest) throw new Error("workflow_effect_key_conflict");
         return { effect: existing, created: false };
       }
+      if ((run.effectCount ?? 0) >= MAX_WORKFLOW_EFFECTS) throw new Error("workflow_effect_budget_exceeded");
       const activeEffects = run.activeEffects ?? [];
       if (activeEffects.length >= 128) throw new Error("workflow_effect_concurrency_limit");
       const effect = { key, operation, inputDigest, status: "prepared" as const, startedAt: Date.now() };
       await storage.put("effect:" + key, effect);
-      await storage.put("run", { ...run, activeEffects: [...activeEffects, key], updatedAt: Date.now() });
+      await storage.put("run", { ...run, effectCount: (run.effectCount ?? 0) + 1, activeEffects: [...activeEffects, key], updatedAt: Date.now() });
       return { effect, created: true };
     });
   }

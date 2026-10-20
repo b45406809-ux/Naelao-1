@@ -12,6 +12,8 @@ function harness() {
   const storage = {
     async get<T>(key: string) { return values.get(key) as T | undefined; },
     async put<T>(key: string, value: T) { values.set(key, value); },
+    async list({ prefix, limit = 1000 }: { prefix?: string; limit?: number }) { return new Map([...values].filter(([key]) => !prefix || key.startsWith(prefix)).slice(0, limit)); },
+    async delete(keys: string[] | string) { for (const key of Array.isArray(keys) ? keys : [keys]) values.delete(key); },
     async transaction<T>(callback: (storage: typeof storage) => Promise<T>) { return callback(storage); },
     async setAlarm(value: number) { alarms.push(value); },
     async deleteAlarm() { alarms.push(0); },
@@ -139,11 +141,13 @@ describe("WorkflowRunDO persisted authorization", () => {
       const input: WorkflowCheckpointPointer = { schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-a/input.json", sha256: "b".repeat(64), bytes: 2 };
       h.artifacts.add(input.r2_key);
       h.artifacts.add("workflow-artifacts/tenant-a/space-a/run-a/step.json");
+      h.values.set("effect:old-step", { key: "old-step", status: "committed" });
       await h.instance.initialize(identity, input, {});
       await vi.advanceTimersByTimeAsync(101);
 
       await h.instance.alarm();
       expect(h.artifacts.size).toBe(0);
+      expect(h.values.has("effect:old-step")).toBe(false);
       expect((await h.instance.existing())?.status).toBe("expired");
       await expect(h.instance.authorize("run-a")).rejects.toThrow("workflow_expired");
     } finally {

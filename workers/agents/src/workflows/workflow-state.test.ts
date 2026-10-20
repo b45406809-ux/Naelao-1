@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WorkflowJournal, type WorkflowJournalRecord, type WorkflowJournalStorage } from "./workflow-state.js";
+import { MAX_WORKFLOW_EFFECTS, WorkflowJournal, type WorkflowJournalRecord, type WorkflowJournalStorage } from "./workflow-state.js";
 
 function storageFixture() {
   const values = new Map<string, unknown>();
@@ -14,7 +14,7 @@ function storageFixture() {
       return result;
     },
   };
-  values.set("run", { usedCredits: 0, activeEffects: [], usageUncertain: false, input, artifactKeys: [input.r2_key], artifactBytes: input.bytes, cleanupPending: false, status: "running" } as WorkflowJournalRecord);
+  values.set("run", { usedCredits: 0, activeEffects: [], usageUncertain: false, input, artifactKeys: [input.r2_key], artifactBytes: input.bytes, effectCount: 0, cleanupPending: false, status: "running" } as WorkflowJournalRecord);
   return { storage, values };
 }
 
@@ -89,5 +89,15 @@ describe("WorkflowJournal usage accounting", () => {
     await expect(journal.reserveArtifact(pointer(2, 64 * 1024 * 1024))).rejects.toThrow("workflow_artifact_budget_exceeded");
     for (let index = 2; index < 256; index++) await journal.reserveArtifact(pointer(index));
     await expect(journal.reserveArtifact(pointer(256))).rejects.toThrow("workflow_artifact_budget_exceeded");
+  });
+
+  it("caps total effect receipts without breaking idempotent replay of existing keys", async () => {
+    const fixture = storageFixture();
+    const journal = new WorkflowJournal(fixture.storage);
+    const first = await journal.prepareEffect("effect-a", "agent.run", "digest-a");
+    Object.assign(fixture.values.get("run") as WorkflowJournalRecord, { effectCount: MAX_WORKFLOW_EFFECTS });
+    await expect(journal.prepareEffect("effect-a", "agent.run", "digest-a")).resolves.toMatchObject({ created: false });
+    await expect(journal.prepareEffect("effect-b", "agent.run", "digest-b")).rejects.toThrow("workflow_effect_budget_exceeded");
+    expect(first.created).toBe(true);
   });
 });
