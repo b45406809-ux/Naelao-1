@@ -1,13 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
+import { errorResponse, mintInternalToken } from "@naelao/http";
 import { registerDynamicPageRoutes } from "./dynamic-pages.js";
 
 function harness(suffix = "preview.test", applicationSuffix = "app.test") {
   const idFromName = vi.fn((name: string) => name as never);
   const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname, method: request.method }));
   const app = new Hono();
+  app.onError(error => errorResponse(error, "test"));
   registerDynamicPageRoutes(app as never);
   const env = {
+    PLATFORM_SECRET: "test-secret",
     DYNAMIC_PAGE_HOST_SUFFIX: suffix,
     APPLICATION_HOST_SUFFIX: applicationSuffix,
     PLATFORM_DB: { prepare: () => ({ bind: (...args: unknown[]) => ({ first: async () => args[0] === "s" ? { tenant_id: "tenant-a" } : null }) }) },
@@ -20,10 +23,14 @@ describe("dynamic page isolation boundary", () => {
   it("restricts publication to a tenant's space administrators", async () => {
     const h = harness();
     const path = "/spaces/s/apps/app/pages";
-    const denied = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-role": "member" }, body: "{}" }, h.env);
+    const token = await mintInternalToken("test-secret", "tenant-a");
+    const denied = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-role": "member" }, body: "{}" }, h.env);
     expect(denied.status).toBe(403);
-    const allowed = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-role": "owner" }, body: "{}" }, h.env);
+    const allowed = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token, "x-naelao-role": "owner" }, body: "{}" }, h.env);
     expect(await allowed.json()).toEqual({ path: "/page/publish", method: "POST" });
+    expect(h.fetch).toHaveBeenCalledOnce();
+    const forged = await h.app.request(path, { method: "POST", headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-role": "owner" }, body: "{}" }, h.env);
+    expect(forged.status).toBe(403);
     expect(h.fetch).toHaveBeenCalledOnce();
   });
 

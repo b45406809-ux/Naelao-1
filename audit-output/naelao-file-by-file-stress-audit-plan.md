@@ -2456,12 +2456,12 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/spaces/src/routes/channel-extensions.test.ts`
 - [ ] `workers/spaces/src/routes/desk-drop.ts`
-- [ ] `workers/spaces/src/routes/dynamic-pages.test.ts`
-- [ ] `workers/spaces/src/routes/dynamic-pages.ts`
-- [ ] `workers/spaces/src/routes/extension-gadget.test.ts`
-- [ ] `workers/spaces/src/routes/extension-gadget.ts`
-- [ ] `workers/spaces/src/routes/gadget-mcp.test.ts`
-- [ ] `workers/spaces/src/routes/gadget-mcp.ts`
+- [x] `workers/spaces/src/routes/dynamic-pages.test.ts`
+- [x] `workers/spaces/src/routes/dynamic-pages.ts`
+- [x] `workers/spaces/src/routes/extension-gadget.test.ts`
+- [x] `workers/spaces/src/routes/extension-gadget.ts`
+- [x] `workers/spaces/src/routes/gadget-mcp.test.ts`
+- [x] `workers/spaces/src/routes/gadget-mcp.ts`
 - [ ] `workers/spaces/src/routes/graduation.ts`
 - [ ] `workers/spaces/src/routes/market-radar.test.ts`
 - [ ] `workers/spaces/src/routes/market-radar.ts`

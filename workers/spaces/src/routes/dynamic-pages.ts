@@ -1,7 +1,7 @@
 import type { Context, Hono } from "hono";
 import type { Env } from "../index.js";
 import { gadgetActorId } from "../do/MicroAppDO.js";
-import { readBoundedRequestBytes } from "@naelao/http";
+import { readBoundedRequestBytes, requireInternalHmac } from "@naelao/http";
 
 function identity(c: Context<{ Bindings: Env }>) {
   return { tenantId: c.req.header("x-naelao-tenant-id") ?? "", role: c.req.header("x-naelao-role") ?? "viewer" };
@@ -33,6 +33,9 @@ async function publicTenant(c: Context<{ Bindings: Env }>, spaceId: string): Pro
 }
 
 export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
+  // Publishing trusts gateway-supplied tenant and role headers. Public preview
+  // render/action routes below have their own host, origin, and token checks.
+  app.use("/spaces/:spaceId/apps/:appId/pages", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
   app.post("/spaces/:spaceId/apps/:appId/pages", async c => {
     const { tenantId, role } = identity(c);
     const { spaceId, appId } = c.req.param();

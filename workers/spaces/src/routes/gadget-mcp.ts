@@ -2,11 +2,15 @@ import type { Context, Hono } from "hono";
 import type { Env } from "../index.js";
 import { gadgetActorId } from "../do/MicroAppDO.js";
 import { getDOName } from "@naelao/crypto";
-import { readBoundedRequestBytes, readBoundedRequestText } from "@naelao/http";
+import { readBoundedRequestBytes, readBoundedRequestText, requireInternalHmac } from "@naelao/http";
 
 const MAX_GADGET_REQUEST_BYTES = 1024 * 1024;
 
 export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
+  // These routes trust gateway-stamped tenant and role headers. Verify the internal
+  // signature here as well as at the router so direct Worker access cannot forge them.
+  app.use("/spaces/:spaceId/apps/*", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+  app.use("/spaces/:spaceId/projects/:projectId/apps/*", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
   const forward = async (c: Context<{ Bindings: Env }>, path: string, method = c.req.method, bodyOverride?: ArrayBuffer) => {
     const tenantId = c.req.header("x-naelao-tenant-id");
     if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);

@@ -1,62 +1,75 @@
 import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
+import { errorResponse, mintInternalToken } from "@naelao/http";
 import { registerGadgetMcpRoutes } from "./gadget-mcp.js";
+
+function testApp() { const app = new Hono(); app.onError(error => errorResponse(error, "test")); return app; }
+
+async function auth(tenantId: string, values: Record<string, string> = {}) {
+  return { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken("test-secret", tenantId), ...values };
+}
 
 describe("gadget MCP host adapter", () => {
   it("checks tenant ownership before routing app, storage, and MCP requests", async () => {
     const idFromName = vi.fn((name: string) => name as never);
     const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname, method: request.method }));
-    const app = new Hono();
+    const app = testApp();
     registerGadgetMcpRoutes(app as never);
     const env = {
+      PLATFORM_SECRET: "test-secret",
       PLATFORM_DB: { prepare: () => ({ bind: (...args: unknown[]) => ({ first: async () => args[0] === "s" && args[1] === "t" ? { 1: 1 } : null }) }) },
       MICRO_APP_DO: { idFromName, get: () => ({ fetch }) },
     } as never;
 
-    const denied = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: { "x-naelao-tenant-id": "wrong" } }, env);
+    const denied = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: await auth("wrong") }, env);
     expect(denied.status).toBe(404);
     expect(idFromName).not.toHaveBeenCalled();
 
-    const allowed = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    const allowed = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(await allowed.json()).toEqual({ path: "/mcp", method: "POST" });
     expect(idFromName).toHaveBeenCalledWith("gadget:app:space:s");
     expect(fetch).toHaveBeenCalledOnce();
 
-    const page = await app.request("/spaces/s/apps/app/app", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    const forgedRole = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "owner" } }, env);
+    expect(forgedRole.status).toBe(403);
+    expect(fetch).toHaveBeenCalledOnce();
+
+    const page = await app.request("/spaces/s/apps/app/app", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(await page.json()).toEqual({ path: "/app", method: "GET" });
-    const data = await app.request("/spaces/s/apps/app/api/data?key=x", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    const data = await app.request("/spaces/s/apps/app/api/data?key=x", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(await data.json()).toEqual({ path: "/api/data", method: "GET" });
-    const storage = await app.request("/spaces/s/apps/app/api/storage", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    const storage = await app.request("/spaces/s/apps/app/api/storage", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(await storage.json()).toEqual({ path: "/api/storage", method: "GET" });
-    const deniedPage = await app.request("/spaces/s/apps/app/app", { headers: { "x-naelao-tenant-id": "wrong", "x-naelao-role": "admin" } }, env);
+    const deniedPage = await app.request("/spaces/s/apps/app/app", { headers: await auth("wrong", { "x-naelao-role": "admin" }) }, env);
     expect(deniedPage.status).toBe(404);
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 
   it("requires an administrator to initialize a gadget", async () => {
-    const app = new Hono();
+    const app = testApp();
     registerGadgetMcpRoutes(app as never);
     const env = {
+      PLATFORM_SECRET: "test-secret",
       PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
       MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async () => Response.json({ ok: true }) }) },
     } as never;
-    const denied = await app.request("/spaces/s/apps/app/initialize", { method: "POST", headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "member" }, body: "{}" }, env);
+    const denied = await app.request("/spaces/s/apps/app/initialize", { method: "POST", headers: await auth("t", { "x-naelao-role": "member" }), body: "{}" }, env);
     expect(denied.status).toBe(403);
-    const invalidScope = await app.request("/spaces/s/apps/app/initialize", { method: "POST", headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" }, body: JSON.stringify({ appId: "app", scope: "SPACE_WIDE", gadgetTier: 3 }) }, env);
+    const invalidScope = await app.request("/spaces/s/apps/app/initialize", { method: "POST", headers: await auth("t", { "x-naelao-role": "admin" }), body: JSON.stringify({ appId: "app", scope: "SPACE_WIDE", gadgetTier: 3 }) }, env);
     expect(invalidScope.status).toBe(400);
-    const allowed = await app.request("/spaces/s/apps/app/initialize", { method: "POST", headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" }, body: JSON.stringify({ appId: "app", scope: "SPACE_SHARED", gadgetTier: 3 }) }, env);
+    const allowed = await app.request("/spaces/s/apps/app/initialize", { method: "POST", headers: await auth("t", { "x-naelao-role": "admin" }), body: JSON.stringify({ appId: "app", scope: "SPACE_SHARED", gadgetTier: 3 }) }, env);
     expect(allowed.status).toBe(200);
   });
 
   it("requires active space membership for non-admin gadget access", async () => {
-    const app = new Hono();
+    const app = testApp();
     registerGadgetMcpRoutes(app as never);
     const prepare = vi.fn((query: string) => ({ bind: (...args: unknown[]) => ({ first: async () => query.includes("space_members") ? (args[2] === "active-member" ? { 1: 1 } : null) : { 1: 1 } }) }));
     const fetch = vi.fn(async () => Response.json({ ok: true }));
-    const env = { PLATFORM_DB: { prepare }, MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch }) } } as never;
-    const denied = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: { "x-naelao-tenant-id": "t", "x-naelao-user-id": "suspended", "x-naelao-role": "member" } }, env);
+    const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare }, MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch }) } } as never;
+    const denied = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: await auth("t", { "x-naelao-user-id": "suspended", "x-naelao-role": "member" }) }, env);
     expect(denied.status).toBe(403);
-    const allowed = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: { "x-naelao-tenant-id": "t", "x-naelao-user-id": "active-member", "x-naelao-role": "member" } }, env);
+    const allowed = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member" }) }, env);
     expect(allowed.status).toBe(200);
     expect(fetch).toHaveBeenCalledOnce();
   });
@@ -64,7 +77,7 @@ describe("gadget MCP host adapter", () => {
   it("mounts an owner-approved project gadget in its project-bound actor after project ACL checks", async () => {
     const idFromName = vi.fn((name: string) => name as never);
     const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));
-    const app = new Hono();
+    const app = testApp();
     registerGadgetMcpRoutes(app as never);
     const env = {
       PLATFORM_SECRET: "test-secret",
@@ -73,25 +86,25 @@ describe("gadget MCP host adapter", () => {
       MICRO_APP_DO: { idFromName, get: () => ({ fetch }) },
     } as never;
     const initialized = await app.request("/spaces/s/projects/project-a/apps/course-notes/initialize", { method: "POST",
-      headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin", "content-type": "application/json" },
+      headers: await auth("t", { "x-naelao-role": "admin", "content-type": "application/json" }),
       body: JSON.stringify({ appId: "course-notes", scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: "CREATE TABLE notes(id TEXT PRIMARY KEY)" }) }, env);
     expect(initialized.status).toBe(200);
     expect(idFromName).toHaveBeenCalledWith("gadget:course-notes:project:project-a");
     expect(fetch).toHaveBeenCalledWith(expect.objectContaining({ url: "http://micro-app/initialize" }));
-    const appPage = await app.request("/spaces/s/projects/project-a/apps/course-notes/app", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    const appPage = await app.request("/spaces/s/projects/project-a/apps/course-notes/app", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(await appPage.json()).toEqual({ path: "/app" });
   });
 
   it("allows a project member to publish bounded collaboration events but never grants Gadget writes", async () => {
     const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname, body: await request.json() }));
-    const app = new Hono(); registerGadgetMcpRoutes(app as never);
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
     const env = {
       PLATFORM_SECRET: "test-secret",
       PLATFORM_DB: { prepare: (query: string) => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
       SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async (request: Request) => new URL(request.url).pathname === "/project-extension-runtime" ? Response.json({ managed: false }) : Response.json({ id: "project-a" }) }) },
       MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch }) },
     } as never;
-    const headers = { "x-naelao-tenant-id": "t", "x-naelao-user-id": "member-a", "x-naelao-role": "member", "content-type": "application/json" };
+    const headers = await auth("t", { "x-naelao-user-id": "member-a", "x-naelao-role": "member", "content-type": "application/json" });
     const event = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/collaboration", { method: "POST", headers, body: JSON.stringify({ kind: "operation", payload: { operation: "canvas.update", detail: "Added a note" } }) }, env);
     expect(event.status).toBe(200);
     expect(fetch).toHaveBeenCalledOnce();
@@ -102,24 +115,24 @@ describe("gadget MCP host adapter", () => {
 
   it("limits Gadget action audit reads to owner and admin roles", async () => {
     const fetch = vi.fn(async () => Response.json({ items: [], next_after: 0 }));
-    const app = new Hono(); registerGadgetMcpRoutes(app as never);
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
     const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
       SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async (request: Request) => new URL(request.url).pathname === "/project-extension-runtime" ? Response.json({ managed: false }) : Response.json({ id: "project-a" }) }) },
       MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch }) } } as never;
-    const member = await app.request("/spaces/s/projects/p/apps/journal/action-audit", { headers: { "x-naelao-tenant-id": "t", "x-naelao-user-id": "member", "x-naelao-role": "member" } }, env);
+    const member = await app.request("/spaces/s/projects/p/apps/journal/action-audit", { headers: await auth("t", { "x-naelao-user-id": "member", "x-naelao-role": "member" }) }, env);
     expect(member.status).toBe(403);
-    const admin = await app.request("/spaces/s/projects/p/apps/journal/action-audit", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    const admin = await app.request("/spaces/s/projects/p/apps/journal/action-audit", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(admin.status).toBe(200);
     expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("rejects project Gadget initialization from a non-admin and rejects space-level Gadget scopes", async () => {
-    const app = new Hono(); registerGadgetMcpRoutes(app as never);
-    const env = { PLATFORM_SECRET: "secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) }, SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async () => Response.json({ id: "p" }) }) }, MICRO_APP_DO: { idFromName: vi.fn(), get: vi.fn() } } as never;
-    const headers = { "x-naelao-tenant-id": "t", "x-naelao-role": "admin", "content-type": "application/json" };
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) }, SPACE_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: async () => Response.json({ id: "p" }) }) }, MICRO_APP_DO: { idFromName: vi.fn(), get: vi.fn() } } as never;
+    const headers = await auth("t", { "x-naelao-role": "admin", "content-type": "application/json" });
     const badScope = await app.request("/spaces/s/projects/p/apps/a/initialize", { method: "POST", headers, body: JSON.stringify({ appId: "a", scope: "SPACE_SHARED", gadgetTier: 3 }) }, env);
     expect(badScope.status).toBe(400);
-    const denied = await app.request("/spaces/s/projects/p/apps/a/initialize", { method: "POST", headers: { ...headers, "x-naelao-role": "member", "x-naelao-user-id": "u" }, body: JSON.stringify({ appId: "a", scope: "PROJECT_BOUND", gadgetTier: 2 }) }, env);
+    const denied = await app.request("/spaces/s/projects/p/apps/a/initialize", { method: "POST", headers: await auth("t", { "x-naelao-role": "member", "x-naelao-user-id": "u", "content-type": "application/json" }), body: JSON.stringify({ appId: "a", scope: "PROJECT_BOUND", gadgetTier: 2 }) }, env);
     expect(denied.status).toBe(403);
   });
 
@@ -135,8 +148,8 @@ describe("gadget MCP host adapter", () => {
       SPACE_DO: { idFromName: (name: string) => name as never, get: () => spaceStub },
       MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: actorFetch }) },
     } as never;
-    const app = new Hono(); registerGadgetMcpRoutes(app as never);
-    const response = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/app", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const response = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/app", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error_code: "project_extension_inactive" });
     expect(actorFetch).not.toHaveBeenCalled();
@@ -148,8 +161,8 @@ describe("gadget MCP host adapter", () => {
       ? Response.json({ managed: true, active: true, releaseValid: false }) : Response.json({ id: "project-a" }) };
     const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ 1: 1 }) }) }) },
       SPACE_DO: { idFromName: (name: string) => name as never, get: () => spaceStub }, MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: actorFetch }) } } as never;
-    const app = new Hono(); registerGadgetMcpRoutes(app as never);
-    const response = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/app", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const response = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/app", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error_code: "project_extension_release_invalid" });
     expect(actorFetch).not.toHaveBeenCalled();
@@ -163,8 +176,8 @@ describe("gadget MCP host adapter", () => {
     const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare },
       SPACE_DO: { idFromName: (name: string) => name as never, get: () => spaceStub },
       MICRO_APP_DO: { idFromName: (name: string) => name as never, get: () => ({ fetch: actorFetch }) } } as never;
-    const app = new Hono(); registerGadgetMcpRoutes(app as never);
-    const response = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/app", { headers: { "x-naelao-tenant-id": "t", "x-naelao-role": "admin" } }, env);
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const response = await app.request("/spaces/s/projects/project-a/apps/mentor_canvas/app", { headers: await auth("t", { "x-naelao-role": "admin" }) }, env);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error_code: "project_extension_publisher_revoked" });
     expect(actorFetch).not.toHaveBeenCalled();
