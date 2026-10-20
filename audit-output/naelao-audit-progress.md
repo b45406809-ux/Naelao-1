@@ -991,3 +991,9 @@ Traced the two clone-based request inspectors in `packages/security`: the upload
 Validation: Security package suite passed 21 files / 110 tests and typecheck passed; Agents suite passed 148 files / 661 tests, Agent typecheck and Wrangler dry-run passed. New regressions check invalid ceilings and underlying stream cancellation, while existing tests confirm declared-length fast rejection and downstream readability for valid bounded bodies. These are runtime stream simulations; Cloudflare's production request-body source behavior is not load-tested.
 
 Refreshed the tracked tree after code commit `e4db8d7e`: 1,967 tracked files and 1,761 source/config files; marked the request-body guard and its regression suite reviewed.
+
+## Entitlement tier validation and immutable plan limits (2026-10-20)
+
+Reviewed the shared plan-limit table and its direct callers in Agents and Knowledge. `getTenantTier` cast arbitrary database strings to `PlanTier`, so an unexpected stored value could return undefined limits and break quota/feature checks. It now validates against the four known tiers and uses the restrictive `free` tier for missing or corrupt values; direct `getPlanLimits` calls also fall back to free for invalid runtime input. The returned tier object was a mutable shared singleton, allowing one caller to alter quota values seen by subsequent checks. Limits are now frozen and exposed as readonly.
+
+Validation: existing entitlement tests plus new malformed-tier/mutation regressions passed 24/24; entitlements package typecheck passed; Knowledge suite passed 6 files / 25 tests with typecheck; Agents suite passed 148 files / 661 tests, typecheck, and Wrangler dry-run. This reviewed the common entitlement helper and its Agents/Knowledge consumers; other workers that query `plan_tier` directly remain open for separate review.

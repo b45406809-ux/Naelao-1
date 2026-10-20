@@ -3,24 +3,24 @@
 import type { PlanTier } from "@naelao/types";
 
 export interface PlanLimits {
-  spaces: number;
-  seats: number;
-  kb_documents_per_space: number;
-  kb_storage_mb: number;
-  monthly_sessions: number;
-  monthly_tokens: number;
-  api_keys: number;
-  webhook_subscriptions: number;
-  custom_tools: boolean;
-  sse_streaming: boolean;
-  advanced_analytics: boolean;
-  sso: boolean;
-  audit_log_retention_days: number;
+  readonly spaces: number;
+  readonly seats: number;
+  readonly kb_documents_per_space: number;
+  readonly kb_storage_mb: number;
+  readonly monthly_sessions: number;
+  readonly monthly_tokens: number;
+  readonly api_keys: number;
+  readonly webhook_subscriptions: number;
+  readonly custom_tools: boolean;
+  readonly sse_streaming: boolean;
+  readonly advanced_analytics: boolean;
+  readonly sso: boolean;
+  readonly audit_log_retention_days: number;
   /** §A1.26: monthly ceiling on Cloudflare infra credits (isolate/container wall-clock time +
    *  durable Workflow steps, converted via billing-core's infraTimeToCredits) — the compute-
    *  consumption counterpart to monthly_tokens, which only meters LLM usage. Same 1:20:200:2000
    *  tier ratio as monthly_tokens. */
-  monthly_infra_credits: number;
+  readonly monthly_infra_credits: number;
   /** Phase 4 (money): OPTIONAL daily/weekly ceilings on top of the monthly one — undefined means
    *  "no extra throttling beyond the monthly cap" (every tier below defines them; a future custom
    *  tier that omits them is not enforced on those windows). These exist to stop a single busy
@@ -30,8 +30,8 @@ export interface PlanLimits {
    *  needing tuning. Enforced by workers/billing/src/quota.ts's checkWindowedQuota, mirrored here
    *  (not imported from there) for the same reason monthly_tokens/QuotaLimits.maxMonthlyTokens are
    *  two independently-maintained copies today — see that file's own comment. */
-  daily_tokens?: number;
-  weekly_tokens?: number;
+  readonly daily_tokens?: number;
+  readonly weekly_tokens?: number;
 }
 
 const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
@@ -109,8 +109,12 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
   },
 };
 
-export function getPlanLimits(tier: PlanTier): PlanLimits {
-  return PLAN_LIMITS[tier];
+export function getPlanLimits(tier: PlanTier): Readonly<PlanLimits> {
+  return Object.freeze(isPlanTier(tier) ? PLAN_LIMITS[tier] : PLAN_LIMITS.free);
+}
+
+export function isPlanTier(value: unknown): value is PlanTier {
+  return typeof value === "string" && Object.hasOwn(PLAN_LIMITS, value);
 }
 
 export function isFeatureAllowed(tier: PlanTier, feature: keyof PlanLimits): boolean {
@@ -130,7 +134,7 @@ export class EntitlementsChecker {
     const row = await this.db.prepare(
       "SELECT plan_tier FROM orgs WHERE id = ?"
     ).bind(tenantId).first<{ plan_tier: string }>();
-    return (row?.plan_tier ?? "free") as PlanTier;
+    return isPlanTier(row?.plan_tier) ? row.plan_tier : "free";
   }
 
   async checkSpaceLimit(tenantId: string): Promise<void> {
