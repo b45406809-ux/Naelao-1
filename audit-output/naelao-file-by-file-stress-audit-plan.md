@@ -1895,8 +1895,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/virtual-cli.ts`
 - [ ] `workers/agents/src/script-engine/virtual-posix.test.ts`
 - [ ] `workers/agents/src/script-engine/virtual-posix.ts`
-- [ ] `workers/agents/src/script-engine/worker-capabilities.test.ts`
-- [ ] `workers/agents/src/script-engine/worker-capabilities.ts`
+- [x] `workers/agents/src/script-engine/worker-capabilities.test.ts`
+- [x] `workers/agents/src/script-engine/worker-capabilities.ts`
 - [ ] `workers/agents/src/script-engine/worker-model-routing.test.ts`
 - [ ] `workers/agents/src/script-engine/worker-model-routing.ts`
 - [ ] `workers/agents/src/script-engine/workspace-paths.ts`
