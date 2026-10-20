@@ -24,6 +24,24 @@ describe("immutable extension kernel", () => {
     expect(validateExtensionManifest(manifest).gadgets[0]?.migrations).toHaveLength(2);
     expect(() => validateExtensionManifest({ ...manifest, gadgets: [{ ...manifest.gadgets[0], migrations: [{ version: 2, description: "second", up: "CREATE TABLE x(id TEXT)" }, { version: 1, description: "first", up: "CREATE TABLE y(id TEXT)" }] }] })).toThrow("migration_versions_must_increase");
   });
+  it("rejects traversal in legacy script and viewport paths", () => {
+    expect(() => validateExtensionManifest({ ...valid, gadgets: [{ id: "gadget_a", name: "A", viewportComponent: "./../escape.ts", scope: "PROJECT_SHARED", gadgetTier: 2, defaultSchemaSql: "" }] }))
+      .toThrow("invalid_extension_manifest:invalid_viewport");
+    expect(() => validateExtensionManifest({ ...valid, daemons: [{ id: "daemon_a", name: "A", workflowScript: "./../../escape.ts", memoryScope: "PROJECT_BOUND" }] }))
+      .toThrow("invalid_extension_manifest:invalid_workflow_script");
+    expect(() => validateExtensionManifest({ ...valid, commands: [{ name: "command_a", scriptPath: "../escape.ts" }] }))
+      .toThrow("invalid_extension_manifest:invalid_command_path");
+  });
+  it("bounds recursive manifest inspection and repeated references", () => {
+    const deep: Record<string, unknown> = {};
+    let cursor = deep;
+    for (let index = 0; index < 70; index++) { cursor.next = {}; cursor = cursor.next as Record<string, unknown>; }
+    expect(() => validateExtensionManifest({ ...valid, metadata: deep })).toThrow("invalid_extension_manifest:manifest_complexity_limit");
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    expect(() => validateExtensionManifest({ ...valid, metadata: cycle })).toThrow("invalid_extension_manifest:manifest_cycle");
+    expect(() => validateExtensionManifest({ ...valid, gadgets: Array.from({ length: 129 }, () => ({})) })).toThrow("invalid_extension_manifest:arrays_required_or_limit_exceeded");
+  });
 });
 
 describe("composed extension bundle contract", () => {
@@ -62,6 +80,14 @@ describe("composed extension bundle contract", () => {
     expect(() => validateExtensionManifest({ ...valid, id: "ext_trading_mentor", capabilityRequirements: ["channel.invoke"], bundle, channels: [] }))
       .toThrow("bundle_channel_declaration_mismatch");
     expect(() => validateExtensionManifest({ ...valid, bundle })).toThrow("bundle_extension_id_mismatch");
+  });
+  it("rejects path traversal in composed asset, lifecycle, and worker entry paths", () => {
+    expect(() => parseExtensionBundle({ ...bundle, primitives: [{ ...bundle.primitives[0], component: "./../outside.tsx" }, bundle.primitives[1]] }))
+      .toThrow("invalid_extension_contract:invalid_canvas_component");
+    expect(() => parseExtensionBundle({ ...bundle, primitives: [{ ...bundle.primitives[0], lifecycle: { onLoad: "./../outside.ts" } }, bundle.primitives[1]] }))
+      .toThrow("invalid_extension_contract:invalid_lifecycle_hook");
+    expect(() => parseExtensionBundle({ ...bundle, workerRoles: [{ ...bundle.workerRoles[0], entry: "../../outside.ts" }] }))
+      .toThrow("invalid_extension_contract:invalid_worker_entry");
   });
   it("validates the published trading mentor channel starter package", () => {
     const manifest = JSON.parse(readFileSync(new URL("../examples/trading-mentor-channel/manifest.json", import.meta.url), "utf8"));

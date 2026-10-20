@@ -1047,3 +1047,9 @@ Traced `toNormalizedInboundMessage` into `NaelaoAgentDO.handleChannelInbound`; p
 Validation: Agent SDK channel-envelope tests passed 5/5; Agent SDK and Agents typechecks passed; `git diff --check` passed. Regressions cover wrong-type/control/oversized identities, invalid timestamps, exact and over-limit Unicode payloads, malformed URLs, attachment count limits, and source-object mutation after normalization.
 
 Refreshed the tracked tree after code commit `c13c7f20`: 1,970 tracked files and 1,764 source/config files; marked the normalized envelope implementation and its stress tests reviewed.
+
+## Extension manifest path and complexity validation (2026-10-20)
+
+Reviewed the shared extension manifest and bundle parsers and traced them to SpaceDO installation, Spaces Worker upload routes, the channel-only installer, and runtime catalog validation. The legacy `SAFE_PATH` accepted `../` segments in gadget, daemon, and command references; composed `CONTRACT_PATH` also accepted traversal segments. Both now accept only bounded relative path segments that cannot be `.` or `..`. Manifest kernel-override screening used recursive descent with no depth/work limit, so deeply nested input could exhaust the call stack; it is now iterative, detects cycles, caps depth at 64 and visited objects at 100,000, and permits ordinary shared references. Top-level permissions, capability requirements, gadgets, daemons, and commands also have explicit collection ceilings.
+
+Validation: Agent SDK suite passed 27 files / 138 tests; Spaces extension/gadget route tests passed 7/7; Agents channel extension/media tests passed 27/27; Agent SDK, Spaces, and Agents typechecks passed; `git diff --check` passed. Added regressions exercise traversal across legacy and composed paths, deep/cyclic manifests, and collection overages. Existing dogfood manifests and published starter bundle tests continue to pass.

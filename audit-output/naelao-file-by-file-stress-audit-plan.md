@@ -773,8 +773,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/agent-sdk/src/document-processing.ts`
 - [ ] `packages/agent-sdk/src/extension-publisher-signatures.test.ts`
 - [ ] `packages/agent-sdk/src/extension-publisher-signatures.ts`
-- [ ] `packages/agent-sdk/src/extensions.test.ts`
-- [ ] `packages/agent-sdk/src/extensions.ts`
+- [x] `packages/agent-sdk/src/extensions.test.ts`
+- [x] `packages/agent-sdk/src/extensions.ts`
 - [x] `packages/agent-sdk/src/fast-decision.test.ts`
 - [x] `packages/agent-sdk/src/fast-decision.ts`
 - [ ] `packages/agent-sdk/src/index.ts`

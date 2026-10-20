@@ -48,7 +48,7 @@ export interface ExtensionManifest {
 
 const ID = /^[a-z][a-z0-9_-]{1,63}$/;
 const PERMISSION = /^[a-z][a-z0-9_.:-]{1,127}$/;
-const SAFE_PATH = /^(?:\.\/)?[a-zA-Z0-9_./-]+\.(?:ts|js)$/;
+const SAFE_PATH = /^(?=.{1,256}$)(?:\.\/)?(?:[a-zA-Z0-9_-][a-zA-Z0-9._-]*\/)*[a-zA-Z0-9_-][a-zA-Z0-9._-]*\.(?:ts|js)$/;
 const COMMAND = /^(?:ext:[a-z][a-z0-9_-]{1,59}|[a-z][a-z0-9_-]{1,63})$/;
 const FORBIDDEN_KEY = /(?:kernel|systemprompt|coreprompt|promptlayers?|writeguard|gatekeepers?|replloop|reasoningloop|bypass|disableguard|unsandboxed|sandboxdisabled)/i;
 const FORBIDDEN_SCRIPT = /(?:NaelaoAgentDO|WriteGuard|Gatekeeper|system\s*prompt|core\s*prompt|reasoning\s*loop|\bmain\b.*(?:push|commit|write)|bypass\s+(?:guard|approval))/i;
@@ -72,11 +72,21 @@ function validateExtensionMigrations(value: unknown): void {
 }
 
 function rejectKernelOverrides(value: unknown): void {
-  if (!value || typeof value !== "object") return;
-  if (Array.isArray(value)) { for (const item of value) rejectKernelOverrides(item); return; }
-  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-    assert(!FORBIDDEN_KEY.test(key), `forbidden_field:${key}`);
-    rejectKernelOverrides(nested);
+  const pending: Array<{ value: unknown; depth: number; exit?: boolean }> = [{ value, depth: 0 }];
+  const active = new WeakSet<object>();
+  let visited = 0;
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (current.exit) { active.delete(current.value as object); continue; }
+    if (!current.value || typeof current.value !== "object") continue;
+    assert(++visited <= 100_000 && current.depth <= 64, "manifest_complexity_limit");
+    assert(!active.has(current.value), "manifest_cycle");
+    active.add(current.value);
+    pending.push({ value: current.value, depth: current.depth, exit: true });
+    for (const [key, nested] of Object.entries(current.value as Record<string, unknown>)) {
+      assert(!FORBIDDEN_KEY.test(key), `forbidden_field:${key}`);
+      pending.push({ value: nested, depth: current.depth + 1 });
+    }
   }
 }
 
@@ -97,13 +107,15 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
   assert(raw.type === "extension", "invalid_type");
-  assert(Array.isArray(raw.declaredPermissions) && raw.declaredPermissions.every((p) => typeof p === "string" && PERMISSION.test(p)), "invalid_permissions");
-  assert(Array.isArray(raw.capabilityRequirements) && raw.capabilityRequirements.length > 0 && raw.capabilityRequirements.every((p) => typeof p === "string" && PERMISSION.test(p)), "capability_requirements_required");
+  assert(Array.isArray(raw.declaredPermissions) && raw.declaredPermissions.length <= 128 && raw.declaredPermissions.every((p) => typeof p === "string" && PERMISSION.test(p)), "invalid_permissions");
+  assert(Array.isArray(raw.capabilityRequirements) && raw.capabilityRequirements.length > 0 && raw.capabilityRequirements.length <= 128 && raw.capabilityRequirements.every((p) => typeof p === "string" && PERMISSION.test(p)), "capability_requirements_required");
   if (context) {
     const granted = new Set(context.gatekeeperCapabilities);
     for (const capability of raw.capabilityRequirements as string[]) assert(granted.has(capability), `gatekeeper_capability_denied:${capability}`);
   }
-  assert(Array.isArray(raw.gadgets) && Array.isArray(raw.daemons) && Array.isArray(raw.commands), "arrays_required");
+  assert(Array.isArray(raw.gadgets) && raw.gadgets.length <= 128
+    && Array.isArray(raw.daemons) && raw.daemons.length <= 64
+    && Array.isArray(raw.commands) && raw.commands.length <= 256, "arrays_required_or_limit_exceeded");
   let canonicalBundle: ExtensionBundleManifest | undefined;
   let canonicalChannels = raw.channels;
   if (raw.bundle !== undefined) {
@@ -319,7 +331,7 @@ export interface ExtensionBundleManifest {
 const CONTRACT_KINDS = new Set<ExtensionPrimitiveKind>(["gadget", "canvas", "channel", "container", "linter", "workflow"]);
 const CONTRACT_ID = /^[a-z][a-z0-9._-]{1,63}$/;
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const CONTRACT_PATH = /^[A-Za-z0-9_./-]{1,160}$/;
+const CONTRACT_PATH = /^(?=.{1,160}$)(?:\.\/)?(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-]{0,159}$/;
 const CONTRACT_SCOPE = new Set<GadgetScope>(["USER_PRIVATE", "SPACE_WIDE", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER", "SPACE_SHARED", "SPACE_USER"]);
 const CONTRACT_ACTIONS = new Set<PermissionAction>(["read", "write", "execute", "network", "admin"]);
 const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "permissions", "capabilityRequirements", "lifecycle", "budget", "cancellation"]);
