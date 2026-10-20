@@ -66,4 +66,11 @@ describe("bounded response readers", () => {
       "request_body_too_large"
     );
   });
+
+  it("rejects invalid ceilings instead of allowing comparisons to bypass the cap", async () => {
+    for (const ceiling of [Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, -1]) {
+      await expect(readBoundedResponseText(new Response("payload"), ceiling)).rejects.toThrow("maximumBytes must be a non-negative safe integer");
+      await expect(readBoundedRequestBytes(new Request("https://example.test/upload"), ceiling)).rejects.toThrow("maximumBytes must be a non-negative safe integer");
+    }
+  });
 });

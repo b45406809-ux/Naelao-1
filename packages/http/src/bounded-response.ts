@@ -3,6 +3,7 @@ export async function readBoundedResponseText(
   response: Response,
   maximumBytes: number
 ): Promise<string> {
+  validateMaximumBytes(maximumBytes);
   const lengthHeader = response.headers.get("content-length");
   const declaredLength =
     lengthHeader !== null && /^\d+$/.test(lengthHeader)
@@ -115,11 +116,18 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+function validateMaximumBytes(maximumBytes: number): void {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
+    throw new RangeError("maximumBytes must be a non-negative safe integer");
+  }
+}
+
 /** Consume a request body once under a hard cap; do not clone/tee the stream. */
 export async function readBoundedRequestBytes(
   request: Request,
   maximumBytes: number
 ): Promise<Uint8Array> {
+  validateMaximumBytes(maximumBytes);
   const lengthHeader = request.headers.get("content-length");
   const declaredLength =
     lengthHeader !== null && /^\d+$/.test(lengthHeader)

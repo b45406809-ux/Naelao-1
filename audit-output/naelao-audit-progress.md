@@ -967,3 +967,9 @@ Validation: Credentials suite passed 10/10; credential hierarchy tests passed 37
 Refreshed the tracked tree after code commit `4cc122ff`: 1,966 tracked files and 1,760 source/config files; existing checklist rows were preserved.
 
 The tenant-token follow-up also made HMAC parsing canonical: repeated or unknown token fields and partial numeric timestamps are now rejected before signature verification. A separate plaintext-route regression confirms tenantless legacy tokens are denied there as well as at outbound egress. Re-ran the affected suites: Credentials 10/10, credential hierarchy 37/37, and vault plan 5/5 passed.
+
+## Shared bounded HTTP reader ceilings (2026-10-20)
+
+Audited the shared request/response stream readers and their call sites. `readBoundedResponseText` and `readBoundedRequestBytes` trusted the numeric ceiling without validating it; with `NaN`, the `total > maximumBytes` checks were always false, defeating the memory bound. Both now require a non-negative safe integer before inspecting or consuming a stream. JSON/text wrappers inherit the validation, and the prefix reader already enforced the same contract.
+
+Validation: `packages/http` suite passed 30/30 and typecheck passed; Agents suite passed 148 files / 661 tests, Agents typecheck and Wrangler dry-run passed; Credentials suite passed 10/10 and typecheck passed. New cases cover NaN, Infinity, unsafe integers, and negative ceilings for request and response reads. Call-site search across packages/workers/apps/tests shows the consumed limits are fixed values or module constants; broader individual call-site feature reviews remain in the file-by-file plan.
