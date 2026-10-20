@@ -37,4 +37,25 @@ describe("Artifact Repository response bounds", () => {
     );
     expect(fetch).toHaveBeenCalledOnce();
   });
+
+  it("rejects oversized request payloads before calling the Artifact worker", async () => {
+    const fetch = vi.fn(async () => Response.json({ commit_id: "c1", tree_id: "t1" }));
+    const repository = client(fetch);
+    const metadata = { agent_role: "worker", user_goal: "x".repeat(2 * 1024 * 1024 + 1), rationale: "r", task_id: "t", thread_id: "th", tool_turn_id: "turn" };
+    await expect(repository.commit("bounded", metadata)).rejects.toThrow("repository_request_too_large");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("copies caller headers before adding JSON content type", async () => {
+    const headers = new Headers({ "x-test": "kept" });
+    let requestHeaders: Headers | undefined;
+    const repository = new ArtifactRepositoryClient(
+      { fetch: async input => { requestHeaders = input.headers; return Response.json({ branch: "main", commit_id: null }); } },
+      "space-1", "project-1", () => headers,
+    );
+    await repository.createRepo();
+    expect(requestHeaders?.get("content-type")).toBe("application/json");
+    expect(headers.has("content-type")).toBe(false);
+    expect(headers.get("x-test")).toBe("kept");
+  });
 });

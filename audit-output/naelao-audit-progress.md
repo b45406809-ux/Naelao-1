@@ -1063,3 +1063,9 @@ Traced structural artifact linting through the SpaceDO validation endpoint. The 
 Validation: Agent SDK artifact-linter tests passed 4/4; SpaceDO artifact-linter route test passed 1/1; Agent SDK and Spaces typechecks passed; `git diff --check` passed. New cases exercise oversized input, path traversal/path length, and a JSON object with 10,000 unexpected fields. The SpaceDO endpoint's existing body boundary and workflow storage remain separately checked in their own file rows.
 
 Refreshed the tracked tree after code commit `7cac8226`: 1,970 tracked files and 1,764 source/config files; marked the artifact-linter implementation and focused regression module reviewed.
+
+## Artifact repository client request/response bounds
+
+Reviewed the public Agent SDK Artifact Repository adapter and existing response stress tests. The adapter already bounded success responses at 16 MiB and error responses at 8 KiB, canceled oversized streams, rejected invalid UTF-8, encoded scope/query identifiers, and used fixed operation names. Outbound JSON bodies had no ceiling and were serialized before any request check. Added a bounded JSON serializer with cycle/accessor/type/depth/node checks, a 2 MiB encoded request limit, and header cloning before setting content type. The client has no in-repository production callsite today, but it is exported from the SDK for consumers.
+
+Validation: Agent SDK full suite passed 27 files / 142 tests; package typecheck passed; `git diff --check` passed. Regressions verify oversized input is rejected before binding fetch and caller headers remain unchanged, alongside the existing streamed success/error response limit tests.

@@ -1,6 +1,51 @@
 /** Typed service-binding adapter for the Artifact worker's Git-for-agents API. */
 const MAX_ARTIFACT_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_ARTIFACT_ERROR_BYTES = 8 * 1024;
+const MAX_ARTIFACT_REQUEST_BYTES = 2 * 1024 * 1024;
+
+function stringifyBoundedRequestBody(value: unknown): string {
+  const active = new WeakSet<object>();
+  let nodes = 0, chars = 0;
+  const visit = (item: unknown, depth: number): void => {
+    if (++nodes > 10_000 || depth > 16) throw new Error("repository_request_too_large");
+    if (typeof item === "string") {
+      chars += item.length;
+      if (chars > MAX_ARTIFACT_REQUEST_BYTES) throw new Error("repository_request_too_large");
+      return;
+    }
+    if (item === null || item === undefined || typeof item === "boolean") return;
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) throw new Error("repository_request_body_invalid");
+      return;
+    }
+    if (typeof item !== "object") throw new Error("repository_request_body_invalid");
+    if (active.has(item)) throw new Error("repository_request_body_invalid");
+    active.add(item);
+    if (Array.isArray(item)) {
+      if (item.length > 10_000) throw new Error("repository_request_too_large");
+      for (const child of item) visit(child, depth + 1);
+    } else {
+      const prototype = Object.getPrototypeOf(item);
+      if (prototype !== Object.prototype && prototype !== null) throw new Error("repository_request_body_invalid");
+      const descriptors = Object.getOwnPropertyDescriptors(item);
+      const keys = Reflect.ownKeys(descriptors);
+      if (keys.some(key => typeof key !== "string") || keys.length > 10_000) throw new Error("repository_request_body_invalid");
+      for (const key of keys as string[]) {
+        const descriptor = descriptors[key]!;
+        if (!("value" in descriptor)) throw new Error("repository_request_body_invalid");
+        chars += key.length;
+        if (chars > MAX_ARTIFACT_REQUEST_BYTES) throw new Error("repository_request_too_large");
+        visit(descriptor.value, depth + 1);
+      }
+    }
+    active.delete(item);
+  };
+  visit(value, 0);
+  const body = JSON.stringify(value);
+  if (typeof body !== "string" || new TextEncoder().encode(body).byteLength > MAX_ARTIFACT_REQUEST_BYTES)
+    throw new Error("repository_request_too_large");
+  return body;
+}
 
 async function readBoundedResponseText(response: Response, maxBytes: number): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
@@ -84,7 +129,13 @@ export class ArtifactRepositoryClient {
   }
 
   private async request<T>(operation: string, init: RequestInit = {}, query?: URLSearchParams): Promise<T> {
-    const headers = await this.headers();
+    const headers = new Headers(await this.headers());
+    if (typeof init.body === "string") {
+      if (init.body.length > MAX_ARTIFACT_REQUEST_BYTES
+        || new TextEncoder().encode(init.body).byteLength > MAX_ARTIFACT_REQUEST_BYTES) throw new Error("repository_request_too_large");
+    } else if (init.body !== undefined && init.body !== null) {
+      throw new Error("repository_request_body_invalid");
+    }
     if (init.body) headers.set("content-type", "application/json");
     const response = await this.binding.fetch(new Request(`${this.base}/${operation}${query ? `?${query}` : ""}`, { ...init, headers }));
     if (!response.ok) {
@@ -104,31 +155,31 @@ export class ArtifactRepositoryClient {
     }
   }
 
-  createRepo() { return this.request<{ branch: string; commit_id: string | null }>("createRepo", { method: "POST", body: "{}" }); }
+  createRepo() { return this.request<{ branch: string; commit_id: string | null }>("createRepo", { method: "POST", body: stringifyBoundedRequestBody({}) }); }
   getRepo() { return this.request<{ branch: string; commit_id: string | null }>("getRepo"); }
-  commit(message: string, metadata: RepositoryCommitMetadata, branch = "main") {
-    return this.request<{ commit_id: string; tree_id: string }>("commit", { method: "POST", body: JSON.stringify({ message, metadata, branch }) });
+  async commit(message: string, metadata: RepositoryCommitMetadata, branch = "main") {
+    return this.request<{ commit_id: string; tree_id: string }>("commit", { method: "POST", body: stringifyBoundedRequestBody({ message, metadata, branch }) });
   }
   getCommit(oid: string) { return this.request<Record<string, unknown>>("getCommit", {}, new URLSearchParams({ oid })); }
   getTree(at?: string) { return this.request<{ data: unknown[]; commit_id: string | null }>("getTree", {}, new URLSearchParams(at ? { at } : {})); }
   compare(baseRef: string, headRef: string) { return this.request<RepositoryComparison>("compare", {}, new URLSearchParams({ baseRef, headRef })); }
-  createTaskBranch(name: string, from?: string) { return this.request<{ branch: string; commit_id: string | null }>("createTaskBranch", { method: "POST", body: JSON.stringify({ name, from }) }); }
-  forkForPrivateScratchpad(name: string, from?: string) { return this.request<{ branch: string; commit_id: string | null }>("forkForPrivateScratchpad", { method: "POST", body: JSON.stringify({ name, from, temporary: true }) }); }
-  rollbackToTurn(commitOid: string, branch = "main") { return this.request<{ commit_id: string }>("rollbackToTurn", { method: "POST", body: JSON.stringify({ commit_id: commitOid, branch }) }); }
+  async createTaskBranch(name: string, from?: string) { return this.request<{ branch: string; commit_id: string | null }>("createTaskBranch", { method: "POST", body: stringifyBoundedRequestBody({ name, from }) }); }
+  async forkForPrivateScratchpad(name: string, from?: string) { return this.request<{ branch: string; commit_id: string | null }>("forkForPrivateScratchpad", { method: "POST", body: stringifyBoundedRequestBody({ name, from, temporary: true }) }); }
+  async rollbackToTurn(commitOid: string, branch = "main") { return this.request<{ commit_id: string }>("rollbackToTurn", { method: "POST", body: stringifyBoundedRequestBody({ commit_id: commitOid, branch }) }); }
   getBlame(path: string, at?: string) { return this.request<Record<string, unknown>>("getBlame", {}, new URLSearchParams({ path, ...(at ? { at } : {}) })); }
   generatePullRequestDiff(baseBranch: string, forkBranch: string) {
     return this.request<PullRequestDiff>("generatePullRequestDiff", {}, new URLSearchParams({ baseBranch, forkBranch }));
   }
-  submitPullRequest(details: { baseBranch?: string; forkBranch: string; title: string; author: string; reasoning: string }) {
-    return this.request<{ card: Record<string, unknown>; event: Record<string, unknown> }>("submitPullRequest", { method: "POST", body: JSON.stringify(details) });
+  async submitPullRequest(details: { baseBranch?: string; forkBranch: string; title: string; author: string; reasoning: string }) {
+    return this.request<{ card: Record<string, unknown>; event: Record<string, unknown> }>("submitPullRequest", { method: "POST", body: stringifyBoundedRequestBody(details) });
   }
-  mergePullRequest(baseBranch: string, forkBranch: string, reviewerId: string, reviewerRank: "admin" | "owner", metadata?: RepositoryCommitMetadata) {
-    return this.request<{ commit_id: string; fast_forward: boolean; event: Record<string, unknown> }>("mergePullRequest", { method: "POST", body: JSON.stringify({ baseBranch, forkBranch, reviewerId, reviewerRank, metadata }) });
+  async mergePullRequest(baseBranch: string, forkBranch: string, reviewerId: string, reviewerRank: "admin" | "owner", metadata?: RepositoryCommitMetadata) {
+    return this.request<{ commit_id: string; fast_forward: boolean; event: Record<string, unknown> }>("mergePullRequest", { method: "POST", body: stringifyBoundedRequestBody({ baseBranch, forkBranch, reviewerId, reviewerRank, metadata }) });
   }
   getDivergenceStatus(baseRef: string, currentRef: string) {
     return this.request<DivergenceStatus>("getDivergenceStatus", {}, new URLSearchParams({ baseRef, currentRef }));
   }
-  reconcileUpstream(targetBranch: string, options: { upstreamBranch?: string; metadata?: RepositoryCommitMetadata } = {}) {
-    return this.request<ReconcileResult>("reconcileUpstream", { method: "POST", body: JSON.stringify({ targetBranch, ...options }) });
+  async reconcileUpstream(targetBranch: string, options: { upstreamBranch?: string; metadata?: RepositoryCommitMetadata } = {}) {
+    return this.request<ReconcileResult>("reconcileUpstream", { method: "POST", body: stringifyBoundedRequestBody({ targetBranch, ...options }) });
   }
 }
