@@ -119,6 +119,7 @@ export async function downloadTwilioWhatsAppAttachments(fields: Record<string, s
   const results: DownloadedChannelAttachment[] = [];
   let total = 0;
   for (let index = 0; index < count; index++) {
+    if (total >= MAX_INBOUND_CHANNEL_MEDIA_TOTAL_BYTES) throw new Error("twilio_whatsapp_media_too_large");
     const mediaUrl = fields[`MediaUrl${index}`];
     const mimeType = (fields[`MediaContentType${index}`] ?? "application/octet-stream").toLowerCase().split(";")[0]!.trim();
     if (!mediaUrl || !/^[\w.+-]+\/[\w.+-]+$/.test(mimeType)) throw new Error("twilio_whatsapp_media_rejected");
@@ -134,10 +135,10 @@ export async function downloadTwilioWhatsAppAttachments(fields: Record<string, s
     });
     if (!response.ok) throw new Error(`twilio_whatsapp_media_download_failed:${response.status}`);
     const length = Number(response.headers.get("content-length"));
-    if (Number.isFinite(length) && length > MAX_INBOUND_CHANNEL_MEDIA_BYTES) throw new Error("twilio_whatsapp_media_too_large");
-    const bytes = new Uint8Array(await readBounded(response, MAX_INBOUND_CHANNEL_MEDIA_BYTES));
+    const remainingBytes = MAX_INBOUND_CHANNEL_MEDIA_TOTAL_BYTES - total;
+    if (Number.isFinite(length) && length > Math.min(MAX_INBOUND_CHANNEL_MEDIA_BYTES, remainingBytes)) throw new Error("twilio_whatsapp_media_too_large");
+    const bytes = new Uint8Array(await readBounded(response, Math.min(MAX_INBOUND_CHANNEL_MEDIA_BYTES, remainingBytes)));
     total += bytes.byteLength;
-    if (total > MAX_INBOUND_CHANNEL_MEDIA_TOTAL_BYTES) throw new Error("twilio_whatsapp_media_too_large");
     const supplied = fields[`MediaFilename${index}`] ?? `whatsapp-${messageSid}-${index + 1}`;
     const filename = supplied.replace(/[\\/\0-\x1f\x7f]/g, "_").replace(/^\.+/, "").slice(0, 120) || `attachment-${index + 1}`;
     results.push({ filename, mimeType, bytes });

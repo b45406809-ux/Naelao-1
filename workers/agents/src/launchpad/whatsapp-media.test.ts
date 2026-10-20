@@ -101,4 +101,21 @@ describe("WhatsApp attachment ingress", () => {
     await expect(downloadTwilioWhatsAppAttachments({ ...fields, MediaUrl0: "https://attacker.example/file" }, { accountSid: sid, authToken: "private", fetcher }))
       .rejects.toThrow("twilio_whatsapp_media_url_rejected");
   });
+
+  it("stops Twilio downloads at the 15 MiB aggregate ceiling", async () => {
+    const sid = `AC${"a".repeat(32)}`;
+    const messageSid = `SM${"b".repeat(32)}`;
+    const fields: Record<string, string> = { MessageSid: messageSid, NumMedia: "4" };
+    for (let index = 0; index < 4; index++) {
+      const mediaSid = `ME${"c".repeat(32)}`;
+      fields[`MediaUrl${index}`] = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages/${messageSid}/Media/${mediaSid}`;
+      fields[`MediaContentType${index}`] = "application/octet-stream";
+    }
+    const fiveMiB = 5 * 1024 * 1024;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(new Uint8Array(fiveMiB)));
+
+    await expect(downloadTwilioWhatsAppAttachments(fields, { accountSid: sid, authToken: "private", fetcher }))
+      .rejects.toThrow("twilio_whatsapp_media_too_large");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
 });
