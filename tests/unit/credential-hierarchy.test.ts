@@ -20,6 +20,10 @@ const SHARING_MIGRATION_SQL = readFileSync(
   join(__dirname, "../../infra/migrations/0069_credential_sharing_and_product_tier.sql"),
   "utf8"
 );
+const PROJECT_CREDENTIAL_MIGRATION_SQL = readFileSync(
+  join(__dirname, "../../infra/migrations/0082_project_bound_credentials.sql"),
+  "utf8"
+);
 // Minimal stand-in for the real `spaces` table (see infra/migrations/0003_spaces.sql +
 // 0034_space_hierarchy.sql) — only the columns resolveCredential's product-root walk actually
 // reads. Full spaces-table migration coverage lives in create-space-record.test.ts and friends.
@@ -34,7 +38,7 @@ const SPACES_STUB_SQL = `
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 function makeEnv(): CredentialsEnv & { PLATFORM_DB: unknown; ANALYTICS: unknown } {
-  const fakeDb = createFakeD1([SPACES_STUB_SQL, MIGRATION_SQL, SHARING_MIGRATION_SQL]);
+  const fakeDb = createFakeD1([SPACES_STUB_SQL, MIGRATION_SQL, SHARING_MIGRATION_SQL, PROJECT_CREDENTIAL_MIGRATION_SQL]);
   const analytics = { writeDataPoint() {} };
   return {
     ENVIRONMENT: "test",
@@ -576,6 +580,54 @@ describe("credential hierarchy", () => {
         env, execCtx
       );
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe("project-bound credential isolation", () => {
+    it("requires a signed project scope to resolve a project credential and rejects cross-project requests", async () => {
+      const create = await credentialsWorker.fetch(
+        await req("/spaces/space-project/credentials", {
+          method: "POST", user: "admin-1", role: "admin",
+          body: { name: "DEPLOY_KEY", value: "project-secret", scope: "project", project_id: "project-a" },
+        }), env, execCtx
+      );
+      expect(create.status).toBe(201);
+
+      const endpoint = "https://credentials.naelao.com/v1/internal/spaces/space-project/credentials/DEPLOY_KEY/plaintext";
+      const unscopedToken = await generateCredentialToken(env.PLATFORM_SECRET, "space-project", "agent-1", undefined, "tenant-1");
+      const unscoped = await credentialsWorker.fetch(new Request(endpoint, {
+        method: "POST", headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-credential-token": unscopedToken },
+      }), env, execCtx);
+      expect(unscoped.status).toBe(404);
+
+      const projectToken = await generateCredentialToken(env.PLATFORM_SECRET, "space-project", "agent-1", "project-a", "tenant-1");
+      const allowed = await credentialsWorker.fetch(new Request(endpoint, {
+        method: "POST", headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-credential-token": projectToken },
+        body: JSON.stringify({ project_id: "project-a" }),
+      }), env, execCtx);
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toMatchObject({ value: "project-secret", project_id: "project-a", resolved_tier: "project_bound" });
+
+      const otherProjectToken = await generateCredentialToken(env.PLATFORM_SECRET, "space-project", "agent-1", "project-b", "tenant-1");
+      const crossProject = await credentialsWorker.fetch(new Request(endpoint, {
+        method: "POST", headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-credential-token": otherProjectToken },
+        body: JSON.stringify({ project_id: "project-a" }),
+      }), env, execCtx);
+      expect(crossProject.status).toBe(403);
+    });
+
+    it("rejects project identifiers supplied without project scope or an administrator", async () => {
+      const wrongScope = await credentialsWorker.fetch(await req("/spaces/space-project/credentials", {
+        method: "POST", user: "admin-1", role: "admin",
+        body: { name: "KEY", value: "v", scope: "space", project_id: "project-a" },
+      }), env, execCtx);
+      expect(wrongScope.status).toBe(400);
+
+      const member = await credentialsWorker.fetch(await req("/spaces/space-project/credentials", {
+        method: "POST", user: "user-1", role: "member",
+        body: { name: "KEY", value: "v", scope: "project", project_id: "project-a" },
+      }), env, execCtx);
+      expect(member.status).toBe(403);
     });
   });
 });
