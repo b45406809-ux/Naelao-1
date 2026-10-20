@@ -8450,16 +8450,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             continue;
           }
         } else if (matchedRule.action === "run_script" && matchedRule.script_name) {
+          if (projectCfgResult?.status === "error") {
+            // F17 / A1.13: fail closed before evaluating script availability or launching any
+            // model/tool work while the project's structural limits cannot be verified.
+            engineEnv.maxTier = 1 as ExecutionTier;
+            spendCapped++;
+            continue;
+          }
           if (!msg.channel_extension_instance_id || !msg.channel_extension_sha256) {
             this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
             escalated++;
-            continue;
-          }
-          if (projectCfgResult?.status === "error") {
-            // F17 / A1.13: fail closed — never run a rule-triggered script unrestricted while
-            // the project's config is unreachable. Treat exactly like a spend-cap hit.
-            engineEnv.maxTier = 1 as ExecutionTier;
-            spendCapped++;
             continue;
           }
           if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
@@ -8472,6 +8472,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
         // Rule matched but delivery/script failed — fall through to escalation, not silent drop.
         escalated++;
+        continue;
+      }
+
+      // F17 / A1.13: a project-scoped inbound message must not reach the paid reasoning loop
+      // while structural project policy is unavailable. Safe deterministic rules above (STOP,
+      // owner-authored replies, and human takeover) remain usable; all other work waits for
+      // policy recovery instead of being treated as unrestricted.
+      if (msg.project_id && projectCfgResult?.status === "error") {
+        engineEnv.maxTier = 1 as ExecutionTier;
+        spendCapped++;
         continue;
       }
 

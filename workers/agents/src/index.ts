@@ -9807,6 +9807,10 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const dispatchStarted = Date.now();
       let claimStatus: "completed" | "failed" | "skipped" = "failed";
       try {
+        // Scheduled goals need the same compact, current situation brief as connector polls.
+        // Keep it outside the persisted job goal so the job's authored instruction remains
+        // unchanged, and let a diagnostics outage degrade to the standing advance directive.
+        const wakeBrief = row.goal ? await buildWakeUpBrief(env, row.space_id, row.tenant_id) : null;
         // A goal-based row (migration 0043) wakes the full reasoning loop against the named
         // agent's own DO; everything else keeps the pre-existing direct-script-fire behavior.
         const doResp = row.goal
@@ -9815,7 +9819,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
               tenantId: row.tenant_id,
               ...(row.agent_id ? { agentId: row.agent_id } : {}),
               ...(row.project_id ? { projectId: row.project_id } : {}),
-              goal: row.goal,
+              goal: [wakeBrief, row.goal].filter(Boolean).join("\n"),
               ...(wakePolicy.airGappedOnly ? { airGappedOnly: true } : {}),
             })
           : await fireScriptDirectly(env, {

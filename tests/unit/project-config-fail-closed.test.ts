@@ -16,13 +16,28 @@ function makeR2(): R2Bucket {
   const store = new Map<string, string>();
   const bucket = {
     async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
+      const text = typeof value === "string"
+        ? value
+        : value instanceof Uint8Array
+          ? new TextDecoder().decode(value)
+          : value instanceof ArrayBuffer
+            ? new TextDecoder().decode(value)
+            : String(value);
+      store.set(key, text);
       return {} as R2Object;
     },
     async get(key: string) {
       if (!store.has(key)) return null;
       const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; }, get body() { return text; } } as unknown as R2ObjectBody;
+      const bytes = new TextEncoder().encode(text);
+      return {
+        size: bytes.byteLength,
+        etag: "test-etag",
+        uploaded: new Date(),
+        async arrayBuffer() { return bytes.slice().buffer; },
+        async text() { return text; },
+        get body() { return new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }); },
+      } as unknown as R2ObjectBody;
     },
     async head(key: string) {
       return store.has(key) ? ({} as R2Object) : null;
@@ -88,10 +103,11 @@ async function heartbeat(doInstance: NaelaoAgentDO) {
 
 describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a clean 404", () => {
   describe("handleScriptRun", () => {
-    it("a network error fetching the project config rejects the run as spend_capped (429), not unrestricted", async () => {
+    it("a network error fetching project policy rejects the run with an unavailable-policy response, not unrestricted", async () => {
       const spacesWorker = {
         async fetch(input: RequestInfo) {
           const url = new URL(typeof input === "string" ? input : (input as Request).url);
+          if (/\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
           if (url.pathname === "/internal/pricing-catalog") return Response.json({ external_revenue_cut: { enabled: false } });
           if (url.pathname === "/internal/business-subscription-status") return Response.json({ gated: false, active: true, reason: "" });
           if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) throw new Error("network down");
@@ -110,6 +126,7 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
       const spacesWorker = {
         async fetch(input: RequestInfo) {
           const url = new URL(typeof input === "string" ? input : (input as Request).url);
+          if (/\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
           if (url.pathname === "/internal/pricing-catalog") return Response.json({ external_revenue_cut: { enabled: false } });
           if (url.pathname === "/internal/business-subscription-status") return Response.json({ gated: false, active: true, reason: "" });
           if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) return new Response("boom", { status: 500 });
@@ -145,6 +162,7 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
       const spacesWorker = {
         async fetch(input: RequestInfo) {
           const url = new URL(typeof input === "string" ? input : (input as Request).url);
+          if (/\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
           if (/\/rules$/.test(url.pathname)) return Response.json({ data: [], count: 0 });
           if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) throw new Error("network down");
           return new Response("not found", { status: 404 });
@@ -161,6 +179,7 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
       const spacesWorker = {
         async fetch(input: RequestInfo) {
           const url = new URL(typeof input === "string" ? input : (input as Request).url);
+          if (/\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
           if (/\/rules$/.test(url.pathname)) return Response.json({ data: [], count: 0 });
           return new Response("not found", { status: 404 });
         },
@@ -176,6 +195,7 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
       const spacesWorker = {
         async fetch(input: RequestInfo) {
           const url = new URL(typeof input === "string" ? input : (input as Request).url);
+          if (/\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
           if (/\/rules$/.test(url.pathname)) {
             return Response.json({
               data: [{ id: "r1", trigger_pattern: "hi", action: "run_script", reply_text: null, script_name: "some-script", enabled: 1, priority: 10 }],
