@@ -643,3 +643,9 @@ The effect receipt and usage counter now commit atomically, but another interlea
 Reviewed the shared decision client and all runtime construction sites. It already clamps retries and response size, but had no request deadline; a stalled OpenRouter call could hold a runtime preflight, WriteGuard, mention router, or other decision path indefinitely. Added one five-second overall deadline (100 ms–30 s bounded override) shared by attempts, retry backoff, and response-body reads. Timeout and network failures normalize to stable non-sensitive errors so existing callers can fall back deterministically. Updated the System One reference.
 
 Validation: `packages/agent-sdk/src/fast-decision.test.ts` passed 24/24, including a never-resolving request and a stalled body stream; package TypeScript passed and `git diff --check` passed. No live OpenRouter latency/load measurements were made; the timeout value is an operational default, not a measured provider percentile.
+
+## Market Radar provider fan-out bound (2026-10-20)
+
+The Market Radar route loaded every verified signal from the previous 30 days, scored each concurrently with a decision-model call, and only then filtered to configured stacks and five displayed results. A growing or polluted table could therefore cause unbounded memory and provider fan-out for a route that returns at most five rows. The query now caps database rows at 100, and deterministic preselection keeps only the five highest-scoring rows with configured stacks before any model requests. At most five concurrent decision requests can be made per refresh.
+
+Validation: Market Radar suite passed 5/5; Spaces TypeScript and `git diff --check` passed. The regression feeds 120 mixed configured/unconfigured candidates and proves preselection caps eligible work at five. No live DB growth or OpenRouter load was run.

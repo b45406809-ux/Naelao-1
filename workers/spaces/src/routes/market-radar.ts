@@ -17,6 +17,8 @@ export interface MarketSignal {
   observed_at: string;
 }
 
+const MAX_RADAR_CANDIDATES = 5;
+
 /** Bounded decision-model scoring with a deterministic fallback for every radar refresh. */
 export function scoreMarketSignal(
   signal: Pick<MarketSignal, "search_surge_pct" | "saturation_index">
@@ -24,6 +26,14 @@ export function scoreMarketSignal(
   const velocity = Math.max(0, Math.min(300, signal.search_surge_pct)) / 3;
   const whitespace = 100 - Math.max(0, Math.min(100, signal.saturation_index));
   return deterministicScore(Math.round((velocity * 0.62 + whitespace * 0.38) * 100) / 100, "market_velocity_whitespace_v1").value;
+}
+
+/** Bound provider work and response construction before making any advisory model calls. */
+export function selectMarketRadarCandidates(signals: readonly MarketSignal[]): MarketSignal[] {
+  return signals
+    .filter((signal) => (STACKS[signal.id]?.extensions.length ?? 0) > 0)
+    .sort((a, b) => scoreMarketSignal(b) - scoreMarketSignal(a) || b.observed_at.localeCompare(a.observed_at))
+    .slice(0, MAX_RADAR_CANDIDATES);
 }
 
 export async function scoreMarketSignalWithSentry(
@@ -167,8 +177,10 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
   const topTrends = async (c: Context<{ Bindings: Env }>) => {
     const { results } = await c.env.PLATFORM_DB.prepare(
       `SELECT id, name, search_surge_pct, saturation_index, arr_low_cents, arr_high_cents, source_url, observed_at
-       FROM market_radar_signals WHERE verified = 1 AND observed_at >= datetime('now', '-30 days')`
+       FROM market_radar_signals WHERE verified = 1 AND observed_at >= datetime('now', '-30 days')
+       ORDER BY observed_at DESC LIMIT 100`
     ).all<MarketSignal>();
+    const candidates = selectMarketRadarCandidates(results);
     const gateway = c.env.OPENROUTER_API_KEY
       ? new SystemOneDecisionClient({
           apiKey: c.env.OPENROUTER_API_KEY,
@@ -185,7 +197,7 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
           } } : {}),
         })
       : undefined;
-    const scored = await Promise.all(results.map(async (signal) => ({
+    const scored = await Promise.all(candidates.map(async (signal) => ({
         ...signal,
         ...await scoreMarketSignalWithSentry(signal, gateway),
         saturation_label:
@@ -197,10 +209,7 @@ export function registerMarketRadarRoutes(app: Hono<{ Bindings: Env }>): void {
         preconfigured_stack: STACKS[signal.id]?.extensions ?? [],
         blueprint: blueprintForOpportunity(signal),
       })));
-    const opportunities = scored
-      .filter((item) => item.preconfigured_stack.length > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
+    const opportunities = scored.sort((a, b) => b.score - a.score).slice(0, MAX_RADAR_CANDIDATES);
     return c.json({
       data: opportunities,
       count: opportunities.length,

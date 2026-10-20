@@ -1,7 +1,7 @@
 import { evaluateBlueprintSecurity } from "@naelao/security";
 import { describe, expect, it, vi } from "vitest";
 import { GRADUATION_STAGES } from "./graduation.js";
-import { blueprintForOpportunity, scoreMarketSignal, scoreMarketSignalWithSentry } from "./market-radar.js";
+import { blueprintForOpportunity, scoreMarketSignal, scoreMarketSignalWithSentry, selectMarketRadarCandidates } from "./market-radar.js";
 
 describe("market radar and graduation", () => {
   it("tracks the complete graduation lifecycle in order", () => {
@@ -29,6 +29,23 @@ describe("market radar and graduation", () => {
     ).toBeGreaterThan(
       scoreMarketSignal({ search_surge_pct: 30, saturation_index: 80 })
     );
+  });
+
+  it("bounds scored radar candidates and excludes rows with no configured stack", () => {
+    const signals = Array.from({ length: 120 }, (_, index) => ({
+      id: index % 2 ? "solar_permitting" : "unconfigured_market",
+      name: `Market ${index}`,
+      search_surge_pct: 300 - index,
+      saturation_index: index % 100,
+      arr_low_cents: 0,
+      arr_high_cents: 0,
+      source_url: "https://example.test",
+      observed_at: new Date(index * 1_000).toISOString(),
+    }));
+    const selected = selectMarketRadarCandidates(signals);
+    expect(selected).toHaveLength(5);
+    expect(selected.every((signal) => signal.id === "solar_permitting")).toBe(true);
+    expect(selected[0]!.search_surge_pct).toBeGreaterThan(selected.at(-1)!.search_surge_pct);
   });
 
   it("uses a confident typed Jev/Laya score and falls back deterministically", async () => {
