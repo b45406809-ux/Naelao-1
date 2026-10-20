@@ -217,7 +217,7 @@ export function interceptPlatformWords(words: string[], command?: string): CliDi
 }
 
 export interface VirtualCliVault {
-  fetchWithAuth(url: string, options: { credentialName: string; method?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response>;
+  fetchWithAuth(url: string, options: { credentialName: string; method?: string; idempotencyKey?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response>;
 }
 export interface SynthesizedCliStore { read(path: string): Promise<string | null>; write(path: string, source: string): Promise<void> }
 export interface VirtualCliDaemonRegistry { execute(name: string, argv: string[]): Promise<unknown> }
@@ -359,7 +359,18 @@ export class VirtualCliDispatcher {
       credentialName = "TWILIO_AUTH_TOKEN"; method = action === "list" || action === "get" ? "GET" : "POST";
     }
     if (!this.ctx.vault) throw new Error("virtual_cli_credentials_unavailable");
-    const response = await this.ctx.vault.fetchWithAuth(url, { credentialName, method, ...(method !== "GET" ? { body } : {}), headers: { "content-type": "application/json" } });
+    const idempotencyKey = typeof body["idempotency_key"] === "string" ? body["idempotency_key"] : undefined;
+    delete body["idempotency_key"];
+    if (!["GET", "HEAD"].includes(method) && (!idempotencyKey || !/^[A-Za-z0-9._:-]{1,120}$/.test(idempotencyKey))) {
+      throw new Error("api_idempotency_key_required");
+    }
+    const response = await this.ctx.vault.fetchWithAuth(url, {
+      credentialName,
+      method,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      ...(method !== "GET" ? { body } : {}),
+      headers: { "content-type": "application/json" },
+    });
     return { exit_code: 0, stdout: await responseText(response) };
   }
   static validateSynthesized(name: string, source: string): void {

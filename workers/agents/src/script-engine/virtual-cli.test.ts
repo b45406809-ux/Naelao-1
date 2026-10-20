@@ -97,6 +97,22 @@ describe("VirtualCliDispatcher", () => {
       .rejects.toThrow("api_idempotency_key_required");
     expect(fetchWithAuth).toHaveBeenCalledTimes(2);
   });
+  it("requires and forwards idempotency for built-in provider writes without sending it in the provider body", async () => {
+    const fetchWithAuth = vi.fn(async () => Response.json({ id: "email_1" }));
+    const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space" });
+    await expect(cli.execute(["resend", "emails", "send", "--from", "sender@example.com", "--to", "customer@example.com", "--subject", "Hello", "--html", "<p>Hello</p>"]))
+      .rejects.toThrow("api_idempotency_key_required");
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+
+    await expect(cli.execute(["resend", "emails", "send", "--from", "sender@example.com", "--to", "customer@example.com", "--subject", "Hello", "--html", "<p>Hello</p>", "--idempotency-key", "email-run-1"]))
+      .resolves.toMatchObject({ exit_code: 0 });
+    expect(fetchWithAuth).toHaveBeenCalledWith("https://api.resend.com/emails", expect.objectContaining({
+      credentialName: "RESEND_API_KEY",
+      method: "POST",
+      idempotencyKey: "email-run-1",
+      body: { from: "sender@example.com", to: "customer@example.com", subject: "Hello", html: "<p>Hello</p>" },
+    }));
+  });
   it("rejects oversized API replies while streaming", async () => {
     const fetchWithAuth = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024)); } })));
     const cli = new VirtualCliDispatcher({ vault: { fetchWithAuth }, tenantId: "tenant", spaceId: "space" });
