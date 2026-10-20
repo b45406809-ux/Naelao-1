@@ -10,6 +10,42 @@ export interface BrowserReflexDecision {
   kind: "action" | "thinking_required";
   action?: BrowserScopedAction; reason?: string;
 }
+const MAX_BROWSER_SCREENSHOT_BYTES = 4 * 1024 * 1024;
+
+/** Read PNG bytes within the same cap used for images returned to the planner. */
+export async function readBoundedBrowserScreenshot(response: Response): Promise<Uint8Array> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BROWSER_SCREENSHOT_BYTES) {
+    void response.body?.cancel().catch(() => {});
+    throw new Error("browser_screenshot_limit");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("browser_screenshot_unavailable");
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > MAX_BROWSER_SCREENSHOT_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw new Error("browser_screenshot_limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 /** A model may choose one supplied action. It cannot create an action, URL, handle or grant. */
 export async function chooseBrowserReflex(scope: BrowserRuntimeScope, observation: BrowserObservation, candidates: readonly BrowserActionCandidate[], gateway: FastDecisionGateway | undefined, minimumConfidence = 0.95): Promise<BrowserReflexDecision> {
   validateBrowserScope(scope);

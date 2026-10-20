@@ -5,7 +5,7 @@
 
 import { mintInternalToken } from "@naelao/http";
 import { assertBrowserUrl, browserEngineFor, validateBrowserScope, type BrowserActionKind, type BrowserObservation, type BrowserRuntimeScope } from "@naelao/agent-sdk";
-import { browserPerceptionReceipt, chooseBrowserReflex, type BrowserActionCandidate } from "./browser-perception.js";
+import { browserPerceptionReceipt, chooseBrowserReflex, readBoundedBrowserScreenshot, type BrowserActionCandidate } from "./browser-perception.js";
 import type {
   ExecutionTier,
   ScriptRunResult,
@@ -172,10 +172,11 @@ async function runBrowser(
       const response = await send(endpoint, params.signal);
       if (params.signal?.aborted || aborted) return fail("browser_session_cancelled");
       if (operation === "see" && response.ok && response.headers.get("content-type")?.includes("image/png")) {
-        const bytes = await response.arrayBuffer();
-        if (bytes.byteLength > 4 * 1024 * 1024) return fail("browser_screenshot_limit");
+        let bytes: Uint8Array;
+        try { bytes = await readBoundedBrowserScreenshot(response); }
+        catch (error) { return fail(error instanceof Error ? error.message : "browser_screenshot_limit"); }
         engine = "chromium";
-        return { ok: true, output: { image_base64: btoa(Array.from(new Uint8Array(bytes), byte => String.fromCharCode(byte)).join("")), mime_type: "image/png", session_id: sessionId },
+        return { ok: true, output: { image_base64: btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join("")), mime_type: "image/png", session_id: sessionId },
           tier: 5, actual_tier: 5, engine, duration_ms: Date.now() - started, tokens_used: 0 };
       }
       let result = await response.json<{ ok?: boolean; result?: BrowserObservation; engine_used?: string; error_code?: string; message?: string }>();

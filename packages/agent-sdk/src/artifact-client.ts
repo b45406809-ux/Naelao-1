@@ -33,7 +33,7 @@ async function readBoundedResponseText(response: Response, maxBytes: number): Pr
     offset += chunk.byteLength;
   }
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
   } catch {
     throw new Error("repository_invalid_response_encoding");
   }
