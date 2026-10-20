@@ -2423,8 +2423,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/do/SpaceDO-migrations.test.ts`
 - [ ] `workers/spaces/src/do/SpaceDO.ts`
 - [ ] `workers/spaces/src/do/SpaceTypeRegistryDO.ts`
-- [ ] `workers/spaces/src/do/TransactionCoordinatorDO.test.ts`
-- [ ] `workers/spaces/src/do/TransactionCoordinatorDO.ts`
+- [x] `workers/spaces/src/do/TransactionCoordinatorDO.test.ts`
+- [x] `workers/spaces/src/do/TransactionCoordinatorDO.ts`
 - [ ] `workers/spaces/src/do/additional-space-do-request-boundaries.test.ts`
 - [ ] `workers/spaces/src/do/artifact-linter.test.ts`
 - [ ] `workers/spaces/src/do/custom-model-lifecycle-do.test.ts`

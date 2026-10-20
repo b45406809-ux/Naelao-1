@@ -45,6 +45,17 @@ async function post(instance: TransactionCoordinatorDO, path: string, body?: unk
   }));
 }
 
+function allowPublicDnsThen(response: Response) {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const address = input instanceof Request ? input.url : String(input);
+    if (address.includes("cloudflare-dns.com/dns-query")) {
+      const type = new URL(address).searchParams.get("type");
+      return Response.json({ Status: 0, Answer: type === "A" ? [{ data: "93.184.216.34" }] : [] });
+    }
+    return response.clone();
+  }));
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("TransactionCoordinatorDO compensation recovery", () => {
@@ -52,13 +63,18 @@ describe("TransactionCoordinatorDO compensation recovery", () => {
     const h = harness();
     const calls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request) => {
-      calls.push(String(url));
+      const address = url instanceof Request ? url.url : String(url);
+      if (address.includes("cloudflare-dns.com/dns-query")) {
+        const type = new URL(address).searchParams.get("type");
+        return Response.json({ Status: 0, Answer: type === "A" ? [{ data: "93.184.216.34" }] : [] });
+      }
+      calls.push(address);
       return new Response("ok", { status: 200 });
     }));
     const created = await post(h.instance, "/sagas", { name: "checkout", tenant_id: "tenant-1", steps: [
-      { name: "reserve", action_url: "https://internal/reserve", action_body: {}, compensation_url: "https://internal/release", compensation_body: {} },
-      { name: "charge", action_url: "https://internal/charge", action_body: {}, compensation_url: "https://internal/refund", compensation_body: {} },
-      { name: "notify", action_url: "https://internal/notify", action_body: {}, compensation_url: "https://internal/undo-notify", compensation_body: {} },
+      { name: "reserve", action_url: "https://example.com/reserve", action_body: {}, compensation_url: "https://example.com/release", compensation_body: {} },
+      { name: "charge", action_url: "https://example.com/charge", action_body: {}, compensation_url: "https://example.com/refund", compensation_body: {} },
+      { name: "notify", action_url: "https://example.com/notify", action_body: {}, compensation_url: "https://example.com/undo-notify", compensation_body: {} },
     ] });
     const { saga_id: id } = await created.json() as { saga_id: string };
     await post(h.instance, `/sagas/${id}/steps/0/complete`);
@@ -66,17 +82,17 @@ describe("TransactionCoordinatorDO compensation recovery", () => {
     await post(h.instance, `/sagas/${id}/steps/2/fail`, { error: "notification failed" });
     await Promise.all(h.pending);
     const state = await (await h.instance.fetch(new Request(`https://saga/sagas/${id}`))).json() as { status: string; steps: Array<{ status: string }> };
-    expect(calls).toEqual(["https://internal/refund", "https://internal/release"]);
+    expect(calls).toEqual(["https://example.com/refund", "https://example.com/release"]);
     expect(state.status).toBe("compensated");
     expect(state.steps.map(step => step.status)).toEqual(["compensated", "compensated", "failed"]);
   });
 
   it("records failed compensation as failed rather than claiming rollback succeeded", async () => {
     const h = harness();
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("provider unavailable", { status: 503 })));
+    allowPublicDnsThen(new Response(null, { status: 503 }));
     const created = await post(h.instance, "/sagas", { name: "refund", tenant_id: "tenant-1", steps: [
-      { name: "charge", action_url: "https://internal/charge", action_body: {}, compensation_url: "https://internal/refund", compensation_body: {} },
-      { name: "next", action_url: "https://internal/next", action_body: {}, compensation_url: "https://internal/undo", compensation_body: {} },
+      { name: "charge", action_url: "https://example.com/charge", action_body: {}, compensation_url: "https://example.com/refund", compensation_body: {} },
+      { name: "next", action_url: "https://example.com/next", action_body: {}, compensation_url: "https://example.com/undo", compensation_body: {} },
     ] });
     const { saga_id: id } = await created.json() as { saga_id: string };
     await post(h.instance, `/sagas/${id}/steps/0/complete`);
@@ -85,5 +101,33 @@ describe("TransactionCoordinatorDO compensation recovery", () => {
     const state = await (await h.instance.fetch(new Request(`https://saga/sagas/${id}`))).json() as { status: string; steps: Array<{ error?: string }> };
     expect(state.status).toBe("failed");
     expect(state.steps[0]?.error).toContain("Compensation failed: 503");
+  });
+
+  it("rejects malformed, oversized, and unsafe saga definitions", async () => {
+    const h = harness();
+    expect((await post(h.instance, "/sagas", "not-json")).status).toBe(400);
+    const bad = await post(h.instance, "/sagas", { name: "bad", tenant_id: "tenant-1", steps: [
+      { name: "private", action_url: "http://127.0.0.1/action", action_body: {}, compensation_url: "https://example.com/undo", compensation_body: {} },
+    ] });
+    expect(bad.status).toBe(400);
+    const tooMany = await post(h.instance, "/sagas", { name: "large", tenant_id: "tenant-1", steps: Array.from({ length: 17 }, (_, i) => ({
+      name: `step-${i}`, action_url: "https://example.com/action", action_body: {}, compensation_url: "https://example.com/undo", compensation_body: {},
+    })) });
+    expect(tooMany.status).toBe(400);
+    expect(h.rows.size).toBe(0);
+  });
+
+  it("enforces sequential step transitions and makes duplicate completion idempotent", async () => {
+    const h = harness();
+    const created = await post(h.instance, "/sagas", { name: "ordered", tenant_id: "tenant-1", steps: [
+      { name: "one", action_url: "https://example.com/one", action_body: {}, compensation_url: "https://example.com/undo-one", compensation_body: {} },
+      { name: "two", action_url: "https://example.com/two", action_body: {}, compensation_url: "https://example.com/undo-two", compensation_body: {} },
+    ] });
+    const { saga_id: id } = await created.json() as { saga_id: string };
+    expect((await post(h.instance, `/sagas/${id}/steps/1/complete`)).status).toBe(409);
+    expect((await post(h.instance, `/sagas/${id}/steps/0/complete`)).status).toBe(200);
+    const duplicate = await post(h.instance, `/sagas/${id}/steps/0/complete`);
+    expect((await duplicate.json()).deduplicated).toBe(true);
+    expect((await post(h.instance, `/sagas/${id}/steps/0/fail`, { error: "late failure" })).status).toBe(409);
   });
 });

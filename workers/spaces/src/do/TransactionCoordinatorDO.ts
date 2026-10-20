@@ -18,8 +18,13 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
+import { checkSsrf } from "@naelao/security";
 
 type SagaStatus = "pending" | "running" | "completed" | "compensating" | "compensated" | "failed";
+const MAX_SAGA_STEPS = 16;
+const MAX_SAGA_NAME = 120;
+const MAX_SAGA_URL = 2048;
+const MAX_SAGA_STEP_JSON_BYTES = 128 * 1024;
 
 interface SagaStep {
   index: number;
@@ -95,22 +100,30 @@ export class TransactionCoordinatorDO extends DurableObject {
           compensation_url: string;
           compensation_body: Record<string, unknown>;
         }>;
-      }>();
+      }>().catch(() => null);
 
-      if (!body.name || !body.tenant_id || !Array.isArray(body.steps) || body.steps.length === 0) {
+      if (!body || typeof body.name !== "string" || !body.name.trim() || body.name.length > MAX_SAGA_NAME
+        || typeof body.tenant_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(body.tenant_id)
+        || !Array.isArray(body.steps) || body.steps.length === 0 || body.steps.length > MAX_SAGA_STEPS) {
         return Response.json({ error: "name, tenant_id, and steps[] required" }, { status: 400 });
       }
 
+      const steps: SagaStep[] = [];
+      for (const [i, s] of body.steps.entries()) {
+        if (!s || typeof s !== "object" || typeof s.name !== "string" || !s.name.trim() || s.name.length > 120
+          || !this.isHttpsUrl(s.action_url) || !this.isHttpsUrl(s.compensation_url)
+          || !s.action_body || typeof s.action_body !== "object" || Array.isArray(s.action_body)
+          || !s.compensation_body || typeof s.compensation_body !== "object" || Array.isArray(s.compensation_body))
+          return Response.json({ error: "invalid_saga_step" }, { status: 400 });
+        const actionBody = JSON.stringify(s.action_body), compensationBody = JSON.stringify(s.compensation_body);
+        if (new TextEncoder().encode(actionBody).byteLength > MAX_SAGA_STEP_JSON_BYTES || new TextEncoder().encode(compensationBody).byteLength > MAX_SAGA_STEP_JSON_BYTES)
+          return Response.json({ error: "saga_step_payload_too_large" }, { status: 413 });
+        steps.push({ index: i, name: s.name, action_url: s.action_url, action_body: actionBody,
+          compensation_url: s.compensation_url, compensation_body: compensationBody, status: "pending" });
+      }
+      if (new TextEncoder().encode(JSON.stringify(steps)).byteLength > 512 * 1024) return Response.json({ error: "saga_payload_too_large" }, { status: 413 });
+
       const sagaId = crypto.randomUUID();
-      const steps: SagaStep[] = body.steps.map((s, i) => ({
-        index: i,
-        name: s.name,
-        action_url: s.action_url,
-        action_body: JSON.stringify(s.action_body),
-        compensation_url: s.compensation_url,
-        compensation_body: JSON.stringify(s.compensation_body),
-        status: "pending",
-      }));
 
       this.ctx.storage.sql.exec(
         `INSERT INTO sagas (id, name, tenant_id, status, steps_json, current_step)
@@ -125,6 +138,8 @@ export class TransactionCoordinatorDO extends DurableObject {
     if (method === "GET" && url.pathname === "/sagas") {
       const tenantId = url.searchParams.get("tenant_id");
       const status = url.searchParams.get("status");
+      if (tenantId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(tenantId)) return Response.json({ error: "invalid_tenant_id" }, { status: 400 });
+      if (status && !["pending", "running", "completed", "compensating", "compensated", "failed"].includes(status)) return Response.json({ error: "invalid_status" }, { status: 400 });
       let rows: SagaRow[];
 
       if (tenantId && status) {
@@ -182,13 +197,15 @@ export class TransactionCoordinatorDO extends DurableObject {
   private markStepComplete(sagaId: string, stepIndex: number): Response {
     const saga = this.getSaga(sagaId);
     if (!saga) return Response.json({ error: "not_found" }, { status: 404 });
-    if (saga.status === "completed" || saga.status === "failed") {
+    if (["completed", "compensating", "compensated", "failed"].includes(saga.status)) {
       return Response.json({ error: "saga_already_terminal", status: saga.status }, { status: 409 });
     }
 
     const steps = JSON.parse(saga.steps_json) as SagaStep[];
     const step = steps[stepIndex];
     if (!step) return Response.json({ error: "step_not_found" }, { status: 404 });
+    if (step.status === "completed") return Response.json({ saga_id: sagaId, step: stepIndex, saga_status: saga.status, deduplicated: true });
+    if (stepIndex !== saga.current_step || step.status !== "pending") return Response.json({ error: "saga_step_out_of_order", current_step: saga.current_step }, { status: 409 });
 
     step.status = "completed";
     step.completed_at = new Date().toISOString();
@@ -211,19 +228,22 @@ export class TransactionCoordinatorDO extends DurableObject {
   private markStepFailed(sagaId: string, stepIndex: number, errorMsg: string): Response {
     const saga = this.getSaga(sagaId);
     if (!saga) return Response.json({ error: "not_found" }, { status: 404 });
+    if (["completed", "compensating", "compensated", "failed"].includes(saga.status)) return Response.json({ error: "saga_already_terminal", status: saga.status }, { status: 409 });
 
     const steps = JSON.parse(saga.steps_json) as SagaStep[];
     const step = steps[stepIndex];
     if (!step) return Response.json({ error: "step_not_found" }, { status: 404 });
+    if (stepIndex !== saga.current_step || step.status !== "pending") return Response.json({ error: "saga_step_out_of_order", current_step: saga.current_step }, { status: 409 });
 
     step.status = "failed";
     step.failed_at = new Date().toISOString();
-    step.error = errorMsg;
+    const boundedError = typeof errorMsg === "string" ? errorMsg.slice(0, 1000) : "Step failed";
+    step.error = boundedError;
 
     // Begin compensation: mark saga as compensating
     this.ctx.storage.sql.exec(
       `UPDATE sagas SET status = 'compensating', steps_json = ?, updated_at = datetime('now'), error = ? WHERE id = ?`,
-      JSON.stringify(steps), errorMsg, sagaId
+      JSON.stringify(steps), boundedError, sagaId
     );
 
     console.log(`[Saga] ${sagaId} step ${stepIndex} (${step.name}) failed — starting compensation`);
@@ -245,22 +265,26 @@ export class TransactionCoordinatorDO extends DurableObject {
       if (!step || step.status !== "completed") continue;
 
       try {
+        const ssrf = await checkSsrf(step.compensation_url);
+        if (ssrf.blocked) throw new Error("compensation_destination_denied");
         const resp = await fetch(step.compensation_url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: step.compensation_body,
+          redirect: "manual",
+          signal: AbortSignal.timeout(10_000),
         });
         if (resp.ok) {
           step.status = "compensated";
           console.log(`[Saga] ${sagaId} compensation step ${i} (${step.name}) succeeded`);
         } else {
-          const text = await resp.text();
-          console.error(`[Saga] ${sagaId} compensation step ${i} (${step.name}) failed: ${resp.status} ${text}`);
-          step.error = `Compensation failed: ${resp.status} ${text}`;
+          await resp.body?.cancel().catch(() => undefined);
+          console.error(`[Saga] ${sagaId} compensation step ${i} (${step.name}) failed: ${resp.status}`);
+          step.error = `Compensation failed: ${resp.status}`;
         }
       } catch (err) {
-        console.error(`[Saga] ${sagaId} compensation step ${i} network error: ${err}`);
-        step.error = `Compensation error: ${err}`;
+        console.error(`[Saga] ${sagaId} compensation step ${i} failed`);
+        step.error = "Compensation request failed";
       }
 
       // Persist updated step state after each compensation
@@ -278,6 +302,12 @@ export class TransactionCoordinatorDO extends DurableObject {
     );
 
     console.log(`[Saga] ${sagaId} compensation complete — final status: ${finalStatus}`);
+  }
+
+  private isHttpsUrl(value: unknown): value is string {
+    if (typeof value !== "string" || value.length > MAX_SAGA_URL) return false;
+    try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password; }
+    catch { return false; }
   }
 
   private rowToApi(row: SagaRow): Record<string, unknown> {
