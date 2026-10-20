@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1971
-Files with source or executable-configuration extensions: 1765
-Inventory revision: 2026-10-20 audit refresh at c4596370
+Files: 1972
+Files with source or executable-configuration extensions: 1766
+Inventory revision: 2026-10-20 audit refresh at 5d21c665
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1997,6 +1997,7 @@ workers/
       external-publications.test.ts
       foundry-sharing.test.ts
       index.ts
+      kb-search-boundaries.test.ts
       parse-v5.test.ts
       parse-v5.ts
       search.ts
