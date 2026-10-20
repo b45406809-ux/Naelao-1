@@ -106,6 +106,8 @@ export interface SystemOneClientOptions {
   legacyProvider?: "jev" | "laya" | "clef";
   fetch?: typeof globalThis.fetch;
   maxRetries?: number;
+  /** Overall wall-clock budget across retries, including backoff. */
+  timeoutMs?: number;
   onDecision?: (event: {
   provider: "openrouter";
     policyCode: string;
@@ -134,7 +136,7 @@ export const CLEF_FLASH_MAX_ESTIMATED_TOKENS = 16_000;
 export const DECIDER_MAX_ESTIMATED_TOKENS = 200_000;
 const MAX_DECISION_RESPONSE_BYTES = 1024 * 1024;
 
-async function readBoundedDecisionText(response: Response, maxBytes: number): Promise<string> {
+async function readBoundedDecisionText(response: Response, maxBytes: number, signal?: AbortSignal): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     throw new Error("system_one_response_too_large");
@@ -145,7 +147,10 @@ async function readBoundedDecisionText(response: Response, maxBytes: number): Pr
   let byteLength = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let item: ReadableStreamReadResult<Uint8Array>;
+      try { item = await reader.read(); }
+      catch { if (signal?.aborted) throw new Error("system_one_timeout"); throw new Error("system_one_invalid_response_json"); }
+      const { done, value } = item;
       if (done) break;
       byteLength += value.byteLength;
       if (byteLength > maxBytes) {
@@ -170,11 +175,11 @@ async function readBoundedDecisionText(response: Response, maxBytes: number): Pr
   }
 }
 
-async function readBoundedDecisionJson(response: Response): Promise<unknown> {
+async function readBoundedDecisionJson(response: Response, signal?: AbortSignal): Promise<unknown> {
   try {
-    return JSON.parse(await readBoundedDecisionText(response, MAX_DECISION_RESPONSE_BYTES));
+    return JSON.parse(await readBoundedDecisionText(response, MAX_DECISION_RESPONSE_BYTES, signal));
   } catch (error) {
-    if (error instanceof Error && error.message === "system_one_response_too_large") throw error;
+    if (error instanceof Error && ["system_one_response_too_large", "system_one_timeout"].includes(error.message)) throw error;
     throw new Error("system_one_invalid_response_json");
   }
 }
@@ -229,6 +234,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
   private readonly provider = "openrouter" as const;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly maxRetries: number;
+  private readonly timeoutMs: number;
   private readonly onDecision: SystemOneClientOptions["onDecision"];
 
   constructor(options: SystemOneClientOptions = {}) {
@@ -239,7 +245,33 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     this.maxRetries = Number.isSafeInteger(options.maxRetries)
       ? Math.max(0, Math.min(2, options.maxRetries!))
       : 2;
+    this.timeoutMs = Number.isSafeInteger(options.timeoutMs)
+      ? Math.max(100, Math.min(30_000, options.timeoutMs!))
+      : 5_000;
     this.onDecision = options.onDecision;
+  }
+
+  private async post(model: string, state: SystemOneState, questions: Record<string, Record<string, unknown>>): Promise<{ response: Response; signal: AbortSignal }> {
+    const signal = AbortSignal.timeout(this.timeoutMs);
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      let response: Response;
+      try {
+        response = await this.fetcher(this.endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
+          body: JSON.stringify({ model, state, questions }),
+          signal,
+        });
+      } catch {
+        if (signal.aborted) throw new Error("system_one_timeout");
+        throw new Error("system_one_network_error");
+      }
+      if (signal.aborted) throw new Error("system_one_timeout");
+      if (response.ok || ![429, 529, 503].includes(response.status) || attempt === this.maxRetries) return { response, signal };
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
+      if (signal.aborted) throw new Error("system_one_timeout");
+    }
+    throw new Error("system_one_network_error");
   }
 
   private observe(policyCode: string, meta: Omit<FastDecisionMeta, "policyCode">): void {
@@ -257,22 +289,13 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
   private async request(question: Record<string, unknown>, state: SystemOneState): Promise<{ answer: SystemOneAnswer; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
     const model = this.modelFor({ decision: question }, state);
-    let response: Response | undefined;
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      response = await this.fetcher(this.endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
-        body: JSON.stringify({ model, state, questions: { decision: question } }),
-      });
-      if (response.ok || ![429, 529, 503].includes(response.status) || attempt === this.maxRetries) break;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
-    }
+    const { response, signal } = await this.post(model, state, { decision: question });
     if (!response?.ok) {
       // Provider errors may echo prompt fragments or account metadata. Preserve the status for
       // diagnosis, but never copy untrusted response text into errors that can reach logs/UI.
       throw new Error(`system_one_http_${response?.status ?? "network"}`);
     }
-    const payload = await readBoundedDecisionJson(response) as Partial<SystemOneResponse>;
+    const payload = await readBoundedDecisionJson(response, signal) as Partial<SystemOneResponse>;
     if (typeof payload.model !== "string" || !payload.answers || typeof payload.answers !== "object") throw new Error("system_one_invalid_response");
     const answer = payload.answers["decision"];
     if (!answer || typeof answer !== "object") throw new Error("system_one_missing_answer");
@@ -282,20 +305,11 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
   private async requestMany(questions: Record<string, Record<string, unknown>>, state: SystemOneState): Promise<{ answers: Record<string, SystemOneAnswer>; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
     const model = this.modelFor(questions, state);
-    let response: Response | undefined;
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      response = await this.fetcher(this.endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
-        body: JSON.stringify({ model, state, questions }),
-      });
-      if (response.ok || ![429, 529, 503].includes(response.status) || attempt === this.maxRetries) break;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
-    }
+    const { response, signal } = await this.post(model, state, questions);
     if (!response?.ok) {
       throw new Error(`system_one_http_${response?.status ?? "network"}`);
     }
-    const raw = await readBoundedDecisionJson(response) as { answers?: Record<string, unknown>; model?: string; usage?: unknown };
+    const raw = await readBoundedDecisionJson(response, signal) as { answers?: Record<string, unknown>; model?: string; usage?: unknown };
     if (!raw.answers || typeof raw.answers !== "object") throw new Error("system_one_invalid_response");
     const answers: Record<string, SystemOneAnswer> = {};
     for (const key of Object.keys(questions)) {

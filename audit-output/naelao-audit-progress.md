@@ -637,3 +637,9 @@ The Agents worker suite subsequently passed **145 test files / 634 tests** with 
 ### Open workflow settlement race
 
 The effect receipt and usage counter now commit atomically, but another interleaving remains to verify/fix: `cancel()`/`finish()` can persist a terminal status and run budget cleanup while an already-authorized `effect()` is awaiting the external worker. If the effect returns after finalization, its receipt/usage can be committed too late for settlement (or final authorization can fail after the external action already completed). No production concurrency test currently covers terminal transition versus in-flight effects. Keep this as an open workflow correctness/billing finding; the current unit tests model concurrent journal updates, not interleaved DO RPCs or billing finalization.
+
+## OpenRouter decision request deadline (2026-10-20)
+
+Reviewed the shared decision client and all runtime construction sites. It already clamps retries and response size, but had no request deadline; a stalled OpenRouter call could hold a runtime preflight, WriteGuard, mention router, or other decision path indefinitely. Added one five-second overall deadline (100 ms–30 s bounded override) shared by attempts, retry backoff, and response-body reads. Timeout and network failures normalize to stable non-sensitive errors so existing callers can fall back deterministically. Updated the System One reference.
+
+Validation: `packages/agent-sdk/src/fast-decision.test.ts` passed 24/24, including a never-resolving request and a stalled body stream; package TypeScript passed and `git diff --check` passed. No live OpenRouter latency/load measurements were made; the timeout value is an operational default, not a measured provider percentile.

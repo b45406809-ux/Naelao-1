@@ -31,6 +31,29 @@ describe("typed fast decisions", () => {
     expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
+  it("aborts a hung OpenRouter decision within the total request budget", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }));
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 2, timeoutMs: 100 });
+    await expect(client.choice({ state: "small", instructions: "Choose", criteria: { yes: null, no: null }, policyCode: "timeout" }))
+      .rejects.toThrow("system_one_timeout");
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it("keeps the same deadline while reading a stalled response body", async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const body = new ReadableStream<Uint8Array>({ start(controller) { streamController = controller; } });
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      init?.signal?.addEventListener("abort", () => streamController?.error(new Error("aborted")), { once: true });
+      return new Response(body);
+    });
+    const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 0, timeoutMs: 100 });
+    await expect(client.choice({ state: "small", instructions: "Choose", criteria: { yes: null, no: null }, policyCode: "body_timeout" }))
+      .rejects.toThrow("system_one_timeout");
+  });
+
   it("maps legacy and Clef aliases to Clef Flash and permits only full Decider as overflow", () => {
     expect(resolveDecisionModel(undefined, "jev")).toBe(CLEF_FLASH_MODEL);
     expect(resolveDecisionModel("jev-latest")).toBe(CLEF_FLASH_MODEL);
