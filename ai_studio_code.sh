@@ -1,4 +1,9 @@
-cat << 'PATCH_EOF' > repomix/patches/batch-01.patch
+#!/usr/bin/env bash
+set -euo pipefail
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+patch_file="$repo_root/repomix/patches/batch-01.patch"
+mkdir -p "$(dirname -- "$patch_file")"
+cat > "$patch_file" <<'PATCH_EOF'
 diff --git a/packages/agent-sdk/src/launchpad-runtime.test.ts b/packages/agent-sdk/src/launchpad-runtime.test.ts
 new file mode 100644
 index 0000000..7340b2b

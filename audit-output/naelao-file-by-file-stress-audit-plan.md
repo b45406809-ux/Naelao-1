@@ -46,8 +46,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `(repository root)`
 
-- [ ] `ai_studio_code (2).sh`
-- [ ] `ai_studio_code.sh`
+- [x] `ai_studio_code (2).sh`
+- [x] `ai_studio_code.sh`
 - [ ] `biome.json`
 - [ ] `create_patch.js`
 - [ ] `package.json`

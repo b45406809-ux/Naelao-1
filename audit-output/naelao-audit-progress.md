@@ -1522,3 +1522,9 @@ Validation: added `tests/unit/phase-runner-safety.test.ts`; all 11 cases pass, c
 The repository-wide audit remains incomplete. This scoped runner review does not validate the AI provider network behavior, Repomix parser behavior on hostile repository names, GitHub CLI/provider outages, or the remaining root configuration and script files.
 
 Inventory refreshed after the runner audit commit `21b52474`: 1,978 tracked files, 1,772 source/config checklist rows, 385 checked and 1,387 unchecked. The two newly added safety helper/test rows are checked; both runner files remain unchecked for their broader provider, CLI, and deployment behavior.
+
+## Root shell patch-generator review (2026-10-21)
+
+Reviewed both `ai_studio_code` shell files. The primary file only writes a fixed embedded patch to `repomix/patches/batch-01.patch`; the duplicate `(2)` file previously overwrote the primary script with an embedded copy. No CI, package script, workflow, or application entrypoint references either file; the only other repository match is the stale `project_tree.md`. Kept the duplicate path as a compatibility wrapper that invokes the primary generator, so it no longer carries a second 1,600-line patch copy or overwrites source. The primary generator now resolves its output relative to the script, quotes its fixed target, and fails immediately on write errors.
+
+Validation: `bash -n` passed for both scripts and `git diff --check` passed. I did not execute the generator because it would overwrite the tracked batch patch artifact; the patch itself remains unverified against the current branch. These are manual tooling files with no known production callers; possible external/manual use remains unverified.
