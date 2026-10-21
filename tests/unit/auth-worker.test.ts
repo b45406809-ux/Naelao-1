@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import authWorker from "../../workers/auth/src/index.js";
 import { cleanExpiredBuilderPasswordResetTokens } from "../../workers/sweeper/src/index.js";
+import { verifyJwt } from "@naelao/auth";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 // Launch-readiness audit follow-up: workers/auth (login/register/password-reset — the builder's
@@ -31,6 +32,7 @@ function makeEnv() {
   return {
     ENVIRONMENT: "test",
     JWT_SECRET: "test-jwt-secret",
+    JWT_EXPIRY_SECONDS: "900",
     PLATFORM_SECRET: "test-platform-secret",
     PLATFORM_DB: fakeDb,
     NOTIFICATIONS_WORKER: {
@@ -62,6 +64,19 @@ describe("POST /register — builder signup", () => {
     expect(body.data.user.email).toBe("jane@acme.com");
     expect(body.data.user.role).toBe("owner");
     expect(body.data.token).toBeTruthy();
+  });
+
+  it("uses the configured token lifetime for both signup and login JWTs", async () => {
+    const env = makeEnv();
+    const registered = await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    const registerBody = await registered.json() as { data: { token: string } };
+    const registerClaims = await verifyJwt(registerBody.data.token, env.JWT_SECRET);
+    expect(registerClaims.exp - registerClaims.iat).toBe(900);
+
+    const login = await authWorker.fetch(req("/login", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    const loginBody = await login.json() as { data: { token: string } };
+    const loginClaims = await verifyJwt(loginBody.data.token, env.JWT_SECRET);
+    expect(loginClaims.exp - loginClaims.iat).toBe(900);
   });
 
   it("sets the org's owner_id to the new user (was previously omitted, which violates a NOT NULL constraint against the real schema)", async () => {

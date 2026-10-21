@@ -5,6 +5,7 @@ import { signJwt, verifyJwt, AuthError } from "@naelao/auth";
 export interface AuthEnv {
   ENVIRONMENT: string;
   JWT_SECRET: string;
+  JWT_EXPIRY_SECONDS?: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   NOTIFICATIONS_WORKER?: Fetcher;
@@ -22,6 +23,16 @@ function validateEnv(env: AuthEnv): void {
       throw new Error(`Missing required secret: ${key}`);
     }
   }
+  if (env.JWT_EXPIRY_SECONDS !== undefined) {
+    const seconds = Number(env.JWT_EXPIRY_SECONDS);
+    if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > 86_400) {
+      throw new Error("JWT_EXPIRY_SECONDS must be an integer between 60 and 86400");
+    }
+  }
+}
+
+function jwtExpirySeconds(env: AuthEnv): number {
+  return env.JWT_EXPIRY_SECONDS === undefined ? 3600 : Number(env.JWT_EXPIRY_SECONDS);
 }
 
 // G-B02: PBKDF2 password helpers (100,000 iterations, SHA-256, 32-byte salt). Cloudflare
@@ -247,7 +258,7 @@ app.post("/login", async (c) => {
       tv: user.token_version ?? 0,
     },
     c.env.JWT_SECRET,
-    86400 // 24 hours
+    jwtExpirySeconds(c.env)
   );
 
   return c.json(
@@ -332,7 +343,7 @@ app.post("/register", async (c) => {
       scopes: ["api:access"],
     },
     c.env.JWT_SECRET,
-    86400
+    jwtExpirySeconds(c.env)
   );
 
   return c.json(
