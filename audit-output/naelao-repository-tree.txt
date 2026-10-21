@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1992
-Files with source or executable-configuration extensions: 1786
-Inventory revision: 2026-10-21 audit refresh for sweeper retention
+Files: 1995
+Files with source or executable-configuration extensions: 1789
+Inventory revision: 2026-10-21 audit refresh for organization data erasure
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1228,6 +1228,7 @@ tests/
     cross-project-handoff.test.ts
     customer-bot-rules-business-membership.test.ts
     daily-digest.test.ts
+    data-erasure-records.test.ts
     db-migrations.test.ts
     deposit-personal-credits.test.ts
     desk-drop.test.ts
@@ -2276,6 +2277,8 @@ workers/
       workflows/
         DataErasureWorkflow.ts
         DunningWorkflow.ts
+        erasure-cleanup.test.ts
+        erasure-cleanup.ts
         KbIngestionWorkflow.ts
         QueueHealthWorkflow.ts
         SpaceProvisioningWorkflow.ts

@@ -19,6 +19,7 @@
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
 import type { Env } from "../env";
+import { anonymizeOrgUsers, eraseSpaceD1Records, eraseSpaceKnowledgeResources } from "./erasure-cleanup.js";
 
 export interface ErasureParams {
   orgId: string;
@@ -99,48 +100,31 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
       for (const space of spaces) {
         // Get all indexed KB documents for this space
         const { results: docs } = await this.env.PLATFORM_DB.prepare(
-          `SELECT id, chunk_count FROM kb_documents WHERE space_id = ?`
+          `SELECT id, project_id, chunk_count FROM kb_documents WHERE space_id = ?`
         )
           .bind(space.id)
-          .all<{ id: string; chunk_count: number }>();
+          .all<{ id: string; project_id: string | null; chunk_count: number | null }>();
 
-        for (const doc of docs) {
-          // Delete R2 objects — paginated (G-E08 fix: don't stop at first page)
-          const prefix = `kb/${space.id}/${doc.id}/`;
-          let cursor: string | undefined;
-          do {
-            const listOpts: R2ListOptions = cursor !== undefined ? { prefix, cursor } : { prefix };
-            const listed: R2Objects = await this.env.KB_BUCKET.list(listOpts);
-            if (listed.objects.length > 0) {
-              await Promise.all(listed.objects.map((o) => this.env.KB_BUCKET.delete(o.key)));
-            }
-            cursor = listed.truncated ? listed.cursor : undefined;
-          } while (cursor);
+        await eraseSpaceKnowledgeResources(space.id, docs, this.env.KB_BUCKET, this.env.KB_VECTORS);
 
-          // Delete Vectorize vectors
-          const chunkCount = doc.chunk_count ?? 0;
-          if (chunkCount > 0) {
-            const vectorIds = Array.from({ length: chunkCount }, (_, i) => `${doc.id}_chunk_${i}`);
-            const BATCH = 100;
-            for (let i = 0; i < vectorIds.length; i += BATCH) {
-              await this.env.KB_VECTORS.deleteByIds(vectorIds.slice(i, i + BATCH));
-            }
+        // Also remove vectors referenced only by the chunk registry (for orphaned/legacy docs).
+        let afterRowId = 0;
+        for (;;) {
+          const { results: chunks } = await this.env.PLATFORM_DB.prepare(
+            `SELECT rowid AS row_id, document_id, chunk_index FROM kb_chunks
+             WHERE space_id = ? AND rowid > ? ORDER BY rowid ASC LIMIT 1000`
+          ).bind(space.id, afterRowId).all<{ row_id: number; document_id: string; chunk_index: number }>();
+          if (chunks.length === 0) break;
+          for (let start = 0; start < chunks.length; start += 100) {
+            await this.env.KB_VECTORS.deleteByIds(chunks.slice(start, start + 100)
+              .map((chunk) => `${chunk.document_id}_chunk_${chunk.chunk_index}`));
           }
+          afterRowId = chunks[chunks.length - 1]!.row_id;
         }
 
-        // Delete all D1 KB document records for this space
-        await this.env.PLATFORM_DB.prepare(
-          `DELETE FROM kb_documents WHERE space_id = ?`
-        ).bind(space.id).run();
-
-        // Delete active session registry entries for this space
-        await this.env.PLATFORM_DB.prepare(
-          `DELETE FROM active_sessions WHERE space_id = ?`
-        ).bind(space.id).run();
-
-        await this.env.PLATFORM_DB.prepare(
-          `DELETE FROM thread_sessions WHERE space_id = ?`
-        ).bind(space.id).run();
+        // Remove every tenant-owned searchable/session record, including parent summaries
+        // that are not covered by the session table's cascade.
+        await eraseSpaceD1Records(this.env.PLATFORM_DB, space.id);
 
         console.log(`[DataErasure] Cleaned space=${space.id} for org=${params.orgId}`);
       }
@@ -153,17 +137,8 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
 
     // ── Step 4: Anonymize user PII ────────────────────────────────────────────
     await step.do("delete-user-pii", async () => {
-      // Overwrite email with a non-identifiable placeholder; clear password_hash.
-      // The id is preserved so foreign-key references remain intact.
-      await this.env.PLATFORM_DB.prepare(
-        `UPDATE users
-         SET email = 'erased-' || id || '@deleted.invalid',
-             status = 'erased',
-             preferred_language = NULL
-         WHERE org_id = ?`
-      )
-        .bind(params.orgId)
-        .run();
+      // Preserve IDs needed by retained audit records, but remove credentials and direct PII.
+      await anonymizeOrgUsers(this.env.PLATFORM_DB, params.orgId);
 
       console.log(`[DataErasure] PII anonymized for users in org=${params.orgId}`);
       return { piiErased: true };

@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1992` tracked files; `1786` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the sweeper retention refresh.
+Inventory basis: `1995` tracked files; `1789` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the organization data-erasure refresh.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1353,6 +1353,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/business-subscription-gate.test.ts`
 - [ ] `tests/unit/business-subscription-status.test.ts`
 - [ ] `tests/unit/business-subscriptions-billing.test.ts`
+- [x] `tests/unit/data-erasure-records.test.ts`
 - [ ] `tests/unit/canvas-extension-security.test.ts`
 - [x] `tests/unit/capability-scope-boundary.test.ts`
 - [ ] `tests/unit/channel-connect-business-gate.test.ts`
@@ -1389,6 +1390,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/cron-next-run.test.ts`
 - [ ] `tests/unit/cross-project-handoff.test.ts`
 - [ ] `tests/unit/customer-bot-rules-business-membership.test.ts`
+- [x] `tests/unit/data-erasure-records.test.ts`
 - [ ] `tests/unit/daily-digest.test.ts`
 - [x] `tests/unit/db-migrations.test.ts`
 - [ ] `tests/unit/deposit-personal-credits.test.ts`
@@ -2593,6 +2595,10 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/workflows/src/workflows`
 
 - [ ] `workers/workflows/src/workflows/DataErasureWorkflow.ts`
+- [x] `workers/workflows/src/workflows/erasure-cleanup.test.ts`
+- [x] `workers/workflows/src/workflows/erasure-cleanup.ts`
+- [x] `workers/workflows/src/workflows/erasure-cleanup.test.ts`
+- [x] `workers/workflows/src/workflows/erasure-cleanup.ts`
 - [ ] `workers/workflows/src/workflows/DunningWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/KbIngestionWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/QueueHealthWorkflow.ts`
