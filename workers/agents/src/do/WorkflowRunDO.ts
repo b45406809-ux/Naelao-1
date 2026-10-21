@@ -172,7 +172,9 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
   }
   private async assertOwner(actorId: string): Promise<WorkflowJournalRecord> {
     const record = await this.journal.read();
-    const grant = await readWorkflowGrant(this.env, { ...record.identity, actorId });
+    // Status/cancel remain available to an authorized owner while suspended so work can be
+    // inspected or stopped. All execution, resume, retry and effect paths still call authorize().
+    const grant = await readWorkflowGrant(this.env, { ...record.identity, actorId }, { allowSuspended: true });
     if (actorId !== record.identity.actorId && !["owner", "admin"].includes(grant.role)) throw new Error("workflow_owner_required");
     return record;
   }

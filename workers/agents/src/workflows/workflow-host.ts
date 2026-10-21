@@ -8,6 +8,9 @@ import type { WorkflowRunDO } from "../do/WorkflowRunDO.js";
 export interface WorkflowProviderInstance { id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }>; terminate(): Promise<void>; restart(): Promise<void>; sendEvent(event: { type: string; payload: unknown }): Promise<void> }
 export interface DurableWorkflowHostEnv {
   PLATFORM_SECRET: string;
+  /** Bound on the Agents Worker. Used to revoke durable workflow grants immediately when the
+   * owning tenant or Space is suspended. Optional in isolated workflow unit fixtures. */
+  PLATFORM_DB?: D1Database | undefined;
   SCRIPTS_R2?: R2Bucket | undefined;
   WORKFLOW_RUN_DO?: DurableObjectNamespace<WorkflowRunDO> | undefined;
   AGENT_SCRIPT_WORKFLOW?: { create(options: { id?: string; params?: unknown }): Promise<WorkflowProviderInstance>; get(id: string): Promise<WorkflowProviderInstance> } | undefined;
@@ -84,8 +87,20 @@ export async function verifyExtensionArtifactSet(bucket: R2Bucket, input: { spac
   const digest = await workflowHash(JSON.stringify(entries));
   return digest === input.expectedSha256;
 }
-export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick<DurableWorkflowIdentity, "tenantId" | "spaceId" | "projectId" | "actorId" | "agentId" | "installationId">): Promise<{ version: string; role: string; installation?: WorkflowInstallationGrant }> {
+export async function readWorkflowGrant(env: DurableWorkflowHostEnv, scope: Pick<DurableWorkflowIdentity, "tenantId" | "spaceId" | "projectId" | "actorId" | "agentId" | "installationId">, options: { allowSuspended?: boolean } = {}): Promise<{ version: string; role: string; installation?: WorkflowInstallationGrant }> {
   if (!env.SCRIPTS_R2 || !scope.actorId || scope.actorId === "system") throw new Error("workflow_actor_required");
+  if (env.PLATFORM_DB && !options.allowSuspended) {
+    let active: { id: string } | null;
+    try {
+      active = await env.PLATFORM_DB.prepare(
+        `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
+         AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = s.tenant_id AND o.status = 'active')`,
+      ).bind(scope.spaceId, scope.tenantId).first<{ id: string }>();
+    } catch {
+      throw new Error("workflow_tenant_status_unavailable");
+    }
+    if (!active) throw new Error("workflow_tenant_suspended");
+  }
   const headers = await workflowHeaders(env, scope.tenantId, scope.actorId);
   const base = "http://spaces-worker/spaces/" + encodeURIComponent(scope.spaceId);
   const response = await env.SPACES_WORKER.fetch(new Request(base + "/members", { headers }));

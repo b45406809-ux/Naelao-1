@@ -1823,7 +1823,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/agents/src/do/TaskDO.ts`
 - [ ] `workers/agents/src/do/ToolSandboxDO.test.ts`
 - [ ] `workers/agents/src/do/ToolSandboxDO.ts`
-- [ ] `workers/agents/src/do/WorkflowRunDO.test.ts`
+- [x] `workers/agents/src/do/WorkflowRunDO.test.ts`
 - [ ] `workers/agents/src/do/WorkflowRunDO.ts`
 - [ ] `workers/agents/src/do/additional-do-request-boundaries.test.ts`
 - [x] `workers/agents/src/do/channel-conversation-transcript.test.ts`

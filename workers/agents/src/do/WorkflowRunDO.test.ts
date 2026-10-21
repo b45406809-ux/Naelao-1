@@ -9,6 +9,7 @@ function harness() {
   const artifacts = new Set<string>();
   const alarms: number[] = [];
   let member = true;
+  let tenantActive = true;
   const storage = {
     async get<T>(key: string) { return values.get(key) as T | undefined; },
     async put<T>(key: string, value: T) { values.set(key, value); },
@@ -28,6 +29,9 @@ function harness() {
   };
   const env: Record<string, any> = {
     PLATFORM_SECRET: "workflow-run-test-secret",
+    PLATFORM_DB: {
+      prepare() { return { bind() { return { first: async () => tenantActive ? { id: "space-a" } : null }; } }; },
+    },
     SCRIPTS_R2: bucket,
     SPACES_WORKER: { async fetch() { return Response.json({ data: member ? [{ user_id: "actor-a", role: "owner" }] : [] }); } },
   };
@@ -38,6 +42,7 @@ function harness() {
     artifacts,
     alarms,
     revoke() { member = false; },
+    suspendTenant() { tenantActive = false; },
   };
 }
 
@@ -59,6 +64,39 @@ describe("WorkflowRunDO persisted authorization", () => {
     h.revoke();
     await expect(h.instance.authorize("run-a")).rejects.toThrow("workflow_membership_revoked");
     await expect(h.instance.authorize("another-run")).rejects.toThrow("workflow_run_scope_mismatch");
+  });
+
+  it("revokes durable workflow authorization after tenant suspension", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-suspended", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-suspended",
+      startKey: "start-suspended", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    await h.instance.initialize(identity, {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-suspended/input.json", sha256: "b".repeat(64), bytes: 2,
+    }, {});
+
+    h.suspendTenant();
+    await expect(h.instance.authorize(identity.runId)).rejects.toThrow("workflow_tenant_suspended");
+  });
+
+  it("still lets the authorized owner cancel a workflow after tenant suspension", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-cancel", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-cancel",
+      startKey: "start-cancel", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    await h.instance.initialize(identity, {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-cancel/input.json", sha256: "b".repeat(64), bytes: 2,
+    }, {});
+
+    h.suspendTenant();
+    await h.instance.cancel("actor-a");
+    expect((await h.instance.existing())?.status).toBe("cancelled");
   });
 
   it("keeps a failed run retryable when budget reservation is unavailable", async () => {
