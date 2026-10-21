@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1996` tracked files; `1790` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the 2026-10-21 queue-dispatch and full-suite review.
+Inventory basis: `1997` tracked files; `1791` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the 2026-10-21 analytics erasure marker review.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -2105,6 +2105,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/analytics/src/events.ts`
 - [ ] `workers/analytics/src/index.ts`
+- [x] `workers/analytics/src/queue.test.ts`
 - [ ] `workers/analytics/src/query.test.ts`
 - [ ] `workers/analytics/src/query.ts`
 

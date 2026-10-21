@@ -16,6 +16,7 @@ export type EventType =
   | "space_deleted"
   | "login"
   | "register"
+  | "user_erased"
   | "billing_checkout"
   | "subscription_changed"
   | "error"

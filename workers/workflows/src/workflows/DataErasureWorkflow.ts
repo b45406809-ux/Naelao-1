@@ -200,10 +200,9 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
       // Emit an analytics.user_erased correction record so the analytics worker
       // can write a null_user_id anonymization marker into Analytics Engine.
       await this.env.EVENTS_QUEUE.send({
-        type: "analytics.user_erased",
-        orgId: params.orgId,
-        erasedAt: completedAt,
-        reason: params.reason,
+        eventType: "user_erased",
+        tenantId: params.orgId,
+        metadata: { erasedAt: completedAt, reason: params.reason.slice(0, 500) },
       });
 
       console.log(
