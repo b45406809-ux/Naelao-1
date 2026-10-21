@@ -71,6 +71,7 @@ describe("chat upload route scope enforcement", () => {
       new URL(request.url).pathname.endsWith("compact-scope")
         ? Response.json({
             project_id: "project-canonical",
+            owned_by_caller: true,
             private_scratchpad: false,
           })
         : Response.json({ id: "project-canonical" })
@@ -88,6 +89,7 @@ describe("chat upload route scope enforcement", () => {
       new URL(request.url).pathname.endsWith("compact-scope")
         ? Response.json({
             project_id: "project-canonical",
+            owned_by_caller: true,
             private_scratchpad: false,
           })
         : Response.json({ id: "project-canonical" })
