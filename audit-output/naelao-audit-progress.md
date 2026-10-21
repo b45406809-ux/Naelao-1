@@ -1951,3 +1951,9 @@ Validation: focused queue-scope test passed 1/1; full Agents suite passed 160 fi
 Follow-up: signature-verified channel ingress also rechecks active tenant/Space status at the Agent Durable Object boundary before creating a session or storing an inbound message. This closes the race between the public webhook's status lookup and its DO dispatch. The updated channel suspension regression now covers ingress as well as heartbeat processing.
 
 Validation: focused channel suspension tests passed 3/3; full Agents suite passed 160 files / 733 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed.
+
+## Connector poll cursor reliability (2026-10-21)
+
+The connector-poll queue consumer advanced its saved `since` timestamp after every Agent DO response, including failed runs and suspension errors. That made the next poll skip records the agent had not processed. It now reads the bounded run response and advances the cursor only when the run reports success; non-2xx, unsuccessful, malformed, or oversized results leave the cursor untouched and retry through the queue. Added success and failure regressions.
+
+Validation: focused cursor tests passed 2/2; full Agents suite passed 161 files / 735 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed. The broader per-file audit remains open.

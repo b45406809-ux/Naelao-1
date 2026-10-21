@@ -9937,7 +9937,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const since = (await env.AGENT_CACHE.get(kvKey)) ?? new Date(Date.now() - 86_400_000).toISOString();
       const stub = await getAgentDOForSpace(env, msg.tenantId, msg.spaceId, "naelao-agent");
       const pollBrief = await buildWakeUpBrief(env, msg.spaceId, msg.tenantId);
-      await stub.fetch(new Request("http://agent-do/script/run", {
+      const runResponse = await stub.fetch(new Request("http://agent-do/script/run", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -9952,6 +9952,9 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
           ...(wakePolicy.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakePolicy.openRouterCapabilityEvidence } : {}),
         }),
       }));
+      if (!runResponse.ok) throw new Error(`connector_poll_run_failed:${runResponse.status}`);
+      const run = JSON.parse(await readBoundedResponseText(runResponse, 2 * 1024 * 1024)) as { result?: { ok?: boolean; error?: string } };
+      if (run.result?.ok !== true) throw new Error(`connector_poll_run_incomplete:${run.result?.error ?? "missing_success_result"}`);
       await env.AGENT_CACHE.put(kvKey, new Date().toISOString(), { expirationTtl: 60 * 60 * 24 * 30 });
       return;
     }

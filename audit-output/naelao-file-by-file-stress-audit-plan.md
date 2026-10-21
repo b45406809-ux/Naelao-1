@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2034` tracked files; `1828` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `97b9bad0`.
+Inventory basis: `2035` tracked files; `1829` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `babd9478`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1741,6 +1741,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/channel-extension-session-route.test.ts`
 - [ ] `workers/agents/src/channel-extension-source-validation.test.ts`
 - [ ] `workers/agents/src/channel-external-quota.ts`
+- [x] `workers/agents/src/connector-poll-cursor.test.ts`
 - [ ] `workers/agents/src/env.ts`
 - [x] `workers/agents/src/extension-provider-auth.test.ts`
 - [ ] `workers/agents/src/index.ts`
