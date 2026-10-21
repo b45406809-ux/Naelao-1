@@ -342,9 +342,9 @@ describe("listDirectory ordering", () => {
   });
 
   it("marks a curated app even when the OTHER provider is the one listing it", async () => {
-    // We curate Notion through Pipedream; Composio also has a `notion` toolkit. Matching only on
-    // `{provider}:{slug}` left Composio's entry unmarked, so the grid rendered Notion twice —
-    // once as our real connector and once as a generic brokered one.
+    // Notion is curated as a Composio connector, while the broad directory may also return its
+    // Pipedream slug. Matching only on `{provider}:{slug}` left Composio's entry unmarked, so the
+    // grid rendered Notion twice — once as our connector and once as a generic brokered app.
     mockFetch((url) => {
       if (url.includes("backend.composio.dev")) return json({ items: [{ slug: "notion", name: "Notion" }] });
       if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });

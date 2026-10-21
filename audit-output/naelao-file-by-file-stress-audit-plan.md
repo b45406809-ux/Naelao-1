@@ -1366,7 +1366,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/composio-connector-connect.test.ts`
 - [ ] `tests/unit/composio-tool-execution.test.ts`
 - [x] `tests/unit/concurrency-do.test.ts`
-- [ ] `tests/unit/connector-catalogue.test.ts`
+- [x] `tests/unit/connector-catalogue.test.ts`
 - [ ] `tests/unit/connector-channel-vault-write.test.ts`
 - [ ] `tests/unit/connector-directory.test.ts`
 - [ ] `tests/unit/connector-gumroad-shim.test.ts`

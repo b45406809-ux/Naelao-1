@@ -28,12 +28,12 @@ describe("connector catalogue", () => {
     ]);
   });
 
-  it("Notion is a Pipedream-routed connector (the second hosted-connect provider) with no mcp_endpoint or builder credential", () => {
+  it("Notion is a Composio-routed connector with no direct MCP endpoint or builder credential", () => {
     const c = getConnector("notion");
     expect(c?.status).toBe("available");
     expect(c?.mcp_endpoint).toBeUndefined();
-    expect(c?.composio).toBeUndefined();
-    expect(c?.pipedream?.app_slug).toBe("notion");
+    expect(c?.composio?.toolkit_slug).toBe("notion");
+    expect(c?.pipedream).toBeUndefined();
     expect(c?.auth.type).toBe("none");
     expect((c?.operations ?? []).length).toBeGreaterThan(0);
   });
