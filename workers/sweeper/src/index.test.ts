@@ -48,8 +48,9 @@ describe("sweeper cursor migration deployment", () => {
       expect(text).toContain('--command="SELECT suspension_reason FROM spaces LIMIT 0"');
       expect(text).toContain("--file=infra/migrations/0122_platform_assistant_sessions.sql");
       expect(text).toContain('--command="SELECT session_id FROM assistant_messages LIMIT 0"');
+      expect(text).toContain('--command="SELECT id FROM assistant_sessions LIMIT 0"');
       expect(text).toContain("--file=infra/migrations/0123_builder_reset_token_expiry_index.sql");
-      expect(text).toContain('--command="SELECT expires_at FROM builder_password_reset_tokens LIMIT 0"');
+      expect(text).toContain('--command="SELECT rowid FROM builder_password_reset_tokens INDEXED BY idx_builder_password_reset_tokens_expiry WHERE julianday(expires_at) < julianday(\'now\') LIMIT 0"');
     }
   });
 });
