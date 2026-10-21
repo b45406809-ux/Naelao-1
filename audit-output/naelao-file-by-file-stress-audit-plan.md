@@ -10,6 +10,13 @@ Use the companion [platform surface inventory](naelao-platform-surface-inventory
 
 Review each checklist file with its callers, callees, owning worker, route registration, runtime bindings, and relevant tests. Record reviewer/date, exercised boundary cases, evidence, findings, and disposition in a per-file audit ledger before checking an item. Treat tests as evidence only for the cases they cover. Do not claim “no bugs” from a clean test run.
 
+## Latest scoped validation (2026-10-21)
+
+- `workers/spaces`: full worker suite passed, 65 test files / 255 tests; TypeScript check passed.
+- `workers/router`: full worker suite passed, 10 test files / 49 tests; TypeScript check passed. Three routing tests initially lacked the `PLATFORM_DB` fixture now required by the tenant suspension gate; the fixtures were updated and the full suite passed.
+- Erasure and legacy space API coverage: 47 focused root tests passed across `product-user-erasure`, `builder-dashboard-api`, and `data-erasure-records`; workflow queue/cleanup suite passed 20 tests. Deploy TOML parsed and `git diff --check` passed.
+- These runs cover the exercised code paths only. The full repository audit remains open.
+
 ## Open cross-file findings
 
 - **Organization erasure lifecycle and coverage:** an authenticated owner can now create, inspect, and cancel a request through `POST /builder/erasure`, `GET /builder/erasure/:requestId`, and `DELETE /builder/erasure/:requestId`. Request and outbox insertion commit together; bounded five-minute retries use backoff, and duplicate queue deliveries are arbitrated by the request status claim. A 24-hour hold is cancellable until an atomic `pending` → `processing` claim wins, and the claim requires the org still carry the erasure hold. Owner status/cancel requests remain reachable while suspended; admin suspensions are preserved. Product status APIs cannot clear known or legacy suspension holds. Focused tests cover the owner API, no-space organizations, duplicate requests, queue failure and retry, bounded outbox batches, repeated cancellation, status claim, admin holds, and the suspension-route exception. Live cron scheduling and D1/Queue failure recovery still need deployment validation. Remaining erasure gaps: RepositoryDO SQLite metadata, SpaceDO/BrowserSessionDO and other Durable Object state, repo/workspace materialization races, external provider resources beyond configured Cloudflare SaaS hostnames, provider cleanup failures, and financial/content retention policy. Runtime/storage inventory and lifecycle integration against deployed Cloudflare resources remain open, so erasure is not declared complete.

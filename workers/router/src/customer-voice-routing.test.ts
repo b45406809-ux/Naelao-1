@@ -14,8 +14,12 @@ describe("customer voice routing", () => {
       return Response.json({ numbers: [] });
     });
     const token = await signJwt({ sub: "owner-1", tid: "tenant-1", email: "owner@example.test", role: "owner", scopes: [] }, secret);
+    const PLATFORM_DB = {
+      prepare: () => ({ bind: () => ({ first: async () => ({ status: "active", reseller_status: "active" }) }) }),
+    } as unknown as D1Database;
     const env = {
       ENVIRONMENT: "test", JWT_SECRET: secret, PLATFORM_SECRET: secret,
+      PLATFORM_DB,
       AGENTS_WORKER: { fetch: workerFetch },
       SPACES_WORKER: { fetch: vi.fn(() => Response.json({ wrong_worker: true })) },
     } as unknown as Env;

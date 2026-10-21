@@ -12,8 +12,11 @@ describe("project extension provider routing", () => {
       return Response.json({ authorize_url: "https://slack.com/oauth/v2/authorize" });
     });
     const token = await signJwt({ sub: "owner-1", tid: "tenant-1", email: "owner@example.test", role: "owner", scopes: [] }, secret);
+    const PLATFORM_DB = {
+      prepare: () => ({ bind: () => ({ first: async () => ({ status: "active", reseller_status: "active" }) }) }),
+    } as unknown as D1Database;
     const env = { ENVIRONMENT: "test", JWT_SECRET: secret, PLATFORM_SECRET: secret, AGENTS_WORKER: { fetch: workerFetch },
-      SPACES_WORKER: { fetch: vi.fn(() => Response.json({ wrong_worker: true })) } } as unknown as Env;
+      PLATFORM_DB, SPACES_WORKER: { fetch: vi.fn(() => Response.json({ wrong_worker: true })) } } as unknown as Env;
     const response = await app.request("/v1/spaces/space-1/projects/project-1/extensions/install-1/connections/slack-main/oauth/slack/start", {
       method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ return_url: "https://shell.example.test" }),
     }, env);
@@ -31,8 +34,11 @@ describe("project extension provider routing", () => {
       return Response.json({ assigned: true });
     });
     const token = await signJwt({ sub: "owner-1", tid: "tenant-1", email: "owner@example.test", role: "owner", scopes: [] }, secret);
+    const PLATFORM_DB = {
+      prepare: () => ({ bind: () => ({ first: async () => ({ status: "active", reseller_status: "active" }) }) }),
+    } as unknown as D1Database;
     const env = { ENVIRONMENT: "test", JWT_SECRET: secret, PLATFORM_SECRET: secret, AGENTS_WORKER: { fetch: workerFetch },
-      SPACES_WORKER: { fetch: vi.fn(() => Response.json({ wrong_worker: true })) } } as unknown as Env;
+      PLATFORM_DB, SPACES_WORKER: { fetch: vi.fn(() => Response.json({ wrong_worker: true })) } } as unknown as Env;
     const response = await app.request("/v1/spaces/space-1/projects/project-1/channel-extensions/install-1/inbox/assign", {
       method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ event_id: "event-1" }),
     }, env);
