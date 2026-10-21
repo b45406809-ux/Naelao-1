@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2019` tracked files; `1813` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `cf8c49a8`.
+Inventory basis: `2023` tracked files; `1817` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `753a4d6b`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -522,6 +522,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `apps/shell/src/components/DiscoverMarketRadar.tsx`
 - [ ] `apps/shell/src/components/DomainGlossaryPanel.tsx`
 - [ ] `apps/shell/src/components/FileViewer.tsx`
+- [ ] `apps/shell/src/components/HtmlPreviewFrame.test.ts`
 - [ ] `apps/shell/src/components/HtmlPreviewFrame.tsx`
 - [ ] `apps/shell/src/components/InlineApprovalCard.tsx`
 - [ ] `apps/shell/src/components/InlineArtifactCard.tsx`
@@ -567,6 +568,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `apps/shell/src/lib/chatSession.ts`
 - [ ] `apps/shell/src/lib/connectorActions.ts`
 - [ ] `apps/shell/src/lib/display-mode.ts`
+- [ ] `apps/shell/src/lib/dom-inspector-message.test.ts`
+- [ ] `apps/shell/src/lib/dom-inspector-message.ts`
 - [ ] `apps/shell/src/lib/modelPreference.ts`
 - [ ] `apps/shell/src/lib/product-context.tsx`
 - [ ] `apps/shell/src/lib/productAccount.ts`
@@ -1207,6 +1210,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/ui/src/components/Modal.tsx`
 - [ ] `packages/ui/src/components/NavItem.tsx`
 - [ ] `packages/ui/src/components/PageView.tsx`
+- [ ] `packages/ui/src/components/QrCode.test.ts`
 - [ ] `packages/ui/src/components/QrCode.tsx`
 - [ ] `packages/ui/src/components/Sidebar.tsx`
 - [ ] `packages/ui/src/components/SpaceSwitcher.tsx`
