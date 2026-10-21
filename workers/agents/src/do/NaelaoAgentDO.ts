@@ -5593,6 +5593,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
     const tenantId = body.tenantId ?? request.headers.get("x-naelao-tenant-id") ?? "";
+    // The hourly worker performs only the per-space fact decay/prune pass. It does not compact a
+    // user conversation, so it has no user/session/role tuple. Keep that internal maintenance
+    // operation distinct from interactive compaction, which must pass the normal run gate below.
+    if (body.runSpaceMaintenance && !body.userId && !body.sessionId && !body.callerRole) {
+      if (!tenantId || !this.env.PLATFORM_DB) return Response.json({ error_code: "maintenance_identity_required" }, { status: 400 });
+      if (await this.tenantSpaceSuspended(tenantId, spaceId)) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+      const maintenance = await this.runMemoryMaintenanceForSpace(spaceId, tenantId);
+      if (await this.tenantSpaceSuspended(tenantId, spaceId)) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+      return Response.json(maintenance);
+    }
     if (!tenantId || !body.userId || !body.sessionId || !body.callerRole)
       return Response.json({ error_code: "compaction_identity_required" }, { status: 400 });
     const runId = `compact:${crypto.randomUUID()}`;

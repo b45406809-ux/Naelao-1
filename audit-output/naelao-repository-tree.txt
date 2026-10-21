@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2031
-Files with source or executable-configuration extensions: 1825
-Inventory revision: 2026-10-21 audit refresh at 2098f0c9
+Files: 2032
+Files with source or executable-configuration extensions: 1826
+Inventory revision: 2026-10-21 audit refresh at 700d4758
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1602,6 +1602,7 @@ workers/
         ingress-memory.test.ts
         LocalTunnelDO.test.ts
         LocalTunnelDO.ts
+        memory-maintenance-route.test.ts
         NaelaoAgentDO.ts
         project-llm-usage.test.ts
         project-llm-usage.ts

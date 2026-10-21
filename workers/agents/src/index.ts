@@ -9925,7 +9925,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       await stub.fetch(new Request("http://agent-do/memory/maintenance", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ spaceId: msg.spaceId }),
+        body: JSON.stringify({ spaceId: msg.spaceId, tenantId: msg.tenantId, runSpaceMaintenance: true }),
       }));
       return;
     }
