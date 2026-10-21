@@ -49,7 +49,8 @@ function pagedFetch(all: Message[]) {
     const beforeIndex = beforeId
       ? Number(beforeId.replace("message-", "")) - 1
       : all.length;
-    const page = all.slice(Math.max(0, beforeIndex - 100), beforeIndex);
+    const limit = Number(url.searchParams.get("limit") ?? 100);
+    const page = all.slice(Math.max(0, beforeIndex - limit), beforeIndex);
     return Response.json({ data: page, cursor_applied: !beforeId || all.some((message) => message.id === beforeId) });
   };
   return { fetch, requests };
@@ -71,9 +72,9 @@ describe("conversation.search", () => {
     expect(result.complete).toBe(true);
     expect(result.searched_messages).toBe(1_234);
     expect(result.results[0]?.position).toBe("1 of 1234");
-    expect(api.requests.length).toBe(13);
+    expect(api.requests.length).toBe(3);
     expect(
-      api.requests.every((url) => url.searchParams.get("limit") === "100")
+      api.requests.every((url) => url.searchParams.get("limit") === "500")
     ).toBe(true);
     expect(api.requests[0]?.searchParams.get("scope_project_id")).toBe(
       "project-1"
@@ -214,7 +215,7 @@ describe("conversation.search", () => {
       context(async () => {
         call++;
         return call === 1
-          ? Response.json({ data: messages(100) })
+          ? Response.json({ data: messages(500) })
           : new Response("unavailable", { status: 503 });
       })
     )) as { ok: boolean; complete: boolean; reason: string };

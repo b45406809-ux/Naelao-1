@@ -79,7 +79,10 @@ function snippet(content: string, queryTokens: string[], radius = 160): string {
   return `${start > 0 ? "…" : ""}${content.slice(start, end)}${end < content.length ? "…" : ""}`;
 }
 
-const SEARCH_PAGE_SIZE = 100;
+// SpaceDO accepts up to 500 messages per request. Using the full page reduces a maximum
+// 10,000-message scan from 100 service-binding calls to 20, keeping it within low-tier
+// Workers subrequest budgets while preserving the independent 16 MiB response-byte ceiling.
+const SEARCH_PAGE_SIZE = 500;
 const SEARCH_MAX_MESSAGES = 10_000;
 const SEARCH_MAX_BYTES = 16 * 1024 * 1024;
 
