@@ -32,6 +32,8 @@ export interface Env {
   /** F-2: billing worker — the public Lemon Squeezy webhook ingress proxies here. */
   BILLING_WORKER?: Fetcher;
   MARKETPLACE_WORKER?: Fetcher;
+  /** Owner/admin portal domain mapping API; public requests still pass through JWT auth. */
+  PORTAL_ROUTER?: Fetcher;
   AI: Ai;
 }
 
@@ -46,8 +48,8 @@ async function checkReplayPrevention(
   const tsHeader = request.headers.get("x-naelao-timestamp");
   if (!tsHeader) return { ok: true }; // header optional for unauthenticated routes
 
-  const ts = parseInt(tsHeader, 10);
-  if (isNaN(ts)) return { ok: false, reason: "x-naelao-timestamp must be a unix epoch integer" };
+  const ts = Number.parseInt(tsHeader, 10);
+  if (Number.isNaN(ts)) return { ok: false, reason: "x-naelao-timestamp must be a unix epoch integer" };
 
   const nowS = Math.floor(Date.now() / 1000);
   if (Math.abs(nowS - ts) > MAX_TIMESTAMP_SKEW_S) {
@@ -95,7 +97,8 @@ async function checkTokenVersion(
     currentVersion = row?.token_version ?? 0;
     if (tokenVersionCache.size >= TOKEN_VERSION_CACHE_MAX) {
       // Evict the oldest entry (Map iterates in insertion order).
-      tokenVersionCache.delete(tokenVersionCache.keys().next().value!);
+      const oldest = tokenVersionCache.keys().next().value;
+      if (oldest !== undefined) tokenVersionCache.delete(oldest);
     }
     tokenVersionCache.set(userId, { version: currentVersion, expiresAt: Date.now() + TOKEN_VERSION_CACHE_TTL_MS });
   }
@@ -307,8 +310,9 @@ const AUTH_ROUTE_LIMITS: Record<string, [routeKey: string, limit: number]> = {
 app.all("/v1/auth/*", async (c) => {
   const url = new URL(c.req.url);
   const suffix = Object.keys(AUTH_ROUTE_LIMITS).find((s) => url.pathname.endsWith(`/${s}`));
-  if (suffix) {
-    const [routeKey, limit] = AUTH_ROUTE_LIMITS[suffix]!;
+  const authLimits = suffix ? AUTH_ROUTE_LIMITS[suffix] : undefined;
+  if (authLimits) {
+    const [routeKey, limit] = authLimits;
     const rl = await checkPreAuthRateLimit(c, routeKey, limit);
     if (!rl.allowed) {
       return c.json({ error_code: "rate_limited", message: "Too many requests", retry_after_ms: rl.retryAfterMs }, 429);
@@ -520,8 +524,9 @@ app.all("/v1/spaces/:spaceId/end-users/*", async (c) => {
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
   const suffix = Object.keys(END_USER_ROUTE_LIMITS).find((s) => u.pathname.endsWith(`/${s}`));
-  if (suffix) {
-    const [routeKey, limit] = END_USER_ROUTE_LIMITS[suffix]!;
+  const endUserLimits = suffix ? END_USER_ROUTE_LIMITS[suffix] : undefined;
+  if (endUserLimits) {
+    const [routeKey, limit] = endUserLimits;
     const rl = await checkPreAuthRateLimit(c, routeKey, limit);
     if (!rl.allowed) {
       return c.json({ error_code: "rate_limited", message: "Too many requests", retry_after_ms: rl.retryAfterMs }, 429);
@@ -866,7 +871,8 @@ function matchAgentSpacePath(path: string): string | null {
   const stripped = path.replace(/^\/v1(?=\/|$)/, "") || "/";
   const m = /^\/spaces\/([^/]+)(\/|$)/.exec(stripped);
   if (!m) return null;
-  const spaceId = m[1]!;
+  const spaceId = m[1];
+  if (!spaceId) return null;
   // Block agent keys from the credential store regardless of method — credentials/* carries
   // raw secrets (OAuth tokens, API keys) that an agent must never read directly.
   const afterSpace = stripped.slice(`/spaces/${spaceId}`.length);
@@ -977,7 +983,9 @@ api.use("*", async (c, next) => {
   const agentKeyMatch = /^Bearer\s+(nak_\S+)$/.exec(authHeader);
   const agentSpaceId = agentKeyMatch ? matchAgentSpacePath(c.req.path) : null;
   if (agentKeyMatch && agentSpaceId) {
-    const resolved = await resolveAgentApiKeyClaims(c.env, agentSpaceId, agentKeyMatch[1]!);
+    const apiKey = agentKeyMatch[1];
+    if (!apiKey) throw unauthorized("Invalid or expired agent API key");
+    const resolved = await resolveAgentApiKeyClaims(c.env, agentSpaceId, apiKey);
     if (!resolved) throw unauthorized("Invalid or expired agent API key");
     c.set("claims", resolved.claims);
     c.set("agentApproval", { mode: resolved.approval.mode, autoApproved: resolved.approval.autoApproved });
@@ -1226,6 +1234,18 @@ for (const path of ["/marketplace", "/marketplace/*"]) api.all(path, async c => 
   if (!c.env.MARKETPLACE_WORKER) return c.json({ error_code: "marketplace_unavailable" }, 503);
   return proxyTo(c.env.MARKETPLACE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, true);
 });
+
+// Portal domain mappings are owner/admin operations. Forward through the signed service binding
+// so the Portal Router never trusts identity headers received directly from a public caller.
+for (const path of ["/domains", "/domains/*", "/subdomains", "/subdomains/*"]) api.all(path, async (c) => {
+  const claims = c.get("claims") as NaelaoJwtClaims | undefined;
+  if (!claims || (claims.role !== "owner" && claims.role !== "admin")) {
+    return c.json({ error_code: "forbidden", message: "Only tenant owners and admins can manage portal domains" }, 403);
+  }
+  if (!c.env.PORTAL_ROUTER) return c.json({ error_code: "portal_unavailable" }, 503);
+  return proxyTo(c.env.PORTAL_ROUTER, claims, c.req.raw, c.env.PLATFORM_SECRET, true);
+});
+
 for (const path of ["/billing/partner/*", "/billing/template-subscriptions"]) api.all(path, async c => {
   if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable" }, 503);
   return proxyTo(c.env.BILLING_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET);

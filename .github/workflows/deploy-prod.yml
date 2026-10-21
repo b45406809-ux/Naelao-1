@@ -88,6 +88,12 @@ jobs:
           npx wrangler d1 execute "$DB_ID" \
             --command="SELECT request_id FROM gdpr_erasure_outbox LIMIT 0" \
             --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0119_portal_domains.sql \
+            --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT hostname FROM portal_domains LIMIT 0" \
+            --remote
 
       - name: Deploy all workers (production)
         env:

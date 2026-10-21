@@ -84,6 +84,10 @@ service = "naelao-billing"
 binding = "MARKETPLACE_WORKER"
 service = "naelao-marketplace"
 
+[[services]]
+binding = "PORTAL_ROUTER"
+service = "naelao-portal-router"
+
 [env.staging]
 name = "naelao-router-staging"
 vars = { ENVIRONMENT = "staging", CORS_ALLOWLIST = "https://staging-dashboard.naelao.com,https://staging-portal.naelao.com,https://staging-app.naelao.com", PRODUCT_SHELL_URL = "https://staging-app.naelao.com" }
@@ -180,6 +184,11 @@ binding = "MARKETPLACE_WORKER"
 service = "naelao-marketplace"
 
 
+[[env.staging.services]]
+binding = "PORTAL_ROUTER"
+service = "naelao-portal-router"
+
+
 [env.production.ai]
 binding = "AI"
 
@@ -266,3 +275,8 @@ service = "naelao-billing"
 [[env.production.services]]
 binding = "MARKETPLACE_WORKER"
 service = "naelao-marketplace"
+
+
+[[env.production.services]]
+binding = "PORTAL_ROUTER"
+service = "naelao-portal-router"

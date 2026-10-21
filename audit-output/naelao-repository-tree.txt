@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2026
-Files with source or executable-configuration extensions: 1820
-Inventory revision: 2026-10-21 audit refresh at 0e83dac6
+Files: 2028
+Files with source or executable-configuration extensions: 1822
+Inventory revision: 2026-10-21 audit refresh at fea8e252
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -600,6 +600,7 @@ infra/
     0116_space_suspension_reason.sql
     0117_org_suspension_reason.sql
     0118_gdpr_erasure_outbox.sql
+    0119_portal_domains.sql
   scripts/
     audit-ui.mjs
     await-quota-then-matrix.sh
@@ -2115,6 +2116,7 @@ workers/
       extension-provider-routing.test.ts
       health.test.ts
       index.ts
+      portal-domain-routing.test.ts
       preferred-language.test.ts
       preferred-language.ts
       RateLimitDO-boundaries.test.ts

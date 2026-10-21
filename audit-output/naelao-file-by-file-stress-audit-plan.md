@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2026` tracked files; `1820` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `0e83dac6`.
+Inventory basis: `2028` tracked files; `1822` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `fea8e252`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -739,6 +739,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `infra/migrations/0116_space_suspension_reason.sql`
 - [ ] `infra/migrations/0117_org_suspension_reason.sql`
 - [ ] `infra/migrations/0118_gdpr_erasure_outbox.sql`
+- [ ] `infra/migrations/0119_portal_domains.sql`
 
 ### `infra/scripts`
 
@@ -1623,7 +1624,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/spacedo-realtime-broadcast.test.ts`
 - [ ] `tests/unit/spacedo-tasks.test.ts`
 - [ ] `tests/unit/spacedo-threads.test.ts`
-- [ ] `tests/unit/storefront-serving.test.ts`
+- [x] `tests/unit/storefront-serving.test.ts`
 - [ ] `tests/unit/streaming-real-deltas.test.ts`
 - [ ] `tests/unit/sub-agent-effort-escalation.test.ts`
 - [ ] `tests/unit/sub-agent-output.test.ts`
@@ -2374,13 +2375,13 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/portal-router`
 
-- [ ] `workers/portal-router/package.json`
-- [ ] `workers/portal-router/tsconfig.json`
+- [x] `workers/portal-router/package.json`
+- [x] `workers/portal-router/tsconfig.json`
 - [x] `workers/portal-router/wrangler.toml`
 
 ### `workers/portal-router/src`
 
-- [ ] `workers/portal-router/src/index.ts`
+- [x] `workers/portal-router/src/index.ts`
 
 ### `workers/provisioner`
 
@@ -2418,6 +2419,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/router/src/extension-provider-routing.test.ts`
 - [ ] `workers/router/src/health.test.ts`
 - [x] `workers/router/src/index.ts`
+- [x] `workers/router/src/portal-domain-routing.test.ts`
 - [ ] `workers/router/src/preferred-language.test.ts`
 - [ ] `workers/router/src/preferred-language.ts`
 - [x] `workers/router/src/tenant-status.test.ts`
