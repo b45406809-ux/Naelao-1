@@ -195,22 +195,24 @@ app.get("/health", (c) => c.json({ ok: true, service: "auth", env: c.env.ENVIRON
 app.post("/login", async (c) => {
   const body = await readJsonObject(c.req.raw);
   if (typeof body.email !== "string" || typeof body.password !== "string" || !body.email.trim() || !body.password) throw badRequest("email and password required");
-  body.email = body.email.trim().toLowerCase();
+  const submittedEmail = body.email.trim();
+  const normalizedEmail = submittedEmail.toLowerCase();
   if (new TextEncoder().encode(body.password).byteLength > MAX_PASSWORD_BYTES) throw badRequest("password exceeds the 1 KiB limit");
 
   const db = c.env.PLATFORM_DB;
 
-  const user = await db
+  const matchingUsers = await db
     .prepare(
       `SELECT u.id, u.email, u.password_hash, u.status, u.org_id,
               u.token_version, m.role, s.plan_tier
        FROM users u
        JOIN org_members m ON m.user_id = u.id AND m.org_id = u.org_id
        JOIN subscriptions s ON s.org_id = u.org_id AND s.status = 'active'
-       WHERE u.email = ?1 LIMIT 1`
+       WHERE lower(u.email) = ?1
+       ORDER BY CASE WHEN u.email = ?2 THEN 0 ELSE 1 END LIMIT 2`
     )
-    .bind(body.email)
-    .first<{
+    .bind(normalizedEmail, submittedEmail)
+    .all<{
       id: string;
       email: string;
       password_hash: string;
@@ -220,6 +222,8 @@ app.post("/login", async (c) => {
       role: string;
       plan_tier: string;
     }>();
+  const user = matchingUsers.results.find((candidate) => candidate.email === submittedEmail)
+    ?? (matchingUsers.results.length === 1 ? matchingUsers.results[0] : undefined);
 
   // Keep unknown, inactive, and wrong-password paths at the same expensive verification and
   // response shape so login cannot be used to enumerate account status by text or timing.
@@ -272,7 +276,7 @@ app.post("/register", async (c) => {
 
   // Check existing
   const existing = await db
-    .prepare(`SELECT id FROM users WHERE email = ?1 LIMIT 1`)
+    .prepare(`SELECT id FROM users WHERE lower(email) = ?1 LIMIT 1`)
     .bind(email)
     .first();
   if (existing) throw badRequest("Email already registered");
@@ -349,13 +353,17 @@ app.post("/register", async (c) => {
 app.post("/request-password-reset", async (c) => {
   let body: Record<string, unknown>;
   try { body = await readJsonObject(c.req.raw); } catch { body = {}; }
-  const email = (typeof body.email === "string" ? body.email : "").trim().toLowerCase();
+  const submittedEmail = (typeof body.email === "string" ? body.email : "").trim();
+  const email = submittedEmail.toLowerCase();
   const ALWAYS_OK = c.json({ ok: true, message: "If an account with that email exists, a reset link has been sent." });
   if (!email) return ALWAYS_OK;
 
-  const user = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, org_id, email FROM users WHERE email = ?1 AND status = 'active' LIMIT 1"
-  ).bind(email).first<{ id: string; org_id: string; email: string }>();
+  const matches = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, org_id, email FROM users WHERE lower(email) = ?1 AND status = 'active'
+     ORDER BY CASE WHEN email = ?2 THEN 0 ELSE 1 END LIMIT 2`
+  ).bind(email, submittedEmail).all<{ id: string; org_id: string; email: string }>();
+  const user = matches.results.find((candidate) => candidate.email === submittedEmail)
+    ?? (matches.results.length === 1 ? matches.results[0] : undefined);
   if (!user) return ALWAYS_OK;
 
   const token = crypto.randomUUID() + crypto.randomUUID();

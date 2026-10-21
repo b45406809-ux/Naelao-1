@@ -118,6 +118,14 @@ describe("POST /register — builder signup", () => {
     const login = await authWorker.fetch(req("/login", { email: "JANE@ACME.COM", password: "hunter2222" }), env as never, execCtx);
     expect(login.status).toBe(200);
   });
+
+  it("rejects a duplicate registration that differs only by email casing", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    const duplicate = await authWorker.fetch(req("/register", { email: "JANE@ACME.COM", password: "hunter2222" }), env as never, execCtx);
+    expect(duplicate.status).toBe(400);
+    expect(await env.__db.prepare("SELECT COUNT(*) AS count FROM users").first<{ count: number }>()).toEqual({ count: 1 });
+  });
 });
 
 describe("POST /login — builder sign-in", () => {
@@ -227,6 +235,17 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     expect(oldLogin.status).toBe(401);
     const newLogin = await authWorker.fetch(req("/login", { email: "jane@acme.com", password: "newpassword1" }), env as never, execCtx);
     expect(newLogin.status).toBe(200);
+  });
+
+  it("keeps legacy mixed-case accounts sign-in and password-recovery compatible", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "legacy@acme.com", password: "hunter2222" }), env as never, execCtx);
+    await env.__db.prepare("UPDATE users SET email = 'Legacy@Acme.com' WHERE email = 'legacy@acme.com'").run();
+    const login = await authWorker.fetch(req("/login", { email: "Legacy@Acme.com", password: "hunter2222" }), env as never, execCtx);
+    expect(login.status).toBe(200);
+    const resetRequest = await authWorker.fetch(req("/request-password-reset", { email: "legacy@acme.com" }), env as never, execCtx);
+    expect(resetRequest.status).toBe(200);
+    expect(env.__notifyCalls[0]?.to).toBe("Legacy@Acme.com");
   });
 
   it("bumps token_version on reset — invalidating any existing session, not just future logins", async () => {
