@@ -9961,19 +9961,16 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
 
     case "daily_digest": {
       if (wakePolicy.airGappedOnly) return;
+      if (!env.NOTIFICATIONS_WORKER) return; // do not mark a digest sent when delivery is unwired
       // Tier 2/3 follow-up: a proactive daily digest email. Advances last_digest_sent_at FIRST
       // (before the email even sends) — at-least-once delivery means this message could be
       // redelivered, and it's much better to occasionally SKIP a digest on a redelivery race than
       // to double-send one; the next day's tick will always catch up regardless.
-      await env.PLATFORM_DB.prepare("UPDATE spaces SET last_digest_sent_at = ? WHERE id = ?")
-        .bind(new Date().toISOString(), msg.spaceId).run();
-
       const internalHeaders = {
         "x-naelao-tenant-id": msg.tenantId,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, msg.tenantId),
       };
 
-      if (!env.NOTIFICATIONS_WORKER) return; // unwired — degrade honestly, no crash
       const contactRes = await env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/internal/spaces/${msg.spaceId}/owner-contact`,
         { headers: internalHeaders }
@@ -10022,8 +10019,15 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
         `Credits spent: ${totalCredits.toLocaleString()}`,
       ];
 
+      // Claim the day's digest only after all prerequisites succeeded. Advancing this timestamp
+      // before a worker/contact/activity check silently disabled delivery for 24 hours when a
+      // prerequisite was unavailable or the Space had just been suspended.
+      if (!await isActiveTenantSpace(env, msg.spaceId, msg.tenantId)) return;
+      await env.PLATFORM_DB.prepare("UPDATE spaces SET last_digest_sent_at = ? WHERE id = ?")
+        .bind(new Date().toISOString(), msg.spaceId).run();
+
       try {
-        await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+        const delivery = await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
           method: "POST",
           headers: { "content-type": "application/json", ...internalHeaders },
           body: JSON.stringify({
@@ -10034,6 +10038,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
             body: lines.join("\n"),
           }),
         }));
+        if (!delivery.ok) throw new Error(`daily_digest_delivery_failed:${delivery.status}`);
       } catch { /* best-effort — a failed send just means no digest today, not a crash */ }
       return;
     }

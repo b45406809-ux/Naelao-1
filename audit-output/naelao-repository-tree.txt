@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2035
-Files with source or executable-configuration extensions: 1829
-Inventory revision: 2026-10-21 audit refresh at babd9478
+Files: 2036
+Files with source or executable-configuration extensions: 1830
+Inventory revision: 2026-10-21 audit refresh at 2f4f96d3
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1585,6 +1585,7 @@ workers/
       container-bridge/
         framing.test.ts
         framing.ts
+      daily-digest-prerequisites.test.ts
       do/
         additional-do-request-boundaries.test.ts
         channel-conversation-transcript.test.ts

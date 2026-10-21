@@ -1957,3 +1957,9 @@ Validation: focused channel suspension tests passed 3/3; full Agents suite passe
 The connector-poll queue consumer advanced its saved `since` timestamp after every Agent DO response, including failed runs and suspension errors. That made the next poll skip records the agent had not processed. It now reads the bounded run response and advances the cursor only when the run reports success; non-2xx, unsuccessful, malformed, or oversized results leave the cursor untouched and retry through the queue. Added success and failure regressions.
 
 Validation: focused cursor tests passed 2/2; full Agents suite passed 161 files / 735 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed. The broader per-file audit remains open.
+
+## Daily digest prerequisite handling (2026-10-21)
+
+The queue advanced `last_digest_sent_at` before checking that notifications were configured or that the Space had an owner contact. A missing binding or contact therefore suppressed a digest for 24 hours without attempting delivery. The handler now checks notification wiring first, gathers contact and activity before claiming the day, and rechecks active tenant/Space status immediately before recording the send timestamp. Added regressions for missing notification binding and missing owner contact.
+
+Validation: focused digest prerequisite tests passed 2/2; full Agents suite passed 162 files / 737 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed. The queue and worker audit continues.
