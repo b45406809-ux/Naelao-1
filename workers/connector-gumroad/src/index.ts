@@ -16,7 +16,7 @@
 
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { requireInternalHmac, readBoundedResponseText } from "@naelao/http";
+import { requireInternalHmac, readBoundedRequestText, readBoundedResponseText } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -40,27 +40,33 @@ function qs(args: Record<string, unknown>, keys: string[]): Record<string, strin
   return out;
 }
 
+function productId(args: Record<string, unknown>): string {
+  const value = args.product_id;
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new Error("invalid_product_id");
+  return value;
+}
+
 export const TOOLS: Record<string, ToolDef & { query?: (a: Record<string, unknown>) => Record<string, string> }> = {
   list_products: {
     description: "List the seller's products.",
     method: "GET",
-    path: () => `/products`,
+    path: () => "/products",
   },
   get_product: {
     description: "Get one product by id (args: product_id).",
     method: "GET",
-    path: (a) => `/products/${encodeURIComponent(String(a["product_id"] ?? ""))}`,
+    path: (a) => `/products/${encodeURIComponent(productId(a))}`,
   },
   list_sales: {
     description: "List recent sales (args: after, before, page_key).",
     method: "GET",
-    path: () => `/sales`,
+    path: () => "/sales",
     query: (a) => qs(a, ["after", "before", "page_key", "product_id", "email"]),
   },
   list_subscribers: {
     description: "List subscribers for a product (args: product_id).",
     method: "GET",
-    path: (a) => `/products/${encodeURIComponent(String(a["product_id"] ?? ""))}/subscribers`,
+    path: (a) => `/products/${encodeURIComponent(productId(a))}/subscribers`,
   },
 };
 
@@ -80,7 +86,12 @@ async function callTool(name: string, args: Record<string, unknown>, token: stri
   url.searchParams.set("access_token", token);
   for (const [k, v] of Object.entries(def.query?.(args) ?? {})) url.searchParams.set(k, v);
 
-  const resp = await fetch(url.toString(), { method: def.method, headers: { Accept: "application/json" } });
+  const resp = await fetch(url.toString(), {
+    method: def.method,
+    headers: { Accept: "application/json" },
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000),
+  });
   const text = await readBoundedResponseText(resp, 1024 * 1024);
   let json: unknown;
   try { json = text ? JSON.parse(text) : null; } catch { json = { raw: text }; }
@@ -110,17 +121,27 @@ interface JsonRpcReq {
 }
 
 async function handleMcp(c: Context<{ Bindings: Env }>) {
-  const body = await c.req.json<JsonRpcReq>().catch(() => ({}) as JsonRpcReq);
+  let body: JsonRpcReq;
+  try {
+    const raw = await readBoundedRequestText(c.req.raw, 64 * 1024);
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_request");
+    body = parsed as JsonRpcReq;
+  } catch {
+    return c.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid or oversized JSON-RPC request" } }, 400);
+  }
   const id = body.id ?? null;
   const reply = (result: unknown) => c.json({ jsonrpc: "2.0", id, result });
   const fail = (code: number, message: string) => c.json({ jsonrpc: "2.0", id, error: { code, message } });
 
   if (body.method === "tools/list") return reply({ tools: toolList() });
   if (body.method === "tools/call") {
+    const args = body.params?.arguments ?? {};
+    if (!args || typeof args !== "object" || Array.isArray(args)) return fail(-32602, "Invalid tool arguments");
     const token = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
     if (!token) return fail(-32602, "Missing Authorization bearer (Gumroad access token)");
     try {
-      return reply(await callTool(body.params?.name ?? "", body.params?.arguments ?? {}, token));
+      return reply(await callTool(body.params?.name ?? "", args, token));
     } catch (err) {
       return fail(-32000, (err as Error).message);
     }
