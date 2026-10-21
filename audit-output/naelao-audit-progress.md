@@ -1963,3 +1963,9 @@ Validation: focused cursor tests passed 2/2; full Agents suite passed 161 files 
 The queue advanced `last_digest_sent_at` before checking that notifications were configured or that the Space had an owner contact. A missing binding or contact therefore suppressed a digest for 24 hours without attempting delivery. The handler now checks notification wiring first, gathers contact and activity before claiming the day, and rechecks active tenant/Space status immediately before recording the send timestamp. Added regressions for missing notification binding and missing owner contact.
 
 Validation: focused digest prerequisite tests passed 2/2; full Agents suite passed 162 files / 737 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed. The queue and worker audit continues.
+
+## Cloudflare email ingress suspension races (2026-10-21)
+
+Cloudflare email ingress checked status once before parsing MIME, then could persist attachments and dispatch an Agent turn after a long parse or while an R2 upload was in flight. It now rechecks tenant/Space status after parsing, before attachment writes, after each R2 write (deleting the object if suspension landed), and before DO dispatch. Added regressions for suspension after parse and during an attachment upload.
+
+Validation: focused email suspension tests passed 2/2; full Agents suite passed 163 files / 739 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed. The repository-wide file audit remains incomplete and active.

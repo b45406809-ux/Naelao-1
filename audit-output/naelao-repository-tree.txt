@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2036
-Files with source or executable-configuration extensions: 1830
-Inventory revision: 2026-10-21 audit refresh at 2f4f96d3
+Files: 2037
+Files with source or executable-configuration extensions: 1831
+Inventory revision: 2026-10-21 audit refresh at d2a27094
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1571,6 +1571,7 @@ workers/
         foundry-command.ts
         session-queue.test.ts
         session-queue.ts
+      cloudflare-email-suspension.test.ts
       connector-poll-cursor.test.ts
       connectors/
         calendar-connector.ts

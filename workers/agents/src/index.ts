@@ -10228,6 +10228,12 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
     message.setReject("Email could not be safely parsed or exceeds attachment limits");
     return;
   }
+  // Parsing can take a while for a large MIME message. Recheck before storing any attachment or
+  // dispatching the inbound turn so a suspension during parsing cannot admit new tenant data.
+  if (!await isActiveTenantSpace(env, route.space_id, route.tenant_id)) {
+    message.setReject("Naelao workspace is unavailable");
+    return;
+  }
   if (mailboxRoute && parsed.attachments.length) {
     message.setReject("Agent mailboxes currently accept text-only messages; send attachments to a task-scoped reply address");
     return;
@@ -10246,6 +10252,10 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
   let total = 0;
   for (let index = 0; index < parsed.attachments.length; index++) {
     const attachment = parsed.attachments[index]!;
+    if (!await isActiveTenantSpace(env, route.space_id, route.tenant_id)) {
+      message.setReject("Naelao workspace is unavailable");
+      return;
+    }
     total += attachment.bytes.byteLength;
     if (attachment.bytes.byteLength > MAX_EMAIL_ATTACHMENT_BYTES || total > MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES) {
       message.setReject("Email attachments exceed Naelao's size limit");
@@ -10254,6 +10264,18 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
     const taskSegment = taskId!.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || "task";
     const key = `spaces/${route.space_id}/email-inbound/${taskSegment}/${messageKey}/${index}-${attachment.filename}`;
     await env.SCRIPTS_R2!.put(key, attachment.bytes, { httpMetadata: { contentType: attachment.mimeType } });
+    let activeAfterAttachmentWrite = false;
+    try {
+      activeAfterAttachmentWrite = await isActiveTenantSpace(env, route.space_id, route.tenant_id);
+    } catch (error) {
+      await env.SCRIPTS_R2!.delete(key);
+      throw error;
+    }
+    if (!activeAfterAttachmentWrite) {
+      await env.SCRIPTS_R2!.delete(key);
+      message.setReject("Naelao workspace is unavailable");
+      return;
+    }
     const createdAt = new Date().toISOString();
     const attachmentId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -10265,6 +10287,10 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
        VALUES (?, ?, ?, ?, 'email', ?, ?, ?, ?, ?, ?)`
     ).bind(attachmentId, route.tenant_id, route.space_id, taskId!, key, attachment.filename, attachment.mimeType, attachment.bytes.byteLength, createdAt, expiresAt).run();
     stored.push({ id: attachmentId, filename: attachment.filename, mimeType: attachment.mimeType, sizeBytes: attachment.bytes.byteLength });
+  }
+  if (!await isActiveTenantSpace(env, route.space_id, route.tenant_id)) {
+    message.setReject("Naelao workspace is unavailable");
+    return;
   }
   const stub = await getAgentDOForSpace(env, route.tenant_id, route.space_id, route.agent_id);
   const inboundText = mailboxRoute
