@@ -1,0 +1,701 @@
+[
+  'numTotalTestSuites',
+  'numPassedTestSuites',
+  'numFailedTestSuites',
+  'numPendingTestSuites',
+  'numTotalTests',
+  'numPassedTests',
+  'numFailedTests',
+  'numPendingTests',
+  'numTodoTests',
+  'snapshot',
+  'startTime',
+  'success',
+  'testResults'
+]
+[
+  {
+    "name": "/workspace/Naelao-1/tests/unit/action-ledger.test.ts",
+    "assertionResults": [
+      "does not execute the same action twice under the same ledger key"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/agent-loop-unbounded.test.ts",
+    "assertionResults": [
+      "completes a 15-step task that the old six-step cap would have failed",
+      "reports real progress on every turn, not just the final one",
+      "folds older steps into a digest rather than overflowing a small context window",
+      "the run's own record keeps the FULL results even when the model only sees a digest",
+      "a successful call resets the stall count, so slow progress is not mistaken for a loop",
+      "estimates tokens the same way the rest of the codebase does"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/agent-run-model-override.test.ts",
+    "assertionResults": [
+      "accepts every model on the shared allowlist"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/agent-task-workflow-failure-handling.test.ts",
+    "assertionResults": [
+      "a non-ok response from the agents worker (e.g. an LLM/quota error) marks the task failed, not stuck processing",
+      "a network-level throw (fetch itself rejects) also reaches a terminal failed status",
+      "a real success still completes normally (no regression from the try/catch)",
+      "a run that opens a real approval and only THEN fails keeps the approval, not just the error",
+      "a billing-gate 402 (insufficient_credits) carries error_code through into TaskDO's result, not just the raw error text",
+      "carries businessRole, callerRole, userId, projectId and businessContext through to the executor",
+      "omits nothing merely because the caller is a builder with no business role"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/agent-templates.test.ts",
+    "assertionResults": [
+      "a customer-support agent never gets code-exec — its whole point is staying inside the KB",
+      "writes real R2 config files and registers a real agent_definitions row",
+      "binds the new agent into a project's allowed_agent_ids when project_id is given, never dropping the existing default",
+      "returns the existing agent instead of minting a duplicate",
+      "still creates a genuinely different template alongside it",
+      "binds an already-existing agent to a project it isn't in yet",
+      "writes R2 config, registers the agent, and seeds the chosen autonomy",
+      "with an archetype: clamps the script list and reports what was rejected"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/approval-gates-structural.test.ts",
+    "assertionResults": [
+      "round-trips through writeAgentConfig/loadAgentConfig (R2) without losing the structural field",
+      "a provisioned launchpad-fulfillment-v1 profile gates customer_email_send and refund_issue under gate_listed, but not an unlisted action",
+      "older configs with no persisted requiresApprovalFor fall back to parsing agents.md (never crash, never silently un-gate a newly-authored heading)"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/browser-code-exec-prebuilt.test.ts",
+    "assertionResults": [
+      "browser.navigate calls codeRunner at tier 4 and returns its output",
+      "degrades honestly with no codeRunner configured",
+      "execute_python routes to tier 5 with the python harness",
+      "execute_bash routes to tier 5 with the bash harness",
+      "run_js routes to tier 2 using the agent-supplied code directly",
+      "run_js rejects ad hoc code that contacts a reserved payment processor (guard parity with script.create)",
+      "degrades honestly with no codeRunner configured"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/browser-worker-kitesurf.test.ts",
+    "assertionResults": [
+      "defaults to 'auto' and launches kitesurf FIRST via the real puppeteer.launch(binding, options) contract",
+      "falls back to chromium when kitesurf fails under 'auto', and says so honestly",
+      "an EXPLICIT engine:'chromium' never even tries kitesurf",
+      "an EXPLICIT engine:'kitesurf' that fails does NOT silently fall back — the caller asked for kitesurf specifically",
+      "SSRF-blocked URLs never reach launch() at all, regardless of engine",
+      "screenshot bytes round-trip through Buffer.toString('base64'), not a spread that could overflow the call stack"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/business-auth.test.ts",
+    "assertionResults": [
+      "a product_end_user can list and create projects (member floor)",
+      "a product_end_user can GET a single project but NOT PATCH it (admin floor)",
+      "a product_end_user can list and create threads, and GET a single thread",
+      "a product_end_user can GET agent-definitions but not POST",
+      "a product_end_user can POST and GET presence"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/business-commerce-membership.test.ts",
+    "assertionResults": [
+      "a product_end_user can list products, view orders, and view revenue (member floor)",
+      "a builder role (owner) is unaffected — can create AND publish"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/business-membership-role.test.ts",
+    "assertionResults": [
+      "treats the product root as implicit member for any caller (Phase B behavior preserved)",
+      "a business owner resolves their own real role"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/business-role-cache.test.ts",
+    "assertionResults": [
+      "does not re-query PLATFORM_DB for a repeat request within the TTL window"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/channel-outbound-delivery.test.ts",
+    "assertionResults": [
+      "refuses WhatsApp without the phone-number id it has to post through",
+      "keys on the chat, not the sender, so a group reply goes to the right place"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/chat-uploads.test.ts",
+    "assertionResults": [
+      "denies a product_end_user who isn't a member of the business",
+      "stores an uploaded file under the session's own uploads prefix",
+      "scopes to the project workspace when project_id is given, matching workspacePrefix()",
+      "rejects more than 6 files in one call",
+      "rejects a file over the size cap",
+      "strips path traversal from a supplied filename",
+      "degrades honestly when R2 isn't bound",
+      "lists files under the session's uploads prefix, not another session's",
+      "deletes an uploaded file"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/code-runner.test.ts",
+    "assertionResults": [
+      "runs a stored script's exported run() and returns its output",
+      "captures a thrown error from the script as a failed result, not a crash",
+      "Tier 6 (container) is routed separately and reports unavailable without a ToolSandboxDO binding",
+      "blocks ctx.fetch to a literal link-local/metadata address",
+      "also blocks a bare fetch() call (not just ctx.fetch) — global fetch is overridden too",
+      "blocks a non-http(s) protocol",
+      "injects ctx.browser.navigate proxied to the BROWSER_WORKER binding",
+      "Tier 4 reports unavailable without a browserWorker binding",
+      "resolves logical aliases with the original human and project scope",
+      "injects ctx.mcp proxied to the MCP_HUB binding with a verified internal token",
+      "one script chains TWO different MCP servers deterministically — the core multi-MCP ask",
+      "ctx.mcp.list_servers/list_tools work without a tool call",
+      "ctx.mcp is absent (not a crash) when no mcpHubWorker binding is configured",
+      "forwards to the ToolSandboxDO's /exec route and returns its result",
+      "surfaces a container-side error without throwing",
+      "addresses the sandbox DO per project, not per agent — two agents in the same project share one container",
+      "falls back to a fixed per-space slot when projectId is absent (the Space Assistant)",
+      "sends spaceId/projectId to the sandbox DO so it can sync the right R2 workspace prefix",
+      "fails closed with a clear message when the named image has no wired binding",
+      "routes to the image's own binding (not the base ToolSandboxDO) when one IS wired",
+      "promotes to Tier 6 and returns its output when the isolate fails with an unresolved import",
+      "forwards projectId to the promoted container run — same project's shared sandbox",
+      "reports BOTH errors, in order, when the promoted container run also fails",
+      "does NOT promote a plain timeout — a slower container isn't obviously the fix",
+      "does NOT promote when no ToolSandboxDO binding is wired — the original isolate error stands"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/compact-conversation.test.ts",
+    "assertionResults": [
+      "forwards the sessionId it was given (it used to drop it entirely)",
+      "addresses the SESSION's own DO, where conversation_summaries actually lives",
+      "surfaces the DO's result to the caller so the UI can report what happened"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/concurrency-do.test.ts",
+    "assertionResults": [
+      "the alarm handler sweeps expired slots across all keys"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/connector-catalogue.test.ts",
+    "assertionResults": [
+      "Notion is a Pipedream-routed connector (the second hosted-connect provider) with no mcp_endpoint or builder credential"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/container-per-project.test.ts",
+    "assertionResults": [
+      "forwards /exec to the harness verbatim, with no workspace_files sync of any kind",
+      "forwards each /workspace/* route straight through to the harness",
+      "cold-starts the container on demand when it isn't already running",
+      "degrades honestly (503) for /exec when no container runtime is bound",
+      "degrades honestly (503) for a /workspace/* route when no container runtime is bound"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/context-window-usage-endpoint.test.ts",
+    "assertionResults": [
+      "returns a per-category breakdown whose segments sum to the model window (step 1)",
+      "triggers memory maintenance on the space-wide assistant DO and returns its result",
+      "returns a clean 502 (not an unhandled throw) when the maintenance call itself fails"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/credential-hierarchy.test.ts",
+    "assertionResults": [
+      "a member can create their own user-scoped credential",
+      "owner/admin can create a space-scoped shared credential",
+      "re-saving the same (space, name, scope) rotates the value in place (upsert)",
+      "a non-privileged user sees only their own personal credentials + shared ones (never never a teammate's)",
+      "owner/admin sees every credential in the space",
+      "a member can delete their own user-scoped credential",
+      "a member cannot delete a teammate's user-scoped credential",
+      "a member cannot delete the shared space credential",
+      "owner/admin can delete the shared space credential",
+      "resolves the space-shared credential when no personal credential exists",
+      "a personal credential wins over the space-shared default (per-user is the default)",
+      "a privileged override ALWAYS wins, even over the acting user's own personal credential",
+      "without on_behalf_of_user_id, resolves at the space level only (mcp-hub's existing call shape)",
+      "404s when neither a personal nor a shared credential exists",
+      "prefer_scope='business' skips the personal credential even when one is connected",
+      "prefer_scope='personal' resolves the personal credential when connected",
+      "prefer_scope='personal' with no personal credential connected returns a distinct 404, never the shared one",
+      "a privileged override still wins over prefer_scope='personal'",
+      "an unrecognized prefer_scope value is ignored, resolving exactly as if it were absent",
+      "a credential created under one tenant is invisible to another tenant's list",
+      "a business with nothing of its own falls through to the product root's shared credential",
+      "a business's own shared credential wins over the product root's",
+      "the product root itself (no parent) never walks further — 404s like any other space with nothing",
+      "a member NOT in shared_with_user_ids does not get the credential (falls through to not-found)",
+      "a member IN shared_with_user_ids gets the credential",
+      "PATCH updates sharing without touching the encrypted value",
+      "PATCH is rejected on a personal (scope=user) credential",
+      "accepts a ::slot suffix and treats it as a distinct credential name"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/cross-project-handoff.test.ts",
+    "assertionResults": [
+      "reports a write, with the path that changed",
+      "reports a delete too — removing a job is as much a state change as adding one",
+      "still writes when nothing is listening"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/customer-bot-rules-business-membership.test.ts",
+    "assertionResults": [
+      "lets a business admin create, list, and delete a rule",
+      "lets a business member SEE rules but not create one (403)",
+      "refuses a non-member of the business entirely (403)"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/daily-digest.test.ts",
+    "assertionResults": [
+      "enqueues a digest for a product root that opted in and is due (never sent before)",
+      "does NOT enqueue for a product that never opted in",
+      "does NOT enqueue when a digest was already sent within the last 24h",
+      "enqueues again once 24h have passed since the last send",
+      "does not crash on malformed config_json — treats it as opted out",
+      "sends a digest email summarizing the last 24h of activity",
+      "excludes activity older than 24h from the summary"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/deposit-personal-credits.test.ts",
+    "assertionResults": [
+      "a plain MEMBER (bob) moves credits from their own personal balance into the project's wallet — real ledger transfer",
+      "1 credit = 1 cent exactly (CREDITS_PER_USD = 100)",
+      "fails CLOSED on insufficient personal balance — never overdraws, never touches the wallet",
+      "REVERSES the personal deduction when the wallet credit itself fails (a project that is NOT kind='wallet')",
+      "rejects a non-positive credits value",
+      "CRITICAL: a non-member of the business cannot deposit into its wallet",
+      "requires a verified internal token"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/end-user-prerun-credit-gate.test.ts",
+    "assertionResults": [
+      "rejects with 402 when the end user's balance is zero, before any reasoning runs",
+      "rejects with 402 when the end user's balance is negative",
+      "Tier 2 metering follow-up: calls the monthly-refresh endpoint before checking the balance"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/fail-closed-lock-and-rules.test.ts",
+    "assertionResults": [
+      "denies the lock when CONCURRENCY_DO is not bound at all",
+      "denies the lock when the ConcurrencyDO stub throws (outage)",
+      "still grants normally when ConcurrencyDO is healthy"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/feature-kinds-route.test.ts",
+    "assertionResults": [
+      "an owner sees every feature kind, including owner/admin-tier ones like Wallet",
+      "a plain member sees editor-tier kinds (CRM) but NOT admin-tier ones (Wallet)",
+      "only exposes feature_kinds — not the unrelated no-code project-template catalogue behind it"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/federation.test.ts",
+    "assertionResults": [
+      "refuses to promote an unproven skill",
+      "promotes a proven skill to the shared template library (health reset, origin authored)",
+      "a second space inherits the shared skill but keeps its own version",
+      "names[] narrows inherit to a specific subset — the skills directory's per-skill Add button",
+      "names[] naming an already-inherited skill correctly reports it skipped, not re-inherited",
+      "omitting names still inherits everything the space lacks (unchanged provisioning-time behavior)"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/file-and-schedule-tools.test.ts",
+    "assertionResults": [
+      "reads only the requested byte range and reports how to continue",
+      "returns matching lines with line numbers",
+      "includes surrounding context when asked"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/handlescriptrun-spend-cap.test.ts",
+    "assertionResults": [
+      "rejects with 429 when the project is already at its daily spend cap, before any reasoning runs",
+      "fails CLOSED (429) when the SpaceDO spend endpoint is unreachable — never fails open"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/internal-task-run-forwards-runid.test.ts",
+    "assertionResults": [
+      "sets body.runId to the taskId from the URL, not a fresh random id"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/interrupted-run-continue.test.ts",
+    "assertionResults": [
+      "reports the work it completed, so a failure can be continued rather than restarted",
+      "continuing under the original run's key does NOT re-execute completed actions",
+      "a fresh run — what plain 'try again' does — DOES redo the work"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/kb-autorag-retrieval.test.ts",
+    "assertionResults": [
+      "uses the legacy hybrid pipeline by default (no retrieval_mode param)",
+      "uses AutoRAG when retrieval_mode=autorag and an instance is configured",
+      "falls back to the legacy pipeline when retrieval_mode=autorag is requested but no instance is configured",
+      "falls back to the legacy pipeline when the AutoRAG call itself throws",
+      "mirrors the sanitized document to R2 when AUTORAG_KB_INSTANCE is configured",
+      "does not attempt any AutoRAG mirror write when unconfigured"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/kb-per-project-isolation.test.ts",
+    "assertionResults": [
+      "a project-scoped document IS visible when listing that project",
+      "two different projects' documents never mix in either project's own list",
+      "kb/search on a project never returns space-wide document chunks, and vice versa",
+      "deleting a project-scoped document removes its R2 chunks under the project's own prefix"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/kb-search-tenant-isolation.test.ts",
+    "assertionResults": [
+      "allows a search against a spaceId owned by the requesting tenant"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/kb-tenant-isolation-all-routes.test.ts",
+    "assertionResults": [
+      "does not serve a cache entry written under one tenant's search to a different tenant"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/launchpad-assistant-profile.test.ts",
+    "assertionResults": [
+      "writes the business-builder profile (not the generic assistant) under agentId naelao-agent",
+      "also seeds the autonomous (yolo) assistant_policy default as part of installation"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/live-activity-feed.test.ts",
+    "assertionResults": [
+      "GET /runs/:runId reports live_steps while the run is mid-flight, then 404s again once it completes"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/llm-byok-routes.test.ts",
+    "assertionResults": [
+      "stores a provider key (space-scoped) and reports it configured, never leaking the value",
+      "removes a stored key (idempotent)"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/local-grants-business-membership.test.ts",
+    "assertionResults": [
+      "an admin member of the business can create a grant for their own machine",
+      "a member only ever sees their OWN grants, never another member's",
+      "a builder JWT-style caller (no x-naelao-role) is unaffected — sees the whole space's grants",
+      "a member (not admin) CAN mint a local-tunnel connect token for their own machine",
+      "?project_id= returns this project's own grants PLUS space-wide ones, never a different project's",
+      "omitting ?project_id= keeps the whole-space view unchanged (business detail page's own use)"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/long-running-agent-runs.test.ts",
+    "assertionResults": [
+      "PUT /spaces/space-1/sessions/sess-1/approvals/appr-1/approve → passes with a real internal token",
+      "PUT /spaces/space-1/sessions/sess-1/approvals/appr-1/reject → passes with a real internal token"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/mcp-hub-hmac.test.ts",
+    "assertionResults": [
+      "accepts a valid, matching internal token",
+      "blocks a money-in-shaped tool_name even when called directly (bypassing the mcp-connector prebuilt client-side check)",
+      "allows an ordinary, non-reserved tool_name through to the (mocked) upstream MCP server"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/memory-os-end-to-end.test.ts",
+    "assertionResults": [
+      "merges project facts and the thread's own episodic notes on recall"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/memory-os-layer5-user-scoping.test.ts",
+    "assertionResults": [
+      "queries with both the user's own scope and the space-level scope (never just spaceId alone)"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/memory-os.test.ts",
+    "assertionResults": [
+      "recall merges semantic (Vectorize) hits above the score floor with structured/episodic"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/memory-prebuilt.test.ts",
+    "assertionResults": [
+      "memory.recall forwards the query and returns results"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/naelaoagentdo-activity-logging.test.ts",
+    "assertionResults": [
+      "posts a run_failed row when the run throws (no reasoner/API key configured in this test env)",
+      "posts an approval_requested row when an approval opens"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/notifications-internal-notify.test.ts",
+    "assertionResults": [
+      "delivers an email via Resend and returns delivered:true",
+      "converts a plain-text body's line breaks to <br> before sending to Resend, instead of one unbroken run-on paragraph",
+      "leaves an already-HTML body untouched (a real template, not plain text)",
+      "returns delivered:false (502) when the upstream Resend call fails, instead of a silent 404"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/onboarding-business-membership.test.ts",
+    "assertionResults": [
+      "a member of the business can read it",
+      "an admin can save answers, and 'save' maps to the save route",
+      "'complete' maps to the complete route, carrying the answers through",
+      "defaults to the non-destructive 'save' when no action is given",
+      "rejects an unknown action rather than guessing"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/owner-voice-ticket-route.test.ts",
+    "assertionResults": [
+      "refuses an OpenRouter request for an air-gapped Space before resolving any BYOK credential"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/pricing-catalog.test.ts",
+    "assertionResults": [
+      "a business member sees the catalog authored on the product root, not its own (empty) config",
+      "querying the product root directly also works (team-mode products have no separate business)",
+      "GET /spaces/:spaceId/pricing surfaces personal_plans alongside plans/credit_packs",
+      "GET /spaces/:spaceId/personal-plan defaults a new end user to 'free' with the real free-tier limits",
+      "POST /internal/personal-plan/grant sets the tier, and GET /personal-plan reflects it immediately",
+      "CRITICAL: a different end user's own tier is completely independent (no cross-user leakage)"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/product-end-user-auth.test.ts",
+    "assertionResults": [
+      "anonymizes the D1 roster row's PII (email/display_name/password_hash) and marks deleted_at",
+      "GET /product-users/me reflects the anonymized state after erasure (row kept, not gone)",
+      "is idempotent — erasing twice does not error"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/project-collaboration-t1-t3.test.ts",
+    "assertionResults": [
+      "a private project (the default) is only visible to its creator, not another space member",
+      "explicit project_members CRUD: add, list, and remove"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/project-memory-client.test.ts",
+    "assertionResults": [
+      "remember() calls the SpaceDO facts route with the right project scoping",
+      "recall() maps SpaceDO fact rows into MemoryRecallResult shape",
+      "recall() merges results from both stores, deduped by text with the higher score winning"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/project-steward-review-route.test.ts",
+    "assertionResults": [
+      "returns only visible project facts and never includes lifecycle actions",
+      "exposes only typed portfolio summaries to an authenticated read-only steward grant",
+      "records owner-attributed review decisions and hides only the matching snoozed or dismissed evidence"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/project-wallet-payer-gate.test.ts",
+    "assertionResults": [
+      "rejects with 402 when the project's space has a wallet but it's empty, before any reasoning runs",
+      "applies REGARDLESS of whether a daily_spend_cap_credits is configured for the project"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/provisioner-agent-triggers.test.ts",
+    "assertionResults": [
+      "creates a scheduled_jobs row for the Content agent's cron, addressed at its own agent_id",
+      "does NOT create any scheduled_jobs row for webhook-type triggers (fulfillment/support)",
+      "still registers the agent-definitions index entries alongside the trigger wiring",
+      "a failed scheduled-jobs install is best-effort — does not throw and does not block the rest of the install",
+      "wires a scheduled job for every schedule-triggered core agent when no templateId is given",
+      "a web-studio space gets the lead-generation cron and nothing it does not need",
+      "accepts an array of template ids and installs the deduped union of their agents"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/r2-workspace-file-size.test.ts",
+    "assertionResults": [
+      "reads a normal-sized file in full"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/reasoner-agent-prompt.test.ts",
+    "assertionResults": [
+      "assembles kernel, business, soul, and founder layers in immutable order",
+      "falls back to the protocol alone when an agent has no prompt of its own",
+      "bounds an oversized prompt so it cannot crowd out the rest of a small window",
+      "accepts the real shape",
+      "coerces the OpenAI-style envelope these models actually emit",
+      "coerces the nested function-call and tool-name variants too"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/scheduled-job-pending-run-awareness.test.ts",
+    "assertionResults": [
+      "skips the tick and never dispatches /script/run when the assistant is already running",
+      "dispatches normally when the assistant is free",
+      "fails OPEN (dispatches normally) when the busy-check itself throws",
+      "fails OPEN when the busy-check returns a non-ok status"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/scheduled-job-run-history.test.ts",
+    "assertionResults": [
+      "caps retention at SCHEDULED_JOB_RUN_HISTORY_LIMIT rows, keeping only the most recent",
+      "retention is scoped per job — a second job's history is untouched"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/script-name-recoverable.test.ts",
+    "assertionResults": [
+      "suggests the real answer for a namespaced guess, not just its same-scored siblings"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/session-budget-guard.test.ts",
+    "assertionResults": [
+      "at the ceiling with no prior approval: opens a new HITL request and refuses the run (402)",
+      "a second concurrent call over the ceiling reuses the SAME pending approval, never opens a duplicate",
+      "a rejected prior approval does not permanently block — a fresh request opens"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/shell-role-gate.test.ts",
+    "assertionResults": [
+      "agrees with the real backend role for a business creator"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/skill-self-improvement.test.ts",
+    "assertionResults": [
+      "stores the failure reason so a later repair can be aimed at it",
+      "demotes a broken skill below a working one, but still returns it",
+      "attaches the health verdict to every candidate",
+      "does not auto-run a skill that failed its last three runs — it patches it, aimed at the real error",
+      "still runs a proven skill directly, with no model call"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/skills-directory-route.test.ts",
+    "assertionResults": [
+      "lists the template's shared skills, correctly marking which the space already has",
+      "names:[x] installs only x, leaving the rest of the directory untouched",
+      "omitting names still inherits everything (unchanged provisioning-time bulk-inherit call)"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/space-assistant-surface.test.ts",
+    "assertionResults": [
+      "returns real file content for a text file",
+      "404s for a file that doesn't exist",
+      "reports too_large rather than the raw bytes for a file over the 2MB cap",
+      "collapses ../ traversal server-side rather than escaping the space's own workspace prefix"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/space-collaboration.test.ts",
+    "assertionResults": [
+      "a stale-but-<24h row is filtered from GET but still physically present in the table"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/space-tenancy.test.ts",
+    "assertionResults": [
+      "ships as a single shared team business out of the box"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/spacedo-realtime-broadcast.test.ts",
+    "assertionResults": [
+      "heartbeatPresence broadcasts presence.heartbeat"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/spacedo-threads.test.ts",
+    "assertionResults": [
+      "a sub_agent thread with parent_thread_id is hidden from the default list, visible with include_sub_threads",
+      "a project with show_sub_threads=1 reveals its subthreads without include_sub_threads",
+      "an explicit parent_thread_id filter is answered in full regardless of show_sub_threads",
+      "POST /sessions with thread_id links the session to the thread"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/web-search-platform.test.ts",
+    "assertionResults": [
+      "saves the downloaded content to R2 under downloads/ and returns metadata only, not the content",
+      "sanitizes an explicit filename and falls back to the URL's own last segment otherwise",
+      "decodes a base64 binary download back to real bytes and records its content type",
+      "still writes a text download as a plain string, unchanged"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/webhook-idempotency.test.ts",
+    "assertionResults": [
+      "replaying a non-order event (subscription.updated, no order/ledger side effect) still only wakes the agent once"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/workflow-budget-settlement-v2.test.ts",
+    "assertionResults": [
+      "retains project, installation and tier scope through one plan quota settlement"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/workspace-file-viewer.test.ts",
+    "assertionResults": [
+      "lists workspace files (excluding .keep)",
+      "reads one file's content inline",
+      "degrades gracefully with no R2 bound"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/workspace-prebuilt.test.ts",
+    "assertionResults": [
+      "copies r2 -> container, leaving the R2 source intact",
+      "copies container -> r2 under a renamed to_path",
+      "moves a file r2 -> container, deleting the R2 source",
+      "moves a file container -> r2, deleting the container source",
+      "copies every R2 file under the run's prefix into the container in one call",
+      "scopes to a path prefix when given one",
+      "copies every container file back into R2 at the same relative paths"
+    ]
+  },
+  {
+    "name": "/workspace/Naelao-1/tests/unit/packages/billing-core.test.ts",
+    "assertionResults": [
+      "is consistent with computeTokenCostMicro under CREDITS_PER_USD"
+    ]
+  }
+]
