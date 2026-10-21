@@ -850,6 +850,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/billing-core/src/credits.test.ts`
 - [ ] `packages/billing-core/src/credits.ts`
 - [ ] `packages/billing-core/src/effort.ts`
+- [x] `packages/billing-core/src/index-stripe.test.ts`
 - [ ] `packages/billing-core/src/index.ts`
 - [ ] `packages/billing-core/src/marketplace-policy.test.ts`
 - [ ] `packages/billing-core/src/marketplace-policy.ts`

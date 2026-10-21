@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1986
-Files with source or executable-configuration extensions: 1780
-Inventory revision: 2026-10-21 audit refresh for OAuth response bounds
+Files: 1987
+Files with source or executable-configuration extensions: 1781
+Inventory revision: 2026-10-21 audit refresh for Stripe billing bounds
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -754,6 +754,7 @@ packages/
       credits.test.ts
       credits.ts
       effort.ts
+      index-stripe.test.ts
       index.ts
       marketplace-policy.test.ts
       marketplace-policy.ts

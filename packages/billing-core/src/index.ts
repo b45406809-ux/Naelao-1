@@ -1,3 +1,5 @@
+import { readBoundedResponseJson } from "@naelao/http";
+
 // Stripe Meters API calls, proration, subscription lifecycle helpers
 //
 // Provider-agnostic billing (spec Appendix H): Lemon Squeezy is the primary provider,
@@ -38,6 +40,8 @@ export interface SubscriptionInfo {
 }
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
+const MAX_STRIPE_RESPONSE_BYTES = 256 * 1024;
+const STRIPE_REQUEST_TIMEOUT_MS = 15_000;
 
 async function stripeRequest<T>(
   config: StripeConfig,
@@ -54,14 +58,15 @@ async function stripeRequest<T>(
   const init: RequestInit = {
     method,
     headers,
+    signal: AbortSignal.timeout(STRIPE_REQUEST_TIMEOUT_MS),
   };
   if (body !== undefined) init.body = new URLSearchParams(body).toString();
   const resp = await fetch(`${base}${path}`, init);
   if (!resp.ok) {
-    const err = await resp.json<{ error?: { message?: string } }>().catch(() => ({ error: { message: `HTTP ${resp.status}` } }));
-    throw new Error(err.error?.message ?? `Stripe error: HTTP ${resp.status}`);
+    const err = await readBoundedResponseJson<{ error?: { message?: string } }>(resp, 8 * 1024).catch(() => ({ error: { message: `HTTP ${resp.status}` } }));
+    throw new Error((err.error?.message ?? `Stripe error: HTTP ${resp.status}`).slice(0, 500));
   }
-  return resp.json<T>();
+  return readBoundedResponseJson<T>(resp, MAX_STRIPE_RESPONSE_BYTES);
 }
 
 // Report usage to Stripe Meters API (billing v2)
@@ -77,6 +82,7 @@ export async function reportMeterEvent(config: StripeConfig, event: MeterEvent):
 
 // Get customer subscription info
 export async function getSubscription(config: StripeConfig, subscriptionId: string): Promise<SubscriptionInfo> {
+  if (!/^[A-Za-z0-9_]{1,128}$/.test(subscriptionId)) throw new Error("Invalid Stripe subscription ID");
   const sub = await stripeRequest<{
     id: string;
     customer: string;
@@ -85,7 +91,7 @@ export async function getSubscription(config: StripeConfig, subscriptionId: stri
     current_period_start: number;
     current_period_end: number;
     cancel_at_period_end: boolean;
-  }>(config, "GET", `/subscriptions/${subscriptionId}`);
+  }>(config, "GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`);
   const tier = sub.items.data[0]?.price.metadata.plan_tier ?? "free";
   return {
     id: sub.id,
@@ -105,9 +111,13 @@ export async function ensureStripeCustomer(
   email: string,
   name?: string
 ): Promise<string> {
+  if (!tenantId || tenantId.length > 128) throw new Error("Invalid tenant ID");
   // Search for existing customer by metadata
+  const escapedTenantId = tenantId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const query = `metadata["tenant_id"]:"${escapedTenantId}"`;
+  const searchPath = `/customers/search?${new URLSearchParams({ query, limit: "1" })}`;
   const search = await stripeRequest<{ data: Array<{ id: string }> }>(
-    config, "GET", `/customers/search?query=metadata["tenant_id"]:"${tenantId}"&limit=1`
+    config, "GET", searchPath
   );
   if (search.data.length > 0) return search.data[0]?.id ?? "";
 
@@ -121,7 +131,8 @@ export async function ensureStripeCustomer(
 
 // Cancel subscription at period end
 export async function cancelSubscription(config: StripeConfig, subscriptionId: string): Promise<void> {
-  await stripeRequest(config, "POST", `/subscriptions/${subscriptionId}`, {
+  if (!/^[A-Za-z0-9_]{1,128}$/.test(subscriptionId)) throw new Error("Invalid Stripe subscription ID");
+  await stripeRequest(config, "POST", `/subscriptions/${encodeURIComponent(subscriptionId)}`, {
     cancel_at_period_end: "true",
   });
 }
@@ -133,7 +144,8 @@ export async function updateSubscriptionPrice(
   newPriceId: string,
   subscriptionItemId: string
 ): Promise<void> {
-  await stripeRequest(config, "POST", `/subscriptions/${subscriptionId}`, {
+  if (!/^[A-Za-z0-9_]{1,128}$/.test(subscriptionId) || !/^[A-Za-z0-9_]{1,128}$/.test(subscriptionItemId) || !/^[A-Za-z0-9_]{1,128}$/.test(newPriceId)) throw new Error("Invalid Stripe subscription identifier");
+  await stripeRequest(config, "POST", `/subscriptions/${encodeURIComponent(subscriptionId)}`, {
     "items[0][id]": subscriptionItemId,
     "items[0][price]": newPriceId,
     proration_behavior: "always_invoice",

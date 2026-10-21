@@ -266,6 +266,9 @@ importers:
 
   packages/billing-core:
     dependencies:
+      '@naelao/http':
+        specifier: workspace:*
+        version: link:../http
       '@naelao/types':
         specifier: workspace:*
         version: link:../types
