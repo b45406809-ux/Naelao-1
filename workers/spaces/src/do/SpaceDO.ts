@@ -2765,7 +2765,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   override async fetch(request: Request): Promise<Response> {
     if (request.body && request.method !== "GET" && request.method !== "HEAD") {
       try {
-        const bytes = await readBoundedRequestBytes(request, 8 * 1024 * 1024);
+        const url = new URL(request.url);
+        const isSessionMessageWrite = request.method === "POST" &&
+          /^\/sessions\/[^/]+\/messages$/.test(url.pathname);
+        const bytes = await readBoundedRequestBytes(request, isSessionMessageWrite ? 1024 * 1024 : 8 * 1024 * 1024);
         request = new Request(request, { body: bytes });
       } catch (error) {
         if (error instanceof RequestBodyTooLargeError)
@@ -4870,15 +4873,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       sessionId
     );
 
-    // G-D01 wanted a STABLE order when messages share a timestamp, and `id` delivered that — the
-    // same input always came back the same way. But `id` is a random UUID, so stable is not the
-    // same as CORRECT: two messages written in the same millisecond (a question and the answer
-    // written straight back to it) came out in whichever order their UUIDs happened to sort,
-    // which is how a reply could render above the question it answers. `rowid` is insertion
-    // order, so it is both stable and right. `created_at` stays the primary key of the sort for
-    // the `before` cursor's sake (it is a timestamp the client sends back to us); rowid only
-    // replaces the arbitrary tie-break.
-    // A transcript loads from the END. Both branches select DESC (newest first) so LIMIT keeps the
+    // `rowid` is insertion order, so ID pagination and the default newest-page query use it
+    // consistently. Mixing a rowid cursor with created_at ordering can skip or repeat messages
+    // if timestamps arrive out of order or the clock moves. `before` remains a timestamp-only
+    // compatibility path. Pages select DESC (newest first) so LIMIT keeps the
     // page nearest the cursor, then reverse back to chronological order for the response — the
     // client renders the same ascending array either way.
     //
@@ -4904,7 +4902,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         ? queryAll<MessageRow>(
             this.ctx.storage.sql as never,
             `SELECT * FROM messages WHERE session_id = ? AND rowid < ?
-             ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+             ORDER BY rowid DESC LIMIT ?`,
             sessionId,
             beforeRowid,
             queryLimit
@@ -4920,7 +4918,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             )
           : queryAll<MessageRow>(
               this.ctx.storage.sql as never,
-              `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+            `SELECT * FROM messages WHERE session_id = ? ORDER BY rowid DESC LIMIT ?`,
               sessionId,
               queryLimit
             )

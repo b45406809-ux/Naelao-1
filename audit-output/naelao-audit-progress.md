@@ -1274,3 +1274,13 @@ Validation: sweeper suite passed 1 file / 8 tests; Knowledge document lifecycle 
 Checked `workers/sweeper/src/index.ts` and its test file. `workers/knowledge/src/index.ts` remains unchecked overall; this slice covers its document ingestion/reindex cleanup metadata path only.
 
 Checked the bundle workflow and every worker `wrangler.toml`. Runtime source, APIs, Durable Object state behavior, and provider-side resource targets remain under audit.
+
+## Conversation message pagination and request bounds (2026-10-21)
+
+Re-reviewed SpaceDO message writes and transcript paging, the agent's bounded transcript loader/compactor, and conversation search/research. ID cursors resolved to SQLite `rowid` but pages were still sorted primarily by `created_at`; imported or out-of-order timestamps could therefore make the rowid cursor skip or repeat messages. Default newest-page retrieval had the same mixed ordering. ID-based paging and the default page now consistently sort by insertion rowid; the legacy timestamp-only `before` query remains available.
+
+The DO's global 8 MiB request cap bounded message writes, but allowed large JSON buffers despite the per-message 128 KiB content ceiling. Message-write requests now have a 1 MiB transport cap, which allows escaped JSON and the metadata ceiling while keeping excess input away from JSON parsing.
+
+Added regressions for out-of-order timestamps across three cursor pages and an oversized body rejected before parsing. Validation: SpaceDO message-pagination suite passed 1 file / 4 tests; conversation search, compaction, and transcript-loader suites passed 3 files / 22 tests; Spaces and Agents TypeScript checks passed. Existing suites also exercise large transcript pages and byte trimming.
+
+Reviewed `conversation.ts`, the transcript loader, the session message route, and automatic compaction path. Search is capped at 10,000 messages / 16 MiB per call and exposes a cursor when incomplete; automatic compaction materializes at most 10,000 messages / 16 MiB and preserves recent context when it cannot scan the full transcript. These are explicit caps rather than complete whole-history guarantees. The full `SpaceDO.ts` and `NaelaoAgentDO.ts` files remain unchecked overall; authorization, migration behavior, tool routing, compaction recovery, and remaining endpoints still need file-by-file review.

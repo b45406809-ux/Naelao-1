@@ -3,6 +3,25 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.j
 import { SpaceDO } from "./SpaceDO.js";
 
 describe("session message pagination under long transcripts", () => {
+  it("rejects an oversized message request before parsing its JSON body", async () => {
+    const storage = createDOStorage();
+    const space = new SpaceDO(
+      { storage } as never,
+      { PLATFORM_SECRET: "pagination-test-secret" } as never
+    );
+    const response = await space.fetch(new Request(
+      "http://space/sessions/large-thread/messages",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ role: "user", content: "x".repeat(1024 * 1024) }),
+      }
+    ));
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error_code: "request_body_too_large" });
+  });
+
   it("caps large serialized pages and exposes a contiguous continuation cursor", async () => {
     const storage = createDOStorage();
     const space = new SpaceDO(
@@ -129,5 +148,54 @@ describe("session message pagination under long transcripts", () => {
       )
     );
     expect(wrongThread.status).toBe(404);
+  });
+
+  it("keeps ID cursor pages contiguous when created_at values arrive out of order", async () => {
+    const storage = createDOStorage();
+    const space = new SpaceDO(
+      { storage } as never,
+      { PLATFORM_SECRET: "pagination-test-secret" } as never
+    );
+    const base = "http://space/sessions/out-of-order/messages";
+    await space.fetch(new Request(`${base}?limit=1`));
+    storage.sql.exec(
+      "INSERT INTO sessions(id,space_id,tenant_id) VALUES(?,?,?)",
+      "out-of-order",
+      "space-a",
+      "tenant-a"
+    );
+    for (let i = 1; i <= 9; i++) {
+      storage.sql.exec(
+        "INSERT INTO messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
+        `message-${i}`,
+        "out-of-order",
+        "user",
+        `message ${i}`,
+        `2026-10-18T00:00:${String(10 - i).padStart(2, "0")}.000Z`
+      );
+    }
+
+    const fetchPage = async (cursor?: string) => {
+      const params = new URLSearchParams({
+        limit: "3",
+        scope_space_id: "space-a",
+        scope_project_id: "",
+        scope_thread_id: "out-of-order",
+      });
+      if (cursor) params.set("before_id", cursor);
+      const response = await space.fetch(new Request(`${base}?${params}`));
+      expect(response.status).toBe(200);
+      return (await response.json()) as { data: Array<{ id: string }>; has_more: boolean };
+    };
+    const newest = await fetchPage();
+    const middle = await fetchPage(newest.data[0]?.id);
+    const oldest = await fetchPage(middle.data[0]?.id);
+
+    expect([...oldest.data, ...middle.data, ...newest.data].map((message) => message.id)).toEqual(
+      Array.from({ length: 9 }, (_, index) => `message-${index + 1}`)
+    );
+    expect(newest.has_more).toBe(true);
+    expect(middle.has_more).toBe(true);
+    expect(oldest.has_more).toBe(false);
   });
 });
