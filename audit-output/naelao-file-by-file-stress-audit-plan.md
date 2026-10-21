@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2024` tracked files; `1818` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `753a4d6b` plus the container digest regression test.
+Inventory basis: `2024` tracked files; `1818` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `122e705c`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1406,13 +1406,13 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/composio-connector-connect.test.ts`
 - [ ] `tests/unit/composio-tool-execution.test.ts`
 - [x] `tests/unit/concurrency-do.test.ts`
-- [ ] `tests/unit/container-image-pin.test.ts`
 - [x] `tests/unit/connector-catalogue.test.ts`
 - [ ] `tests/unit/connector-channel-vault-write.test.ts`
 - [ ] `tests/unit/connector-directory.test.ts`
 - [ ] `tests/unit/connector-gumroad-shim.test.ts`
 - [ ] `tests/unit/connector-whop-shim.test.ts`
 - [ ] `tests/unit/consult-agent-orchestration-hook.test.ts`
+- [ ] `tests/unit/container-image-pin.test.ts`
 - [ ] `tests/unit/container-marketplace-slots.test.ts`
 - [ ] `tests/unit/container-per-project.test.ts`
 - [ ] `tests/unit/context-window-usage-endpoint.test.ts`

@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2023
-Files with source or executable-configuration extensions: 1817
-Inventory revision: 2026-10-21 audit refresh at 753a4d6b
+Files: 2024
+Files with source or executable-configuration extensions: 1818
+Inventory revision: 2026-10-21 audit refresh at 122e705c
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1223,6 +1223,7 @@ tests/
     connector-gumroad-shim.test.ts
     connector-whop-shim.test.ts
     consult-agent-orchestration-hook.test.ts
+    container-image-pin.test.ts
     container-marketplace-slots.test.ts
     container-per-project.test.ts
     context-window-usage-endpoint.test.ts
