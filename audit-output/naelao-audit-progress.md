@@ -1861,3 +1861,5 @@ Validation: owner voice route suite 5/5; full Agents suite 156 files / 714 tests
 The direct HMAC-protected `/agents/:agentId/script/run` route could bypass the already-added task-run and trigger suspension checks. Interrupted-run continuation and HITL approval could also resume previously admitted work after suspension. All three dispatch paths now recheck the active organization and Space, and the asynchronous approval-resume helper repeats the check immediately before resuming its DO. Approval rejection remains available as a stop/cleanup action.
 
 Validation: direct script HMAC, approval authority and continuation regressions passed 11/11; full Agents suite passed 156 files / 714 tests; Agents TypeScript, focused security lint and `git diff --check` passed. Queue alarms, long-running in-flight tool loops and other entrypoints remain in the open audit.
+
+Refreshed the tracked repository tree after adding the continuation-route regression file. The tree now records 2,027 tracked files and 1,821 source or executable-configuration files at code commit `a621df58`; the scratch `work/` files and root Vitest reports remain untracked and excluded.
