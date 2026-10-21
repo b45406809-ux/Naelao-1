@@ -784,7 +784,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       provisioned.push("owner_member");
     }
 
-    // Step 6: Register workflow templates (stored in KV for the triggers worker to pick up)
+    // Step 6: Store workflow templates in Space KV so rollback can remove their provisioned state.
     for (const wf of manifest.backend.workflowTemplates) {
       await env.SPACES_KV.put(
         `workflow-template:${spaceId}:${wf.id}`,

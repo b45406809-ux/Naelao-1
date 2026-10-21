@@ -1191,7 +1191,7 @@ non-functional in any real deployment.
 
 **Critical bug: `DEFAULT_NAELAO_AGENT.agentId` did not match what any dispatcher wakes.** The
 profile that provisioning installs was `"naelao-default"`, but EVERY consumer — the Lemon
-Squeezy webhook's `resolveDefaultAgent`, `naelao-triggers`' fire path, the hourly channel-
+Squeezy webhook's `resolveDefaultAgent`, the Agents event-trigger fire path, the hourly channel-
 heartbeat sweep, and every `/spaces/:id/sessions`/`/script/run` call — hardcodes the literal
 string `"naelao-agent"`. `loadAgentConfig` returns `null` on a path mismatch and the DO 404s
 with `"agent 'naelao-agent' is not provisioned in space '...'"`. This meant a real deployment's

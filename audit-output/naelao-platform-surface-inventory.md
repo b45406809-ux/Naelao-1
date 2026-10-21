@@ -34,7 +34,6 @@ Literal route-registration matches: 1059
 - `workers/sweeper` — manifest `workers/sweeper/wrangler.toml`; entrypoint `workers/sweeper/src/index.ts`
 - `workers/synthetics` — manifest `workers/synthetics/wrangler.toml`; entrypoint `workers/synthetics/src/index.ts`
 - `workers/threads` — manifest `workers/threads/wrangler.toml`; entrypoint `workers/threads/src/index.ts`
-- `workers/triggers` — manifest `workers/triggers/wrangler.toml`; entrypoint `workers/triggers/src/index.ts`
 - `workers/workflows` — manifest `workers/workflows/wrangler.toml`; entrypoint `workers/workflows/src/index.ts`
 - `workers/ws-gateway` — manifest `workers/ws-gateway/wrangler.toml`; entrypoint `workers/ws-gateway/src/index.ts`
 
@@ -90,7 +89,6 @@ These are the tables covered by the corresponding scoped audit entries, not a co
 - `workers/provisioner` consumes `naelao-provisioning-queue` in development/default, staging, production.
 - `workers/spaces` produces `naelao-provisioning-queue` in development/default, staging, production.
 - `workers/threads` produces `naelao-channel-sessions` in development/default, staging, production.
-- `workers/triggers` produces `naelao-channel-sessions` in development/default, staging, production.
 - `workers/workflows` consumes `naelao-events` in development/default, staging, production.
 - `workers/workflows` produces `naelao-analytics` in development/default, staging, production.
 - `workers/workflows` produces `naelao-events` in development/default, staging, production.
@@ -136,7 +134,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/spaces/src/routes/mcp.ts` — 1 route/middleware registration calls
 - `workers/spaces/src/routes/recipes.ts` — 2 route/middleware registration calls
 - `workers/threads/src/index.ts` — 9 route/middleware registration calls
-- `workers/triggers/src/index.ts` — 6 route/middleware registration calls
 
 ## Literal route registrations
 
@@ -1187,12 +1184,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/threads/src/index.ts:128` — `app.patch("/v1/threads/sessions/:sessionId", async (c) => {`
 - `workers/threads/src/index.ts:162` — `app.post("/v1/threads/:id/summarize", async (c) => {`
 - `workers/threads/src/index.ts:195` — `app.delete("/v1/threads/:id", async (c) => {`
-- `workers/triggers/src/index.ts:37` — `app.use("*", requestId);`
-- `workers/triggers/src/index.ts:38` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
-- `workers/triggers/src/index.ts:40` — `app.get("/v1/triggers", async (c) => {`
-- `workers/triggers/src/index.ts:54` — `app.post("/v1/triggers", async (c) => {`
-- `workers/triggers/src/index.ts:86` — `app.patch("/v1/triggers/:id", async (c) => {`
-- `workers/triggers/src/index.ts:105` — `app.delete("/v1/triggers/:id", async (c) => {`
 
 ## Audit caveats
 

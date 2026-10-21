@@ -42,7 +42,6 @@
     "packages/events/**",
     "workers/router/**",
     "workers/workflows/**",
-    "workers/triggers/**",
     "workers/mcp-hub/**",
     "workers/notifications/**",
     "packages/agent-sdk/**",

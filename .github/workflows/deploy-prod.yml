@@ -112,7 +112,7 @@ jobs:
           WORKERS=(admin agents analytics artifact assistant auth billing browser \
                    connector-gumroad connector-whop credentials eval knowledge marketplace \
                    mcp-hub notifications portal-router provisioner router \
-                   security-gateway spaces sweeper synthetics threads triggers workflows ws-gateway)
+                   security-gateway spaces sweeper synthetics threads workflows ws-gateway)
           failed=()
           for w in "${WORKERS[@]}"; do
             if [ -f "workers/$w/wrangler.toml" ]; then

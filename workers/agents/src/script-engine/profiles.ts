@@ -38,7 +38,7 @@ const BASE_AGENTS_MD = `# Behavioral Rules
  * provisioning, the one every dispatcher (billing webhooks, event triggers, the hourly
  * channel-heartbeat sweep, scheduled jobs) wakes, and the one with continuous, hibernation-
  * backed existence per §05. `agentId` MUST be exactly `"naelao-agent"` — every consumer
- * (workers/billing/src/lemon-squeezy.ts resolveDefaultAgent, workers/triggers,
+ * (workers/billing/src/lemon-squeezy.ts resolveDefaultAgent, SpaceDO event-trigger dispatch,
  * handleAgentTick's heartbeat/scheduled_job cases, fireScriptDirectly's default) hardcodes that
  * literal string rather than importing this constant, since they run in different Workers than this
  * profile is authored in.

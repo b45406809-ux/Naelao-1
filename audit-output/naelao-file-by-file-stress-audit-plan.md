@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2025` tracked files; `1819` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `47dca3df`.
+Inventory basis: `2020` tracked files; `1814` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `a47bda67`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -43,6 +43,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - **Lint enforcement gap (partially closed):** the previous CI `pnpm --recursive --parallel --if-present lint` step had no package-level `lint` scripts and was a no-op. CI now runs Biome's `security` rule group over the repository; that focused gate passes locally. The full root `biome check .` still has 7,600 diagnostics across 1,972 files, mostly existing style/formatting rules, so broad style/format enforcement and cleanup remain open.
 - **Tenant suspension enforcement:** public router requests check org and reseller relationship status; selected agent, notification, provisioner, workflow, and Knowledge entrypoints also gate work. HMAC-protected task, trigger, script and workflow effect paths recheck tenant and Space activity. Business-email send/provision/reply-address, OAuth refresh and consent start/callback, attachment read/analysis, external approval create/consume, and document-node leases reject inactive tenant/Space scopes before provider, data, or DO access. Regression tests cover these rejection boundaries. Enforcement is still not universal across internal routes, queues, Durable Object alarms, in-flight direct script runs, or other worker paths. `spaces.suspension_reason` and `orgs.suspension_reason` now distinguish admin, reseller/product, and erasure holds in updated writers; legacy suspended rows are conservatively not reactivated through product APIs, but their original owner/control still requires reconciliation. Legacy `/spaces` creation, update, and delete now enforce writer/admin roles, including owner/admin-only status changes and deletes. Other suspension writers and all worker/DO entrypoints remain to be traced.
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
+- **Provisioned workflow template reachability:** Provisioner writes `workflow-template:{spaceId}:{templateId}` records to `SPACES_KV` and deletes them on rollback, but repository search found no reader of that key prefix. Trace the workflow manifest path and deployed consumer before treating these templates as usable; either wire a scoped consumer or retire the write and update claims.
 
 ## Work sequence
 
@@ -2598,17 +2599,6 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [x] `workers/threads/src/index.test.ts`
 - [ ] `workers/threads/src/index.ts`
-
-### `workers/triggers`
-
-- [ ] `workers/triggers/package.json`
-- [ ] `workers/triggers/tsconfig.json`
-- [x] `workers/triggers/wrangler.toml`
-
-### `workers/triggers/src`
-
-- [x] `workers/triggers/src/index.test.ts`
-- [x] `workers/triggers/src/index.ts`
 
 ### `workers/workflows`
 
