@@ -24,7 +24,8 @@ import {
   deleteKvPrefix,
   eraseOrgOperationalRecords,
   eraseSpaceD1Records,
-  eraseSpaceKnowledgeResources,
+  eraseSpaceKnowledgeDocumentResources,
+  eraseSpaceKnowledgePrefixes,
   eraseSpaceR2Prefixes,
   eraseTenantExportKeys,
 } from "./erasure-cleanup.js";
@@ -89,13 +90,6 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     // ── Step 3: Delete space data (R2, Vectorize, D1) ────────────────────────
     // G-E08: Paginated R2 deletion — iterate all pages, not just first
     await step.do("delete-spaces-data", async () => {
-      // Fetch all space IDs for this org
-      const { results: spaces } = await this.env.PLATFORM_DB.prepare(
-        `SELECT id FROM spaces WHERE tenant_id = ?`
-      )
-        .bind(params.orgId)
-        .all<{ id: string }>();
-
       // Delete usage events for this org
       await this.env.PLATFORM_DB.prepare(
         `DELETE FROM usage_events WHERE org_id = ?`
@@ -103,58 +97,79 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         .bind(params.orgId)
         .run();
 
-      // Delete R2 objects and Vectorize vectors for each space
-      for (const space of spaces) {
-        // Get all indexed KB documents for this space
-        const { results: docs } = await this.env.PLATFORM_DB.prepare(
-          `SELECT id, project_id, chunk_count FROM kb_documents WHERE space_id = ?`
-        )
-          .bind(space.id)
-          .all<{ id: string; project_id: string | null; chunk_count: number | null }>();
+      // Page spaces and documents so a long-lived org cannot force unbounded D1 result arrays.
+      let afterSpaceId = "";
+      let spacesProcessed = 0;
+      for (;;) {
+        const { results: spaces } = await this.env.PLATFORM_DB.prepare(
+          "SELECT id FROM spaces WHERE tenant_id = ? AND id > ? ORDER BY id LIMIT 100",
+        ).bind(params.orgId, afterSpaceId).all<{ id: string }>();
+        if (spaces.length === 0) break;
+        const nextSpaceId = spaces[spaces.length - 1]?.id;
+        if (!nextSpaceId || nextSpaceId <= afterSpaceId) throw new Error("Invalid space erasure pagination cursor");
 
-        await eraseSpaceKnowledgeResources(space.id, docs, this.env.KB_BUCKET, this.env.KB_VECTORS);
-
-        await eraseSpaceR2Prefixes(params.orgId, space.id, this.env.ARTIFACT_R2_BUCKET,
-          this.env.REPOSITORY_OBJECTS, this.env.SCRIPTS_R2);
-        let afterExportId = "";
-        for (;;) {
-          const { results: exports } = await this.env.PLATFORM_DB.prepare(
-            `SELECT id, artifact_key FROM blueprint_export_jobs
-             WHERE space_id = ? AND tenant_id = ? AND id > ? ORDER BY id LIMIT 100`,
-          ).bind(space.id, params.orgId, afterExportId).all<{ id: string; artifact_key: string }>();
-          if (exports.length === 0) break;
-          await eraseTenantExportKeys(params.orgId, this.env.SCRIPTS_R2, exports.map(({ artifact_key }) => artifact_key));
-          const nextExportId = exports[exports.length - 1]?.id;
-          if (!nextExportId || nextExportId <= afterExportId) throw new Error("Invalid blueprint export pagination cursor");
-          afterExportId = nextExportId;
-        }
-
-        // Also remove vectors referenced only by the chunk registry (for orphaned/legacy docs).
-        let afterRowId = 0;
-        for (;;) {
-          const { results: chunks } = await this.env.PLATFORM_DB.prepare(
-            `SELECT rowid AS row_id, document_id, chunk_index FROM kb_chunks
-             WHERE space_id = ? AND rowid > ? ORDER BY rowid ASC LIMIT 1000`
-          ).bind(space.id, afterRowId).all<{ row_id: number; document_id: string; chunk_index: number }>();
-          if (chunks.length === 0) break;
-          for (let start = 0; start < chunks.length; start += 100) {
-            await this.env.KB_VECTORS.deleteByIds(chunks.slice(start, start + 100)
-              .map((chunk) => `${chunk.document_id}_chunk_${chunk.chunk_index}`));
+        for (const space of spaces) {
+          let afterDocumentId = "";
+          for (;;) {
+            const { results: docs } = await this.env.PLATFORM_DB.prepare(
+              `SELECT id, project_id, chunk_count FROM kb_documents
+               WHERE space_id = ? AND id > ? ORDER BY id LIMIT 100`,
+            ).bind(space.id, afterDocumentId)
+              .all<{ id: string; project_id: string | null; chunk_count: number | null }>();
+            if (docs.length === 0) break;
+            for (const document of docs) {
+              await eraseSpaceKnowledgeDocumentResources(space.id, document, this.env.KB_BUCKET, this.env.KB_VECTORS);
+            }
+            const nextDocumentId = docs[docs.length - 1]?.id;
+            if (!nextDocumentId || nextDocumentId <= afterDocumentId) throw new Error("Invalid document erasure pagination cursor");
+            afterDocumentId = nextDocumentId;
           }
-          afterRowId = chunks[chunks.length - 1]!.row_id;
+          await eraseSpaceKnowledgePrefixes(space.id, this.env.KB_BUCKET);
+
+          await eraseSpaceR2Prefixes(params.orgId, space.id, this.env.ARTIFACT_R2_BUCKET,
+            this.env.REPOSITORY_OBJECTS, this.env.SCRIPTS_R2);
+          let afterExportId = "";
+          for (;;) {
+            const { results: exports } = await this.env.PLATFORM_DB.prepare(
+              `SELECT id, artifact_key FROM blueprint_export_jobs
+               WHERE space_id = ? AND tenant_id = ? AND id > ? ORDER BY id LIMIT 100`,
+            ).bind(space.id, params.orgId, afterExportId).all<{ id: string; artifact_key: string }>();
+            if (exports.length === 0) break;
+            await eraseTenantExportKeys(params.orgId, this.env.SCRIPTS_R2, exports.map(({ artifact_key }) => artifact_key));
+            const nextExportId = exports[exports.length - 1]?.id;
+            if (!nextExportId || nextExportId <= afterExportId) throw new Error("Invalid blueprint export pagination cursor");
+            afterExportId = nextExportId;
+          }
+
+          // Also remove vectors referenced only by the chunk registry (for orphaned/legacy docs).
+          let afterRowId = 0;
+          for (;;) {
+            const { results: chunks } = await this.env.PLATFORM_DB.prepare(
+              `SELECT rowid AS row_id, document_id, chunk_index FROM kb_chunks
+               WHERE space_id = ? AND rowid > ? ORDER BY rowid ASC LIMIT 1000`
+            ).bind(space.id, afterRowId).all<{ row_id: number; document_id: string; chunk_index: number }>();
+            if (chunks.length === 0) break;
+            for (let start = 0; start < chunks.length; start += 100) {
+              await this.env.KB_VECTORS.deleteByIds(chunks.slice(start, start + 100)
+                .map((chunk) => `${chunk.document_id}_chunk_${chunk.chunk_index}`));
+            }
+            afterRowId = chunks[chunks.length - 1]!.row_id;
+          }
+
+          // Remove every tenant-owned searchable/session record, including parent summaries
+          // that are not covered by the session table's cascade.
+          await eraseSpaceD1Records(this.env.PLATFORM_DB, space.id);
+
+          console.log(`[DataErasure] Cleaned space=${space.id} for org=${params.orgId}`);
+          spacesProcessed++;
         }
-
-        // Remove every tenant-owned searchable/session record, including parent summaries
-        // that are not covered by the session table's cascade.
-        await eraseSpaceD1Records(this.env.PLATFORM_DB, space.id);
-
-        console.log(`[DataErasure] Cleaned space=${space.id} for org=${params.orgId}`);
+        afterSpaceId = nextSpaceId;
       }
 
       console.log(
-        `[DataErasure] Deleted data for ${spaces.length} space(s) in org=${params.orgId}`,
+        `[DataErasure] Deleted data for ${spacesProcessed} space(s) in org=${params.orgId}`,
       );
-      return { spacesProcessed: spaces.length };
+      return { spacesProcessed };
     });
 
     // ── Step 4: Anonymize user PII ────────────────────────────────────────────

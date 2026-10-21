@@ -166,15 +166,28 @@ export async function eraseSpaceKnowledgeResources(
   vectors: VectorizeIndex,
 ): Promise<void> {
   for (const document of documents) {
-    const count = validatedChunkCount(document.chunk_count);
-    await deleteR2Prefix(bucket, documentPrefix(spaceId, document.project_id, document.id));
-    await bucket.delete(autoragKey(spaceId, document.project_id, document.id));
-    for (let start = 0; start < count; start += R2_DELETE_BATCH_SIZE) {
-      const end = Math.min(start + R2_DELETE_BATCH_SIZE, count);
-      const ids = Array.from({ length: end - start }, (_, offset) => `${document.id}_chunk_${start + offset}`);
-      await vectors.deleteByIds(ids);
-    }
+    await eraseSpaceKnowledgeDocumentResources(spaceId, document, bucket, vectors);
   }
+  await eraseSpaceKnowledgePrefixes(spaceId, bucket);
+}
+
+export async function eraseSpaceKnowledgeDocumentResources(
+  spaceId: string,
+  document: ErasureDocument,
+  bucket: R2Bucket,
+  vectors: VectorizeIndex,
+): Promise<void> {
+  const count = validatedChunkCount(document.chunk_count);
+  await deleteR2Prefix(bucket, documentPrefix(spaceId, document.project_id, document.id));
+  await bucket.delete(autoragKey(spaceId, document.project_id, document.id));
+  for (let start = 0; start < count; start += R2_DELETE_BATCH_SIZE) {
+    const end = Math.min(start + R2_DELETE_BATCH_SIZE, count);
+    const ids = Array.from({ length: end - start }, (_, offset) => `${document.id}_chunk_${start + offset}`);
+    await vectors.deleteByIds(ids);
+  }
+}
+
+export async function eraseSpaceKnowledgePrefixes(spaceId: string, bucket: R2Bucket): Promise<void> {
   // Remove leftovers from partially indexed or pre-project-scope documents as well.
   await deleteR2Prefix(bucket, `kb/${spaceId}/`);
   await deleteR2Prefix(bucket, `autorag/${spaceId}/`);
