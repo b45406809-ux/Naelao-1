@@ -22,7 +22,7 @@ function makeEnv(opts: { ownerTenantId: string; vectorizeQuery: ReturnType<typeo
         },
         async first() {
           if (/SELECT config_json FROM spaces/.test(sql)) return { config_json: "{}" };
-          if (/FROM spaces WHERE/.test(sql)) {
+          if (/FROM spaces s JOIN orgs o/.test(sql) || /FROM spaces WHERE/.test(sql)) {
             const args = (stmt as unknown as { _args: unknown[] })._args;
             const [, tenantId] = args;
             return tenantId === opts.ownerTenantId ? { 1: 1 } : null;

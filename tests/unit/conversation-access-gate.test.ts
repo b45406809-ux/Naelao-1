@@ -36,11 +36,12 @@ const SPACES_TABLE_SQL = `
   CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT);
   CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
 `;
+const SPACE_SUSPENSION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0116_space_suspension_reason.sql"), "utf8");
 const NAELAO_PRODUCT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0044_naelao_product.sql"), "utf8");
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, NAELAO_PRODUCT_MIGRATION, BUILDER_DASHBOARD_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SPACE_SUSPENSION_MIGRATION, NAELAO_PRODUCT_MIGRATION, BUILDER_DASHBOARD_MIGRATION]);
   return {
     PLATFORM_SECRET: "s",
     ENVIRONMENT: "test",

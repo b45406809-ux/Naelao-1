@@ -6,8 +6,8 @@ import { mintInternalToken } from "@naelao/http";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 const SPACES_TABLE_SQL = `
-  CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', config_json TEXT NOT NULL DEFAULT '{}');
-  CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
+  CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', suspension_reason TEXT, config_json TEXT NOT NULL DEFAULT '{}');
+  CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free', status TEXT NOT NULL DEFAULT 'active', suspension_reason TEXT);
 `;
 const KB_DOCUMENTS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0006_kb_documents.sql"), "utf8");
 const KB_PROJECT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0051_kb_documents_project.sql"), "utf8");
@@ -29,6 +29,7 @@ function makeEnv(opts: {
 }) {
   const fakeDb = createFakeD1([SPACES_TABLE_SQL, KB_DOCUMENTS_MIGRATION, KB_PROJECT_MIGRATION, KB_SECURITY_MIGRATION]);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status, config_json) VALUES ('space-1', 'tenant-a', 'active', '{}')`);
+  fakeDb.db.exec(`INSERT INTO orgs (id, status) VALUES ('tenant-a', 'active')`);
 
   const kv = { async get() { return null; }, async put() {}, async delete() {} };
   const ai = {

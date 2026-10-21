@@ -15,8 +15,8 @@ const SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 const SPACES_TABLE_SQL = `
-  CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', config_json TEXT NOT NULL DEFAULT '{}');
-  CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
+  CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', suspension_reason TEXT, config_json TEXT NOT NULL DEFAULT '{}');
+  CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free', status TEXT NOT NULL DEFAULT 'active', suspension_reason TEXT);
 `;
 const KB_DOCUMENTS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0006_kb_documents.sql"), "utf8");
 const KB_PROJECT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0051_kb_documents_project.sql"), "utf8");
@@ -25,6 +25,7 @@ const KB_SECURITY_MIGRATION = readFileSync(join(__dirname, "../../infra/migratio
 function makeEnv() {
   const fakeDb = createFakeD1([SPACES_TABLE_SQL, KB_DOCUMENTS_MIGRATION, KB_PROJECT_MIGRATION, KB_SECURITY_MIGRATION]);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status) VALUES ('space-1', 'tenant-1', 'active')`);
+  fakeDb.db.exec(`INSERT INTO orgs (id, status) VALUES ('tenant-1', 'active')`);
   for (const projectId of ["proj-1", "proj-a", "proj-b"]) {
     fakeDb.db.exec(`INSERT INTO project_access (tenant_id, space_id, project_id, user_id, role_rank, visibility) VALUES ('tenant-1', 'space-1', '${projectId}', 'builder', 50, 'private')`);
   }

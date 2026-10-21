@@ -24,7 +24,8 @@ function makeEnv(opts: { credential?: string | null } = {}) {
     PLATFORM_SECRET: "platform-secret",
     // Network delivery is fail-closed when policy is absent. These tests exercise provider
     // formatting, so use a real row with an explicit non-air-gapped policy.
-    PLATFORM_DB: { prepare: () => ({ bind: () => ({ run: async () => ({}), first: async () => ({ config_json: "{}" }) }) }) },
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: () => ({ run: async () => ({}), first: async () =>
+      sql.includes("FROM orgs") ? { status: "active" } : { config_json: "{}" } }) }) },
     CREDENTIALS_WORKER: {
       fetch: async () =>
         opts.credential === null

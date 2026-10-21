@@ -100,7 +100,7 @@ describe("conversation.search — finds what the summary dropped", () => {
     expect(invalid.results).toHaveLength(5);
   });
 
-  it("pages through older transcript messages instead of silently searching only the newest 50", async () => {
+  it("searches older transcript messages instead of silently limiting itself to the newest 50", async () => {
     const many = Array.from({ length: 126 }, (_, i) => ({ role: "user", content: `ordinary note ${i}` }));
     many[3] = { role: "user", content: "The original launch phrase was blue lantern." };
     const { ctx, calls } = makeCtx(many);
@@ -111,8 +111,10 @@ describe("conversation.search — finds what the summary dropped", () => {
     expect(r.searched_messages).toBe(126);
     expect(r.results[0]?.excerpt).toContain("blue lantern");
     expect(r.results[0]?.position).toBe("4 of 126");
-    expect(calls).toHaveLength(2);
-    expect(calls[1]).toContain("before_id=m-26");
+    // This is smaller than the worker page cap, so the full transcript should fit in one
+    // bounded request. Explicit scan_limit pagination is covered below.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("limit=500");
   });
 
   it("does not claim a miss is conclusive after reaching its transcript safety bound", async () => {
