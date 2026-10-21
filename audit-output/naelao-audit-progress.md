@@ -1379,6 +1379,12 @@ Reviewed semantic memory isolation and hybrid project/thread recall after the sh
 
 Validation: memory OS end-to-end and per-user scope suites passed 2 files / 15 tests. No production code change was required.
 
+## Restore business creation route stress fixtures to deployed auth/schema (2026-10-21)
+
+Triaged the business-create/business-routes failures from the broad test report. The test D1 schemas were missing `product_end_users.deleted_at`, the `business_memberships` table, and some real roster fields; customer IDs used by route tests were not registered. The tests also authenticated business-specific requests as the product-root tenant even though the route correctly requires the child business tenant, and several missing-identity assertions expected 401 while these internal product-user routes return 403. Updated the fixtures and assertions to match the worker's actual auth boundaries. LockDO is now constructed with the same SQLite-backed storage used by its focused unit test.
+
+Validation: `business-create.test.ts` and `business-routes.test.ts` passed 2 files / 39 tests. This closes those two test modules only; the full shared `tests/` suite remains open and has many unrelated failures.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.

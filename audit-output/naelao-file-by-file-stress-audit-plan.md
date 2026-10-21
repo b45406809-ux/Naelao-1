@@ -1337,14 +1337,14 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/business-auth.test.ts`
 - [ ] `tests/unit/business-commerce-membership.test.ts`
 - [ ] `tests/unit/business-context.test.ts`
-- [ ] `tests/unit/business-create.test.ts`
+- [x] `tests/unit/business-create.test.ts`
 - [ ] `tests/unit/business-diagnostics-prebuilt.test.ts`
 - [ ] `tests/unit/business-email-agentmail-routes.test.ts`
 - [x] `tests/unit/business-feature-kinds.test.ts`
 - [x] `tests/unit/business-membership-role.test.ts`
 - [ ] `tests/unit/business-onboarding-flow.test.ts`
 - [ ] `tests/unit/business-role-cache.test.ts`
-- [ ] `tests/unit/business-routes.test.ts`
+- [x] `tests/unit/business-routes.test.ts`
 - [ ] `tests/unit/business-subscription-gate.test.ts`
 - [ ] `tests/unit/business-subscription-status.test.ts`
 - [ ] `tests/unit/business-subscriptions-billing.test.ts`

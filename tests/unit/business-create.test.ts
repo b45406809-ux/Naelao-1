@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createBusinessForEndUser } from "../../workers/spaces/src/business-create.js";
+import { LockDO } from "../../workers/spaces/src/do/LockDO.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 // Fills a real coverage gap the Three-Tier phased plan flagged in advance: "no route-level test
@@ -15,7 +17,7 @@ const SCHEMA = [
     config_json TEXT NOT NULL DEFAULT '{}', parent_space_id TEXT, depth INTEGER NOT NULL DEFAULT 0,
     tenancy_mode TEXT, scenario_type TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    created_by TEXT
+    created_by TEXT, deleted_at TEXT
   );`,
   `CREATE TABLE tenant_hierarchy (
     child_tenant_id TEXT PRIMARY KEY, parent_tenant_id TEXT NOT NULL,
@@ -28,6 +30,16 @@ const SCHEMA = [
     billing_relationship TEXT NOT NULL DEFAULT 'platform', wholesale_cents INTEGER,
     referral_share_pct REAL NOT NULL DEFAULT 0.0, status TEXT NOT NULL DEFAULT 'active',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );`,
+  `CREATE TABLE product_end_users (
+    product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, email TEXT, suspended_at TEXT, deleted_at TEXT,
+    PRIMARY KEY (product_space_id, end_user_id)
+  );`,
+  `CREATE TABLE business_memberships (
+    business_space_id TEXT NOT NULL, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active',
+    invited_by TEXT, joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (business_space_id, end_user_id)
   );`,
 ];
 
@@ -45,6 +57,19 @@ function makeKv(): KVNamespace {
     put: async (k: string, v: string) => void store.set(k, v),
     delete: async (k: string) => void store.delete(k),
   } as unknown as KVNamespace;
+}
+
+function makeLockDoNamespace(): DurableObjectNamespace {
+  const instances = new Map<string, LockDO>();
+  return {
+    idFromName: (name: string) => ({ toString: () => name }) as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => {
+      const name = id.toString();
+      let object = instances.get(name);
+      if (!object) { object = new LockDO({ storage: createDOStorage() } as never, {} as never); instances.set(name, object); }
+      return { fetch: (request: Request) => object!.fetch(request) } as unknown as DurableObjectStub;
+    },
+  } as unknown as DurableObjectNamespace;
 }
 
 /** Phase 4 (money): a fake PRODUCT_USER_DO namespace whose /plan-tier reads a fixed tier per
@@ -74,11 +99,15 @@ function makeEnv(productConfig: Record<string, unknown>, opts?: { personalPlanTi
   fakeDb.db.exec(
     `INSERT INTO spaces (id, tenant_id, status, name, config_json) VALUES ('prod-1', 'builder-tenant', 'active', 'Acme', '${JSON.stringify({ productConfig }).replace(/'/g, "''")}')`
   );
+  for (const userId of ["u1", "u2", "customer-a", "customer-b", "u-free", "u-plus", "u-nodo", "u-atcap"]) {
+    fakeDb.db.prepare("INSERT INTO product_end_users (product_space_id, end_user_id) VALUES ('prod-1', ?)").run(userId);
+  }
   const sentMessages: unknown[] = [];
   return {
     env: {
       PLATFORM_DB: fakeDb,
       PLATFORM_SECRET: "test-secret",
+      LOCK_DO: makeLockDoNamespace(),
       SPACE_TYPE_REGISTRY_DO: make404RegistryDo(),
       NAELAO_CONFIG_KV: makeKv(),
       PROVISION_QUEUE: { send: async (msg: unknown) => void sentMessages.push(msg) } as unknown as Queue<unknown>,

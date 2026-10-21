@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import spacesWorker from "../../workers/spaces/src/index.js";
 import { mintInternalToken } from "@naelao/http";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
+import { LockDO } from "../../workers/spaces/src/do/LockDO.js";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 // Three-Tier Platform Model, Phase C (§A1.17): route-level tests for the business-creation
@@ -54,7 +56,7 @@ const SCHEMA = [
   );`,
   `CREATE TABLE product_end_users (
     product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, email TEXT, display_name TEXT,
-    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')), last_seen_at TEXT, consented_at TEXT,
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')), last_seen_at TEXT, consented_at TEXT, deleted_at TEXT,
     suspended_at TEXT, PRIMARY KEY (product_space_id, end_user_id)
   );`,
 ];
@@ -75,6 +77,19 @@ function makeKv(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
+function makeLockDoNamespace(): DurableObjectNamespace {
+  const instances = new Map<string, LockDO>();
+  return {
+    idFromName: (name: string) => ({ toString: () => name }) as unknown as DurableObjectId,
+    get: (id: DurableObjectId) => {
+      const name = id.toString();
+      let object = instances.get(name);
+      if (!object) { object = new LockDO({ storage: createDOStorage() } as never, {} as never); instances.set(name, object); }
+      return { fetch: (request: Request) => object!.fetch(request) } as unknown as DurableObjectStub;
+    },
+  } as unknown as DurableObjectNamespace;
+}
+
 function makeEnv(opts?: { productConfigExtra?: Record<string, unknown>; personalPlanTierByKey?: Record<string, string> }) {
   const fakeDb = createFakeD1(SCHEMA);
   const productConfig = { membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"], ...(opts?.productConfigExtra ?? {}) };
@@ -85,6 +100,7 @@ function makeEnv(opts?: { productConfigExtra?: Record<string, unknown>; personal
     PLATFORM_SECRET,
     ENVIRONMENT: "test",
     PLATFORM_DB: fakeDb,
+    LOCK_DO: makeLockDoNamespace(),
     SPACE_DO: makeStatefulDoNamespace(SpaceDO),
     SPACE_TYPE_REGISTRY_DO: make404RegistryDo(),
     NAELAO_CONFIG_KV: makeKv(),
@@ -116,17 +132,24 @@ async function internalHeaders(tenantId: string, extra: Record<string, string> =
   return { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token, ...extra };
 }
 
+function registerProductUser(env: ReturnType<typeof makeEnv>, userId: string, email = `${userId}@example.com`) {
+  env.PLATFORM_DB.prepare(
+    "INSERT OR IGNORE INTO product_end_users (product_space_id, end_user_id, email) VALUES ('prod-1', ?, ?)"
+  ).bind(userId, email).run();
+}
+
 function req(path: string, headers: Record<string, string>, init?: RequestInit): Request {
   return new Request(`https://spaces.naelao.com${path}`, { ...init, headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) } });
 }
 
 async function createBusiness(env: ReturnType<typeof makeEnv>, userId: string, name: string) {
+  registerProductUser(env, userId);
   const headers = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": userId });
   const res = await spacesWorker.fetch(
     req("/spaces/prod-1/businesses", headers, { method: "POST", body: JSON.stringify({ name, spacetype_id: "launchpad" }) }),
     env as never, execCtx
   );
-  expect(res.status).toBe(201);
+  expect(res.status, await res.clone().text()).toBe(201);
   return (await res.json()) as { space_id: string; tenant_id: string };
 }
 
@@ -149,7 +172,7 @@ describe("POST /spaces/:productSpaceId/businesses", () => {
       req("/spaces/prod-1/businesses", headers, { method: "POST", body: JSON.stringify({ name: "X", spacetype_id: "launchpad" }) }),
       env as never, execCtx
     );
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
   });
 });
 
@@ -224,6 +247,7 @@ describe("GET /spaces/:productSpaceId/directory (step 18)", () => {
   it("never leaks owner identity, revenue, or any private metric — safe projection only", async () => {
     const env = makeEnv();
     await createBusiness(env, "alice", "Alice's Shop");
+    registerProductUser(env, "bob");
     const bobHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "bob" });
     const res = await spacesWorker.fetch(req("/spaces/prod-1/directory", bobHeaders), env as never, execCtx);
     const body = (await res.json()) as { data: Array<Record<string, unknown>> };
@@ -237,7 +261,7 @@ describe("GET /spaces/:productSpaceId/directory (step 18)", () => {
     const env = makeEnv();
     const headers = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user" });
     const res = await spacesWorker.fetch(req("/spaces/prod-1/directory", headers), env as never, execCtx);
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
   });
 });
 
@@ -366,7 +390,7 @@ describe("Business invites — create + accept round trip", () => {
   it("an owner invites, a different end user accepts, and becomes a real member", async () => {
     const env = makeEnv();
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const ownerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
 
     const inviteRes = await spacesWorker.fetch(
       req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com", role: "admin" }) }),
@@ -375,7 +399,8 @@ describe("Business invites — create + accept round trip", () => {
     expect(inviteRes.status).toBe(201);
     const invite = (await inviteRes.json()) as { token: string };
 
-    const carolHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
+    registerProductUser(env, "carol", "carol@example.com");
+    const carolHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
     const acceptRes = await spacesWorker.fetch(
       req(`/spaces/${biz.space_id}/invites/${invite.token}/accept`, carolHeaders, { method: "POST" }),
       env as never, execCtx
@@ -392,7 +417,8 @@ describe("Business invites — create + accept round trip", () => {
   it("rejects a non-owner/admin from sending invites", async () => {
     const env = makeEnv();
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const strangerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "mallory" });
+    registerProductUser(env, "mallory");
+    const strangerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "mallory" });
     const res = await spacesWorker.fetch(
       req(`/spaces/${biz.space_id}/invites`, strangerHeaders, { method: "POST", body: JSON.stringify({ email: "x@example.com" }) }),
       env as never, execCtx
@@ -403,13 +429,14 @@ describe("Business invites — create + accept round trip", () => {
   it("rejects re-accepting an already-accepted invite", async () => {
     const env = makeEnv();
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const ownerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
     const inviteRes = await spacesWorker.fetch(
       req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com" }) }),
       env as never, execCtx
     );
     const invite = (await inviteRes.json()) as { token: string };
-    const carolHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
+    registerProductUser(env, "carol", "carol@example.com");
+    const carolHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
     await spacesWorker.fetch(req(`/spaces/${biz.space_id}/invites/${invite.token}/accept`, carolHeaders, { method: "POST" }), env as never, execCtx);
 
     const second = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/invites/${invite.token}/accept`, carolHeaders, { method: "POST" }), env as never, execCtx);
@@ -419,7 +446,7 @@ describe("Business invites — create + accept round trip", () => {
   it("rejects an expired invite", async () => {
     const env = makeEnv();
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const ownerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
     const inviteRes = await spacesWorker.fetch(
       req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com" }) }),
       env as never, execCtx
@@ -428,7 +455,8 @@ describe("Business invites — create + accept round trip", () => {
     await env.PLATFORM_DB.prepare("UPDATE business_invites SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
       .bind(invite.id).run();
 
-    const carolHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
+    registerProductUser(env, "carol", "carol@example.com");
+    const carolHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
     const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/invites/${invite.token}/accept`, carolHeaders, { method: "POST" }), env as never, execCtx);
     expect(res.status).toBe(410);
   });
@@ -445,7 +473,7 @@ describe("Business invites — personal-plan gate (only active when the product 
   it("a FREE-tier owner is refused when the product has a real personal-plan upgrade path", async () => {
     const env = makeEnv({ productConfigExtra: PRODUCT_CONFIG_WITH_PLANS, personalPlanTierByKey: { "prod-1:alice": "free" } });
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const ownerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
     const res = await spacesWorker.fetch(
       req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com" }) }),
       env as never, execCtx
@@ -458,7 +486,7 @@ describe("Business invites — personal-plan gate (only active when the product 
   it("a PLUS-tier owner CAN invite when the product has a real personal-plan upgrade path", async () => {
     const env = makeEnv({ productConfigExtra: PRODUCT_CONFIG_WITH_PLANS, personalPlanTierByKey: { "prod-1:alice": "plus" } });
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const ownerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
     const res = await spacesWorker.fetch(
       req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com" }) }),
       env as never, execCtx
@@ -469,7 +497,7 @@ describe("Business invites — personal-plan gate (only active when the product 
   it("a FREE-tier owner is NOT refused when the product has NO personalPlans configured (the default, backward-compatible with every live business today)", async () => {
     const env = makeEnv({ personalPlanTierByKey: { "prod-1:alice": "free" } }); // no PRODUCT_CONFIG_WITH_PLANS
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const ownerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
     const res = await spacesWorker.fetch(
       req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com" }) }),
       env as never, execCtx
@@ -482,7 +510,8 @@ describe("Business members — CRITICAL cross-business isolation", () => {
   it("a stranger cannot list another business's members", async () => {
     const env = makeEnv();
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const strangerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "mallory" });
+    registerProductUser(env, "mallory");
+    const strangerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "mallory" });
     const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/business-members`, strangerHeaders), env as never, execCtx);
     expect(res.status).toBe(403);
   });
@@ -490,7 +519,8 @@ describe("Business members — CRITICAL cross-business isolation", () => {
   it("a stranger cannot remove another business's member", async () => {
     const env = makeEnv();
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const strangerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "mallory" });
+    registerProductUser(env, "mallory");
+    const strangerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "mallory" });
     const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/business-members/alice`, strangerHeaders, { method: "DELETE" }), env as never, execCtx);
     expect(res.status).toBe(403);
   });
@@ -498,7 +528,7 @@ describe("Business members — CRITICAL cross-business isolation", () => {
   it("the owner cannot be removed even by another admin", async () => {
     const env = makeEnv();
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const ownerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
     const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/business-members/alice`, ownerHeaders, { method: "DELETE" }), env as never, execCtx);
     expect(res.status).toBe(403);
   });
@@ -506,13 +536,14 @@ describe("Business members — CRITICAL cross-business isolation", () => {
   it("an owner can remove a non-owner member", async () => {
     const env = makeEnv();
     const biz = await createBusiness(env, "alice", "Alice's Shop");
-    const ownerHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const ownerHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
     const inviteRes = await spacesWorker.fetch(
       req(`/spaces/${biz.space_id}/invites`, ownerHeaders, { method: "POST", body: JSON.stringify({ email: "carol@example.com" }) }),
       env as never, execCtx
     );
     const invite = (await inviteRes.json()) as { token: string };
-    const carolHeaders = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
+    registerProductUser(env, "carol", "carol@example.com");
+    const carolHeaders = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "carol" });
     await spacesWorker.fetch(req(`/spaces/${biz.space_id}/invites/${invite.token}/accept`, carolHeaders, { method: "POST" }), env as never, execCtx);
 
     const delRes = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/business-members/carol`, ownerHeaders, { method: "DELETE" }), env as never, execCtx);
