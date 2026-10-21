@@ -140,4 +140,27 @@ describe("admin worker against the real platform schema", () => {
     expect(body.active_tenants).toBe(1);
     expect(body.sessions_24h).toBeNull();
   });
+
+  it("does not restore a product space while its parent tenant is suspended", async () => {
+    const env = makeEnv();
+    const db = (env.PLATFORM_DB as ReturnType<typeof createFakeD1>).db;
+    db.exec(`INSERT INTO orgs (id, name, owner_id, plan_tier, status) VALUES ('org-1', 'Acme', 'u1', 'free', 'suspended')`);
+    db.exec(`INSERT INTO spaces (id, tenant_id, spacetype_id, name, status) VALUES ('space-1', 'org-1', 'launchpad', 'Product', 'suspended')`);
+
+    const res = await adminWorker.fetch(adminReq("/admin/products/space-1/restore", { method: "POST" }), env as never, execCtx);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect((db.prepare("SELECT status FROM spaces WHERE id = ?").get("space-1") as { status: string }).status).toBe("suspended");
+  });
+
+  it("restores only a suspended space under an active tenant", async () => {
+    const env = makeEnv();
+    const db = (env.PLATFORM_DB as ReturnType<typeof createFakeD1>).db;
+    db.exec(`INSERT INTO orgs (id, name, owner_id, plan_tier, status) VALUES ('org-1', 'Acme', 'u1', 'free', 'active')`);
+    db.exec(`INSERT INTO spaces (id, tenant_id, spacetype_id, name, status) VALUES ('space-1', 'org-1', 'launchpad', 'Product', 'suspended')`);
+
+    const res = await adminWorker.fetch(adminReq("/admin/products/space-1/restore", { method: "POST" }), env as never, execCtx);
+    expect(res.status).toBe(200);
+    expect((db.prepare("SELECT status FROM spaces WHERE id = ?").get("space-1") as { status: string }).status).toBe("active");
+  });
 });

@@ -1749,3 +1749,9 @@ The Notifications worker's webhook check only rejected a short list of literal I
 ## MCP Hub Composio tenant-space binding (2026-10-21)
 
 Two internal Composio endpoints authenticated the tenant HMAC but trusted a separate `x-naelao-space-id` header without checking that the space belonged to the signed tenant. Their air-gap check also reads space policy by ID only. Added an active-space ownership check (`space_id`, `tenant_id`, and `status='active'`) before egress checks, OAuth-link creation, execution, or usage metering. Regression tests use a valid tenant-A HMAC with a tenant-B space and verify both connect and execute stop with 404 before any outbound provider request. Validation passed: MCP Hub suite 12/12, MCP Hub TypeScript, and `git diff --check`.
+
+## Admin restore boundary under tenant suspension (2026-10-21)
+
+Reviewing the product kill-switch paths found `/admin/products/:spaceId/restore` reactivated any suspended space without checking its parent org. An org already suspended by admin or erasure could therefore have a child space reactivated through the product restore endpoint. Restore now requires the parent org to remain active, accepts only suspended spaces, and uses a conditional update to catch status races. Real SQLite regression tests verify a suspended org stays blocked and an active org's suspended space restores. Validation passed: admin schema suite 8/8, Admin Worker TypeScript, and `git diff --check`.
+
+Cross-file review found a larger unresolved gap: `/admin/tenants/:tenantId` can set `orgs.status='suspended'`, but no runtime worker reads that status as an access gate. The Data Erasure workflow separately suspends each space, but admin tenant suspension alone does not. A centralized tenant suspension gate and a restoration model that preserves per-space suspension reasons are needed before the admin tenant status can be relied on to freeze a tenant.

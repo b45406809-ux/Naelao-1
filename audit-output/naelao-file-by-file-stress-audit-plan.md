@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2002` tracked files; `1796` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `a0cf0f6b`.
+Inventory basis: `2002` tracked files; `1796` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `c141f39d`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -15,6 +15,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - **Organization erasure lifecycle and coverage:** the queue consumer accepts `data.erasure`, but no producer or request route was found. `DataErasureWorkflow` suspends an org, waits 24 hours, then permanently deletes data; no cancellation or restoration path was found despite the “reversible window” description. Cleanup currently has only the KB bucket and quota KV bindings, while artifacts, exported files, scripts/workspaces, and other space records use separate storage and D1 tables. Build a tenant-scoped resource inventory, add safely scoped cleanup, and trace authorization, initiation, cancellation, and suspended-state recovery before describing this feature as usable or complete.
 - **Webhook DNS rebinding:** webhook delivery now rejects private literal IPs and private DNS answers, rejects redirects, and has a deadline. Cloudflare `fetch` resolves DNS again after validation, so a rebinding response could change the target between check and connection. Use a controlled egress proxy with address pinning to close this race.
 - **MCP Hub DNS rebinding:** direct MCP URLs use the same preflight DNS validation before `fetch`, but the runtime resolves again at connection time. A controlled egress proxy with address pinning is still needed to close this network-level race for direct connectors.
+- **Tenant suspension enforcement:** admin can set `orgs.status` to `suspended`, but no runtime worker checks that state as an authorization gate. Product-space restoration now refuses to activate a space under a suspended org; add a centralized tenant gate and a restoration model that preserves independently suspended spaces before treating org status as a platform freeze.
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 
 ## Work sequence

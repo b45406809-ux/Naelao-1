@@ -348,11 +348,25 @@ app.post("/admin/products/:spaceId/suspend", async (c) => {
 
 app.post("/admin/products/:spaceId/restore", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const space = await c.env.PLATFORM_DB.prepare("SELECT id, status FROM spaces WHERE id = ?").bind(spaceId).first<{ id: string; status: string }>();
+  const space = await c.env.PLATFORM_DB.prepare(
+    `SELECT s.id, s.status, o.status AS org_status
+     FROM spaces s JOIN orgs o ON o.id = s.tenant_id WHERE s.id = ?`
+  ).bind(spaceId).first<{ id: string; status: string; org_status: string }>();
   if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  await c.env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET status = 'active', updated_at = datetime('now') WHERE id = ? AND status = 'suspended'"
+  if (space.org_status !== "active") {
+    return c.json({ error_code: "tenant_suspended", message: "A space cannot be restored while its tenant is suspended" }, 409);
+  }
+  if (space.status !== "suspended") {
+    return c.json({ error_code: "space_not_suspended", message: "Only suspended spaces can be restored" }, 409);
+  }
+  const result = await c.env.PLATFORM_DB.prepare(
+    `UPDATE spaces SET status = 'active', updated_at = datetime('now')
+     WHERE id = ? AND status = 'suspended'
+       AND EXISTS (SELECT 1 FROM orgs WHERE id = spaces.tenant_id AND status = 'active')`
   ).bind(spaceId).run();
+  if (result.meta.changes === 0) {
+    return c.json({ error_code: "restore_conflict", message: "Space or tenant status changed; reload and retry" }, 409);
+  }
   await c.env.PLATFORM_DB.prepare(
     "INSERT INTO platform_failures (id, message_type, payload_json, failure_reason, failed_at, retry_count, reviewed) VALUES (?, ?, ?, ?, datetime('now'), 0, 0)"
   ).bind(crypto.randomUUID(), "admin_product_restore", JSON.stringify({ space_id: spaceId }), "Admin restore").run().catch(() => {});
