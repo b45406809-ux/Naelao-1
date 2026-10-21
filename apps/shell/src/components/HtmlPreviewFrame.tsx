@@ -30,7 +30,6 @@
 import * as React from "react";
 
 const INSPECTOR_SCRIPT = `
-<script>
 (function () {
   var hovered = null;
   function describe(el) {
@@ -62,8 +61,45 @@ const INSPECTOR_SCRIPT = `
       window.parent.postMessage({ type: "AVOS_DOM_CLICK", selector: d.selector, tag: d.tag, text: d.text }, "*");
     } catch (err) { /* postMessage never throws in practice; ignore defensively */ }
   }, true);
-})();
-</script>`;
+})();`;
+
+/**
+ * Isolate previews from the shell page and give the inspector only its own one-time script
+ * capability. User-authored HTML stays inside the frame; its scripts, event handlers, network
+ * requests, forms, nested frames and top-level navigation are blocked by CSP and sandboxing.
+ */
+export function buildSandboxedPreviewDocument(html: string, interactive = false, nonce?: string): string {
+  const trustedNonce = interactive && nonce && /^[a-f0-9]{32,128}$/i.test(nonce) ? nonce : undefined;
+  const policy = [
+    "default-src 'none'",
+    trustedNonce ? `script-src 'nonce-${trustedNonce}'` : "script-src 'none'",
+    "style-src 'unsafe-inline'",
+    "img-src data: blob:",
+    "font-src data:",
+    "media-src data: blob:",
+    "connect-src 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "frame-src 'none'",
+    "worker-src 'none'",
+    "navigate-to 'none'",
+  ].join("; ");
+  const inspector = trustedNonce
+    ? `<script nonce="${trustedNonce}">${INSPECTOR_SCRIPT}</script>`
+    : "";
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer"></head><body>${html}${inspector}</body></html>`;
+}
+
+function createNonce(): string | undefined {
+  try {
+    const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  } catch {
+    // Fail closed: preview remains visible, but the inspector script is omitted.
+    return undefined;
+  }
+}
 
 export interface InspectedElement {
   selector: string;
@@ -84,12 +120,18 @@ export function HtmlPreviewFrame({
    *  actually mounted somewhere on this page (see the header comment above). */
   interactive?: boolean;
 }) {
-  const srcDoc = interactive ? html + INSPECTOR_SCRIPT : html;
+  const [srcDoc, setSrcDoc] = React.useState("");
+  React.useEffect(() => {
+    const nonce = interactive ? createNonce() : undefined;
+    setSrcDoc(buildSandboxedPreviewDocument(html, interactive, nonce));
+  }, [html, interactive]);
   return (
     <iframe
       title={title ?? "Preview"}
-      sandbox="allow-scripts"
+      sandbox={interactive ? "allow-scripts" : ""}
+      data-naelao-dom-inspector={interactive ? "true" : undefined}
       srcDoc={srcDoc}
+      referrerPolicy="no-referrer"
       style={{ width: "100%", height, border: "1px solid var(--border)", borderRadius: 6, background: "#fff" }}
     />
   );

@@ -94,13 +94,7 @@ function DocxView({ content }: { content: string }) {
   }, [content]);
   if (err) return <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Couldn&rsquo;t render this document — download it to view.</p>;
   if (html === null) return <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Opening document…</p>;
-  return (
-    <div
-      style={{ maxHeight: 320, overflow: "auto", fontSize: 12, lineHeight: 1.55, padding: "4px 2px" }}
-      // mammoth output is sanitized HTML from the doc's own text; rendered read-only in the panel.
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  return <HtmlPreviewFrame html={html} title="Word document preview" height={320} />;
 }
 
 /** XLSX → first sheet as a table via sheetjs (lazy). */

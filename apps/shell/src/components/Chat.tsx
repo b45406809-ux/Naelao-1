@@ -85,6 +85,7 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 import { modelLabel } from "./ModelSelector";
 import { userFacingErrorMessage } from "@/lib/user-facing-errors";
+import { isTrustedDomInspectionMessage } from "@/lib/dom-inspector-message";
 import { OwnerVoiceCall } from "./OwnerVoiceCall";
 
 const POLL_INTERVAL_MS = 1500;
@@ -1398,10 +1399,11 @@ export function Chat({
   const [inspectedElement, setInspectedElement] = React.useState<InspectedElement | null>(null);
   React.useEffect(() => {
     function onMessage(e: MessageEvent) {
-      const data = e.data as { type?: unknown; selector?: unknown; tag?: unknown; text?: unknown } | null;
-      if (!data || data.type !== "AVOS_DOM_CLICK") return;
-      if (typeof data.selector !== "string" || typeof data.tag !== "string") return;
-      setInspectedElement({ selector: data.selector, tag: data.tag, text: typeof data.text === "string" ? data.text : "" });
+      const inspectors = Array.from(
+        document.querySelectorAll<HTMLIFrameElement>('iframe[data-naelao-dom-inspector="true"]')
+      ).flatMap((frame) => frame.contentWindow ? [frame.contentWindow] : []);
+      if (!isTrustedDomInspectionMessage(e.source, e.data, inspectors)) return;
+      setInspectedElement({ selector: e.data.selector, tag: e.data.tag, text: e.data.text });
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);

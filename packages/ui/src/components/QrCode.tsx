@@ -1,5 +1,5 @@
 import * as React from "react";
-import { qrSvg } from "../qr";
+import { encodeQr } from "../qr";
 
 export interface QrCodeProps {
   /** What the code encodes — normally a URL. */
@@ -22,21 +22,38 @@ export interface QrCodeProps {
  * caller shows the raw link alongside, so there is always a way through.
  */
 export function QrCode({ value, size = 200, label, className }: QrCodeProps): React.ReactElement | null {
-  const svg = React.useMemo(() => {
+  const encoded = React.useMemo(() => {
     try {
-      return qrSvg(value, label ? { title: label } : {});
+      const grid = encodeQr(value);
+      const quietZone = 4;
+      let path = "";
+      for (let row = 0; row < grid.length; row++) {
+        for (let column = 0; column < grid.length; column++) {
+          if (grid[row]?.[column]) path += `M${column + quietZone} ${row + quietZone}h1v1h-1z`;
+        }
+      }
+      return { path, viewSize: grid.length + quietZone * 2 };
     } catch {
       return null;
     }
-  }, [value, label]);
+  }, [value]);
 
-  if (!svg) return null;
+  if (!encoded) return null;
   return (
-    <div
+    <svg
       className={className}
-      style={{ width: size, height: size, borderRadius: 8, overflow: "hidden", background: "#fff" }}
-      // The SVG is built from our own encoder over a string we control — no user markup reaches it.
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
+      width={size}
+      height={size}
+      viewBox={`0 0 ${encoded.viewSize} ${encoded.viewSize}`}
+      shapeRendering="crispEdges"
+      role="img"
+      aria-label={label ?? "QR code"}
+      style={{ borderRadius: 8, overflow: "hidden", background: "#fff" }}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>{label ?? "QR code"}</title>
+      <rect width={encoded.viewSize} height={encoded.viewSize} fill="#fff" />
+      <path d={encoded.path} fill="#000" />
+    </svg>
   );
 }
