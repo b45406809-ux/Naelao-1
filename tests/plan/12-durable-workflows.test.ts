@@ -17,6 +17,16 @@ const identity: DurableWorkflowIdentity = {
   codeKey: "workflow-code/tenant-one/space-one/" + "a".repeat(64), startKey: "request-one",
   expiresAt: 2_000_000_000_000, workflowClass: "ephemeral_task", capabilities: ["project.read"],
 };
+async function initializedJournal(storage: PersistedStorage): Promise<WorkflowJournal> {
+  const journal = new WorkflowJournal(storage);
+  await journal.initialize(identity, {
+    schema: 1,
+    r2_key: "workflow-artifacts/tenant-one/space-one/wf-123/input.json",
+    sha256: "e".repeat(64),
+    bytes: 2,
+  }, {});
+  return journal;
+}
 describe("Step 12 durable workflow contracts", () => {
   it("deduplicates starts within an actor and isolates tenant keys", async () => {
     expect(await durableWorkflowRunId(identity, "request-one")).toBe(await durableWorkflowRunId(identity, "request-one"));
@@ -47,13 +57,13 @@ describe("Step 12 durable workflow contracts", () => {
   });
   it("reuses a committed effect after a new host instance reconstructs the journal", async () => {
     const storage = new PersistedStorage();
-    const firstHost = new WorkflowJournal(storage);
-    const claim = await firstHost.prepareEffect("notify", "notify.send", "b".repeat(64));
+    const firstHost = await initializedJournal(storage);
+    const claim = await firstHost.prepareExternalEffect("notify", "notify.send", "b".repeat(64));
     let effects = 0;
     if (claim.created) effects++;
     const pointer = { schema: 1 as const, r2_key: "workflow-artifacts/tenant-one/space-one/wf-123/receipt.json", sha256: "c".repeat(64), bytes: 16 };
-    await firstHost.commitEffect(claim.effect, pointer);
-    const resumed = await new WorkflowJournal(storage).prepareEffect("notify", "notify.send", "b".repeat(64));
+    await firstHost.commitEffect(claim.effect, pointer, 0);
+    const resumed = await new WorkflowJournal(storage).prepareExternalEffect("notify", "notify.send", "b".repeat(64));
     if (resumed.created) effects++;
     expect(effects).toBe(1);
     expect(resumed.effect.result).toEqual(pointer);
@@ -61,12 +71,12 @@ describe("Step 12 durable workflow contracts", () => {
   });
   it("never repeats a prepared effect with an uncertain external outcome", async () => {
     const storage = new PersistedStorage();
-    const claim = await new WorkflowJournal(storage).prepareEffect("charge", "payment.charge", "b".repeat(64));
+    const claim = await (await initializedJournal(storage)).prepareExternalEffect("charge", "payment.charge", "b".repeat(64));
     expect(claim.created).toBe(true);
-    const recovered = await new WorkflowJournal(storage).prepareEffect("charge", "payment.charge", "b".repeat(64));
+    const recovered = await new WorkflowJournal(storage).prepareExternalEffect("charge", "payment.charge", "b".repeat(64));
     expect(recovered.created).toBe(false);
     expect(recovered.effect.status).toBe("prepared");
-    await expect(new WorkflowJournal(storage).prepareEffect("charge", "payment.charge", "d".repeat(64))).rejects.toThrow("conflict");
+    await expect(new WorkflowJournal(storage).prepareExternalEffect("charge", "payment.charge", "d".repeat(64))).rejects.toThrow("conflict");
   });
   it("keeps sleeping state through reconstruction and cancellation stays terminal", async () => {
     const storage = new PersistedStorage();
