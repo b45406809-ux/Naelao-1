@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
@@ -18,16 +18,16 @@ const SECRET = "test-platform-secret";
 const OTHER_SECRET = "attacker-guessed-secret";
 const TENANT = "victim-tenant";
 
-function makeEnv(): AgentsEnv {
+function makeEnv(spaceActive = true): AgentsEnv {
   // A DB/stub that would succeed if the handler were ever reached — so a 401/403 can only come
   // from the auth gate, never from a downstream failure masquerading as a rejection.
   const okStmt = {
     bind() { return okStmt; },
-    async first() { return { id: "space-1", tenant_id: TENANT, config_json: "{}" }; },
+    async first() { return spaceActive ? { id: "space-1", tenant_id: TENANT, config_json: "{}" } : null; },
     async all() { return { results: [] }; },
     async run() { return { meta: { changes: 1 } }; },
   };
-  const agentDoStub = { async fetch() { return Response.json({ ok: true }); } };
+  const agentDoStub = { fetch: vi.fn(async () => Response.json({ ok: true })) };
   return {
     ANTHROPIC_API_KEY: "test-anthropic-key",
     PLATFORM_SECRET: SECRET,
@@ -38,7 +38,8 @@ function makeEnv(): AgentsEnv {
     SPACES_WORKER: { fetch: async () => Response.json({ role: "owner" }) },
     TASK_DO: { idFromName: (n: string) => ({ toString: () => n }), get: () => ({ fetch: async () => Response.json({ tasks: [] }) }) },
     ANALYTICS: { writeDataPoint() {} },
-  } as unknown as AgentsEnv;
+    agentDoFetch: agentDoStub.fetch,
+  } as unknown as AgentsEnv & { agentDoFetch: typeof agentDoStub.fetch };
 }
 
 // Representative routes across each phase family that shared the vulnerable getCallerIdentity-only
@@ -111,6 +112,22 @@ describe("F1 — agents-worker routes reject a spoofed tenant header with no val
       makeEnv()
     );
     expect(res.status).toBe(403);
+  });
+
+  it("POST /internal/tasks/:id/run → blocks a validly signed task after its Space or tenant is suspended", async () => {
+    const token = await mintInternalToken(SECRET, TENANT);
+    const env = makeEnv(false) as AgentsEnv & { agentDoFetch: ReturnType<typeof vi.fn> };
+    const res = await app.fetch(
+      new Request("https://agents.naelao.com/internal/tasks/task-1/run", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token },
+        body: JSON.stringify({ taskId: "task-1", spaceId: "space-1", sessionId: "s", tenantId: TENANT, goal: "x", model: "claude-sonnet-4-6" }),
+      }),
+      env
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(env.agentDoFetch).not.toHaveBeenCalled();
   });
 });
 

@@ -3319,6 +3319,12 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
   }
+  // A durable task can outlive the tenant state that admitted it. Re-check both the owning
+  // Space and organization at dispatch time so queue delay/replay cannot start work after a
+  // suspension or deletion. Unknown state fails closed before the agent DO or model path runs.
+  if (!await isActiveTenantSpace(c.env, body.spaceId, body.tenantId)) {
+    return c.json({ error_code: "tenant_suspended", message: "Space or organization is not active" }, 403);
+  }
 
   try {
     const stub = await getAgentDO(c.env, body.tenantId, body.sessionId);
