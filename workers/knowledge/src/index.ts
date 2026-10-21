@@ -436,6 +436,7 @@ function chunkCoordinates(document: string, chunks: string[], sourceChunks?: Str
 app.post("/internal/spaces/:spaceId/kb/references/resolve", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, {} as { document_ids?: unknown });
   if (!Array.isArray(body.document_ids) || body.document_ids.length > 30 || body.document_ids.some((id) => typeof id !== "string" || id.length > 160)) {
     throw badRequest("document_ids must be an array of at most 30 IDs");
@@ -457,6 +458,7 @@ app.post("/internal/spaces/:spaceId/kb/references/resolve", async (c) => {
 app.get("/internal/spaces/:spaceId/kb/documents/:documentId/shared", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   const documentId = c.req.param("documentId");
   const doc = await c.env.PLATFORM_DB.prepare(
     "SELECT id,title,source_url,status,project_id FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?"
@@ -513,6 +515,7 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
 app.put("/internal/spaces/:spaceId/kb/documents/:docId/status", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   const docId = c.req.param("docId");
   const body = await readBoundedJson<{ status?: unknown; chunk_count?: unknown; project_id?: unknown }>(c.req.raw, 16 * 1024);
   if (!body || typeof body !== "object" || Array.isArray(body) ||
@@ -537,6 +540,7 @@ app.put("/internal/spaces/:spaceId/kb/documents/:docId/status", async (c) => {
 app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   const docId = c.req.param("docId");
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   const body = await readBoundedJson<{
@@ -579,6 +583,7 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   const embeddings: Array<{ embedding: number[]; tokenCount: number }> = [];
   for (let start = 0; start < chunks.length; start += 50) embeddings.push(...await embedBatch(c.env.AI, chunks.slice(start, start + 50)));
   if (embeddings.length !== chunks.length) throw internalError("Embedding provider returned an incomplete batch");
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   const projectId = body.projectId;
   const projectScope = projectId || SPACE_WIDE_PROJECT_SENTINEL;
   const requiredRoleRank = Number(body.requiredRoleRank ?? 0);
@@ -592,6 +597,7 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   const vectors: VectorizeVector[] = [];
   let storageBytes = 0;
   for (let i = 0; i < chunks.length; i++) {
+    if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
     const chunk = chunks[i]!;
     const chunkIndex = chunkOffset + i;
     const byteLength = new TextEncoder().encode(chunk).byteLength;
@@ -628,6 +634,7 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
       source_freshness: now, ...coordinate, chunk_index: chunkIndex, title: doc.title, content_preview: chunk.slice(0, 200),
     } });
   }
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   for (let start = 0; start < vectors.length; start += 100) await c.env.KB_VECTORS.upsert(vectors.slice(start, start + 100));
   await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytes, true, `workflow-ingest:${docId}:${chunkOffset}`);
   return c.json({ id: docId, chunk_count: doc.chunk_count, batch_count: chunks.length });

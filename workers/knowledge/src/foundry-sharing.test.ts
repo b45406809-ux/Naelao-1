@@ -2,10 +2,10 @@ import { mintInternalToken } from "@naelao/http";
 import { describe, expect, it, vi } from "vitest";
 import worker from "./index.js";
 
-function env() {
+function env(spaceActive = true) {
   const prepare = vi.fn((sql: string) => ({
     bind: (...args: unknown[]) => ({
-      first: async () => sql.includes("FROM spaces") ? { id: "source" }
+      first: async () => sql.includes("FROM spaces") ? spaceActive ? { id: "source" } : null
         : sql.includes("FROM kb_documents") ? { id: "doc-1", title: "Policy", source_url: null, status: "indexed", project_id: null } : null,
       all: async () => sql.includes("FROM kb_chunks")
         ? { results: [{ chunk_index: 0, content: "Sanitized policy text." }] }
@@ -40,5 +40,24 @@ describe("Foundry knowledge reference and document share service", () => {
   it("rejects direct access and missing or unindexed documents", async () => {
     const direct = await worker.fetch(new Request("https://knowledge/internal/spaces/source/kb/documents/doc-1/shared"), env(), {} as ExecutionContext);
     expect(direct.status).toBe(403);
+  });
+
+  it("blocks internal reads when the tenant Space is suspended", async () => {
+    const token = await mintInternalToken("secret", "tenant");
+    const headers = { "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token };
+    const references = await worker.fetch(new Request("https://knowledge/internal/spaces/source/kb/references/resolve", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ document_ids: ["doc-1"] }),
+    }), env(false), {} as ExecutionContext);
+    const shared = await worker.fetch(new Request("https://knowledge/internal/spaces/source/kb/documents/doc-1/shared", { headers }), env(false), {} as ExecutionContext);
+    const statusUpdate = await worker.fetch(new Request("https://knowledge/internal/spaces/source/kb/documents/doc-1/status", {
+      method: "PUT", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ status: "indexed", project_id: "project" }),
+    }), env(false), {} as ExecutionContext);
+    const chunkIngest = await worker.fetch(new Request("https://knowledge/internal/spaces/source/kb/documents/doc-1/ingest-chunks", {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}",
+    }), env(false), {} as ExecutionContext);
+    expect(references.status).toBe(404);
+    expect(shared.status).toBe(404);
+    expect(statusUpdate.status).toBe(404);
+    expect(chunkIngest.status).toBe(404);
   });
 });
