@@ -9,6 +9,9 @@ export interface PlanLimits {
   readonly kb_storage_mb: number;
   readonly monthly_sessions: number;
   readonly monthly_tokens: number;
+  /** Maximum token allowance for one delegated worker session. Set to 10% of this plan's daily
+   *  token quota; the normal daily/monthly quota reservation still limits aggregate parallel use. */
+  readonly max_worker_tokens: number;
   readonly api_keys: number;
   readonly webhook_subscriptions: number;
   readonly custom_tools: boolean;
@@ -42,6 +45,7 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     kb_storage_mb: 100,
     monthly_sessions: 500,
     monthly_tokens: 100_000,
+    max_worker_tokens: 2_000,
     api_keys: 2,
     webhook_subscriptions: 0,
     custom_tools: false,
@@ -60,6 +64,7 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     kb_storage_mb: 1_000,
     monthly_sessions: 10_000,
     monthly_tokens: 2_000_000,
+    max_worker_tokens: 20_000,
     api_keys: 10,
     webhook_subscriptions: 5,
     custom_tools: true,
@@ -78,6 +83,7 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     kb_storage_mb: 10_000,
     monthly_sessions: 100_000,
     monthly_tokens: 20_000_000,
+    max_worker_tokens: 200_000,
     api_keys: 50,
     webhook_subscriptions: 25,
     custom_tools: true,
@@ -96,6 +102,7 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     kb_storage_mb: 100_000,
     monthly_sessions: 1_000_000,
     monthly_tokens: 200_000_000,
+    max_worker_tokens: 2_000_000,
     api_keys: 200,
     webhook_subscriptions: 100,
     custom_tools: true,

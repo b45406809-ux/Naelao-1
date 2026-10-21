@@ -1368,6 +1368,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // trip, and threaded into the DO call below so enforceRunGates can gate on it without needing
   // its own PLATFORM_DB binding (NaelaoAgentDO has none — see item 47's own note on this).
   let sessionCreditCeiling: number | undefined;
+  // One worker run is capped by the tenant's current subscription plan. Default to the
+  // restrictive free allowance if plan lookup is unavailable or has corrupt data.
+  let workerTokenBudget = getPlanLimits("free").max_worker_tokens;
   // WHICH business this run is for. The same already-parsed config_json carries `template_id` and
   // `onboarding.status`, and spaceRow carries the name — so the agent can finally be told what it
   // is running for zero extra queries. Before this, the reasoner payload described the agent's
@@ -1466,6 +1469,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     const checker = new EntitlementsChecker(c.env.PLATFORM_DB);
     const tier = await checker.getTenantTier(tenantId);
     const limits = getPlanLimits(tier);
+    workerTokenBudget = limits.max_worker_tokens;
     const monthStart = new Date();
     monthStart.setUTCDate(1);
     monthStart.setUTCHours(0, 0, 0, 0);
@@ -1578,6 +1582,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         businessRole,
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
+        workerTokenBudget,
         // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
         // so a durable/async run knows exactly as much about the business as a sync one.
         businessContext,
@@ -1657,6 +1662,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         ...(dynamicModelCandidate ? { openRouterCapabilityEvidence: dynamicModelCandidate } : {}),
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
+        context: { worker_token_budget: workerTokenBudget },
         // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
         // so a durable/async run knows exactly as much about the business as a sync one.
         businessContext,
@@ -3321,6 +3327,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     /** Resolved server-side in /agent/run — see resolveCallerBusinessRole. */
     businessRole?: string;
     sessionCreditCeiling?: number;
+    workerTokenBudget?: number;
     /** WHICH business this run is for — carried from /agent/run through the Workflow so the
      *  async path is no less informed than the sync one. */
     businessContext?: BusinessContext;
@@ -3364,6 +3371,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           userId: body.userId,
           projectId: body.projectId,
           sessionCreditCeiling: body.sessionCreditCeiling,
+          context: { worker_token_budget: body.workerTokenBudget, long_running: true },
           businessContext: body.businessContext,
           reasoningEffort: body.reasoningEffort,
           effort: body.effort,
@@ -3380,7 +3388,6 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           runId: body.taskId,
           // The Workflow owns this background planner run. Keep the interactive time limit off;
           // explicit token/spend, tenant, approval, and cancellation controls still apply.
-          context: { long_running: true },
         }),
       })
     );

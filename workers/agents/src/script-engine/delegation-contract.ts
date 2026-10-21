@@ -21,9 +21,7 @@ function resource(contract: DelegationContract): string {
   }
   if (!Number.isInteger(contract.maxTier) || contract.maxTier < 1 || contract.maxTier > 6 || typeof contract.localOnly !== "boolean" || (contract.localModelMachine !== undefined && (typeof contract.localModelMachine !== "string" || !contract.localModelMachine))
     || ![2, 3].includes(contract.depth) || typeof contract.planner !== "boolean" || (contract.depth === 3 && contract.planner)
-    // Keep worker spend bounded while allowing long-running sessions to use the standard
-    // sub-agent budget rather than the former 2k-token ceiling.
-    || !Number.isSafeInteger(contract.maxTokens) || contract.maxTokens < 1 || contract.maxTokens > 20_000
+    || !Number.isSafeInteger(contract.maxTokens) || contract.maxTokens < 1 || contract.maxTokens > 2_000_000
     || !Number.isSafeInteger(contract.maxSteps) || contract.maxSteps < 1 || contract.maxSteps > 100) throw new Error("delegation_budget_or_depth_invalid");
   if (contract.filePaths !== undefined) {
     if (!Array.isArray(contract.filePaths) || contract.filePaths.length > 128) throw new Error("delegation_file_scope_invalid");

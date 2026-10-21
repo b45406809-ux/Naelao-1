@@ -978,6 +978,8 @@ export interface PlanState {
 
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
 export interface ScriptEngineEnv {
+  /** Server-resolved per-worker session token ceiling from the tenant's subscription plan. */
+  workerTokenBudget?: number;
   /** Canonical AVOS/Cowork mode resolved by the host; both modes share this kernel. */
   templateMode?: import("@naelao/agent-sdk").OperatingModeDispatch["templateMode"];
   /** Immutable compliance posture for this run. Egress-capable gateways must be absent and the

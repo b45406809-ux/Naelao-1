@@ -31,4 +31,11 @@ describe("plan tier validation and immutable limits", () => {
   it("uses free limits for an invalid runtime tier value", () => {
     expect(getPlanLimits("unknown" as never).monthly_tokens).toBe(getPlanLimits("free").monthly_tokens);
   });
+
+  it("scales one worker-session budget with the subscription's daily token quota", () => {
+    expect(getPlanLimits("free").max_worker_tokens).toBe(2_000);
+    expect(getPlanLimits("growth").max_worker_tokens).toBe(20_000);
+    expect(getPlanLimits("business").max_worker_tokens).toBe(200_000);
+    expect(getPlanLimits("enterprise").max_worker_tokens).toBe(2_000_000);
+  });
 });

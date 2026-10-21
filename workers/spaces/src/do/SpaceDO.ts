@@ -10601,7 +10601,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.assigned_role ?? null,
       body.model ?? null,
       JSON.stringify(Array.isArray(body.file_paths) ? body.file_paths.map(String) : []),
-      Math.max(1, Math.min(2000, Number(body.budget_tokens ?? 1800))),
+      Math.max(1, Math.min(2_000_000, Number(body.budget_tokens ?? 1800))),
       body.prompt_text ?? body.title,
       Array.isArray(body.intent_embedding) ? JSON.stringify(body.intent_embedding) : null,
       now,

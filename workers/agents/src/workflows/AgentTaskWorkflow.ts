@@ -56,6 +56,8 @@ export interface AgentTaskParams {
   // §A1 Harness Excellence Phase HX2: threaded through the same path as the fields above so the
   // async dispatch path's session-budget gate matches the sync path's exactly.
   sessionCreditCeiling?: number;
+  /** Plan-resolved per-worker token cap, carried from /agent/run through the durable job. */
+  workerTokenBudget?: number;
   /** WHICH business this task is for (name, what it sells, setup state) — resolved by the
    *  /agent/run route from the space row. Carried so a durable/async run is told exactly as much
    *  about the business as a synchronous one; without it the default dispatch path would be the
@@ -208,6 +210,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
               callerRole: p.callerRole,
               businessRole: p.businessRole,
               sessionCreditCeiling: p.sessionCreditCeiling,
+              workerTokenBudget: p.workerTokenBudget,
               businessContext: p.businessContext,
               reasoningEffort: p.reasoningEffort,
               effort: p.effort,

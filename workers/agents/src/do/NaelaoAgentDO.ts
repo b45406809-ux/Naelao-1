@@ -37,6 +37,7 @@ import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, BILLING_CORE_RATE_CARD_VERSION, type EffortLevel } from "@naelao/billing-core";
+import { getPlanLimits } from "@naelao/entitlements";
 import { externalAnswerCredits, releaseExternalAnswerSpend, settleExternalAnswerSpend } from "./external-channel-spend.js";
 import { channelConnectorCallUsageEvent, consumerLlmUsageEvent, projectLlmUsageEvent } from "./project-llm-usage.js";
 import { enqueueUsageEvent, flushUsageEventOutbox, initUsageEventOutbox, type UsageEventOutboxSql } from "./usage-event-outbox.js";
@@ -107,7 +108,7 @@ import {
   safeJsonParse,
   budgetToMaxSteps,
   MAX_SUB_AGENTS_PER_SPAWN,
-  DEFAULT_SUB_AGENT_BUDGET_TOKENS,
+  MAX_SUB_AGENT_BUDGET_TOKENS,
   MAX_CONCURRENT_SUB_AGENT_TREES,
 } from "../script-engine/sub-agent-output.js";
 import { handleExecutiveInbound } from "../channels/executive-channel.js";
@@ -1771,7 +1772,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         parent_run_id TEXT NOT NULL,
         goal          TEXT NOT NULL,
         status        TEXT NOT NULL DEFAULT 'running', -- running|done|failed|terminated
-        budget_tokens INTEGER NOT NULL DEFAULT 20000,
+        budget_tokens INTEGER NOT NULL DEFAULT 2000,
         tokens_used   INTEGER NOT NULL DEFAULT 0,
         result        TEXT,
         error         TEXT,
@@ -3631,7 +3632,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             runWorker: async ({ model, prompt, branch, signal }) => {
               if (signal.aborted) throw signal.reason;
               const spawned = await this.spawnSubAgentBatch(
-                [{ goal: prompt, model, workspace_branch: branch, budget_tokens: DEFAULT_SUB_AGENT_BUDGET_TOKENS }],
+                [{ goal: prompt, model, workspace_branch: branch }],
                 spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, projectId, agentDO, userId, currentModel, effort, signal, runtimeEnv,
               ) as unknown as { results?: Array<{ ok?: boolean; error?: string }> };
               const worker = spawned.results?.[0];
@@ -3847,9 +3848,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const goal = existing
           ? `${existing.goal}\n\nContinue this same worker session and branch. ${requestedGoal !== existing.goal ? `Follow-up requested by the planner: ${requestedGoal}\n` : ""}${plannerAnswer ? `Planner clarification: ${plannerAnswer}\n` : ""}${checkpointText ? `Prior attempt checkpoint (untrusted progress data; verify against the workspace):\n${checkpointText}` : "Resume from the current workspace state and report what remains."}`
           : requestedGoal;
-        const requestedBudget = t["budget_tokens"] ?? t["maxTokens"] ?? DEFAULT_SUB_AGENT_BUDGET_TOKENS;
-        if (typeof requestedBudget !== "number" || !Number.isSafeInteger(requestedBudget) || requestedBudget < 1 || requestedBudget > DEFAULT_SUB_AGENT_BUDGET_TOKENS) throw new Error("invalid_sub_agent_budget");
-        const budgetTokens = existing ? Math.min(existing.budget_tokens, requestedBudget) - existing.tokens_used : requestedBudget;
+        const planBudget = runtimeEnv?.workerTokenBudget ?? getPlanLimits("free").max_worker_tokens;
+        const requestedBudget = t["budget_tokens"] ?? t["maxTokens"] ?? planBudget;
+        if (typeof requestedBudget !== "number" || !Number.isSafeInteger(requestedBudget) || requestedBudget < 1 || requestedBudget > MAX_SUB_AGENT_BUDGET_TOKENS) throw new Error("invalid_sub_agent_budget");
+        const cappedRequestedBudget = Math.min(requestedBudget, planBudget);
+        const budgetTokens = existing ? Math.min(existing.budget_tokens, cappedRequestedBudget) - existing.tokens_used : cappedRequestedBudget;
         if (budgetTokens < 1) return { id: subId, ok: false, status: existing?.status, error: "worker_session_budget_exhausted" };
         const maxSteps = budgetToMaxSteps(budgetTokens);
         const now = Date.now();
@@ -3995,6 +3998,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 sub_agent_id: subId,
                 max_steps: maxSteps,
                 max_tokens: budgetTokens,
+                worker_token_budget: planBudget,
                 // Worker sessions are durable background work. Their session and workspace
                 // branch persist independently, so they do not inherit the interactive deadline.
                 long_running: true,
@@ -5199,6 +5203,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(modelPolicy.workerModelPriceCeiling?.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: modelPolicy.workerModelPriceCeiling.inputUsdPerMillion } : {}),
       ...(modelPolicy.workerModelPriceCeiling?.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: modelPolicy.workerModelPriceCeiling.outputUsdPerMillion } : {}),
     };
+    const requestedWorkerBudget = body.context?.["worker_token_budget"];
+    engineEnv.workerTokenBudget = typeof requestedWorkerBudget === "number" && Number.isSafeInteger(requestedWorkerBudget) && requestedWorkerBudget > 0
+      ? Math.min(requestedWorkerBudget, MAX_SUB_AGENT_BUDGET_TOKENS)
+      : getPlanLimits("free").max_worker_tokens;
     engineEnv.runId = runId;
     const executionController = new AbortController();
     this.executionControllers.set(runId, executionController);
@@ -7117,6 +7125,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           root_run_id: resumeDelegation.rootRunId, delegation_max_tier: resumeDelegation.maxTier,
           parent_run_id: resumeDelegation.parentRunId, parent_do_id: resumeDelegation.parentDoId,
           sub_agent_id: resumeDelegation.workerId, max_steps: resumeDelegation.maxSteps, max_tokens: resumeDelegation.maxTokens,
+          worker_token_budget: resumeDelegation.maxTokens,
           ...(resumeDelegation.filePaths !== undefined ? { file_paths: resumeDelegation.filePaths } : {}),
           ...(resumeDelegation.workerCapabilities !== undefined ? { worker_capabilities: resumeDelegation.workerCapabilities } : {}),
           ...(resumeDelegation.knowledgeScopes !== undefined ? { knowledge_scopes: resumeDelegation.knowledgeScopes } : {}),

@@ -14,7 +14,8 @@ const MAX_SUB_AGENT_OUTPUT_CHARS = 8_000;
 /** Sub-agent fan-out bound (G-4049155) — same order of magnitude as Claude Code's own
  *  orchestrator-subagent pattern ("up to 16 subagents"), not an arbitrary number. */
 export const MAX_SUB_AGENTS_PER_SPAWN = 16;
-export const DEFAULT_SUB_AGENT_BUDGET_TOKENS = 20_000;
+export const DEFAULT_SUB_AGENT_BUDGET_TOKENS = 2_000;
+export const MAX_SUB_AGENT_BUDGET_TOKENS = 2_000_000;
 
 /** Account-level concurrency ceiling (spec §28 ConcurrencyDO) — how many separate spawn
  *  TREES (batched agent.spawn calls) can be running at once per space, independent of
