@@ -1723,7 +1723,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/agents/src/channels/email-docx.test.ts`
 - [ ] `workers/agents/src/channels/email-docx.ts`
 - [ ] `workers/agents/src/channels/email-ocr-settings-route.test.ts`
-- [ ] `workers/agents/src/channels/email-ocr.test.ts`
+- [x] `workers/agents/src/channels/email-ocr.test.ts`
 - [ ] `workers/agents/src/channels/email-ocr.ts`
 - [x] `workers/agents/src/channels/email-pdf.test.ts`
 - [ ] `workers/agents/src/channels/email-pdf.ts`

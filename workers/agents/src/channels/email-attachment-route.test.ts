@@ -69,6 +69,7 @@ function smallPng(): Uint8Array {
 
 function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGapped?: boolean; mime?: string; attemptAllowed?: boolean; bytes?: Uint8Array } = {}) {
   let r2Reads = 0;
+  let documentSandboxCalls = 0;
   const ai = { run: vi.fn(async () => ({ answer: "Invoice 42\nTotal $10.00" })) };
   const env = {
     PLATFORM_SECRET: secret,
@@ -107,6 +108,7 @@ function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGap
       idFromName: (name: string) => name,
       get: (id: string) => ({
         async fetch(request: Request) {
+          documentSandboxCalls++;
           expect(id).toBe("sandbox:space-1:_assistant");
           expect(request.url).toBe("http://document-sandbox/pdf/render");
           expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
@@ -122,7 +124,7 @@ function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGap
     },
     AI: ai,
   };
-  return { env: env as never, r2Reads: () => r2Reads, ai };
+  return { env: env as never, r2Reads: () => r2Reads, ai, documentSandboxCalls: () => documentSandboxCalls };
 }
 
 async function readAttachment(env: never, overrides: Partial<typeof owned> = {}) {
@@ -265,6 +267,14 @@ describe("explicit task-scoped email image OCR endpoint", () => {
     const response = await ocrAttachment(exhausted.env);
     expect(response.status).toBe(429);
     expect(await response.json()).toMatchObject({ error_code: "attachment_ocr_daily_limit_reached", max_attempts_per_day: 20 });
+    expect(exhausted.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("checks the PDF OCR daily limit before rendering pages in the document sandbox", async () => {
+    const exhausted = makeOcrEnv({ attemptAllowed: false, mime: "application/pdf", bytes: new TextEncoder().encode("%PDF-1.4\nfixture") });
+    const response = await ocrAttachment(exhausted.env);
+    expect(response.status).toBe(429);
+    expect(exhausted.documentSandboxCalls()).toBe(0);
     expect(exhausted.ai.run).not.toHaveBeenCalled();
   });
 });

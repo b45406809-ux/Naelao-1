@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
-import { EMAIL_OCR_ADMISSION_SQL, EMAIL_OCR_MAX_ATTEMPTS_PER_SPACE_PER_DAY, EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MODEL, EmailOcrError, extractEmailImageOcr, rasterImageDimensions, reserveEmailOcrAttempt } from "./email-ocr.js";
+import { EMAIL_OCR_ADMISSION_SQL, EMAIL_OCR_MAX_ATTEMPTS_PER_SPACE_PER_DAY, EMAIL_OCR_MAX_BYTES, EMAIL_OCR_MAX_TEXT_CHARS, EMAIL_OCR_MODEL, EmailOcrError, extractEmailImageOcr, rasterImageDimensions, reserveEmailOcrAttempt } from "./email-ocr.js";
 
 function png(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(24);
@@ -43,6 +43,12 @@ describe("explicit email image OCR", () => {
   it("returns only bounded, explicit OCR text and fails when the model gives no text", async () => {
     const ai = { run: vi.fn(async () => ({ answer: " " })) };
     await expect(extractEmailImageOcr(ai, "image/png", png(2, 2))).rejects.toMatchObject({ code: "attachment_ocr_no_text" });
+  });
+
+  it("truncates an unexpectedly large provider answer to the output contract", async () => {
+    const ai = { run: vi.fn(async () => ({ answer: "x".repeat(EMAIL_OCR_MAX_TEXT_CHARS + 1) })) };
+    const result = await extractEmailImageOcr(ai, "image/png", png(2, 2));
+    expect(result.text).toHaveLength(EMAIL_OCR_MAX_TEXT_CHARS);
   });
 
   it("atomically enforces a rolling per-Space daily OCR call limit in SQLite", async () => {

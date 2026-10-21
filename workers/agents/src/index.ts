@@ -7207,6 +7207,10 @@ app.post("/internal/business-email/attachment/ocr", async (c) => {
     if (mimeType === "application/pdf") {
       if (object.size > EMAIL_PDF_MAX_BYTES) return c.json({ error_code: "attachment_pdf_too_large", max_bytes: EMAIL_PDF_MAX_BYTES }, 413);
       if (!c.env.DOCUMENT_SANDBOX) return c.json({ error_code: "scanned_pdf_ocr_unavailable" }, 503);
+      const initialAttemptAdmitted = await reserveEmailOcrAttempt(c.env.PLATFORM_DB, {
+        id: crypto.randomUUID(), tenantId, spaceId: body.spaceId, now: new Date(),
+      });
+      if (!initialAttemptAdmitted) return c.json({ error_code: "attachment_ocr_daily_limit_reached", max_attempts_per_day: 20 }, 429);
       const inputBytes = new Uint8Array(await object.arrayBuffer());
       const projectId = body.projectId;
       const scope: ContainerInvocationScope = {
@@ -7234,7 +7238,7 @@ app.post("/internal/business-email/attachment/ocr", async (c) => {
         const code = rendered.error ?? "scanned_pdf_ocr_unavailable";
         return c.json({ error_code: code === "pdf_encrypted_unsupported" ? "attachment_pdf_encrypted" : code }, code === "pdf_encrypted_unsupported" ? 415 : code === "pdf_input_too_large_or_invalid" ? 413 : 422);
       }
-      for (let index = 0; index < rendered.pages.length; index++) {
+      for (let index = 1; index < rendered.pages.length; index++) {
         const admitted = await reserveEmailOcrAttempt(c.env.PLATFORM_DB, { id: crypto.randomUUID(), tenantId, spaceId: body.spaceId, now: new Date() });
         if (!admitted) return c.json({ error_code: "attachment_ocr_daily_limit_reached", max_attempts_per_day: 20 }, 429);
       }
