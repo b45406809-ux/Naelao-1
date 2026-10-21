@@ -9,6 +9,7 @@
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { workspacePrefix } from "../types.js";
 import { publishWorkspaceBytesCas } from "../r2-cas.js";
+import { normalizeWorkspacePath } from "../workspace-paths.js";
 
 const MAX_FILE_OPERATION_BYTES = 1024 * 1024;
 
@@ -25,9 +26,7 @@ function bucket(ctx: PrebuiltOpContext): R2Bucket {
   return ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
 }
 function key(ctx: PrebuiltOpContext, path: string): string {
-  const clean = String(path).replace(/^\/+/, "");
-  if (clean.includes("..")) throw new Error(`Path traversal rejected: ${path}`);
-  return `${workspacePrefix(ctx.env)}${clean}`;
+  return `${workspacePrefix(ctx.env)}${normalizeWorkspacePath(path)}`;
 }
 function reqStr(args: Record<string, unknown>, name: string): string {
   const v = args[name];
@@ -42,11 +41,6 @@ function requiredExpectedHash(args: Record<string, unknown>): string | null {
   const value = args["expectedHash"];
   if (value !== null && typeof value !== "string") throw new Error("'expectedHash' must be a SHA-256 string or null");
   return value;
-}
-
-async function contentHash(content: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function casWrite(ctx: PrebuiltOpContext, storageKey: string, content: string, expectedHash: string | null): Promise<string> {

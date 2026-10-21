@@ -1408,6 +1408,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/feature-kinds-route.test.ts`
 - [ ] `tests/unit/federation.test.ts`
 - [ ] `tests/unit/file-and-schedule-tools.test.ts`
+- [x] `tests/unit/file-manager-paths.test.ts`
 - [x] `tests/unit/free-tier-template-gating.test.ts`
 - [ ] `tests/unit/gateway-reasoner-failover.test.ts`
 - [ ] `tests/unit/gemini-provider-routing.test.ts`
@@ -1513,7 +1514,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/qr-encoder.test.ts`
 - [ ] `tests/unit/quota-atomic.test.ts`
 - [ ] `tests/unit/quota-windowed.test.ts`
-- [ ] `tests/unit/r2-workspace-file-size.test.ts`
+- [x] `tests/unit/r2-workspace-file-size.test.ts`
 - [ ] `tests/unit/rag-embed-shape.test.ts`
 - [ ] `tests/unit/rate-limit-do.test.ts`
 - [ ] `tests/unit/reasoner-agent-prompt.test.ts`
