@@ -1602,3 +1602,9 @@ The storage-only attachment copy path also trusted D1 size metadata until after 
 The email worker entrypoint checked Cloudflare's declared `rawSize`, but the reusable MIME parser accepted an unrestricted stream on its own. Added a streaming transform at the parser boundary that rejects input once it crosses the same 20 MiB cap, even if an upstream caller omits or misstates the metadata. The regression feeds repeated 6 MiB chunks and confirms parsing stops and rejects at the ceiling.
 
 Validation passed: parser helper suite 5/5, Cloudflare email handler suite 20/20, and Agents Worker TypeScript. The email parser test file is checked; the parser source and ingress handler remain unchecked pending partial-write cleanup and idempotency review.
+
+## AgentMail provider response and timeout bounds (2026-10-21)
+
+The AgentMail REST helper previously parsed the entire provider response with `response.json()` and had no request deadline. It now uses a 64 KiB streamed response ceiling and a 12-second abort signal. Malformed JSON, oversized output, and non-object payloads fail closed through the existing honest error result. Added the first direct tests for this previously untested adapter: unconfigured behavior, valid authenticated request, oversized response, malformed JSON, and local recipient validation.
+
+Validation passed: AgentMail and Cloudflare email helper suites 9/9, Agents Worker TypeScript, and Cloudflare handler integration 20/20. The new AgentMail test file is checked. Its source remains unchecked for full Svix/header conformance, malformed payload fields, webhook retry/idempotency, and live provider behavior.

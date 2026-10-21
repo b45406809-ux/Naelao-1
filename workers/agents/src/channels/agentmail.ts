@@ -5,7 +5,7 @@
  * domain, so no Naelao-owned DNS zone is needed at all — which is exactly why it unblocks the
  * "auto-provisioned business email" feature.
  *
- * This is a dependency-free REST client verified against AgentMail's own OpenAPI
+ * This is a small REST client verified against AgentMail's own OpenAPI
  * (https://docs.agentmail.to/openapi.json — base https://api.agentmail.to, Bearer auth, paths
  * under /v0). Every function degrades HONESTLY when `AGENTMAIL_API_KEY` is unset
  * (`{configured:false}`) rather than throwing or pretending — the same "confirm once real access
@@ -14,7 +14,11 @@
  * a live key exists is the Svix header/secret format (documented on the verify function).
  */
 
+import { readBoundedResponseText } from "@naelao/http";
+
 const AGENTMAIL_BASE = "https://api.agentmail.to";
+const AGENTMAIL_RESPONSE_MAX_BYTES = 64 * 1024;
+const AGENTMAIL_REQUEST_TIMEOUT_MS = 12_000;
 
 export interface AgentMailEnv {
   /** AgentMail API key (Bearer). A Workers Secret — never in code/wrangler vars. Unset = the whole
@@ -37,13 +41,23 @@ async function amFetch(
 ): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> {
   const resp = await fetch(`${AGENTMAIL_BASE}${path}`, {
     method: init.method,
+    signal: AbortSignal.timeout(AGENTMAIL_REQUEST_TIMEOUT_MS),
     headers: {
       authorization: `Bearer ${env.AGENTMAIL_API_KEY}`,
       "content-type": "application/json",
     },
     ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
   });
-  const json = await resp.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  let json: Record<string, unknown> = {};
+  try {
+    const text = await readBoundedResponseText(resp, AGENTMAIL_RESPONSE_MAX_BYTES);
+    const parsed: unknown = text ? JSON.parse(text) : {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) json = parsed as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(error instanceof Error && error.message === "response_too_large"
+      ? "agentmail_response_too_large"
+      : "agentmail_response_invalid");
+  }
   return { ok: resp.ok, status: resp.status, json };
 }
 
