@@ -43,7 +43,6 @@
     "workers/router/**",
     "workers/workflows/**",
     "workers/triggers/**",
-    "workers/channels/**",
     "workers/mcp-hub/**",
     "workers/notifications/**",
     "packages/agent-sdk/**",

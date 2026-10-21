@@ -42,7 +42,6 @@
     "packages/events/**",
     "workers/router/**",
     "workers/workflows/**",
-    "workers/channels/**",
     "workers/ws-gateway/**",
     "workers/mcp-hub/**",
     "workers/notifications/**",
