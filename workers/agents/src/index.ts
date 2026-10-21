@@ -449,6 +449,35 @@ const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
+// Product sessions authorize a person, not access to every conversation in a product. Apply
+// ownership before every session-scoped Agents route (runs, status/stream, approvals, context,
+// connector preferences, and uploads), including routes added later under this namespace.
+app.use("/spaces/:spaceId/sessions/:sessionId/*", async (c, next) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  if (c.req.header("x-naelao-role") !== "product_end_user") return next();
+  if (!tenantId || !userId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "unauthorized" }, 401);
+  }
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "session_scope_unavailable" }, 503);
+  const { spaceId, sessionId } = c.req.param();
+  const response = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`,
+    { headers: {
+      "x-naelao-tenant-id": tenantId,
+      "x-naelao-user-id": userId,
+      "x-naelao-role": "product_end_user",
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+    } },
+  ));
+  if (!response.ok) return c.json({ error_code: "session_unavailable" }, 404);
+  const scope = await response.json<{ owned_by_caller?: boolean; private_scratchpad?: boolean }>().catch(() => null);
+  if (!scope) return c.json({ error_code: "session_scope_unavailable" }, 503);
+  if (scope.owned_by_caller !== true) return c.json({ error_code: "session_unavailable" }, 404);
+  if (scope.private_scratchpad) return c.json({ error_code: "private_scratchpad_client_only" }, 403);
+  return next();
+});
+
 const MAX_JSON_REQUEST_BYTES = 4 * 1024 * 1024;
 export async function fetchAgentsRequest(request: Request, env: AgentsEnv, ctx: ExecutionContext): Promise<Response> {
   const contentType = request.headers.get("content-type") ?? "";
@@ -1144,31 +1173,24 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
 
-  // Authenticate the target transcript before reading a fallback goal, inspecting attachments,
-  // or starting a paid agent run. Product sessions are valid identities across their product,
-  // not proof that the caller owns every conversation in that product.
-  if (!c.env.SPACES_WORKER) return c.json({ error_code: "session_scope_unavailable" }, 503);
-  const scopeHeaders = {
-    "x-naelao-tenant-id": tenantId,
-    "x-naelao-user-id": userId,
-    "x-naelao-role": callerRole,
-    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
-  };
-  const scopeResponse = await c.env.SPACES_WORKER.fetch(new Request(
-    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`,
-    { headers: scopeHeaders },
-  ));
-  if (!scopeResponse.ok) return c.json({ error_code: "session_unavailable" }, 404);
-  const sessionScope = await scopeResponse.json<{
-    owned_by_caller?: boolean;
-    private_scratchpad?: boolean;
-  }>().catch(() => null);
-  if (!sessionScope) return c.json({ error_code: "session_scope_unavailable" }, 503);
-  if (callerRole === "product_end_user" && sessionScope.owned_by_caller !== true) {
-    return c.json({ error_code: "session_unavailable" }, 404);
-  }
-  if (sessionScope.private_scratchpad) {
-    return c.json({ error_code: "private_scratchpad_client_only" }, 403);
+  // The product-session middleware above already checked ownership for end users. Resolve scope
+  // here for builder/internal callers too so a private encrypted scratchpad can never be passed to
+  // a model run, even if its message routes remain client-only.
+  if (callerRole !== "product_end_user") {
+    if (!c.env.SPACES_WORKER) return c.json({ error_code: "session_scope_unavailable" }, 503);
+    const scopeResponse = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`,
+      { headers: {
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-user-id": userId,
+        "x-naelao-role": callerRole,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+      } },
+    ));
+    if (!scopeResponse.ok) return c.json({ error_code: "session_unavailable" }, 404);
+    const scope = await scopeResponse.json<{ private_scratchpad?: boolean }>().catch(() => null);
+    if (!scope) return c.json({ error_code: "session_scope_unavailable" }, 503);
+    if (scope.private_scratchpad) return c.json({ error_code: "private_scratchpad_client_only" }, 403);
   }
 
   // A product end user can be the OWNER of their own business, not just a customer of it. Without
