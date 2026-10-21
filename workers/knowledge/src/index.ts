@@ -499,6 +499,113 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
   return c.json({ data: results, count: results.length, limit, offset });
 });
 
+// Workflow-only large-document endpoints. These internal routes are guarded by the
+// tenant-bound HMAC middleware registered above.
+app.put("/internal/spaces/:spaceId/kb/documents/:docId/status", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const docId = c.req.param("docId");
+  const body = await readBoundedJson<{ status?: unknown; chunk_count?: unknown; project_id?: unknown }>(c.req.raw, 16 * 1024);
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      !new Set(["processing", "indexed", "failed"]).has(String(body.status)) ||
+      typeof body.project_id !== "string" || !body.project_id || body.project_id.length > 256 ||
+      (body.chunk_count !== undefined && (!Number.isSafeInteger(body.chunk_count) || Number(body.chunk_count) < 0 || Number(body.chunk_count) > 12_000))) {
+    throw badRequest("Invalid workflow document status update");
+  }
+  const doc = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, status FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ? AND project_id = ?"
+  ).bind(docId, spaceId, tenantId, body.project_id).first<{ id: string; status: string }>();
+  if (!doc) throw notFound("KbDocument");
+  if (doc.status === "indexed" && body.status !== "indexed") return c.json({ error_code: "invalid_document_transition" }, 409);
+  const result = await c.env.PLATFORM_DB.prepare(
+    `UPDATE kb_documents SET status = ?, chunk_count = COALESCE(?, chunk_count), updated_at = datetime('now')
+     WHERE id = ? AND space_id = ? AND tenant_id = ? AND project_id = ?`
+  ).bind(body.status, body.chunk_count ?? null, docId, spaceId, tenantId, body.project_id).run();
+  if (result.meta.changes === 0) throw notFound("KbDocument");
+  return c.json({ id: docId, status: body.status });
+});
+
+app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const docId = c.req.param("docId");
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  const body = await readBoundedJson<{ chunks?: unknown; projectId?: unknown; chunkOffset?: unknown; byteOffset?: unknown; lineOffset?: unknown }>(c.req.raw, 700_000);
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      typeof body.projectId !== "string" || !body.projectId || body.projectId.length > 256 ||
+      !Number.isSafeInteger(body.chunkOffset) || Number(body.chunkOffset) < 0 || Number(body.chunkOffset) >= 600 ||
+      !Number.isSafeInteger(body.byteOffset) || Number(body.byteOffset) < 0 || Number(body.byteOffset) > 5 * 1024 * 1024 ||
+      !Number.isSafeInteger(body.lineOffset) || Number(body.lineOffset) < 1 || Number(body.lineOffset) > 5 * 1024 * 1024 ||
+      !Array.isArray(body.chunks) || body.chunks.length === 0 || body.chunks.length > 50 ||
+      body.chunks.some((chunk) => typeof chunk !== "string" || chunk.length === 0 || chunk.length > 10 * 1024)) {
+    throw badRequest("Invalid workflow chunks");
+  }
+  const rawChunks = body.chunks as string[];
+  const rawBytes = rawChunks.reduce((total, chunk) => total + new TextEncoder().encode(chunk).byteLength, 0);
+  if (rawBytes > 5 * 1024 * 1024) throw new HttpError(413, "payload_too_large", "Workflow chunks exceed 5 MiB");
+
+  const doc = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, title, status, chunk_count FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ? AND project_id = ?"
+  ).bind(docId, spaceId, tenantId, body.projectId).first<{ id: string; title: string; status: string; chunk_count: number }>();
+  if (!doc) throw notFound("KbDocument");
+  if (doc.status === "indexed") return c.json({ chunk_count: doc.chunk_count, idempotent: true });
+  if (doc.status !== "processing" && doc.status !== "flagged") return c.json({ error_code: "document_not_processing" }, 409);
+  const chunkOffset = Number(body.chunkOffset);
+  if (doc.chunk_count < 1 || chunkOffset + rawChunks.length > doc.chunk_count) throw badRequest("Workflow chunk range is outside the document");
+
+  const chunks = rawChunks.map((chunk) => sanitizeKbContent(chunk).sanitized);
+  if (chunks.some((chunk) => chunk.length === 0)) throw badRequest("Workflow chunks cannot be empty after sanitization");
+  const embeddings: Array<{ embedding: number[]; tokenCount: number }> = [];
+  for (let start = 0; start < chunks.length; start += 50) embeddings.push(...await embedBatch(c.env.AI, chunks.slice(start, start + 50)));
+  if (embeddings.length !== chunks.length) throw internalError("Embedding provider returned an incomplete batch");
+  const projectId = body.projectId;
+  const projectScope = projectId || SPACE_WIDE_PROJECT_SENTINEL;
+  const now = new Date().toISOString();
+  const roles = Object.keys(ROLE_RANK).filter((role) => role in KNOWLEDGE_ROLE_MASK);
+  const accessMask = roles.reduce((mask, role) => mask | KNOWLEDGE_ROLE_MASK[role as KnowledgeRole], 0);
+  const vectors: VectorizeVector[] = [];
+  let storageBytes = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+    const chunkIndex = chunkOffset + i;
+    const byteLength = new TextEncoder().encode(chunk).byteLength;
+    const lineStart = Number(body.lineOffset) + chunks.slice(0, i).reduce((lines, value) => lines + (value.match(/\n/g)?.length ?? 0), 0);
+    const byteStart = Number(body.byteOffset) + chunks.slice(0, i).reduce((bytes, value) => bytes + new TextEncoder().encode(value).byteLength, 0);
+    const lineEnd = lineStart + (chunk.match(/\n/g)?.length ?? 0);
+    const coordinate = { byteStart, byteEnd: byteStart + byteLength, lineStart, lineEnd };
+    const chunkId = `${docId}_chunk_${chunkIndex}`;
+    const contentHash = await sha256Hex(chunk);
+    const record: ChunkRecord = {
+      docId, chunkIndex, content: chunk, spaceId, tenantId, projectId: projectScope,
+      visibility: "project", requiredRoleRank: 0, chunkId, contentHash, sourceFreshness: now,
+      headingPath: [], ...coordinate,
+    };
+    const serialized = JSON.stringify(record);
+    const citationKey = citationR2Key(spaceId, projectId, docId, chunkIndex);
+    await c.env.KB_BUCKET.put(chunkR2Key(spaceId, projectId, docId, chunkIndex), serialized);
+    await c.env.KB_BUCKET.put(citationKey, chunk, { customMetadata: { contentHash, tenantId, spaceId, projectId: projectScope } });
+    storageBytes += new TextEncoder().encode(serialized).byteLength + byteLength;
+    await c.env.PLATFORM_DB.prepare(
+      `INSERT INTO kb_chunks (id, tenant_id, space_id, project_id, document_id, chunk_index, content, content_hash,
+        visibility, required_role_rank, source_freshness, heading_path, r2_key, byte_start, byte_end, line_start, line_end, created_at, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'project', 0, ?, '[]', ?, ?, ?, ?, ?, ?, NULL)
+       ON CONFLICT(id) DO UPDATE SET content = excluded.content, content_hash = excluded.content_hash,
+        source_freshness = excluded.source_freshness, r2_key = excluded.r2_key, byte_start = excluded.byte_start,
+        byte_end = excluded.byte_end, line_start = excluded.line_start, line_end = excluded.line_end, deleted_at = NULL`
+    ).bind(chunkId, tenantId, spaceId, projectScope, docId, chunkIndex, chunk, contentHash, now, citationKey,
+      coordinate.byteStart, coordinate.byteEnd, coordinate.lineStart, coordinate.lineEnd, now).run();
+    vectors.push({ id: chunkId, values: embeddings[i]!.embedding, metadata: {
+      space_id: spaceId, tenant_id: tenantId, project_id: projectScope, visibility: "public",
+      allowed_roles: roles, allowed_user_ids: [], access_mask: accessMask, allowedRolesMask: accessMask,
+      required_role_rank: 0, doc_id: docId, chunk_id: chunkId, content_hash: contentHash,
+      source_freshness: now, ...coordinate, chunk_index: chunkIndex, title: doc.title, content_preview: chunk.slice(0, 200),
+    } });
+  }
+  for (let start = 0; start < vectors.length; start += 100) await c.env.KB_VECTORS.upsert(vectors.slice(start, start + 100));
+  await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytes, true);
+  return c.json({ id: docId, chunk_count: doc.chunk_count, batch_count: chunks.length });
+});
+
 // ── POST /spaces/:spaceId/kb/documents ────────────────────────────────────────
 
 app.post("/spaces/:spaceId/kb/documents", async (c) => {

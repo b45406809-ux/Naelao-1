@@ -9,6 +9,8 @@ export type WorkflowBinding = { create(opts: { id?: string; params?: any }): Pro
 
 export interface Env {
   ENVIRONMENT: string;
+  /** Shared worker HMAC secret for signed calls to internal service routes. */
+  PLATFORM_SECRET: string;
   CF_ACCOUNT_ID: string;
   CF_API_TOKEN: string;
 

@@ -16,7 +16,7 @@
  */
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
-import { readBoundedResponseText } from "@naelao/http";
+import { mintInternalToken, readBoundedResponseText } from "@naelao/http";
 import type { Env } from "../env";
 
 export interface IngestionParams {
@@ -53,18 +53,33 @@ function splitIntoChunks(text: string, chunkSize: number): string[] {
 
     // Find the last whitespace within the chunk window
     let end = offset + chunkSize;
+    let nextOffset = end;
     const slice = text.slice(offset, end);
     const lastSpace = slice.lastIndexOf(" ");
 
     if (lastSpace > 0) {
       end = offset + lastSpace;
+      nextOffset = end + 1;
     }
 
     chunks.push(text.slice(offset, end).trim());
-    offset = end + 1; // skip the space we split on
+    offset = nextOffset;
   }
 
   return chunks.filter(c => c.length > 0);
+}
+
+function chunkOffsets(text: string, chunks: string[]): Array<{ byteOffset: number; lineOffset: number }> {
+  let cursor = 0;
+  return chunks.map((chunk) => {
+    const characterOffset = Math.max(cursor, text.indexOf(chunk, cursor));
+    const offset = {
+      byteOffset: new TextEncoder().encode(text.slice(0, characterOffset)).byteLength,
+      lineOffset: text.slice(0, characterOffset).split("\n").length,
+    };
+    cursor = characterOffset + chunk.length;
+    return offset;
+  });
 }
 
 export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams> {
@@ -74,8 +89,21 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
   ): Promise<void> {
     const params = event.payload;
     let chunkCount = 0;
+    const documentPath = `/internal/spaces/${encodeURIComponent(params.spaceId)}/kb/documents/${encodeURIComponent(params.docId)}`;
+    const internalHeaders = async () => ({
+      "X-Naelao-Tenant-Id": params.tenantId,
+      "X-Naelao-Internal-Token": await mintInternalToken(this.env.PLATFORM_SECRET, params.tenantId),
+    });
 
     try {
+      if (![params.docId, params.spaceId, params.tenantId, params.projectId, params.r2Key, params.title, params.contentType]
+        .every((value) => typeof value === "string" && value.length > 0) ||
+          params.docId.length > 128 || params.spaceId.length > 256 || params.tenantId.length > 256 ||
+          params.projectId.length > 256 || params.title.length > 500 || params.contentType.length > 64 ||
+          params.r2Key.length > 512 || !params.r2Key.startsWith("staging/") || params.r2Key.includes("..") || params.r2Key.includes("\\")) {
+        throw new Error("Invalid KB ingestion workflow parameters");
+      }
+
       // G-BC03: Per-step retry config with exponential backoff
       const networkRetry = {
         retries: { limit: 3, delay: 1000, backoff: "exponential" as const },
@@ -83,7 +111,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
       };
 
       // ── Step 1: Fetch raw content from R2 ──────────────────────────────────
-      await step.do("fetch-content", networkRetry, async () => {
+      const stagedObject = await step.do("fetch-content", networkRetry, async () => {
         const obj = await this.env.KB_BUCKET.get(params.r2Key);
 
         if (!obj) {
@@ -112,16 +140,16 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
         console.log(
           `[KbIngestion] Fetched r2Key="${params.r2Key}", length=${content.length} chars`,
         );
-        return { contentLength: content.length };
+        return { contentLength: content.length, size: sizeHeader, etag: obj.etag };
       });
 
       // ── Step 2: Mark document as processing ────────────────────────────────
       await step.do("update-status-processing", networkRetry, async () => {
         const resp = await this.env.KNOWLEDGE_WORKER.fetch(
-          `https://knowledge-worker/internal/docs/${params.docId}/status`,
+          `https://knowledge-worker${documentPath}/status`,
           {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...(await internalHeaders()) },
             body: JSON.stringify({ status: "processing", project_id: params.projectId }),
           },
         );
@@ -137,11 +165,10 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
         return { ok: true };
       });
 
-      // ── Step 3: Chunk and embed via KNOWLEDGE_WORKER ────────────────────────
-      // We re-fetch the content inside this step because WorkflowStep state is
-      // JSON-serialized between steps — storing large strings across steps would
-      // balloon serialized state. R2 fetches are idempotent so re-fetching is safe.
-      chunkCount = await step.do("chunk-and-embed", { ...networkRetry, timeout: 29_000 }, async () => {
+      // ── Step 3: Count chunks, then embed bounded batches ───────────────────
+      // Keeping each call below 50 chunks avoids one long request/5 MiB JSON body.
+      // The content is re-read from R2 per step instead of being serialized into workflow state.
+      chunkCount = await step.do("count-chunks", networkRetry, async () => {
         const obj = await this.env.KB_BUCKET.get(params.r2Key);
         if (!obj) {
           throw new Error(
@@ -149,53 +176,60 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
           );
         }
         if (obj.size > MAX_CONTENT_BYTES) throw new Error(`Document exceeds 5MB limit: size=${obj.size} bytes, docId=${params.docId}`);
+        if (obj.size !== stagedObject.size || obj.etag !== stagedObject.etag) {
+          throw new Error("Staged document changed between workflow steps");
+        }
         const content = await obj.text();
         const contentBytes = new TextEncoder().encode(content).byteLength;
         if (contentBytes > MAX_CONTENT_BYTES) throw new Error(`Document content exceeds 5MB byte limit: size=${contentBytes}`);
-
-        const chunks = splitIntoChunks(content, CHUNK_SIZE_CHARS);
-
-        console.log(
-          `[KbIngestion] Chunked docId=${params.docId} into ${chunks.length} chunk(s)`,
-        );
-
-        const resp = await this.env.KNOWLEDGE_WORKER.fetch(
-          `https://knowledge-worker/internal/docs/${params.docId}/ingest-chunks`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Naelao-Tenant-Id": params.tenantId,
-            },
-            body: JSON.stringify({
-              chunks,
-              spaceId: params.spaceId,
-              tenantId: params.tenantId,
-              projectId: params.projectId,
-              title: params.title,
-              contentType: params.contentType,
-            }),
-          },
-        );
-
-        if (!resp.ok) {
-          let text = "";
-          try { text = (await readBoundedResponseText(resp, 8 * 1024)).slice(0, 300); } catch { text = "response_body_unavailable"; }
-          throw new Error(
-            `Chunk ingestion failed for doc ${params.docId}: (${resp.status}) ${text}`,
-          );
-        }
-
-        return chunks.length;
+        return splitIntoChunks(content, CHUNK_SIZE_CHARS).length;
       });
+
+      await step.do("set-total-chunks", networkRetry, async () => {
+        const resp = await this.env.KNOWLEDGE_WORKER.fetch(`https://knowledge-worker${documentPath}/status`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", ...(await internalHeaders()) },
+          body: JSON.stringify({ status: "processing", chunk_count: chunkCount, project_id: params.projectId }),
+        });
+        if (!resp.ok) throw new Error(`Failed to set chunk count for doc ${params.docId}: (${resp.status})`);
+        return { chunkCount };
+      });
+
+      for (let offset = 0; offset < chunkCount; offset += 50) {
+        await step.do(`chunk-and-embed-${offset}`, { ...networkRetry, timeout: 29_000 }, async () => {
+          const obj = await this.env.KB_BUCKET.get(params.r2Key);
+          if (!obj || obj.size !== stagedObject.size || obj.etag !== stagedObject.etag) {
+            throw new Error("Staged document changed or disappeared between workflow steps");
+          }
+          const content = await obj.text();
+          const chunks = splitIntoChunks(content, CHUNK_SIZE_CHARS);
+          if (chunks.length !== chunkCount) throw new Error("Staged document chunk count changed between workflow steps");
+          const offsets = chunkOffsets(content, chunks);
+          const batch = chunks.slice(offset, offset + 50);
+          const resp = await this.env.KNOWLEDGE_WORKER.fetch(`https://knowledge-worker${documentPath}/ingest-chunks`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...(await internalHeaders()) },
+            body: JSON.stringify({
+              chunks: batch, projectId: params.projectId, chunkOffset: offset,
+              byteOffset: offsets[offset]?.byteOffset ?? 0, lineOffset: offsets[offset]?.lineOffset ?? 1,
+            }),
+          });
+          if (!resp.ok) {
+            let text = "";
+            try { text = (await readBoundedResponseText(resp, 8 * 1024)).slice(0, 300); } catch { text = "response_body_unavailable"; }
+            throw new Error(`Chunk ingestion failed for doc ${params.docId}: (${resp.status}) ${text}`);
+          }
+          return { offset, chunks: batch.length };
+        });
+      }
 
       // ── Step 4: Mark document as indexed ──────────────────────────────────
       await step.do("update-status-indexed", networkRetry, async () => {
         const resp = await this.env.KNOWLEDGE_WORKER.fetch(
-          `https://knowledge-worker/internal/docs/${params.docId}/status`,
+          `https://knowledge-worker${documentPath}/status`,
           {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...(await internalHeaders()) },
             body: JSON.stringify({ status: "indexed", chunk_count: chunkCount, project_id: params.projectId }),
           },
         );
@@ -229,10 +263,10 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
 
       try {
         await this.env.KNOWLEDGE_WORKER.fetch(
-          `https://knowledge-worker/internal/docs/${params.docId}/status`,
+          `https://knowledge-worker${documentPath}/status`,
           {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...(await internalHeaders()) },
             body: JSON.stringify({ status: "failed", error: message, project_id: params.projectId }),
           },
         );

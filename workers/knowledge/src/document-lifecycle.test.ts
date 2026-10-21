@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const vectorUpserts: VectorizeVector[][] = [];
@@ -14,6 +14,12 @@ function fixture(options: { existing?: boolean; projectId?: string; allowedUserI
           first: async () => {
             if (sql.includes("FROM spaces")) return { id: "space-1" };
             if (sql.includes("COUNT(*) as count FROM kb_documents")) return { count: 0 };
+            if (sql.includes("SELECT id, title, status, chunk_count FROM kb_documents")) return options.workflowDoc
+              ? { id: "doc-1", title: "Guide", status: options.workflowStatus ?? "processing", chunk_count: 2 }
+              : null;
+            if (sql.includes("SELECT id, status FROM kb_documents")) return options.workflowDoc
+              ? { id: "doc-1", status: options.workflowStatus ?? "processing" }
+              : null;
             if (sql.includes("SELECT id, title, chunk_count, project_id,")) return options.existing
               ? { id: "doc-1", title: "Old title", chunk_count: 1, project_id: options.projectId ?? null, required_role_rank: options.requiredRoleRank ?? 0, content_type: "text" }
               : null;
@@ -70,6 +76,73 @@ async function request(path: string, method: string, body?: unknown): Promise<Re
 }
 
 describe("Knowledge document lifecycle boundaries", () => {
+  it("accepts workflow chunk batches through the tenant-HMAC internal API", async () => {
+    const f = fixture({ workflowDoc: true });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["alpha beta", "gamma"], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+      },
+    ), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ id: "doc-1", chunk_count: 2 });
+    expect(f.vectorUpserts.flat().map((vector) => vector.id)).toEqual(["doc-1_chunk_0", "doc-1_chunk_1"]);
+    expect(f.dbCalls.some(({ sql, args }) => sql.includes("INSERT INTO kb_chunks") && args[2] === "space-1" && args[3] === "project-1")).toBe(true);
+    expect(f.writes.map(({ key }) => key)).toEqual([
+      "kb/space-1/project-1/doc-1/chunk_0.json", "kb/space-1/project-1/doc-1/chunk_0.txt",
+      "kb/space-1/project-1/doc-1/chunk_1.json", "kb/space-1/project-1/doc-1/chunk_1.txt",
+    ]);
+  });
+
+  it("updates workflow document status only for the matching tenant, space, and project", async () => {
+    const f = fixture({ workflowDoc: true });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/status", "PUT", { status: "processing", project_id: "project-1" },
+    ), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ id: "doc-1", status: "processing" });
+    expect(f.dbCalls.some(({ sql, args }) => sql.includes("UPDATE kb_documents SET status") &&
+      args[2] === "doc-1" && args[3] === "space-1" && args[4] === "tenant-1" && args[5] === "project-1")).toBe(true);
+  });
+
+  it("rejects workflow chunk batches for unknown docs and malformed oversized input", async () => {
+    const missing = fixture();
+    const missingResponse = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["one"], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+      },
+    ), missing.env, {} as ExecutionContext);
+    expect(missingResponse.status).toBe(404);
+    expect(missing.vectorUpserts).toHaveLength(0);
+
+    const valid = fixture({ workflowDoc: true });
+    const invalidResponse = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["x".repeat(10 * 1024 + 1)], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+      },
+    ), valid.env, {} as ExecutionContext);
+    expect(invalidResponse.status).toBe(400);
+    expect(valid.vectorUpserts).toHaveLength(0);
+  });
+
+  it("requires an internal token on workflow-only document status routes", async () => {
+    const f = fixture({ workflowDoc: true });
+    const response = await worker.fetch(new Request("https://knowledge/internal/spaces/space-1/kb/documents/doc-1/status", {
+      method: "PUT", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1" },
+      body: JSON.stringify({ status: "processing", project_id: "project-1" }),
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(403);
+    expect(f.dbCalls).toHaveLength(0);
+  });
+
+  it.each([null, [], "invalid"])("returns 400 for non-object internal workflow payloads", async (body) => {
+    const f = fixture({ workflowDoc: true });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/status", "PUT", body,
+    ), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(400);
+    expect(f.dbCalls).toHaveLength(0);
+  });
+
   it("rejects malformed ACL and PDF payloads before creating document rows", async () => {
     for (const body of [
       { title: "private", content: "secret", allowed_user_ids: "user-1" },
