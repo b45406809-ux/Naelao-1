@@ -6,9 +6,9 @@
  * embeds, and indexes the content via the KNOWLEDGE_WORKER internal API.
  *
  * Steps:
- *   1. fetch-content            — retrieve raw content from R2, validate ≤5MB
+ *   1. fetch-content            — retrieve raw content from scoped R2 staging, validate ≤5MB
  *   2. update-status-processing — mark document as processing
- *   3. chunk-and-embed          — split + forward chunks to knowledge worker
+ *   3. count-chunks + bounded chunk-and-embed batches
  *   4. update-status-indexed    — mark document as indexed with chunk count
  *   5. cleanup-raw              — delete the raw staging object from R2
  *
@@ -27,6 +27,8 @@ export interface IngestionParams {
   r2Key: string;      // Key in KB_BUCKET where raw content is staged
   title: string;
   contentType: string;
+  requiredRoleRank?: number;
+  allowedUserIds?: string[];
 }
 
 // 5 MB content limit per workflow run
@@ -103,6 +105,13 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
           params.r2Key.length > 512 || !params.r2Key.startsWith("staging/") || params.r2Key.includes("..") || params.r2Key.includes("\\")) {
         throw new Error("Invalid KB ingestion workflow parameters");
       }
+      const expectedStagingPrefix = `staging/${params.tenantId}/${params.spaceId}/${params.projectId}/${params.docId}/`;
+      if (!params.r2Key.startsWith(expectedStagingPrefix) ||
+          (params.requiredRoleRank !== undefined && (!Number.isSafeInteger(params.requiredRoleRank) || params.requiredRoleRank < 0 || params.requiredRoleRank > 50)) ||
+          (params.allowedUserIds !== undefined && (!Array.isArray(params.allowedUserIds) || params.allowedUserIds.length > 100 ||
+            params.allowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256)))) {
+        throw new Error("Invalid KB ingestion scope or access policy");
+      }
 
       // G-BC03: Per-step retry config with exponential backoff
       const networkRetry = {
@@ -150,7 +159,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
           {
             method: "PUT",
             headers: { "Content-Type": "application/json", ...(await internalHeaders()) },
-            body: JSON.stringify({ status: "processing", project_id: params.projectId }),
+          body: JSON.stringify({ status: "processing", project_id: params.projectId }),
           },
         );
 
@@ -212,6 +221,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
             body: JSON.stringify({
               chunks: batch, projectId: params.projectId, chunkOffset: offset,
               byteOffset: offsets[offset]?.byteOffset ?? 0, lineOffset: offsets[offset]?.lineOffset ?? 1,
+              requiredRoleRank: params.requiredRoleRank ?? 0, allowedUserIds: params.allowedUserIds ?? [],
             }),
           });
           if (!resp.ok) {

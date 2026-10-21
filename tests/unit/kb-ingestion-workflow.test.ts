@@ -35,7 +35,7 @@ function setup(object: { size: number; etag?: string; text: () => Promise<string
       spaceId: "space-1",
       tenantId: "tenant-1",
       projectId: "project-1",
-      r2Key: "staging/doc-1",
+      r2Key: "staging/tenant-1/space-1/project-1/doc-1/original",
       title: "Guide",
       contentType: "text/plain",
     },
@@ -72,7 +72,7 @@ describe("KB ingestion workflow bounds and side effects", () => {
       byteOffset: 0,
       lineOffset: 1,
     });
-    expect(ctx.deleted).toEqual(["staging/doc-1"]);
+    expect(ctx.deleted).toEqual(["staging/tenant-1/space-1/project-1/doc-1/original"]);
   });
 
   it("rejects an oversized R2 object before reading or ingesting it", async () => {

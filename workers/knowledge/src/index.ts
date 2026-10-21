@@ -21,6 +21,7 @@ interface KnowledgeEnv {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
+  EVENTS_QUEUE: Queue;
   BILLING_WORKER?: Fetcher;
   KB_BUCKET: R2Bucket;
   KB_VECTORS: VectorizeIndex;
@@ -530,12 +531,18 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   const spaceId = c.req.param("spaceId");
   const docId = c.req.param("docId");
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
-  const body = await readBoundedJson<{ chunks?: unknown; projectId?: unknown; chunkOffset?: unknown; byteOffset?: unknown; lineOffset?: unknown }>(c.req.raw, 700_000);
+  const body = await readBoundedJson<{
+    chunks?: unknown; projectId?: unknown; chunkOffset?: unknown; byteOffset?: unknown; lineOffset?: unknown;
+    requiredRoleRank?: unknown; allowedUserIds?: unknown;
+  }>(c.req.raw, 700_000);
   if (!body || typeof body !== "object" || Array.isArray(body) ||
       typeof body.projectId !== "string" || !body.projectId || body.projectId.length > 256 ||
       !Number.isSafeInteger(body.chunkOffset) || Number(body.chunkOffset) < 0 || Number(body.chunkOffset) >= 600 ||
       !Number.isSafeInteger(body.byteOffset) || Number(body.byteOffset) < 0 || Number(body.byteOffset) > 5 * 1024 * 1024 ||
       !Number.isSafeInteger(body.lineOffset) || Number(body.lineOffset) < 1 || Number(body.lineOffset) > 5 * 1024 * 1024 ||
+      (body.requiredRoleRank !== undefined && (!Number.isSafeInteger(body.requiredRoleRank) || Number(body.requiredRoleRank) < 0 || Number(body.requiredRoleRank) > 50)) ||
+      (body.allowedUserIds !== undefined && (!Array.isArray(body.allowedUserIds) || body.allowedUserIds.length > 100 ||
+        body.allowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256))) ||
       !Array.isArray(body.chunks) || body.chunks.length === 0 || body.chunks.length > 50 ||
       body.chunks.some((chunk) => typeof chunk !== "string" || chunk.length === 0 || chunk.length > 10 * 1024)) {
     throw badRequest("Invalid workflow chunks");
@@ -566,9 +573,14 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   if (embeddings.length !== chunks.length) throw internalError("Embedding provider returned an incomplete batch");
   const projectId = body.projectId;
   const projectScope = projectId || SPACE_WIDE_PROJECT_SENTINEL;
+  const requiredRoleRank = Number(body.requiredRoleRank ?? 0);
+  const allowedUserIds = [...new Set((body.allowedUserIds ?? []) as string[])];
   const now = new Date().toISOString();
-  const roles = Object.keys(ROLE_RANK).filter((role) => role in KNOWLEDGE_ROLE_MASK);
+  const roles = allowedUserIds.length > 0 ? [] : Object.entries(ROLE_RANK)
+    .filter(([role, rank]) => role in KNOWLEDGE_ROLE_MASK && rank >= requiredRoleRank)
+    .map(([role]) => role);
   const accessMask = roles.reduce((mask, role) => mask | KNOWLEDGE_ROLE_MASK[role as KnowledgeRole], 0);
+  const visibility = requiredRoleRank === 0 && allowedUserIds.length === 0 ? "public" : "restricted";
   const vectors: VectorizeVector[] = [];
   let storageBytes = 0;
   for (let i = 0; i < chunks.length; i++) {
@@ -583,7 +595,7 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
     const contentHash = await sha256Hex(chunk);
     const record: ChunkRecord = {
       docId, chunkIndex, content: chunk, spaceId, tenantId, projectId: projectScope,
-      visibility: "project", requiredRoleRank: 0, chunkId, contentHash, sourceFreshness: now,
+      visibility: projectId ? "project" : "space", requiredRoleRank, chunkId, contentHash, sourceFreshness: now,
       headingPath: [], ...coordinate,
     };
     const serialized = JSON.stringify(record);
@@ -594,16 +606,17 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
     await c.env.PLATFORM_DB.prepare(
       `INSERT INTO kb_chunks (id, tenant_id, space_id, project_id, document_id, chunk_index, content, content_hash,
         visibility, required_role_rank, source_freshness, heading_path, r2_key, byte_start, byte_end, line_start, line_end, created_at, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'project', 0, ?, '[]', ?, ?, ?, ?, ?, ?, NULL)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, NULL)
        ON CONFLICT(id) DO UPDATE SET content = excluded.content, content_hash = excluded.content_hash,
         source_freshness = excluded.source_freshness, r2_key = excluded.r2_key, byte_start = excluded.byte_start,
         byte_end = excluded.byte_end, line_start = excluded.line_start, line_end = excluded.line_end, deleted_at = NULL`
-    ).bind(chunkId, tenantId, spaceId, projectScope, docId, chunkIndex, chunk, contentHash, now, citationKey,
+    ).bind(chunkId, tenantId, spaceId, projectScope, docId, chunkIndex, chunk, contentHash,
+      projectId ? "project" : "space", requiredRoleRank, now, citationKey,
       coordinate.byteStart, coordinate.byteEnd, coordinate.lineStart, coordinate.lineEnd, now).run();
     vectors.push({ id: chunkId, values: embeddings[i]!.embedding, metadata: {
-      space_id: spaceId, tenant_id: tenantId, project_id: projectScope, visibility: "public",
-      allowed_roles: roles, allowed_user_ids: [], access_mask: accessMask, allowedRolesMask: accessMask,
-      required_role_rank: 0, doc_id: docId, chunk_id: chunkId, content_hash: contentHash,
+      space_id: spaceId, tenant_id: tenantId, project_id: projectScope, visibility,
+      allowed_roles: roles, allowed_user_ids: allowedUserIds, access_mask: accessMask, allowedRolesMask: accessMask,
+      required_role_rank: requiredRoleRank, doc_id: docId, chunk_id: chunkId, content_hash: contentHash,
       source_freshness: now, ...coordinate, chunk_index: chunkIndex, title: doc.title, content_preview: chunk.slice(0, 200),
     } });
   }
@@ -662,8 +675,8 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     throw badRequest("title is required");
   }
   if (body.title.length > 500) throw badRequest("title exceeds maximum size of 500 characters");
-  if (!body.content || typeof body.content !== "string") {
-    throw badRequest("content is required");
+  if (typeof body.content !== "string" || !body.content.trim()) {
+    throw badRequest("nonempty content is required");
   }
 
   const validContentTypes = new Set(["text", "url", "code", "pdf"]);
@@ -672,15 +685,13 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     throw badRequest(`content_type must be one of: text, url, code, pdf`);
   }
 
-  // Enforce 1MB content limit
-  const MAX_CONTENT_CHARS = 1_048_576;
-  if (body.content.length > MAX_CONTENT_CHARS) {
-    throw badRequest(`content exceeds maximum size of 1MB (${MAX_CONTENT_CHARS} chars)`);
-  }
+  const MAX_SYNC_CONTENT_BYTES = 1_048_576;
+  const MAX_WORKFLOW_CONTENT_BYTES = 5 * 1024 * 1024;
   if (body.source_url !== undefined && (typeof body.source_url !== "string" || body.source_url.length > 2_048)) {
     throw badRequest("source_url must be a string of at most 2048 characters");
   }
   const originalBytes = contentType === "pdf" ? decodePdfContent(body.content) : new TextEncoder().encode(body.content);
+  if (originalBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("content exceeds the 5 MiB ingestion limit");
 
   // G-AA26: Scan document content for prompt injection before indexing
   const titleMod = moderateInput(body.title.trim());
@@ -710,6 +721,39 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       new Error(`KB document limit (${limits.kb_documents_per_space}) reached for ${tier} plan`),
       { error_code: "quota_exceeded", status: 429 }
     );
+  }
+
+  if (originalBytes.byteLength > MAX_SYNC_CONTENT_BYTES) {
+    if (!projectId) throw badRequest("Documents over 1 MiB currently require a project scope");
+    const docId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const stagedText = contentType === "pdf"
+      ? await createParseV5Request(originalBytes, "application/pdf", c.env)
+      : body.content;
+    const stagedBytes = new TextEncoder().encode(stagedText);
+    if (stagedBytes.byteLength > MAX_WORKFLOW_CONTENT_BYTES) throw badRequest("Parsed document exceeds the 5 MiB ingestion limit");
+    const r2Key = `staging/${tenantId}/${spaceId}/${projectId}/${docId}/original`;
+    await c.env.PLATFORM_DB.prepare(
+      `INSERT INTO kb_documents
+       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?)`
+    ).bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType, now, now).run();
+    try {
+      await c.env.KB_BUCKET.put(r2Key, stagedBytes, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
+      await c.env.EVENTS_QUEUE.send({
+        type: "kb.ingest", docId, spaceId, tenantId, projectId, r2Key,
+        title: body.title.trim(), contentType, requiredRoleRank, allowedUserIds,
+      });
+      await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, stagedBytes.byteLength, true, `workflow-stage:${docId}`);
+      return c.json({ id: docId, space_id: spaceId, project_id: projectId, status: "processing", ingestion: "queued" }, 202);
+    } catch (error) {
+      await Promise.allSettled([
+        c.env.KB_BUCKET.delete(r2Key),
+        c.env.PLATFORM_DB.prepare("DELETE FROM kb_documents WHERE id = ? AND tenant_id = ? AND space_id = ?")
+          .bind(docId, tenantId, spaceId).run(),
+      ]);
+      throw new HttpError(503, "ingestion_queue_unavailable", "Could not enqueue large document ingestion");
+    }
   }
 
   const docId = crypto.randomUUID();

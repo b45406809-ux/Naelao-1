@@ -30,8 +30,14 @@ export async function queue(
           break;
 
         case "kb.ingest":
-          if (typeof body.projectId !== "string" || !body.projectId) {
-            throw new Error("kb.ingest requires projectId");
+          if (typeof body.docId !== "string" || !body.docId || typeof body.spaceId !== "string" || !body.spaceId ||
+              typeof body.tenantId !== "string" || !body.tenantId || typeof body.projectId !== "string" || !body.projectId ||
+              typeof body.r2Key !== "string" || !body.r2Key || typeof body.title !== "string" || !body.title ||
+              typeof body.contentType !== "string" || !body.contentType ||
+              (body.requiredRoleRank !== undefined && (!Number.isSafeInteger(body.requiredRoleRank) || Number(body.requiredRoleRank) < 0 || Number(body.requiredRoleRank) > 50)) ||
+              (body.allowedUserIds !== undefined && (!Array.isArray(body.allowedUserIds) || body.allowedUserIds.length > 100 ||
+                body.allowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256)))) {
+            throw new Error("kb.ingest requires valid document scope, staging key, and access policy");
           }
           await env.KB_INGESTION.create({
             id: message.id,

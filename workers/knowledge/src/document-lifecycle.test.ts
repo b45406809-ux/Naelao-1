@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; queueFails?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const vectorUpserts: VectorizeVector[][] = [];
@@ -23,7 +23,7 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
             if (sql.includes("SELECT id, title, chunk_count, project_id,")) return options.existing
               ? { id: "doc-1", title: "Old title", chunk_count: 1, project_id: options.projectId ?? null, required_role_rank: options.requiredRoleRank ?? 0, content_type: "text" }
               : null;
-            if (sql.includes("FROM project_access")) return null;
+            if (sql.includes("FROM project_access")) return options.workflowDoc ? { role_rank: 50, visibility: "private" } : null;
             if (sql.includes("SELECT id, chunk_count, project_id FROM kb_documents")) return options.existing
               ? { id: "doc-1", chunk_count: 1, project_id: options.projectId ?? null }
               : null;
@@ -57,6 +57,7 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
       delete: vi.fn(async () => undefined),
     },
     KB_VECTORS: vectorize,
+    EVENTS_QUEUE: { send: vi.fn(async () => { if (options.queueFails) throw new Error("queue offline"); }) },
     AI: { run: vi.fn(async (_model: string, input: { text: string | string[] }) => {
       if (options.aiFails) throw new Error("provider offline");
       return { data: (Array.isArray(input.text) ? input.text : [input.text]).map(() => [0.1, 0.2]) };
@@ -91,6 +92,52 @@ describe("Knowledge document lifecycle boundaries", () => {
       "kb/space-1/project-1/doc-1/chunk_0.json", "kb/space-1/project-1/doc-1/chunk_0.txt",
       "kb/space-1/project-1/doc-1/chunk_1.json", "kb/space-1/project-1/doc-1/chunk_1.txt",
     ]);
+  });
+
+  it("preserves restrictive ACLs through workflow chunk ingestion", async () => {
+    const f = fixture({ workflowDoc: true });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["restricted content"], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+        requiredRoleRank: 40, allowedUserIds: ["user-special"],
+      },
+    ), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(f.vectorUpserts.flat()[0]?.metadata).toMatchObject({
+      visibility: "restricted", required_role_rank: 40, allowed_roles: [], allowed_user_ids: ["user-special"],
+    });
+    expect(f.dbCalls.some(({ sql, args }) => sql.includes("INSERT INTO kb_chunks") && args[9] === 40)).toBe(true);
+  });
+
+  it("stages large project documents and enqueues the workflow with their access policy", async () => {
+    const f = fixture({ workflowDoc: true });
+    const content = "safe content ".repeat(81_000);
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
+      title: "Large guide", content, project_id: "project-1", required_role_rank: 30, allowed_user_ids: ["user-special"],
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(202);
+    const result = await response.json() as { id: string; status: string; ingestion: string };
+    expect(result).toMatchObject({ status: "processing", ingestion: "queued" });
+    const key = `staging/tenant-1/space-1/project-1/${result.id}/original`;
+    expect(f.writes).toContainEqual(expect.objectContaining({ key }));
+    expect((f.env as unknown as { EVENTS_QUEUE: { send: ReturnType<typeof vi.fn> } }).EVENTS_QUEUE.send)
+      .toHaveBeenCalledWith(expect.objectContaining({
+        type: "kb.ingest", docId: result.id, spaceId: "space-1", tenantId: "tenant-1",
+        projectId: "project-1", r2Key: key, requiredRoleRank: 30, allowedUserIds: ["user-special"],
+      }));
+  });
+
+  it("rolls back staged data and the document row when queue submission fails", async () => {
+    const f = fixture({ workflowDoc: true, queueFails: true });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
+      title: "Large guide", content: "safe content ".repeat(81_000), project_id: "project-1",
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(503);
+    const stagingWrite = f.writes.find(({ key }) => key.startsWith("staging/"));
+    expect(stagingWrite).toBeDefined();
+    expect((f.env as unknown as { KB_BUCKET: { delete: ReturnType<typeof vi.fn> } }).KB_BUCKET.delete)
+      .toHaveBeenCalledWith(stagingWrite?.key);
+    expect(f.dbCalls.some(({ sql }) => sql.startsWith("DELETE FROM kb_documents WHERE id"))).toBe(true);
   });
 
   it("updates workflow document status only for the matching tenant, space, and project", async () => {
@@ -154,6 +201,16 @@ describe("Knowledge document lifecycle boundaries", () => {
       expect(response.status).toBe(400);
       expect(f.dbCalls.some(({ sql }) => sql.includes("INSERT INTO kb_documents"))).toBe(false);
       expect(f.writes).toHaveLength(0);
+    }
+  });
+
+  it("rejects empty or whitespace-only documents before staging them", async () => {
+    for (const content of ["", " \n\t "]) {
+      const f = fixture();
+      const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", { title: "Blank", content }), f.env, {} as ExecutionContext);
+      expect(response.status).toBe(400);
+      expect(f.writes).toHaveLength(0);
+      expect((f.env as unknown as { EVENTS_QUEUE: { send: ReturnType<typeof vi.fn> } }).EVENTS_QUEUE.send).not.toHaveBeenCalled();
     }
   });
 

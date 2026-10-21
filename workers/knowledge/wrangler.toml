@@ -59,8 +59,16 @@ ENVIRONMENT = "development"
 RETRIEVAL_POLICY_VERSION = "1"
 RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85"
 
+[[queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "naelao-events"
+
 [env.staging]
 vars = { ENVIRONMENT = "staging", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85" }
+
+[[env.staging.queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "naelao-events"
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
@@ -68,6 +76,10 @@ service = "naelao-billing"
 
 [env.production]
 vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_CONFIDENCE_THRESHOLD = "0.85" }
+
+[[env.production.queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "naelao-events"
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
