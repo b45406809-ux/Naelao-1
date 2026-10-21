@@ -1393,6 +1393,8 @@ The workspace/download tests used incomplete R2 doubles that lacked `head`, `arr
 
 Validation: `workspace-prebuilt.test.ts` and `web-search-platform.test.ts` passed 2 files / 28 tests; Agents `tsc --noEmit` passed. The workspace command `pnpm --filter @naelao/agents-worker typecheck` could not start because pnpm stopped at its ignored dependency build-script policy; direct installed TypeScript execution passed.
 
+Committed and pushed as `ef69f0d4`. Refreshed the inventory after both audit/test commits: 1,976 tracked files and 1,770 source/config checklist rows; 377 rows are checked.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.
