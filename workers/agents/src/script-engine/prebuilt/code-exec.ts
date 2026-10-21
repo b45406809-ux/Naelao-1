@@ -409,12 +409,12 @@ export const codeExec: PrebuiltScript = {
     // bypasses the library, so it must not bypass the money-in guard as well.
     async "code.run_js"(a, c) {
       const adHocCode = String(a["code"] ?? "");
+      assertNoReservedViolation({ name: "code-exec.run_js", code: adHocCode });
       await inspectMutation(adHocCode, {
         ...(c.env.mutationGrant ? { token: c.env.mutationGrant } : {}),
         secret: c.env.platformSecret ?? "",
         resourceId: c.env.projectId ?? c.env.spaceId,
       });
-      assertNoReservedViolation({ name: "code-exec.run_js", code: adHocCode });
       return runTier(
         c,
         "code-exec.run_js",

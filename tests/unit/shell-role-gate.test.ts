@@ -27,6 +27,12 @@ const BUSINESS_MEMBERSHIPS_SQL = `
     PRIMARY KEY (business_space_id, end_user_id)
   );
 `;
+const SPACE_MEMBERS_SQL = `
+  CREATE TABLE space_members (
+    space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member',
+    suspended_at TEXT, PRIMARY KEY (space_id, end_user_id)
+  );
+`;
 
 describe("shell business-role gate", () => {
   it("lets an owner manage settings — the exact case the reported bug locked out", () => {
@@ -66,7 +72,7 @@ describe("shell business-role gate", () => {
   it("agrees with the real backend role for a business creator", async () => {
     // The creator's actual stored row, exactly as POST /spaces/:productSpaceId/businesses writes
     // it — 'owner', which is the role the old exact-match `=== "admin"` UI check rejected.
-    const fake = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL]);
+    const fake = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL, SPACE_MEMBERS_SQL]);
     fake.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('prod-root', 'root-tenant', 'active', 'Product')");
     fake.db.exec("INSERT INTO spaces (id, tenant_id, status, name, parent_space_id) VALUES ('biz', 'biz-tenant', 'active', 'Biz', 'prod-root')");
     fake.db.exec(

@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { BuilderAccountDO } from "../../workers/spaces/src/do/BuilderAccountDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // Three-Tier Platform Model, Phase 1 (docs/spec-appendix A1.17). BuilderAccountDO is
 // deliberately thin — a per-builder product index + scoped API keys — everything else
 // (usage/billing/rate-limiting) reads from systems that already exist elsewhere.
 
 function makeDO() {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new BuilderAccountDO(ctx as never, {} as never);
 }
 

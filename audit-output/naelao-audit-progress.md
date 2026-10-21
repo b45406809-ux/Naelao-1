@@ -1445,6 +1445,12 @@ The remaining connector-catalogue failure was a stale Notion expectation: the ca
 
 Committed and pushed as `64ec6cf9`; refreshed the inventory: 1,976 tracked files, 1,770 source/config checklist rows, 383 checked rows.
 
+## Repair container and prebuilt test contracts (2026-10-21)
+
+The next current shared-suite failures showed outdated Tier assumptions in the code-exec/browser-use tests and a ToolSandboxDO test that still treated proxying as unauthenticated. Updated expectations to the Tier 2 Python isolate, Tier 1 virtual Bash, the browser's bounded untrusted-text receipt, and fail-closed unauthenticated container requests. Reordered ad hoc JS guards so the reserved payment-processor check runs before generic SQL mutation analysis; reserved-capability attempts now get the specific rejection consistently. BuilderAccountDO tests now use the full SQLite Durable Object storage shim, including `transactionSync`, matching the production atomic API-key write path.
+
+Validation: browser/code prebuilt, BuilderAccountDO, and ToolSandboxDO focused suites passed 23 tests. The next fresh repository test sweep reported 114 failures across 41 files (down from the prior 129 across 106 files; this includes current test discovery at 706 files). Additional fixture repairs aligned the webhook idempotency D1 double with subscription lookup/update columns, made lock release use its required fencing token, and added the current `space_members` table to the business-role fixture. Those three suites passed 18 tests. The async task run-ID test now supplies an `ExecutionContext`, matching the route's scheduled evidence recording; it passed its focused check. No full-suite pass is claimed; 114 failures remain in the captured report and further audit remains open.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.

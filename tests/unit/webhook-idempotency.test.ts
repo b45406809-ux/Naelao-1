@@ -22,6 +22,16 @@ const SPACES_SQL = `
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active'
   );
 `;
+// Subscription lookups run for provider subscription events even when the event isn't a Naelao
+// marketplace subscription. Match the production table's provider-reference columns so this
+// fixture tests the non-marketplace path without depending on unrelated marketplace migrations.
+const TEMPLATE_SUBSCRIPTIONS_LOOKUP_SQL = `
+  CREATE TABLE template_subscriptions (
+    id TEXT PRIMARY KEY, space_id TEXT NOT NULL, provider_subscription_id TEXT,
+    status TEXT NOT NULL DEFAULT 'active', paid_cycles_total INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`;
 const RESELLER_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0033_reseller_accounts.sql"), "utf8");
 const COMMERCE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0035_commerce.sql"), "utf8");
 const LEDGER_KIND_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0061_reseller_ledger_kind.sql"), "utf8");
@@ -119,7 +129,7 @@ describe("Lemon Squeezy webhook — exactly-once (S0.3)", () => {
   });
 
   it("replaying a non-order event (subscription.updated, no order/ledger side effect) still only wakes the agent once", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, TEMPLATE_SUBSCRIPTIONS_LOOKUP_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const agentsFetch = vi.fn(async () => new Response("{}"));

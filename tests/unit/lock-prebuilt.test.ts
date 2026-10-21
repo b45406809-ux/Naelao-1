@@ -11,20 +11,22 @@ function makeR2(): R2Bucket {
   return {} as unknown as R2Bucket;
 }
 
-function makeFakeLockGateway(): LockGateway & { slots: Map<string, { holder: string; limit: number }[]> } {
-  const slots = new Map<string, { holder: string; limit: number }[]>();
+function makeFakeLockGateway(): LockGateway & { slots: Map<string, { holder: string; limit: number; fencingToken: number }[]> } {
+  const slots = new Map<string, { holder: string; limit: number; fencingToken: number }[]>();
+  let nextFencingToken = 1;
   return {
     slots,
     async acquire({ key, holderId, limit = 1 }) {
       const holders = slots.get(key) ?? [];
-      if (holders.some((h) => h.holder === holderId)) return { granted: true, active: holders.length, limit };
+      if (holders.some((h) => h.holder === holderId)) return { granted: true, active: holders.length, limit, fencingToken: holders.find(h => h.holder === holderId)!.fencingToken };
       if (holders.length >= limit) return { granted: false, active: holders.length, limit };
-      holders.push({ holder: holderId, limit });
+      const fencingToken = nextFencingToken++;
+      holders.push({ holder: holderId, limit, fencingToken });
       slots.set(key, holders);
-      return { granted: true, active: holders.length, limit };
+      return { granted: true, active: holders.length, limit, fencingToken };
     },
-    async release({ key, holderId }) {
-      const holders = (slots.get(key) ?? []).filter((h) => h.holder !== holderId);
+    async release({ key, holderId, fencingToken }) {
+      const holders = (slots.get(key) ?? []).filter((h) => h.holder !== holderId || h.fencingToken !== fencingToken);
       slots.set(key, holders);
     },
     async status(key) {
@@ -53,8 +55,8 @@ describe("lock prebuilt — acquire/release/status", () => {
     const gateway = makeFakeLockGateway();
     const tools = new ScriptToolSurface(makeEnv(gateway), ["lock"]);
 
-    await tools.run("lock.acquire", { key: "csv-row:5", holder_id: "thread-a" });
-    await tools.run("lock.release", { key: "csv-row:5", holder_id: "thread-a" });
+    const acquired = await tools.run("lock.acquire", { key: "csv-row:5", holder_id: "thread-a" });
+    await tools.run("lock.release", { key: "csv-row:5", holder_id: "thread-a", fencing_token: (acquired.output as { fencingToken: number }).fencingToken });
 
     const retry = await tools.run("lock.acquire", { key: "csv-row:5", holder_id: "thread-b" });
     expect((retry.output as { granted: boolean }).granted).toBe(true);

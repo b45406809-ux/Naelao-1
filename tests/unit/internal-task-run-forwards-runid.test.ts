@@ -52,10 +52,11 @@ describe("POST /internal/tasks/:taskId/run forwards runId to /script/run", () =>
           goal: "reply OK", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         }),
       }),
-      env
+      env,
+      { waitUntil: () => undefined, passThroughOnException: () => undefined } as ExecutionContext
     );
 
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
     const forwarded = capturedBody();
     expect(forwarded).toBeDefined();
     // This is the exact fix: without it, forwarded.runId is undefined and handleScriptRun mints
