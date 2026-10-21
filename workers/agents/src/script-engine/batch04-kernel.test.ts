@@ -47,6 +47,8 @@ describe("Batch 04 universal kernel", () => {
     expect(PLANNER_FIRST_PROTOCOL).toContain("Never put a clarification question in an answer message");
     expect(UNIVERSAL_AGENT_BASELINE_PREBUILTS).toContain("project-coordination");
     expect(UNIVERSAL_AGENT_BASELINE_PREBUILTS).toContain("executive-cabinet");
+    expect(UNIVERSAL_AGENT_BASELINE_PREBUILTS).not.toContain("code-exec");
+    expect(UNIVERSAL_AGENT_BASELINE_PREBUILTS).not.toContain("runtime-discovery");
   });
 
   it("keeps worker-owned domain actions behind the parent planner boundary", () => {
