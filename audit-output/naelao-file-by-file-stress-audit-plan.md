@@ -15,7 +15,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - **Organization erasure lifecycle and coverage:** the queue consumer accepts `data.erasure`, but no producer or request route was found. `DataErasureWorkflow` suspends an org, waits 24 hours, then permanently deletes data; no cancellation or restoration path was found despite the “reversible window” description. Cleanup currently has only the KB bucket and quota KV bindings, while artifacts, exported files, scripts/workspaces, and other space records use separate storage and D1 tables. Build a tenant-scoped resource inventory, add safely scoped cleanup, and trace authorization, initiation, cancellation, and suspended-state recovery before describing this feature as usable or complete.
 - **Webhook DNS rebinding:** webhook delivery now rejects private literal IPs and private DNS answers, rejects redirects, and has a deadline. Cloudflare `fetch` resolves DNS again after validation, so a rebinding response could change the target between check and connection. Use a controlled egress proxy with address pinning to close this race.
 - **MCP Hub DNS rebinding:** direct MCP URLs use the same preflight DNS validation before `fetch`, but the runtime resolves again at connection time. A controlled egress proxy with address pinning is still needed to close this network-level race for direct connectors.
-- **Tenant suspension enforcement:** public router requests and selected agent, notification, provisioner, workflow, and Knowledge entrypoints now check `orgs.status`; the enforcement is not yet universal across internal routes, queues, Durable Object alarms, already-running workflows, or other worker paths. Add complete cross-service coverage and a restoration model that preserves independently suspended spaces before treating org status as a platform freeze.
+- **Tenant suspension enforcement:** public router requests check org and reseller relationship status; selected agent, notification, provisioner, workflow, and Knowledge entrypoints also gate work. Enforcement is not universal across internal routes, queues, Durable Object alarms, already-running workflows, or other worker paths. A `spaces.suspension_reason` migration now preserves admin-product, reseller, and erasure holds for updated writers, but legacy suspended rows and other suspension writers still need source reconciliation before restoration is fully safe.
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 
 ## Work sequence
@@ -707,6 +707,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/migrations/0113_whatsapp_extension_phone_routing.sql`
 - [x] `infra/migrations/0114_thread_last_active_at.sql`
 - [x] `infra/migrations/0115_sweeper_fairness_cursors.sql`
+- [x] `infra/migrations/0116_space_suspension_reason.sql`
 
 ### `infra/scripts`
 
@@ -1515,6 +1516,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/project-scoped-automation.test.ts`
 - [ ] `tests/unit/project-steward-dispatch.test.ts`
 - [ ] `tests/unit/project-steward-review-route.test.ts`
+- [x] `tests/unit/reseller-suspension.test.ts`
 - [ ] `tests/unit/project-templates.test.ts`
 - [ ] `tests/unit/project-wallet-payer-gate.test.ts`
 - [ ] `tests/unit/projects-from-template.test.ts`

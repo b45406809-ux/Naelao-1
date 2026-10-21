@@ -75,6 +75,12 @@ jobs:
             --file=infra/migrations/0115_sweeper_fairness_cursors.sql \
             --remote \
             --env=staging
+          # Refuse to deploy consumers that require the suspension-reason column if migration
+          # application failed in the legacy best-effort loop above.
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT suspension_reason FROM spaces LIMIT 0" \
+            --remote \
+            --env=staging
 
       - name: Deploy router worker (staging)
         env:

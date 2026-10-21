@@ -35,9 +35,10 @@ describe("fair cleanup pagination", () => {
 describe("sweeper cursor migration deployment", () => {
   it("requires the idempotent cursor migration in staging and production deploys", () => {
     for (const workflow of ["deploy-staging.yml", "deploy-prod.yml"]) {
-      const text = readFileSync(`.github/workflows/${workflow}`, "utf8");
+      const text = readFileSync(new URL(`../../../.github/workflows/${workflow}`, import.meta.url), "utf8");
       expect(text).toContain("--file=infra/migrations/0115_sweeper_fairness_cursors.sql");
       expect(text).toContain("npx wrangler d1 execute \"$DB_ID\"");
+      expect(text).toContain('--command="SELECT suspension_reason FROM spaces LIMIT 0"');
     }
   });
 });

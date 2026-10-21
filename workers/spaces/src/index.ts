@@ -6849,17 +6849,25 @@ app.post("/reseller/clients/:childTenantId/status", async (c) => {
 
   const hierarchy = await assertResellerParent(c.env, tenantId, childTenantId);
   if (!hierarchy) return c.json({ error_code: "not_found", message: "Client not found in your portfolio" }, 404);
+  if (body.status === "active" && hierarchy.status === "terminated") {
+    return c.json({ error_code: "client_terminated", message: "A terminated reseller relationship cannot be reactivated" }, 409);
+  }
 
   const now = new Date().toISOString();
-  await c.env.PLATFORM_DB.prepare(
-    "UPDATE tenant_hierarchy SET status = ? WHERE child_tenant_id = ? AND parent_tenant_id = ?"
-  ).bind(body.status, childTenantId, tenantId).run();
-
-  // Cascade to the child's spaces (suspend → 'suspended', reactivate → 'active').
-  const spaceStatus = body.status === "suspended" ? "suspended" : "active";
-  await c.env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET status = ?, updated_at = ? WHERE tenant_id = ? AND status NOT IN ('deleted')"
-  ).bind(spaceStatus, now, childTenantId).run();
+  const hierarchyUpdate = c.env.PLATFORM_DB.prepare(
+    "UPDATE tenant_hierarchy SET status = ? WHERE child_tenant_id = ? AND parent_tenant_id = ? AND status != 'terminated'"
+  ).bind(body.status, childTenantId, tenantId);
+  const spacesUpdate = body.status === "suspended"
+    ? c.env.PLATFORM_DB.prepare(
+      `UPDATE spaces SET status = 'suspended', suspension_reason = 'reseller', updated_at = ?
+       WHERE tenant_id = ? AND status = 'active'`
+    ).bind(now, childTenantId)
+    : c.env.PLATFORM_DB.prepare(
+      `UPDATE spaces SET status = 'active', suspension_reason = NULL, updated_at = ?
+       WHERE tenant_id = ? AND status = 'suspended' AND suspension_reason = 'reseller'
+         AND EXISTS (SELECT 1 FROM orgs WHERE id = spaces.tenant_id AND status = 'active')`
+    ).bind(now, childTenantId);
+  await c.env.PLATFORM_DB.batch([hierarchyUpdate, spacesUpdate]);
 
   return c.json({ child_tenant_id: childTenantId, status: body.status, updated_at: now });
 });

@@ -64,8 +64,8 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         .run();
 
       await this.env.PLATFORM_DB.prepare(
-        `UPDATE spaces SET status = 'suspended', updated_at = datetime('now')
-         WHERE tenant_id = ? AND status != 'suspended'`
+        `UPDATE spaces SET status = 'suspended', suspension_reason = 'erasure', updated_at = datetime('now')
+         WHERE tenant_id = ? AND status = 'active'`
       )
         .bind(params.orgId)
         .run();

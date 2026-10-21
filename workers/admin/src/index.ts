@@ -336,7 +336,7 @@ app.post("/admin/products/:spaceId/suspend", async (c) => {
   if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   if (space.status === "suspended") return c.json({ ok: true, already_suspended: true });
   await c.env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET status = 'suspended', updated_at = datetime('now') WHERE id = ?"
+    "UPDATE spaces SET status = 'suspended', suspension_reason = 'admin_product', updated_at = datetime('now') WHERE id = ? AND status = 'active'"
   ).bind(spaceId).run();
   // Audit trail — same table pattern as /admin/failures.
   await c.env.PLATFORM_DB.prepare(
@@ -349,9 +349,9 @@ app.post("/admin/products/:spaceId/suspend", async (c) => {
 app.post("/admin/products/:spaceId/restore", async (c) => {
   const spaceId = c.req.param("spaceId");
   const space = await c.env.PLATFORM_DB.prepare(
-    `SELECT s.id, s.status, o.status AS org_status
+    `SELECT s.id, s.status, s.suspension_reason, o.status AS org_status
      FROM spaces s JOIN orgs o ON o.id = s.tenant_id WHERE s.id = ?`
-  ).bind(spaceId).first<{ id: string; status: string; org_status: string }>();
+  ).bind(spaceId).first<{ id: string; status: string; suspension_reason: string | null; org_status: string }>();
   if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   if (space.org_status !== "active") {
     return c.json({ error_code: "tenant_suspended", message: "A space cannot be restored while its tenant is suspended" }, 409);
@@ -359,9 +359,12 @@ app.post("/admin/products/:spaceId/restore", async (c) => {
   if (space.status !== "suspended") {
     return c.json({ error_code: "space_not_suspended", message: "Only suspended spaces can be restored" }, 409);
   }
+  if (space.suspension_reason !== "admin_product") {
+    return c.json({ error_code: "suspension_reason_mismatch", message: "This space was suspended by another control; restore it through that control" }, 409);
+  }
   const result = await c.env.PLATFORM_DB.prepare(
-    `UPDATE spaces SET status = 'active', updated_at = datetime('now')
-     WHERE id = ? AND status = 'suspended'
+    `UPDATE spaces SET status = 'active', suspension_reason = NULL, updated_at = datetime('now')
+     WHERE id = ? AND status = 'suspended' AND suspension_reason = 'admin_product'
        AND EXISTS (SELECT 1 FROM orgs WHERE id = spaces.tenant_id AND status = 'active')`
   ).bind(spaceId).run();
   if (result.meta.changes === 0) {
