@@ -1,16 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { generateCredentialToken, type CredentialsEnv } from "./index.js";
 
-function env(): CredentialsEnv {
+function env(spaceActive = true): CredentialsEnv {
   return {
     ENVIRONMENT: "test",
     PLATFORM_SECRET: "secret",
     CREDENTIAL_ENCRYPTION_KEY: `v1:${"11".repeat(32)}`,
     ANALYTICS: {} as AnalyticsEngineDataset,
     PLATFORM_DB: {
-      prepare: vi.fn(() => ({
+      prepare: vi.fn((sql: string) => ({
         bind: vi.fn(() => ({
-          first: vi.fn(async () => ({ config_json: '{"compliance":{"airGappedOnly":true}}' })),
+          first: vi.fn(async () => sql.includes("JOIN orgs")
+            ? spaceActive ? { id: "s" } : null
+            : { config_json: '{"compliance":{"airGappedOnly":true}}' }),
         })),
       })),
     } as unknown as D1Database,
@@ -68,5 +70,21 @@ describe("credential egress air-gap boundary", () => {
       }), env(), {} as ExecutionContext);
       expect(response.status).toBe(403);
     }
+  });
+
+  it("blocks outbound egress and credential plaintext after Space suspension", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const credentialToken = await generateCredentialToken("secret", "s", "agent", undefined, "tenant");
+    const egress = await worker.fetch!(new Request("https://credentials/v1/internal/spaces/s/outbound", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-credential-token": credentialToken },
+      body: JSON.stringify({ credentialName: "gemini", url: "https://example.com" }),
+    }), env(false), {} as ExecutionContext);
+    const plaintext = await worker.fetch!(new Request("https://credentials/v1/internal/spaces/s/credentials/gemini/plaintext", {
+      method: "POST", headers: { "x-naelao-tenant-id": "tenant", "x-naelao-credential-token": credentialToken },
+    }), env(false), {} as ExecutionContext);
+    expect(egress.status).toBe(404);
+    expect(plaintext.status).toBe(404);
+    expect(outbound).not.toHaveBeenCalled();
   });
 });

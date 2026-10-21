@@ -76,6 +76,14 @@ async function sha256Hex(value: string | Uint8Array): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function isActiveTenantSpace(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
+  const row = await db.prepare(
+    `SELECT s.id FROM spaces s JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active'
+     WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'`
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  return row !== null;
+}
+
 async function recordOutboundReceipt(
   env: CredentialsEnv,
   context: OutboundReceiptContext,
@@ -958,6 +966,7 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
   if (!tokenCheck.ok || tokenCheck.tenantId !== tenantId) {
     throw forbidden(tokenCheck.reason ?? "Invalid credential token");
   }
+  if (!(await isActiveTenantSpace(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
 
   let onBehalfOfUserId: string | null = null;
   let requestedProjectId: string | undefined;
@@ -1032,6 +1041,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   if (!tenantId || !credentialToken) throw forbidden("Authenticated outbound request required");
   const tokenCheck = await verifyCredentialToken(credentialToken, c.env.PLATFORM_SECRET, spaceId, tenantId);
   if (!tokenCheck.ok || tokenCheck.tenantId !== tenantId) throw forbidden(tokenCheck.reason ?? "Credential token tenant scope mismatch");
+  if (!(await isActiveTenantSpace(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   // This is the final bearer-secret egress boundary. Check the immutable space policy before
   // resolving or decrypting a credential, before SSRF validation, and before the first fetch.
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) {
@@ -1110,12 +1120,19 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   let response: Response | undefined;
   let outboundHeaders = new Headers(supplied);
   for (let redirects = 0; redirects <= 5; redirects++) {
+    if (!(await isActiveTenantSpace(c.env.PLATFORM_DB, spaceId, tenantId))) {
+      if (receiptContext) {
+        try { await recordOutboundReceipt(c.env, receiptContext, "failed", inputHash, await sha256Hex("space suspended before dispatch"), "Space was suspended before the external request was sent"); } catch { /* pending receipt remains fail-closed */ }
+      }
+      return c.json({ error_code: "tenant_suspended", message: "This tenant or Space is inactive" }, 403);
+    }
     try {
       response = await fetch(destination, {
         method,
         headers: outboundHeaders,
         ...(body.body === undefined ? {} : { body: typeof body.body === "string" ? body.body : JSON.stringify(body.body) }),
         redirect: "manual",
+        signal: AbortSignal.timeout(30_000),
       });
     } catch {
       if (receiptContext) {
