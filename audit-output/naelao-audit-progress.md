@@ -2009,3 +2009,9 @@ Validation: focused Channels tests passed 2/2; Channels TypeScript, full targete
 ## File checklist status after reviewed service slices (2026-10-21)
 
 Marked the complete Triggers, Channels, and Analytics entrypoint/test files reviewed; the large Knowledge and Agent files remain unchecked because only specific paths were examined. The refreshed inventory contains 2,040 tracked files / 1,834 code and executable-configuration files, with 468 checklist files marked reviewed. These are scoped increments; the remaining file-by-file audit and runtime stress coverage are still open.
+
+## Remove unreachable legacy Channels worker (2026-10-21)
+
+Triple-checked the legacy `workers/channels` surface against tracked callers, worker deployment config, and the schema/deployment graph. No router route, service binding, or code caller referenced it; its Wrangler config set `workers_dev = false` and declared no route; and no migration created the `channels` table its API queries. Current channel entrypoints are routed through the Agents worker. Removed the unreachable worker, its worker-specific tenant-guard test, stale lockfile importer, and active architecture/inventory references. The historical generated HTML snapshot is retained. The repo cannot prove whether an external Cloudflare account has an untracked manual binding, so external deployment inventory remains a verification item.
+
+Validation: Channels tests passed 2/2 before removal; the five-worker regression pass passed Channels, Triggers, Analytics, and Notifications, and initially found three stale Knowledge expectations, corrected and followed by a full Knowledge pass (10 files / 64 tests). Inventory now lists 2,034 tracked files / 1,828 source and executable configuration files with 465 checklist entries reviewed. The audit remains incomplete.

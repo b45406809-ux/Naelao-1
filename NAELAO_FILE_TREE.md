@@ -203,9 +203,6 @@ naelao/
 │   ├── triggers/                     # naelao-triggers — inbound webhook ingestion + verification
 │   │   └── src/{index.ts,verify/{slack.ts,discord.ts,telegram.ts,whatsapp.ts,stripe.ts,generic.ts}}  # G-G09
 │   │
-│   ├── channels/                     # naelao-channels — inbound channel → agent routing
-│   │   └── src/{index.ts,inbound.ts}    # consumes @naelao/channel-adapters (G-AE17)
-│   │
 │   ├── workflows/                    # naelao-workflows — dynamic workflow loader + registry
 │   │   ├── src/{index.ts,loader.ts,run.ts}
 │   │   └── src/do/{WorkflowRegistryDO.ts,WorkerDefinitionDO.ts}

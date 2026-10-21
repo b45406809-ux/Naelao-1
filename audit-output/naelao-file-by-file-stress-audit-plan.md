@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2040` tracked files; `1834` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `68abcd3e`.
+Inventory basis: `2034` tracked files; `1828` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `5814fb1e`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1405,7 +1405,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/channel-outbound-delivery.test.ts`
 - [x] `tests/unit/channel-pairing.test.ts`
 - [ ] `tests/unit/channel-replay-dedup-drain.test.ts`
-- [ ] `tests/unit/channels-routing-key-tenant-guard.test.ts`
 - [x] `tests/unit/chat-uploads.test.ts`
 - [ ] `tests/unit/code-runner.test.ts`
 - [ ] `tests/unit/commerce-prebuilt-hmac.test.ts`
@@ -2243,17 +2242,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/browser/src/BrowserSessionDO.ts`
 - [ ] `workers/browser/src/browser-session-state.ts`
 - [ ] `workers/browser/src/index.ts`
-
-### `workers/channels`
-
-- [ ] `workers/channels/package.json`
-- [ ] `workers/channels/tsconfig.json`
-- [x] `workers/channels/wrangler.toml`
-
-### `workers/channels/src`
-
-- [x] `workers/channels/src/index.test.ts`
-- [x] `workers/channels/src/index.ts`
 
 ### `workers/connector-gumroad`
 

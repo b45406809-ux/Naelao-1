@@ -169,9 +169,6 @@ Platform ops. JWT-gated with `role: 'platform_admin'`. Tenant management, featur
 #### `workers/search/`
 Semantic search across SpaceTypes in a dedicated Vectorize index. Hybrid retrieval. Powers marketplace discovery.
 
-#### `workers/channels/`
-Inbound channels: CF Email Routing handler, Slack Events API, generic webhook. Translates to session format. Routes responses back to originating channel.
-
 #### `workers/triggers/`
 Scheduled and event-driven Space activation. Stores trigger definitions in D1. CF Cron Triggers fire the worker. Creates synthetic sessions with injected user messages.
 

@@ -4,9 +4,9 @@ Generated from the current source/config tree using Wrangler worker manifests, e
 
 Supplemental routes added after the last full discovery refresh: `workers/spaces/src/index.ts` registers owner-only `POST /builder/erasure`, `GET /builder/erasure/:requestId`, and `DELETE /builder/erasure/:requestId`; the latter two are the only request paths exempted from router tenant suspension. Internal `DELETE /internal/tenant/:tenantId/spaces/:spaceId/product-users/erase` and `DELETE /internal/tenant/:tenantId/spaces/:spaceId/business-services/erase` routes are protected by `requireInternalHmac`. Aggregate route counts and other line references above predate these additions and still need a full discovery refresh.
 
-Workers with Wrangler manifests: 32
+Workers with Wrangler manifests: 31
 Exported DurableObject declarations: 22
-Literal route-registration matches: 1079
+Literal route-registration matches: 1071
 
 ## Worker services
 
@@ -18,7 +18,6 @@ Literal route-registration matches: 1079
 - `workers/auth` — manifest `workers/auth/wrangler.toml`; entrypoint `workers/auth/src/index.ts`
 - `workers/billing` — manifest `workers/billing/wrangler.toml`; entrypoint `workers/billing/src/index.ts`
 - `workers/browser` — manifest `workers/browser/wrangler.toml`; entrypoint `workers/browser/src/index.ts`
-- `workers/channels` — manifest `workers/channels/wrangler.toml`; entrypoint `workers/channels/src/index.ts`
 - `workers/connector-gumroad` — manifest `workers/connector-gumroad/wrangler.toml`; entrypoint `workers/connector-gumroad/src/index.ts`
 - `workers/connector-whop` — manifest `workers/connector-whop/wrangler.toml`; entrypoint `workers/connector-whop/src/index.ts`
 - `workers/credentials` — manifest `workers/credentials/wrangler.toml`; entrypoint `workers/credentials/src/index.ts`
@@ -82,7 +81,6 @@ Literal route-registration matches: 1079
 - `workers/analytics` consumes `naelao-analytics` in development/default, staging, production.
 - `workers/billing` consumes `naelao-billing-events` in development/default, staging, production.
 - `workers/billing` produces `naelao-billing-events` in development/default, staging, production.
-- `workers/channels` produces `naelao-channel-sessions` in development/default, staging, production.
 - `workers/knowledge` produces `naelao-events` in development/default, staging, production.
 - `workers/mini-agi` produces `naelao-channel-sessions` in development/default, staging, production.
 - `workers/notifications` consumes `naelao-notifications-queue` in development/default, staging, production.
@@ -109,7 +107,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/billing/src/partner-portal.ts` — 4 route/middleware registration calls
 - `workers/billing/src/whop-wallet.ts` — 8 route/middleware registration calls
 - `workers/browser/src/index.ts` — 4 route/middleware registration calls
-- `workers/channels/src/index.ts` — 8 route/middleware registration calls
 - `workers/connector-gumroad/src/index.ts` — 5 route/middleware registration calls
 - `workers/connector-whop/src/index.ts` — 5 route/middleware registration calls
 - `workers/credentials/src/index.ts` — 10 route/middleware registration calls
@@ -417,14 +414,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/browser/src/index.ts:10` — `app.use("/v1/*", async (c, next) => {`
 - `workers/browser/src/index.ts:18` — `app.post("/v1/browser/:operation", async c => {`
 - `workers/browser/src/index.ts:36` — `app.get("/health", c => c.json({ ok: true, service: "browser",`
-- `workers/channels/src/index.ts:40` — `app.use("*", requestId);`
-- `workers/channels/src/index.ts:41` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
-- `workers/channels/src/index.ts:45` — `app.get("/v1/channels", async (c) => {`
-- `workers/channels/src/index.ts:54` — `app.post("/v1/channels", async (c) => {`
-- `workers/channels/src/index.ts:96` — `app.delete("/v1/channels/:id", async (c) => {`
-- `workers/channels/src/index.ts:111` — `app.post("/inbound/email/:routingKey", async (c) => {`
-- `workers/channels/src/index.ts:145` — `app.post("/inbound/slack/:routingKey", async (c) => {`
-- `workers/channels/src/index.ts:191` — `app.post("/inbound/webhook/:routingKey", async (c) => {`
 - `workers/connector-gumroad/src/index.ts:102` — `app.use("/mcp", requireManagedConnectorContext, requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
 - `workers/connector-gumroad/src/index.ts:103` — `app.use("/connectors/gumroad/mcp", requireManagedConnectorContext, requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
 - `workers/connector-gumroad/src/index.ts:131` — `app.post("/mcp", handleMcp);`

@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2040
-Files with source or executable-configuration extensions: 1834
-Inventory revision: 2026-10-21 audit refresh at 68abcd3e
+Files: 2034
+Files with source or executable-configuration extensions: 1828
+Inventory revision: 2026-10-21 audit refresh at 5814fb1e
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1209,7 +1209,6 @@ tests/
     channel-outbound-delivery.test.ts
     channel-pairing.test.ts
     channel-replay-dedup-drain.test.ts
-    channels-routing-key-tenant-guard.test.ts
     chat-uploads.test.ts
     code-runner.test.ts
     commerce-prebuilt-hmac.test.ts
@@ -1992,13 +1991,6 @@ workers/
       index.ts
     tsconfig.json
     wrangler.local.toml
-    wrangler.toml
-  channels/
-    package.json
-    src/
-      index.test.ts
-      index.ts
-    tsconfig.json
     wrangler.toml
   connector-gumroad/
     package.json
