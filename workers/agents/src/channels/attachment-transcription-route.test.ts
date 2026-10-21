@@ -3,7 +3,7 @@ import { mintInternalToken } from "@naelao/http";
 import { app } from "../index.js";
 
 const secret = "transcription-route-secret";
-function env(options: { owned?: boolean; airGapped?: boolean; mime?: string; oversizedMediaResponse?: boolean } = {}) {
+function env(options: { owned?: boolean; airGapped?: boolean; mime?: string; oversizedMediaResponse?: boolean; mismatchedR2Size?: boolean } = {}) {
   let reads = 0;
   let mediaCalls = 0;
   const ai = { run: vi.fn(async (_model: string, input?: Record<string, unknown>) => input?.task === "query" ? ({ answer: "A red truck at a loading dock." }) : ({ text: "recognized words" })) };
@@ -19,7 +19,7 @@ function env(options: { owned?: boolean; airGapped?: boolean; mime?: string; ove
       if (sql.includes("INSERT INTO email_attachment_ocr_usage")) return { meta: { changes: 1 } };
       throw new Error(`unexpected SQL: ${sql}`);
     }, async run() { return { meta: { changes: 1 } }; } }; } }; } },
-    SCRIPTS_R2: { async get(key: string) { reads++; expect(key).toBe("private/key"); return { async arrayBuffer() {
+    SCRIPTS_R2: { async get(key: string) { reads++; expect(key).toBe("private/key"); return { size: (options.mime?.startsWith("image/") ? 24 : 3) + (options.mismatchedR2Size ? 1 : 0), async arrayBuffer() {
       if (options.mime?.startsWith("image/")) { const png = new Uint8Array(24); png.set([137,80,78,71,13,10,26,10], 0); png.set([73,72,68,82], 12); png[19] = 5; png[23] = 5; return png.buffer; }
       return new Uint8Array([1, 2, 3]).buffer;
     } }; } },
@@ -96,6 +96,19 @@ describe("task-scoped audio transcription route", () => {
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({ error_code: "video_audio_output_limit" });
     expect(state.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects R2 objects whose size disagrees with the authorized attachment row", async () => {
+    const audio = env({ mime: "audio/ogg", mismatchedR2Size: true });
+    expect((await post(audio.value)).status).toBe(409);
+    expect(audio.mediaCalls()).toBe(0);
+    expect(audio.ai.run).not.toHaveBeenCalled();
+
+    const image = env({ mime: "image/png", mismatchedR2Size: true });
+    const response = await describeImage(image.value);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "attachment_size_mismatch" });
+    expect(image.ai.run).not.toHaveBeenCalled();
   });
 
   it("answers visual questions only for an authorized image after owner and egress checks", async () => {
