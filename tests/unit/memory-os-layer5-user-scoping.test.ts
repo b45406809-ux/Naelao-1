@@ -53,8 +53,8 @@ describe("Memory OS Layer 5 — semantic recall is scoped per user, not just per
 
     await store.recall({ userId: "carol", text: "anything" });
     const calledFilters = (vectorIndex.query as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1].filter);
-    expect(calledFilters).toContainEqual({ spaceId: { $eq: "space1" }, userId: { $eq: "carol" } });
-    expect(calledFilters).toContainEqual({ spaceId: { $eq: "space1" }, userId: { $eq: "" } });
+    expect(calledFilters).toContainEqual({ tenantId: { $eq: "" }, spaceId: { $eq: "space1" }, projectId: { $eq: "" }, userId: { $eq: "carol" } });
+    expect(calledFilters).toContainEqual({ tenantId: { $eq: "" }, spaceId: { $eq: "space1" }, projectId: { $eq: "" }, userId: { $eq: "" } });
   });
 
   it("an unscoped (space-level) query issues only one query, not a duplicate", async () => {

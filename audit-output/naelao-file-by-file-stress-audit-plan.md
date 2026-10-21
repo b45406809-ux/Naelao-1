@@ -1452,9 +1452,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/mcp-hub-platform-provider-keys.test.ts`
 - [ ] `tests/unit/mcp-hub-ssrf.test.ts`
 - [ ] `tests/unit/member-seat-reseller-billing.test.ts`
-- [ ] `tests/unit/memory-os-end-to-end.test.ts`
+- [x] `tests/unit/memory-os-end-to-end.test.ts`
 - [ ] `tests/unit/memory-os-fabric-wiki.test.ts`
-- [ ] `tests/unit/memory-os-layer5-user-scoping.test.ts`
+- [x] `tests/unit/memory-os-layer5-user-scoping.test.ts`
 - [ ] `tests/unit/memory-os-wiki-autorag.test.ts`
 - [ ] `tests/unit/memory-os.test.ts`
 - [ ] `tests/unit/memory-panel-reads-memory-os.test.ts`

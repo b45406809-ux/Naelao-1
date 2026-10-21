@@ -285,9 +285,12 @@ describe("Memory OS end-to-end — the project/thread boundary", () => {
     // An agent should see BOTH what the project established and what it personally observed.
     const { a } = twoThreadsOneProject();
     await a.remember({ text: "", entity: "payout", relation: "destination", attribute: "Revolut" });
-    await a.remember({ text: "the owner replies fastest in the evening" });
+    await a.remember({ text: "the owner replies fastest about payouts in the evening" });
 
-    const merged = JSON.stringify(await a.recall({ text: "payout evening owner" }));
+    // Use one query that genuinely targets both durable payout configuration and episodic
+    // payout observations. The strict fact relevance gate intentionally rejects a fact when
+    // most meaningful query terms point elsewhere.
+    const merged = JSON.stringify(await a.recall({ text: "payout" }));
     expect(merged).toContain("Revolut");
     expect(merged).toContain("evening");
   });
