@@ -1855,3 +1855,9 @@ Validation: built-in OAuth, custom OAuth, Composio, and Pipedream suites passed 
 The owner voice-ticket route checked `spaces.status` but did not verify the parent organization. A suspended organization whose Space remained active could still mint a short-lived hosted voice ticket. It now uses the shared active tenant/Space gate before session lookup; the regression confirms it returns 403 without contacting the Spaces Worker.
 
 Validation: owner voice route suite 5/5; full Agents suite 156 files / 714 tests; Agents TypeScript, focused security lint and `git diff --check` passed. Other tenant-scoped read/write routes remain under review.
+
+## Agent restart and approval continuation gates (2026-10-21)
+
+The direct HMAC-protected `/agents/:agentId/script/run` route could bypass the already-added task-run and trigger suspension checks. Interrupted-run continuation and HITL approval could also resume previously admitted work after suspension. All three dispatch paths now recheck the active organization and Space, and the asynchronous approval-resume helper repeats the check immediately before resuming its DO. Approval rejection remains available as a stop/cleanup action.
+
+Validation: direct script HMAC, approval authority and continuation regressions passed 11/11; full Agents suite passed 156 files / 714 tests; Agents TypeScript, focused security lint and `git diff --check` passed. Queue alarms, long-running in-flight tool loops and other entrypoints remain in the open audit.

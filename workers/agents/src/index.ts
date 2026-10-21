@@ -1867,6 +1867,7 @@ app.post("/agents/:agentId/script/run", async (c) => {
   if (body.tenantId && body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
   }
+  if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
 
   const actingUserId = c.req.header("x-naelao-user-id") ?? "";
   const stub = body.threadTier || body.projectId
@@ -2718,6 +2719,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/agent/interrupted", async (c) => {
 app.post("/spaces/:spaceId/sessions/:sessionId/agent/interrupted", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const { spaceId, sessionId } = c.req.param();
+  if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const space = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?")
     .bind(spaceId, tenantId).first<{ id: string }>();
   if (!space) throw notFound("Space");
@@ -3458,6 +3460,7 @@ async function requireApprovalAuthority(c: Parameters<typeof requireOwnedSpace>[
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/approve", async (c) => {
   const { spaceId, approvalId } = c.req.param();
   const tenantId = await requireApprovalAuthority(c, spaceId);
+  if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const stub = getHitlDo(c.env, spaceId);
   const res = await stub.fetch(`http://do/requests/${approvalId}/approve`, { method: "PUT" });
   // Approving is only half the job: if a run suspended waiting on this, it has to actually pick
@@ -3473,6 +3476,7 @@ app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/approve", as
  *  gate has no loop behind it), and a failure here must never make an approval look unsuccessful. */
 async function resumeSuspendedRun(env: AgentsEnv, tenantId: string, spaceId: string, approvalId: string): Promise<void> {
   try {
+    if (!await isActiveTenantSpace(env, spaceId, tenantId)) return;
     // Which agent DO actually suspended is recorded on the approval itself. Agent DOs are
     // addressed per space:project:thread, so guessing (e.g. always the Space Assistant) would
     // reach the wrong instance for any project-scoped run and silently find no checkpoint.

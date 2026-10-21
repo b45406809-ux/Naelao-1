@@ -12,7 +12,7 @@ import { mintInternalToken } from "@naelao/http";
 
 const SECRET = "test-platform-secret";
 
-function makeEnv(): AgentsEnv & { __runCalls: unknown[] } {
+function makeEnv(active = true): AgentsEnv & { __runCalls: unknown[] } {
   const runCalls: unknown[] = [];
   const agentDoStub = {
     async fetch(reqInput: Request) {
@@ -24,6 +24,7 @@ function makeEnv(): AgentsEnv & { __runCalls: unknown[] } {
   return {
     ANTHROPIC_API_KEY: "test-anthropic-key",
     PLATFORM_SECRET: SECRET,
+    PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => active ? { id: "space-1" } : null }) }) },
     WHOP_API_KEY: "test-whop-key",
     NAELAO_WHOP_COMPANY_ID: "test-company",
     NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },
@@ -100,6 +101,18 @@ describe("POST /agents/:agentId/script/run — auth boundary", () => {
     );
     expect(res.status).toBe(200);
     expect(env.__runCalls).toHaveLength(1);
+  });
+
+  it("rejects a valid internal request for a suspended tenant before reaching the agent DO", async () => {
+    const env = makeEnv(false);
+    const validToken = await mintInternalToken(SECRET, "tenant-a");
+    const res = await app.fetch(scriptRunReq(
+      { goal: "do something", spaceId: "space-1", tenantId: "tenant-a" },
+      { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": validToken },
+    ), env);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(env.__runCalls).toHaveLength(0);
   });
 
   it("never forwards caller-supplied durable continuation state to the agent DO", async () => {
