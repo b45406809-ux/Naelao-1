@@ -699,6 +699,7 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
       method: "POST",
       headers,
       body: JSON.stringify(mcpPayload),
+      redirect: "error",
       signal: AbortSignal.timeout(15_000),
     });
   } catch (fetchErr) {
@@ -955,6 +956,7 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
       method: "POST",
       headers,
       body: JSON.stringify(mcpPayload),
+      redirect: "error",
       signal: AbortSignal.timeout(30_000),
     });
   } catch (fetchErr) {

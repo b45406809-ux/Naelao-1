@@ -52,4 +52,27 @@ describe("MCP server response boundaries", () => {
     expect(response.status).toBe(502);
     expect(await response.json()).toMatchObject({ error_code: "upstream_error" });
   });
+
+  it.each([
+    ["GET", "https://mcp/v1/spaces/s/mcp-servers/server/tools"],
+    ["POST", "https://mcp/v1/spaces/s/mcp-servers/server/tools/call"],
+  ])("rejects redirects for credentialed %s direct MCP egress", async (method, url) => {
+    let redirect: string | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      redirect = init?.redirect;
+      return Response.json({ result: { tools: [] } });
+    }));
+    const tenantToken = await mintInternalToken("secret", "tenant");
+    const response = await worker.fetch!(new Request(url, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": tenantToken,
+      },
+      ...(method === "POST" ? { body: JSON.stringify({ tool_name: "search", input: {} }) } : {}),
+    }), env(), {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(redirect).toBe("error");
+  });
 });
