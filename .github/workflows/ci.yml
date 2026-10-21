@@ -41,7 +41,9 @@ jobs:
         run: pnpm turbo run build
 
       - name: Typecheck all packages
-        run: pnpm --recursive --parallel typecheck
+        # Do not spawn a TypeScript process for all 63 workspaces at once; that exceeds the
+        # memory limit of smaller CI runners. Two concurrent projects retain useful parallelism.
+        run: pnpm --recursive --workspace-concurrency=2 typecheck
 
   test:
     name: Unit & integration tests
