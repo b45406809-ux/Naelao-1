@@ -23,7 +23,7 @@
  *                   directly (still logged, still auditable, never silent).
  *
  * Naelao's ONE Whop master API key (`WHOP_PLATFORM_API_KEY`) is the only credential involved —
- * universal-tools doctrine, exactly like COMPOSIO_API_KEY/TOGETHER_API_KEY: it never reaches an
+ * universal-tools doctrine: it never reaches an
  * agent isolate, only these HMAC-gated internal routes and the prebuilt scripts that call them.
  */
 

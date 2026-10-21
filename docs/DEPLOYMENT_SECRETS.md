@@ -43,7 +43,6 @@ that worker's directory. For local dev, create `workers/<name>/.dev.vars` (gitig
 | **Whop as a second PLATFORM billing provider** — `WHOP_API_KEY`, `WHOP_GROWTH_PLAN_ID`, `WHOP_BUSINESS_PLAN_ID`, `WHOP_PLATFORM_PLAN_WEBHOOK_SECRET` | billing | Added because Lemon Squeezy's own onboarding requires a Stripe-linked payout path unavailable in some sellers' countries (AUDIT_TODO.md AI-7). This is Naelao's OWN **normal** Whop seller/company account — sign up at [whop.com](https://whop.com) like any creator, no invite needed (a completely different relationship than `WHOP_PLATFORM_API_KEY` below, which needs Whop's invite-only Platforms API). In your Whop company dashboard: **Settings → API** for `WHOP_API_KEY`; create two recurring **Plans** for the Growth/Business tiers and copy their plan ids; **Settings → Webhooks** → create one pointing at `https://<billing-worker>/webhooks/whop-platform-plan` and copy its signing secret into `WHOP_PLATFORM_PLAN_WEBHOOK_SECRET` (a DIFFERENT secret than `WHOP_WEBHOOK_SECRET` below — that one verifies a BUSINESS's own sub-merchant company's webhook, this verifies Naelao's own company's). `/billing/checkout` tries Whop first, falls back to Lemon Squeezy, then a dev placeholder. `/billing/portal` returns Whop's fixed self-serve orders page (`whop.com/orders/` — Whop has no per-customer-mintable portal session) when the org's subscription is Whop-backed. |
 | **Whop OAuth-delegated checkout** (end-user subscriptions/credit-packs settling into a BUSINESS's own connected Whop company) | billing, agents | No new secret — reuses the "Connect with Whop" OAuth flow's existing `WHOP_OAUTH_CLIENT_ID`/`WHOP_OAUTH_CLIENT_SECRET` (see the WHOP connector row further down) and its vaulted `WHOP_OAUTH_TOKENS` credential per business. Scopes were widened to include `checkout_configuration:create`, `plan:create`, `access_pass:create`/`update`, `checkout_configuration:basic:read` — a business that connected Whop BEFORE this change must reconnect once to grant the new scopes. `/internal/business-subscriptions/checkout` and `/internal/credit-packs/checkout` try this path first (settles 100% into that business's own Whop balance — Naelao's cut is NOT auto-split here; it reaches the ledger via the existing revenue-tracker prebuilt's periodic poll of that same account), falling back to Lemon Squeezy/dev placeholder when the business has no Whop connection. |
 | `RESEND_API_KEY` (+ `RESEND_API_URL` = `https://api.resend.com`) | notifications (hard-required) | [resend.com](https://resend.com) → API Keys. Also verify your sending domain there (DNS records). Powers email verification, password resets, approval-request emails, agent notifications — signup is functionally broken without it (credits are only granted on email verification). |
-| `TOGETHER_API_KEY` (+ `TOGETHER_API_URL` = `https://api.together.xyz`) | together-ai (hard-required) | [api.together.ai](https://api.together.ai) → Settings → API Keys. Open-model inference the `together-ai` prebuilt exposes to agents. |
 
 > **No `ANTHROPIC_API_KEY` worker secret.** The agents worker's `validateEnv` no longer requires
 > it; the CF AI Gateway holds it. You *may* still set `ANTHROPIC_API_KEY` on the agents worker as
@@ -146,10 +145,9 @@ flows. Never platform secrets:
 4. Lemon Squeezy: key + store + webhook + the two plan variant IDs on billing (the ONLY billing
    provider — no Stripe).
 5. Resend: key + verified domain on notifications.
-6. `TOGETHER_API_KEY` on together-ai.
-7. Deploy all workers (`--env production` — secrets are set PER environment), deploy Pages apps
+6. Deploy all workers (`--env production` — secrets are set PER environment), deploy Pages apps
    with `NEXT_PUBLIC_API_URL` including `/v1`.
-8. Optional but recommended before real traffic: `TAVILY_API_KEY` (agents advertise web search),
+7. Optional but recommended before real traffic: `TAVILY_API_KEY` (agents advertise web search),
    CF-for-SaaS zone token (custom domains).
 # Batch 1–4 runtime and connector rollout
 

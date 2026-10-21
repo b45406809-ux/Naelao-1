@@ -4,9 +4,9 @@ Generated from the current source/config tree using Wrangler worker manifests, e
 
 Supplemental routes added after the last full discovery refresh: `workers/spaces/src/index.ts` registers owner-only `POST /builder/erasure`, `GET /builder/erasure/:requestId`, and `DELETE /builder/erasure/:requestId`; the latter two are the only request paths exempted from router tenant suspension. Internal `DELETE /internal/tenant/:tenantId/spaces/:spaceId/product-users/erase` and `DELETE /internal/tenant/:tenantId/spaces/:spaceId/business-services/erase` routes are protected by `requireInternalHmac`. Aggregate route counts and other line references above predate these additions and still need a full discovery refresh.
 
-Workers with Wrangler manifests: 29
+Workers with Wrangler manifests: 28
 Exported DurableObject declarations: 22
-Literal route-registration matches: 1062
+Literal route-registration matches: 1059
 
 ## Worker services
 
@@ -35,7 +35,6 @@ Literal route-registration matches: 1062
 - `workers/sweeper` — manifest `workers/sweeper/wrangler.toml`; entrypoint `workers/sweeper/src/index.ts`
 - `workers/synthetics` — manifest `workers/synthetics/wrangler.toml`; entrypoint `workers/synthetics/src/index.ts`
 - `workers/threads` — manifest `workers/threads/wrangler.toml`; entrypoint `workers/threads/src/index.ts`
-- `workers/together-ai` — manifest `workers/together-ai/wrangler.toml`; entrypoint `workers/together-ai/src/index.ts`
 - `workers/triggers` — manifest `workers/triggers/wrangler.toml`; entrypoint `workers/triggers/src/index.ts`
 - `workers/workflows` — manifest `workers/workflows/wrangler.toml`; entrypoint `workers/workflows/src/index.ts`
 - `workers/ws-gateway` — manifest `workers/ws-gateway/wrangler.toml`; entrypoint `workers/ws-gateway/src/index.ts`
@@ -132,7 +131,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/spaces/src/routes/mcp.ts` — 1 route/middleware registration calls
 - `workers/spaces/src/routes/recipes.ts` — 2 route/middleware registration calls
 - `workers/threads/src/index.ts` — 9 route/middleware registration calls
-- `workers/together-ai/src/index.ts` — 3 route/middleware registration calls
 - `workers/triggers/src/index.ts` — 6 route/middleware registration calls
 
 ## Literal route registrations
@@ -1190,9 +1188,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/threads/src/index.ts:128` — `app.patch("/v1/threads/sessions/:sessionId", async (c) => {`
 - `workers/threads/src/index.ts:162` — `app.post("/v1/threads/:id/summarize", async (c) => {`
 - `workers/threads/src/index.ts:195` — `app.delete("/v1/threads/:id", async (c) => {`
-- `workers/together-ai/src/index.ts:78` — `app.use("*", requestId);`
-- `workers/together-ai/src/index.ts:79` — `app.use("*", async (c, next) => {`
-- `workers/together-ai/src/index.ts:85` — `app.post("/chat", async (c) => {`
 - `workers/triggers/src/index.ts:37` — `app.use("*", requestId);`
 - `workers/triggers/src/index.ts:38` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
 - `workers/triggers/src/index.ts:40` — `app.get("/v1/triggers", async (c) => {`

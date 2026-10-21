@@ -1660,7 +1660,7 @@ app.delete("/internal/semantic-cache", async (c) => {
 //
 // Web search is bundled by Naelao exactly like Claude/ChatGPT bundle it: the platform holds ONE
 // provider key (TAVILY_API_KEY, a Workers Secret) and every agent gets search for free. This is
-// the `commerce`/`together-ai` platform-key precedent, NOT the BYO-key `space_credentials` model
+// the platform-held `commerce` key precedent, NOT the BYO-key `space_credentials` model
 // (which is only for a builder's OWN external accounts). The key never leaves this worker — the
 // calling isolate only ever sees normalized results.
 //

@@ -1132,7 +1132,7 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     search.** Audit finding (traced every `prebuilt/` script against where its key comes from):
     the platform already gets this right for `browser-use` (CF Browser Rendering), `code-exec`
     (CF isolate/container, no key), `knowledge-base` (CF Vectorize/AI), `commerce` (Naelao's LS
-    key + fee), and LLM inference (Anthropic + `together-ai`'s `TOGETHER_API_KEY`). BYO-key is
+    key + fee), and LLM inference through the shared CF AI Gateway. BYO-key is
     correctly reserved for the builder's OWN external accounts (`mcp-connector`,
     `revenue-tracker` → their Whop/Gumroad). The ONE mis-modeled/broken universal tool was
     **`web-search`**: its design comment intended platform-provided ("the API key never reaches
@@ -1141,8 +1141,8 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     search was advertised in agent profiles yet completely non-functional. Fixed: implemented the
     three routes on the knowledge worker (Tavily via a new `TAVILY_API_KEY` Workers Secret,
     HMAC-gated like every other `/internal/*` route, SSRF-guarded `fetch`/`extract` via
-    `@naelao/security`'s `checkSsrf`), following the `commerce`/`together-ai` platform-key
-    precedent — NOT the BYO `space_credentials` model. `search`/`extract` degrade honestly
+    `@naelao/security`'s `checkSsrf`), following the `commerce` platform-key precedent — NOT
+    the BYO `space_credentials` model. `search`/`extract` degrade honestly
     (`configured:false`) when the platform key is unset; `fetch` is a keyless SSRF-guarded GET
     that works out of the box. The `web-search` prebuilt now mints a verifiable tenant-scoped
     internal token (the gate requires it) and the provider key never reaches the agent isolate.

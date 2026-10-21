@@ -59,7 +59,7 @@ export interface BillingEnv {
   /** Service binding to notifications worker — sends the one-time payout approval email. */
   NOTIFICATIONS_WORKER?: Fetcher;
   /** Naelao's ONE Whop master Platform account API key — universal-tools doctrine, like
-   *  COMPOSIO_API_KEY/TOGETHER_API_KEY. Used to auto-provision a sub-merchant company per
+   *  other platform-held provider credentials. Used to auto-provision a sub-merchant company per
    *  business, read balances, create checkouts, and issue withdrawals. Never platform billing
    *  custody (item 45 stands — Lemon Squeezy is still the only PLATFORM provider); this is the
    *  per-business revenue-custody rail. Optional — wallet routes degrade honestly

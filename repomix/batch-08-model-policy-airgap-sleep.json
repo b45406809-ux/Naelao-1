@@ -69,7 +69,6 @@
     "workers/spaces/src/index.ts",
     "workers/spaces/src/do/SpaceDO.ts",
     "workers/spaces/wrangler.toml",
-    "workers/together-ai/**"
   ],
   "ignore": {
     "useGitignore": true,

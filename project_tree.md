@@ -795,10 +795,6 @@
     │   ├── src
     │   │   └── index.ts
     │   └── wrangler.toml
-    ├── together-ai
-    │   ├── src
-    │   │   └── index.ts
-    │   └── wrangler.toml
     ├── triggers
     │   ├── src
     │   │   └── index.ts

@@ -206,7 +206,7 @@ The remaining direct outbound inventory is now classified rather than treated as
 | Worker/path | Current classification | Required proof or follow-up |
 |---|---|---|
 | `workers/assistant` platform documentation assistant | Platform-scoped; no space identifier or tenant credential vault | Keep outside space air-gap claims, or add an explicit platform egress posture if it will ever serve a space assistant. |
-| `workers/together-ai` and `workers/marketplace` embedding paths | Platform/service-scoped | Document that these routes cannot be reached as a space tool, or route them through the shared space policy. |
+| `workers/marketplace` embedding paths | Platform/service-scoped | Document that these routes cannot be reached as a space tool, or route them through the shared space policy. |
 | `workers/connector-gumroad` and `workers/connector-whop` | Connector shims; MCP Hub checks the space policy and now adds a short-lived internal HMAC plus space context before invocation; the shim rejects unproved MCP calls | Deployment must provision the same `PLATFORM_SECRET` on MCP Hub and both shims, then verify the route in staging. |
 | `workers/analytics`, `workers/synthetics`, and `workers/workflows/QueueHealthWorkflow` | Platform telemetry/health infrastructure | Verify that telemetry metadata contains no space payload and that account-level controls cover these calls. |
 | billing provider calls | Business/billing infrastructure; some calls are space-attributed | Review each route against billing's space attribution before claiming tenant air-gap coverage. |
