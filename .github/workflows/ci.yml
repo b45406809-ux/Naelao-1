@@ -92,7 +92,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # --if-present must precede the script name or pnpm forwards it as a literal arg to the
-      # underlying command (e.g. `next lint --if-present`, which next's CLI rejects).
-      - name: Lint (if configured)
-        run: pnpm --recursive --parallel --if-present lint
+      # Package-level lint scripts are not configured. Enforce Biome's security rule group
+      # directly so this job checks every supported source file instead of passing as a no-op.
+      - name: Lint security rules
+        run: pnpm exec biome lint . --only=security --max-diagnostics=0
