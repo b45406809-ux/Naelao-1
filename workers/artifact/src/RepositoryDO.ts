@@ -25,6 +25,11 @@ interface RepoState {
 
 type Entries = Record<string, TreeEntry>;
 
+const RECONCILE_MAX_FILES = 1_000;
+// Changes are base64 encoded in the internal commit request, so keep raw workspace
+// content below half of the direct request-body ceiling to leave room for paths/metadata.
+const RECONCILE_MAX_BYTES = 8 * 1024 * 1024;
+
 interface Env {
   REPOSITORY_OBJECTS: R2Bucket;
   /** Canonical mutable workspace files; Git refs/objects are a materialized projection. */
@@ -503,15 +508,28 @@ export class RepositoryDO extends DurableObject<Env> {
         const prefix = branch === "main" ? workspaceRoot : `${workspaceRoot}branches/${branch.replaceAll("\\", "/")}/`;
         const live = new Map<string, { bytes: Uint8Array; hash: string; etag: string }>();
         let cursor: string | undefined;
+        let scannedFiles = 0;
+        let scannedBytes = 0;
         do {
           const page = await this.env.WORKSPACE_R2.list(cursor ? { prefix, cursor } : { prefix });
           for (const item of page.objects) {
             if (item.key.slice(prefix.length).startsWith("branches/")) continue;
             if (item.customMetadata?.deleted === "true" || item.key.endsWith("/.keep")) continue;
+            if (scannedFiles >= RECONCILE_MAX_FILES || item.size > RECONCILE_MAX_BYTES - scannedBytes) {
+              return jsonError(`Workspace reconciliation exceeds its ${RECONCILE_MAX_FILES}-file or ${RECONCILE_MAX_BYTES}-byte scan limit`, 413);
+            }
+            scannedFiles++;
+            scannedBytes += item.size;
             const path = normalizePath(item.key.slice(prefix.length));
             const object = await this.env.WORKSPACE_R2.get(item.key);
             if (!object) continue;
             const bytes = new Uint8Array(await object.arrayBuffer());
+            if (bytes.byteLength > RECONCILE_MAX_BYTES - (scannedBytes - item.size)) {
+              return jsonError(`Workspace reconciliation exceeds its ${RECONCILE_MAX_FILES}-file or ${RECONCILE_MAX_BYTES}-byte scan limit`, 413);
+            }
+            // R2 metadata may be stale after a concurrent write. Count the actual bytes read
+            // before retaining them so an inconsistent size cannot bypass the memory ceiling.
+            scannedBytes += bytes.byteLength - item.size;
             const head = await this.env.WORKSPACE_R2.head(item.key);
             if (!head) continue;
             live.set(path, { bytes, hash: await sha256(bytes), etag: head.etag });

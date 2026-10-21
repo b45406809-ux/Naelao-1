@@ -2181,8 +2181,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/artifact/src`
 
-- [ ] `workers/artifact/src/RepositoryDO-boundaries.test.ts`
-- [ ] `workers/artifact/src/RepositoryDO.ts`
+- [x] `workers/artifact/src/RepositoryDO-boundaries.test.ts`
+- [x] `workers/artifact/src/RepositoryDO.ts`
 - [ ] `workers/artifact/src/index.ts`
 - [ ] `workers/artifact/src/repository-token.test.ts`
 - [ ] `workers/artifact/src/repository-token.ts`
