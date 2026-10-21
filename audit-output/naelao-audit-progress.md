@@ -1302,3 +1302,9 @@ Validation: conversation compaction, conversation search, and transcript loader 
 Stress review of a maximum 500-row response found the 1 MiB trimming loop removed one oldest message and re-serialized the entire page each time. With near-ceiling messages this could perform hundreds of full-page serializations. The reader now measures row JSON sizes once from newest to oldest, retains the largest contiguous newest suffix under a reserved envelope budget, and serializes the final bounded response once. It fails closed if even one row cannot fit. Expanded the regression to 200 × 100 KiB messages (~20 MB source page) and verified the response stays under 1 MiB with an exact continuation cursor.
 
 Validation: Spaces pagination suite passed 1 file / 4 tests; Spaces TypeScript check passed.
+
+## Fail closed on empty pages with an active history cursor (2026-10-21)
+
+The automatic transcript loader and `conversation.search` both stopped on an empty page without checking `has_more`. A contradictory/failed page response could therefore be treated as complete history and make the agent infer a fact was never discussed. Both paths now reject that state as incomplete; the compactor refuses to replace context from it, and search returns an explicit unavailable/incomplete result. Added regressions to both readers.
+
+Validation: Agents conversation search, transcript loader, and compaction suites passed 3 files / 24 tests; Agents TypeScript check passed.

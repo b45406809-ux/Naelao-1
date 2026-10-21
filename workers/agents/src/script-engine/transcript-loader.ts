@@ -32,7 +32,12 @@ export async function loadTranscriptPages<T extends TranscriptPageMessage>(
       const body = await readBoundedResponseJson<{ data?: T[]; messages?: T[]; cursor_applied?: boolean; has_more?: boolean }>(response, TRANSCRIPT_MAX_BYTES + 256 * 1024);
       if (beforeId && body.cursor_applied === false) return undefined;
       const page = body.data ?? body.messages ?? [];
-      if (page.length === 0) break;
+      if (page.length === 0) {
+        // An empty page is only end-of-history when the service agrees. Do not let an
+        // inconsistent cursor/provider response silently compact an incomplete transcript.
+        if (body.has_more === true) return undefined;
+        break;
+      }
       for (const message of page) {
         if (message.id) {
           if (seenIds.has(message.id)) return undefined;

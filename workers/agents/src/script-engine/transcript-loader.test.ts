@@ -32,6 +32,13 @@ describe("bounded transcript page loading", () => {
     expect(calls).toBe(2);
   });
 
+  it("rejects an empty page that claims older rows remain", async () => {
+    const result = await loadTranscriptPages<{ id: string; content: string }>(() =>
+      Promise.resolve(Response.json({ data: [], has_more: true }))
+    );
+    expect(result).toBeUndefined();
+  });
+
   it("rejects repeated pages instead of duplicating transcript content", async () => {
     let calls = 0;
     const page = Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, content: "x" }));

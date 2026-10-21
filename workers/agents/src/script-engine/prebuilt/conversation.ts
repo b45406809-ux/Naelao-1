@@ -137,7 +137,19 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
         return { messages, incomplete: true, unavailable: false, error: "The history cursor is no longer valid; restart the search from the newest page.", ...(messages[0]?.id ? { nextCursor: messages[0].id } : {}) };
       }
       const page = body.data ?? body.messages ?? [];
-      if (page.length === 0) break;
+      if (page.length === 0) {
+        if (body.has_more === true) {
+          incomplete = true;
+          return {
+            messages,
+            incomplete,
+            unavailable: messages.length === 0,
+            error: "The transcript service returned an empty page while older messages remain.",
+            ...(messages[0]?.id ? { nextCursor: messages[0].id } : beforeId ? { nextCursor: beforeId } : {}),
+          };
+        }
+        break;
+      }
       const acceptedPage: StoredMessage[] = [];
       // SpaceDO pages are chronological. Keep the newest contiguous suffix when the byte
       // budget cuts through a page so before_id can continue toward the dropped older prefix.

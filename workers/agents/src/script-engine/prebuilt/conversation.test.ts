@@ -207,6 +207,15 @@ describe("conversation.search", () => {
     expect(result.reason).toContain("503");
   });
 
+  it("does not treat an empty page with has_more as proof the transcript is exhausted", async () => {
+    const result = (await conversation.operations["conversation.search"](
+      { query: "missing topic" },
+      context(async () => Response.json({ data: [], has_more: true }))
+    )) as { ok: boolean; complete: boolean; reason: string };
+    expect(result).toMatchObject({ ok: false, complete: false });
+    expect(result.reason).toContain("empty page while older messages remain");
+  });
+
   it("does not silently restart at the newest page when an older-page cursor is stale", async () => {
     const result = (await conversation.operations["conversation.search"](
       { query: "copper telescope", before_id: "deleted-message" },
