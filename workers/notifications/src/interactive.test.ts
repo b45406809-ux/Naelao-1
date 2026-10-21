@@ -116,6 +116,25 @@ describe("interactive mobile approval delivery", () => {
     expect(res.status).toBe(502); expect(await res.json()).toMatchObject({ delivered: false });
   });
 
+  it("does not expose provider fetch errors that may contain a Telegram bot token URL", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("request failed https://api.telegram.org/bottelegram-secret-token/sendMessage");
+    }));
+    const credentials = { async fetch() { return Response.json({ value: "telegram-secret-token" }); } };
+    const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ channel: "telegram", space_id: "space", to: "recipient", message: "hello" }),
+    }), {
+      ...env(), PLATFORM_SECRET: "platform-secret", CREDENTIALS_WORKER: credentials as unknown as Fetcher,
+    }, {} as ExecutionContext);
+
+    expect(response.status).toBe(502);
+    const body = await response.text();
+    expect(body).toContain("telegram send failed");
+    expect(body).not.toContain("telegram-secret-token");
+  });
+
   for (const channel of ["slack", "telegram"]) {
     it(`rejects oversized ${channel} response JSON and sets an upstream deadline`, async () => {
       const outbound = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(

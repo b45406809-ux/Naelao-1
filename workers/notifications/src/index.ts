@@ -277,8 +277,8 @@ async function sendChatMessage(
     if (!resp.ok) return { delivered: false, reason: `${channel} returned ${resp.status}`, status: resp.status };
     if (channel === "telegram" && !(await readProviderJson<{ ok?: boolean; description?: string }>(resp))?.ok) return { delivered: false, reason: "telegram rejected the message", status: resp.status };
     return { delivered: true };
-  } catch (err) {
-    return { delivered: false, reason: `${channel} send failed: ${(err as Error).message}` };
+  } catch {
+    return { delivered: false, reason: `${channel} send failed` };
   }
 }
 
