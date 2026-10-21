@@ -1,5 +1,8 @@
 name: Deploy to staging
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -9,11 +12,37 @@ env:
   PNPM_VERSION: "9"
 
 jobs:
+  preflight:
+    name: Staging preflight checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: pnpm turbo run build
+
+      - name: Full typecheck
+        run: pnpm --recursive --parallel typecheck
+
+      - name: Run tests
+        run: pnpm --filter "@naelao/tests" test
+
   deploy-workers-staging:
     name: Deploy workers to staging
     runs-on: ubuntu-latest
     environment: staging
     concurrency: deploy-staging
+    needs: [preflight]
     steps:
       - uses: actions/checkout@v4
 
@@ -106,6 +135,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     concurrency: deploy-staging-pages
+    needs: [preflight]
     steps:
       - uses: actions/checkout@v4
 
@@ -169,6 +199,7 @@ jobs:
     name: Deploy marketplace-web to staging (CF Pages)
     runs-on: ubuntu-latest
     environment: staging
+    needs: [preflight]
     steps:
       - uses: actions/checkout@v4
 
@@ -201,6 +232,7 @@ jobs:
     name: Build and publish widget
     runs-on: ubuntu-latest
     environment: staging
+    needs: [preflight]
     steps:
       - uses: actions/checkout@v4
 

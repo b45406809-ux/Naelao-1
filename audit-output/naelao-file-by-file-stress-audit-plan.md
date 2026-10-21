@@ -64,13 +64,13 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `.github/workflows/apply-gemini-batch.yml`
 - [ ] `.github/workflows/bundle-check.yml`
-- [ ] `.github/workflows/ci.yml`
-- [ ] `.github/workflows/deploy-prod.yml`
-- [ ] `.github/workflows/deploy-staging.yml`
+- [x] `.github/workflows/ci.yml`
+- [x] `.github/workflows/deploy-prod.yml`
+- [x] `.github/workflows/deploy-staging.yml`
 - [ ] `.github/workflows/generate-repomix-batch.yml`
 - [ ] `.github/workflows/implement-full-plan.yml`
 - [ ] `.github/workflows/manual-cmd.yml`
-- [ ] `.github/workflows/pr-checks.yml`
+- [x] `.github/workflows/pr-checks.yml`
 
 ### `_BUILD_PLAN`
 

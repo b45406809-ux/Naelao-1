@@ -1235,3 +1235,14 @@ Changed sentence splitting to a single global boundary scan that yields segments
 Validation: RAG suite passed 4 files / 27 tests; RAG TypeScript check and `git diff --check` passed. Workspace `pnpm` scripts were blocked by the automatic dependency check rejecting the ignored `core-js-pure` build script, so the installed Vitest and TypeScript binaries were run directly.
 
 Re-reviewed `chunk.ts` and `batch05-stress.test.ts`. This is an efficiency fix; the existing output overlap and sentence boundary behavior are preserved.
+
+
+## CI and deployment workflow boundaries (2026-10-21)
+
+Reviewed CI, PR checks, and staging/production deployment workflow wiring. The PR migration workflow selected Node 20 although the test helpers require `node:sqlite`, available from Node 22.5. CI and deploy workflows also relied on implicit repository token permissions. The staging deployment had no dependency on build, typecheck, or test preflight, so deploy jobs could begin while checks failed.
+
+Updated PR checks to Node 22, set read-only `contents` permissions on CI, PR checks, staging, and production workflows, and made staging worker and frontend deployments depend on a preflight that installs, builds, typechecks, and runs the test workspace. The production frontend job retains `contents: write` because it creates the GitHub release; other production jobs inherit read-only permissions.
+
+Confirmed YAML parsing for all four workflows. Reviewed D1 migration invocation and the referenced Wrangler config: every deploy replays all historical SQL files with `d1 execute` and suppresses every error via `|| true`; several historical migrations contain non-idempotent `ALTER TABLE` operations. Replacing this with Wrangler's migration ledger without first baselining the existing remote database could replay destructive or already-applied migrations, so this remains a release-blocking migration-management gap requiring a verified remote baseline and a one-time ledger bootstrap. No remote D1 command was run.
+
+Checked the four workflow files listed above. Their other steps still require ongoing action-version pinning and deployment configuration review as the workflow audit continues.
