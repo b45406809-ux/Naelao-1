@@ -4,8 +4,8 @@ import {
   isTenantActive,
 } from "./tenant-status";
 
-function database(status: string | null) {
-  const first = vi.fn().mockResolvedValue(status ? { status } : null);
+function database(status: string | null, resellerStatus = "active") {
+  const first = vi.fn().mockResolvedValue(status ? { status, reseller_status: resellerStatus } : null);
   const prepare = vi.fn(() => ({ bind: vi.fn(() => ({ first })) }));
   return { db: { prepare } as unknown as D1Database, prepare, first };
 }
@@ -28,12 +28,21 @@ describe("tenant suspension gate", () => {
     );
   });
 
+  it("denies tenants suspended or terminated by their reseller", async () => {
+    expect(await isTenantActive(database("active", "active").db, "tenant-reseller-active"))
+      .toBe(true);
+    expect(await isTenantActive(database("active", "suspended").db, "tenant-reseller-suspended"))
+      .toBe(false);
+    expect(await isTenantActive(database("active", "terminated").db, "tenant-reseller-terminated"))
+      .toBe(false);
+  });
+
   it("bounds status lookups with a short cache and observes the next status after expiry", async () => {
     vi.useFakeTimers();
     const first = vi
       .fn()
-      .mockResolvedValueOnce({ status: "active" })
-      .mockResolvedValueOnce({ status: "suspended" });
+      .mockResolvedValueOnce({ status: "active", reseller_status: "active" })
+      .mockResolvedValueOnce({ status: "suspended", reseller_status: "active" });
     const db = {
       prepare: vi.fn(() => ({ bind: vi.fn(() => ({ first })) })),
     } as unknown as D1Database;

@@ -15,10 +15,12 @@ export async function isTenantActive(
   if (cached) tenantStatusCache.delete(tenantId);
 
   const row = await db
-    .prepare("SELECT status FROM orgs WHERE id = ?")
+    .prepare(`SELECT o.status, COALESCE(h.status, 'active') AS reseller_status
+             FROM orgs o LEFT JOIN tenant_hierarchy h ON h.child_tenant_id = o.id
+             WHERE o.id = ?`)
     .bind(tenantId)
-    .first<{ status: string }>();
-  const active = row?.status === "active";
+    .first<{ status: string; reseller_status: string }>();
+  const active = row?.status === "active" && row.reseller_status === "active";
   if (tenantStatusCache.size >= TENANT_STATUS_CACHE_MAX) {
     const oldest = tenantStatusCache.keys().next().value;
     if (oldest !== undefined) tenantStatusCache.delete(oldest);

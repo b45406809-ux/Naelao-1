@@ -33,12 +33,12 @@ function namedFetcher(name: string): Fetcher {
   } as unknown as Fetcher;
 }
 
-function makeEnv(tenantStatus = "active") {
+function makeEnv(tenantStatus = "active", resellerStatus = "active") {
   return {
     ENVIRONMENT: "test",
     JWT_SECRET,
     PLATFORM_SECRET: "test-platform-secret",
-    PLATFORM_DB: activeTenantDb(tenantStatus),
+    PLATFORM_DB: activeTenantDb(tenantStatus, resellerStatus),
     SPACES_WORKER: namedFetcher("SPACES"),
     KNOWLEDGE_WORKER: namedFetcher("KNOWLEDGE"),
     AGENTS_WORKER: namedFetcher("AGENTS"),
@@ -81,6 +81,14 @@ describe("router — /spaces dispatch order (F15)", () => {
   it("rejects all authenticated feature requests for a suspended tenant", async () => {
     clearTenantStatusCacheForTests();
     const res = await authedFetch("GET", "/v1/spaces/s1", makeEnv("suspended"));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    clearTenantStatusCacheForTests();
+  });
+
+  it("rejects child-tenant requests while its reseller hierarchy is suspended", async () => {
+    clearTenantStatusCacheForTests();
+    const res = await authedFetch("GET", "/v1/spaces/s1", makeEnv("active", "suspended"));
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
     clearTenantStatusCacheForTests();
