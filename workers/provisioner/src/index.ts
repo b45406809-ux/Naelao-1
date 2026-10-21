@@ -671,7 +671,9 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
   const provisioned: string[] = [];
 
   const current = await env.PLATFORM_DB.prepare(
-    "SELECT status FROM spaces WHERE id = ? AND tenant_id = ?"
+    `SELECT s.status FROM spaces s
+     JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active'
+     WHERE s.id = ? AND s.tenant_id = ?`
   ).bind(spaceId, tenantId).first<{ status: string }>();
   if (!current || !mayStartProvisioning(current.status)) {
     console.warn(`[provisioner] Ignoring stale provision request for ${spaceId} (status=${current?.status ?? "missing"})`);
