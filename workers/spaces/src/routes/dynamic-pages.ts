@@ -25,7 +25,8 @@ function previewHostSuffix(env: Env): string | undefined {
 async function publicTenant(c: Context<{ Bindings: Env }>, spaceId: string): Promise<string | Response> {
   const suffix = previewHostSuffix(c.env);
   if (!suffix) return c.json({ error_code: "dynamic_pages_disabled" }, 503);
-  const space = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'").bind(spaceId).first<{ tenant_id: string }>();
+  const space = await c.env.PLATFORM_DB.prepare(`SELECT s.tenant_id FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+    WHERE s.id = ? AND s.status = 'active' AND o.status = 'active'`).bind(spaceId).first<{ tenant_id: string }>();
   if (!space || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(space.tenant_id.toLowerCase())) return c.notFound();
   const expectedHost = `${space.tenant_id.toLowerCase()}.${suffix}`;
   if (new URL(c.req.url).hostname.toLowerCase() !== expectedHost) return c.notFound();
@@ -42,7 +43,8 @@ export function registerDynamicPageRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
     if (!validIdentity(spaceId, appId, "page")) return c.json({ error_code: "bad_request" }, 400);
     if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Space administrator required" }, 403);
-    const owned = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active' AND o.status = 'active'`).bind(spaceId, tenantId).first();
     if (!owned) return c.notFound();
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId });
     let body: Uint8Array;

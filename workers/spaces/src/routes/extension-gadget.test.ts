@@ -4,6 +4,23 @@ import { mintInternalToken } from "@naelao/http";
 import { registerExtensionGadgetRoutes } from "./extension-gadget.js";
 
 describe("extension workflow Gadget bridge", () => {
+  it("blocks Gadget access when its tenant or Space is inactive", async () => {
+    const spaceFetch = vi.fn();
+    const actorFetch = vi.fn();
+    const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) },
+      SPACE_DO: { idFromName: vi.fn(), get: () => ({ fetch: spaceFetch }) },
+      MICRO_APP_DO: { idFromName: vi.fn(), get: () => ({ fetch: actorFetch }) } };
+    const app = new Hono(); registerExtensionGadgetRoutes(app as never);
+    const token = await mintInternalToken(env.PLATFORM_SECRET, "tenant-a");
+    const response = await app.request("/spaces/space-a/internal/extensions/install-a/gadgets/journal/insert", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify({ project_id: "project-a", workflow_id: "record_order", arguments: { table: "orders", record: { id: "one" } } }),
+    }, env as never);
+    expect(response.status).toBe(404);
+    expect(spaceFetch).not.toHaveBeenCalled();
+    expect(actorFetch).not.toHaveBeenCalled();
+  });
+
   it("forwards only a declared Gadget operation to the exact named project install", async () => {
     let rpc: Record<string, unknown> | null = null;
     let auditActor: string | null = null;

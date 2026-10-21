@@ -17,7 +17,8 @@ export function registerExtensionGadgetRoutes(app: Hono<{ Bindings: Env }>): voi
     const workflowId = typeof body.workflow_id === "string" ? body.workflow_id : "";
     const args = body.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments) ? body.arguments as Record<string, unknown> : {};
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return c.json({ error_code: "extension_gadget_project_required" }, 400);
-    const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first();
+    const spaceRow = await c.env.PLATFORM_DB.prepare(`SELECT s.id FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
     if (!spaceRow) return c.json({ error_code: "space_not_found" }, 404);
     const name = await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET);
     const stub = c.env.SPACE_DO.get(c.env.SPACE_DO.idFromName(name));

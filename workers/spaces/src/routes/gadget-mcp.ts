@@ -16,7 +16,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
     const { spaceId, appId } = c.req.param();
     if (!spaceId || !appId || !/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) return c.json({ error_code: "bad_request", message: "Invalid gadget identity" }, 400);
-    const owned = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active' AND o.status = 'active'`).bind(spaceId, tenantId).first();
     if (!owned) return c.json({ error_code: "not_found", message: "Space or app not found" }, 404);
     const role = c.req.header("x-naelao-role") ?? "viewer";
     if (!["owner", "admin"].includes(role)) {
@@ -68,7 +69,8 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
       const member = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM space_members WHERE space_id=? AND tenant_id=? AND end_user_id=? AND suspended_at IS NULL").bind(spaceId, tenantId, userId).first();
       if (!member) return c.json({ error_code: "forbidden", message: "Space membership required" }, 403);
     }
-    const owned = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(spaceId, tenantId).first();
+    const owned = await c.env.PLATFORM_DB.prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first();
     if (!owned) return c.json({ error_code: "not_found" }, 404);
     const id = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
     const viewer = ["owner", "admin"].includes(role) ? "space_manager=1" : `viewer_id=${encodeURIComponent(userId)}`;

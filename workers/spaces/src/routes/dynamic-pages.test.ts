@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { errorResponse, mintInternalToken } from "@naelao/http";
 import { registerDynamicPageRoutes } from "./dynamic-pages.js";
 
-function harness(suffix = "preview.test", applicationSuffix = "app.test") {
+function harness(suffix = "preview.test", applicationSuffix = "app.test", tenantActive = true) {
   const idFromName = vi.fn((name: string) => name as never);
   const fetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname, method: request.method }));
   const app = new Hono();
@@ -13,7 +13,7 @@ function harness(suffix = "preview.test", applicationSuffix = "app.test") {
     PLATFORM_SECRET: "test-secret",
     DYNAMIC_PAGE_HOST_SUFFIX: suffix,
     APPLICATION_HOST_SUFFIX: applicationSuffix,
-    PLATFORM_DB: { prepare: () => ({ bind: (...args: unknown[]) => ({ first: async () => args[0] === "s" ? { tenant_id: "tenant-a" } : null }) }) },
+    PLATFORM_DB: { prepare: () => ({ bind: (...args: unknown[]) => ({ first: async () => tenantActive && args[0] === "s" ? { tenant_id: "tenant-a" } : null }) }) },
     MICRO_APP_DO: { idFromName, get: () => ({ fetch }) },
   } as never;
   return { app, env, idFromName, fetch };
@@ -42,6 +42,17 @@ describe("dynamic page isolation boundary", () => {
     const allowed = await h.app.request("https://tenant-a.preview.test/p/s/app/sign", undefined, h.env);
     expect(await allowed.json()).toEqual({ path: "/page/render", method: "GET" });
     expect(h.idFromName).toHaveBeenCalledWith("gadget:app:space:s");
+  });
+
+  it("blocks public pages and actions after the tenant or Space is suspended", async () => {
+    const h = harness("preview.test", "app.test", false);
+    const page = await h.app.request("https://tenant-a.preview.test/p/s/app/sign", undefined, h.env);
+    const action = await h.app.request("https://tenant-a.preview.test/p/s/app/sign/actions/submit", {
+      method: "POST", headers: { origin: "https://tenant-a.preview.test" }, body: "{}",
+    }, h.env);
+    expect(page.status).toBe(404);
+    expect(action.status).toBe(404);
+    expect(h.fetch).not.toHaveBeenCalled();
   });
 
   it("requires a same-origin POST for the public form action", async () => {

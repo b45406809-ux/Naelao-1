@@ -45,6 +45,16 @@ describe("gadget MCP host adapter", () => {
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 
+  it("blocks gadget operations when the organization or Space is inactive", async () => {
+    const actorFetch = vi.fn(async () => Response.json({ ok: true }));
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret", PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) },
+      MICRO_APP_DO: { idFromName: vi.fn(), get: () => ({ fetch: actorFetch }) } } as never;
+    const response = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: await auth("t", { "x-naelao-role": "admin" }), body: "{}" }, env);
+    expect(response.status).toBe(404);
+    expect(actorFetch).not.toHaveBeenCalled();
+  });
+
   it("requires an administrator to initialize a gadget", async () => {
     const app = testApp();
     registerGadgetMcpRoutes(app as never);
