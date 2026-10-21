@@ -2021,3 +2021,9 @@ Validation: Channels tests passed 2/2 before removal; the five-worker regression
 The managed connector built product URLs from model-supplied IDs. `encodeURIComponent` leaves dot segments intact, so `../../user` could escape `/products/:id` and invoke another Gumroad GET endpoint with the user's token. IDs now require a bounded alphanumeric/underscore/hyphen format. MCP requests are capped at 64 KiB, and provider fetches reject redirects and have a 15-second timeout. Added tests for traversal rejection, oversized input, redirect policy, and outbound deadline configuration.
 
 Validation: Gumroad shim suite passed 1 file / 2 tests; TypeScript and targeted-file Biome lint passed; `git diff --check` passed. Refreshed the source checklist; this connector entrypoint is checked after reviewing its MCP/HMAC path and outbound request construction. External live provider calls remain deployment-level validation. The broader audit continues.
+
+## Whop MCP shim request, path, and write bounds (2026-10-21)
+
+The Whop connector interpolated model-supplied membership IDs into REST paths; `encodeURIComponent` does not encode dot segments. It also accepted unbounded JSON-RPC bodies, had no provider deadline or redirect rejection, and permitted empty or oversized direct-message/announcement writes. Membership and write target IDs now require bounded safe segments, write text is nonempty and size-capped, MCP requests are limited to 64 KiB, and provider requests reject redirects and time out after 15 seconds. Added regression coverage for path traversal, invalid writes, request bounds, and fetch controls.
+
+Validation: Whop shim suite passed 1 file / 2 tests; TypeScript, targeted-file Biome lint, and `git diff --check` passed. Inventory refreshed; the file-by-file audit remains open.

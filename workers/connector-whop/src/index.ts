@@ -20,7 +20,7 @@
 
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { requireInternalHmac, readBoundedResponseText } from "@naelao/http";
+import { requireInternalHmac, readBoundedRequestText, readBoundedResponseText } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -48,6 +48,11 @@ function qs(args: Record<string, unknown>, keys: string[]): string {
   return s ? `?${s}` : "";
 }
 
+function safeId(value: unknown, field: string): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new Error(`invalid_${field}`);
+  return value;
+}
+
 // Tool → Whop request. Mirrors the connector catalogue's declared operations.
 export const TOOLS: Record<string, ToolDef> = {
   list_memberships: {
@@ -58,7 +63,7 @@ export const TOOLS: Record<string, ToolDef> = {
   get_membership: {
     description: "Get one membership by id.",
     method: "GET",
-    path: (a) => `/v5/company/memberships/${encodeURIComponent(String(a["id"] ?? ""))}`,
+    path: (a) => `/v5/company/memberships/${encodeURIComponent(safeId(a.id, "membership_id"))}`,
   },
   list_members: {
     description: "List members/users with access (page, per).",
@@ -84,14 +89,22 @@ export const TOOLS: Record<string, ToolDef> = {
   send_message: {
     description: "Send a direct message to a member (args: to_user_id, message).",
     method: "POST",
-    path: () => `/v5/company/messages`,
-    body: (a) => ({ to_user_id: a["to_user_id"], message: a["message"] }),
+    path: () => "/v5/company/messages",
+    body: (a) => {
+      const toUserId = safeId(a.to_user_id, "user_id");
+      if (typeof a.message !== "string" || !a.message.trim() || new TextEncoder().encode(a.message).byteLength > 10_000) throw new Error("invalid_message");
+      return { to_user_id: toUserId, message: a.message };
+    },
   },
   post_announcement: {
     description: "Post an announcement to a community/feed (args: experience_id, content).",
     method: "POST",
-    path: () => `/v5/company/announcements`,
-    body: (a) => ({ experience_id: a["experience_id"], content: a["content"] }),
+    path: () => "/v5/company/announcements",
+    body: (a) => {
+      const experienceId = safeId(a.experience_id, "experience_id");
+      if (typeof a.content !== "string" || !a.content.trim() || new TextEncoder().encode(a.content).byteLength > 20_000) throw new Error("invalid_announcement");
+      return { experience_id: experienceId, content: a.content };
+    },
   },
 };
 
@@ -109,6 +122,8 @@ async function callTool(name: string, args: Record<string, unknown>, bearer: str
   const init: RequestInit = {
     method: def.method,
     headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json", "Content-Type": "application/json" },
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000),
     ...(def.body ? { body: JSON.stringify(def.body(args)) } : {}),
   };
   const resp = await fetch(`${WHOP_API}${def.path(args)}`, init);
@@ -141,7 +156,15 @@ interface JsonRpcReq {
 }
 
 async function handleMcp(c: Context<{ Bindings: Env }>) {
-  const body = await c.req.json<JsonRpcReq>().catch(() => ({}) as JsonRpcReq);
+  let body: JsonRpcReq;
+  try {
+    const raw = await readBoundedRequestText(c.req.raw, 64 * 1024);
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_request");
+    body = parsed as JsonRpcReq;
+  } catch {
+    return c.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid or oversized JSON-RPC request" } }, 400);
+  }
   const id = body.id ?? null;
   const reply = (result: unknown) => c.json({ jsonrpc: "2.0", id, result });
   const fail = (code: number, message: string) => c.json({ jsonrpc: "2.0", id, error: { code, message } });
@@ -150,11 +173,13 @@ async function handleMcp(c: Context<{ Bindings: Env }>) {
     return reply({ tools: toolList() });
   }
   if (body.method === "tools/call") {
+    const args = body.params?.arguments ?? {};
+    if (!args || typeof args !== "object" || Array.isArray(args)) return fail(-32602, "Invalid tool arguments");
     const bearer = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
     if (!bearer) return fail(-32602, "Missing Authorization bearer (Whop API key)");
     const name = body.params?.name ?? "";
     try {
-      const out = await callTool(name, body.params?.arguments ?? {}, bearer);
+      const out = await callTool(name, args, bearer);
       return reply(out);
     } catch (err) {
       return fail(-32000, (err as Error).message);

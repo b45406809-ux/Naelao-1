@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2034` tracked files; `1828` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `0eafd51b`.
+Inventory basis: `2035` tracked files; `1829` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `c98f30ca`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -2251,6 +2251,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/connector-gumroad/src`
 
+- [ ] `workers/connector-gumroad/src/index.test.ts`
 - [x] `workers/connector-gumroad/src/index.ts`
 
 ### `workers/connector-whop`
@@ -2261,7 +2262,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/connector-whop/src`
 
-- [ ] `workers/connector-whop/src/index.ts`
+- [x] `workers/connector-whop/src/index.ts`
 
 ### `workers/credentials`
 
