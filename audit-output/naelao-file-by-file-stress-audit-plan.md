@@ -1301,7 +1301,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `tests/unit/agent-run-script-native-dispatch.test.ts`
 - [x] `tests/unit/agent-run-trace-endpoint.test.ts`
 - [ ] `tests/unit/agent-signals-and-session-spend.test.ts`
-- [ ] `tests/unit/agent-task-workflow-failure-handling.test.ts`
+- [x] `tests/unit/agent-task-workflow-failure-handling.test.ts`
 - [ ] `tests/unit/agent-templates.test.ts`
 - [ ] `tests/unit/agentmail-client.test.ts`
 - [ ] `tests/unit/agents-worker-internal-token-gate.test.ts`

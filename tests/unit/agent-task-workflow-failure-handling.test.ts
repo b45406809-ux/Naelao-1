@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { AgentTaskWorkflow } from "../../workers/agents/src/workflows/AgentTaskWorkflow.js";
 import type { AgentTaskParams } from "../../workers/agents/src/workflows/AgentTaskWorkflow.js";
+import { WorkflowRunDO } from "../../workers/agents/src/do/WorkflowRunDO.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // Live-reported bug (2026-08-07): "Timed out waiting for a response" on EVERY message,
 // reproduced directly against production. Root cause: AgentTaskWorkflow's "run-agent" step threw
@@ -18,7 +20,10 @@ function makeFakeStep() {
   const attempts: Record<string, number> = {};
   return {
     attempts,
-    async do(name: string, config: { retries?: { limit?: number } } | undefined, cb: () => Promise<unknown>) {
+    async do(name: string, configOrCallback: { retries?: { limit?: number } } | (() => Promise<unknown>) | undefined, callback?: () => Promise<unknown>) {
+      const config = typeof configOrCallback === "function" ? undefined : configOrCallback;
+      const cb = typeof configOrCallback === "function" ? configOrCallback : callback;
+      if (!cb) throw new Error("workflow step callback missing");
       const limit = config?.retries?.limit ?? 0;
       let lastErr: unknown;
       for (let i = 0; i <= limit; i++) {
@@ -64,10 +69,81 @@ function makeFakeTaskDO() {
 }
 
 function makeEnv(opts: { taskDoStub: ReturnType<typeof makeFakeTaskDO>["stub"]; agentsWorkerFetch: (req: Request) => Promise<Response> }) {
+  const objectStore = new Map<string, string>();
+  const scriptsR2 = {
+    async put(key: string, value: string | ArrayBuffer | ArrayBufferView) {
+      objectStore.set(key, typeof value === "string" ? value : new TextDecoder().decode(value instanceof ArrayBuffer ? value : new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
+    },
+    async get(key: string) {
+      const value = objectStore.get(key);
+      if (value === undefined) return null;
+      const bytes = new TextEncoder().encode(value);
+      return { size: bytes.byteLength, async text() { return value; }, async arrayBuffer() { return bytes.slice().buffer; } };
+    },
+    async delete(key: string) { objectStore.delete(key); },
+    async list({ prefix }: { prefix?: string }) {
+      const objects = [...objectStore].filter(([key]) => key.startsWith(prefix ?? "")).map(([key, value]) => ({ key, size: new TextEncoder().encode(value).byteLength }));
+      return { objects, truncated: false };
+    },
+  } as unknown as R2Bucket;
+  for (const filename of ["agents.md", "system-prompt.md", "scripts.json", "skills.json"]) {
+    objectStore.set(`spaces/space-1/agents/naelao-agent/${filename}`, filename.endsWith(".json") ? "[]" : "");
+  }
+  const spacesWorker = {
+    async fetch(input: Request | string, init?: RequestInit) {
+      const request = typeof input === "string" ? new Request(input, init) : input;
+      const path = new URL(request.url).pathname;
+      if (path === "/spaces/space-1/members") {
+        const userId = request.headers.get("x-naelao-user-id") ?? "user-1";
+        return Response.json({ data: [{ user_id: userId, role: "owner" }] });
+      }
+      if (path === "/spaces/space-1/projects/proj-1/members") {
+        const userId = request.headers.get("x-naelao-user-id") ?? "user-1";
+        return Response.json({ data: [{ user_id: userId, role: "owner" }] });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  };
+  const workflowInstances = new Map<string, WorkflowRunDO>();
+  const workflowRunNamespace = {
+    idFromName: (name: string) => name,
+    get: (id: string) => {
+      let object = workflowInstances.get(id);
+      if (!object) {
+        const storage = createDOStorage() as ReturnType<typeof createDOStorage> & Record<string, unknown>;
+        const values = new Map<string, unknown>();
+        Object.assign(storage, {
+          async get(key: string) { return values.get(key); },
+          async put(key: string, value: unknown) { values.set(key, value); },
+          async delete(keys: string | string[]) {
+            for (const key of Array.isArray(keys) ? keys : [keys]) values.delete(key);
+          },
+          async list(options: { prefix?: string; limit?: number } = {}) {
+            const entries = [...values.entries()].filter(([key]) => key.startsWith(options.prefix ?? ""));
+            return new Map(entries.slice(0, options.limit ?? entries.length));
+          },
+          async transaction<T>(closure: (target: typeof storage) => Promise<T>) { return closure(storage); },
+        });
+        object = new WorkflowRunDO({ storage } as never, workflowEnv as never);
+        workflowInstances.set(id, object);
+      }
+      return object;
+    },
+  };
+  const workflowEnv = {
+    PLATFORM_SECRET: "test-secret",
+    SCRIPTS_R2: scriptsR2,
+    SPACES_WORKER: spacesWorker,
+    WORKFLOW_RUN_DO: workflowRunNamespace,
+  };
   return {
     TASK_DO: { idFromName: (name: string) => name, get: () => opts.taskDoStub },
     AGENTS_WORKER: { fetch: opts.agentsWorkerFetch },
     PLATFORM_SECRET: "test-secret",
+    WORKFLOW_BUILD_ID: "a".repeat(64),
+    SCRIPTS_R2: scriptsR2,
+    SPACES_WORKER: spacesWorker,
+    WORKFLOW_RUN_DO: workflowRunNamespace,
     // reportWorkflowStepInfraUsage degrades to a no-op when BILLING_WORKER is absent.
   } as unknown as ConstructorParameters<typeof AgentTaskWorkflow>[1];
 }
@@ -80,7 +156,8 @@ const baseParams: AgentTaskParams = {
   goal: "hello",
   agentId: "naelao-agent",
   model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-  taskDoName: "task-do-1",
+  taskDoName: "tasks:space-1",
+  userId: "user-1",
 };
 
 describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO status", () => {
@@ -96,7 +173,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "wf-1" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -117,7 +194,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "wf-2" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -133,7 +210,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "wf-3" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("complete");
@@ -156,7 +233,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "wf-4" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -181,7 +258,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "wf-credits" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -198,7 +275,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "wf-plain" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -217,7 +294,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await expect(wf.run({ payload: baseParams, instanceId: "wf-5" } as never, step as never)).resolves.toBeUndefined();
+    await expect(wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never)).resolves.toBeUndefined();
   });
 });
 
@@ -254,7 +331,7 @@ describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
           projectId: "proj-1",
           businessContext: { name: "Pixel Forge Studio", setup_status: "complete" },
         },
-        instanceId: "wf-role",
+        instanceId: "task-1",
       } as never,
       makeFakeStep() as never
     );
@@ -279,7 +356,7 @@ describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
 
     const wf = new AgentTaskWorkflow({} as never, env);
     await wf.run(
-      { payload: { ...baseParams, userId: "builder-1", callerRole: "owner" }, instanceId: "wf-b" } as never,
+      { payload: { ...baseParams, userId: "builder-1", callerRole: "owner" }, instanceId: "task-1" } as never,
       makeFakeStep() as never
     );
 

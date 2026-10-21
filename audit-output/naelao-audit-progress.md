@@ -1405,6 +1405,12 @@ Validation: `model-switcher-config-resolution.test.ts` passed all 18 tests. This
 
 Committed and pushed as `0bf20c59`; refreshed the inventory after the code/test commit: 1,976 tracked files / 1,770 source/config rows / 378 checked rows.
 
+## Rebuild durable-task failure fixtures around the scoped workflow journal (2026-10-21)
+
+The fresh suite showed the older failure-handling test bypassed the newly required durable-workflow setup: workflow instance ID did not match task ID, the TaskDO name was not scoped to the Space, the actor was missing, and no workflow build pin, journal, agent configuration, or membership grant existed. The test's fake `WorkflowStep.do` also supported only the three-argument overload, while the terminal step uses the callback-only overload. Updated the harness to use the real `WorkflowRunDO` and SQLite-backed journal/storage fixture, scoped membership and agent config, valid task/run IDs, and both step signatures. No workflow production code was weakened.
+
+Validation: `agent-task-workflow-failure-handling.test.ts` passed 1 file / 9 tests. The shared suite's other failures remain open.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.
