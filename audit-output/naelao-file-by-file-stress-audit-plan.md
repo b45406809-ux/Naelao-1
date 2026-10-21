@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2029` tracked files; `1823` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `d63aca4f`.
+Inventory basis: `2025` tracked files; `1819` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `47dca3df`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -2346,16 +2346,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/mcp-hub/src/pipedream.ts`
 - [x] `workers/mcp-hub/src/tenant-space-boundary.test.ts`
 - [x] `workers/mcp-hub/src/upstream-response-boundaries.test.ts`
-
-### `workers/mini-agi`
-
-- [ ] `workers/mini-agi/package.json`
-- [ ] `workers/mini-agi/tsconfig.json`
-- [x] `workers/mini-agi/wrangler.toml`
-
-### `workers/mini-agi/src`
-
-- [ ] `workers/mini-agi/src/index.ts`
 
 ### `workers/notifications`
 

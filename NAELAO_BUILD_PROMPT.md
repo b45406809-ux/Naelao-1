@@ -187,8 +187,8 @@ Platform-level Claude-powered helper for builders. Pre-configured with platform 
 #### `workers/browser/`
 CF Browser Rendering (Puppeteer) for agents. `POST /v1/browser/navigate {url, actions}`. Returns `{text, screenshot_base64, links}`. SSRF protection: block private IP ranges and internal hosts.
 
-#### `workers/mini-agi/`
-Hierarchical agent orchestration. Planner LLM decomposes goals into subtasks → dispatches child agent runs → aggregates results. Depth limit 3, total token budget enforced.
+#### Planning and delegated work
+The standalone `workers/mini-agi/` prototype was retired because it had no Router ingress and its session dispatch targeted an unsupported Agents route. Planning and bounded delegation belong to the Agents runtime (`engine.plan_and_delegate_goal`, project workers, and scoped subagents), which is the current implementation path.
 
 ### Priority 3 — Missing Packages
 

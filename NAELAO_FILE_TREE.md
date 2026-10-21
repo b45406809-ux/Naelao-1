@@ -213,9 +213,6 @@ naelao/
 │   ├── browser/                      # naelao-browser — CF Browser Rendering CDP proxy
 │   │   └── src/{index.ts,navigate.ts,robots.ts,sanitize.ts,session-isolation.ts}  # G-AB33,AB35,AB36
 │   │
-│   ├── mini-agi/                     # naelao-mini-agi — cross-space intelligence + access matrix
-│   │   └── src/{index.ts,access-matrix.ts}  & src/do/{MiniAGIDO.ts}
-│   │
 │   ├── eval/                         # naelao-eval — GAIA/benchmark pipeline, judge calibration
 │   │   └── src/{index.ts,run.ts,judge.ts,calibrate.ts}                        # G-AB08
 │   │
@@ -322,7 +319,7 @@ naelao/
 
 | Resource type | Instances |
 |---|---|
-| **Workers** (~28) | router, ws-gateway, auth, spaces, provisioner, credentials, threads, agents, assistant, knowledge, billing, mcp-hub, triggers, workflows, artifact, browser, mini-agi, eval, analytics, notifications, marketplace, portal-router, apps-registry, admin, sweeper, categorizer, synthetics |
+| **Workers** (~27) | router, ws-gateway, auth, spaces, provisioner, credentials, threads, agents, assistant, knowledge, billing, mcp-hub, triggers, workflows, artifact, browser, eval, analytics, notifications, marketplace, portal-router, apps-registry, admin, sweeper, categorizer, synthetics |
 | **Durable Objects** | SpaceDO, SpaceMetaDO, UserRegistryDO, ConversationShardDO, ShardRouterDO, ChildUserDO, NaelaoAgentDO, ConcurrencyDO, WalletDO, BuilderWalletDO, OrchestrationBudgetDO, AlarmSchedulerDO, AssistantDO, AssistantSandboxDO, HybridQueryDO, RefreshTokenDO, SigningKeyDO, TursoRegistryDO, StripeRateLimiterDO, RateLimitDO, WorkflowRegistryDO, WorkerDefinitionDO, AppRegistryDO, SpaceTypeRegistryDO, MiniAGIDO, FinetuneJobDO, ProjectDO, MaintenanceConfigDO, AdmissionControllerDO, ChannelDispatchDO, ReconnectSemaphoreDO |
 | **KV namespaces** | CONFIG, CIRCUIT, ARTIFACT, PORTAL_ROUTES, MCP_TOOL_CACHE, IDEMPOTENCY, SESSION_REVOCATION |
 | **R2 buckets** | workspace, knowledge-docs, assets, artifacts, uploads, workflows, training-files, backups, exports |

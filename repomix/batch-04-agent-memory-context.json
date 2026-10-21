@@ -54,7 +54,6 @@
     "workers/agents/wrangler.toml",
     "workers/agents/package.json",
     "workers/assistant/**",
-    "workers/mini-agi/**",
     "workers/workflows/**",
     "workers/agents/src/do/TaskDO.ts",
     "workers/agents/src/do/ConcurrencyDO.ts",

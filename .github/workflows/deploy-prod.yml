@@ -111,7 +111,7 @@ jobs:
           # report green. Track every failure and fail the step (with a run summary) if any occurred.
           WORKERS=(admin agents analytics artifact assistant auth billing browser \
                    connector-gumroad connector-whop credentials eval knowledge marketplace \
-                   mcp-hub mini-agi notifications portal-router provisioner router \
+                   mcp-hub notifications portal-router provisioner router \
                    security-gateway spaces sweeper synthetics threads triggers workflows ws-gateway)
           failed=()
           for w in "${WORKERS[@]}"; do

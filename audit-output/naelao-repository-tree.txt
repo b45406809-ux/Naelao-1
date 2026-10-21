@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2029
-Files with source or executable-configuration extensions: 1823
-Inventory revision: 2026-10-21 audit refresh at d63aca4f
+Files: 2025
+Files with source or executable-configuration extensions: 1819
+Inventory revision: 2026-10-21 audit refresh at 47dca3df
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -2066,12 +2066,6 @@ workers/
       pipedream.ts
       tenant-space-boundary.test.ts
       upstream-response-boundaries.test.ts
-    tsconfig.json
-    wrangler.toml
-  mini-agi/
-    package.json
-    src/
-      index.ts
     tsconfig.json
     wrangler.toml
   notifications/

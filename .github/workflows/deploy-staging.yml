@@ -151,7 +151,7 @@ jobs:
           # half-deployed platform still reported the job green. Now: track every failure, surface
           # a summary to the GitHub Actions run, and fail the step if ANY worker failed to deploy.
           failed=()
-          for w in admin analytics artifact assistant browser connector-gumroad connector-whop credentials eval marketplace mcp-hub mini-agi notifications portal-router provisioner security-gateway sweeper synthetics threads triggers workflows ws-gateway; do
+          for w in admin analytics artifact assistant browser connector-gumroad connector-whop credentials eval marketplace mcp-hub notifications portal-router provisioner security-gateway sweeper synthetics threads triggers workflows ws-gateway; do
             if [ -f "workers/$w/wrangler.toml" ]; then
               echo "Deploying $w..."
               if ! npx wrangler deploy --env=staging --config="workers/$w/wrangler.toml"; then

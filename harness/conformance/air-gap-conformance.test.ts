@@ -11,7 +11,6 @@ const SPACE_EGRESS_BOUNDARIES = [
   "workers/credentials/src/index.ts",
   "workers/spaces/src/product-end-user-routes.ts",
   "workers/threads/src/index.ts",
-  "workers/mini-agi/src/index.ts",
 ] as const;
 
 describe("space air-gap boundary wiring", () => {

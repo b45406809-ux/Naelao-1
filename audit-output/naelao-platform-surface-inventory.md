@@ -25,7 +25,6 @@ Literal route-registration matches: 1059
 - `workers/knowledge` — manifest `workers/knowledge/wrangler.toml`; entrypoint `workers/knowledge/src/index.ts`
 - `workers/marketplace` — manifest `workers/marketplace/wrangler.toml`; entrypoint `workers/marketplace/src/index.ts`
 - `workers/mcp-hub` — manifest `workers/mcp-hub/wrangler.toml`; entrypoint `workers/mcp-hub/src/index.ts`
-- `workers/mini-agi` — manifest `workers/mini-agi/wrangler.toml`; entrypoint `workers/mini-agi/src/index.ts`
 - `workers/notifications` — manifest `workers/notifications/wrangler.toml`; entrypoint `workers/notifications/src/index.ts`
 - `workers/portal-router` — manifest `workers/portal-router/wrangler.toml`; entrypoint `workers/portal-router/src/index.ts`
 - `workers/provisioner` — manifest `workers/provisioner/wrangler.toml`; entrypoint `workers/provisioner/src/index.ts`
@@ -87,7 +86,6 @@ These are the tables covered by the corresponding scoped audit entries, not a co
 - `workers/billing` consumes `naelao-billing-events` in development/default, staging, production.
 - `workers/billing` produces `naelao-billing-events` in development/default, staging, production.
 - `workers/knowledge` produces `naelao-events` in development/default, staging, production.
-- `workers/mini-agi` produces `naelao-channel-sessions` in development/default, staging, production.
 - `workers/notifications` consumes `naelao-notifications-queue` in development/default, staging, production.
 - `workers/provisioner` consumes `naelao-provisioning-queue` in development/default, staging, production.
 - `workers/spaces` produces `naelao-provisioning-queue` in development/default, staging, production.
@@ -119,7 +117,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/knowledge/src/index.ts` — 27 route/middleware registration calls
 - `workers/marketplace/src/index.ts` — 10 route/middleware registration calls
 - `workers/mcp-hub/src/index.ts` — 16 route/middleware registration calls
-- `workers/mini-agi/src/index.ts` — 6 route/middleware registration calls
 - `workers/notifications/src/index.ts` — 9 route/middleware registration calls
 - `workers/portal-router/src/index.ts` — 11 route/middleware registration calls
 - `workers/provisioner/src/index.ts` — 3 route/middleware registration calls
@@ -496,12 +493,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/mcp-hub/src/index.ts:756` — `app.delete("/v1/spaces/:spaceId/connector-aliases/:aliasId", async (c) => {`
 - `workers/mcp-hub/src/index.ts:767` — `app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) => {`
 - `workers/mcp-hub/src/index.ts:822` — `app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {`
-- `workers/mini-agi/src/index.ts:60` — `app.use("*", requestId);`
-- `workers/mini-agi/src/index.ts:61` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
-- `workers/mini-agi/src/index.ts:64` — `app.post("/v1/agi/runs", async (c) => {`
-- `workers/mini-agi/src/index.ts:102` — `app.get("/v1/agi/runs/:id", async (c) => {`
-- `workers/mini-agi/src/index.ts:117` — `app.get("/v1/agi/runs", async (c) => {`
-- `workers/mini-agi/src/index.ts:135` — `app.post("/v1/agi/runs/:id/cancel", async (c) => {`
 - `workers/notifications/src/index.ts:723` — `app.use("*", requestId);`
 - `workers/notifications/src/index.ts:724` — `app.use("*", async (c, next) => {`
 - `workers/notifications/src/index.ts:736` — `app.post("/internal/notify", async (c) => {`
