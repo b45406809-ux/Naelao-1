@@ -25,6 +25,16 @@ describe("RAG stress boundaries", () => {
     expect(chunks[1]).toContain(chunks[0]?.slice(-32));
   });
 
+  it("chunks punctuation-dense input without quadratic sentence-splitting work", () => {
+    const text = "a. ".repeat(20_000);
+    const chunks = chunkText(text);
+    expect(chunks.length).toBeGreaterThan(10);
+    expect(chunks.length).toBeLessThan(100);
+    expect(chunks.every((chunk) => chunk.length <= 512 * 4)).toBe(true);
+    expect(chunks[0]?.startsWith("a. ")).toBe(true);
+    expect(chunks.at(-1)?.endsWith("a.")).toBe(true);
+  });
+
   it("batches 101 embeddings without dropping input and rejects malformed vectors", async () => {
     const run = vi.fn(
       async (_model: string, input: { text: string | string[] }) => {

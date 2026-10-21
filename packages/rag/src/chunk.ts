@@ -16,7 +16,7 @@ const CHARS_PER_TOKEN = 4;
 const MIN_CHUNK_CHARS = 100;
 
 /** Sentence boundary delimiters — split after these patterns */
-const SENTENCE_BOUNDARIES = [". ", "! ", "? ", "\n\n"];
+const SENTENCE_BOUNDARY_PATTERN = /\. |! |\? |\n\n/g;
 
 /**
  * Split text into overlapping chunks at sentence boundaries.
@@ -44,13 +44,11 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
   if (!text || text.trim().length === 0) return [];
 
   // First pass: split text into sentence-level segments
-  const sentences = splitIntoSentences(text);
-
   const chunks: string[] = [];
   let currentChunk = "";
   let overlapBuffer = "";
 
-  for (const sentence of sentences) {
+  for (const sentence of splitIntoSentences(text)) {
     const candidate =
       currentChunk.length === 0 ? sentence : currentChunk + sentence;
 
@@ -117,38 +115,18 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
 /**
  * Split text into sentence segments, preserving the delimiter as part of the segment.
  */
-function splitIntoSentences(text: string): string[] {
+function* splitIntoSentences(text: string): Generator<string> {
   // Normalise line endings
   const normalised = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-
-  const results: string[] = [];
-  let remaining = normalised;
-
-  while (remaining.length > 0) {
-    let splitIdx = -1;
-    let splitLen = 0;
-
-    // Find earliest sentence boundary
-    for (const boundary of SENTENCE_BOUNDARIES) {
-      const idx = remaining.indexOf(boundary);
-      if (idx !== -1 && (splitIdx === -1 || idx < splitIdx)) {
-        splitIdx = idx;
-        splitLen = boundary.length;
-      }
-    }
-
-    if (splitIdx === -1) {
-      // No more boundaries — treat remainder as one segment
-      results.push(remaining);
-      break;
-    }
-
-    const segment = remaining.slice(0, splitIdx + splitLen);
-    if (segment.length > 0) results.push(segment);
-    remaining = remaining.slice(splitIdx + splitLen);
+  let start = 0;
+  SENTENCE_BOUNDARY_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SENTENCE_BOUNDARY_PATTERN.exec(normalised)) !== null) {
+    const end = match.index + match[0].length;
+    if (end > start) yield normalised.slice(start, end);
+    start = end;
   }
-
-  return results;
+  if (start < normalised.length) yield normalised.slice(start);
 }
 
 /**

@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timezone
 import re, subprocess
 
 root = Path.cwd()
@@ -6,6 +7,10 @@ paths = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
 paths = sorted(p for p in paths if p)
 extensions = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".kt", ".swift", ".sql", ".sh", ".yaml", ".yml", ".toml", ".json", ".jsonc"}
 source_paths = [p for p in paths if Path(p).suffix.lower() in extensions]
+revision = subprocess.check_output(
+    ["git", "rev-parse", "--short", "HEAD"], text=True
+).strip()
+inventory_date = datetime.now(timezone.utc).date().isoformat()
 
 # Refresh the file tree from tracked source only, deliberately excluding temporary work artifacts.
 lines = [
@@ -14,7 +19,7 @@ lines = [
     "Inventory source: git ls-files (tracked files only)",
     f"Files: {len(paths)}",
     f"Files with source or executable-configuration extensions: {len(source_paths)}",
-    "Inventory revision: 2026-10-20 audit refresh at d9af80ac",
+    f"Inventory revision: {inventory_date} audit refresh at {revision}",
     "Ignored dependencies, caches, generated build output, and .git internals are excluded.",
     "Empty directories are not represented because Git does not track them.",
     "",
@@ -48,7 +53,7 @@ try:
     caveats = "## Audit caveats" + tail.split("## Audit caveats", 1)[1]
 except IndexError:
     caveats = ""
-prefix = re.sub(r"Inventory basis: .*", f"Inventory basis: `{len(paths)}` tracked files; `{len(source_paths)}` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `d9af80ac`.", prefix)
+prefix = re.sub(r"Inventory basis: .*", f"Inventory basis: `{len(paths)}` tracked files; `{len(source_paths)}` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `{revision}`.", prefix)
 sections = ["## File-by-file checklist", "", "Check each file only after its behavior and runtime relationships are traced and recorded. Config, schema, and deployment files are included because they affect runtime behavior and security.", ""]
 groups = {}
 for p in source_paths:

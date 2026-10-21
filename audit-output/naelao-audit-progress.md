@@ -1224,3 +1224,14 @@ The shared preflight now resolves the signed tenant, verifies space ownership, t
 Validation: Knowledge Worker air-gap and web-fetch tests passed 2 files / 16 tests; Knowledge Worker TypeScript check passed.
 
 Checked `air-gap.test.ts` for this boundary. The main Knowledge Worker `index.ts` remains unchecked overall; all its other route groups still need review.
+
+
+## RAG sentence chunking under dense punctuation (2026-10-21)
+
+Re-stressed `packages/rag/src/chunk.ts` with a 60,000-character input containing 20,000 short sentences. The sentence splitter repeatedly searched and sliced the entire remaining suffix, and first retained every resulting sentence string in an array. This made punctuation-dense input scale quadratically in scan/copy work and increased peak memory.
+
+Changed sentence splitting to a single global boundary scan that yields segments directly to the chunk builder. Added the dense punctuation case and asserts that chunk count and size stay bounded.
+
+Validation: RAG suite passed 4 files / 27 tests; RAG TypeScript check and `git diff --check` passed. Workspace `pnpm` scripts were blocked by the automatic dependency check rejecting the ignored `core-js-pure` build script, so the installed Vitest and TypeScript binaries were run directly.
+
+Re-reviewed `chunk.ts` and `batch05-stress.test.ts`. This is an efficiency fix; the existing output overlap and sentence boundary behavior are preserved.
