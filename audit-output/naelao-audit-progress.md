@@ -1618,3 +1618,5 @@ The task-correlated reply sender had branched to the notifications worker before
 Reviewing the other provision path confirmed it already checks active Space state and stored air-gap policy before external mailbox creation. The business-email route tests now cover regular sends, reply-to sends, provisioning, and inbound dispatch failure behavior; this does not replace live provider verification.
 
 After the email-boundary changes, the full configured package/Worker workspace passed **1,632 tests across 342 files**, the Agents Worker suite passed **697 tests across 152 files**, and the Agents Worker TypeScript check passed. These local tests do not cover live Cloudflare bindings or AgentMail/Svix delivery conditions.
+
+Refreshed the tracked tree and source/config checklist at code commit `92cd6ee4`: **1,981 tracked files, 1,775 source/config files, 404 checked and 1,371 unchecked**. This refresh includes the new AgentMail adapter test and preserves all prior checked rows. The whole-repository review remains substantially incomplete.

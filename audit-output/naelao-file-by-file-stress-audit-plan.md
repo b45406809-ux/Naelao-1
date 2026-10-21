@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1980` tracked files; `1774` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `5a9c92e3`.
+Inventory basis: `1981` tracked files; `1775` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `92cd6ee4`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -700,7 +700,6 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `infra/scripts`
 
-- [x] `infra/scripts/phase-runner-safety.mjs`
 - [ ] `infra/scripts/audit-ui.mjs`
 - [ ] `infra/scripts/await-quota-then-matrix.sh`
 - [ ] `infra/scripts/capture-runtime-economics.mjs`
@@ -713,6 +712,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/scripts/evaluate-unit-economics.mjs`
 - [ ] `infra/scripts/evaluate-unit-economics.test.mjs`
 - [ ] `infra/scripts/matrix-results-to-benchmarks.mjs`
+- [x] `infra/scripts/phase-runner-safety.mjs`
 - [ ] `infra/scripts/pin-workflow-build.mjs`
 - [ ] `infra/scripts/plan-preflight.mjs`
 - [ ] `infra/scripts/protected-preview.mjs`
@@ -1289,12 +1289,10 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `tests/unit`
 
-- [x] `tests/unit/phase-runner-safety.test.ts`
 - [ ] `tests/unit/action-ledger.test.ts`
 - [ ] `tests/unit/admin-worker-schema.test.ts`
 - [ ] `tests/unit/agent-api-keys.test.ts`
 - [ ] `tests/unit/agent-config-self-heal.test.ts`
-- [x] `tests/unit/kb-ingestion-workflow.test.ts`
 - [ ] `tests/unit/agent-conversation-pagination.test.ts`
 - [ ] `tests/unit/agent-diagnostics-rollup.test.ts`
 - [ ] `tests/unit/agent-loop-unbounded.test.ts`
@@ -1425,6 +1423,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/internal-triggers-fire.test.ts`
 - [ ] `tests/unit/interrupted-run-continue.test.ts`
 - [ ] `tests/unit/kb-autorag-retrieval.test.ts`
+- [x] `tests/unit/kb-ingestion-workflow.test.ts`
 - [ ] `tests/unit/kb-per-project-isolation.test.ts`
 - [ ] `tests/unit/kb-search-tenant-isolation.test.ts`
 - [ ] `tests/unit/kb-tenant-isolation-all-routes.test.ts`
@@ -1479,6 +1478,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/owner-voice-ticket-route.test.ts`
 - [ ] `tests/unit/parse-bounded-integer.test.ts`
 - [ ] `tests/unit/personal-plan-whop-checkout.test.ts`
+- [x] `tests/unit/phase-runner-safety.test.ts`
 - [ ] `tests/unit/pipedream-connector-connect.test.ts`
 - [ ] `tests/unit/plan-tool.test.ts`
 - [ ] `tests/unit/platform-plan-billing.test.ts`
@@ -1702,8 +1702,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/agents/src/channels`
 
-- [ ] `workers/agents/src/channels/agentmail.ts`
 - [x] `workers/agents/src/channels/agentmail.test.ts`
+- [ ] `workers/agents/src/channels/agentmail.ts`
 - [x] `workers/agents/src/channels/attachment-copy-route.test.ts`
 - [ ] `workers/agents/src/channels/attachment-index-route.test.ts`
 - [x] `workers/agents/src/channels/attachment-transcription-route.test.ts`
