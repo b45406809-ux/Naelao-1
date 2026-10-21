@@ -1530,3 +1530,15 @@ Reviewed both `ai_studio_code` shell files. The primary file only writes a fixed
 Validation: `bash -n` passed for both scripts and `git diff --check` passed. I did not execute the generator because it would overwrite the tracked batch patch artifact; the patch itself remains unverified against the current branch. These are manual tooling files with no known production callers; possible external/manual use remains unverified.
 
 Inventory refreshed after the root shell pass at `4b6b70c3`: 1,978 tracked files and 1,772 source/config checklist rows; 387 checked and 1,385 unchecked. The two shell-generator rows are now checked after the wrapper refactor and syntax validation.
+
+## CI test-surface and KB ingestion boundary pass (2026-10-21)
+
+The CI test job previously ran `pnpm --filter @naelao/tests test` from the tests package, which covers the `tests/` tree but not package/Worker Vitest projects, the native Node suites, or the separate conformance harness. Expanded the job to run the repository-root Vitest suite, all package/Worker projects via `vitest.workspace.ts`, native Node test files, and conformance. This matches the locally exercised commands and avoids the Turbo-invoked package-manager install behavior seen in this environment.
+
+The workspace suite passed **1,618/1,618 tests across 754 suites**. The repository-root suite passed **5,261/5,261 across 1,943 suites**. Native Node suites passed **27/27** and conformance passed **4/4**. `workers/workflows/src/workflows/KbIngestionWorkflow.ts` had an unused fetched-size result and described a UTF-8 byte check as a character limit; removed the unused result and report the actual byte count. Added workflow tests for success ordering and cleanup, oversized R2 metadata, understated metadata with oversized UTF-8 content, and missing objects; all four pass. Workflow TypeScript and targeted unused-variable lint checks pass.
+
+A full `turbo run test` attempt is not a valid result in this execution environment: the provided pnpm shim re-runs workspace installs from package tasks, then rejects `core-js-pure@3.50.0` under `ERR_PNPM_IGNORED_BUILDS`. I restored its incidental lock/workspace edits. The test suites were instead executed directly through Vitest workspace mode and Node's test runner.
+
+A repository unused-variable scan still reports 52 diagnostics across 51 files after excluding generated build/plan artifacts. Some are real dead state/functions, others are parameters required by test doubles or APIs; they need file-by-file triage. The existing CI recursive lint job excludes the root and there are no package lint scripts, so that job currently performs no checks. The root `biome check .` script remains red on its large pre-existing formatter/style baseline. I did not wire either command into required CI as a false passing or knowingly failing gate; lint-gate repair remains open.
+
+Inventory refresh pending this batch: one new checked test row was added; repository source file count will be refreshed after this commit.

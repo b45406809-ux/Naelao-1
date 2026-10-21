@@ -11,5 +11,17 @@
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 },
   "javascript": { "formatter": { "quoteStyle": "double", "trailingCommas": "es5" } },
-  "files": { "ignore": ["**/dist/**", "**/node_modules/**", "**/.wrangler/**"] }
+  "files": {
+    "ignore": [
+      "**/dist/**",
+      "**/node_modules/**",
+      "**/.wrangler/**",
+      "**/.next/**",
+      "**/_BUILD_PLAN/**",
+      "**/.phase-runs/**",
+      "work/**",
+      "work-*.json",
+      "work-*.txt"
+    ]
+  }
 }

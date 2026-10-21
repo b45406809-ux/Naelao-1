@@ -1294,6 +1294,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/admin-worker-schema.test.ts`
 - [ ] `tests/unit/agent-api-keys.test.ts`
 - [ ] `tests/unit/agent-config-self-heal.test.ts`
+- [x] `tests/unit/kb-ingestion-workflow.test.ts`
 - [ ] `tests/unit/agent-conversation-pagination.test.ts`
 - [ ] `tests/unit/agent-diagnostics-rollup.test.ts`
 - [ ] `tests/unit/agent-loop-unbounded.test.ts`

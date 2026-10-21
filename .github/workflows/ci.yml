@@ -62,8 +62,17 @@ jobs:
       - name: Build workspace packages
         run: pnpm turbo run build
 
-      - name: Run tests
-        run: pnpm --filter "@naelao/tests" test
+      - name: Run repository unit and integration tests
+        run: pnpm exec vitest run --config tests/vitest.config.ts
+
+      - name: Run package and worker test projects
+        run: pnpm exec vitest run --workspace vitest.workspace.ts
+
+      - name: Run native Node test projects
+        run: node --test infra/scripts/*.test.mjs tests/unit/local-agent-client.node.test.mjs packages/bridge/test/*.test.mjs
+
+      - name: Run conformance checks
+        run: pnpm test:conformance
 
   lint:
     name: Lint

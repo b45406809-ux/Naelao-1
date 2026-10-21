@@ -83,7 +83,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
       };
 
       // ── Step 1: Fetch raw content from R2 ──────────────────────────────────
-      const { contentLength } = await step.do("fetch-content", networkRetry, async () => {
+      await step.do("fetch-content", networkRetry, async () => {
         const obj = await this.env.KB_BUCKET.get(params.r2Key);
 
         if (!obj) {
@@ -102,9 +102,10 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
 
         const content = await obj.text();
 
-        if (new TextEncoder().encode(content).byteLength > MAX_CONTENT_BYTES) {
+        const contentBytes = new TextEncoder().encode(content).byteLength;
+        if (contentBytes > MAX_CONTENT_BYTES) {
           throw new Error(
-            `Document content exceeds 5MB character limit: length=${content.length}`,
+            `Document content exceeds 5MB byte limit: size=${contentBytes}`,
           );
         }
 
@@ -149,7 +150,8 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
         }
         if (obj.size > MAX_CONTENT_BYTES) throw new Error(`Document exceeds 5MB limit: size=${obj.size} bytes, docId=${params.docId}`);
         const content = await obj.text();
-        if (new TextEncoder().encode(content).byteLength > MAX_CONTENT_BYTES) throw new Error("Document content exceeds 5MB byte limit");
+        const contentBytes = new TextEncoder().encode(content).byteLength;
+        if (contentBytes > MAX_CONTENT_BYTES) throw new Error(`Document content exceeds 5MB byte limit: size=${contentBytes}`);
 
         const chunks = splitIntoChunks(content, CHUNK_SIZE_CHARS);
 
