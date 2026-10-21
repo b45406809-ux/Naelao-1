@@ -218,9 +218,23 @@ describe("conversation.search", () => {
           ? Response.json({ data: messages(500) })
           : new Response("unavailable", { status: 503 });
       })
-    )) as { ok: boolean; complete: boolean; reason: string };
+    )) as { ok: boolean; complete: boolean; note: string; next_cursor?: string; results: Array<{ message_id: string }> };
     expect(result).toMatchObject({ ok: false, complete: false });
-    expect(result.reason).toContain("503");
+    expect(result.note).toContain("503");
+    expect(result.results.some((match) => match.message_id === "message-1")).toBe(true);
+    expect(result.next_cursor).toBe("message-1");
+  });
+
+  it("rejects a query made only of stop words instead of claiming no match", async () => {
+    let calls = 0;
+    await expect(conversation.operations["conversation.search"](
+      { query: "what did we say about it" },
+      context(async () => {
+        calls++;
+        return Response.json({ data: [] });
+      })
+    )).rejects.toThrow("at least one searchable word or identifier");
+    expect(calls).toBe(0);
   });
 
   it("does not treat an empty page with has_more as proof the transcript is exhausted", async () => {

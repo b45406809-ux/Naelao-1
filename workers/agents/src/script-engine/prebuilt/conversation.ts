@@ -219,6 +219,10 @@ function queryText(args: Record<string, unknown>): string {
 async function search(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
   const query = queryText(args);
   if (!query) throw new Error("conversation.search requires 'query' — what are you looking for?");
+  const queryTokens = tokenize(query);
+  if (queryTokens.length === 0) {
+    throw new Error("conversation.search query must include at least one searchable word or identifier.");
+  }
   const sessionId = ctx.env.currentSessionId;
   if (!sessionId) return { ok: false, reason: "conversation.search is only available when this run has a host-authorized conversation thread." };
   if (args["session_id"] !== undefined && String(args["session_id"]).trim() !== sessionId) {
@@ -229,7 +233,7 @@ async function search(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
   const scanLimit = parseBoundedInteger(String(args["scan_limit"] ?? SEARCH_MAX_MESSAGES), SEARCH_MAX_MESSAGES, 50, SEARCH_MAX_MESSAGES);
   const beforeId = typeof args["before_id"] === "string" ? args["before_id"].trim().slice(0, 160) : undefined;
   const { messages, incomplete, unavailable, error, nextCursor } = await loadMessages(ctx, sessionId, beforeId || undefined, scanLimit);
-  if (unavailable || error) {
+  if (unavailable || (error && messages.length === 0)) {
     const note = `${error ?? "History search is unavailable."} Search was incomplete; an empty result does not mean this was never discussed.`;
     return { ok: false, query, results: [], searched_messages: messages.length, complete: false, note, reason: note };
   }
@@ -248,15 +252,15 @@ async function search(args: Record<string, unknown>, ctx: PrebuiltOpContext) {
       ? { ok: false, query, results: [], searched_messages: 0, note: "History search is unavailable. An empty result does not mean this was never discussed." }
       : { ok: true, query, results: [], searched_messages: 0, exhausted: true, note: "No stored messages to search." };
   }
-  const queryTokens = tokenize(query);
   const scored = messages.map((m, i) => ({ m, i, score: scoreMessage(m, queryTokens) }))
     .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.i - a.i).slice(0, limit);
   return {
-    ok: true, query, searched_messages: messages.length, complete: !incomplete,
+    ok: !error, query, searched_messages: messages.length, complete: !incomplete && !error,
     results: scored.map((r) => ({ role: r.m.role, position: incomplete ? `${r.i + 1} of scanned page (${messages.length} messages)` : `${r.i + 1} of ${messages.length}`, created_at: r.m.created_at ?? null, message_id: r.m.id ?? null, excerpt: snippet(r.m.content, queryTokens), relevance: Number(r.score.toFixed(3)) })),
-    exhausted: !incomplete,
+    exhausted: !incomplete && !error,
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
-    ...(incomplete ? { note: nextCursor
+    ...(error ? { note: `${error} Search was incomplete; the returned matches only cover ${messages.length} messages.${nextCursor ? ` Continue older history with before_id=${nextCursor}.` : ""}` }
+      : incomplete ? { note: nextCursor
       ? `The search was incomplete after ${messages.length} messages in this page. Search older history by passing before_id=${nextCursor}.`
       : `The search was incomplete after ${messages.length} messages because a stable message cursor was unavailable.` }
       : scored.length === 0 ? { note: beforeId
