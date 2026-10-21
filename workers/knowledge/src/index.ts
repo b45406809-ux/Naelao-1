@@ -1517,9 +1517,12 @@ async function requireWebToolEgress(c: Parameters<typeof airGapResponse>[0] & {
   env: KnowledgeEnv;
 }): Promise<Response | null> {
   const spaceId = c.req.header("x-naelao-space-id")?.trim();
-  // Internal callers must identify the policy owner. Missing identity fails closed instead of
-  // silently turning this platform endpoint into an ungoverned egress path.
-  if (!spaceId || await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  // Egress policy is tenant-owned. A caller must not select another tenant's space to borrow
+  // its less restrictive policy or bypass an air-gap decision.
+  if (!spaceId) return airGapResponse(c);
+  const tenantId = requireTenant(c);
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
+  if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   return null;
 }
 

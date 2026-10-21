@@ -1213,3 +1213,14 @@ Storage reports now accept an operation ID and derive idempotency from that writ
 Validation: Knowledge Worker focused storage/lifecycle suites passed 2 files / 10 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
 
 Checked `storage-usage.ts` and `storage-usage.test.ts`. Document deletion usage accounting and retrying failed billing events remain unimplemented; these events measure bytes written and do not claim retained GB-months or a price.
+
+
+## Internal web-search space ownership for egress policy (2026-10-21)
+
+Traced all four internal web-search routes through `requireWebToolEgress` to the shared network egress policy. The routes required `x-naelao-space-id` and checked that space's air-gap flag, but never verified that the HMAC-authenticated tenant owned that space. A trusted worker could therefore request an external fetch under a different tenant's space policy.
+
+The shared preflight now resolves the signed tenant, verifies space ownership, then checks air-gap policy before any DNS or network request. Added a foreign-space regression that expects 404 and proves no outbound fetch occurs. Existing air-gap and web-fetch tests continue to pass.
+
+Validation: Knowledge Worker air-gap and web-fetch tests passed 2 files / 16 tests; Knowledge Worker TypeScript check passed.
+
+Checked `air-gap.test.ts` for this boundary. The main Knowledge Worker `index.ts` remains unchecked overall; all its other route groups still need review.

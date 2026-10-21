@@ -2240,7 +2240,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/knowledge/src`
 
-- [ ] `workers/knowledge/src/air-gap.test.ts`
+- [x] `workers/knowledge/src/air-gap.test.ts`
 - [x] `workers/knowledge/src/document-lifecycle.test.ts`
 - [x] `workers/knowledge/src/external-publications.test.ts`
 - [ ] `workers/knowledge/src/foundry-sharing.test.ts`
