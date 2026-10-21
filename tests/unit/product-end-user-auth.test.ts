@@ -32,9 +32,10 @@ const PASSWORD_RESET_MIGRATION = readFileSync(join(__dirname, "../../infra/migra
 const EMAIL_VERIFICATION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0055_email_verification.sql"), "utf8");
 const DELETED_AT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0058_product_end_users_deleted_at.sql"), "utf8");
 const PRODUCT_END_USER_LANGUAGE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0096_product_end_user_language.sql"), "utf8");
+const WHATSAPP_AUTH_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0080_whatsapp_passwordless_auth.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION]);
+  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION, WHATSAPP_AUTH_MIGRATION]);
   const notifyCalls: Array<{ to: string; subject: string; body: string }> = [];
   return {
     PLATFORM_SECRET: "test-platform-secret",
@@ -245,7 +246,9 @@ describe("POST /spaces/:spaceId/end-users/login", () => {
       "UPDATE product_end_users SET suspended_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
     ).bind("prod-1", signup.end_user_id).run();
     const res = await spacesWorker.fetch(req("/spaces/prod-1/end-users/login", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
-    expect(res.status).toBe(403);
+    // Login intentionally keeps the same response as an unknown email/wrong password, so
+    // suspended accounts cannot be enumerated from this public endpoint.
+    expect(res.status).toBe(401);
   });
 
   it("a session minted at login verifies against the product's internal verify endpoint", async () => {
@@ -468,10 +471,10 @@ describe("DELETE /spaces/:spaceId/product-users/me (Tier 2/3 follow-up: GDPR era
     return res.json() as Promise<{ end_user_id: string; session_token: string }>;
   }
 
-  function eraseReq(productId: string, endUserId: string, tenantId: string): Request {
+  async function eraseReq(productId: string, endUserId: string, tenantId: string): Promise<Request> {
     return new Request(`https://spaces.naelao.com/spaces/${productId}/product-users/me`, {
       method: "DELETE",
-      headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": endUserId, "x-naelao-tenant-id": tenantId },
+      headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": endUserId, "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken("test-platform-secret", tenantId) },
     });
   }
 
@@ -479,7 +482,7 @@ describe("DELETE /spaces/:spaceId/product-users/me (Tier 2/3 follow-up: GDPR era
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1");
     const { end_user_id } = await signup(env, "prod-1");
-    const res = await spacesWorker.fetch(eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
+    const res = await spacesWorker.fetch(await eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
     expect(res.status).toBe(200);
     const body = await res.json() as { erased: boolean };
     expect(body.erased).toBe(true);
@@ -496,11 +499,11 @@ describe("DELETE /spaces/:spaceId/product-users/me (Tier 2/3 follow-up: GDPR era
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1");
     const { end_user_id } = await signup(env, "prod-1");
-    await spacesWorker.fetch(eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
+    await spacesWorker.fetch(await eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
 
     const meRes = await spacesWorker.fetch(
       new Request(`https://spaces.naelao.com/spaces/prod-1/product-users/me`, {
-        headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": end_user_id, "x-naelao-tenant-id": "tenant-1" },
+        headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": end_user_id, "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": await mintInternalToken("test-platform-secret", "tenant-1") },
       }),
       env as never, execCtx
     );
@@ -513,8 +516,8 @@ describe("DELETE /spaces/:spaceId/product-users/me (Tier 2/3 follow-up: GDPR era
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1");
     const { end_user_id } = await signup(env, "prod-1");
-    const first = await spacesWorker.fetch(eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
-    const second = await spacesWorker.fetch(eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
+    const first = await spacesWorker.fetch(await eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
+    const second = await spacesWorker.fetch(await eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
   });
@@ -535,7 +538,7 @@ describe("DELETE /spaces/:spaceId/product-users/me (Tier 2/3 follow-up: GDPR era
   it("404s for a nonexistent end user", async () => {
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1");
-    const res = await spacesWorker.fetch(eraseReq("prod-1", "no-such-user", "tenant-1"), env as never, execCtx);
+    const res = await spacesWorker.fetch(await eraseReq("prod-1", "no-such-user", "tenant-1"), env as never, execCtx);
     expect(res.status).toBe(404);
   });
 
@@ -544,7 +547,7 @@ describe("DELETE /spaces/:spaceId/product-users/me (Tier 2/3 follow-up: GDPR era
     await seedProduct(env, "prod-1", "tenant-1");
     const alice = await signup(env, "prod-1", "alice@acme.com");
     const bob = await signup(env, "prod-1", "bob@acme.com");
-    await spacesWorker.fetch(eraseReq("prod-1", alice.end_user_id, "tenant-1"), env as never, execCtx);
+    await spacesWorker.fetch(await eraseReq("prod-1", alice.end_user_id, "tenant-1"), env as never, execCtx);
 
     const bobRow = await env.PLATFORM_DB.prepare(
       "SELECT email, deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"

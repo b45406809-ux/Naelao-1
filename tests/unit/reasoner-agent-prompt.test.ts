@@ -15,7 +15,7 @@ describe("the agent's own system prompt reaches the model", () => {
   it("assembles kernel, business, soul, and founder layers in immutable order", () => {
     const composed = composeSystemPrompt("You are the Naelao Agent for a Whop reselling business.");
     expect(composed.startsWith("<kernel>")).toBe(true);
-    expect(composed).toContain("script-first agent");
+    expect(composed).toContain("terminal-native agent");
     expect(composed.indexOf("<kernel>")).toBeLessThan(composed.indexOf("<business_context>"));
     expect(composed.indexOf("<business_context>")).toBeLessThan(composed.indexOf("<soul>"));
     expect(composed.indexOf("<soul>")).toBeLessThan(composed.indexOf("<founder_directives>"));
@@ -29,7 +29,7 @@ describe("the agent's own system prompt reaches the model", () => {
 
   it("falls back to the protocol alone when an agent has no prompt of its own", () => {
     expect(composeSystemPrompt(undefined)).toBe(composeSystemPrompt(""));
-    expect(composeSystemPrompt("   ")).toContain("script-first agent");
+    expect(composeSystemPrompt("   ")).toContain("terminal-native agent");
   });
 
   it("bounds an oversized prompt so it cannot crowd out the rest of a small window", () => {
@@ -39,7 +39,7 @@ describe("the agent's own system prompt reaches the model", () => {
     // fixed-size protocol plus the closing identity anchor.
     expect(composed.length).toBeLessThan(huge.length / 2);
     // Truncated, but the protocol still survives — losing THAT would break every reply.
-    expect(composed).toContain("script-first agent");
+    expect(composed).toContain("terminal-native agent");
   });
 });
 

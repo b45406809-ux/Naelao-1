@@ -13,7 +13,7 @@ const SECRET = "test-platform-secret";
 
 function makeStatefulCredentialsStub() {
   let seq = 0;
-  const rows: Array<{ id: string; name: string; value: string; scope: string }> = [];
+  const rows: Array<{ id: string; name: string; value: string; scope: string; description?: string }> = [];
   const worker = {
     async fetch(reqInput: Request) {
       const url = new URL(reqInput.url);
@@ -23,19 +23,19 @@ function makeStatefulCredentialsStub() {
 
       if (reqInput.method === "POST" && listMatch) {
         if (!reqInput.headers.get("x-naelao-user-id")) return new Response("x-naelao-user-id required", { status: 400 });
-        const body = await reqInput.json<{ name: string; value: string; scope?: string }>();
+        const body = await reqInput.json<{ name: string; value: string; scope?: string; description?: string }>();
         if ((body.scope ?? "user") === "space" && role !== "owner" && role !== "admin") {
           return new Response("owner/admin required for space scope", { status: 403 });
         }
         // Upsert by name (the real worker replaces a same-(space,name,scope) row).
         const existing = rows.find((r) => r.name === body.name);
-        if (existing) { existing.value = body.value; return Response.json({ id: existing.id, name: body.name }, { status: 200 }); }
+        if (existing) { existing.value = body.value; existing.description = body.description; return Response.json({ id: existing.id, name: body.name }, { status: 200 }); }
         const id = `cred-${++seq}`;
-        rows.push({ id, name: body.name, value: body.value, scope: body.scope ?? "user" });
+        rows.push({ id, name: body.name, value: body.value, scope: body.scope ?? "user", description: body.description });
         return Response.json({ id, name: body.name, scope: body.scope ?? "user" }, { status: 201 });
       }
       if (reqInput.method === "GET" && listMatch) {
-        return Response.json({ credentials: rows.map((r) => ({ id: r.id, name: r.name, scope: r.scope })) });
+        return Response.json({ credentials: rows.map((r) => ({ id: r.id, name: r.name, scope: r.scope, description: r.description })) });
       }
       if (reqInput.method === "DELETE" && delMatch) {
         const id = decodeURIComponent(delMatch[2]!);
@@ -60,63 +60,64 @@ async function makeEnv() {
     "content-type": "application/json",
     "x-naelao-tenant-id": "tenant-a",
     "x-naelao-user-id": "alice",
+    "x-naelao-role": "owner",
     "x-naelao-internal-token": token,
   };
   return { env, headers, rows };
 }
 
 describe("BYOK LLM key routes (step 28)", () => {
-  it("stores a provider key (space-scoped) and reports it configured, never leaking the value", async () => {
+  it("stores an OpenRouter key (space-scoped) and reports it configured, never leaking the value", async () => {
     const { env, headers, rows } = await makeEnv();
 
     const put = await app.fetch(
       new Request("https://agents.naelao.com/spaces/space-a/llm-byok", {
         method: "PUT",
         headers,
-        body: JSON.stringify({ provider: "google-ai-studio", key: "AIza-secret-123" }),
+        body: JSON.stringify({ provider: "openrouter", key: "or-secret-123" }),
       }),
       env as never,
     );
     expect(put.status).toBe(200);
 
     // Stored space-scoped under the canonical name, with the real key.
-    const stored = rows.find((r) => r.name === "llm-byok:google-ai-studio");
+    const stored = rows.find((r) => r.name.startsWith("llm_byok_openrouter::key_"));
     expect(stored?.scope).toBe("space");
-    expect(stored?.value).toBe("AIza-secret-123");
+    expect(stored?.value).toBe("or-secret-123");
 
     const get = await app.fetch(
       new Request("https://agents.naelao.com/spaces/space-a/llm-byok", { headers }),
       env as never,
     );
     const body = (await get.json()) as { providers: Array<{ provider: string; configured: boolean }> };
-    const google = body.providers.find((p) => p.provider === "google-ai-studio")!;
+    const openrouter = body.providers.find((p) => p.provider === "openrouter")!;
     const groq = body.providers.find((p) => p.provider === "groq")!;
-    expect(google.configured).toBe(true);
+    expect(openrouter.configured).toBe(true);
     expect(groq.configured).toBe(false);
     // The response never carries the key value.
-    expect(JSON.stringify(body)).not.toContain("AIza-secret-123");
+    expect(JSON.stringify(body)).not.toContain("or-secret-123");
   });
 
   it("removes a stored key (idempotent)", async () => {
     const { env, headers, rows } = await makeEnv();
     await app.fetch(
       new Request("https://agents.naelao.com/spaces/space-a/llm-byok", {
-        method: "PUT", headers, body: JSON.stringify({ provider: "groq", key: "gsk-abc" }),
+        method: "PUT", headers, body: JSON.stringify({ provider: "openrouter", key: "or-abc" }),
       }),
       env as never,
     );
-    expect(rows.some((r) => r.name === "llm-byok:groq")).toBe(true);
+    expect(rows.some((r) => r.name.startsWith("llm_byok_openrouter::key_"))).toBe(true);
 
     const del = await app.fetch(
-      new Request("https://agents.naelao.com/spaces/space-a/llm-byok/groq", { method: "DELETE", headers }),
+      new Request("https://agents.naelao.com/spaces/space-a/llm-byok/openrouter", { method: "DELETE", headers }),
       env as never,
     );
     expect(del.status).toBe(200);
-    expect(rows.some((r) => r.name === "llm-byok:groq")).toBe(false);
+    expect(rows.some((r) => r.name.startsWith("llm_byok_openrouter::key_"))).toBe(false);
 
     // Deleting again is a no-op success, not a 404.
     const again = await app.fetch(
-      new Request("https://agents.naelao.com/spaces/space-a/llm-byok/groq", { method: "DELETE", headers }),
+      new Request("https://agents.naelao.com/spaces/space-a/llm-byok/openrouter", { method: "DELETE", headers }),
       env as never,
     );
     expect(again.status).toBe(200);

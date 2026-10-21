@@ -33,7 +33,8 @@ function makeR2(): R2Bucket {
     async get(key: string) {
       if (!store.has(key)) return null;
       const text = store.get(key)!;
-      return { async text() { return text; } } as unknown as R2ObjectBody;
+      const bytes = new TextEncoder().encode(text);
+      return { size: bytes.byteLength, async text() { return text; }, async arrayBuffer() { return bytes.slice().buffer; } } as unknown as R2ObjectBody;
     },
     async head(key: string) {
       return store.has(key) ? ({} as R2Object) : null;

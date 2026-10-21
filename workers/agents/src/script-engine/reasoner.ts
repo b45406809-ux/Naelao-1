@@ -673,8 +673,16 @@ export function decisionTools(_model: string | undefined, availableOperations?: 
   ].filter((tool) => tool.name === "AskUser" || !availableOperations || availableOperations.includes(tool.name));
 }
 
-/** Action names are identical across both schema variants — build once from either. */
-const DECISION_ACTIONS = new Set(decisionTools(undefined).map((t) => t.name));
+/**
+ * Names offered as tools are identical across schema variants. The terminal-shell migration
+ * removed the old structured actions from the advertised schema, but providers still emit their
+ * legacy envelopes for in-flight prompts and older model adapters. Continue decoding those
+ * shapes without advertising them to new requests.
+ */
+const DECISION_ACTIONS = new Set([
+  ...decisionTools(undefined).map((t) => t.name),
+  "run", "distill", "patch", "answer", "give_up",
+]);
 
 /**
  * Turn a provider tool call into a ReasonDecision, validating that the action is one we declared

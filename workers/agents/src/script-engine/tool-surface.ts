@@ -796,7 +796,10 @@ export class ScriptToolSurface {
     // alphabetical order, which had no relationship to relevance and is what silently dropped the
     // real answer from the live-reported case above.
     scored.sort((a, b) => b.hits - a.hits || a.distance - b.distance || a.op.localeCompare(b.op));
-    const names = scored.slice(0, 8).map((s) => s.op);
+    // A single prebuilt currently owns up to nine closely related thread operations. Keep the
+    // suggestion set wide enough to include the useful neighboring action instead of truncating
+    // it solely because one operation sorts last among otherwise comparable matches.
+    const names = scored.slice(0, 10).map((s) => s.op);
     return ` Did you mean one of: ${names.join(", ")}? Use the exact operation name.`;
   }
 

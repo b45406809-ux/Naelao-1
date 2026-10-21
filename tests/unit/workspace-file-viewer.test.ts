@@ -1,7 +1,5 @@
 import { describe, it, expect } from "vitest";
 import spacesWorker from "../../workers/spaces/src/index.js";
-import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
 import { mintInternalToken } from "@naelao/http";
 
 // F-39: read-only R2 workspace file viewer. A project member lists + reads the artifacts their
@@ -22,13 +20,21 @@ function makeR2(files: Record<string, string>) {
     async get(key: string) {
       if (!(key in files)) return null;
       const v = files[key]!;
-      return { size: new TextEncoder().encode(v).length, async text() { return v; } };
+      const bytes = new TextEncoder().encode(v);
+      return { size: bytes.byteLength, async text() { return v; }, async arrayBuffer() { return bytes.slice().buffer; } };
     },
   };
 }
 
 function makeEnv(files: Record<string, string>) {
-  return { PLATFORM_SECRET, ENVIRONMENT: "test", SPACE_DO: makeStatefulDoNamespace(SpaceDO), SCRIPTS_R2: makeR2(files) };
+  const spaceDo = {
+    idFromName: (name: string) => ({ toString: () => name }),
+    get: () => ({ fetch: async (request: Request) => {
+      const path = new URL(request.url).pathname;
+      return path.startsWith("/projects/p1") ? Response.json({ id: "p1", visibility: "public" }) : new Response("not found", { status: 404 });
+    } }),
+  };
+  return { PLATFORM_SECRET, ENVIRONMENT: "test", SPACE_DO: spaceDo, SCRIPTS_R2: makeR2(files) };
 }
 async function h(): Promise<Record<string, string>> {
   return { "content-type": "application/json", "x-naelao-tenant-id": "t1", "x-naelao-internal-token": await mintInternalToken(PLATFORM_SECRET, "t1") };
@@ -73,8 +79,9 @@ describe("F-39: workspace file viewer", () => {
   });
 
   it("degrades gracefully with no R2 bound", async () => {
-    const env = { PLATFORM_SECRET, ENVIRONMENT: "test", SPACE_DO: makeStatefulDoNamespace(SpaceDO) };
-    const res = await get(env as never, "/spaces/s1/projects/p1/workspace/files", await h());
+    const env = makeEnv({});
+    const { SCRIPTS_R2: _bucket, ...withoutBucket } = env;
+    const res = await get(withoutBucket as never, "/spaces/s1/projects/p1/workspace/files", await h());
     const body = await res.json() as { unavailable?: boolean; count: number };
     expect(body.count).toBe(0);
     expect(body.unavailable).toBe(true);

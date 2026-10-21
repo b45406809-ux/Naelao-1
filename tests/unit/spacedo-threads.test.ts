@@ -49,6 +49,7 @@ describe("SpaceDO — threads (spec-canonical, sub-agent/channel subthreads)", (
       space_id: "space1",
       id: "sub-1",
       thread_kind: "sub_agent",
+      thread_tier: "tier_2_task",
       parent_thread_id: parent.json.id,
       title: "Sub-agent run",
     });
@@ -79,7 +80,10 @@ describe("SpaceDO — threads (spec-canonical, sub-agent/channel subthreads)", (
     });
 
     const list = await call(spaceDO, `/threads?space_id=space1&project_id=${project.json.id}`, "GET");
-    expect(list.json.count).toBe(2);
+    // Listing the project lazily ensures its durable team room exists alongside these two
+    // user-visible threads.
+    expect(list.json.count).toBe(3);
+    expect(list.json.data.some((thread: any) => thread.id === project.json.id)).toBe(false);
   });
 
   it("mirroring the same channel_session_id twice is idempotent (no duplicate thread)", async () => {
@@ -131,17 +135,17 @@ describe("SpaceDO — threads (spec-canonical, sub-agent/channel subthreads)", (
     it("an explicit parent_thread_id filter is answered in full regardless of show_sub_threads", async () => {
       const parent = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "Parent" });
       const consult1 = await call(spaceDO, "/threads", "POST", {
-        space_id: "space1", thread_kind: "sub_agent", parent_thread_id: parent.json.id,
+        space_id: "space1", thread_kind: "sub_agent", thread_tier: "tier_2_task", parent_thread_id: parent.json.id,
         session_id: "sess-1", title: "Consult: agent1",
       });
       const consult2 = await call(spaceDO, "/threads", "POST", {
-        space_id: "space1", thread_kind: "sub_agent", parent_thread_id: parent.json.id,
+        space_id: "space1", thread_kind: "sub_agent", thread_tier: "tier_2_task", parent_thread_id: parent.json.id,
         session_id: "sess-2", title: "Consult: agent2",
       });
       // An unrelated subthread under a DIFFERENT parent must never leak in.
       const other = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "Other parent" });
       await call(spaceDO, "/threads", "POST", {
-        space_id: "space1", thread_kind: "sub_agent", parent_thread_id: other.json.id, session_id: "sess-3",
+        space_id: "space1", thread_kind: "sub_agent", thread_tier: "tier_2_task", parent_thread_id: other.json.id, session_id: "sess-3",
       });
 
       // No project show_sub_threads flag set at all — the explicit ask still answers in full.
@@ -165,7 +169,8 @@ describe("SpaceDO — threads (spec-canonical, sub-agent/channel subthreads)", (
   // all, so it was indistinguishable from a real assistant/Home session in the sessions list.
   describe("a project thread's own chat session (§A1.18 thread model, gap fix)", () => {
     it("POST /sessions with thread_id links the session to the thread", async () => {
-      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", project_id: "proj1", title: "New thread" });
+      const project = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Project" });
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", project_id: project.json.id, title: "New thread" });
       expect(thread.json.session_id).toBeNull();
 
       const created = await call(spaceDO, "/sessions", "POST", {

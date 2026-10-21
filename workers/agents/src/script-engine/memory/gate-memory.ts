@@ -42,14 +42,14 @@ export async function gateMemory(
           ? cosineSimilarity(queryEmbedding, candidate.embedding)
           : candidate.score,
     }))
-    .filter((candidate) => Number.isFinite(candidate.score) && candidate.score >= SEMANTIC_MEMORY_THRESHOLD)
+    .filter((candidate) => Number.isFinite(candidate.score) && candidate.score > SEMANTIC_MEMORY_THRESHOLD)
     .sort((a, b) => b.score - a.score);
 }
 
 /** The only renderer for semantic recall used in model context. */
 export function renderRecalledMemory(candidates: SemanticMemoryCandidate[]): string {
   return candidates
-    .filter((candidate) => candidate.score >= SEMANTIC_MEMORY_THRESHOLD)
+    .filter((candidate) => candidate.score > SEMANTIC_MEMORY_THRESHOLD)
     .map((candidate) => `<recalled_memory score="${candidate.score.toFixed(3)}">${candidate.text}</recalled_memory>`)
     .join("\n");
 }

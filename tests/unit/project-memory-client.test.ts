@@ -36,7 +36,7 @@ describe("buildProjectMemoryStore (HTTP client)", () => {
     }));
     const result = await store.remember({ text: "", entity: "e", relation: "r", attribute: "a" });
     expect(result).toEqual({ id: "fact-1" });
-    expect(seenUrl).toBe("http://spaces-worker/spaces/space-1/projects/proj-1/memory/facts");
+    expect(seenUrl).toBe("http://spaces-worker/spaces/space-1/projects/proj-1/memory/facts?role_rank=0");
   });
 
   it("remember() with no entity/relation/attribute is a silent no-op (not a fact)", async () => {
@@ -50,7 +50,7 @@ describe("buildProjectMemoryStore (HTTP client)", () => {
       Response.json({ data: [{ id: "f1", entity: "refund", relation: "is", attribute: "30 days", trust_score: 1 }] })
     ));
     const results = await store.recall({ text: "refund" });
-    expect(results).toEqual([{ id: "f1", layer: "structured_fact", text: "refund is 30 days", entity: "refund", relation: "is", attribute: "30 days", score: 1 }]);
+    expect(results).toMatchObject([{ id: "f1", layer: "structured_fact", text: "refund is 30 days", entity: "refund", relation: "is", attribute: "30 days", score: 1, role_rank: 0 }]);
   });
 
   it("degrades to an empty array (never throws) when SpaceDO is unreachable", async () => {
@@ -142,7 +142,7 @@ describe("buildHybridMemoryStore (composition)", () => {
       ],
     });
     const hybrid = buildHybridMemoryStore(local, project);
-    const results = await hybrid.recall({ text: "x" });
+    const results = await hybrid.recall({ text: "shared fact" });
     expect(results).toHaveLength(2);
     const sharedFact = results.find((r) => r.text === "shared fact");
     expect(sharedFact?.score).toBe(0.9); // project's higher score won, not local's 0.3

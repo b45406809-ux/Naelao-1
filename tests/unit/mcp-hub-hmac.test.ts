@@ -16,15 +16,19 @@ const PLATFORM_SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 const MIGRATIONS = [
+  readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0012_mcp_servers.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0037_mcp_servers_auth.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0060_mcp_server_connector_provider.sql"), "utf8"),
 ];
 
 function makeEnv(overrides: Record<string, unknown> = {}) {
+  const db = createFakeD1(MIGRATIONS);
+  db.db.exec(`INSERT INTO spaces (id, tenant_id, spacetype_id, name, config_json) VALUES ('space-1', 'tenant-1', 'type-1', 'Test', '{}')`);
   return {
     ENVIRONMENT: "test",
     PLATFORM_SECRET,
-    PLATFORM_DB: createFakeD1(MIGRATIONS),
+    PLATFORM_DB: db,
     ...overrides,
   };
 }
@@ -93,8 +97,11 @@ describe("mcp-hub — reserved-tool-name guard is enforced server-side at call t
 
   it("allows an ordinary, non-reserved tool_name through to the (mocked) upstream MCP server", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { members: [] } }), { status: 200 })
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith("https://cloudflare-dns.com/")) return new Response(JSON.stringify({ Answer: [{ data: "93.184.216.34" }] }), { status: 200 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { content: [{ type: "text", text: "ok" }] } }), { status: 200 });
+    }
     ) as typeof fetch;
     try {
       const env = makeEnv();

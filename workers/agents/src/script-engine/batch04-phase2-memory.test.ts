@@ -45,13 +45,14 @@ describe("Batch 04 phase 2 hybrid memory", () => {
     expect(isolateThreadMessages(stored, { spaceId: "s", projectId: "p", threadId: "new" })).toEqual([]);
   });
 
-  it("admits cosine similarity at 0.80 and rejects values below it", async () => {
+  it("admits only cosine similarity strictly above 0.80", async () => {
     expect(cosineSimilarity([1, 0], [0.8, 0.6])).toBeCloseTo(0.8);
     const gated = await gateMemory([1, 0], [
-      { id: "boundary", layer: "semantic", text: "keep", score: 0, embedding: [0.8, 0.6] },
+      { id: "boundary", layer: "semantic", text: "boundary", score: 0, embedding: [0.8, 0.6] },
       { id: "below", layer: "semantic", text: "drop", score: 0, embedding: [0.79, Math.sqrt(1 - 0.79 ** 2)] },
+      { id: "above", layer: "semantic", text: "keep", score: 0, embedding: [0.8001, Math.sqrt(1 - 0.8001 ** 2)] },
     ]);
-    expect(gated.map((candidate) => candidate.id)).toEqual(["boundary"]);
+    expect(gated.map((candidate) => candidate.id)).toEqual(["above"]);
     expect(renderRecalledMemory(gated)).toContain("<recalled_memory score=\"0.800\">keep</recalled_memory>");
   });
 

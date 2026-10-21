@@ -69,6 +69,10 @@ async function endUserHeaders(tenant: string, userId: string): Promise<Record<st
   };
 }
 
+async function builderHeaders(tenant: string): Promise<Record<string, string>> {
+  return { "x-naelao-tenant-id": tenant, "x-naelao-internal-token": await mintInternalToken(PLATFORM_SECRET, tenant) };
+}
+
 async function seedProductWithPlans(env: ReturnType<typeof makeEnv>) {
   const pricingConfig = {
     model: "subscription",
@@ -191,7 +195,7 @@ describe("PATCH /builder/products/:id/pricing", () => {
     const res = await spacesWorker.fetch(
       req("/builder/products/prod-1/pricing", {
         method: "PATCH",
-        headers: { "x-naelao-tenant-id": "tenant-1" },
+        headers: await builderHeaders("tenant-1"),
         body: JSON.stringify({
           plans: [
             { id: "pro", name: "Pro", priceCents: 2900, interval: "month", lsVariantId: "var_existing" },
@@ -220,7 +224,7 @@ describe("PATCH /builder/products/:id/pricing", () => {
     const res = await spacesWorker.fetch(
       req("/builder/products/prod-1/pricing", {
         method: "PATCH",
-        headers: { "x-naelao-tenant-id": "tenant-1" },
+        headers: await builderHeaders("tenant-1"),
         body: JSON.stringify({ creditPacks: [{ id: "pack-500", name: "500 credits", credits: 500, priceCents: 300 }] }),
       }),
       { ...env, BILLING_WORKER: billing } as never,
@@ -239,7 +243,7 @@ describe("PATCH /builder/products/:id/pricing", () => {
     const res = await spacesWorker.fetch(
       req("/builder/products/prod-1/pricing", {
         method: "PATCH",
-        headers: { "x-naelao-tenant-id": "tenant-1" },
+        headers: await builderHeaders("tenant-1"),
         body: JSON.stringify({ walletTopups: [{ id: "topup-25", name: "$25", priceCents: 2500 }] }),
       }),
       { ...env, BILLING_WORKER: billing } as never,
@@ -257,7 +261,7 @@ describe("PATCH /builder/products/:id/pricing", () => {
       "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id) VALUES ('prod-1', 'someone-else', 'active', 'X', 'launchpad')"
     ).run();
     const res = await spacesWorker.fetch(
-      req("/builder/products/prod-1/pricing", { method: "PATCH", headers: { "x-naelao-tenant-id": "tenant-1" }, body: JSON.stringify({ plans: [] }) }),
+      req("/builder/products/prod-1/pricing", { method: "PATCH", headers: await builderHeaders("tenant-1"), body: JSON.stringify({ plans: [] }) }),
       env as never,
       execCtx
     );

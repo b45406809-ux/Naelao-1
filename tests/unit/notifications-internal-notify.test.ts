@@ -14,7 +14,8 @@ const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as Ex
 const NOTIFICATIONS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0010_notifications.sql"), "utf8");
 
 function makeEnv(resendOk = true) {
-  const fakeDb = createFakeD1([NOTIFICATIONS_MIGRATION]);
+  const fakeDb = createFakeD1([NOTIFICATIONS_MIGRATION, `CREATE TABLE spaces (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active', config_json TEXT NOT NULL DEFAULT '{}');`]);
+  fakeDb.db.exec(`INSERT INTO spaces (id, status, config_json) VALUES ('space-1', 'active', '{}')`);
   return {
     ENVIRONMENT: "test",
     RESEND_API_KEY: "test-resend-key",
