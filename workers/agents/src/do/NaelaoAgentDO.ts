@@ -4423,7 +4423,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       entry.steps.push({ seq: entry.steps.length, ts: Date.now(), ...step, partial: true });
     } else {
-      entry.steps.push({ seq: entry.steps.length, ts: Date.now(), ...step });
+      const nextSeq = entry.steps.reduce((max, row) => Math.max(max, row.seq), -1) + 1;
+      entry.steps.push({ seq: nextSeq, ts: Date.now(), ...step });
     }
     if (entry.steps.length > NaelaoAgentDO.MAX_LIVE_STEPS) entry.steps.shift();
     entry.updatedAt = Date.now();
@@ -4496,11 +4497,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   /** Read a run back from SQLite — the path a client takes after the DO has hibernated, or from a
    *  tab that was not even open when the run started. */
-  private readDurableRun(runId: string): { steps: LiveRunStepRow[]; partial_answer?: string; terminal?: FinishedRunState; status: string } | null {
+  private readDurableRun(runId: string): { session_id: string; steps: LiveRunStepRow[]; partial_answer?: string; terminal?: FinishedRunState; status: string } | null {
     try {
       const state = (this.ctx.storage.sql
-        .exec(`SELECT status, partial_answer, terminal_json FROM run_state WHERE run_id = ?`, runId)
-        .toArray() as unknown as Array<{ status: string; partial_answer: string | null; terminal_json: string | null }>)[0];
+        .exec(`SELECT session_id, status, partial_answer, terminal_json FROM run_state WHERE run_id = ?`, runId)
+        .toArray() as unknown as Array<{ session_id: string; status: string; partial_answer: string | null; terminal_json: string | null }>)[0];
       if (!state) return null;
       const steps = (this.ctx.storage.sql
         .exec(`SELECT step_json FROM run_stream WHERE run_id = ? ORDER BY seq ASC`, runId)
@@ -4512,6 +4513,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         try { terminal = JSON.parse(state.terminal_json) as FinishedRunState; } catch { /* keep undefined */ }
       }
       return {
+        session_id: state.session_id,
         steps,
         status: state.status,
         ...(state.partial_answer ? { partial_answer: state.partial_answer } : {}),
@@ -5025,7 +5027,59 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     // Register before any gate or provisioning check. Continue uses this id for immediate
     // polling, and those checks can fail before the normal progress reporter is constructed.
-    this.liveRuns.set(runId, { steps: [], updatedAt: Date.now() });
+    // A caller may retry a request after its DO was evicted or its response connection was
+    // severed. Return the terminal receipt instead of running the task a second time.
+    const durablePrior = this.readDurableRun(runId);
+    if (durablePrior && durablePrior.session_id !== sessionId) {
+      return Response.json({ error: "run_id_scope_mismatch" }, { status: 409 });
+    }
+    if (durablePrior?.terminal) {
+      const terminal = durablePrior.terminal;
+      return Response.json({
+        status: terminal.status,
+        ...(terminal.final_answer !== undefined ? { final_answer: terminal.final_answer } : {}),
+        ...(terminal.error ? { error: terminal.error } : {}),
+        ...(terminal.pending_approval !== undefined ? { pending_approval: terminal.pending_approval } : {}),
+        ...(terminal.pending_question !== undefined
+          ? terminal.status === "awaiting_planner_input"
+            ? { pending_worker_question: terminal.pending_question }
+            : { pending_question: terminal.pending_question }
+          : {}),
+        ...(terminal.deferred_approvals !== undefined ? { deferred_approvals: terminal.deferred_approvals } : {}),
+        trace: durablePrior.steps,
+        result: {
+          ok: terminal.status === "completed",
+          ...(terminal.final_answer !== undefined ? { output: terminal.final_answer } : {}),
+          ...(terminal.error ? { error: terminal.error } : {}),
+          tier: 1,
+          duration_ms: 0,
+          tokens_used: 0,
+        },
+      });
+    }
+    // Only recover after the previous execution has been quiet long enough that an active
+    // request is unlikely to still be in flight. The journal contains completed tool boundaries;
+    // the current model/tool operation is intentionally never assumed complete.
+    let recoveredSteps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }> = [];
+    try {
+      const prior = this.ctx.storage.sql.exec(
+        `SELECT status, updated_at FROM run_state WHERE run_id = ? AND terminal_json IS NULL`, runId
+      ).toArray() as Array<{ status: string; updated_at: number }>;
+      const row = prior[0];
+      if (row?.status === "running" && durablePrior?.session_id === sessionId && Date.now() - row.updated_at > 15 * 60 * 1000) {
+        recoveredSteps = durablePrior?.steps
+          .filter(step => step.phase === "run" && typeof step.name === "string" && typeof step.ok === "boolean"
+            && !!step.params && typeof step.params === "object" && !Array.isArray(step.params))
+          .map(step => ({ name: step.name!, params: step.params as Record<string, unknown>, ok: step.ok!,
+            ...(step.output !== undefined ? { output: step.output } : {}),
+            ...(step.detail ? { error: step.detail } : {}) })) ?? [];
+      }
+    } catch { /* a recovery read failure must not prevent a normal run */ }
+    this.liveRuns.set(runId, {
+      steps: recoveredSteps.length ? durablePrior?.steps.slice(-NaelaoAgentDO.MAX_LIVE_STEPS) ?? [] : [],
+      ...(recoveredSteps.length && durablePrior?.partial_answer ? { partialAnswer: durablePrior.partial_answer } : {}),
+      updatedAt: Date.now(),
+    });
     this.openDurableRun(runId, sessionId);
 
     if (body.templateMode !== undefined && body.templateMode !== "autonomous_operator" && body.templateMode !== "autonomous_venture_os" && body.templateMode !== "cowork_studio") {
@@ -5618,7 +5672,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(this.env.PLATFORM_DB ? { shouldStopForTenant: () => this.tenantSpaceSuspended(tenantId, spaceId) } : {}),
         ...(continuation?.approvedActionEvidence ? { preApprovedActions: [continuation.approvedActionEvidence] } : {}),
         ...(isLeaf ? { ledgerKey: delegation!.workerId } : continuation?.ledgerKey ? { ledgerKey: continuation.ledgerKey } : {}),
-        ...(continuation?.resumeSteps?.length ? { resumeSteps: continuation.resumeSteps } : {}),
+        ...(continuation?.resumeSteps?.length
+          ? { resumeSteps: continuation.resumeSteps }
+          : recoveredSteps.length ? { resumeSteps: recoveredSteps } : {}),
         ...(continuation?.humanAnswer ? { humanAnswer: continuation.humanAnswer } : {}),
         ...(deliberationRound !== undefined ? { deliberationRound } : {}),
         ...(typeof maxStepsFromContext === "number" ? { maxSteps: maxStepsFromContext } : {}),
