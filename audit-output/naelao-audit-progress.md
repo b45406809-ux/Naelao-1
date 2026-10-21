@@ -1429,6 +1429,12 @@ Validation: `builder-payout-requests.test.ts` passed all 13 tests, including mul
 
 Committed and pushed as `03d41a2e`; refreshed the inventory: 1,976 tracked files, 1,770 source/config checklist rows, and 381 checked rows.
 
+## Reconcile browser tests with the scoped session protocol (2026-10-21)
+
+The old browser test sent an unsigned token and a bare URL to `/v1/browser/navigate`. The worker has since moved to a tenant-signed, task-scoped `BrowserSessionDO` protocol, so the tests stopped at 401 before reaching browser behavior. Replaced those obsolete request expectations with current gateway tests for HMAC scope forwarding, tenant-scope mismatch rejection, malformed scope, and unauthenticated access. Added a real `BrowserSessionDO` launch-path test with a minimal Puppeteer page and DNS stub; it confirms a tier-4 run selects Kitesurf and calls the documented `puppeteer.launch(BROWSER, { browser: "kitesurf" })` contract.
+
+Validation: `browser-worker-kitesurf.test.ts` passed 1 file / 5 tests; Browser Worker `tsc --noEmit` passed. This test slice does not validate the complete action/accessibility/screenshot surface, which remains open in the worker and DO checklist rows.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.

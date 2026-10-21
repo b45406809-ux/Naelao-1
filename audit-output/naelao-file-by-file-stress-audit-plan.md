@@ -1327,7 +1327,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/blueprint-conformance-workflow.test.ts`
 - [ ] `tests/unit/bootstrap-complete-agent-projects.test.ts`
 - [ ] `tests/unit/browser-code-exec-prebuilt.test.ts`
-- [ ] `tests/unit/browser-worker-kitesurf.test.ts`
+- [x] `tests/unit/browser-worker-kitesurf.test.ts`
 - [ ] `tests/unit/builder-account-do.test.ts`
 - [x] `tests/unit/builder-dashboard-api.test.ts`
 - [x] `tests/unit/builder-payout-requests.test.ts`
