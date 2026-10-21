@@ -25,7 +25,7 @@ const RESET_TOKENS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrati
 
 function makeEnv() {
   const fakeDb = createFakeD1([USERS_MIGRATION, ORGS_MIGRATION, BILLING_MIGRATION, TOKEN_VERSION_MIGRATION, RESET_TOKENS_MIGRATION]);
-  const notifyCalls: Array<{ to: string; subject: string; body: string }> = [];
+  const notifyCalls: Array<{ to: string; subject: string; body: string; tenantId: string | null }> = [];
   return {
     ENVIRONMENT: "test",
     JWT_SECRET: "test-jwt-secret",
@@ -34,7 +34,7 @@ function makeEnv() {
     NOTIFICATIONS_WORKER: {
       fetch: async (req: Request) => {
         const body = await req.json() as { to: string; subject: string; body: string };
-        notifyCalls.push(body);
+        notifyCalls.push({ ...body, tenantId: req.headers.get("x-naelao-tenant-id") });
         return new Response(JSON.stringify({ delivered: true }), { status: 200 });
       },
     },
@@ -90,6 +90,32 @@ describe("POST /register — builder signup", () => {
     const res = await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "short" }), env as never, execCtx);
     expect(res.status).toBe(400);
   });
+
+  it("rejects passwords over the byte ceiling before password hashing or storage", async () => {
+    const env = makeEnv();
+    const response = await authWorker.fetch(req("/register", { email: "large@acme.com", password: "x".repeat(1025) }), env as never, execCtx);
+    expect(response.status).toBe(400);
+    expect(await env.__db.prepare("SELECT COUNT(*) AS count FROM users").first<{ count: number }>()).toEqual({ count: 0 });
+  });
+
+  it("rejects malformed and oversized JSON before touching D1", async () => {
+    const env = makeEnv();
+    const malformed = await authWorker.fetch(new Request("https://auth.naelao.com/register", { method: "POST", headers: { "content-type": "application/json" }, body: "null" }), env as never, execCtx);
+    const oversized = await authWorker.fetch(req("/register", { email: "large@acme.com", password: "hunter2222", org_name: "x".repeat(17_000) }), env as never, execCtx);
+    expect(malformed.status).toBe(400);
+    expect(oversized.status).toBe(413);
+    expect(await env.__db.prepare("SELECT COUNT(*) AS count FROM users").first<{ count: number }>()).toEqual({ count: 0 });
+  });
+
+  it("normalizes email casing at registration so sign-in and recovery agree", async () => {
+    const env = makeEnv();
+    const response = await authWorker.fetch(req("/register", { email: "Jane@Acme.com", password: "hunter2222" }), env as never, execCtx);
+    expect(response.status).toBe(201);
+    const stored = await env.__db.prepare("SELECT email FROM users LIMIT 1").first<{ email: string }>();
+    expect(stored?.email).toBe("jane@acme.com");
+    const login = await authWorker.fetch(req("/login", { email: "JANE@ACME.COM", password: "hunter2222" }), env as never, execCtx);
+    expect(login.status).toBe(200);
+  });
 });
 
 describe("POST /login — builder sign-in", () => {
@@ -118,6 +144,35 @@ describe("POST /login — builder sign-in", () => {
     const res = await authWorker.fetch(req("/login", { email: "nobody@acme.com", password: "whatever1" }), env as never, execCtx);
     expect(res.status).toBe(401);
   });
+
+  it("does not reveal whether an email belongs to an inactive account", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "inactive@acme.com", password: "hunter2222" }), env as never, execCtx);
+    await env.__db.prepare("UPDATE users SET status = 'suspended' WHERE email = ?").bind("inactive@acme.com").run();
+
+    const inactive = await authWorker.fetch(req("/login", { email: "inactive@acme.com", password: "wrong-password" }), env as never, execCtx);
+    const unknown = await authWorker.fetch(req("/login", { email: "unknown@acme.com", password: "wrong-password" }), env as never, execCtx);
+    expect(inactive.status).toBe(401);
+    const inactiveError = await inactive.json() as { error_code: string; message: string };
+    const unknownError = await unknown.json() as { error_code: string; message: string };
+    expect(inactiveError).toMatchObject({ error_code: "unauthorized", message: "Invalid email or password" });
+    expect(unknownError).toMatchObject({ error_code: inactiveError.error_code, message: inactiveError.message });
+  });
+
+  it("rejects oversized login passwords before querying the database", async () => {
+    const env = makeEnv();
+    const response = await authWorker.fetch(req("/login", { email: "x@example.com", password: "x".repeat(1025) }), env as never, execCtx);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ message: "password exceeds the 1 KiB limit" });
+  });
+
+  it("treats malformed stored password hashes as invalid credentials instead of throwing", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "bad-hash@acme.com", password: "hunter2222" }), env as never, execCtx);
+    await env.__db.prepare("UPDATE users SET password_hash = ? WHERE email = ?").bind('{"hash":"x","salt":"x","iterations":999999999999}', "bad-hash@acme.com").run();
+    const response = await authWorker.fetch(req("/login", { email: "bad-hash@acme.com", password: "hunter2222" }), env as never, execCtx);
+    expect(response.status).toBe(401);
+  });
 });
 
 describe("password reset (launch-readiness audit follow-up: builders had no account-recovery path at all)", () => {
@@ -133,6 +188,8 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
 
     const reqRes = await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
     expect(reqRes.status).toBe(200);
+    const user = await env.__db.prepare("SELECT org_id FROM users WHERE email = 'jane@acme.com'").first<{ org_id: string }>();
+    expect(env.__notifyCalls[0]?.tenantId).toBe(user?.org_id);
     const token = extractResetToken(env.__notifyCalls);
 
     const resetRes = await authWorker.fetch(req("/reset-password", { token, new_password: "newpassword1" }), env as never, execCtx);
@@ -181,6 +238,32 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     expect(second.status).toBe(400);
   });
 
+  it("allows only one concurrent reset request to claim and apply a reset token", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const token = extractResetToken(env.__notifyCalls);
+
+    // D1 serializes batches. Both requests can pass the initial read and perform PBKDF2 before
+    // either batch starts, so queue the actual SQLite transactions as the deployed service does.
+    const database = env.__db;
+    const realBatch = database.batch.bind(database);
+    let pending = Promise.resolve();
+    database.batch = (statements) => {
+      const result = pending.then(() => realBatch(statements));
+      pending = result.then(() => undefined, () => undefined);
+      return result;
+    };
+
+    const [first, second] = await Promise.all([
+      authWorker.fetch(req("/reset-password", { token, new_password: "newpassword1" }), env as never, execCtx),
+      authWorker.fetch(req("/reset-password", { token, new_password: "anotherpass1" }), env as never, execCtx),
+    ]);
+    expect([first.status, second.status].sort()).toEqual([200, 400]);
+    const version = await database.prepare("SELECT token_version FROM users WHERE email = 'jane@acme.com'").first<{ token_version: number }>();
+    expect(version?.token_version).toBe(1);
+  });
+
   it("rejects a garbage token", async () => {
     const env = makeEnv();
     const res = await authWorker.fetch(req("/reset-password", { token: "not-a-real-token", new_password: "newpassword1" }), env as never, execCtx);
@@ -196,6 +279,17 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     expect(res.status).toBe(400);
   });
 
+  it("rejects oversized reset passwords and tokens", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const token = extractResetToken(env.__notifyCalls);
+    const largePassword = await authWorker.fetch(req("/reset-password", { token, new_password: "x".repeat(1025) }), env as never, execCtx);
+    const largeToken = await authWorker.fetch(req("/reset-password", { token: "x".repeat(129), new_password: "newpassword1" }), env as never, execCtx);
+    expect(largePassword.status).toBe(400);
+    expect(largeToken.status).toBe(400);
+  });
+
   it("includes a clickable reset link when BUILDER_DASHBOARD_URL is configured, and falls back to token-only text otherwise", async () => {
     const envWithUrl = { ...makeEnv(), BUILDER_DASHBOARD_URL: "https://app.naelao.com" };
     await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), envWithUrl as never, execCtx);
@@ -207,5 +301,22 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), envNoUrl as never, execCtx);
     expect(envNoUrl.__notifyCalls[0]!.body).not.toContain("http");
     expect(envNoUrl.__notifyCalls[0]!.body).toContain("Reset token:");
+  });
+});
+
+describe("token revocation verification", () => {
+  it("rejects a still-unexpired JWT after /revoke increments its token version", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    const login = await authWorker.fetch(req("/login", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    const { data } = await login.json() as { data: { token: string } };
+    const authRequest = (path: string) => new Request(`https://auth.naelao.com${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${data.token}` },
+    });
+
+    expect((await authWorker.fetch(authRequest("/verify"), env as never, execCtx)).status).toBe(200);
+    expect((await authWorker.fetch(authRequest("/revoke"), env as never, execCtx)).status).toBe(200);
+    expect((await authWorker.fetch(authRequest("/verify"), env as never, execCtx)).status).toBe(401);
   });
 });

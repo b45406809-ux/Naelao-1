@@ -1370,7 +1370,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/assistant-permission-clamp.test.ts`
 - [ ] `tests/unit/assistant-policy-and-model-config-business-membership.test.ts`
 - [ ] `tests/unit/assistant-policy-cache.test.ts`
-- [ ] `tests/unit/auth-worker.test.ts`
+- [x] `tests/unit/auth-worker.test.ts`
 - [ ] `tests/unit/avos-features.test.ts`
 - [ ] `tests/unit/batch1-presentation.test.ts`
 - [ ] `tests/unit/billing-fulfillment-project.test.ts`
