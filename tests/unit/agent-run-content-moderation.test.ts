@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
@@ -14,7 +14,7 @@ import { mintInternalToken } from "@naelao/http";
 
 const SECRET = "test-platform-secret";
 
-function makeEnv(): AgentsEnv & { __runCalls: unknown[] } {
+function makeEnv(tenantActive = true): AgentsEnv & { __runCalls: unknown[] } {
   const runCalls: unknown[] = [];
   const agentDoStub = {
     async fetch(reqInput: Request) {
@@ -47,9 +47,11 @@ function makeEnv(): AgentsEnv & { __runCalls: unknown[] } {
     // "no such row" cleanly (not a throw) so the app's own error handling produces a normal,
     // assertable 404 rather than an unhandled dispatch error.
     PLATFORM_DB: {
-      prepare() {
+      prepare(sql: string) {
         return {
-          bind: () => ({ first: async () => null }),
+          bind: () => ({ first: async () => sql.includes("SELECT s.id FROM spaces s WHERE")
+            ? tenantActive ? { id: "space-1" } : null
+            : null }),
         };
       },
     },
@@ -110,5 +112,25 @@ describe("POST /spaces/:spaceId/sessions/:sessionId/agent/run — content policy
     const env = makeEnv();
     const res = await runReq(env, "What's the status of my last order?");
     expect(res.status).toBe(404);
+  });
+
+  it("blocks chat, mention continuation, and bot resume for suspended tenants before agent dispatch", async () => {
+    const env = makeEnv(false);
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const requests = [
+      ["/spaces/space-1/sessions/sess-1/agent/run", { goal: "hello" }],
+      ["/spaces/space-1/sessions/sess-1/agent/mention-run", { text: "hello" }],
+      ["/spaces/space-1/channels/sessions/sess-1/resume", {}],
+    ] as const;
+    const responses = await Promise.all(requests.map(([path, body]) => app.fetch(new Request(`https://agents.naelao.com${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+      body: JSON.stringify(body),
+    }), env)));
+    for (const response of responses) {
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ error_code: "tenant_suspended" });
+    }
+    expect(env.__runCalls).toHaveLength(0);
   });
 });

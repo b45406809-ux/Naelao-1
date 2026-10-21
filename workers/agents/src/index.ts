@@ -1175,6 +1175,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
 
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
+  if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
 
   // The product-session middleware above already checked ownership for end users. Resolve scope
   // here for builder/internal callers too so a private encrypted scratchpad can never be passed to
@@ -1770,6 +1771,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/mention-run", async (c) => 
   if (!body.text || typeof body.text !== "string") {
     throw badRequest("text is required and must be a string");
   }
+  if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
 
   const { roster, defaultAgentId } = await resolveMentionRoster(c.env, tenantId, spaceId, body.project_id);
   const mentioned = parseMentions(body.text, roster);
@@ -8762,6 +8764,7 @@ app.delete("/spaces/:spaceId/sessions/:sessionId/uploads/:filename", async (c) =
 app.post("/spaces/:spaceId/channels/sessions/:sessionId/resume", async (c) => {
   const { spaceId, sessionId } = c.req.param();
   const tenantId = await requireVerifiedTenant(c);
+  if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   return stub.fetch(new Request(`http://agent-do/channels/sessions/${encodeURIComponent(sessionId)}/resume`, { method: "POST" }));
 });

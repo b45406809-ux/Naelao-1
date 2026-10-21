@@ -1354,7 +1354,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/agents-worker-internal-token-gate.test.ts`
 - [ ] `tests/unit/ai-gateway-stored-keys.test.ts`
 - [ ] `tests/unit/analytics-space-metrics-isolation.test.ts`
-- [ ] `tests/unit/approval-authority.test.ts`
+- [x] `tests/unit/approval-authority.test.ts`
 - [ ] `tests/unit/approval-gates-structural.test.ts`
 - [ ] `tests/unit/approvals-prebuilt.test.ts`
 - [ ] `tests/unit/artifact-worker.test.ts`
@@ -1523,11 +1523,11 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/notifications-internal-notify.test.ts`
 - [ ] `tests/unit/onboarding-business-membership.test.ts`
 - [ ] `tests/unit/onboarding-oauth-availability.test.ts`
-- [ ] `tests/unit/owner-voice-ticket-route.test.ts`
+- [x] `tests/unit/owner-voice-ticket-route.test.ts`
 - [ ] `tests/unit/parse-bounded-integer.test.ts`
 - [ ] `tests/unit/personal-plan-whop-checkout.test.ts`
 - [x] `tests/unit/phase-runner-safety.test.ts`
-- [ ] `tests/unit/pipedream-connector-connect.test.ts`
+- [x] `tests/unit/pipedream-connector-connect.test.ts`
 - [ ] `tests/unit/plan-tool.test.ts`
 - [ ] `tests/unit/platform-plan-billing.test.ts`
 - [ ] `tests/unit/platform-safety.test.ts`
@@ -1601,7 +1601,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/scheduled-jobs.test.ts`
 - [ ] `tests/unit/script-engine.test.ts`
 - [ ] `tests/unit/script-name-recoverable.test.ts`
-- [ ] `tests/unit/script-run-hmac-gate.test.ts`
+- [x] `tests/unit/script-run-hmac-gate.test.ts`
 - [ ] `tests/unit/seed-general-project.test.ts`
 - [ ] `tests/unit/send-to-thread-orchestration-hook.test.ts`
 - [ ] `tests/unit/session-budget-guard.test.ts`
@@ -1634,6 +1634,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/template-bootstrap-execution.test.ts`
 - [ ] `tests/unit/template-royalty-webhook.test.ts`
 - [ ] `tests/unit/tenant-custom-oauth.test.ts`
+- [x] `tests/unit/tenant-continuation-gate.test.ts`
 - [ ] `tests/unit/terminal-output.test.ts`
 - [x] `tests/unit/thread-last-active-migration.test.ts`
 - [ ] `tests/unit/tool-addressing-robustness.test.ts`
@@ -1651,7 +1652,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/webhook-normalizer.test.ts`
 - [ ] `tests/unit/whop-oauth-business-billing.test.ts`
 - [ ] `tests/unit/whop-oauth-checkout.test.ts`
-- [ ] `tests/unit/whop-oauth-connect.test.ts`
+- [x] `tests/unit/whop-oauth-connect.test.ts`
 - [ ] `tests/unit/whop-platform-plan-billing.test.ts`
 - [ ] `tests/unit/whop-wallet.test.ts`
 - [ ] `tests/unit/workflow-budget-settlement-v2.test.ts`
@@ -1733,7 +1734,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/agents/src`
 
-- [ ] `workers/agents/src/agent-run-session-scope.test.ts`
+- [x] `workers/agents/src/agent-run-session-scope.test.ts`
 - [ ] `workers/agents/src/agent-templates.test.ts`
 - [ ] `workers/agents/src/agent-templates.ts`
 - [ ] `workers/agents/src/batch09-foundations.test.ts`
@@ -1750,7 +1751,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/model-policy.test.ts`
 - [ ] `workers/agents/src/model-policy.ts`
 - [ ] `workers/agents/src/project-steward-dispatch.ts`
-- [ ] `workers/agents/src/prompt-injection-quarantine.test.ts`
+- [x] `workers/agents/src/prompt-injection-quarantine.test.ts`
 - [ ] `workers/agents/src/pull-request-review.test.ts`
 - [ ] `workers/agents/src/reconciliation-b2.test.ts`
 - [ ] `workers/agents/src/request-body-boundaries.test.ts`

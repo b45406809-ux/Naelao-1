@@ -1863,3 +1863,9 @@ The direct HMAC-protected `/agents/:agentId/script/run` route could bypass the a
 Validation: direct script HMAC, approval authority and continuation regressions passed 11/11; full Agents suite passed 156 files / 714 tests; Agents TypeScript, focused security lint and `git diff --check` passed. Queue alarms, long-running in-flight tool loops and other entrypoints remain in the open audit.
 
 Refreshed the tracked repository tree after adding the continuation-route regression file. The tree now records 2,027 tracked files and 1,821 source or executable-configuration files at code commit `a621df58`; the scratch `work/` files and root Vitest reports remain untracked and excluded.
+
+## Interactive agent dispatch suspension gates (2026-10-21)
+
+The user-facing chat `/agent/run`, `/agent/mention-run`, and channel-session `/resume` entrypoints could still dispatch new work or reactivate bot responses after tenant suspension. They now check tenant and Space activity before session/roster work or Durable Object dispatch. Added a regression that exercises all three suspended paths and asserts no agent run is dispatched. The full Agents suite initially identified two fixtures that lacked a `PLATFORM_DB` binding; both now explicitly model an active tenant and preserve their original authorization/injection assertions.
+
+Validation: focused chat/mention/resume regressions passed 34/34; session-scope and injection regressions passed 5/5; full Agents suite passed 156 files / 714 tests; Agents TypeScript and Biome security lint passed; `git diff --check` passed. No new tracked files were added, so the repository tree remains current at 2,027 tracked files / 1,821 source or executable-configuration files. Remaining suspension work includes already-running tool loops and complete queue/DO-alarm coverage; the repository audit remains open.

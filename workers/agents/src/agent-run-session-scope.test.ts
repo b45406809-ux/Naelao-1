@@ -24,6 +24,9 @@ async function postRun(options: {
     },
   ), {
     PLATFORM_SECRET: secret,
+    PLATFORM_DB: {
+      prepare() { return { bind() { return { first: async () => ({ id: "space-a" }) }; } }; },
+    },
     SPACES_WORKER: { fetch },
   } as never, {} as never);
   return { response, fetch };
