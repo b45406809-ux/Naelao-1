@@ -1,9 +1,9 @@
 /**
  * DataErasureWorkflow
  *
- * GDPR / right-to-erasure workflow. Permanently erases all PII and data for an org.
- * Includes a 24-hour cooling-off period between suspension and hard deletion
- * to satisfy regulatory requirements and allow accidental-request reversal.
+ * Organization data-erasure workflow. Permanently removes the data covered by its cleanup steps.
+ * It includes a 24-hour delay after suspension. A request/cancellation and restoration path is
+ * not currently wired, so this delay is not a reversible cooling-off window.
  *
  * Steps:
  *   1. record-erasure-request  — insert audit_log entry
@@ -74,9 +74,8 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
       return { suspended: true };
     });
 
-    // ── Regulatory cooling-off period: 24 hours ───────────────────────────────
-    // CF Workflows supports sleep durations up to 1 year.
-    // This satisfies GDPR Art. 17 implementation requirements (reversibility window).
+    // ── Delayed deletion: 24 hours ────────────────────────────────────────────
+    // This is only a delay. There is no cancellation or restoration path yet.
     await step.sleep("cooling-off", "24 hours");
 
     // ── Step 3: Delete space data (R2, Vectorize, D1) ────────────────────────

@@ -12,7 +12,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 
 ## Open cross-file findings
 
-- **Organization erasure lifecycle:** the queue consumer accepts `data.erasure`, but no producer or request route was found. `DataErasureWorkflow` suspends an org, waits 24 hours, then permanently deletes data; no cancellation or restoration path was found despite the “reversible window” description. Trace authorization, initiation, cancellation, and suspended-state recovery end to end before describing this feature as usable or reversible.
+- **Organization erasure lifecycle and coverage:** the queue consumer accepts `data.erasure`, but no producer or request route was found. `DataErasureWorkflow` suspends an org, waits 24 hours, then permanently deletes data; no cancellation or restoration path was found despite the “reversible window” description. Cleanup currently has only the KB bucket and quota KV bindings, while artifacts, exported files, scripts/workspaces, and other space records use separate storage and D1 tables. Build a tenant-scoped resource inventory, add safely scoped cleanup, and trace authorization, initiation, cancellation, and suspended-state recovery before describing this feature as usable or complete.
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 
 ## Work sequence
