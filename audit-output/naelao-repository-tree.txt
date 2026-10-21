@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1973
-Files with source or executable-configuration extensions: 1767
-Inventory revision: 2026-10-20 audit refresh at 01ab8b94
+Files: 1974
+Files with source or executable-configuration extensions: 1768
+Inventory revision: 2026-10-20 audit refresh at 8816f06c
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1994,6 +1994,7 @@ workers/
     package.json
     src/
       air-gap.test.ts
+      document-lifecycle.test.ts
       external-publications.test.ts
       foundry-sharing.test.ts
       index.ts
