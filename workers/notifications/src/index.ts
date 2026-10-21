@@ -496,7 +496,8 @@ function plainTextToHtml(text: string): string {
 
 async function sendEmailNow(
   env: NotificationsEnv,
-  msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId" | "replyTo">
+  msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId" | "replyTo">,
+  notificationId?: string
 ): Promise<{ ok: boolean; status?: number; from?: string }> {
   let subject = msg.subject ?? "(no subject)";
   let html = msg.html ?? "";
@@ -546,7 +547,7 @@ async function sendEmailNow(
       `INSERT INTO notifications (id, tenant_id, user_id, type, title, body, created_at)
        VALUES (?, ?, ?, 'email', ?, ?, datetime('now'))`
     )
-      .bind(crypto.randomUUID(), msg.tenantId, msg.userId, subject, html)
+      .bind(notificationId ?? crypto.randomUUID(), msg.tenantId, msg.userId, subject, html)
       .run();
   }
 
@@ -585,7 +586,7 @@ export async function queue(
             break;
           }
 
-          const result = await sendEmailNow(env, msg);
+          const result = await sendEmailNow(env, msg, `email:${message.id}`);
           if (!result.ok) {
             console.error(
               `[notifications/queue] Resend API error ${result.status ?? "unknown"} for email=${msg.email}`
@@ -605,11 +606,11 @@ export async function queue(
             break;
           }
           await env.PLATFORM_DB.prepare(
-            `INSERT INTO notifications (id, tenant_id, user_id, type, title, body, created_at)
+            `INSERT OR IGNORE INTO notifications (id, tenant_id, user_id, type, title, body, created_at)
              VALUES (?, ?, ?, 'in_app', ?, ?, datetime('now'))`
           )
             .bind(
-              crypto.randomUUID(),
+              `in-app:${message.id}`,
               msg.tenantId,
               msg.userId,
               msg.subject ?? "(no subject)",

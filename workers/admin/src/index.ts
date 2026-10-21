@@ -30,11 +30,11 @@ export async function queue(
     try {
       // Persist to D1 platform_failures table for operator review
       await env.PLATFORM_DB.prepare(
-        `INSERT INTO platform_failures (id, message_type, payload_json, failure_reason, failed_at, retry_count, reviewed)
+        `INSERT OR IGNORE INTO platform_failures (id, message_type, payload_json, failure_reason, failed_at, retry_count, reviewed)
          VALUES (?, ?, ?, ?, ?, 0, 0)`
       )
         .bind(
-          crypto.randomUUID(),
+          `dlq:${message.id}`,
           messageType,
           JSON.stringify(body),
           `DLQ: exhausted retries for message type=${messageType}`,

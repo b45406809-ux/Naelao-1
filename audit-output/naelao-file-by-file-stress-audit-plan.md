@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1997` tracked files; `1791` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the 2026-10-21 analytics queue wiring review.
+Inventory basis: `1999` tracked files; `1793` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `6b71c5e2`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1358,7 +1358,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/business-subscription-gate.test.ts`
 - [ ] `tests/unit/business-subscription-status.test.ts`
 - [ ] `tests/unit/business-subscriptions-billing.test.ts`
-- [x] `tests/unit/data-erasure-records.test.ts`
 - [ ] `tests/unit/canvas-extension-security.test.ts`
 - [x] `tests/unit/capability-scope-boundary.test.ts`
 - [ ] `tests/unit/channel-connect-business-gate.test.ts`
@@ -1395,8 +1394,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/cron-next-run.test.ts`
 - [ ] `tests/unit/cross-project-handoff.test.ts`
 - [ ] `tests/unit/customer-bot-rules-business-membership.test.ts`
-- [x] `tests/unit/data-erasure-records.test.ts`
 - [ ] `tests/unit/daily-digest.test.ts`
+- [x] `tests/unit/data-erasure-records.test.ts`
 - [x] `tests/unit/db-migrations.test.ts`
 - [ ] `tests/unit/deposit-personal-credits.test.ts`
 - [ ] `tests/unit/desk-drop.test.ts`
@@ -1560,13 +1559,11 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/scheduled-jobs-business-membership.test.ts`
 - [ ] `tests/unit/scheduled-jobs-fires-events.test.ts`
 - [ ] `tests/unit/scheduled-jobs.test.ts`
-- [x] `tests/unit/sweeper-thread-session-retention.test.ts`
 - [ ] `tests/unit/script-engine.test.ts`
 - [ ] `tests/unit/script-name-recoverable.test.ts`
 - [ ] `tests/unit/script-run-hmac-gate.test.ts`
 - [ ] `tests/unit/seed-general-project.test.ts`
 - [ ] `tests/unit/send-to-thread-orchestration-hook.test.ts`
-- [x] `tests/unit/thread-last-active-migration.test.ts`
 - [ ] `tests/unit/session-budget-guard.test.ts`
 - [ ] `tests/unit/shell-request.test.ts`
 - [ ] `tests/unit/shell-role-gate.test.ts`
@@ -1592,11 +1589,13 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/sub-agent-effort-escalation.test.ts`
 - [ ] `tests/unit/sub-agent-output.test.ts`
 - [ ] `tests/unit/sub-agents-panel-do-addressing.test.ts`
+- [x] `tests/unit/sweeper-thread-session-retention.test.ts`
 - [ ] `tests/unit/tasks-prebuilt.test.ts`
 - [ ] `tests/unit/template-bootstrap-execution.test.ts`
 - [ ] `tests/unit/template-royalty-webhook.test.ts`
 - [ ] `tests/unit/tenant-custom-oauth.test.ts`
 - [ ] `tests/unit/terminal-output.test.ts`
+- [x] `tests/unit/thread-last-active-migration.test.ts`
 - [ ] `tests/unit/tool-addressing-robustness.test.ts`
 - [ ] `tests/unit/usage-events-v2-migration.test.ts`
 - [ ] `tests/unit/wake-up-brief.test.ts`
@@ -1664,6 +1663,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/admin/src`
 
 - [ ] `workers/admin/src/index.ts`
+- [x] `workers/admin/src/queue.test.ts`
 
 ### `workers/agents`
 
@@ -2105,9 +2105,9 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/analytics/src/events.ts`
 - [ ] `workers/analytics/src/index.ts`
-- [x] `workers/analytics/src/queue.test.ts`
 - [ ] `workers/analytics/src/query.test.ts`
 - [ ] `workers/analytics/src/query.ts`
+- [x] `workers/analytics/src/queue.test.ts`
 
 ### `workers/artifact`
 
@@ -2135,8 +2135,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/assistant/src`
 
-- [ ] `workers/assistant/src/index.ts`
 - [x] `workers/assistant/src/index.test.ts`
+- [ ] `workers/assistant/src/index.ts`
 
 ### `workers/auth`
 
@@ -2328,6 +2328,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/notifications/src/air-gap.test.ts`
 - [ ] `workers/notifications/src/index.ts`
 - [ ] `workers/notifications/src/interactive.test.ts`
+- [x] `workers/notifications/src/queue-idempotency.test.ts`
 - [ ] `workers/notifications/src/web-push.test.ts`
 - [ ] `workers/notifications/src/web-push.ts`
 
@@ -2602,14 +2603,12 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/workflows/src/workflows`
 
 - [ ] `workers/workflows/src/workflows/DataErasureWorkflow.ts`
-- [x] `workers/workflows/src/workflows/erasure-cleanup.test.ts`
-- [x] `workers/workflows/src/workflows/erasure-cleanup.ts`
-- [x] `workers/workflows/src/workflows/erasure-cleanup.test.ts`
-- [x] `workers/workflows/src/workflows/erasure-cleanup.ts`
 - [ ] `workers/workflows/src/workflows/DunningWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/KbIngestionWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/QueueHealthWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/SpaceProvisioningWorkflow.ts`
+- [x] `workers/workflows/src/workflows/erasure-cleanup.test.ts`
+- [x] `workers/workflows/src/workflows/erasure-cleanup.ts`
 
 ### `workers/ws-gateway`
 

@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1997
-Files with source or executable-configuration extensions: 1791
-Inventory revision: 2026-10-21 audit refresh for analytics queue wiring
+Files: 1999
+Files with source or executable-configuration extensions: 1793
+Inventory revision: 2026-10-21 audit refresh at 6b71c5e2
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1415,13 +1415,11 @@ tests/
     scheduled-jobs-business-membership.test.ts
     scheduled-jobs-fires-events.test.ts
     scheduled-jobs.test.ts
-    sweeper-thread-session-retention.test.ts
     script-engine.test.ts
     script-name-recoverable.test.ts
     script-run-hmac-gate.test.ts
     seed-general-project.test.ts
     send-to-thread-orchestration-hook.test.ts
-    thread-last-active-migration.test.ts
     session-budget-guard.test.ts
     shell-request.test.ts
     shell-role-gate.test.ts
@@ -1447,11 +1445,13 @@ tests/
     sub-agent-effort-escalation.test.ts
     sub-agent-output.test.ts
     sub-agents-panel-do-addressing.test.ts
+    sweeper-thread-session-retention.test.ts
     tasks-prebuilt.test.ts
     template-bootstrap-execution.test.ts
     template-royalty-webhook.test.ts
     tenant-custom-oauth.test.ts
     terminal-output.test.ts
+    thread-last-active-migration.test.ts
     tool-addressing-robustness.test.ts
     usage-events-v2-migration.test.ts
     wake-up-brief.test.ts
@@ -1490,6 +1490,7 @@ workers/
     package.json
     src/
       index.ts
+      queue.test.ts
     tsconfig.json
     wrangler.toml
   agents/
@@ -1560,8 +1561,8 @@ workers/
         composio.ts
         directory.ts
         oauth-ticket.test.ts
-        oauth.ts
         oauth.test.ts
+        oauth.ts
         pipedream.ts
         webhook-normalizer.ts
       container-bridge/
@@ -1900,9 +1901,9 @@ workers/
     src/
       events.ts
       index.ts
-      queue.test.ts
       query.test.ts
       query.ts
+      queue.test.ts
     tsconfig.json
     vitest.config.ts
     wrangler.toml
@@ -2059,6 +2060,7 @@ workers/
       air-gap.test.ts
       index.ts
       interactive.test.ts
+      queue-idempotency.test.ts
       web-push.test.ts
       web-push.ts
     tsconfig.json
@@ -2274,8 +2276,8 @@ workers/
     src/
       env.ts
       index.ts
-      queue-consumer.ts
       queue-consumer.test.ts
+      queue-consumer.ts
       workflows/
         DataErasureWorkflow.ts
         DunningWorkflow.ts
