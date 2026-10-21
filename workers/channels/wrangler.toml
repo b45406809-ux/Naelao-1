@@ -29,3 +29,34 @@ vars = { ENVIRONMENT = "staging" }
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.staging.kv_namespaces]]
+binding = "CHANNEL_CONFIG"
+id = "62b7da98d3894ce9824ed45b79129a1c"
+
+
+[[env.staging.queues.producers]]
+binding = "SESSIONS_QUEUE"
+queue = "naelao-channel-sessions"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.kv_namespaces]]
+binding = "CHANNEL_CONFIG"
+id = "62b7da98d3894ce9824ed45b79129a1c"
+
+
+[[env.production.queues.producers]]
+binding = "SESSIONS_QUEUE"
+queue = "naelao-channel-sessions"

@@ -8,7 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 # downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
 workers_dev = false
 
-[[triggers]]
+[triggers]
 crons = ["* * * * *"]
 
 [[d1_databases]]
@@ -35,6 +35,18 @@ ENVIRONMENT = "development"
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
+[env.staging.triggers]
+crons = []
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+[[env.staging.queues.producers]]
+binding = "SESSIONS_QUEUE"
+queue = "naelao-channel-sessions"
+
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
@@ -45,6 +57,18 @@ service = "naelao-spaces"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[env.production.triggers]
+crons = ["* * * * *"]
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+[[env.production.queues.producers]]
+binding = "SESSIONS_QUEUE"
+queue = "naelao-channel-sessions"
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"

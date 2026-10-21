@@ -21,3 +21,14 @@ vars = { ENVIRONMENT = "staging" }
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"

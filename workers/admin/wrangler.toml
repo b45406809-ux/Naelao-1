@@ -30,3 +30,36 @@ vars = { ENVIRONMENT = "staging" }
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.staging.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_events"
+
+
+[[env.staging.queues.consumers]]
+queue = "naelao-dlq"
+max_batch_size = 10
+max_retries = 0
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_events"
+
+
+[[env.production.queues.consumers]]
+queue = "naelao-dlq"
+max_batch_size = 10
+max_retries = 0

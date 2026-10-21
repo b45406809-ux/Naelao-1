@@ -40,3 +40,39 @@ vars = { ENVIRONMENT = "staging", JWT_EXPIRY_SECONDS = "3600", BUILDER_DASHBOARD
 [env.production]
 name = "naelao-auth-production"
 vars = { ENVIRONMENT = "production", JWT_EXPIRY_SECONDS = "3600", BUILDER_DASHBOARD_URL = "https://dashboard.naelao.com" }
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+# Launch-readiness audit follow-up — password-reset emails.
+
+[[env.staging.services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
+
+# F-13: auth was the ONE worker with no named-environment blocks. The prod/staging deploys
+# select an env with --env=<name>; without these blocks the worker deployed with the top-level
+# ENVIRONMENT="development" config (localhost links) even in production. wrangler REPLACES (not
+# merges) top-level [vars] for a named env, so every var must be repeated here. Binding tables
+# ([[d1_databases]], [[services]]) DO inherit from the top level, so they don't.
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+# Launch-readiness audit follow-up — password-reset emails.
+
+[[env.production.services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
+
+# F-13: auth was the ONE worker with no named-environment blocks. The prod/staging deploys
+# select an env with --env=<name>; without these blocks the worker deployed with the top-level
+# ENVIRONMENT="development" config (localhost links) even in production. wrangler REPLACES (not
+# merges) top-level [vars] for a named env, so every var must be repeated here. Binding tables
+# ([[d1_databases]], [[services]]) DO inherit from the top level, so they don't.

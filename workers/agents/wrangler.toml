@@ -429,3 +429,512 @@ service = "naelao-credentials"
 [[env.production.services]]
 binding = "BROWSER_WORKER"
 service = "naelao-browser"
+
+[[env.staging.durable_objects.bindings]]
+name = "NAELAO_AGENT_DO"
+class_name = "NaelaoAgentDO"
+
+# Cloudflare Agents voice SDK for owner browser calls; external customer telephony remains on
+# its existing VOICE_CALLS service. Voice Agent turns dispatch into the canonical session planner.
+
+[[env.staging.durable_objects.bindings]]
+name = "OWNER_VOICE_AGENT"
+class_name = "OwnerVoiceAgent"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "CUSTOMER_VOICE_AGENT"
+class_name = "CustomerVoiceAgent"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "HITL_APPROVAL_DO"
+class_name = "HITLApprovalDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "TASK_DO"
+class_name = "TaskDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "TOOL_SANDBOX"
+class_name = "ToolSandboxDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "DOCUMENT_SANDBOX"
+class_name = "DocumentSandboxDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "MEDIA_SANDBOX"
+class_name = "MediaSandboxDO"
+
+# §A1.17 Phase M — local-machine-as-container (spec gap G-3). One instance per (spaceId, userId);
+# holds the WebSocket to a builder's own Naelao Local Agent client. No [[containers]] binding —
+# this is not a CF Container, it relays to a real human's machine over WS.
+
+[[env.staging.durable_objects.bindings]]
+name = "LOCAL_TUNNEL"
+class_name = "LocalTunnelDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "RISK_GUARD"
+class_name = "RiskGuardDO"
+
+# Account-level concurrency ceiling (spec §28 "ConcurrencyDO") — gates simultaneous sub-agent
+# spawn trees per (spaceId, holder). See buildOrchestrationHooks' spawnSubAgent in NaelaoAgentDO.
+
+[[env.staging.durable_objects.bindings]]
+name = "CONCURRENCY_DO"
+class_name = "ConcurrencyDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "WORKFLOW_RUN_DO"
+class_name = "WorkflowRunDO"
+
+
+[[env.staging.containers]]
+class_name = "ToolSandboxDO"
+image = "./Dockerfile.toolsandbox"
+max_instances = 5
+instance_type = "basic"
+
+# Default scheduling is deliberate: dynamic durable_object image mode retains root caps.
+# After building/publishing, configure CONTAINER_IMAGE_REGISTRY with real deployed digests.
+# An empty registry disables sidecar execution. Never put guessed hashes in that variable.
+
+[[env.staging.containers]]
+class_name = "DocumentSandboxDO"
+image = "./Dockerfile.documents"
+max_instances = 3
+instance_type = "standard-1"
+
+
+[[env.staging.containers]]
+class_name = "MediaSandboxDO"
+image = "./Dockerfile.media"
+max_instances = 3
+instance_type = "standard-1"
+
+# Script-first engine (authoritative agent model; spec appendix ~6672k):
+# skill library + agent 4-file config + agent workspace, all keyed by space.
+# Layout: spaces/{spaceId}/scripts/..., spaces/{spaceId}/agents/..., spaces/{spaceId}/workspace/...
+
+[[env.staging.r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
+# Vectorize index for script.find semantic search (spec §16). Optional — the engine
+# degrades to a tag/text scan when absent.
+
+[[env.staging.vectorize]]
+binding = "SCRIPTS_VECTORIZE"
+index_name = "naelao-agent-scripts"
+
+# Vectorize index for the Memory OS semantic layer (episodic facts promoted to long-term
+# semantic memory, queried by embedding + user_id filter). Separate vector space/lifecycle
+# from the skill-library index above.
+
+[[env.staging.vectorize]]
+binding = "MEMORY_VECTORIZE"
+index_name = "naelao-agent-memory"
+
+# CF Worker Loader (beta) — dynamically spins up a fresh V8 isolate per script.run call for
+# execution Tiers 2-4 (script-engine/code-runner.ts). Not yet in @cloudflare/workers-types;
+# typed locally there. Optional — Tiers 2-4 degrade to "unavailable" without it (Tier 1 R2
+# ops always work; Tier 5 container is unaffected).
+# TEMPORARILY DISABLED: this binding requires the CF Workers PAID plan (account is on free tier
+# as of this bootstrap phase) — deploying with it declared fails outright (error 10195), which
+# was blocking even unrelated fixes from reaching this worker at all. Re-enable (uncomment) the
+# moment the account upgrades to the $5/mo plan; the code already degrades to "unavailable"
+# identically whether the binding is absent or present-but-unusable, so this is a zero-behavior-
+# change toggle, not a functionality cut.
+
+[[env.staging.worker_loaders]]
+binding = "LOADER"
+#
+# VERIFIED 2026-08-08, and the result is a trap worth writing down: uncommenting this and running
+# `wrangler deploy` SUCCEEDS — it prints a normal deployment and a new Version ID — but Cloudflare
+# silently DROPS the binding. `GET /accounts/{id}/workers/services/naelao-agents/environments/
+# production/bindings` afterwards contains no LOADER, and a real Tier-2 script still fails with
+# "Tier 2 is unavailable: no worker_loaders binding configured in this environment".
+# So a successful deploy is NOT evidence that Worker Loaders is enabled. Check the bindings API.
+
+
+[[env.staging.workflows]]
+name = "AgentTaskWorkflow"
+class_name = "AgentTaskWorkflow"
+binding = "AGENT_TASK_WORKFLOW"
+
+
+[[env.staging.workflows]]
+name = "GenericSubagentWorkflow"
+class_name = "GenericSubagentWorkflow"
+binding = "GENERIC_SUBAGENT_WORKFLOW"
+
+
+[[env.staging.workflows]]
+name = "CompanyAutomationWorkflow"
+class_name = "CompanyAutomationWorkflow"
+binding = "COMPANY_AUTOMATION_WORKFLOW"
+
+# §A1.17 Phase J — durable execution for scripts tagged runtime:"workflow" (long-running/cron
+# automations). Separate from AgentTaskWorkflow (which runs one full agent reasoning turn);
+# this runs one named script directly, no reasoner, with step retries.
+
+[[env.staging.workflows]]
+name = "ScriptRunWorkflow"
+class_name = "ScriptRunWorkflow"
+binding = "AGENT_SCRIPT_WORKFLOW"
+
+
+[[env.staging.workflows]]
+name = "ScheduledReminderWorkflow"
+class_name = "ScheduledReminderWorkflow"
+binding = "SCHEDULED_REMINDER_WORKFLOW"
+
+
+[[env.staging.services]]
+binding = "VOICE_CALLS"
+service = "naelao-calls"
+
+
+[[env.staging.kv_namespaces]]
+binding = "AGENT_CACHE"
+id = "8564eeacd7b44efb88f71f39366ec4be"
+
+
+[[env.staging.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
+# Hourly "agent tick" fan-out (heartbeats, connector polls, scheduled jobs) — see
+# enqueueAgentTicks/handleAgentTicksQueue in src/index.ts. scheduled() only does the cheap D1
+# roster + isCronDue queries (no subrequests); each due tick becomes one queue message,
+# processed by the queue() consumer. Without this, the old serial in-invocation loop broke the
+# Workers 1000-subrequest limit at a few hundred active spaces.
+
+[[env.staging.queues.producers]]
+binding = "AGENT_TICKS"
+queue = "naelao-agent-ticks"
+
+
+[[env.staging.queues.consumers]]
+queue = "naelao-agent-ticks"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-agent-ticks-dlq"
+
+
+[env.staging.triggers]
+# Hourly → poll webhook-less connectors (e.g. Gumroad) + drain each space's channel heartbeat
+# (unanswered messages) + Memory OS maintenance. (The old "0 2 * * *" daily trigger drove the
+# retired BusinessDO/ProductDO nightly Whop cycle — removed alongside those DOs.)
+crons = ["0 * * * *", "*/5 * * * *"]
+
+
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+
+[[env.staging.services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
+
+# Billing worker — the reserved commerce script's only money-in path.
+
+[[env.staging.services]]
+binding = "ARTIFACT_WORKER"
+service = "naelao-artifact"
+
+# CF Browser Rendering proxy — Tier 4 of the execution ladder (code-runner.ts). Agents never
+# get raw CDP; all browser ops are mediated by this Worker's SSRF guard + rate controls.
+
+[[env.staging.services]]
+binding = "WS_GATEWAY"
+service = "naelao-ws-gateway"
+
+# PLATFORM_DB — this worker's src/index.ts declares `PLATFORM_DB: D1Database` on AgentsEnv and
+# uses it in 31 places (agent/run's model + space lookup, bootstrap/complete, channel inbound,
+# connector webhooks, template resolution...), but this binding was MISSING from wrangler.toml
+# entirely, so `c.env.PLATFORM_DB` was undefined on the live worker and every one of those routes
+# threw "Cannot read properties of undefined (reading 'prepare')". TypeScript cannot catch this:
+# wrangler.toml is never typechecked against the Env interface. It went unnoticed because a
+# separate PLATFORM_SECRET mismatch made every router-proxied request 401 before it could reach
+# any of this code.
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+# Optional hosted-connector settings: PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET and
+# PIPEDREAM_PROJECT_ID are platform credentials set with `wrangler secret put`. Set
+# PIPEDREAM_ENVIRONMENT and an explicit PIPEDREAM_SUPPORTED_APPS comma-list as plain vars
+# only after verifying those app slugs are enabled in the project; unset disables overrides.
+
+[env.staging.ai]
+binding = "AI"
+
+
+[[env.production.durable_objects.bindings]]
+name = "NAELAO_AGENT_DO"
+class_name = "NaelaoAgentDO"
+
+# Cloudflare Agents voice SDK for owner browser calls; external customer telephony remains on
+# its existing VOICE_CALLS service. Voice Agent turns dispatch into the canonical session planner.
+
+[[env.production.durable_objects.bindings]]
+name = "OWNER_VOICE_AGENT"
+class_name = "OwnerVoiceAgent"
+
+
+[[env.production.durable_objects.bindings]]
+name = "CUSTOMER_VOICE_AGENT"
+class_name = "CustomerVoiceAgent"
+
+
+[[env.production.durable_objects.bindings]]
+name = "HITL_APPROVAL_DO"
+class_name = "HITLApprovalDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "TASK_DO"
+class_name = "TaskDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "TOOL_SANDBOX"
+class_name = "ToolSandboxDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "DOCUMENT_SANDBOX"
+class_name = "DocumentSandboxDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "MEDIA_SANDBOX"
+class_name = "MediaSandboxDO"
+
+# §A1.17 Phase M — local-machine-as-container (spec gap G-3). One instance per (spaceId, userId);
+# holds the WebSocket to a builder's own Naelao Local Agent client. No [[containers]] binding —
+# this is not a CF Container, it relays to a real human's machine over WS.
+
+[[env.production.durable_objects.bindings]]
+name = "LOCAL_TUNNEL"
+class_name = "LocalTunnelDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "RISK_GUARD"
+class_name = "RiskGuardDO"
+
+# Account-level concurrency ceiling (spec §28 "ConcurrencyDO") — gates simultaneous sub-agent
+# spawn trees per (spaceId, holder). See buildOrchestrationHooks' spawnSubAgent in NaelaoAgentDO.
+
+[[env.production.durable_objects.bindings]]
+name = "CONCURRENCY_DO"
+class_name = "ConcurrencyDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "WORKFLOW_RUN_DO"
+class_name = "WorkflowRunDO"
+
+
+[[env.production.containers]]
+class_name = "ToolSandboxDO"
+image = "./Dockerfile.toolsandbox"
+max_instances = 5
+instance_type = "basic"
+
+# Default scheduling is deliberate: dynamic durable_object image mode retains root caps.
+# After building/publishing, configure CONTAINER_IMAGE_REGISTRY with real deployed digests.
+# An empty registry disables sidecar execution. Never put guessed hashes in that variable.
+
+[[env.production.containers]]
+class_name = "DocumentSandboxDO"
+image = "./Dockerfile.documents"
+max_instances = 3
+instance_type = "standard-1"
+
+
+[[env.production.containers]]
+class_name = "MediaSandboxDO"
+image = "./Dockerfile.media"
+max_instances = 3
+instance_type = "standard-1"
+
+# Script-first engine (authoritative agent model; spec appendix ~6672k):
+# skill library + agent 4-file config + agent workspace, all keyed by space.
+# Layout: spaces/{spaceId}/scripts/..., spaces/{spaceId}/agents/..., spaces/{spaceId}/workspace/...
+
+[[env.production.r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
+# Vectorize index for script.find semantic search (spec §16). Optional — the engine
+# degrades to a tag/text scan when absent.
+
+[[env.production.vectorize]]
+binding = "SCRIPTS_VECTORIZE"
+index_name = "naelao-agent-scripts"
+
+# Vectorize index for the Memory OS semantic layer (episodic facts promoted to long-term
+# semantic memory, queried by embedding + user_id filter). Separate vector space/lifecycle
+# from the skill-library index above.
+
+[[env.production.vectorize]]
+binding = "MEMORY_VECTORIZE"
+index_name = "naelao-agent-memory"
+
+# CF Worker Loader (beta) — dynamically spins up a fresh V8 isolate per script.run call for
+# execution Tiers 2-4 (script-engine/code-runner.ts). Not yet in @cloudflare/workers-types;
+# typed locally there. Optional — Tiers 2-4 degrade to "unavailable" without it (Tier 1 R2
+# ops always work; Tier 5 container is unaffected).
+# TEMPORARILY DISABLED: this binding requires the CF Workers PAID plan (account is on free tier
+# as of this bootstrap phase) — deploying with it declared fails outright (error 10195), which
+# was blocking even unrelated fixes from reaching this worker at all. Re-enable (uncomment) the
+# moment the account upgrades to the $5/mo plan; the code already degrades to "unavailable"
+# identically whether the binding is absent or present-but-unusable, so this is a zero-behavior-
+# change toggle, not a functionality cut.
+
+[[env.production.worker_loaders]]
+binding = "LOADER"
+#
+# VERIFIED 2026-08-08, and the result is a trap worth writing down: uncommenting this and running
+# `wrangler deploy` SUCCEEDS — it prints a normal deployment and a new Version ID — but Cloudflare
+# silently DROPS the binding. `GET /accounts/{id}/workers/services/naelao-agents/environments/
+# production/bindings` afterwards contains no LOADER, and a real Tier-2 script still fails with
+# "Tier 2 is unavailable: no worker_loaders binding configured in this environment".
+# So a successful deploy is NOT evidence that Worker Loaders is enabled. Check the bindings API.
+
+
+[[env.production.workflows]]
+name = "AgentTaskWorkflow"
+class_name = "AgentTaskWorkflow"
+binding = "AGENT_TASK_WORKFLOW"
+
+
+[[env.production.workflows]]
+name = "GenericSubagentWorkflow"
+class_name = "GenericSubagentWorkflow"
+binding = "GENERIC_SUBAGENT_WORKFLOW"
+
+
+[[env.production.workflows]]
+name = "CompanyAutomationWorkflow"
+class_name = "CompanyAutomationWorkflow"
+binding = "COMPANY_AUTOMATION_WORKFLOW"
+
+# §A1.17 Phase J — durable execution for scripts tagged runtime:"workflow" (long-running/cron
+# automations). Separate from AgentTaskWorkflow (which runs one full agent reasoning turn);
+# this runs one named script directly, no reasoner, with step retries.
+
+[[env.production.workflows]]
+name = "ScriptRunWorkflow"
+class_name = "ScriptRunWorkflow"
+binding = "AGENT_SCRIPT_WORKFLOW"
+
+
+[[env.production.workflows]]
+name = "ScheduledReminderWorkflow"
+class_name = "ScheduledReminderWorkflow"
+binding = "SCHEDULED_REMINDER_WORKFLOW"
+
+
+[[env.production.services]]
+binding = "VOICE_CALLS"
+service = "naelao-calls"
+
+
+[[env.production.kv_namespaces]]
+binding = "AGENT_CACHE"
+id = "8564eeacd7b44efb88f71f39366ec4be"
+
+
+[[env.production.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
+# Hourly "agent tick" fan-out (heartbeats, connector polls, scheduled jobs) — see
+# enqueueAgentTicks/handleAgentTicksQueue in src/index.ts. scheduled() only does the cheap D1
+# roster + isCronDue queries (no subrequests); each due tick becomes one queue message,
+# processed by the queue() consumer. Without this, the old serial in-invocation loop broke the
+# Workers 1000-subrequest limit at a few hundred active spaces.
+
+[[env.production.queues.producers]]
+binding = "AGENT_TICKS"
+queue = "naelao-agent-ticks"
+
+
+[[env.production.queues.consumers]]
+queue = "naelao-agent-ticks"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-agent-ticks-dlq"
+
+
+[env.production.triggers]
+# Hourly → poll webhook-less connectors (e.g. Gumroad) + drain each space's channel heartbeat
+# (unanswered messages) + Memory OS maintenance. (The old "0 2 * * *" daily trigger drove the
+# retired BusinessDO/ProductDO nightly Whop cycle — removed alongside those DOs.)
+crons = ["0 * * * *", "*/5 * * * *"]
+
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+
+[[env.production.services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
+
+# Billing worker — the reserved commerce script's only money-in path.
+
+[[env.production.services]]
+binding = "ARTIFACT_WORKER"
+service = "naelao-artifact"
+
+# CF Browser Rendering proxy — Tier 4 of the execution ladder (code-runner.ts). Agents never
+# get raw CDP; all browser ops are mediated by this Worker's SSRF guard + rate controls.
+
+[[env.production.services]]
+binding = "WS_GATEWAY"
+service = "naelao-ws-gateway"
+
+# PLATFORM_DB — this worker's src/index.ts declares `PLATFORM_DB: D1Database` on AgentsEnv and
+# uses it in 31 places (agent/run's model + space lookup, bootstrap/complete, channel inbound,
+# connector webhooks, template resolution...), but this binding was MISSING from wrangler.toml
+# entirely, so `c.env.PLATFORM_DB` was undefined on the live worker and every one of those routes
+# threw "Cannot read properties of undefined (reading 'prepare')". TypeScript cannot catch this:
+# wrangler.toml is never typechecked against the Env interface. It went unnoticed because a
+# separate PLATFORM_SECRET mismatch made every router-proxied request 401 before it could reach
+# any of this code.
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+# Optional hosted-connector settings: PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET and
+# PIPEDREAM_PROJECT_ID are platform credentials set with `wrangler secret put`. Set
+# PIPEDREAM_ENVIRONMENT and an explicit PIPEDREAM_SUPPORTED_APPS comma-list as plain vars
+# only after verifying those app slugs are enabled in the project; unset disables overrides.
+
+[env.production.ai]
+binding = "AI"

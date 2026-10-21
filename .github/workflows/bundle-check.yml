@@ -6,6 +6,14 @@ on:
     paths:
       - "workers/**"
       - "apps/widget/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig.base.json"
+
+permissions:
+  contents: read
 
 env:
   NODE_VERSION: "22"
@@ -38,10 +46,10 @@ jobs:
       - name: Check widget bundle size (< 10KB gzipped)
         run: |
           WIDGET_GZ=$(gzip -c apps/widget/dist/naelao-chat.js | wc -c)
-          WIDGET_KB=$(( WIDGET_GZ / 1024 ))
-          echo "Widget gzipped size: ${WIDGET_KB}KB (limit: ${{ env.WIDGET_LIMIT_KB }}KB)"
-          if [ "$WIDGET_KB" -gt "${{ env.WIDGET_LIMIT_KB }}" ]; then
-            echo "❌ Widget too large: ${WIDGET_KB}KB > ${{ env.WIDGET_LIMIT_KB }}KB"
+          WIDGET_KB=$(( (WIDGET_GZ + 1023) / 1024 ))
+          echo "Widget gzipped size: ${WIDGET_KB}KB (limit: ${WIDGET_LIMIT_KB}KB)"
+          if [ "$WIDGET_GZ" -gt "$(( WIDGET_LIMIT_KB * 1024 ))" ]; then
+            echo "❌ Widget too large: ${WIDGET_KB}KB > ${WIDGET_LIMIT_KB}KB"
             exit 1
           fi
           echo "✅ Widget size OK"
@@ -49,21 +57,35 @@ jobs:
       - name: Build workers (dry-run via wrangler)
         run: |
           FAILED=0
-          for worker_dir in workers/*/; do
+          for config in workers/*/wrangler.toml; do
+            worker_dir="${config%/wrangler.toml}"
             worker=$(basename "$worker_dir")
-            if [ -f "$worker_dir/wrangler.toml" ]; then
-              echo "Building $worker..."
-              pnpm --filter "@naelao/$worker" build 2>&1 | tail -5 || true
-              if [ -f "$worker_dir/dist/index.js" ]; then
-                SIZE=$(wc -c < "$worker_dir/dist/index.js")
-                SIZE_GZ=$(gzip -c "$worker_dir/dist/index.js" | wc -c)
-                SIZE_GZ_KB=$(( SIZE_GZ / 1024 ))
-                echo "  $worker: ${SIZE_GZ_KB}KB gzipped"
-                if [ "$SIZE_GZ_KB" -gt "${{ env.WORKER_BUNDLE_LIMIT_KB }}" ]; then
-                  echo "  ❌ $worker too large: ${SIZE_GZ_KB}KB > ${{ env.WORKER_BUNDLE_LIMIT_KB }}KB"
-                  FAILED=1
-                fi
-              fi
+            out_dir=$(mktemp -d)
+            echo "Building $worker from $config..."
+            if ! ./node_modules/.bin/wrangler deploy --dry-run --env=production \
+              --outdir "$out_dir" --config "$config" >"$out_dir/build.log" 2>&1; then
+              tail -30 "$out_dir/build.log"
+              echo "  ❌ $worker build failed"
+              FAILED=1
+              continue
+            fi
+            if grep -q "Processing workers/.*wrangler.toml configuration:" "$out_dir/build.log"; then
+              tail -30 "$out_dir/build.log"
+              echo "  ❌ $worker has Wrangler configuration warnings"
+              FAILED=1
+              continue
+            fi
+            if [ ! -f "$out_dir/index.js" ]; then
+              echo "  ❌ $worker build did not produce index.js"
+              FAILED=1
+              continue
+            fi
+            SIZE_GZ=$(gzip -c "$out_dir/index.js" | wc -c)
+            SIZE_GZ_KB=$(( (SIZE_GZ + 1023) / 1024 ))
+            echo "  $worker: ${SIZE_GZ_KB}KB gzipped"
+            if [ "$SIZE_GZ" -gt "$(( WORKER_BUNDLE_LIMIT_KB * 1024 ))" ]; then
+              echo "  ❌ $worker too large: ${SIZE_GZ_KB}KB > ${WORKER_BUNDLE_LIMIT_KB}KB"
+              FAILED=1
             fi
           done
           if [ "$FAILED" -eq 1 ]; then exit 1; fi

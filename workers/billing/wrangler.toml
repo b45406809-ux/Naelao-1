@@ -116,3 +116,89 @@ service = "naelao-credentials"
 [[env.production.services]]
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
+
+[env.staging.triggers]
+crons = ["0 0 * * *", "15 * * * *"]
+# Optional native FDE settlement: STRIPE_CONNECT_SECRET_KEY, active Connect destinations,
+# an authorized partner opt-in or withdrawal request, and a funded Stripe platform balance.
+# This does not move a userland business wallet or a Lemon Squeezy balance.
+
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.staging.kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
+
+
+[[env.staging.queues.producers]]
+binding = "BILLING_EVENTS"
+queue = "naelao-billing-events"
+
+
+[[env.staging.queues.consumers]]
+queue = "naelao-billing-events"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-billing-events-dlq"
+
+# Billing provider: Lemon Squeezy ONLY (Stripe removed in the vendor cutover).
+# Secrets (set via `wrangler secret put`, per environment):
+#   LEMON_SQUEEZY_API_KEY             — LS API key (app.lemonsqueezy.com → Settings → API)
+#   LEMON_SQUEEZY_STORE_ID            — Naelao's LS store id
+#   LEMON_SQUEEZY_WEBHOOK_SECRET      — signing secret of the LS webhook pointed at
+#                                       /v1/webhooks/lemon-squeezy
+#   LEMON_SQUEEZY_GROWTH_VARIANT_ID   — LS subscription variant for the builder Growth plan
+#   LEMON_SQUEEZY_BUSINESS_VARIANT_ID — LS subscription variant for the builder Business plan
+#   PLATFORM_SECRET                   — shared inter-worker HMAC secret (same value everywhere)
+# The plan variants are created ONCE in the Naelao LS store (Products → New → subscription);
+# without them /billing/checkout degrades to the dev-placeholder flow.
+
+[env.production.triggers]
+crons = ["0 0 * * *", "15 * * * *"]
+# Optional native FDE settlement: STRIPE_CONNECT_SECRET_KEY, active Connect destinations,
+# an authorized partner opt-in or withdrawal request, and a funded Stripe platform balance.
+# This does not move a userland business wallet or a Lemon Squeezy balance.
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
+
+
+[[env.production.queues.producers]]
+binding = "BILLING_EVENTS"
+queue = "naelao-billing-events"
+
+
+[[env.production.queues.consumers]]
+queue = "naelao-billing-events"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-billing-events-dlq"
+
+# Billing provider: Lemon Squeezy ONLY (Stripe removed in the vendor cutover).
+# Secrets (set via `wrangler secret put`, per environment):
+#   LEMON_SQUEEZY_API_KEY             — LS API key (app.lemonsqueezy.com → Settings → API)
+#   LEMON_SQUEEZY_STORE_ID            — Naelao's LS store id
+#   LEMON_SQUEEZY_WEBHOOK_SECRET      — signing secret of the LS webhook pointed at
+#                                       /v1/webhooks/lemon-squeezy
+#   LEMON_SQUEEZY_GROWTH_VARIANT_ID   — LS subscription variant for the builder Growth plan
+#   LEMON_SQUEEZY_BUSINESS_VARIANT_ID — LS subscription variant for the builder Business plan
+#   PLATFORM_SECRET                   — shared inter-worker HMAC secret (same value everywhere)
+# The plan variants are created ONCE in the Naelao LS store (Products → New → subscription);
+# without them /billing/checkout degrades to the dev-placeholder flow.

@@ -47,6 +47,46 @@ function readWorkerSource(dir: string): string {
   return out.join("\n");
 }
 
+function getTableEntries(toml: string, table: string): string[] {
+  const lines = toml.split(/\r?\n/);
+  const entries: string[] = [];
+  let current: string[] | null = null;
+  for (const line of lines) {
+    const header = line.match(/^\s*\[\[?([^\]]+)\]\]?\s*$/)?.[1];
+    if (header !== undefined) {
+      if (current) entries.push(current.join("\n"));
+      current = header === table ? [line] : null;
+    } else if (current) {
+      current.push(line);
+    }
+  }
+  if (current) entries.push(current.join("\n"));
+  return entries;
+}
+
+function entryIdentity(entry: string): string | null {
+  const binding = entry.match(/^\s*binding\s*=\s*"([^"]+)"/m)?.[1];
+  if (binding) return `binding:${binding}`;
+  const queue = entry.match(/^\s*queue\s*=\s*"([^"]+)"/m)?.[1];
+  if (queue) return `queue:${queue}`;
+  const name = entry.match(/^\s*name\s*=\s*"([^"]+)"/m)?.[1];
+  const className = entry.match(/^\s*class_name\s*=\s*"([^"]+)"/m)?.[1];
+  return name && className ? `class:${name}:${className}` : null;
+}
+
+function resourceTables(toml: string): string[] {
+  return [...toml.matchAll(/^\s*\[\[([^\]]+)\]\]\s*$/gm)]
+    .map((match) => match[1]!)
+    .filter((table) => !table.startsWith("env.") && table !== "migrations");
+}
+
+function regularBindingTables(toml: string): string[] {
+  return [...toml.matchAll(/^\[([^\]]+)\]\s*$/gm)]
+    .map((match) => match[1]!)
+    .filter((table) => !table.startsWith("env.") && table !== "vars")
+    .filter((table) => getTableEntries(toml, table).some((entry) => entryIdentity(entry)));
+}
+
 describe("wrangler.toml declares every binding the worker's code actually uses", () => {
   for (const binding of D1_BINDINGS) {
     for (const dir of workerDirs()) {
@@ -74,5 +114,45 @@ describe("wrangler.toml declares every binding the worker's code actually uses",
     expect(toml).toContain('binding = "PLATFORM_DB"');
     // And it must point at the real platform database, not a placeholder.
     expect(toml).toContain('database_name = "naelao-platform"');
+  });
+
+  it.each(workerDirs())("preserves top-level resource bindings in staging and production for %s", (dir) => {
+    const toml = readFileSync(join(WORKERS_DIR, dir, "wrangler.toml"), "utf8");
+    const tables = [...new Set(resourceTables(toml))];
+    for (const environment of ["staging", "production"]) {
+      for (const table of tables) {
+        const expected = getTableEntries(toml, table)
+          .map(entryIdentity)
+          .filter((identity): identity is string => identity !== null);
+        const configured = new Set(
+          getTableEntries(toml, `env.${environment}.${table}`).map(entryIdentity)
+        );
+        for (const identity of expected) {
+          expect(
+            configured.has(identity),
+            `workers/${dir}/wrangler.toml drops ${identity} from env.${environment}.${table}`
+          ).toBe(true);
+        }
+      }
+      for (const table of regularBindingTables(toml)) {
+        const expected = getTableEntries(toml, table).map(entryIdentity).filter(Boolean);
+        const configured = getTableEntries(toml, `env.${environment}.${table}`).map(entryIdentity);
+        for (const identity of expected) {
+          expect(
+            configured,
+            `workers/${dir}/wrangler.toml drops ${identity} from env.${environment}.${table}`
+          ).toContain(identity);
+        }
+      }
+    }
+
+    const browserBinding = toml.match(/^browser\s*=\s*\{\s*binding\s*=\s*"([^"]+)"/m)?.[1];
+    if (browserBinding) {
+      for (const environment of ["staging", "production"]) {
+        expect(toml).toMatch(
+          new RegExp(`^\\[env\\.${environment}\\][\\s\\S]*?^browser\\s*=\\s*\\{\\s*binding\\s*=\\s*"${browserBinding}"`, "m")
+        );
+      }
+    }
   });
 });

@@ -13,7 +13,7 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
-[[vectorize_indexes]]
+[[vectorize]]
 binding = "SPACETYPES_VECTORS"
 index_name = "naelao-spacetypes-prod"
 
@@ -25,3 +25,24 @@ vars = { ENVIRONMENT = "staging" }
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.staging.vectorize]]
+binding = "SPACETYPES_VECTORS"
+index_name = "naelao-spacetypes-prod"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.vectorize]]
+binding = "SPACETYPES_VECTORS"
+index_name = "naelao-spacetypes-prod"

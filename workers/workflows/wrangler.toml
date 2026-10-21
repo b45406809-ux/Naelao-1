@@ -45,7 +45,7 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 binding = "KB_BUCKET"
 bucket_name = "naelao-kb"
 
-[[vectorize_indexes]]
+[[vectorize]]
 binding = "KB_VECTORS"
 index_name = "naelao-kb-prod"
 
@@ -81,3 +81,160 @@ vars = { ENVIRONMENT = "staging" }
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.staging.workflows]]
+name = "SpaceProvisioningWorkflow"
+class_name = "SpaceProvisioningWorkflow"
+binding = "SPACE_PROVISIONING"
+
+
+[[env.staging.workflows]]
+name = "DataErasureWorkflow"
+class_name = "DataErasureWorkflow"
+binding = "DATA_ERASURE"
+
+
+[[env.staging.workflows]]
+name = "KbIngestionWorkflow"
+class_name = "KbIngestionWorkflow"
+binding = "KB_INGESTION"
+
+
+[[env.staging.workflows]]
+name = "DunningWorkflow"
+class_name = "DunningWorkflow"
+binding = "DUNNING"
+
+
+[[env.staging.workflows]]
+name = "QueueHealthWorkflow"
+class_name = "QueueHealthWorkflow"
+binding = "QUEUE_HEALTH"
+
+
+[env.staging.triggers]
+crons = ["*/30 * * * *"]
+
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.staging.r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
+
+
+[[env.staging.vectorize]]
+binding = "KB_VECTORS"
+index_name = "naelao-kb-prod"
+
+
+[[env.staging.kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
+
+
+[[env.staging.queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "naelao-events"
+
+
+[[env.staging.queues.consumers]]
+queue = "naelao-events"
+max_batch_size = 100
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-events-dlq"
+
+
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+
+[[env.staging.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+
+[[env.production.workflows]]
+name = "SpaceProvisioningWorkflow"
+class_name = "SpaceProvisioningWorkflow"
+binding = "SPACE_PROVISIONING"
+
+
+[[env.production.workflows]]
+name = "DataErasureWorkflow"
+class_name = "DataErasureWorkflow"
+binding = "DATA_ERASURE"
+
+
+[[env.production.workflows]]
+name = "KbIngestionWorkflow"
+class_name = "KbIngestionWorkflow"
+binding = "KB_INGESTION"
+
+
+[[env.production.workflows]]
+name = "DunningWorkflow"
+class_name = "DunningWorkflow"
+binding = "DUNNING"
+
+
+[[env.production.workflows]]
+name = "QueueHealthWorkflow"
+class_name = "QueueHealthWorkflow"
+binding = "QUEUE_HEALTH"
+
+
+[env.production.triggers]
+crons = ["*/30 * * * *"]
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
+
+
+[[env.production.vectorize]]
+binding = "KB_VECTORS"
+index_name = "naelao-kb-prod"
+
+
+[[env.production.kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
+
+
+[[env.production.queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "naelao-events"
+
+
+[[env.production.queues.consumers]]
+queue = "naelao-events"
+max_batch_size = 100
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-events-dlq"
+
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+
+[[env.production.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"

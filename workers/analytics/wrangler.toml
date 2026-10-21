@@ -35,3 +35,34 @@ vars = { ENVIRONMENT = "staging", CF_ACCOUNT_ID = "", CF_ANALYTICS_API_TOKEN = "
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
 vars = { ENVIRONMENT = "production", CF_ACCOUNT_ID = "", CF_ANALYTICS_API_TOKEN = "" }
+
+[[env.staging.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_analytics"
+
+
+[[env.staging.kv_namespaces]]
+binding = "METRICS_CACHE"
+id = "6e38f2bdab314df480fc82d0f2c2adbb"
+
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_analytics"
+
+
+[[env.production.kv_namespaces]]
+binding = "METRICS_CACHE"
+id = "6e38f2bdab314df480fc82d0f2c2adbb"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"

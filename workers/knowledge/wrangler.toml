@@ -72,3 +72,84 @@ vars = { ENVIRONMENT = "production", RETRIEVAL_POLICY_VERSION = "1", RETRIEVAL_C
 [[env.production.services]]
 binding = "BILLING_WORKER"
 service = "naelao-billing"
+
+[env.staging.ai]
+binding = "AI"
+
+
+[[env.staging.kv_namespaces]]
+binding = "KB_CACHE"
+id = "bd6fe7b9c8eb40c8922c85249888add7"
+
+
+[[env.staging.r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
+
+
+[[env.staging.vectorize]]
+binding = "KB_VECTORS"
+index_name = "naelao-kb-vectors"
+
+
+[[env.staging.vectorize]]
+binding = "SEMANTIC_CACHE_VECTORS"
+index_name = "naelao-semantic-cache"
+
+
+[[env.staging.kv_namespaces]]
+binding = "SEMANTIC_CACHE_KV"
+id = "10ca4ecaba3e40deaf7e7cb53ed7c5cf"
+
+
+[[env.staging.analytics_engine_datasets]]
+binding = "KNOWLEDGE_ANALYTICS"
+dataset = "naelao_knowledge_retrieval"
+
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+
+[env.production.ai]
+binding = "AI"
+
+
+[[env.production.kv_namespaces]]
+binding = "KB_CACHE"
+id = "bd6fe7b9c8eb40c8922c85249888add7"
+
+
+[[env.production.r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
+
+
+[[env.production.vectorize]]
+binding = "KB_VECTORS"
+index_name = "naelao-kb-vectors"
+
+
+[[env.production.vectorize]]
+binding = "SEMANTIC_CACHE_VECTORS"
+index_name = "naelao-semantic-cache"
+
+
+[[env.production.kv_namespaces]]
+binding = "SEMANTIC_CACHE_KV"
+id = "10ca4ecaba3e40deaf7e7cb53ed7c5cf"
+
+
+[[env.production.analytics_engine_datasets]]
+binding = "KNOWLEDGE_ANALYTICS"
+dataset = "naelao_knowledge_retrieval"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"

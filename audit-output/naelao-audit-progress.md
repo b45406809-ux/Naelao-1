@@ -1246,3 +1246,18 @@ Updated PR checks to Node 22, set read-only `contents` permissions on CI, PR che
 Confirmed YAML parsing for all four workflows. Reviewed D1 migration invocation and the referenced Wrangler config: every deploy replays all historical SQL files with `d1 execute` and suppresses every error via `|| true`; several historical migrations contain non-idempotent `ALTER TABLE` operations. Replacing this with Wrangler's migration ledger without first baselining the existing remote database could replay destructive or already-applied migrations, so this remains a release-blocking migration-management gap requiring a verified remote baseline and a one-time ledger bootstrap. No remote D1 command was run.
 
 Checked the four workflow files listed above. Their other steps still require ongoing action-version pinning and deployment configuration review as the workflow audit continues.
+
+
+## Worker staging and production Wrangler bindings (2026-10-21)
+
+Compiled every worker with Wrangler 4.149.0 in both staging and production using `deploy --dry-run --env=...`. This exposed that Wrangler does not inherit resource bindings into named environments. Most worker configs declared D1, KV, Durable Object, queue, workflow, service, Vectorize, analytics, or AI bindings only at the top level, while the deploy workflows always pass `--env=staging` or `--env=production`. The production router dry-run, for example, had only environment variables and no database, services, Durable Object, KV, or AI binding. The existing binding test checked only that a binding appeared somewhere in the config.
+
+Added the missing environment resource tables across the worker manifests while preserving explicit staging overrides. Corrected invalid array-form cron tables in sweeper, synthetics, and triggers; bound their D1 resources in each deployed environment; turned off duplicate sweeper/synthetic/trigger schedules in staging; aligned the sweeper's R2 and Vectorize targets with the Knowledge Worker; added the missing Browser binding to staging and production; and changed search/workflows `vectorize_indexes` to Wrangler's supported `vectorize` table.
+
+The bundle workflow now dry-runs every Wrangler config with `--env=production`, requires an emitted `index.js`, fails on Wrangler config warnings/build failures, measures compressed bytes without KB rounding, and runs when shared packages or workspace config change. Extended `wrangler-binding-parity.test.ts` to ensure each top-level resource binding is represented in both named environments.
+
+Validation: all 32 worker Wrangler configs parsed as TOML; all 32 production and all 32 staging dry-runs completed without binding omissions, config warnings, or errors; the binding parity test passed 58 tests; bundle workflow YAML parsed; `git diff --check` passed. These checks compile bundles and inspect declared bindings, but do not prove remote service/bucket/index existence, correct cross-worker target names, secret installation, or live scheduled behavior.
+
+Residual environment risk: where there was no explicit staging-specific resource override, staging now receives the resource ID/name already declared at top level. This follows the repository's existing shared-D1 configuration and restores runtime bindings, but does not establish staging data isolation. Remote resource IDs and service target names still need confirmation before relying on staging as an isolated environment.
+
+Checked the bundle workflow and every worker `wrangler.toml`. Runtime source, APIs, Durable Object state behavior, and provider-side resource targets remain under audit.

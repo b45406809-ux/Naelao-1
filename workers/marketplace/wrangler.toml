@@ -37,3 +37,24 @@ vars = { ENVIRONMENT = "production" }
 [[env.production.services]]
 binding = "BILLING_WORKER"
 service = "naelao-billing"
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.staging.vectorize]]
+binding = "SPACE_TYPES_INDEX"
+index_name = "naelao-space-types"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.vectorize]]
+binding = "SPACE_TYPES_INDEX"
+index_name = "naelao-space-types"

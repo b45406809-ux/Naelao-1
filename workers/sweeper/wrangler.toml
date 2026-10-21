@@ -8,7 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 # downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
 workers_dev = false
 
-[[triggers]]
+[triggers]
 crons = ["0 3 * * *"]
 
 [[d1_databases]]
@@ -20,9 +20,9 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 binding = "KB_BUCKET"
 bucket_name = "naelao-kb-documents"
 
-[[vectorize_indexes]]
+[[vectorize]]
 binding = "KB_VECTORS"
-index_name = "naelao-kb-prod"
+index_name = "naelao-kb-vectors"
 
 [vars]
 ENVIRONMENT = "development"
@@ -30,5 +30,37 @@ ENVIRONMENT = "development"
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
+[env.staging.triggers]
+crons = []
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+[[env.staging.r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
+
+[[env.staging.vectorize]]
+binding = "KB_VECTORS"
+index_name = "naelao-kb-vectors"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[env.production.triggers]
+crons = ["0 3 * * *"]
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+[[env.production.r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
+
+[[env.production.vectorize]]
+binding = "KB_VECTORS"
+index_name = "naelao-kb-vectors"

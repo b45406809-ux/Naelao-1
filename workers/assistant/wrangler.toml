@@ -26,3 +26,24 @@ vars = { ENVIRONMENT = "staging", LLM_GATEWAY_URL = "https://llm.naelao.com" }
 
 [env.production]
 vars = { ENVIRONMENT = "production", LLM_GATEWAY_URL = "https://llm.naelao.com" }
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.staging.vectorize]]
+binding = "PLATFORM_DOCS_INDEX"
+index_name = "naelao-platform-docs"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.vectorize]]
+binding = "PLATFORM_DOCS_INDEX"
+index_name = "naelao-platform-docs"

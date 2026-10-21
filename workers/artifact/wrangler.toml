@@ -36,3 +36,42 @@ vars = { ENVIRONMENT = "staging" }
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.staging.r2_buckets]]
+binding = "ARTIFACT_BUCKET"
+bucket_name = "naelao-artifacts"
+
+
+[[env.staging.r2_buckets]]
+binding = "REPOSITORY_OBJECTS"
+bucket_name = "naelao-repository-objects"
+
+
+[[env.staging.r2_buckets]]
+binding = "WORKSPACE_R2"
+bucket_name = "naelao-agent-scripts"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "REPOSITORY_DO"
+class_name = "RepositoryDO"
+
+
+[[env.production.r2_buckets]]
+binding = "ARTIFACT_BUCKET"
+bucket_name = "naelao-artifacts"
+
+
+[[env.production.r2_buckets]]
+binding = "REPOSITORY_OBJECTS"
+bucket_name = "naelao-repository-objects"
+
+
+[[env.production.r2_buckets]]
+binding = "WORKSPACE_R2"
+bucket_name = "naelao-agent-scripts"
+
+
+[[env.production.durable_objects.bindings]]
+name = "REPOSITORY_DO"
+class_name = "RepositoryDO"

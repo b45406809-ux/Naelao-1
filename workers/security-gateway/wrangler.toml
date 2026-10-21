@@ -37,3 +37,26 @@ vars = { ENVIRONMENT = "staging", RATE_LIMIT_GLOBAL = "1000", RATE_LIMIT_AUTH = 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
 vars = { ENVIRONMENT = "production", RATE_LIMIT_GLOBAL = "1000", RATE_LIMIT_AUTH = "10", RATE_LIMIT_TENANT = "500" }
+
+[[env.staging.durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiterDO"
+script_name = "naelao-security-gateway"
+
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiterDO"
+script_name = "naelao-security-gateway"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"

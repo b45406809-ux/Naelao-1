@@ -52,3 +52,19 @@ vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e8
 [[env.production.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+# §A1 Harness Excellence Phase HX3 — needed so mode="agent" eval runs can dispatch a real
+# /agent/run per case instead of only ever judging the raw case input text.
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+# §A1 Harness Excellence Phase HX3 — needed so mode="agent" eval runs can dispatch a real
+# /agent/run per case instead of only ever judging the raw case input text.

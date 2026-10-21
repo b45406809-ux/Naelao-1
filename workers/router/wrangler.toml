@@ -91,3 +91,178 @@ vars = { ENVIRONMENT = "staging", CORS_ALLOWLIST = "https://staging-dashboard.na
 [env.production]
 name = "naelao-router-production"
 vars = { ENVIRONMENT = "production", CORS_ALLOWLIST = "https://dashboard.naelao.com,https://portal.naelao.com,https://app.naelao.com", PRODUCT_SHELL_URL = "https://app.naelao.com" }
+
+[env.staging.ai]
+binding = "AI"
+
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+
+[[env.staging.kv_namespaces]]
+binding = "SESSION_REVOCATION"
+id = "3f2a9f17b80d48db915bc8261f606155"
+preview_id = "3f2a9f17b80d48db915bc8261f606155"
+
+
+[[env.staging.kv_namespaces]]
+binding = "CONFIG"
+id = "8af2d30b39db44ffa3ec8aca10d2ef8a"
+preview_id = "8af2d30b39db44ffa3ec8aca10d2ef8a"
+
+
+[[env.staging.kv_namespaces]]
+binding = "NONCE_STORE"
+id = "d9668899b225423a980124f4ff38eeb0"
+preview_id = "d9668899b225423a980124f4ff38eeb0"
+
+
+[[env.staging.kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
+preview_id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "RATE_LIMIT_DO"
+class_name = "RateLimitDO"
+
+
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+
+[[env.staging.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+
+[[env.staging.services]]
+binding = "EVAL_WORKER"
+service = "naelao-eval"
+
+
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+
+[[env.staging.services]]
+binding = "AUTH_WORKER"
+service = "naelao-auth"
+
+
+[[env.staging.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
+
+[[env.staging.services]]
+binding = "ANALYTICS_WORKER"
+service = "naelao-analytics"
+
+# F-2: billing worker — the public Lemon Squeezy webhook ingress (/v1/webhooks/lemon-squeezy)
+# proxies here. Inherited by the staging/production named environments (only vars are replaced
+# per-env, not binding tables — see wrangler-vars-parity.test.ts).
+
+[[env.staging.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+
+[[env.staging.services]]
+binding = "MARKETPLACE_WORKER"
+service = "naelao-marketplace"
+
+
+[env.production.ai]
+binding = "AI"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+
+[[env.production.kv_namespaces]]
+binding = "SESSION_REVOCATION"
+id = "3f2a9f17b80d48db915bc8261f606155"
+preview_id = "3f2a9f17b80d48db915bc8261f606155"
+
+
+[[env.production.kv_namespaces]]
+binding = "CONFIG"
+id = "8af2d30b39db44ffa3ec8aca10d2ef8a"
+preview_id = "8af2d30b39db44ffa3ec8aca10d2ef8a"
+
+
+[[env.production.kv_namespaces]]
+binding = "NONCE_STORE"
+id = "d9668899b225423a980124f4ff38eeb0"
+preview_id = "d9668899b225423a980124f4ff38eeb0"
+
+
+[[env.production.kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
+preview_id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
+
+
+[[env.production.durable_objects.bindings]]
+name = "RATE_LIMIT_DO"
+class_name = "RateLimitDO"
+
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+
+[[env.production.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+
+[[env.production.services]]
+binding = "EVAL_WORKER"
+service = "naelao-eval"
+
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+
+[[env.production.services]]
+binding = "AUTH_WORKER"
+service = "naelao-auth"
+
+
+[[env.production.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
+
+[[env.production.services]]
+binding = "ANALYTICS_WORKER"
+service = "naelao-analytics"
+
+# F-2: billing worker — the public Lemon Squeezy webhook ingress (/v1/webhooks/lemon-squeezy)
+# proxies here. Inherited by the staging/production named environments (only vars are replaced
+# per-env, not binding tables — see wrangler-vars-parity.test.ts).
+
+[[env.production.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+
+[[env.production.services]]
+binding = "MARKETPLACE_WORKER"
+service = "naelao-marketplace"

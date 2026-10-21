@@ -72,3 +72,70 @@ service = "naelao-spaces"
 [[env.production.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
+
+[[env.staging.queues.consumers]]
+queue = "naelao-provisioning-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+max_concurrency = 10
+dead_letter_queue = "naelao-provisioning-dlq"
+
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.staging.kv_namespaces]]
+binding = "SPACES_KV"
+id = "0fdaabda06a64e1f911c32fddde5718c"
+
+# Service binding to naelao-spaces — provisioner registers each installed agent in the
+# SpaceDO agent_definitions index (the code expects env.SPACES_WORKER, not an HTTP URL).
+
+[[env.staging.r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
+# Portal slug→spaceId mapping written during external portal provisioning (step 7).
+# Read by naelao-portal-router worker at request time. Optional — skipped if unbound.
+
+[[env.staging.kv_namespaces]]
+binding = "PORTAL_KV"
+id = "50fe6d17439d4b8082cdc827393fc87f"
+
+
+[[env.production.queues.consumers]]
+queue = "naelao-provisioning-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+max_concurrency = 10
+dead_letter_queue = "naelao-provisioning-dlq"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+
+[[env.production.kv_namespaces]]
+binding = "SPACES_KV"
+id = "0fdaabda06a64e1f911c32fddde5718c"
+
+# Service binding to naelao-spaces — provisioner registers each installed agent in the
+# SpaceDO agent_definitions index (the code expects env.SPACES_WORKER, not an HTTP URL).
+
+[[env.production.r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
+# Portal slug→spaceId mapping written during external portal provisioning (step 7).
+# Read by naelao-portal-router worker at request time. Optional — skipped if unbound.
+
+[[env.production.kv_namespaces]]
+binding = "PORTAL_KV"
+id = "50fe6d17439d4b8082cdc827393fc87f"

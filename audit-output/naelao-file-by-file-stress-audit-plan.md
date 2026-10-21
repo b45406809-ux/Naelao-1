@@ -63,7 +63,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `.github/workflows`
 
 - [ ] `.github/workflows/apply-gemini-batch.yml`
-- [ ] `.github/workflows/bundle-check.yml`
+- [x] `.github/workflows/bundle-check.yml`
 - [x] `.github/workflows/ci.yml`
 - [x] `.github/workflows/deploy-prod.yml`
 - [x] `.github/workflows/deploy-staging.yml`
@@ -1604,7 +1604,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/workspace-file-viewer.test.ts`
 - [ ] `tests/unit/workspace-prebuilt.test.ts`
 - [ ] `tests/unit/workspace-scoping.test.ts`
-- [ ] `tests/unit/wrangler-binding-parity.test.ts`
+- [x] `tests/unit/wrangler-binding-parity.test.ts`
 - [ ] `tests/unit/wrangler-vars-parity.test.ts`
 
 ### `tests/unit/helpers`
@@ -1642,7 +1642,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/admin/package.json`
 - [ ] `workers/admin/tsconfig.json`
-- [ ] `workers/admin/wrangler.toml`
+- [x] `workers/admin/wrangler.toml`
 
 ### `workers/admin/src`
 
@@ -1653,7 +1653,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/package.json`
 - [ ] `workers/agents/tsconfig.json`
 - [ ] `workers/agents/vitest.config.ts`
-- [ ] `workers/agents/wrangler.toml`
+- [x] `workers/agents/wrangler.toml`
 
 ### `workers/agents/container`
 
@@ -2079,7 +2079,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/analytics/package.json`
 - [ ] `workers/analytics/tsconfig.json`
 - [ ] `workers/analytics/vitest.config.ts`
-- [ ] `workers/analytics/wrangler.toml`
+- [x] `workers/analytics/wrangler.toml`
 
 ### `workers/analytics/src`
 
@@ -2093,7 +2093,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/artifact/package.json`
 - [ ] `workers/artifact/tsconfig.json`
 - [ ] `workers/artifact/vitest.config.ts`
-- [ ] `workers/artifact/wrangler.toml`
+- [x] `workers/artifact/wrangler.toml`
 
 ### `workers/artifact/src`
 
@@ -2110,7 +2110,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/assistant/package.json`
 - [ ] `workers/assistant/tsconfig.json`
-- [ ] `workers/assistant/wrangler.toml`
+- [x] `workers/assistant/wrangler.toml`
 
 ### `workers/assistant/src`
 
@@ -2120,7 +2120,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/auth/package.json`
 - [ ] `workers/auth/tsconfig.json`
-- [ ] `workers/auth/wrangler.toml`
+- [x] `workers/auth/wrangler.toml`
 
 ### `workers/auth/src`
 
@@ -2132,7 +2132,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/billing/package.json`
 - [ ] `workers/billing/tsconfig.json`
 - [ ] `workers/billing/vitest.config.ts`
-- [ ] `workers/billing/wrangler.toml`
+- [x] `workers/billing/wrangler.toml`
 
 ### `workers/billing/src`
 
@@ -2156,7 +2156,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/browser/package.json`
 - [ ] `workers/browser/tsconfig.json`
 - [ ] `workers/browser/wrangler.local.toml`
-- [ ] `workers/browser/wrangler.toml`
+- [x] `workers/browser/wrangler.toml`
 
 ### `workers/browser/src`
 
@@ -2170,7 +2170,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/channels/package.json`
 - [ ] `workers/channels/tsconfig.json`
-- [ ] `workers/channels/wrangler.toml`
+- [x] `workers/channels/wrangler.toml`
 
 ### `workers/channels/src`
 
@@ -2180,7 +2180,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/connector-gumroad/package.json`
 - [ ] `workers/connector-gumroad/tsconfig.json`
-- [ ] `workers/connector-gumroad/wrangler.toml`
+- [x] `workers/connector-gumroad/wrangler.toml`
 
 ### `workers/connector-gumroad/src`
 
@@ -2190,7 +2190,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/connector-whop/package.json`
 - [ ] `workers/connector-whop/tsconfig.json`
-- [ ] `workers/connector-whop/wrangler.toml`
+- [x] `workers/connector-whop/wrangler.toml`
 
 ### `workers/connector-whop/src`
 
@@ -2201,7 +2201,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/credentials/package.json`
 - [ ] `workers/credentials/tsconfig.json`
 - [ ] `workers/credentials/vitest.config.ts`
-- [ ] `workers/credentials/wrangler.toml`
+- [x] `workers/credentials/wrangler.toml`
 
 ### `workers/credentials/src`
 
@@ -2214,7 +2214,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/eval/package.json`
 - [ ] `workers/eval/tsconfig.json`
-- [ ] `workers/eval/wrangler.toml`
+- [x] `workers/eval/wrangler.toml`
 
 ### `workers/eval/src`
 
@@ -2225,7 +2225,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/feedback/package.json`
 - [ ] `workers/feedback/tsconfig.json`
-- [ ] `workers/feedback/wrangler.toml`
+- [x] `workers/feedback/wrangler.toml`
 
 ### `workers/feedback/src`
 
@@ -2236,7 +2236,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/knowledge/package.json`
 - [ ] `workers/knowledge/tsconfig.json`
 - [ ] `workers/knowledge/vitest.config.ts`
-- [ ] `workers/knowledge/wrangler.toml`
+- [x] `workers/knowledge/wrangler.toml`
 
 ### `workers/knowledge/src`
 
@@ -2259,7 +2259,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/marketplace/package.json`
 - [ ] `workers/marketplace/tsconfig.json`
-- [ ] `workers/marketplace/wrangler.toml`
+- [x] `workers/marketplace/wrangler.toml`
 
 ### `workers/marketplace/src`
 
@@ -2269,7 +2269,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/mcp-hub/package.json`
 - [ ] `workers/mcp-hub/tsconfig.json`
-- [ ] `workers/mcp-hub/wrangler.toml`
+- [x] `workers/mcp-hub/wrangler.toml`
 
 ### `workers/mcp-hub/src`
 
@@ -2285,7 +2285,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/mini-agi/package.json`
 - [ ] `workers/mini-agi/tsconfig.json`
-- [ ] `workers/mini-agi/wrangler.toml`
+- [x] `workers/mini-agi/wrangler.toml`
 
 ### `workers/mini-agi/src`
 
@@ -2296,7 +2296,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/notifications/package.json`
 - [ ] `workers/notifications/tsconfig.json`
 - [ ] `workers/notifications/vitest.config.ts`
-- [ ] `workers/notifications/wrangler.toml`
+- [x] `workers/notifications/wrangler.toml`
 
 ### `workers/notifications/src`
 
@@ -2310,7 +2310,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/portal-router/package.json`
 - [ ] `workers/portal-router/tsconfig.json`
-- [ ] `workers/portal-router/wrangler.toml`
+- [x] `workers/portal-router/wrangler.toml`
 
 ### `workers/portal-router/src`
 
@@ -2340,7 +2340,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/router/package.json`
 - [ ] `workers/router/tsconfig.json`
 - [ ] `workers/router/vitest.config.ts`
-- [ ] `workers/router/wrangler.toml`
+- [x] `workers/router/wrangler.toml`
 
 ### `workers/router/src`
 
@@ -2367,7 +2367,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/search/package.json`
 - [ ] `workers/search/tsconfig.json`
-- [ ] `workers/search/wrangler.toml`
+- [x] `workers/search/wrangler.toml`
 
 ### `workers/search/src`
 
@@ -2390,7 +2390,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/package.json`
 - [ ] `workers/spaces/tsconfig.json`
 - [ ] `workers/spaces/vitest.config.ts`
-- [ ] `workers/spaces/wrangler.toml`
+- [x] `workers/spaces/wrangler.toml`
 
 ### `workers/spaces/src`
 
@@ -2511,7 +2511,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/sweeper/package.json`
 - [ ] `workers/sweeper/tsconfig.json`
 - [x] `workers/sweeper/vitest.config.ts`
-- [ ] `workers/sweeper/wrangler.toml`
+- [x] `workers/sweeper/wrangler.toml`
 
 ### `workers/sweeper/src`
 
@@ -2522,7 +2522,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/synthetics/package.json`
 - [ ] `workers/synthetics/tsconfig.json`
-- [ ] `workers/synthetics/wrangler.toml`
+- [x] `workers/synthetics/wrangler.toml`
 
 ### `workers/synthetics/src`
 
@@ -2533,7 +2533,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/threads/package.json`
 - [ ] `workers/threads/tsconfig.json`
-- [ ] `workers/threads/wrangler.toml`
+- [x] `workers/threads/wrangler.toml`
 
 ### `workers/threads/src`
 
@@ -2544,7 +2544,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/together-ai/package.json`
 - [ ] `workers/together-ai/tsconfig.json`
-- [ ] `workers/together-ai/wrangler.toml`
+- [x] `workers/together-ai/wrangler.toml`
 
 ### `workers/together-ai/src`
 
@@ -2555,7 +2555,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/triggers/package.json`
 - [ ] `workers/triggers/tsconfig.json`
-- [ ] `workers/triggers/wrangler.toml`
+- [x] `workers/triggers/wrangler.toml`
 
 ### `workers/triggers/src`
 
@@ -2565,7 +2565,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/workflows/package.json`
 - [ ] `workers/workflows/tsconfig.json`
-- [ ] `workers/workflows/wrangler.toml`
+- [x] `workers/workflows/wrangler.toml`
 
 ### `workers/workflows/src`
 
@@ -2585,7 +2585,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/ws-gateway/package.json`
 - [ ] `workers/ws-gateway/tsconfig.json`
-- [ ] `workers/ws-gateway/wrangler.toml`
+- [x] `workers/ws-gateway/wrangler.toml`
 
 ### `workers/ws-gateway/src`
 

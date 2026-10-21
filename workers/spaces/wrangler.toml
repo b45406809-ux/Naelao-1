@@ -221,3 +221,223 @@ service = "naelao-notifications"
 [[env.production.services]]
 binding = "KNOWLEDGE_WORKER"
 service = "naelao-knowledge"
+
+[[env.staging.worker_loaders]]
+binding = "LOADER"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "CONFORMANCE_SANDBOX_DO"
+class_name = "ConformanceSandboxDO"
+
+
+[[env.staging.workflows]]
+binding = "BLUEPRINT_CONFORMANCE_WORKFLOW"
+name = "BlueprintConformanceWorkflow"
+class_name = "BlueprintConformanceWorkflow"
+
+
+[[env.staging.services]]
+binding = "CONFORMANCE_EXECUTOR"
+service = "naelao-spaces"
+
+
+[[env.staging.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "SPACE_DO"
+class_name = "SpaceDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "LOCK_DO"
+class_name = "LockDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "FEATURE_FLAG_DO"
+class_name = "FeatureFlagDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "TRANSACTION_COORDINATOR_DO"
+class_name = "TransactionCoordinatorDO"
+
+# SpaceTypeRegistryDO — global singleton, one instance for the whole platform.
+# Space Types are exclusively authored by Naelao (spec §62 / CLAUDE.md #7).
+
+[[env.staging.durable_objects.bindings]]
+name = "SPACE_TYPE_REGISTRY_DO"
+class_name = "SpaceTypeRegistryDO"
+
+# Three-Tier Platform Model, Phase 1 (docs/spec-appendix A1.17) — one per builder (tenant).
+
+[[env.staging.durable_objects.bindings]]
+name = "BUILDER_ACCOUNT_DO"
+class_name = "BuilderAccountDO"
+
+# Three-Tier Platform Model, Phase 2 — one per (productId, endUserId). The platform's first
+# persistent signed-in end-user identity (credit ledger, sessions, preferences).
+
+[[env.staging.durable_objects.bindings]]
+name = "PRODUCT_USER_DO"
+class_name = "ProductUserDO"
+
+
+[[env.staging.durable_objects.bindings]]
+name = "MICRO_APP_DO"
+class_name = "MicroAppDO"
+
+
+[[env.staging.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+
+[[env.staging.r2_buckets]]
+binding = "EXPORTS_BUCKET"
+bucket_name = "naelao-exports"
+
+# F-39: read-only access to the agent workspace bucket so the builder/end-user file viewer can
+# list + read a project's R2 workspace files (spaces/{id}/projects/{id}/workspace/...). Same
+# bucket the agents worker writes to via SCRIPTS_R2.
+
+[[env.staging.r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
+# KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
+
+[[env.staging.kv_namespaces]]
+binding = "NAELAO_CONFIG_KV"
+id = "2816ec20283b4ecd8c5b43e3ebe18b77"
+
+# Producer to the provisioning queue — on space creation we enqueue a space_provision
+# message; naelao-provisioner consumes it and installs the SpaceType's agents.
+
+[[env.staging.queues.producers]]
+binding = "PROVISION_QUEUE"
+queue = "naelao-provisioning-queue"
+
+# Billing worker — called at product publish time to auto-create LS product + variant.
+
+[[env.staging.services]]
+binding = "WS_GATEWAY"
+service = "naelao-ws-gateway"
+
+# Security audit follow-up — password-reset emails (product-end-user-routes.ts).
+
+[[env.production.worker_loaders]]
+binding = "LOADER"
+
+
+[[env.production.durable_objects.bindings]]
+name = "CONFORMANCE_SANDBOX_DO"
+class_name = "ConformanceSandboxDO"
+
+
+[[env.production.workflows]]
+binding = "BLUEPRINT_CONFORMANCE_WORKFLOW"
+name = "BlueprintConformanceWorkflow"
+class_name = "BlueprintConformanceWorkflow"
+
+
+[[env.production.services]]
+binding = "CONFORMANCE_EXECUTOR"
+service = "naelao-spaces"
+
+
+[[env.production.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
+
+[[env.production.durable_objects.bindings]]
+name = "SPACE_DO"
+class_name = "SpaceDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "LOCK_DO"
+class_name = "LockDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "FEATURE_FLAG_DO"
+class_name = "FeatureFlagDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "TRANSACTION_COORDINATOR_DO"
+class_name = "TransactionCoordinatorDO"
+
+# SpaceTypeRegistryDO — global singleton, one instance for the whole platform.
+# Space Types are exclusively authored by Naelao (spec §62 / CLAUDE.md #7).
+
+[[env.production.durable_objects.bindings]]
+name = "SPACE_TYPE_REGISTRY_DO"
+class_name = "SpaceTypeRegistryDO"
+
+# Three-Tier Platform Model, Phase 1 (docs/spec-appendix A1.17) — one per builder (tenant).
+
+[[env.production.durable_objects.bindings]]
+name = "BUILDER_ACCOUNT_DO"
+class_name = "BuilderAccountDO"
+
+# Three-Tier Platform Model, Phase 2 — one per (productId, endUserId). The platform's first
+# persistent signed-in end-user identity (credit ledger, sessions, preferences).
+
+[[env.production.durable_objects.bindings]]
+name = "PRODUCT_USER_DO"
+class_name = "ProductUserDO"
+
+
+[[env.production.durable_objects.bindings]]
+name = "MICRO_APP_DO"
+class_name = "MicroAppDO"
+
+
+[[env.production.d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
+
+
+[[env.production.r2_buckets]]
+binding = "EXPORTS_BUCKET"
+bucket_name = "naelao-exports"
+
+# F-39: read-only access to the agent workspace bucket so the builder/end-user file viewer can
+# list + read a project's R2 workspace files (spaces/{id}/projects/{id}/workspace/...). Same
+# bucket the agents worker writes to via SCRIPTS_R2.
+
+[[env.production.r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
+# KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
+
+[[env.production.kv_namespaces]]
+binding = "NAELAO_CONFIG_KV"
+id = "2816ec20283b4ecd8c5b43e3ebe18b77"
+
+# Producer to the provisioning queue — on space creation we enqueue a space_provision
+# message; naelao-provisioner consumes it and installs the SpaceType's agents.
+
+[[env.production.queues.producers]]
+binding = "PROVISION_QUEUE"
+queue = "naelao-provisioning-queue"
+
+# Billing worker — called at product publish time to auto-create LS product + variant.
+
+[[env.production.services]]
+binding = "WS_GATEWAY"
+service = "naelao-ws-gateway"
+
+# Security audit follow-up — password-reset emails (product-end-user-routes.ts).

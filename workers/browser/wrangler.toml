@@ -31,6 +31,7 @@ ENVIRONMENT = "development"
 
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
+browser = { binding = "BROWSER" }
 
 [[env.staging.durable_objects.bindings]]
 name = "BROWSER_SESSION_DO"
@@ -44,6 +45,7 @@ service = "naelao-spaces-staging"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+browser = { binding = "BROWSER" }
 
 [[env.production.durable_objects.bindings]]
 name = "BROWSER_SESSION_DO"
