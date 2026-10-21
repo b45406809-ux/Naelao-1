@@ -72,6 +72,11 @@ jobs:
               --file="$migration" \
               --remote 2>&1 || true
           done
+          # The sweeper depends on persisted fairness cursors. Make this newest idempotent
+          # migration a required step instead of relying on the legacy best-effort loop above.
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0115_sweeper_fairness_cursors.sql \
+            --remote
 
       - name: Deploy all workers (production)
         env:

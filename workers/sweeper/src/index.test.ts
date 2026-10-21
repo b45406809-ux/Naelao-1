@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   cleanDeletedSpaces,
   cleanExpiredApiKeys,
@@ -28,6 +29,16 @@ describe("fair cleanup pagination", () => {
     await expect(selectFairSweepBatch(db, "failed_docs", select, (row: { id: string }) => row.id))
       .resolves.toEqual([{ id: "a" }]);
     expect(writes).toEqual(["b", "a"]);
+  });
+});
+
+describe("sweeper cursor migration deployment", () => {
+  it("requires the idempotent cursor migration in staging and production deploys", () => {
+    for (const workflow of ["deploy-staging.yml", "deploy-prod.yml"]) {
+      const text = readFileSync(`.github/workflows/${workflow}`, "utf8");
+      expect(text).toContain("--file=infra/migrations/0115_sweeper_fairness_cursors.sql");
+      expect(text).toContain("npx wrangler d1 execute \"$DB_ID\"");
+    }
   });
 });
 
