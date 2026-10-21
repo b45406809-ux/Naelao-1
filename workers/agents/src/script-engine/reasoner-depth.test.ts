@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GatewayReasoner, modelForDelegationDepth, preferredLanguageContext } from "./reasoner.js";
+import { runScriptLoop } from "./loop.js";
 
 describe("delegation-depth model tiering", () => {
   it("physically clamps depth 3 to the free edge model", () => {
@@ -18,6 +19,42 @@ describe("saved language preference context", () => {
 
   it("omits a preference when unset", () => {
     expect(preferredLanguageContext()).toBeUndefined();
+  });
+});
+
+describe("tenant suspension in durable agent loops", () => {
+  it("stops before observing or searching when the tenant was suspended after admission", async () => {
+    const tools = { find: vi.fn() };
+    const reasoner = { decide: vi.fn() };
+    const result = await runScriptLoop({} as never, tools as never, reasoner as never, [], {
+      goal: "continue the task",
+      shouldStopForTenant: async () => true,
+    });
+
+    expect(result.result?.error).toBe("tenant_suspended");
+    expect(tools.find).not.toHaveBeenCalled();
+    expect(reasoner.decide).not.toHaveBeenCalled();
+  });
+
+  it("rechecks after planning and blocks the tool if suspension lands during model reasoning", async () => {
+    let checks = 0;
+    const tools = {
+      find: vi.fn(async () => []),
+      availableOperations: () => [],
+      disclosureGroups: () => [],
+      activeCatalog: async () => [],
+      resolveOperationAlias: (name: string, params: Record<string, unknown>) => ({ name, params }),
+      run: vi.fn(),
+    };
+    const reasoner = { decide: vi.fn(async () => ({ action: "run", name: "conversation.search", params: { query: "older messages" } })) };
+    const result = await runScriptLoop({} as never, tools as never, reasoner as never, [], {
+      goal: "find an earlier decision",
+      shouldStopForTenant: async () => ++checks >= 5,
+    });
+
+    expect(result.result?.error).toBe("tenant_suspended");
+    expect(reasoner.decide).toHaveBeenCalledOnce();
+    expect(tools.run).not.toHaveBeenCalled();
   });
 });
 

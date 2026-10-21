@@ -1036,6 +1036,9 @@ export interface AgentDOEnv {
   /** Legacy selector accepted during rollout; provider aliases map to Clef Flash. */
   SYSTEM_ONE_PROVIDER?: "jev" | "laya" | "clef" | "openrouter";
   PLATFORM_SECRET: string;
+  /** Shared tenant/Space status source. Bound on all Agents Worker environments; optional only
+   * for isolated DO unit fixtures that do not exercise tenant authorization. */
+  PLATFORM_DB?: D1Database;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
   HITL_APPROVAL_DO?: DurableObjectNamespace; // G-AY01: optional — HITL support
@@ -5248,6 +5251,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // Checked once per step, so a Stop button actually stops something. Only wired here —
         // the interactive path — since a cron wake or channel drain has nobody watching it.
         shouldCancel: () => this.isCancelRequested(runId),
+        ...(this.env.PLATFORM_DB ? { shouldStopForTenant: () => this.tenantSpaceSuspended(tenantId, spaceId) } : {}),
         ...(continuation?.approvedActionEvidence ? { preApprovedActions: [continuation.approvedActionEvidence] } : {}),
         ...(continuation?.ledgerKey ? { ledgerKey: continuation.ledgerKey } : {}),
         ...(continuation?.resumeSteps?.length ? { resumeSteps: continuation.resumeSteps } : {}),
@@ -7144,6 +7148,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * any error (network, non-2xx, missing SPACES_WORKER) is treated as capped, matching the
    * fetchAssistantPolicy precedent — a spend limiter that fails open isn't one.
    */
+  /** Recheck tenant and Space status inside the durable execution boundary. */
+  private async tenantSpaceSuspended(tenantId: string, spaceId: string): Promise<boolean> {
+    try {
+      const active = await this.env.PLATFORM_DB!.prepare(
+        `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
+         AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = s.tenant_id AND o.status = 'active')`,
+      ).bind(spaceId, tenantId).first<{ id: string }>();
+      return !active;
+    } catch {
+      return true;
+    }
+  }
+
   /**
    * Go-live audit A-1/A-2: the F-36 clamp, execution-ceiling + daily-spend-cap, project wallet
    * gate, and product_end_user pre-run credit check used to live ONLY inline in handleScriptRun
@@ -7169,6 +7186,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     | { ok: false; response: Response }
   > {
     const { spaceId, tenantId, projectId, userId, callerRole, sessionId, agentId, runId, sessionCreditCeiling } = opts;
+    if (this.env.PLATFORM_DB && await this.tenantSpaceSuspended(tenantId, spaceId)) {
+      return { ok: false, response: Response.json({ error_code: "tenant_suspended" }, { status: 403 }) };
+    }
     if (sessionId && this.env.SPACES_WORKER) {
       const sessionResponse = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}`, { headers: await this.internalHeaders(tenantId, userId ? { "x-naelao-user-id": userId } : {}) }));
       if (sessionResponse.ok && (await readBoundedResponseJson<{ private_scratchpad?: boolean }>(sessionResponse, 2 * 1024 * 1024)).private_scratchpad) return { ok: false, response: Response.json({ error_code: "private_scratchpad_client_only", error: "Private scratchpad keys stay in the browser; server-side agent execution is unavailable for this session." }, { status: 403 }) };
@@ -8836,6 +8856,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           // gets a tighter clock than an interactive turn. Answering one message thoroughly while
           // the rest of the inbox goes cold is the wrong trade here.
           deadlineAt: Date.now() + CHANNEL_REPLY_WALL_CLOCK_MS,
+          ...(this.env.PLATFORM_DB ? { shouldStopForTenant: () => this.tenantSpaceSuspended(tenantId, spaceId) } : {}),
           // This customer's earlier messages on this channel — without it every inbound message
           // is answered as if it were the first thing they ever said.
           ...(() => {
@@ -9103,8 +9124,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       console.error("Agent run failed:", err);
       return Response.json(
-        { error_code: err instanceof PreInferenceSpendError ? err.status === 402 ? "spend_capped" : "spend_reservation_unavailable" : "agent_error", message: errMsg, runId },
-        { status: err instanceof PreInferenceSpendError ? err.status : 500 }
+        { error_code: errMsg === "tenant_suspended" ? "tenant_suspended" : err instanceof PreInferenceSpendError ? err.status === 402 ? "spend_capped" : "spend_reservation_unavailable" : "agent_error", message: errMsg, runId },
+        { status: errMsg === "tenant_suspended" ? 403 : err instanceof PreInferenceSpendError ? err.status : 500 }
       );
     }
   }
@@ -9146,6 +9167,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let currentFsmState: AgentFsmState = "PLANNING";
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+      if (this.env.PLATFORM_DB && await this.tenantSpaceSuspended(services.tenantId, services.spaceId)) {
+        throw new Error("tenant_suspended");
+      }
       // Check if current run has been cancelled
       const runRow = (this.ctx.storage.sql
         .exec(`SELECT status, fsm_state FROM agent_runs WHERE id = ?`, runId)
@@ -9206,6 +9230,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         max_tokens: 4096,
         temperature: 0,
       }, undefined, this.aiGatewayConfig());
+
+      if (this.env.PLATFORM_DB && await this.tenantSpaceSuspended(services.tenantId, services.spaceId)) {
+        throw new Error("tenant_suspended");
+      }
 
       // G-AZ09: Track per-call costs for unit economics model
       const usage = (llmResponse as { usage?: Record<string, number> }).usage ?? {};
@@ -9402,6 +9430,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const MAX_PARALLEL_TOOLS = 5;
         const parallelResults = await Promise.all(
           dispatchQueue.slice(0, MAX_PARALLEL_TOOLS).map(async ({ block }) => {
+            if (this.env.PLATFORM_DB && await this.tenantSpaceSuspended(services.tenantId, services.spaceId)) {
+              throw new Error("tenant_suspended");
+            }
             const result = await dispatchTool(block.name!, block.input!, allowedDomains, services);
             let observation = result.error ? `Error: ${result.error}` : result.output;
             const obsBytes = new TextEncoder().encode(observation).length;

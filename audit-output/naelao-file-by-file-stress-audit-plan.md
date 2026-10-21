@@ -1937,7 +1937,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/r2-workspace-cas.test.ts`
 - [ ] `workers/agents/src/script-engine/r2-workspace.test.ts`
 - [ ] `workers/agents/src/script-engine/r2-workspace.ts`
-- [ ] `workers/agents/src/script-engine/reasoner-depth.test.ts`
+- [x] `workers/agents/src/script-engine/reasoner-depth.test.ts`
 - [ ] `workers/agents/src/script-engine/reasoner.ts`
 - [x] `workers/agents/src/script-engine/request-context-budget.test.ts`
 - [x] `workers/agents/src/script-engine/request-context-budget.ts`

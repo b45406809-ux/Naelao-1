@@ -549,6 +549,9 @@ export interface RunLoopOptions {
    * sub-agent), which have no one watching to press a button.
    */
   shouldCancel?: () => boolean | Promise<boolean>;
+  /** Recheck the tenant/Space grant at every reasoning step boundary. This revocation is a
+   * terminal failure, not a user cancellation: it must not create a resumable interrupted run. */
+  shouldStopForTenant?: () => boolean | Promise<boolean>;
 }
 
 async function reportProgress(opts: RunLoopOptions, checkpoint: LiveCheckpoint): Promise<void> {
@@ -614,6 +617,9 @@ export async function runScriptLoop(
    * be safe: on a resume the model is shown its completed steps, but showing is not preventing.
    */
   const invoke = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
+    if (opts.shouldStopForTenant && await opts.shouldStopForTenant()) {
+      return { ok: false, error: "tenant_suspended", tier: 1, duration_ms: 0, tokens_used: 0 };
+    }
     if(env.artifactValidationState) { env.artifactValidationState.actionName=name;env.artifactValidationState.actionInput=params; }
     const previous = env.onToolOutput;
     env.onToolOutput = output => { void reportProgress(opts, { phase: "run", name, params,
@@ -721,6 +727,16 @@ export async function runScriptLoop(
     ...(deferredOut.length > 0 ? { deferred_approvals: deferredOut } : {}),
     ...(stepsOut.length > 0 ? { steps_completed: stepsOut } : {}),
   });
+  const tenantSuspensionResult = (): LoopResult => {
+    pushTrace({ phase: "give_up", ok: false, detail: "tenant or Space suspended" });
+    notes.push("Run stopped because the tenant or Space is no longer active");
+    return finish({
+      level: "L4",
+      result: { ok: false, output: "This run stopped because the tenant or Space is suspended.", error: "tenant_suspended", tier: 1, duration_ms: 0, tokens_used: 0 },
+      notes,
+    });
+  };
+  const tenantSuspended = async (): Promise<boolean> => Boolean(opts.shouldStopForTenant && await opts.shouldStopForTenant());
 
   /** A run that stopped at the gate, waiting on a human. Deliberately NOT an error result: the
    *  work so far is intact and the action is still pending, so the caller persists a checkpoint
@@ -752,9 +768,11 @@ export async function runScriptLoop(
   };
 
   // 1-2. OBSERVE + FINGERPRINT
+  if (await tenantSuspended()) return tenantSuspensionResult();
   await reportProgress(opts, { phase: "observe", detail: "Observing current state" });
   const observeStart = Date.now();
   const snapshot = await runObserve(env, opts.startupObserve, opts.observeArgs ?? {});
+  if (await tenantSuspended()) return tenantSuspensionResult();
   notes.push(`observed ${snapshot.type} fingerprint=${snapshot.fingerprint.slice(0, 12)}`);
   pushTrace({ phase: "observe", detail: snapshot.type, duration_ms: Date.now() - observeStart, ok: true });
 
@@ -762,6 +780,7 @@ export async function runScriptLoop(
   await reportProgress(opts, { phase: "find", detail: "Searching for a matching capability" });
   const findStart = Date.now();
   const candidates = await tools.find(opts.goal, { snapshot, limit: 3 });
+  if (await tenantSuspended()) return tenantSuspensionResult();
   const top = candidates[0];
   notes.push(`find: ${candidates.length} candidate(s)` + (top ? ` top=${top.name} conf=${top.confidence.toFixed(2)}` : ""));
   pushTrace({
@@ -842,6 +861,7 @@ export async function runScriptLoop(
         repairTarget: { name: top!.name, failureReason: repairReason ?? "fingerprint drift (partial match)" },
         ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
       });
+      if (await tenantSuspended()) return tenantSuspensionResult();
       const usage = usageOf(reasoner);
       pushTrace({
         phase: "reason",
@@ -855,6 +875,7 @@ export async function runScriptLoop(
         ...(messageOf(reasoner) ? { message: messageOf(reasoner) } : {}),
       });
       if (decision.action === "patch") {
+        if (await tenantSuspended()) return tenantSuspensionResult();
         await tools.update(decision.name, { code: decision.code }, decision.reason);
         const params = paramsFor(top!, opts.goal);
         const gate = await gateCurrentPolicy(decision.name, params);
@@ -954,6 +975,7 @@ export async function runScriptLoop(
       // Explicit protocol state: two consultation rounds is the hard horizon. A third consult
       // transitions to BLOCKED_AWAITING_HUMAN instead of spending tokens without new authority.
       for (let step = 0; ; step++) {
+        if (await tenantSuspended()) return tenantSuspensionResult();
         // Stopped by a person. Not an error and not a failure: the steps already taken are real
         // and are reported, which is the difference between "I stopped, here is what I did" and a
         // run that simply vanishes.
@@ -1068,6 +1090,7 @@ export async function runScriptLoop(
             : {}),
           ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
         });
+        if (await tenantSuspended()) return tenantSuspensionResult();
         longestStepMs = Math.max(longestStepMs, Date.now() - reasonStart);
         const stepUsage = usageOf(reasoner);
         usageAcc.input += stepUsage.input;
