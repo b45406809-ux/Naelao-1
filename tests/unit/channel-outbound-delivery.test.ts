@@ -97,7 +97,7 @@ describe("chat-channel replies", () => {
     });
     const body = await res.json<{ delivered: boolean; reason: string }>();
     expect(body.delivered).toBe(false);
-    expect(body.reason).toContain("phone_number_id");
+    expect(body.reason).toMatch(/phone[- ]number id/i);
   });
 
   it("still reports honestly for a channel with no send path at all", async () => {
@@ -114,11 +114,12 @@ describe("telegram adapter", () => {
     expect(adapter).toBeDefined();
   });
 
-  it("keys on the chat, not the sender, so a group reply goes to the right place", () => {
+  it("keeps the sender identity separate from the group chat reply destination", () => {
     const norm = adapter.normalizeInbound({
       message: { message_id: 7, date: 1700000000, text: "hello", from: { id: 999 }, chat: { id: -100555 } },
     });
-    expect(norm!.channel_user_id).toBe("-100555");
+    expect(norm!.channel_user_id).toBe("999");
+    expect(norm!.recipient_id).toBe("-100555");
     // message_id is only unique per chat, so the dedupe key has to carry both.
     expect(norm!.external_id).toBe("-100555:7");
     expect(norm!.timestamp).toBe(1700000000 * 1000);

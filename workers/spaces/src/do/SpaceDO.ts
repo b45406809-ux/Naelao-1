@@ -6199,7 +6199,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       "DELETE FROM presence WHERE space_id = ? AND last_seen_at < ?",
       body.space_id,
-      now - 60_000
+      now - PRESENCE_PRUNE_CUTOFF_MS
     );
     return Response.json({ ok: true, last_seen_at: now });
   }

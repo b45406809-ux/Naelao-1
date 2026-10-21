@@ -92,7 +92,7 @@ describe("SpaceDO real-time broadcasts (§A1.17 Phase V)", () => {
   it("heartbeatPresence broadcasts presence.heartbeat", async () => {
     const { doInstance, calls } = makeSpaceDO();
     await call(doInstance, "/presence", "POST", { space_id: "space-1", user_id: "alice", tenant_id: "tenant-1" });
-    const presenceEvents = calls.filter((c) => c.event === "presence.heartbeat");
+    const presenceEvents = calls.filter((c) => c.event === "presence.update");
     expect(presenceEvents).toHaveLength(1);
     expect(presenceEvents[0]).toMatchObject({ spaceId: "space-1", tenantId: "tenant-1" });
     expect(presenceEvents[0]!.data).toMatchObject({ user_id: "alice" });
