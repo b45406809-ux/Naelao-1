@@ -10,7 +10,8 @@ const SPACE_ERASURE_TABLES = [
   "desk_drop_tickets", "email_attachment_ocr_usage", "email_inbound_attachments", "email_reply_routes",
   "eval_runs", "eval_suites", "extension_provider_routes", "extension_provider_connections",
   "extension_publisher_keys", "installed_extensions", "kb_external_publication_documents",
-  "kb_external_publications", "mcp_servers", "oauth_sessions", "oauth_providers", "payment_connections",
+  "kb_external_publications", "launchpad_products", "fde_graduations", "llm_token_reservations",
+  "mcp_servers", "oauth_sessions", "oauth_providers", "payment_connections",
   "payout_destinations", "project_access", "project_steward_decisions", "project_steward_runs",
   "recipe_installations", "scheduled_job_runs", "scheduled_jobs", "space_compliance_policy",
   "space_credential_keys", "space_credentials", "space_members", "triggers", "virtual_cli_commands",
@@ -66,6 +67,10 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM web_push_subscriptions WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM do_registry WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM space_type_tools WHERE tenant_id = ?").bind(orgId),
+    // Earnings rows reference these subscriptions; preserve financial history while stopping renewals.
+    db.prepare("UPDATE template_subscriptions SET status = 'cancelled', updated_at = datetime('now') WHERE space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
+    // Preserve the wallet's financial/provider identifiers, but remove the direct owner email.
+    db.prepare("UPDATE whop_sub_merchants SET owner_email = 'erased@deleted.invalid' WHERE tenant_id = ?").bind(orgId),
     db.prepare("UPDATE spacetypes SET name = 'Erased SpaceType', description = NULL, schema_json = '{}', status = 'archived' WHERE org_id = ?").bind(orgId),
     db.prepare("UPDATE spaces SET name = 'Erased space', config_json = '{}', created_by = NULL, status = 'deleted', suspension_reason = 'erasure', updated_at = datetime('now') WHERE tenant_id = ?").bind(orgId),
     db.prepare("UPDATE users SET org_id = NULL WHERE org_id = ?").bind(orgId),

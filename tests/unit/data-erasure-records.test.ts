@@ -74,6 +74,12 @@ describe("data erasure D1 records", () => {
     db.db.prepare("INSERT INTO users (id, email, org_id) VALUES (?, ?, ?)").run("user-a", "person@example.com", "org-a");
     db.db.prepare("INSERT INTO notifications (id, tenant_id, user_id, type, title, body) VALUES (?, ?, ?, ?, ?, ?)")
       .run("n-a", "org-a", "user-a", "agent", "Private", "Body");
+    db.db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name) VALUES (?, ?, ?, ?)")
+      .run("space-a", "org-a", "type-a", "Acme space");
+    db.db.prepare("INSERT INTO template_subscriptions (id, space_id, template_id, developer_user_id, attribution_channel) VALUES (?, ?, ?, ?, ?)")
+      .run("sub-a", "space-a", "template-a", "developer-a", "MARKETPLACE_ORGANIC");
+    db.db.prepare("INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email) VALUES (?, ?, ?, ?, ?)")
+      .run("merchant-a", "org-a", "space-a", "company-a", "person@example.com");
     db.db.prepare("INSERT INTO audit_log (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run("audit-a", "org-a", "user-a", "user", "erasure_requested", "org", "org-a", "{}");
 
@@ -83,6 +89,9 @@ describe("data erasure D1 records", () => {
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM org_members WHERE org_id = ?").get("org-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE tenant_id = ?").get("org-a")).toEqual({ count: 1 });
+    expect(db.db.prepare("SELECT status FROM template_subscriptions WHERE id = ?").get("sub-a")).toEqual({ status: "cancelled" });
+    expect(db.db.prepare("SELECT owner_email FROM whop_sub_merchants WHERE id = ?").get("merchant-a"))
+      .toEqual({ owner_email: "erased@deleted.invalid" });
     expect(db.db.prepare("SELECT org_id FROM users WHERE id = ?").get("user-a")).toEqual({ org_id: null });
     expect(db.db.prepare("SELECT name, owner_id, status FROM orgs WHERE id = ?").get("org-a"))
       .toEqual({ name: "Erased organization", owner_id: "system-erasure", status: "erased" });
