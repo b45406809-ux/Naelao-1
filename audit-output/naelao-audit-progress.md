@@ -18,6 +18,8 @@ The organization-level D1 pass found more non-`space_id` records: business invit
 
 ProductUserDO records are now erased through a tenant-HMAC-protected internal Spaces route before deleting their D1 roster rows. The D1 helper keyset-pages users in batches of 100, stops on any DO failure, and only removes a profile after the DO confirms success. Validation: 205-user SQLite-backed paging test plus cross-tenant and retry-preservation cases (2 pass); Workflows and Spaces TypeScript checks; workflow erasure/queue suites 20/20. ProductUserDO credit ledgers remain by design for accounting; other durable-object namespaces are still unaudited for organization erasure.
 
+Refreshed the tracked repository tree after adding the ProductUserDO erasure helper and its SQLite test. At code commit `52d598f6`, the tree records 2,015 tracked files / 1,809 source or executable-configuration files; the checklist has 439 reviewed and 1,370 open. The tree and file checklist remain an inventory and work tracker, not a completed audit.
+
 This is not complete erasure coverage. RepositoryDO SQLite state, durable object state in other services, repo/workspace materialization races, export request/cancellation/restoration lifecycle, storage surfaces outside these prefixes, and a legal retention schedule for financial/audit records remain open. The current pass deletes the repository R2 prefix but does not yet purge per-repository Durable Object metadata.
 
 ## Completed focused review

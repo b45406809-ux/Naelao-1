@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2013` tracked files; `1807` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `b2899390`.
+Inventory basis: `2015` tracked files; `1809` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `52d598f6`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1517,7 +1517,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/project-scoped-automation.test.ts`
 - [ ] `tests/unit/project-steward-dispatch.test.ts`
 - [ ] `tests/unit/project-steward-review-route.test.ts`
-- [x] `tests/unit/reseller-suspension.test.ts`
 - [ ] `tests/unit/project-templates.test.ts`
 - [ ] `tests/unit/project-wallet-payer-gate.test.ts`
 - [ ] `tests/unit/projects-from-template.test.ts`
@@ -1541,6 +1540,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `tests/unit/repl-primitives.test.ts`
 - [ ] `tests/unit/requirements-trace-matrix.test.ts`
 - [ ] `tests/unit/reseller-attribution.test.ts`
+- [x] `tests/unit/reseller-suspension.test.ts`
 - [ ] `tests/unit/reserved-capabilities.test.ts`
 - [ ] `tests/unit/resume-run-continuation.test.ts`
 - [ ] `tests/unit/revenue-cut-surcharge.test.ts`
@@ -1723,8 +1723,6 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/agents/src/channels`
 
-- [x] `workers/agents/src/channels/session-queue.test.ts`
-- [x] `workers/agents/src/channels/session-queue.ts`
 - [x] `workers/agents/src/channels/agentmail.test.ts`
 - [ ] `workers/agents/src/channels/agentmail.ts`
 - [x] `workers/agents/src/channels/attachment-copy-route.test.ts`
@@ -1754,6 +1752,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/channels/executive-channel.ts`
 - [ ] `workers/agents/src/channels/foundry-command.test.ts`
 - [ ] `workers/agents/src/channels/foundry-command.ts`
+- [x] `workers/agents/src/channels/session-queue.test.ts`
+- [x] `workers/agents/src/channels/session-queue.ts`
 
 ### `workers/agents/src/connectors`
 
@@ -2364,7 +2364,6 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/provisioner/src`
 
 - [ ] `workers/provisioner/src/index.ts`
-- [ ] `workers/provisioner/src/tenant-suspension.test.ts`
 - [x] `workers/provisioner/src/manifest-contract.test.ts`
 - [x] `workers/provisioner/src/manifest-contract.ts`
 - [x] `workers/provisioner/src/message-contract.test.ts`
@@ -2373,6 +2372,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/provisioner/src/provisioning-state.ts`
 - [ ] `workers/provisioner/src/queue-message-handler.test.ts`
 - [ ] `workers/provisioner/src/queue-message-handler.ts`
+- [ ] `workers/provisioner/src/tenant-suspension.test.ts`
 
 ### `workers/router`
 
@@ -2390,10 +2390,10 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/router/src/extension-provider-routing.test.ts`
 - [ ] `workers/router/src/health.test.ts`
 - [x] `workers/router/src/index.ts`
-- [x] `workers/router/src/tenant-status.test.ts`
-- [x] `workers/router/src/tenant-status.ts`
 - [ ] `workers/router/src/preferred-language.test.ts`
 - [ ] `workers/router/src/preferred-language.ts`
+- [x] `workers/router/src/tenant-status.test.ts`
+- [x] `workers/router/src/tenant-status.ts`
 
 ### `workers/router/src/routes`
 
@@ -2624,10 +2624,10 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/workflows/src/workflows/KbIngestionWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/QueueHealthWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/SpaceProvisioningWorkflow.ts`
-- [ ] `workers/workflows/src/workflows/space-provisioning-state.test.ts`
-- [ ] `workers/workflows/src/workflows/space-provisioning-state.ts`
 - [x] `workers/workflows/src/workflows/erasure-cleanup.test.ts`
 - [x] `workers/workflows/src/workflows/erasure-cleanup.ts`
+- [ ] `workers/workflows/src/workflows/space-provisioning-state.test.ts`
+- [ ] `workers/workflows/src/workflows/space-provisioning-state.ts`
 
 ### `workers/ws-gateway`
 

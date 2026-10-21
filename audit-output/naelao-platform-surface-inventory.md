@@ -2,6 +2,8 @@
 
 Generated from the current source/config tree using Wrangler worker manifests, exported DurableObject declarations, and literal route-registration calls. This is a discovery index, not a proof that every runtime route or indirect dispatch has been found. Review dynamic route assembly and bindings during the audit.
 
+Supplemental route added at code commit `52d598f6`: `workers/spaces/src/index.ts:122-123` registers `DELETE /internal/tenant/:tenantId/spaces/:spaceId/product-users/erase` behind `requireInternalHmac`. The aggregate route counts and other line references above predate this addition and need a full discovery refresh.
+
 Workers with Wrangler manifests: 32
 Exported DurableObject declarations: 22
 Literal route-registration matches: 1079
