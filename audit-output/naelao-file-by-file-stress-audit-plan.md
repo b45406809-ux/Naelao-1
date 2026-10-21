@@ -1708,8 +1708,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/channels/channel-extension-session.ts`
 - [ ] `workers/agents/src/channels/channel-session-usage.test.ts`
 - [ ] `workers/agents/src/channels/channel-session-usage.ts`
-- [ ] `workers/agents/src/channels/chat-upload-attachments.test.ts`
-- [ ] `workers/agents/src/channels/chat-upload-attachments.ts`
+- [x] `workers/agents/src/channels/chat-upload-attachments.test.ts`
+- [x] `workers/agents/src/channels/chat-upload-attachments.ts`
 - [x] `workers/agents/src/channels/chat-upload-route.test.ts`
 - [x] `workers/agents/src/channels/chat-upload-scope.test.ts`
 - [x] `workers/agents/src/channels/chat-upload-scope.ts`

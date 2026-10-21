@@ -13,7 +13,7 @@ describe("chat upload attachment indexing", () => {
       async run() { if (sql.includes("INSERT OR IGNORE INTO channel_attachments")) rows.set(String(values[0]), { id: String(values[0]) }); return {}; },
     }; } }; } };
     const bucket = {
-      async get(key: string) { const bytes = objects.get(key); return bytes ? { key, size: bytes.byteLength,
+      async get(key: string) { const bytes = objects.get(key); return bytes ? { key, size: bytes.byteLength, etag: "stable",
         httpMetadata: { contentType: "text/plain" }, async arrayBuffer() { return bytes.slice().buffer; } } : null; },
       async put(key: string, bytes: Uint8Array) { objects.set(key, bytes.slice()); },
     };
@@ -29,12 +29,28 @@ describe("chat upload attachment indexing", () => {
   });
 
   it("rejects traversal, missing uploads, and overlarge files without widening the source prefix", async () => {
-    const bucket = { async get(key: string) { return key.endsWith("big.bin") ? { key, size: 20 * 1024 * 1024 + 1,
+    const bucket = { async get(key: string) { return key.endsWith("big.bin") ? { key, size: 20 * 1024 * 1024 + 1, etag: "stable",
       httpMetadata: {}, async arrayBuffer() { return new ArrayBuffer(0); } } : null; }, async put() {} };
     const db = { prepare() { return { bind() { return { async first() { return null; }, async run() { return {}; } }; } }; } };
     const base = { bucket, db, platformSecret: "test-secret", tenantId: "t", spaceId: "s", sessionId: "sess", taskId: "task" };
     await expect(indexChatUploads({ ...base, names: ["../secret"] })).rejects.toThrow("chat_attachment_name_invalid");
     await expect(indexChatUploads({ ...base, names: ["missing.txt"] })).rejects.toThrow("chat_attachment_not_found");
     await expect(indexChatUploads({ ...base, names: ["big.bin"] })).rejects.toThrow("chat_attachment_size_limit");
+  });
+
+  it("rejects same-size upload replacement between metadata check and byte read", async () => {
+    let reads = 0;
+    const bucket = {
+      async get(key: string) {
+        reads++;
+        const bytes = new TextEncoder().encode(reads === 1 ? "old bytes" : "new bytes");
+        return { key, size: bytes.byteLength, etag: reads === 1 ? "etag-old" : "etag-new",
+          httpMetadata: { contentType: "text/plain" }, async arrayBuffer() { return bytes.slice().buffer; } };
+      },
+      async put() { throw new Error("must not store a replaced upload"); },
+    };
+    const db = { prepare() { return { bind() { return { async first() { return null; }, async run() { return {}; } }; } }; } };
+    await expect(indexChatUploads({ bucket, db, platformSecret: "secret", tenantId: "t", spaceId: "s",
+      sessionId: "sess", taskId: "task", names: ["brief.txt"] })).rejects.toThrow("chat_attachment_changed_during_index");
   });
 });

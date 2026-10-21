@@ -3,6 +3,7 @@ import { storeChannelAttachments, type StoredChannelAttachment } from "./channel
 interface ChatUploadObject {
   key: string;
   size: number;
+  etag: string;
   httpMetadata?: { contentType?: string };
   arrayBuffer(): Promise<ArrayBuffer>;
 }
@@ -43,7 +44,7 @@ export async function indexChatUploads(input: {
   const base = input.projectId
     ? `spaces/${input.spaceId}/projects/${input.projectId}/workspace/`
     : `spaces/${input.spaceId}/workspace/`;
-  const files: Array<{ filename: string; key: string; size: number; mimeType: string }> = [];
+  const files: Array<{ filename: string; key: string; size: number; etag: string; mimeType: string }> = [];
   let total = 0;
   const names = new Set<string>();
   for (const rawName of input.names) {
@@ -57,13 +58,13 @@ export async function indexChatUploads(input: {
       throw new Error("chat_attachment_size_limit");
     }
     total += object.size;
-    files.push({ filename, key, size: object.size, mimeType: object.httpMetadata?.contentType ?? "application/octet-stream" });
+    files.push({ filename, key, size: object.size, etag: object.etag, mimeType: object.httpMetadata?.contentType ?? "application/octet-stream" });
   }
   const stored: StoredChannelAttachment[] = [];
   for (let index = 0; index < files.length; index++) {
     const file = files[index]!;
     const object = await input.bucket.get(file.key);
-    if (!object || object.size !== file.size) throw new Error("chat_attachment_changed_during_index");
+    if (!object || object.size !== file.size || object.etag !== file.etag) throw new Error("chat_attachment_changed_during_index");
     const bytes = new Uint8Array(await object.arrayBuffer());
     if (bytes.byteLength !== file.size) throw new Error("chat_attachment_size_mismatch");
     const [record] = await storeChannelAttachments({

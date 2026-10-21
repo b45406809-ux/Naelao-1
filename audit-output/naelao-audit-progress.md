@@ -1350,3 +1350,19 @@ This review did not test production R2 quotas, concurrent duplicate-name uploads
 ### Broad Agents verification after worker/upload changes
 
 Full Agents worker suite passed 151 files / 682 tests (one new worker-capability regression and two new upload stress regressions). Agents TypeScript check passed. Existing PDF.js standard-font warnings were emitted by PDF tests; all suites passed.
+
+## Bind attachment indexing to the source object version (2026-10-21)
+
+The chat upload indexer first read object metadata and later fetched bytes for task-scoped copying. It verified only byte length, so a concurrent same-size overwrite could change the file between validation and indexing. The second read now must match both size and R2 ETag before any attachment record is stored. Added a same-length replacement regression that confirms indexing fails closed.
+
+Validation: chat upload attachment suite passed 1 file / 3 tests; Agents TypeScript check passed. This closes the size-only TOCTOU gap; production R2 consistency and concurrent upload behavior still need environment-level verification.
+
+## Enforce the Decisions API deadline during retry backoff (2026-10-21)
+
+The Decisions client uses one abort signal for the entire request, but its retry sleep did not listen for that signal. A second retry could therefore finish its backoff after the configured total timeout. Replaced the unconditional sleep with an abort-aware delay and added a fake-clock regression proving the next request is not sent after the shared deadline.
+
+Validation: Fast Decision suite passed 1 file / 25 tests; Agent SDK and Agents TypeScript checks passed. The Agents full suite had passed 151 files / 682 tests immediately before this later attachment ETag and backoff slice; focused tests cover these latest changes.
+
+### Broad Agents verification after ETag and retry-deadline changes
+
+Re-ran the complete Agents suite on the latest tree: 151 files / 683 tests passed, including the new same-size attachment replacement regression. Expected PDF.js standard-font warnings appeared. Agents and Agent SDK TypeScript checks both passed.

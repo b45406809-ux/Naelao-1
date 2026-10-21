@@ -136,6 +136,21 @@ export const CLEF_FLASH_MAX_ESTIMATED_TOKENS = 16_000;
 export const DECIDER_MAX_ESTIMATED_TOKENS = 200_000;
 const MAX_DECISION_RESPONSE_BYTES = 1024 * 1024;
 
+function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error("system_one_timeout"));
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const timer = setTimeout(() => { cleanup(); resolve(); }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new Error("system_one_timeout"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
 async function readBoundedDecisionText(response: Response, maxBytes: number, signal?: AbortSignal): Promise<string> {
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
@@ -273,8 +288,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       const retryable = [429, 529, 503].includes(response.status);
       await response.body?.cancel().catch(() => undefined);
       if (!retryable || attempt === this.maxRetries) return { response, signal };
-      await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
-      if (signal.aborted) throw new Error("system_one_timeout");
+      await waitForRetry(Math.min(100 * 2 ** attempt, 1_000), signal);
     }
     throw new Error("system_one_network_error");
   }

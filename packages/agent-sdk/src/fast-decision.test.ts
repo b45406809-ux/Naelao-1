@@ -49,6 +49,22 @@ describe("typed fast decisions", () => {
     expect(fetcher.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
   });
 
+  it("includes retry backoff in the shared timeout budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn(async () => new Response("busy", { status: 503 }));
+      const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 2, timeoutMs: 250 });
+      const result = client.choice({ state: "small", instructions: "Choose", criteria: { yes: null, no: null }, policyCode: "retry_deadline" });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(150);
+      await expect(result).rejects.toThrow("system_one_timeout");
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the same deadline while reading a stalled response body", async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const body = new ReadableStream<Uint8Array>({ start(controller) { streamController = controller; } });
