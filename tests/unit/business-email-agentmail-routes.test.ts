@@ -138,7 +138,9 @@ describe("/internal/business-email/send", () => {
     const env = makeEnv({
       EMAIL_INGRESS_DOMAIN: "agents.example.test",
       PLATFORM_DB: {
-        prepare: (query: string) => ({ bind: () => ({ first: async () => query.includes("email_reply_routes") ? { address_hash: replyHash } : null }) }),
+        prepare: (query: string) => ({ bind: () => ({ first: async () => query.includes("email_reply_routes")
+          ? { address_hash: replyHash }
+          : query.includes("config_json") ? { config_json: "{}" } : null }) }),
       } as never,
       NOTIFICATIONS_WORKER: { fetch: async (request: Request) => { sent.push(request); return Response.json({ delivered: true, from: "team@example.test" }); } } as unknown as Fetcher,
     });
@@ -218,6 +220,25 @@ describe("/internal/business-email/send", () => {
 
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error_code: "air_gap_egress_denied" });
+    expect(called).toBe(false);
+  });
+
+  it("blocks task-correlated reply email in air-gapped Spaces before calling notifications", async () => {
+    const replyTo = await createReplyAddress({ domain: "agents.example.test", tenantId: TENANT, spaceId: "s1", taskId: "run-1", secret: SECRET });
+    let called = false;
+    const env = makeEnv({
+      EMAIL_INGRESS_DOMAIN: "agents.example.test",
+      NOTIFICATIONS_WORKER: { fetch: async () => { called = true; return Response.json({ delivered: true }); } } as unknown as Fetcher,
+      PLATFORM_DB: {
+        prepare: () => ({ bind: () => ({ first: async () => ({ config_json: '{"compliance":{"airGappedOnly":true}}' }) }) }),
+      } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const response = await post("/internal/business-email/send", {
+      spaceId: "s1", tenantId: TENANT, taskId: "run-1", replyTo, to: "vendor@example.net", text: "Reply",
+    }, env, { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "air_gap_egress_denied" });
     expect(called).toBe(false);
   });
 });

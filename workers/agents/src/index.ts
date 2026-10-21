@@ -7310,6 +7310,11 @@ app.post("/internal/business-email/send", async (c) => {
   const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; taskId?: string; to?: string | string[]; subject?: string; text?: string; html?: string; replyTo?: string }>().catch(() => null);
   if (!body?.spaceId || !body.tenantId || !body.to) return c.json({ error_code: "bad_request", message: "spaceId, tenantId, to are required" }, 400);
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
+  // All email providers, including the task-correlated reply fallback, perform network egress.
+  // Apply Space policy before branching to any provider.
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.spaceId)) {
+    return c.json({ ok: false, configured: true, error_code: "air_gap_egress_denied" }, 403);
+  }
 
   if (body.replyTo) {
     if (!body.taskId || !c.env.EMAIL_INGRESS_DOMAIN || !normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN)) {
@@ -7330,12 +7335,6 @@ app.post("/internal/business-email/send", async (c) => {
     }));
     const result = await response.json<{ delivered?: boolean; from?: string }>().catch(() => ({} as { delivered?: boolean; from?: string }));
     return c.json({ ok: response.ok && result.delivered === true, configured: true, provider: "resend", from: result.from, reply_to: body.replyTo }, response.ok && result.delivered === true ? 200 : 502);
-  }
-
-  // Email is network egress just like the notification-worker fallback. Check the Space policy
-  // before either provider is reached; a missing or unreadable policy fails closed.
-  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.spaceId)) {
-    return c.json({ ok: false, configured: true, error_code: "air_gap_egress_denied" }, 403);
   }
 
   // Prefer native Cloudflare Email Service whenever configured. AgentMail remains an opt-in
