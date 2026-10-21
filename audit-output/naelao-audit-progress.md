@@ -2188,6 +2188,10 @@ Extended the real SQLite migration test with tenant operational, marketplace, an
 
 The erasure step itself held every Space in one Workflow operation, so a tenant with many spaces could exceed a step's runtime and replay all completed resource deletions after a late failure. Split tenant enumeration into durable page-list steps and one durable cleanup step per Space. Replay and injected failure tests cover 205 spaces, verify completed steps are not rerun, and verify only the failed Space retries. Workflows erasure and queue tests now pass 23/23, TypeScript passes, and Wrangler dry runs pass for development, staging, and production. A very large single Space can still exceed one cleanup step because its document, Vectorize, R2, and provider resources are processed inside that Space step; per-document/resource checkpointing remains open.
 
+## System One routing and context-bound verification (2026-10-21)
+
+Reviewed the decision client against the active model-routing correction and the checked-in provider research. Ordinary decisions use `cloudflare/clef-flash` through OpenRouter's Decisions API; `perplexity/pplx-decider-v1.2` is the only overflow model, and the Decider Flash slug resolves to Clef Flash. The 16,000 estimated-token Clef threshold stays below the documented 24,576 context, and full Decider is capped at 200,000 estimated tokens. The client bounds retries, total request time, and response bytes, validates typed outputs, and rejects unknown models. Focused tests passed 25/25 and Agent SDK TypeScript passed. A live OpenRouter metadata check was blocked by the workspace's outbound proxy (HTTP 403), so current provider metadata was not independently refreshed. No routing change was needed.
+
 ## Provisioner saga queue isolation (2026-10-21)
 
 The Provisioner queue serially runs up to ten messages per batch, while each provisioning or deprovisioning saga can make many service-binding, D1, KV, and R2 calls. Reduced the consumer batch size to one in development, staging, and production while retaining its concurrency of ten. This prevents one slow saga from holding later messages in the same batch.
