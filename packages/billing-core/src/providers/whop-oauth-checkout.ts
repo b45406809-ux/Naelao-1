@@ -88,7 +88,7 @@ export async function createOrGetAccessPass(
     title: params.title,
     visibility: "hidden", // not listed on the company's public storefront — reached only via the direct checkout link
   });
-  if (typeof result.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(result.id)) throw new Error("Whop access_pass creation returned no valid id");
+  if (typeof result.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(result.id)) throw new Error("Whop access_pass creation returned no id or an invalid id");
   return { access_pass_id: result.id };
 }
 

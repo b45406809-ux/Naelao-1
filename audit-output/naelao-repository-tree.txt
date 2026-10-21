@@ -3,7 +3,7 @@ Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
 Files: 1996
 Files with source or executable-configuration extensions: 1790
-Inventory revision: 2026-10-21 audit refresh for KB ingestion queue
+Inventory revision: 2026-10-21 audit refresh for queue dispatch and full-suite review
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 

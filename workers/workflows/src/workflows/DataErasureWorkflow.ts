@@ -19,7 +19,7 @@
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
 import type { Env } from "../env";
-import { anonymizeOrgUsers, eraseSpaceD1Records, eraseSpaceKnowledgeResources } from "./erasure-cleanup.js";
+import { anonymizeOrgUsers, deleteKvPrefix, eraseSpaceD1Records, eraseSpaceKnowledgeResources } from "./erasure-cleanup.js";
 
 export interface ErasureParams {
   orgId: string;
@@ -148,20 +148,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     // G-AZ34: Delete all CF KV cached responses scoped to this tenant.
     // QUOTA_CACHE keys follow the pattern: {orgId}:* (quota entries, config, etc.)
     await step.do("clear-kv-cache", async () => {
-      const prefix = `${params.orgId}:`;
-      let cursor: string | undefined;
-      let deleted = 0;
-      do {
-        const listOpts = cursor !== undefined
-          ? { prefix, cursor }
-          : { prefix };
-        const listed = await this.env.QUOTA_CACHE.list(listOpts);
-        for (const key of listed.keys) {
-          await this.env.QUOTA_CACHE.delete(key.name);
-          deleted++;
-        }
-        cursor = listed.list_complete ? undefined : listed.cursor;
-      } while (cursor);
+      const deleted = await deleteKvPrefix(this.env.QUOTA_CACHE, `${params.orgId}:`);
 
       console.log(`[DataErasure] Cleared ${deleted} KV cache entries for org=${params.orgId}`);
       return { kvKeysDeleted: deleted };

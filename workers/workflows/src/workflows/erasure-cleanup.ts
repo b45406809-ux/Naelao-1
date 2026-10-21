@@ -1,5 +1,31 @@
 const MAX_DOCUMENT_CHUNKS = 12_000;
 const R2_DELETE_BATCH_SIZE = 100;
+const KV_DELETE_BATCH_SIZE = 100;
+
+export async function deleteKvPrefix(
+  kv: Pick<KVNamespace, "list" | "delete">,
+  prefix: string
+): Promise<number> {
+  let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+  let deleted = 0;
+  do {
+    const listed = await kv.list(cursor === undefined ? { prefix } : { prefix, cursor });
+    for (let start = 0; start < listed.keys.length; start += KV_DELETE_BATCH_SIZE) {
+      const batch = listed.keys.slice(start, start + KV_DELETE_BATCH_SIZE);
+      await Promise.all(batch.map(({ name }) => kv.delete(name)));
+      deleted += batch.length;
+    }
+    if (listed.list_complete) return deleted;
+    const nextCursor = listed.cursor;
+    if (!nextCursor || seenCursors.has(nextCursor)) {
+      throw new Error("KV erasure returned a missing or repeated cursor");
+    }
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  } while (cursor !== undefined);
+  return deleted;
+}
 
 export interface ErasureDocument {
   id: string;

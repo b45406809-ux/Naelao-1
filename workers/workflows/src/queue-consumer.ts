@@ -5,6 +5,26 @@ interface QueueMessage {
   [key: string]: unknown;
 }
 
+async function createWorkflowOnce(
+  workflow: Env["SPACE_PROVISIONING"],
+  id: string,
+  params: Record<string, unknown>
+): Promise<void> {
+  try {
+    await workflow.create({ id, params });
+  } catch (createError) {
+    // Queue delivery is at least once. If create succeeded but its response or our later
+    // acknowledgement was lost, the same message is redelivered and create reports a conflict.
+    // Confirm the deterministic instance exists before treating that redelivery as handled.
+    try {
+      const instance = await workflow.get(id);
+      if (!instance) throw createError;
+    } catch {
+      throw createError;
+    }
+  }
+}
+
 export async function queue(
   batch: MessageBatch<QueueMessage>,
   env: Env
@@ -14,18 +34,12 @@ export async function queue(
     try {
       switch (body.type) {
         case "space.provision":
-          await env.SPACE_PROVISIONING.create({
-            id: message.id,
-            params: body,
-          });
+          await createWorkflowOnce(env.SPACE_PROVISIONING, message.id, body);
           message.ack();
           break;
 
         case "data.erasure":
-          await env.DATA_ERASURE.create({
-            id: message.id,
-            params: body,
-          });
+          await createWorkflowOnce(env.DATA_ERASURE, message.id, body);
           message.ack();
           break;
 
@@ -39,18 +53,12 @@ export async function queue(
                 body.allowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256)))) {
             throw new Error("kb.ingest requires valid document scope, staging key, and access policy");
           }
-          await env.KB_INGESTION.create({
-            id: message.id,
-            params: body,
-          });
+          await createWorkflowOnce(env.KB_INGESTION, message.id, body);
           message.ack();
           break;
 
         case "dunning":
-          await env.DUNNING.create({
-            id: message.id,
-            params: body,
-          });
+          await createWorkflowOnce(env.DUNNING, message.id, body);
           message.ack();
           break;
 

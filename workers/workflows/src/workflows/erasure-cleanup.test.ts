@@ -1,5 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
-import { eraseSpaceD1Records, eraseSpaceKnowledgeResources } from "./erasure-cleanup.js";
+import { deleteKvPrefix, eraseSpaceD1Records, eraseSpaceKnowledgeResources } from "./erasure-cleanup.js";
+
+describe("KV erasure pagination", () => {
+  it("deletes every page and returns the number of deleted keys", async () => {
+    const list = vi.fn()
+      .mockResolvedValueOnce({ keys: [{ name: "org-a:one" }], list_complete: false, cursor: "next" })
+      .mockResolvedValueOnce({ keys: [{ name: "org-a:two" }], list_complete: true });
+    const remove = vi.fn(async (_name: string) => undefined);
+    await expect(deleteKvPrefix({ list, delete: remove } as never, "org-a:")).resolves.toBe(2);
+    expect(list).toHaveBeenNthCalledWith(1, { prefix: "org-a:" });
+    expect(list).toHaveBeenNthCalledWith(2, { prefix: "org-a:", cursor: "next" });
+    expect(remove.mock.calls.map(([key]) => key)).toEqual(["org-a:one", "org-a:two"]);
+  });
+
+  it.each([undefined, "repeated"])("fails closed for a missing or repeated cursor (%s)", async (cursor) => {
+    const list = vi.fn()
+      .mockResolvedValueOnce({ keys: [], list_complete: false, ...(cursor ? { cursor } : {}) })
+      .mockResolvedValueOnce({ keys: [], list_complete: false, cursor: "repeated" });
+    await expect(deleteKvPrefix({ list, delete: vi.fn() } as never, "org-a:")).rejects.toThrow(/cursor/);
+    expect(list).toHaveBeenCalledTimes(cursor ? 2 : 1);
+  });
+});
 
 describe("space knowledge resource erasure", () => {
   it("uses project-scoped keys, drains all pages, and bounds object/vector batches", async () => {

@@ -5,7 +5,10 @@
 
 // CF Workflows type — the Workflow binding returned by Wrangler
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type WorkflowBinding = { create(opts: { id?: string; params?: any }): Promise<void> };
+export type WorkflowBinding = {
+  create(opts: { id?: string; params?: any }): Promise<void>;
+  get(id: string): Promise<unknown>;
+};
 
 export interface Env {
   ENVIRONMENT: string;

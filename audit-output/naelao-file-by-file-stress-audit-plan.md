@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1996` tracked files; `1790` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the KB ingestion queue refresh.
+Inventory basis: `1996` tracked files; `1790` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the 2026-10-21 queue-dispatch and full-suite review.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -9,6 +9,11 @@ Status: only files with checked boxes have a completed scoped review recorded in
 Use the companion [platform surface inventory](naelao-platform-surface-inventory.md) for the discovered worker manifests, Durable Object declarations, literal API route registrations, and container bindings; confirm these against deployment configuration and indirect dispatch during phase 2.
 
 Review each checklist file with its callers, callees, owning worker, route registration, runtime bindings, and relevant tests. Record reviewer/date, exercised boundary cases, evidence, findings, and disposition in a per-file audit ledger before checking an item. Treat tests as evidence only for the cases they cover. Do not claim “no bugs” from a clean test run.
+
+## Open cross-file findings
+
+- **Organization erasure lifecycle:** the queue consumer accepts `data.erasure`, but no producer or request route was found. `DataErasureWorkflow` suspends an org, waits 24 hours, then permanently deletes data; no cancellation or restoration path was found despite the “reversible window” description. Trace authorization, initiation, cancellation, and suspended-state recovery end to end before describing this feature as usable or reversible.
+- **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 
 ## Work sequence
 
