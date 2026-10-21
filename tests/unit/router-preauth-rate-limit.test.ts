@@ -187,6 +187,24 @@ describe("router — pre-auth rate limiting on /v1/auth/* (builder login/registe
     expect(res.status).toBe(429);
   });
 
+  it("rate limits builder token verification and revocation endpoints", async () => {
+    const { namespace, idFromNameCalls } = makeRateLimitDoNamespace(false);
+    for (const endpoint of ["verify", "revoke"]) {
+      const response = await routerWorker.fetch(
+        new Request(`https://router.naelao.com/v1/auth/${endpoint}`, {
+          method: "POST",
+          headers: { "cf-connecting-ip": "203.0.113.21", authorization: "Bearer invalid" },
+        }),
+        makeEnv(namespace) as never, execCtx
+      );
+      expect(response.status).toBe(429);
+    }
+    expect(idFromNameCalls).toEqual([
+      "preauth:builder-token-verify:203.0.113.21",
+      "preauth:builder-token-revoke:203.0.113.21",
+    ]);
+  });
+
   it("keys builder-login and builder-register in distinct buckets", async () => {
     const { namespace, idFromNameCalls } = makeRateLimitDoNamespace(true);
     await routerWorker.fetch(

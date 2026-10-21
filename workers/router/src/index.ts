@@ -304,6 +304,8 @@ const AUTH_ROUTE_LIMITS: Record<string, [routeKey: string, limit: number]> = {
   register: ["builder-register", 5],
   "request-password-reset": ["builder-reset-request", 5],
   "reset-password": ["builder-reset-confirm", 10],
+  verify: ["builder-token-verify", 30],
+  revoke: ["builder-token-revoke", 10],
 };
 
 // ── Auth routes (forwarded to auth worker) ───────────────────────────────────
