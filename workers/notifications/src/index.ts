@@ -1,7 +1,7 @@
 // G-N01: Notifications worker — email + in-app notification consumer
 import { badRequest, errorResponse, notFound, requestId, mintInternalToken, requireInternalHmac, readBoundedResponseText } from "@naelao/http";
 import { Hono } from "hono";
-import { isSpaceNetworkEgressDenied } from "@naelao/security";
+import { checkSsrf, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { decryptSubscription, deliverWebPush, encryptSubscription, hashEndpoint, validatePushSubscription, type BrowserPushSubscription } from "./web-push.js";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -408,38 +408,6 @@ async function sendBrowserPush(env: NotificationsEnv, msg: NotificationMessage):
   return rows.results.length - stale.length;
 }
 
-// ── SSRF guard (G-AS03) ───────────────────────────────────────────────────────
-// Prevents webhooks targeting internal CF infrastructure or RFC-1918 ranges.
-
-const BLOCKED_HOSTNAME_PATTERNS: RegExp[] = [
-  /^localhost$/i,
-  /^127\.\d+\.\d+\.\d+$/,
-  /^0\.0\.0\.0$/,
-  /^169\.254\.\d+\.\d+$/,
-  /^10\.\d+\.\d+\.\d+$/,
-  /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
-  /^192\.168\.\d+\.\d+$/,
-  /^::1$/,
-];
-
-function validateWebhookUrl(rawUrl: string): { ok: boolean; message?: string } {
-  let u: URL;
-  try {
-    u = new URL(rawUrl);
-  } catch {
-    return { ok: false, message: "Invalid webhook URL" };
-  }
-  if (u.protocol !== "https:" && u.protocol !== "http:") {
-    return { ok: false, message: "Webhook URL must use http or https" };
-  }
-  for (const pattern of BLOCKED_HOSTNAME_PATTERNS) {
-    if (pattern.test(u.hostname)) {
-      return { ok: false, message: `Webhook URL hostname '${u.hostname}' is in a blocked range` };
-    }
-  }
-  return { ok: true };
-}
-
 // ── HMAC helper ───────────────────────────────────────────────────────────────
 
 async function hmacSha256Hex(message: string, secret: string): Promise<string> {
@@ -630,9 +598,9 @@ export async function queue(
           }
 
           // G-AS03: SSRF guard — reject webhooks targeting internal/private ranges
-          const ssrfCheck = validateWebhookUrl(msg.webhookUrl);
-          if (!ssrfCheck.ok) {
-            console.warn(`[notifications/queue] webhook blocked by SSRF guard: ${ssrfCheck.message} url=${msg.webhookUrl}`);
+          const ssrfCheck = await checkSsrf(msg.webhookUrl);
+          if (ssrfCheck.blocked) {
+            console.warn(`[notifications/queue] webhook blocked by SSRF guard: ${ssrfCheck.reason} url=${msg.webhookUrl}`);
             message.ack();
             break;
           }
@@ -647,6 +615,8 @@ export async function queue(
               "X-Naelao-Signature": signature,
             },
             body,
+            redirect: "error",
+            signal: AbortSignal.timeout(10_000),
           });
 
           if (!res.ok) {
