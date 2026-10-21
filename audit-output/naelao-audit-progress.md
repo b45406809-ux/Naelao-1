@@ -2248,6 +2248,8 @@ Continued the Credentials outbound route audit. The Worker already capped inboun
 
 Validation: Credentials full focused suite passed 3 files / 13 tests; Credentials TypeScript and `git diff --check` passed. New boundary cases assert malformed input, invalid headers, GET body, and oversize provider body all stop before outbound fetch. Credential decryption and live provider behavior were not exercised in those malformed-input cases.
 
+The write idempotency key now also requires an actual string instead of accepting a numeric JSON value through regular-expression coercion. The same 13-test Credentials suite passed with this malformed-write case included.
+
 ## Router builder-auth ingress follow-up (2026-10-21)
 
 Traced the public `/v1/auth/*` routes through IP-bucketed pre-auth rate limiting and streaming body forwarding. Login, registration, and reset endpoints were bounded, but authenticated `/verify` and `/revoke` were forwarded without a pre-auth rate budget; both can trigger D1 reads/writes and were exposed to avoidable request amplification. Added separate per-IP limits (30/minute for verify, 10/minute for revoke) and route regressions asserting each uses its own bucket and rejects when the RateLimitDO blocks it. The Wrangler manifest contains the RateLimitDO binding in development, staging, and production; no public request header can select a bucket key other than the edge-provided client IP in deployed Workers.

@@ -53,6 +53,7 @@ describe("credential egress air-gap boundary", () => {
     expect((await send("null")).status).toBe(400);
     expect((await send(JSON.stringify({ credentialName: "gemini", url: "https://example.com", headers: "not-an-object" }))).status).toBe(400);
     expect((await send(JSON.stringify({ credentialName: "gemini", url: "https://example.com", method: "GET", body: "not-allowed" }))).status).toBe(400);
+    expect((await send(JSON.stringify({ credentialName: "gemini", url: "https://example.com", method: "POST", idempotencyKey: 123, body: "write" }))).status).toBe(400);
     expect((await send(JSON.stringify({ credentialName: "gemini", url: "https://example.com", body: "x".repeat(512 * 1024 + 1) }))).status).toBe(413);
     expect(outbound).not.toHaveBeenCalled();
   });

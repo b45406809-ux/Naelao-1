@@ -1166,7 +1166,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
     return c.json({ error_code: "egress_body_method_invalid", message: "GET and HEAD requests cannot include a body" }, 400);
   }
   const isWrite = method !== "GET" && method !== "HEAD";
-  if (isWrite && (!body.idempotencyKey || !/^[A-Za-z0-9._:-]{1,120}$/.test(body.idempotencyKey))) {
+  if (isWrite && (typeof body.idempotencyKey !== "string" || !/^[A-Za-z0-9._:-]{1,120}$/.test(body.idempotencyKey))) {
     return c.json({ error_code: "egress_idempotency_required", message: "A valid idempotency key is required for external changes" }, 400);
   }
   if (isWrite && (!tokenCheck.actorId || !tokenCheck.runId || !tokenCheck.traceId || !tokenCheck.spanId || !tokenCheck.agentId)) {
