@@ -1471,6 +1471,12 @@ Updated tests for the current Telegram contract, which preserves sender identity
 
 Also aligned memory recall assertions to its `{results}` response, added `arrayBuffer()` to the R2 test double used by hash-verified reads, and updated the missing-query assertion to the web-search validator's bounded-query error. These three suites passed 21 tests.
 
+The latest full shared-suite snapshot after scheduler, approval, lock, and spend-cap fixture repairs reports 5,185 passing and 61 failing tests across 49 test files (5,246 total tests; report: `/tmp/naelao-root-vitest-20261021-after-spend-cap.json`). The failure assertion set is 7 lower than the prior 68-failure snapshot. It is still red.
+
+Closed the async lock gateway test contract (awaiting `buildScriptEngineEnv()` and using the current `acquired`/fencing-token reply), long-running approval route identity (owner membership and user headers), and spend-cap harness requirements (model-policy route, byte-accurate CAS R2 fake, alarm methods). The combined focused suites passed 23 tests.
+
+The cross-project workspace-change fixture now supplies required `expectedHash` values and models R2 head/ETag/byte behavior, including a real write before the CAS delete. The file/schedule R2 fake now returns byte buffers for hash-verified ranged reads. Together with the previous three suites, the five focused suites passed 44 tests. This only closes those targeted test modules; the 19 failing shared-suite modules and the wider file-by-file audit remain open.
+
 The next full `tests/vitest.config.ts` run reported 103 failures across 31 files and 706 collected test files. The durable-workflow failures came from preparing effects before journal initialization and using the pure-effect API for externally visible notifications/charges; the harness now initializes a realistic workflow and uses `prepareExternalEffect`, including its exact receipt and usage contract. The durable-workflow suite passed 9 tests. The other 101 failures from that full-run snapshot remain to triage; the suite is still red.
 
 Two additional fixture/API gaps are repaired. The Launchpad provisioning harness now provides the authenticated agent-config lock gateway and a CAS-capable R2 fake (head/ETag/arrayBuffer/conditional PUT), which is required for safe multi-file profile installation. The scheduled-job run-history cap is now exported from the Agents Worker, as its test contract expects. Launchpad profile and scheduled-job history suites passed 10 tests.

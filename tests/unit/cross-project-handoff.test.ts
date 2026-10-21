@@ -12,16 +12,32 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { r2Workspace } from "../../workers/agents/src/script-engine/prebuilt/r2-workspace.js";
+import { sha256Text } from "../../workers/agents/src/script-engine/r2-cas.js";
 import { matchesEvent, type TriggerRule, type EventEnvelope } from "../../packages/events/src/index.js";
 import { seedWebStudioHandoffRules } from "../../workers/provisioner/src/index.js";
 
 function makeR2() {
-  const store = new Map<string, string>();
+  const store = new Map<string, { bytes: Uint8Array; metadata: Record<string, string>; etag: string }>();
+  let revision = 0;
   return {
-    async put(key: string, value: unknown) { store.set(key, String(value)); return {}; },
+    async put(key: string, value: unknown, options?: { customMetadata?: Record<string, string>; onlyIf?: unknown }) {
+      const bytes = typeof value === "string" ? new TextEncoder().encode(value)
+        : value instanceof ArrayBuffer ? new Uint8Array(value)
+        : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+        : new TextEncoder().encode(String(value));
+      const etag = `rev-${++revision}`;
+      store.set(key, { bytes: bytes.slice(), metadata: options?.customMetadata ?? {}, etag });
+      return { etag };
+    },
     async get(key: string) {
       const v = store.get(key);
-      return v === undefined ? null : { text: async () => v, size: v.length };
+      if (!v) return null;
+      const bytes = v.bytes.slice();
+      return { text: async () => new TextDecoder().decode(bytes), size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; } };
+    },
+    async head(key: string) {
+      const v = store.get(key);
+      return v ? { size: v.bytes.byteLength, etag: v.etag, customMetadata: v.metadata } : null;
     },
     async delete(key: string) { store.delete(key); },
     async list() { return { objects: [], truncated: false }; },
@@ -45,21 +61,23 @@ describe("a workspace write announces itself", () => {
   it("reports a write, with the path that changed", async () => {
     const changes: Array<{ path: string; operation: string }> = [];
     const ctx = ctxWith(changes);
-    await r2Workspace.operations["write_file"]!({ path: "leads/acme-cafe.json", content: "{}" }, ctx);
+    await r2Workspace.operations["write_file"]!({ path: "leads/acme-cafe.json", content: "{}", expectedHash: null }, ctx);
     expect(changes).toEqual([{ path: "leads/acme-cafe.json", operation: "write" }]);
   });
 
   it("reports a delete too — removing a job is as much a state change as adding one", async () => {
     const changes: Array<{ path: string; operation: string }> = [];
     const ctx = ctxWith(changes);
-    await r2Workspace.operations["delete_file"]!({ path: "leads/gone.json" }, ctx);
+    await r2Workspace.operations["write_file"]!({ path: "leads/gone.json", content: "{}", expectedHash: null }, ctx);
+    changes.length = 0;
+    await r2Workspace.operations["delete_file"]!({ path: "leads/gone.json", expectedHash: await sha256Text("{}") }, ctx);
     expect(changes).toEqual([{ path: "leads/gone.json", operation: "delete" }]);
   });
 
   it("still writes when nothing is listening", async () => {
     // The hook is absent for a Space Assistant run (no project). A write must not depend on it.
     const ctx = { env: { scriptsBucket: makeR2(), spaceId: "s", agentId: "a", tenantId: "t" } } as never;
-    const res = await r2Workspace.operations["write_file"]!({ path: "notes.txt", content: "hi" }, ctx);
+    const res = await r2Workspace.operations["write_file"]!({ path: "notes.txt", content: "hi", expectedHash: null }, ctx);
     expect((res as { ok: boolean }).ok).toBe(true);
   });
 });

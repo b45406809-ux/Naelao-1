@@ -19,13 +19,17 @@ function makeR2(): R2Bucket {
   const store = new Map<string, string>();
   const bucket = {
     async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
+      const text = typeof value === "string" ? value
+        : value instanceof ArrayBuffer ? new TextDecoder().decode(value)
+        : ArrayBuffer.isView(value) ? new TextDecoder().decode(value as Uint8Array)
+        : String(value);
+      store.set(key, text);
       return {} as R2Object;
     },
     async get(key: string) {
       if (!store.has(key)) return null;
       const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; }, get body() { return text; } } as unknown as R2ObjectBody;
+      return { size: new TextEncoder().encode(text).byteLength, uploaded: new Date(), async text() { return text; }, async arrayBuffer() { return new TextEncoder().encode(text).buffer; }, get body() { return text; } } as unknown as R2ObjectBody;
     },
     async head(key: string) {
       return store.has(key) ? ({} as R2Object) : null;
@@ -64,6 +68,7 @@ function makeSpacesWorker(project: { execution_ceiling: number; daily_spend_cap_
       if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) {
         return Response.json(project);
       }
+      if (/^\/internal\/spaces\/[^/]+\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
       if (url.pathname === "/internal/pricing-catalog") return Response.json({ external_revenue_cut: { enabled: false } });
       if (url.pathname === "/internal/business-subscription-status") return Response.json({ gated: false, active: true, reason: "" });
       return new Response("not found", { status: 404 });
@@ -74,7 +79,7 @@ function makeSpacesWorker(project: { execution_ceiling: number; daily_spend_cap_
 
 async function makeDO(project: { execution_ceiling: number; daily_spend_cap_credits: number }) {
   const r2 = makeR2();
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: { sql: createDOSqlStorage(), async setAlarm() {}, async deleteAlarm() {} } };
   const { fetcher: spacesWorker, spend } = makeSpacesWorker(project);
   const env = {
     PLATFORM_SECRET: "test",
@@ -139,7 +144,7 @@ describe("NaelaoAgentDO /script/run — customer-bot daily spend cap", () => {
 
   it("fails CLOSED (429) when the SpaceDO spend endpoint is unreachable — never fails open", async () => {
     const r2 = makeR2();
-    const ctx = { storage: { sql: createDOSqlStorage() } };
+    const ctx = { storage: { sql: createDOSqlStorage(), async setAlarm() {}, async deleteAlarm() {} } };
     const env = {
       PLATFORM_SECRET: "test",
       KNOWLEDGE_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher,
@@ -150,6 +155,7 @@ describe("NaelaoAgentDO /script/run — customer-bot daily spend cap", () => {
           if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) {
             return Response.json({ execution_ceiling: 2, daily_spend_cap_credits: 100 });
           }
+          if (/^\/internal\/spaces\/[^/]+\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
           if (url.pathname === "/internal/pricing-catalog") return Response.json({ external_revenue_cut: { enabled: false } });
           if (url.pathname === "/internal/business-subscription-status") return Response.json({ gated: false, active: true, reason: "" });
           return new Response("not found", { status: 404 });

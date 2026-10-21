@@ -23,13 +23,13 @@ function makeDO(env: Record<string, unknown>): NaelaoAgentDO {
 }
 
 type LockGatewayAccess = {
-  buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string): { lockGateway?: { acquire: (p: { key: string; holderId: string; limit?: number }) => Promise<{ granted: boolean }> } } | null;
+  buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string): Promise<{ lockGateway?: { acquire: (p: { key: string; holderId: string; limit?: number }) => Promise<{ granted: boolean }> } } | null>;
 };
 
 describe("S0.4 — lock prebuilt fails CLOSED when ConcurrencyDO is unavailable", () => {
   it("denies the lock when CONCURRENCY_DO is not bound at all", async () => {
     const spaceDO = makeDO({ SCRIPTS_R2: {} as unknown as R2Bucket, PLATFORM_SECRET: "test" });
-    const engineEnv = (spaceDO as unknown as LockGatewayAccess).buildScriptEngineEnv("space1", "naelao-agent", "tenant1");
+    const engineEnv = await (spaceDO as unknown as LockGatewayAccess).buildScriptEngineEnv("space1", "naelao-agent", "tenant1");
     expect(engineEnv?.lockGateway).toBeTruthy();
     const result = await engineEnv!.lockGateway!.acquire({ key: "ledger.csv", holderId: "thread-a" });
     expect(result.granted).toBe(false);
@@ -41,7 +41,7 @@ describe("S0.4 — lock prebuilt fails CLOSED when ConcurrencyDO is unavailable"
       get: () => ({ fetch: async () => { throw new Error("network down"); } }),
     };
     const spaceDO = makeDO({ SCRIPTS_R2: {} as unknown as R2Bucket, PLATFORM_SECRET: "test", CONCURRENCY_DO: throwingConcurrencyDO });
-    const engineEnv = (spaceDO as unknown as LockGatewayAccess).buildScriptEngineEnv("space1", "naelao-agent", "tenant1");
+    const engineEnv = await (spaceDO as unknown as LockGatewayAccess).buildScriptEngineEnv("space1", "naelao-agent", "tenant1");
     const result = await engineEnv!.lockGateway!.acquire({ key: "ledger.csv", holderId: "thread-a" });
     expect(result.granted).toBe(false);
   });
@@ -49,10 +49,10 @@ describe("S0.4 — lock prebuilt fails CLOSED when ConcurrencyDO is unavailable"
   it("still grants normally when ConcurrencyDO is healthy", async () => {
     const healthyConcurrencyDO = {
       idFromName: (name: string) => ({ toString: () => name }),
-      get: () => ({ fetch: async () => Response.json({ granted: true, active: 1, limit: 1 }) }),
+      get: () => ({ fetch: async () => Response.json({ acquired: true, fencingToken: 1 }) }),
     };
     const spaceDO = makeDO({ SCRIPTS_R2: {} as unknown as R2Bucket, PLATFORM_SECRET: "test", CONCURRENCY_DO: healthyConcurrencyDO });
-    const engineEnv = (spaceDO as unknown as LockGatewayAccess).buildScriptEngineEnv("space1", "naelao-agent", "tenant1");
+    const engineEnv = await (spaceDO as unknown as LockGatewayAccess).buildScriptEngineEnv("space1", "naelao-agent", "tenant1");
     const result = await engineEnv!.lockGateway!.acquire({ key: "ledger.csv", holderId: "thread-a" });
     expect(result.granted).toBe(true);
   });

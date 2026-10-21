@@ -16,7 +16,8 @@ function makeR2(initial: Record<string, string> = {}): R2Bucket {
       const full = store.get(key)!;
       const r = opts?.range;
       const text = r ? full.slice(r.offset, r.offset + r.length) : full;
-      return { size: full.length, uploaded: new Date("2026-01-01T00:00:00Z"), async text() { return text; } } as unknown as R2ObjectBody;
+      const bytes = new TextEncoder().encode(text);
+      return { size: new TextEncoder().encode(full).byteLength, uploaded: new Date("2026-01-01T00:00:00Z"), async text() { return text; }, async arrayBuffer() { return bytes.buffer; } } as unknown as R2ObjectBody;
     },
     async head(key: string) {
       if (!store.has(key)) return null;

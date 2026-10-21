@@ -26,7 +26,7 @@ function makeEnv(): AgentsEnv {
   // never from a downstream failure dressed up as a rejection.
   const okStmt = {
     bind() { return okStmt; },
-    async first() { return { id: "space-1", tenant_id: TENANT, config_json: "{}" }; },
+    async first() { return { id: "space-1", tenant_id: TENANT, config_json: "{}", role: "owner" }; },
     async all() { return { results: [] }; },
     async run() { return { meta: { changes: 1 } }; },
   };
@@ -77,6 +77,7 @@ describe("approvals routes are not reachable by anyone who can guess a space id"
             "x-naelao-tenant-id": TENANT,
             "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT),
             "content-type": "application/json",
+            ...(method === "PUT" ? { "x-naelao-user-id": "owner-1", "x-naelao-role": "owner" } : {}),
           },
           ...(method === "PUT" ? { body: "{}" } : {}),
         }),
