@@ -814,6 +814,15 @@ const handleSpaceMembers = async (c: Context<{ Bindings: Env }>) => {
     return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
   }
 
+  let activeSpace: { id: string } | null;
+  try {
+    activeSpace = await c.env.PLATFORM_DB.prepare(`SELECT s.id FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`).bind(spaceId, tenantId).first<{ id: string }>();
+  } catch {
+    return c.json({ error_code: "tenant_status_unavailable" }, 503);
+  }
+  if (!activeSpace) return c.json({ error_code: "tenant_suspended" }, 403);
+
   const doId = c.env.SPACE_DO.idFromName(
     await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET)
   );
