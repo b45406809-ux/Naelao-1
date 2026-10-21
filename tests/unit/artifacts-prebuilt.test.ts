@@ -6,15 +6,15 @@ import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/typ
 // through the (previously orphaned, now hardened) artifact worker's real /spaces/:spaceId/
 // artifacts contract via a direct service binding.
 
-function fakeArtifactWorker(): { fetcher: Fetcher; calls: Array<{ method: string; path: string; body?: unknown }> } {
-  const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+function fakeArtifactWorker(): { fetcher: Fetcher; calls: Array<{ method: string; path: string; query: string; body?: unknown }> } {
+  const calls: Array<{ method: string; path: string; query: string; body?: unknown }> = [];
   const store = new Map<string, { filename: string; content: string; content_type: string }>();
   const fetcher: Fetcher = {
     fetch: async (input: RequestInfo) => {
       const req = input as Request;
       const url = new URL(req.url);
       const body = req.method !== "GET" && req.method !== "DELETE" ? await req.clone().json().catch(() => undefined) : undefined;
-      calls.push({ method: req.method, path: url.pathname, body });
+      calls.push({ method: req.method, path: url.pathname, query: url.search, body });
 
       if (req.method === "POST" && url.pathname === "/spaces/space1/artifacts") {
         const b = body as { filename: string; content: string; content_type?: string };
@@ -32,7 +32,7 @@ function fakeArtifactWorker(): { fetcher: Fetcher; calls: Array<{ method: string
         const id = url.pathname.split("/").pop()!;
         const found = store.get(id);
         if (!found) return new Response(JSON.stringify({ error_code: "not_found" }), { status: 404 });
-        return new Response(found.content, { headers: { "content-type": found.content_type, "x-artifact-filename": found.filename } });
+        return new Response(found.content, { headers: { "content-type": found.content_type, "x-artifact-filename": encodeURIComponent(found.filename) } });
       }
       if (req.method === "DELETE" && url.pathname.startsWith("/spaces/space1/artifacts/")) {
         const id = url.pathname.split("/").pop()!;
@@ -92,6 +92,13 @@ describe("artifacts prebuilt — real route contract", () => {
     expect(result.count).toBe(1);
   });
 
+  it("artifacts.list forwards a bounded-page cursor to the artifact worker", async () => {
+    const { fetcher, calls } = fakeArtifactWorker();
+    const ctx = ctxWith(fetcher);
+    await artifacts.operations["artifacts.list"]!({ limit: 25, cursor: "opaque-page-2" }, ctx);
+    expect(calls[0]).toMatchObject({ method: "GET", query: "?limit=25&cursor=opaque-page-2" });
+  });
+
   it("artifacts.get returns real text content for a text artifact", async () => {
     const { fetcher } = fakeArtifactWorker();
     const ctx = ctxWith(fetcher);
@@ -102,6 +109,17 @@ describe("artifacts prebuilt — real route contract", () => {
     const result = (await artifacts.operations["artifacts.get"]!({ artifact_id: created.artifact_id }, ctx)) as { content: string; filename: string };
     expect(result.content).toBe("# hi");
     expect(result.filename).toBe("notes.md");
+  });
+
+  it("decodes the RFC3986 artifact filename header without corrupting Unicode names", async () => {
+    const { fetcher } = fakeArtifactWorker();
+    const ctx = ctxWith(fetcher);
+    const created = (await artifacts.operations["artifacts.create"]!(
+      { filename: "caf\u00e9.html", content: "<h1>hi</h1>", content_type: "text/html" },
+      ctx,
+    )) as { artifact_id: string };
+    const result = (await artifacts.operations["artifacts.get"]!({ artifact_id: created.artifact_id }, ctx)) as { filename: string };
+    expect(result.filename).toBe("caf\u00e9.html");
   });
 
   it("artifacts.get requires an artifact_id", async () => {

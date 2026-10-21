@@ -42,7 +42,7 @@ import {
   listWorkspaceFiles,
   readAssistantFile,
   readWorkspaceFile,
-  listArtifacts,
+  listArtifactsPage,
   getArtifact,
   deleteArtifact,
   getAssistantCapabilities,
@@ -1291,6 +1291,8 @@ function FilesPanel({ spaceId, projectId, session }: { spaceId: string; projectI
 // doesn't have, since an artifact is something the person is actively managing, not just browsing.
 function ArtifactsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
   const [items, setItems] = React.useState<ArtifactSummary[] | null>(null);
+  const [nextCursor, setNextCursor] = React.useState<string | undefined>();
+  const [loadingMore, setLoadingMore] = React.useState(false);
   const [open, setOpen] = React.useState<ArtifactContent | null>(null);
   const [opening, setOpening] = React.useState<string | null>(null);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
@@ -1298,12 +1300,29 @@ function ArtifactsPanel({ spaceId, session }: { spaceId: string; session: Sessio
   React.useEffect(() => {
     let cancelled = false;
     setOpen(null);
-    listArtifacts(spaceId, session).then((r) => { if (!cancelled) setItems(r); }).catch(() => { if (!cancelled) setItems([]); });
+    listArtifactsPage(spaceId, session).then((page) => {
+      if (!cancelled) { setItems(page.data); setNextCursor(page.next_cursor); }
+    }).catch(() => { if (!cancelled) { setItems([]); setNextCursor(undefined); } });
     return () => { cancelled = true; };
   }, [spaceId, session]);
 
   function load() {
-    listArtifacts(spaceId, session).then(setItems).catch(() => setItems([]));
+    listArtifactsPage(spaceId, session).then((page) => { setItems(page.data); setNextCursor(page.next_cursor); })
+      .catch(() => { setItems([]); setNextCursor(undefined); });
+  }
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await listArtifactsPage(spaceId, session, { cursor: nextCursor });
+      setItems((current) => [...(current ?? []), ...page.data]);
+      setNextCursor(page.next_cursor);
+    } catch {
+      // Keep the continuation cursor so the person can retry.
+    } finally {
+      setLoadingMore(false);
+    }
   }
 
   async function openArtifact(id: string) {
@@ -1360,6 +1379,11 @@ function ArtifactsPanel({ spaceId, session }: { spaceId: string; session: Sessio
             </button>
           </div>
         ))
+      )}
+      {nextCursor && (
+        <button type="button" onClick={loadMore} disabled={loadingMore} style={{ margin: "6px 14px", fontSize: 11 }}>
+          {loadingMore ? "Loading…" : "Load more artifacts"}
+        </button>
       )}
       {open && (
         <div style={{ margin: "8px 14px", padding: 10, border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface2)" }}>

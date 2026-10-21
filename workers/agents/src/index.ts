@@ -8490,8 +8490,9 @@ app.get("/spaces/:spaceId/assistant/artifacts", async (c) => {
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
   if (!c.env.ARTIFACT_WORKER) return c.json({ error_code: "unavailable", message: "Artifact storage not bound" }, 503);
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const query = new URL(c.req.url).search;
   const resp = await c.env.ARTIFACT_WORKER.fetch(
-    new Request(`http://artifact-worker/spaces/${spaceId}/artifacts`, {
+    new Request(`http://artifact-worker/spaces/${spaceId}/artifacts${query}`, {
       headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
     })
   );
@@ -8524,7 +8525,9 @@ app.get("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {
     return c.json({ error_code: resp.status === 404 ? "not_found" : "upstream_error", message: body || `artifact worker returned ${resp.status}` }, resp.status as 404 | 500);
   }
   const contentType = resp.headers.get("content-type") ?? "application/octet-stream";
-  const filename = resp.headers.get("x-artifact-filename") ?? "";
+  const encodedFilename = resp.headers.get("x-artifact-filename") ?? "";
+  let filename = encodedFilename;
+  try { filename = decodeURIComponent(encodedFilename); } catch { /* retain the safe encoded form */ }
   const isText = /^text\/|json|xml/.test(contentType);
   if (!isText) {
     return c.json({ artifact_id: artifactId, filename, content_type: contentType, binary: true });

@@ -33,7 +33,7 @@ export const artifacts: PrebuiltScript = {
   requires_tier: 1,
   paramHints: {
     "artifacts.create": "{filename: string, content: string, content_type?: string} — content_type defaults to 'text/plain'; use 'text/html' for a page, 'text/markdown' for a report.",
-    "artifacts.list": "{} — no arguments.",
+    "artifacts.list": "{limit?:1..200, cursor?:next_cursor} — returns one bounded page; pass next_cursor to continue.",
     "artifacts.get": "{artifact_id: string} — the id returned by artifacts.create or artifacts.list.",
     "artifacts.delete": "{artifact_id: string}",
   },
@@ -58,9 +58,13 @@ export const artifacts: PrebuiltScript = {
       return await readBoundedResponseJson(resp, 2 * 1024 * 1024);
     },
 
-    async "artifacts.list"(_args, ctx) {
+    async "artifacts.list"(args, ctx) {
+      const query = new URLSearchParams();
+      if (args["limit"] !== undefined) query.set("limit", String(args["limit"]));
+      if (typeof args["cursor"] === "string") query.set("cursor", args["cursor"]);
+      const suffix = query.toString();
       const resp = await reqWorker(ctx).fetch(
-        new Request(`http://artifact-worker/spaces/${ctx.env.spaceId}/artifacts`, {
+        new Request(`http://artifact-worker/spaces/${ctx.env.spaceId}/artifacts${suffix ? `?${suffix}` : ""}`, {
           headers: await internalHeaders(ctx),
         })
       );
@@ -78,7 +82,9 @@ export const artifacts: PrebuiltScript = {
       );
       if (!resp.ok) throw new Error(`artifacts.get failed: ${resp.status}`);
       const contentType = resp.headers.get("content-type") ?? "application/octet-stream";
-      const filename = resp.headers.get("x-artifact-filename") ?? "";
+      const encodedFilename = resp.headers.get("x-artifact-filename") ?? "";
+      let filename = encodedFilename;
+      try { filename = decodeURIComponent(encodedFilename); } catch { /* keep the safe encoded name */ }
       // Text content types come back readable; anything else reports metadata only (a script's
       // own return value is JSON — raw binary bytes have nowhere useful to go in this contract).
       if (/^text\/|json|xml/.test(contentType)) {

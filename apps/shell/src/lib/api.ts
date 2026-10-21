@@ -2221,9 +2221,25 @@ export interface ArtifactContent {
   too_large?: boolean;
   binary?: boolean;
 }
+export interface ArtifactListPage {
+  data: ArtifactSummary[];
+  count: number;
+  has_more: boolean;
+  next_cursor?: string;
+}
+export async function listArtifactsPage(
+  spaceId: string,
+  session: SessionCredentials,
+  options: { limit?: number; cursor?: string } = {},
+): Promise<ArtifactListPage> {
+  const query = new URLSearchParams();
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.cursor) query.set("cursor", options.cursor);
+  const suffix = query.toString();
+  return apiFetch<ArtifactListPage>(`/v1/spaces/${spaceId}/assistant/artifacts${suffix ? `?${suffix}` : ""}`, { session });
+}
 export async function listArtifacts(spaceId: string, session: SessionCredentials): Promise<ArtifactSummary[]> {
-  const res = await apiFetch<{ data: ArtifactSummary[] }>(`/v1/spaces/${spaceId}/assistant/artifacts`, { session });
-  return res.data;
+  return (await listArtifactsPage(spaceId, session)).data;
 }
 export async function getArtifact(spaceId: string, artifactId: string, session: SessionCredentials): Promise<ArtifactContent> {
   return apiFetch(`/v1/spaces/${spaceId}/assistant/artifacts/${encodeURIComponent(artifactId)}`, { session });

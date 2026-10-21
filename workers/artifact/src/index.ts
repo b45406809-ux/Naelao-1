@@ -289,6 +289,12 @@ app.get("/spaces/:spaceId/artifacts", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
   const prefix = buildR2Prefix(tenantId, spaceId);
+  const rawLimit = c.req.query("limit");
+  const parsedLimit = rawLimit === undefined ? 100 : Number(rawLimit);
+  if (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 200) throw badRequest("limit must be an integer from 1 to 200");
+  const limit = parsedLimit;
+  const cursor = c.req.query("cursor");
+  if (cursor !== undefined && (!cursor || cursor.length > 2048)) throw badRequest("cursor must contain at most 2048 characters");
   const items: Array<{
     artifact_id: string;
     filename: string;
@@ -296,32 +302,25 @@ app.get("/spaces/:spaceId/artifacts", async (c) => {
     size: number;
     uploaded: string;
   }> = [];
-  let cursor: string | undefined;
-  do {
-    const listed = await c.env.ARTIFACT_BUCKET.list({
-      prefix,
-      ...(cursor ? { cursor } : {}),
-      limit: 200,
+  const listed = await c.env.ARTIFACT_BUCKET.list({ prefix, limit, ...(cursor ? { cursor } : {}) });
+  for (const o of listed.objects) {
+    const rest = o.key.slice(prefix.length); // {artifactId}/{filename}
+    const slash = rest.indexOf("/");
+    const artifactId = slash === -1 ? rest : rest.slice(0, slash);
+    const filename = slash === -1 ? "" : rest.slice(slash + 1);
+    items.push({
+      artifact_id: artifactId,
+      filename,
+      content_type:
+        o.customMetadata?.["content_type"] ??
+        o.httpMetadata?.contentType ??
+        "application/octet-stream",
+      size: o.size,
+      uploaded: o.uploaded.toISOString(),
     });
-    for (const o of listed.objects) {
-      const rest = o.key.slice(prefix.length); // {artifactId}/{filename}
-      const slash = rest.indexOf("/");
-      const artifactId = slash === -1 ? rest : rest.slice(0, slash);
-      const filename = slash === -1 ? "" : rest.slice(slash + 1);
-      items.push({
-        artifact_id: artifactId,
-        filename,
-        content_type:
-          o.customMetadata?.["content_type"] ??
-          o.httpMetadata?.contentType ??
-          "application/octet-stream",
-        size: o.size,
-        uploaded: o.uploaded.toISOString(),
-      });
-    }
-    cursor = listed.truncated ? listed.cursor : undefined;
-  } while (cursor && items.length < 500);
-  return c.json({ data: items, count: items.length });
+  }
+  if (listed.truncated && !listed.cursor) return c.json({ error_code: "artifact_pagination_unavailable" }, 503);
+  return c.json({ data: items, count: items.length, has_more: listed.truncated, ...(listed.truncated ? { next_cursor: listed.cursor } : {}) });
 });
 
 // GET /spaces/:spaceId/artifacts/:artifactId — download/preview one artifact.
@@ -342,13 +341,20 @@ app.get("/spaces/:spaceId/artifacts/:artifactId", async (c) => {
     object.customMetadata?.["content_type"] ??
     object.httpMetadata?.contentType ??
     "application/octet-stream";
+  const filename = firstObject.key.slice(prefix.length);
+  const encodedFilename = encodeURIComponent(filename).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 
   return new Response(object.body, {
     headers: {
       "Content-Type": mimeType,
-      "Cache-Control": "private, max-age=3600",
+      "Content-Disposition": `attachment; filename="artifact"; filename*=UTF-8''${encodedFilename}`,
+      "Content-Security-Policy": "sandbox; default-src 'none'; object-src 'none'; base-uri 'none'",
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "private, no-store",
       "X-Artifact-Id": artifactId,
-      "X-Artifact-Filename": firstObject.key.slice(prefix.length),
+      // Headers are byte strings; RFC3986 encoding preserves arbitrary Unicode names without
+      // turning control characters into a header-injection vector.
+      "X-Artifact-Filename": encodedFilename,
     },
   });
 });

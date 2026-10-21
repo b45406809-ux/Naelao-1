@@ -197,18 +197,21 @@ describe("GET /spaces/:spaceId/assistant/files/* — per-file content read", () 
 // service binding, minting the exact internal token that worker's own requireInternalHmac gate
 // requires. Business-membership gating is identical to every other assistant surface route above.
 describe("GET/DELETE /spaces/:spaceId/assistant/artifacts[/*] — artifact worker proxy", () => {
-  function makeArtifactEnv(opts: { spacesOk: boolean; withArtifactWorker?: boolean }): AgentsEnv {
+  function makeArtifactEnv(opts: { spacesOk: boolean; withArtifactWorker?: boolean }): AgentsEnv & { artifactListQueries: string[] } {
     const { agentDoStub } = makeAgentDoStub();
     const store = new Map<string, { filename: string; content: string; content_type: string }>();
+    const artifactListQueries: string[] = [];
     store.set("art-1", { filename: "report.html", content: "<h1>hi</h1>", content_type: "text/html" });
     const artifactFetcher: Fetcher = {
       fetch: async (input: RequestInfo) => {
         const r = input as Request;
         const url = new URL(r.url);
         if (r.method === "GET" && url.pathname === "/spaces/space1/artifacts") {
+          artifactListQueries.push(url.search);
           return Response.json({
             data: [...store.entries()].map(([id, v]) => ({ artifact_id: id, filename: v.filename, content_type: v.content_type, size: v.content.length, uploaded: "2026-01-01" })),
             count: store.size,
+            has_more: false,
           });
         }
         if (r.method === "GET" && url.pathname.startsWith("/spaces/space1/artifacts/")) {
@@ -231,8 +234,9 @@ describe("GET/DELETE /spaces/:spaceId/assistant/artifacts[/*] — artifact worke
       NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },
       SPACES_WORKER: makeSpacesWorkerStub(opts.spacesOk),
       ...(opts.withArtifactWorker !== false ? { ARTIFACT_WORKER: artifactFetcher } : {}),
+      artifactListQueries,
       ANALYTICS: { writeDataPoint() {} },
-    } as unknown as AgentsEnv;
+    } as unknown as AgentsEnv & { artifactListQueries: string[] };
   }
 
   it("lists real artifacts from the artifact worker", async () => {
@@ -242,6 +246,13 @@ describe("GET/DELETE /spaces/:spaceId/assistant/artifacts[/*] — artifact worke
     const body = (await res.json()) as { data: Array<{ artifact_id: string }>; count: number };
     expect(body.count).toBe(1);
     expect(body.data[0]!.artifact_id).toBe("art-1");
+  });
+
+  it("forwards list pagination arguments through the authenticated assistant proxy", async () => {
+    const env = makeArtifactEnv({ spacesOk: true });
+    const res = await app.fetch(await req("/spaces/space1/assistant/artifacts?limit=25&cursor=opaque-page", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
+    expect(res.status).toBe(200);
+    expect(env.artifactListQueries).toEqual(["?limit=25&cursor=opaque-page"]);
   });
 
   it("fetches real artifact content, JSON-wrapped (matching the Files viewer's own contract)", async () => {
