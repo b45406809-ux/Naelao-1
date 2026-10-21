@@ -64,17 +64,18 @@ describe("data erasure D1 records", () => {
   });
 
   it("clears credentials and login metadata while anonymizing only the target org", async () => {
-    const db = createFakeD1([
-      migration("0001_users.sql"),
-      "ALTER TABLE users ADD COLUMN preferred_language TEXT;",
-    ]);
+    const db = createFakeD1(platformMigrations);
     db.db.prepare("INSERT INTO users (id, email, password_hash, org_id, preferred_language, last_login_at) VALUES (?, ?, ?, ?, ?, ?)")
       .run("user-a", "person@example.com", "credential-hash", "org-a", "en", "2026-01-01");
     db.db.prepare("INSERT INTO users (id, email, password_hash, org_id) VALUES (?, ?, ?, ?)")
       .run("user-b", "other@example.com", "other-hash", "org-b");
+    db.db.prepare("INSERT INTO builder_password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)")
+      .run("reset-a", "user-a", "reset-hash", "2026-12-01");
 
     await anonymizeOrgUsers(db as never, "org-a");
 
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM builder_password_reset_tokens WHERE user_id = ?").get("user-a"))
+      .toEqual({ count: 0 });
     expect(db.db.prepare("SELECT email, password_hash, preferred_language, last_login_at, status, org_id FROM users WHERE id = ?")
       .get("user-a")).toEqual({
       email: "erased-user-a@deleted.invalid", password_hash: null,
@@ -101,6 +102,12 @@ describe("data erasure D1 records", () => {
       .run("order-a", "space-a", "org-a", "buyer@example.com", "Buyer Name", "provider-order-a");
     db.db.prepare("INSERT INTO product_end_users (product_space_id, end_user_id, email, display_name) VALUES (?, ?, ?, ?)")
       .run("space-a", "end-user-a", "end-user@example.com", "End User");
+    db.db.prepare("INSERT INTO password_reset_tokens (id, product_space_id, end_user_id, token_hash, expires_at) VALUES (?, ?, ?, ?, ?)")
+      .run("reset-a", "space-a", "end-user-a", "hash-a", "2026-12-01");
+    db.db.prepare("INSERT INTO email_verification_tokens (id, product_space_id, end_user_id, token_hash, expires_at) VALUES (?, ?, ?, ?, ?)")
+      .run("verify-a", "space-a", "end-user-a", "hash-b", "2026-12-01");
+    db.db.prepare("INSERT INTO builder_password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)")
+      .run("builder-reset-a", "user-a", "hash-c", "2026-12-01");
     db.db.prepare("INSERT INTO business_invites (id, business_space_id, product_space_id, email, token_hash, invited_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("invite-a", "space-a", "space-a", "invitee@example.com", "token-hash", "user-a", "2026-12-01");
     db.db.prepare("INSERT INTO gdpr_requests (id, tenant_id, request_type, subject_type, subject_id, subject_email, requested_by) VALUES (?, ?, ?, ?, ?, ?, ?)")
@@ -120,6 +127,12 @@ describe("data erasure D1 records", () => {
     expect(db.db.prepare("SELECT customer_email, customer_name, ls_order_id, gross_cents FROM launchpad_orders WHERE id = ?").get("order-a"))
       .toEqual({ customer_email: "erased@deleted.invalid", customer_name: null, ls_order_id: null, gross_cents: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM product_end_users WHERE product_space_id = ?").get("space-a"))
+      .toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM password_reset_tokens WHERE product_space_id = ?").get("space-a"))
+      .toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM email_verification_tokens WHERE product_space_id = ?").get("space-a"))
+      .toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM builder_password_reset_tokens WHERE user_id = ?").get("user-a"))
       .toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM business_invites WHERE business_space_id = ?").get("space-a"))
       .toEqual({ count: 0 });

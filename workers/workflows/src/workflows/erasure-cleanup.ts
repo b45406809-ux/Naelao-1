@@ -65,6 +65,8 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM business_memberships WHERE business_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?) OR product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId, orgId),
     db.prepare("DELETE FROM business_invites WHERE business_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?) OR product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId, orgId),
+    db.prepare("DELETE FROM password_reset_tokens WHERE product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
+    db.prepare("DELETE FROM email_verification_tokens WHERE product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM product_end_users WHERE product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM notifications WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM web_push_subscriptions WHERE tenant_id = ?").bind(orgId),
@@ -86,6 +88,9 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
 }
 
 export async function anonymizeOrgUsers(db: D1Database, orgId: string): Promise<void> {
+  await db.prepare(
+    "DELETE FROM builder_password_reset_tokens WHERE user_id IN (SELECT id FROM users WHERE org_id = ?)",
+  ).bind(orgId).run();
   await db.prepare(
     `UPDATE users
      SET email = 'erased-' || id || '@deleted.invalid', password_hash = NULL,
