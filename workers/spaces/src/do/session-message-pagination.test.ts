@@ -37,7 +37,7 @@ describe("session message pagination under long transcripts", () => {
       "tenant-a"
     );
     const content = "x".repeat(100_000);
-    for (let i = 1; i <= 20; i++) {
+    for (let i = 1; i <= 200; i++) {
       storage.sql.exec(
         "INSERT INTO messages(id,session_id,role,content,created_at) VALUES(?,?,?,?,?)",
         `large-${i}`,
@@ -57,15 +57,15 @@ describe("session message pagination under long transcripts", () => {
       expect(new TextEncoder().encode(serialized).byteLength).toBeLessThanOrEqual(1024 * 1024);
       return JSON.parse(serialized) as {
         data: Array<{ id: string }>;
-        total_count: number;
+      total_count: number;
         total_content_chars: number;
         has_more: boolean;
         next_before_id: string | null;
       };
     };
     const newest = await requestPage();
-    expect(newest.data.length).toBeLessThan(20);
-    expect(newest).toMatchObject({ total_count: 20, total_content_chars: 2_000_000, has_more: true });
+    expect(newest.data.length).toBeLessThan(200);
+    expect(newest).toMatchObject({ total_count: 200, total_content_chars: 20_000_000, has_more: true });
     expect(newest.next_before_id).toBe(newest.data[0]?.id);
     const oldestShown = Number(newest.data[0]?.id.replace("large-", ""));
     const older = await requestPage(newest.next_before_id ?? undefined);

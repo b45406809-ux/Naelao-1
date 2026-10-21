@@ -4956,17 +4956,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       next_before_id: hasMore ? data[0]?.id ?? null : null,
     });
     // A row-count limit alone permits a 500-row page to serialize tens of MiB when messages are
-    // near their individual content ceiling. Keep the actual JSON response below 1 MiB and make
-    // byte-trimming explicit so bounded readers can continue from the exact oldest returned row.
-    let body = responseBody();
-    let serialized = JSON.stringify(body);
-    while (new TextEncoder().encode(serialized).byteLength > 1024 * 1024 && data.length > 1) {
-      data = data.slice(1);
-      hasMore = true;
-      body = responseBody();
-      serialized = JSON.stringify(body);
+    // near their individual content ceiling. Measure a contiguous newest suffix once instead of
+    // repeatedly serializing the whole oversized page after dropping one row at a time.
+    const encoder = new TextEncoder();
+    const maxResponseBytes = 1024 * 1024;
+    const maxRowsBytes = maxResponseBytes - 1024; // reserve space for the response envelope
+    let selectedStart = data.length;
+    let selectedBytes = 0;
+    for (let i = data.length - 1; i >= 0; i--) {
+      const rowBytes = encoder.encode(JSON.stringify(data[i])).byteLength;
+      const separatorBytes = selectedStart < data.length ? 1 : 0;
+      if (selectedBytes + rowBytes + separatorBytes > maxRowsBytes) break;
+      selectedBytes += rowBytes + separatorBytes;
+      selectedStart = i;
     }
-    if (new TextEncoder().encode(serialized).byteLength > 1024 * 1024) {
+    if (data.length > 0 && selectedStart === data.length) {
+      return Response.json({ error_code: "message_response_too_large" }, { status: 500 });
+    }
+    if (selectedStart > 0) {
+      data = data.slice(selectedStart);
+      hasMore = true;
+    }
+    const body = responseBody();
+    const serialized = JSON.stringify(body);
+    if (encoder.encode(serialized).byteLength > maxResponseBytes) {
       return Response.json({ error_code: "message_response_too_large" }, { status: 500 });
     }
     return new Response(serialized, { headers: { "content-type": "application/json; charset=utf-8" } });
