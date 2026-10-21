@@ -96,10 +96,11 @@ describe("space D1 erasure", () => {
     expect(statements).toContain("DELETE FROM space_credentials WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM mcp_servers WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM webhook_subscriptions WHERE space_id = ?");
-    expect(statements).toHaveLength(56);
+    expect(statements).toHaveLength(57);
     expect(statements).toContain("DELETE FROM fde_graduations WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM llm_token_reservations WHERE space_id = ?");
     expect(statements).toContain("DELETE FROM launchpad_products WHERE space_id = ?");
+    expect(statements).toContain("DELETE FROM workflow_budget_reservations WHERE space_id = ?");
   });
 });
 

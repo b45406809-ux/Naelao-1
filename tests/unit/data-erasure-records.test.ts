@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { anonymizeOrgUsers, eraseOrgOperationalRecords, eraseSpaceD1Records } from "../../workers/workflows/src/workflows/erasure-cleanup.js";
+import { anonymizeOrgUsers, eraseOrgOperationalRecords, eraseSpaceD1Records, SPACE_ERASURE_TABLES } from "../../workers/workflows/src/workflows/erasure-cleanup.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 const migration = (name: string) => readFileSync(join(__dirname, `../../infra/migrations/${name}`), "utf8");
@@ -9,6 +9,23 @@ const platformMigrations = readdirSync(join(__dirname, "../../infra/migrations")
   .filter((name) => /^\d+.*\.sql$/.test(name)).sort().map(migration);
 
 describe("data erasure D1 records", () => {
+  it("classifies every live space-scoped table as deleted or deliberately retained", async () => {
+    const db = createFakeD1(platformMigrations);
+    const retainedOrSeparatelyHandled = new Set([
+      "developer_earnings_ledger", "launchpad_orders", "platform_provenance", "template_subscriptions",
+      "usage_events", "wallet_transactions", "whop_payout_requests", "whop_sub_merchants",
+    ]);
+    const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
+    const scoped = new Set<string>();
+    for (const { name } of tables) {
+      const columns = await db.prepare(`PRAGMA table_info(${JSON.stringify(name)})`).all<{ name: string }>();
+      if (columns.results.some((column) => column.name === "space_id")) scoped.add(name);
+    }
+    const classified = new Set([...SPACE_ERASURE_TABLES, ...retainedOrSeparatelyHandled]);
+    expect([...scoped].filter((table) => !classified.has(table)).sort()).toEqual([]);
+    expect([...SPACE_ERASURE_TABLES].filter((table) => !scoped.has(table)).sort()).toEqual([]);
+  });
+
   it("removes searchable chunks and parent threads as well as session shadows", async () => {
     const db = createFakeD1(platformMigrations);
     db.db.prepare(`INSERT INTO kb_documents (id, space_id, tenant_id, title) VALUES (?, ?, ?, ?)`)
@@ -80,6 +97,8 @@ describe("data erasure D1 records", () => {
       .run("sub-a", "space-a", "template-a", "developer-a", "MARKETPLACE_ORGANIC");
     db.db.prepare("INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email) VALUES (?, ?, ?, ?, ?)")
       .run("merchant-a", "org-a", "space-a", "company-a", "person@example.com");
+    db.db.prepare("INSERT INTO launchpad_orders (id, space_id, tenant_id, customer_email, customer_name, ls_order_id) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("order-a", "space-a", "org-a", "buyer@example.com", "Buyer Name", "provider-order-a");
     db.db.prepare("INSERT INTO audit_log (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run("audit-a", "org-a", "user-a", "user", "erasure_requested", "org", "org-a", "{}");
 
@@ -92,6 +111,8 @@ describe("data erasure D1 records", () => {
     expect(db.db.prepare("SELECT status FROM template_subscriptions WHERE id = ?").get("sub-a")).toEqual({ status: "cancelled" });
     expect(db.db.prepare("SELECT owner_email FROM whop_sub_merchants WHERE id = ?").get("merchant-a"))
       .toEqual({ owner_email: "erased@deleted.invalid" });
+    expect(db.db.prepare("SELECT customer_email, customer_name, ls_order_id, gross_cents FROM launchpad_orders WHERE id = ?").get("order-a"))
+      .toEqual({ customer_email: "erased@deleted.invalid", customer_name: null, ls_order_id: null, gross_cents: 0 });
     expect(db.db.prepare("SELECT org_id FROM users WHERE id = ?").get("user-a")).toEqual({ org_id: null });
     expect(db.db.prepare("SELECT name, owner_id, status FROM orgs WHERE id = ?").get("org-a"))
       .toEqual({ name: "Erased organization", owner_id: "system-erasure", status: "erased" });
