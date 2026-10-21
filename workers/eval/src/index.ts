@@ -14,7 +14,7 @@
 // (research finding: ~20% of "solved" SWE-bench entries are reward-hacked; a validation gate that
 // only pattern-matches text is not a real gate).
 import { Hono } from "hono";
-import { errorResponse, requestId, mintInternalToken, readBoundedResponseText } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken, readBoundedRequestText, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 // The judge calls the SAME AI Gateway client the production reasoner uses, imported directly
 // from the agents worker rather than reimplemented — one implementation so the two can't drift
 // (same precedent as the provisioner importing launchpad/bootstrap.ts).
@@ -102,12 +102,13 @@ async function fetchRunTrace(
     const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
     const resp = await env.AGENTS_WORKER.fetch(
       new Request(
-        `http://agents-worker/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/trace`,
-        { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token } }
+        `http://agents-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/agent/runs/${encodeURIComponent(runId)}/trace`,
+        { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token }, signal: AbortSignal.timeout(10_000) }
       )
     );
     if (!resp.ok) return { trace: [], error: `trace HTTP ${resp.status}` };
-    const body = await resp.json<{ trace?: TraceStepLike[]; steps?: TraceStepLike[] }>();
+    const raw = await readBoundedResponseText(resp, 2 * 1024 * 1024);
+    const body = JSON.parse(raw) as { trace?: TraceStepLike[]; steps?: TraceStepLike[] };
     return { trace: body.trace ?? body.steps ?? [] };
   } catch (err: unknown) {
     return { trace: [], error: err instanceof Error ? err.message : String(err) };
@@ -154,6 +155,8 @@ const PASS_THRESHOLD = 7;
  *  happened. Measured per-case latencies during the model matrix ranged from ~5s to ~24s, but a
  *  model that emits a long reasoning preamble before every tool call sits well above that. */
 const AGENT_RUN_TIMEOUT_MS = 150_000;
+const MAX_EVAL_REQUEST_BYTES = 1024 * 1024;
+const MAX_EVAL_TEXT_CHARS = 8_000;
 
 /** Pull the first JSON object out of a reply. Smaller open models frequently wrap their JSON in
  *  a markdown fence or a sentence of preamble even when told not to; treating that as a judge
@@ -181,6 +184,36 @@ function validGeneratedCases(value: unknown, count: number): value is Array<{ in
     && typeof item.expected_output === "string" && item.expected_output.trim().length > 0 && item.expected_output.length <= 2_000
     && typeof item.criteria === "string" && item.criteria.trim().length > 0 && item.criteria.length <= 1_000
     && (item.tags === undefined || (Array.isArray(item.tags) && item.tags.length <= 8 && item.tags.every((tag: unknown) => typeof tag === "string" && tag.length <= 48))));
+}
+
+function isValidEvalCase(value: unknown): value is EvalCase {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  if (typeof item.input !== "string" || !item.input.trim() || item.input.length > MAX_EVAL_TEXT_CHARS) return false;
+  if (item.expected_output !== undefined && (typeof item.expected_output !== "string" || item.expected_output.length > MAX_EVAL_TEXT_CHARS)) return false;
+  if (item.criteria !== undefined && (typeof item.criteria !== "string" || item.criteria.length > 2_000)) return false;
+  if (item.judge !== undefined && typeof item.judge !== "boolean") return false;
+  if (item.tags !== undefined && (!Array.isArray(item.tags) || item.tags.length > 16 || item.tags.some((tag) => typeof tag !== "string" || tag.length > 64))) return false;
+  if (item.trace_checks !== undefined && (!Array.isArray(item.trace_checks) || item.trace_checks.length > 32)) return false;
+  return true;
+}
+
+async function readJsonBody<T>(request: Request): Promise<{ body?: T; tooLarge: boolean; invalid: boolean }> {
+  try {
+    const text = await readBoundedRequestText(request, MAX_EVAL_REQUEST_BYTES);
+    if (!text.trim()) return { body: {} as T, tooLarge: false, invalid: false };
+    return { body: JSON.parse(text) as T, tooLarge: false, invalid: false };
+  } catch (error) {
+    return { tooLarge: error instanceof RequestBodyTooLargeError, invalid: !(error instanceof RequestBodyTooLargeError) };
+  }
+}
+
+async function isActiveTenantSpace(db: D1Database, tenantId: string, spaceId: string): Promise<boolean> {
+  const row = await db.prepare(
+    `SELECT 1 FROM spaces s JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active'
+      WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'`
+  ).bind(spaceId, tenantId).first();
+  return row !== null;
 }
 
 function validateEnv(env: Env): void {
@@ -374,9 +407,11 @@ app.post("/evals/fixtures/generate", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  let body: { description?: unknown; count?: unknown };
-  try { body = await c.req.json(); }
-  catch { return c.json({ error_code: "bad_request", message: "Expected a JSON request body" }, 400); }
+  const parsed = await readJsonBody<{ description?: unknown; count?: unknown }>(c.req.raw);
+  if (parsed.tooLarge) return c.json({ error_code: "payload_too_large", message: "Request body exceeds 1 MiB" }, 413);
+  if (parsed.invalid) return c.json({ error_code: "bad_request", message: "Expected a JSON request body" }, 400);
+  const body = parsed.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error_code: "bad_request", message: "Expected a JSON request body" }, 400);
   const description = typeof body.description === "string" ? body.description.trim() : "";
   const count = body.count === undefined ? 40 : body.count;
   if (!description || description.length > 4_000 || !Number.isInteger(count) || (count as number) < 1 || (count as number) > 50) {
@@ -428,18 +463,26 @@ app.post("/evals", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  const body = await c.req.json<{
-    name: string;
-    space_id: string;
-    cases: EvalCase[];
-  }>();
+  const parsed = await readJsonBody<{ name?: unknown; space_id?: unknown; cases?: unknown }>(c.req.raw);
+  if (parsed.tooLarge) return c.json({ error_code: "payload_too_large", message: "Request body exceeds 1 MiB" }, 413);
+  if (parsed.invalid) return c.json({ error_code: "bad_request", message: "Expected a JSON request body" }, 400);
+  const body = parsed.body;
 
-  if (!body.name || !body.space_id || !Array.isArray(body.cases) || body.cases.length === 0) {
+  if (!body || typeof body !== "object" || Array.isArray(body)
+      || typeof body.name !== "string" || !body.name.trim() || body.name.length > 200
+      || typeof body.space_id !== "string" || !body.space_id || !Array.isArray(body.cases) || body.cases.length === 0) {
     return c.json({ error_code: "bad_request", message: "name, space_id, and cases are required" }, 400);
   }
 
   if (body.cases.length > 100) {
     return c.json({ error_code: "bad_request", message: "Maximum 100 eval cases per suite" }, 400);
+  }
+
+  if (!body.cases.every(isValidEvalCase)) {
+    return c.json({ error_code: "bad_request", message: "Each case must have bounded input and valid optional fields" }, 400);
+  }
+  if (!await isActiveTenantSpace(c.env.PLATFORM_DB, tenantId, body.space_id)) {
+    return c.json({ error_code: "not_found", message: "Active Space not found" }, 404);
   }
 
   const id = crypto.randomUUID();
@@ -448,9 +491,9 @@ app.post("/evals", async (c) => {
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO eval_suites (id, name, space_id, tenant_id, cases_json, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, body.name, body.space_id, tenantId, JSON.stringify(body.cases), now, now).run();
+  ).bind(id, body.name.trim(), body.space_id, tenantId, JSON.stringify(body.cases), now, now).run();
 
-  return c.json({ id, name: body.name, space_id: body.space_id, case_count: body.cases.length, created_at: now }, 201);
+  return c.json({ id, name: body.name.trim(), space_id: body.space_id, case_count: body.cases.length, created_at: now }, 201);
 });
 
 // GET /evals — list eval suites for tenant
@@ -463,12 +506,18 @@ app.get("/evals", async (c) => {
   let results: unknown[];
   if (spaceId !== null) {
     const { results: rows } = await c.env.PLATFORM_DB.prepare(
-      "SELECT id, name, space_id, created_at FROM eval_suites WHERE tenant_id = ? AND space_id = ? ORDER BY created_at DESC"
+      `SELECT e.id, e.name, e.space_id, e.created_at FROM eval_suites e
+       JOIN spaces s ON s.id = e.space_id AND s.tenant_id = e.tenant_id AND s.status = 'active'
+       JOIN orgs o ON o.id = e.tenant_id AND o.status = 'active'
+       WHERE e.tenant_id = ? AND e.space_id = ? ORDER BY e.created_at DESC`
     ).bind(tenantId, spaceId).all();
     results = rows;
   } else {
     const { results: rows } = await c.env.PLATFORM_DB.prepare(
-      "SELECT id, name, space_id, created_at FROM eval_suites WHERE tenant_id = ? ORDER BY created_at DESC"
+      `SELECT e.id, e.name, e.space_id, e.created_at FROM eval_suites e
+       JOIN spaces s ON s.id = e.space_id AND s.tenant_id = e.tenant_id AND s.status = 'active'
+       JOIN orgs o ON o.id = e.tenant_id AND o.status = 'active'
+       WHERE e.tenant_id = ? ORDER BY e.created_at DESC`
     ).bind(tenantId).all();
     results = rows;
   }
@@ -491,6 +540,9 @@ app.post("/evals/:id/run", async (c) => {
   ).bind(evalId, tenantId).first<EvalSuite>();
 
   if (!suite) return c.json({ error_code: "not_found", message: "Eval suite not found" }, 404);
+  if (!await isActiveTenantSpace(c.env.PLATFORM_DB, tenantId, suite.space_id)) {
+    return c.json({ error_code: "not_found", message: "Active Space not found" }, 404);
+  }
 
   /**
    * `trace_only` forces every case to skip the LLM judge and score purely from its trace checks,
@@ -514,11 +566,30 @@ app.post("/evals/:id/run", async (c) => {
     model?: string;
     trace_only?: boolean;
   };
-  const runBody = await c.req.json<RunBody>().catch(() => ({} as RunBody));
+  const parsedRunBody = await readJsonBody<RunBody>(c.req.raw);
+  if (parsedRunBody.tooLarge) return c.json({ error_code: "payload_too_large", message: "Request body exceeds 1 MiB" }, 413);
+  if (parsedRunBody.invalid) return c.json({ error_code: "bad_request", message: "Expected a JSON request body" }, 400);
+  const runBody = parsedRunBody.body ?? {};
+  if (runBody.session_id !== undefined && (typeof runBody.session_id !== "string" || runBody.session_id.length > 200)) {
+    return c.json({ error_code: "bad_request", message: "session_id must be a bounded string" }, 400);
+  }
+  if (runBody.agent_definition_id !== undefined && (typeof runBody.agent_definition_id !== "string" || runBody.agent_definition_id.length > 200)) {
+    return c.json({ error_code: "bad_request", message: "agent_definition_id must be a bounded string" }, 400);
+  }
+  if (runBody.model !== undefined && (typeof runBody.model !== "string" || runBody.model.length > 200)) {
+    return c.json({ error_code: "bad_request", message: "model must be a bounded string" }, 400);
+  }
+  if (runBody.mode !== undefined && runBody.mode !== "text" && runBody.mode !== "agent") {
+    return c.json({ error_code: "bad_request", message: "mode must be text or agent" }, 400);
+  }
+  if (runBody.trace_only !== undefined && typeof runBody.trace_only !== "boolean") {
+    return c.json({ error_code: "bad_request", message: "trace_only must be a boolean" }, 400);
+  }
   const mode = runBody.mode === "agent" ? "agent" : "text";
   if (mode === "agent" && !runBody.session_id) {
     return c.json({ error_code: "bad_request", message: "session_id is required for mode=agent" }, 400);
   }
+  const sessionId = runBody.session_id;
 
   const cases: EvalCase[] = JSON.parse(suite.cases_json) as EvalCase[];
   const runId = crypto.randomUUID();
@@ -530,6 +601,7 @@ app.post("/evals/:id/run", async (c) => {
     correctness: number;
     semantic_validity: number;
     reason: string;
+    actual_output?: string | null;
     agent_run_id?: string | null;
     agent_error?: string;
     judge_error?: string;
@@ -547,7 +619,7 @@ app.post("/evals/:id/run", async (c) => {
     if (evalCase === undefined) continue;
 
     if (mode === "agent") {
-      const agentResult = await runAgentForCase(c.env, tenantId, suite.space_id, runBody.session_id!, runBody.agent_definition_id, evalCase, runBody.model);
+      const agentResult = await runAgentForCase(c.env, tenantId, suite.space_id, sessionId ?? "", runBody.agent_definition_id, evalCase, runBody.model);
       if (agentResult.error) {
         results.push({ case_index: i, score: 0, correctness: 0, semantic_validity: 0, reason: agentResult.error, agent_run_id: agentResult.runId, agent_error: agentResult.error, latency_ms: agentResult.latency_ms });
         continue;
@@ -561,7 +633,7 @@ app.post("/evals/:id/run", async (c) => {
       let traceTotal: number | undefined;
       if (checks.length > 0 && agentResult.runId) {
         const { trace, error: traceError } = await fetchRunTrace(
-          c.env, tenantId, suite.space_id, runBody.session_id!, agentResult.runId
+          c.env, tenantId, suite.space_id, sessionId ?? "", agentResult.runId
         );
         if (traceError) {
           // An unreachable trace is an instrument gap, not a model failure — leave the checks
@@ -592,6 +664,7 @@ app.post("/evals/:id/run", async (c) => {
           correctness: traceScore,
           semantic_validity: traceScore,
           reason: traceDetail ?? "trace-graded",
+          actual_output: agentResult.answer,
           agent_run_id: agentResult.runId,
           latency_ms: agentResult.latency_ms,
           trace_score: traceScore,
@@ -613,6 +686,7 @@ app.post("/evals/:id/run", async (c) => {
         ...judged,
         score: composed,
         reason: traceDetail ? `${judged.reason} | trace: ${traceDetail}` : judged.reason,
+        actual_output: agentResult.answer,
         agent_run_id: agentResult.runId,
         latency_ms: agentResult.latency_ms,
         ...(traceScore !== undefined ? { trace_score: traceScore, trace_passed: tracePassed, trace_total: traceTotal } : {}),
@@ -671,21 +745,22 @@ app.post("/evals/:id/run", async (c) => {
 
   if (results.length > 0) {
     await c.env.PLATFORM_DB.batch(
-      results.map((r) => {
-        const evalCase = cases[r.case_index]!;
-        return c.env.PLATFORM_DB.prepare(
+      results.flatMap((r) => {
+        const evalCase = cases[r.case_index];
+        if (!evalCase) return [];
+        return [c.env.PLATFORM_DB.prepare(
           `INSERT INTO eval_results (id, run_id, suite_id, tenant_id, case_index, input, expected_output, actual_output, passed, score, judge_reasoning, latency_ms)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).bind(
           crypto.randomUUID(), runId, evalId, tenantId, r.case_index,
           evalCase.input,
           evalCase.expected_output ?? null,
-          r.agent_error ?? null,
+          r.actual_output ?? (r.agent_error ?? null),
           !r.judge_error && r.score >= PASS_THRESHOLD ? 1 : 0,
           r.judge_error ? null : r.score,
           r.reason,
           r.latency_ms ?? null
-        );
+        )];
       })
     );
   }
@@ -706,6 +781,8 @@ app.get("/evals/:id/results", async (c) => {
     `SELECT r.id, r.model, r.status, r.total_cases, r.passed, r.failed, r.started_at, r.completed_at,
             (SELECT AVG(score) FROM eval_results WHERE run_id = r.id) AS avg_score
        FROM eval_runs r
+       JOIN spaces s ON s.id = r.space_id AND s.tenant_id = r.tenant_id AND s.status = 'active'
+       JOIN orgs o ON o.id = r.tenant_id AND o.status = 'active'
       WHERE r.suite_id = ? AND r.tenant_id = ?
       ORDER BY r.started_at DESC LIMIT 10`
   ).bind(evalId, tenantId).all();
