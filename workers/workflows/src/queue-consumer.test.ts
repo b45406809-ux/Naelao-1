@@ -91,3 +91,29 @@ describe("KB ingestion queue dispatch", () => {
     expect(msg.retry).toHaveBeenCalledOnce();
   });
 });
+
+describe("data erasure queue dispatch", () => {
+  it("starts erasure with bounded request fields", async () => {
+    const msg = message({ type: "data.erasure", orgId: "tenant-a", requestedBy: "user-a", reason: "Account closure" });
+    const create = vi.fn(async () => undefined);
+    await queue({ messages: [msg] } as never, { DATA_ERASURE: { create } } as never);
+    expect(create).toHaveBeenCalledWith({ id: "message-1", params: msg.body });
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(msg.retry).not.toHaveBeenCalled();
+  });
+
+  it("discards malformed or oversized erasure requests without creating workflows", async () => {
+    for (const body of [
+      { type: "data.erasure", orgId: "tenant-a", requestedBy: "user-a" },
+      { type: "data.erasure", orgId: "tenant-a", requestedBy: "user-a", reason: "x".repeat(2001) },
+      { type: "data.erasure", orgId: "x".repeat(129), requestedBy: "user-a", reason: "" },
+    ]) {
+      const msg = message(body);
+      const create = vi.fn(async () => undefined);
+      await queue({ messages: [msg] } as never, { DATA_ERASURE: { create } } as never);
+      expect(create).not.toHaveBeenCalled();
+      expect(msg.ack).toHaveBeenCalledOnce();
+      expect(msg.retry).not.toHaveBeenCalled();
+    }
+  });
+});

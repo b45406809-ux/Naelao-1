@@ -39,6 +39,13 @@ export async function queue(
           break;
 
         case "data.erasure":
+          if (typeof body.orgId !== "string" || !body.orgId || body.orgId.length > 128 ||
+              typeof body.requestedBy !== "string" || !body.requestedBy || body.requestedBy.length > 256 ||
+              typeof body.reason !== "string" || body.reason.length > 2000) {
+            console.warn(`[queue] discarding malformed data.erasure message ${message.id}`);
+            message.ack();
+            break;
+          }
           await createWorkflowOnce(env.DATA_ERASURE, message.id, body);
           message.ack();
           break;

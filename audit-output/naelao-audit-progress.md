@@ -8,6 +8,8 @@ Extended the existing erasure worker coverage across the 56 per-space operationa
 
 Evidence: `workers/workflows/src/workflows/erasure-cleanup.test.ts` (11 pass), `tests/unit/data-erasure-records.test.ts` (3 pass), and `workers/workflows` TypeScript check. A migration cross-check found and added cleanup for `fde_graduations`, `launchpad_products`, and `llm_token_reservations`. Wrangler TOML R2 bindings are configured in default, staging, and production environments. The bindings now cover `naelao-artifacts`, `naelao-repository-objects`, and `naelao-agent-scripts`.
 
+The queue consumer now rejects malformed or oversized `data.erasure` messages before workflow creation. Its focused queue and erasure tests pass (19 combined), and the workflows TypeScript check passes. No authenticated producer/request API was found, so this only protects the internal dispatch boundary and does not make organization erasure user-accessible.
+
 This is not complete erasure coverage. RepositoryDO SQLite state, durable object state in other services, repo/workspace materialization races, export request/cancellation/restoration lifecycle, storage surfaces outside these prefixes, and a legal retention schedule for financial/audit records remain open. The current pass deletes the repository R2 prefix but does not yet purge per-repository Durable Object metadata.
 
 ## Completed focused review
