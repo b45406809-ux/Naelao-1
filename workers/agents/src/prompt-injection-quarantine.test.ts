@@ -4,7 +4,9 @@ import { mintInternalToken } from "@naelao/http";
 
 describe("agent ingress injection quarantine", () => {
   it("tracks a detected injection, returns a generic response, and never dispatches it", async () => {
-    const spaceFetch = vi.fn(async () => Response.json({ rate_limited: false }));
+    const spaceFetch = vi.fn(async (request: Request) => new URL(request.url).pathname.endsWith("/compact-scope")
+      ? Response.json({ project_id: null, private_scratchpad: false })
+      : Response.json({ rate_limited: false }));
     const secret = "test-platform-secret";
     const tenantId = "tenant-1";
     const headers = new Headers({
@@ -24,6 +26,6 @@ describe("agent ingress injection quarantine", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error_code: "request_unavailable", message: "Unable to process this request" });
-    expect(spaceFetch).toHaveBeenCalledOnce();
+    expect(spaceFetch).toHaveBeenCalledTimes(2);
   });
 });

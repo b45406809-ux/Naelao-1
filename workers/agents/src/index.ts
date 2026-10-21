@@ -1144,6 +1144,33 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
 
+  // Authenticate the target transcript before reading a fallback goal, inspecting attachments,
+  // or starting a paid agent run. Product sessions are valid identities across their product,
+  // not proof that the caller owns every conversation in that product.
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "session_scope_unavailable" }, 503);
+  const scopeHeaders = {
+    "x-naelao-tenant-id": tenantId,
+    "x-naelao-user-id": userId,
+    "x-naelao-role": callerRole,
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+  };
+  const scopeResponse = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`,
+    { headers: scopeHeaders },
+  ));
+  if (!scopeResponse.ok) return c.json({ error_code: "session_unavailable" }, 404);
+  const sessionScope = await scopeResponse.json<{
+    owned_by_caller?: boolean;
+    private_scratchpad?: boolean;
+  }>().catch(() => null);
+  if (!sessionScope) return c.json({ error_code: "session_scope_unavailable" }, 503);
+  if (callerRole === "product_end_user" && sessionScope.owned_by_caller !== true) {
+    return c.json({ error_code: "session_unavailable" }, 404);
+  }
+  if (sessionScope.private_scratchpad) {
+    return c.json({ error_code: "private_scratchpad_client_only" }, 403);
+  }
+
   // A product end user can be the OWNER of their own business, not just a customer of it. Without
   // resolving that, the F-36 clamp downgraded yolo for them unconditionally — so an owner who set
   // their own business to autonomous still had every action gated with nobody but themself to
