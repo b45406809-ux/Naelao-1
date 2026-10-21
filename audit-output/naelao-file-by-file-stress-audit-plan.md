@@ -2277,17 +2277,17 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/credentials`
 
-- [ ] `workers/credentials/package.json`
-- [ ] `workers/credentials/tsconfig.json`
-- [ ] `workers/credentials/vitest.config.ts`
+- [x] `workers/credentials/package.json`
+- [x] `workers/credentials/tsconfig.json`
+- [x] `workers/credentials/vitest.config.ts`
 - [x] `workers/credentials/wrangler.toml`
 
 ### `workers/credentials/src`
 
 - [x] `workers/credentials/src/air-gap.test.ts`
-- [ ] `workers/credentials/src/index.ts`
+- [x] `workers/credentials/src/index.ts`
 - [x] `workers/credentials/src/outbound-auth.test.ts`
-- [ ] `workers/credentials/src/request-body-boundaries.test.ts`
+- [x] `workers/credentials/src/request-body-boundaries.test.ts`
 
 ### `workers/eval`
 

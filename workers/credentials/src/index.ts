@@ -536,6 +536,22 @@ export function headersForEgressRedirect(current: URL, next: URL, headers: Heade
   return forwarded;
 }
 
+/** Rebuild an upstream response after secret redaction without retaining stale entity metadata. */
+export function buildOutboundResponse(response: Response, bytes: Uint8Array, secrets: string[] = []): Response {
+  const headers = new Headers();
+  for (const [name, value] of response.headers) {
+    if (/^(set-cookie|authorization|proxy-authenticate|www-authenticate)$/i.test(name) || secrets.some((secret) => secret && value.includes(secret))) continue;
+    headers.append(name, value);
+  }
+  // Secret removal can change bytes and their digests. Let the runtime calculate framing for
+  // the replacement body rather than forwarding the origin's now-stale representation metadata.
+  for (const name of ["content-length", "content-md5", "digest", "etag", "content-range", "accept-ranges"]) {
+    headers.delete(name);
+  }
+  const body = [204, 205, 304].includes(response.status) ? null : bytes;
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+}
+
 function isPrivileged(role: string): boolean {
   return PRIVILEGED_ROLES.has(role);
 }
@@ -1206,10 +1222,6 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   }
   if (!response) throw forbidden("Outbound redirect limit exceeded");
 
-  const safeHeaders = new Headers();
-  for (const [name, value] of response.headers) {
-    if (!/^(set-cookie|authorization|proxy-authenticate|www-authenticate)$/i.test(name) && ![secret, authorization].some((sensitive) => value.includes(sensitive))) safeHeaders.append(name, value);
-  }
   let bytes: Uint8Array;
   try { bytes = redactOutboundSecrets(await readBoundedResponse(response), [secret, authorization]); }
   catch {
@@ -1219,7 +1231,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
     return c.json({ error_code: "egress_response_unavailable", message: "The external response exceeded the safe limit; the action will not be retried automatically." }, 502);
   }
   // Defend against an origin reflecting the injected authorization value into output bodies.
-  const contentType = safeHeaders.get("content-type") ?? "";
+  const contentType = response.headers.get("content-type") ?? "";
   if (/^(text\/|application\/(json|xml|javascript))/.test(contentType)) {
     const text = new TextDecoder().decode(bytes);
     bytes = new TextEncoder().encode([secret, authorization].reduce((value, sensitive) => value.split(sensitive).join("[REDACTED]"), text));
@@ -1232,7 +1244,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
       return c.json({ error_code: "action_receipt_finalize_failed", message: "The external service responded, but its audit record could not be finalized. Do not retry this action." }, 503);
     }
   }
-  return new Response(bytes, { status: response.status, statusText: response.statusText, headers: safeHeaders });
+  return buildOutboundResponse(response, bytes, [secret, authorization]);
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────

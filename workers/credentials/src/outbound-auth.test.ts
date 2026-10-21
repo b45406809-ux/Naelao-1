@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildOutboundAuthorization, headersForEgressRedirect, redactOutboundSecrets } from "./index.js";
+import { buildOutboundAuthorization, buildOutboundResponse, headersForEgressRedirect, redactOutboundSecrets } from "./index.js";
 
 describe("credential outbound authorization", () => {
   it("keeps bearer as the default and builds Basic auth from a vaulted password", () => {
@@ -33,6 +33,37 @@ describe("credential outbound authorization", () => {
     expect(headersForEgressRedirect(new URL("https://api.example.test/path"), new URL("https://cdn.example.test/path"), original).has("authorization")).toBe(false);
     expect(headersForEgressRedirect(new URL("https://api.example.test/path"), new URL("https://api.example.test/other"), original).get("authorization"))
       .toBe("Bearer secret");
+  });
+
+  it("drops stale representation metadata after response bytes change and never attaches bodies to bodyless statuses", () => {
+    const upstream = new Response("secret removed", {
+      status: 200,
+      headers: {
+        "content-length": "14",
+        "content-md5": "old-digest",
+        digest: "sha-256=old-digest",
+        etag: '"origin-version"',
+        "content-range": "bytes 0-13/100",
+        "accept-ranges": "bytes",
+        "content-type": "text/plain",
+        "set-cookie": "session=private",
+      },
+    });
+    const redacted = buildOutboundResponse(upstream, new TextEncoder().encode("[REDACTED]"), ["secret"]);
+    expect(redacted.status).toBe(200);
+    expect(redacted.headers.get("content-length")).toBeNull();
+    expect(redacted.headers.get("content-md5")).toBeNull();
+    expect(redacted.headers.get("digest")).toBeNull();
+    expect(redacted.headers.get("etag")).toBeNull();
+    expect(redacted.headers.get("content-range")).toBeNull();
+    expect(redacted.headers.get("accept-ranges")).toBeNull();
+    expect(redacted.headers.get("set-cookie")).toBeNull();
+
+    for (const status of [204, 205, 304]) {
+      const bodyless = buildOutboundResponse(new Response(null, { status }), new Uint8Array());
+      expect(bodyless.status).toBe(status);
+      expect(bodyless.body).toBeNull();
+    }
   });
 
   it("redacts long secrets with repeated prefixes in large responses", () => {
