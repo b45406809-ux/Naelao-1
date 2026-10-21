@@ -1403,6 +1403,8 @@ The largest cluster was `model-switcher-config-resolution.test.ts` (18 assertion
 
 Validation: `model-switcher-config-resolution.test.ts` passed all 18 tests. This closes the test module only; builder model authorization implementation and broader agent-run authorization still have their own checklist rows and route coverage.
 
+Committed and pushed as `0bf20c59`; refreshed the inventory after the code/test commit: 1,976 tracked files / 1,770 source/config rows / 378 checked rows.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.
