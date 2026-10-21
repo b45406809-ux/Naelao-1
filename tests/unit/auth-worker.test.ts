@@ -218,6 +218,9 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
       "EXPLAIN QUERY PLAN SELECT rowid FROM builder_password_reset_tokens WHERE julianday(expires_at) < julianday('now') LIMIT 1000"
     ).all<{ detail: string }>();
     expect(plan.results.some((row) => row.detail.includes("idx_builder_password_reset_tokens_expiry"))).toBe(true);
+    await expect(env.__db.prepare(
+      "SELECT rowid FROM builder_password_reset_tokens INDEXED BY idx_builder_password_reset_tokens_expiry WHERE julianday(expires_at) < julianday('now') LIMIT 0"
+    ).all()).resolves.toMatchObject({ results: [] });
   });
 
   it("sweeps expired token rows while preserving a live reset token", async () => {

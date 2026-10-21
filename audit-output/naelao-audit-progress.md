@@ -2238,7 +2238,7 @@ Validation: Auth worker tests passed 32/32; Notifications suites passed 27/27; A
 
 The reset route also previously treated an invalid stored expiry as unexpired because `NaN < now` is false. It now rejects unparsable expiration values before hashing or claiming the token; the regression confirms the existing password remains usable after a malformed token row is refused. Auth tests passed 32/32.
 
-The expiry index now indexes the exact `julianday(expires_at)` expression used by the sweeper, rather than the raw text column. SQLite `EXPLAIN QUERY PLAN` confirms the bounded expiry query uses the new expression index; Auth tests remain 32/32.
+The expiry index now indexes the exact `julianday(expires_at)` expression used by the sweeper, rather than the raw text column. SQLite `EXPLAIN QUERY PLAN` confirms the bounded expiry query uses the new expression index, and the exact forced-index query from the deployment guard executes successfully against local SQLite; Auth tests remain 32/32.
 
 Signup JWTs were missing `tv` even though login JWTs carried it. Router skips its revocation-epoch gate when `tv` is absent, so the token returned from signup remained usable after `/revoke`. Signup now includes the initial version `0`; the revocation regression now exercises the signup-issued token and confirms it is rejected after the epoch increments. Auth tests passed 32/32.
 
