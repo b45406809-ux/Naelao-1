@@ -44,6 +44,7 @@ import { type ProvisionMessage } from "./message-contract.js";
 import { handleProvisionQueueMessage } from "./queue-message-handler.js";
 import { isProvisionableManifest } from "./manifest-contract.js";
 import { mayStartProvisioning } from "./provisioning-state.js";
+import { claimProvisionLease, ProvisionLeaseBusyError, releaseProvisionLease } from "./provisioning-lease.js";
 
 async function responseErrorDetail(response: Response): Promise<string> {
   return (await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 500);
@@ -679,7 +680,18 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     return;
   }
 
+  const leaseToken = crypto.randomUUID();
+  if (!(await claimProvisionLease(env.PLATFORM_DB, spaceId, tenantId, leaseToken))) {
+    throw new ProvisionLeaseBusyError();
+  }
+
   try {
+    // A previous attempt may have completed between the initial read and our lease claim.
+    const claimedSpace = await env.PLATFORM_DB.prepare(
+      "SELECT status FROM spaces WHERE id = ? AND tenant_id = ?"
+    ).bind(spaceId, tenantId).first<{ status: string }>();
+    if (!claimedSpace || !mayStartProvisioning(claimedSpace.status)) return;
+
     // Step 1: Mark DB as provisioning + write KV config cache
     const begin = await env.PLATFORM_DB.prepare(
       "UPDATE spaces SET status = 'provisioning', updated_at = ? WHERE id = ? AND tenant_id = ? AND status IN ('provisioning', 'error')"
@@ -1020,6 +1032,10 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     console.error(`[provisioner] Provisioning failed at: ${provisioned[provisioned.length - 1] ?? "startup"}`, err);
     await rollbackSpace(spaceId, tenantId, spaceTypeId, provisioned, env, userId);
     throw err;
+  } finally {
+    await releaseProvisionLease(env.PLATFORM_DB, spaceId, tenantId, leaseToken).catch((err) => {
+      console.error("[provisioner] Failed to release provisioning lease:", err);
+    });
   }
 }
 

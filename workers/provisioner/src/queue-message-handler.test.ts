@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { handleProvisionQueueMessage } from "./queue-message-handler.js";
 import type { ProvisionQueueMessage } from "./queue-message-handler.js";
 import type { ProvisionMessage } from "./message-contract.js";
+import { PROVISION_LEASE_TTL_SECONDS, ProvisionLeaseBusyError } from "./provisioning-lease.js";
 
 const validMessage: ProvisionMessage = {
   type: "space_provision",
@@ -48,6 +49,17 @@ describe("provision queue dispatch", () => {
     const handlers = { provision: vi.fn(async () => { throw new Error("transient D1 failure"); }), deprovision: vi.fn(async () => undefined) };
     await handleProvisionQueueMessage(entry.message, handlers);
     expect(entry.retry).toHaveBeenCalledOnce();
+    expect(entry.ack).not.toHaveBeenCalled();
+  });
+
+  it("delays a duplicate provisioning delivery until its current lease can expire", async () => {
+    const entry = queueMessage(validMessage);
+    const handlers = {
+      provision: vi.fn(async () => { throw new ProvisionLeaseBusyError(); }),
+      deprovision: vi.fn(async () => undefined),
+    };
+    await handleProvisionQueueMessage(entry.message, handlers);
+    expect(entry.retry).toHaveBeenCalledWith({ delaySeconds: PROVISION_LEASE_TTL_SECONDS });
     expect(entry.ack).not.toHaveBeenCalled();
   });
 });

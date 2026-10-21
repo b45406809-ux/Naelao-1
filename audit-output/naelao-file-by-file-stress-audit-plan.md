@@ -45,7 +45,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 - **SpaceType resource quota enforcement:** the old manifest accepted `maxDOsPerInstance`, `maxR2WritesPerDay`, `maxContainerHoursPerDay`, `maxLLMTokensPerDay`, `maxCronJobsPerInstance`, and `maxWorkflowsPerInstance`, but repository-wide source search found no runtime enforcement. These fields and the Provisioner `workflowTemplates`/`cronJobs` placeholders are removed from the active manifest contract so operators do not mistake declarations for protections. Actual per-tenant limits still need explicit, metered enforcement tied to platform resource usage and billing; do not restore these manifest claims until that path exists.
 - **Space deprovision lifecycle:** `space_deprovision` is accepted by the queue contract, but no source producer sends it. The handler currently removes the script R2 prefix and portal/space KV entries but does not enumerate SpaceDO or D1 data. The public space/product delete paths are soft deletes, so do not wire destructive cleanup until retention and restore semantics are established. Audit the caller and all storage owners before enabling purge; separately add an idempotent durable cleanup workflow if true deletion is required.
-- **Provision queue duplicate delivery:** Queue delivery is at-least-once and the consumer allows concurrent batches. `provisionSpace` reads a `provisioning` row and then updates it with a predicate that still allows `provisioning`, so two deliveries for one Space can both enter the saga. Most individual writes are intended to be idempotent, but that is not a global claim and some external provisioning effects may duplicate. Add a per-Space claim with lease recovery and test concurrent delivery plus worker-crash retry before treating provisioning as single-run.
+- **Provision queue duplicate delivery:** Added a conditional D1-backed per-Space lease (30-minute expiry), owner-token release, a delayed queue retry for overlapping deliveries, and expiration recovery. SQLite tests verify one winner under 20 concurrent claims, tenant isolation, expiration, and owner-only release; queue tests verify duplicate deliveries wait through lease expiry. The source saga remains unchecked overall, and no deployed queue concurrency or hard Worker-termination test was run.
 
 ## Work sequence
 
@@ -744,6 +744,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/migrations/0118_gdpr_erasure_outbox.sql`
 - [ ] `infra/migrations/0119_portal_domains.sql`
 - [x] `infra/migrations/0120_synthetics_storage.sql`
+- [x] `infra/migrations/0121_space_provisioning_leases.sql`
 
 ### `infra/scripts`
 
@@ -1564,6 +1565,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/provisioner-owner-member.test.ts`
 - [ ] `tests/unit/provisioner-rollback-gc.test.ts`
 - [ ] `tests/unit/provisioner-seed-wallet.test.ts`
+- [x] `tests/unit/provisioning-lease.test.ts`
 - [ ] `tests/unit/qr-encoder.test.ts`
 - [ ] `tests/unit/quota-atomic.test.ts`
 - [ ] `tests/unit/quota-windowed.test.ts`
@@ -2394,6 +2396,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/provisioner/src/provisioning-required-routes.test.ts`
 - [x] `workers/provisioner/src/provisioning-state.test.ts`
 - [x] `workers/provisioner/src/provisioning-state.ts`
+- [x] `workers/provisioner/src/provisioning-lease.ts`
 - [x] `workers/provisioner/src/queue-message-handler.test.ts`
 - [x] `workers/provisioner/src/queue-message-handler.ts`
 - [ ] `workers/provisioner/src/tenant-suspension.test.ts`

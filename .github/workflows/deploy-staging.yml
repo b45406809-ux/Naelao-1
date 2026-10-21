@@ -105,6 +105,14 @@ jobs:
             --command="SELECT check_name FROM synthetic_check_state LIMIT 0" \
             --remote \
             --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0121_space_provisioning_leases.sql \
+            --remote \
+            --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT lease_token FROM space_provisioning_leases LIMIT 0" \
+            --remote \
+            --env=staging
 
       - name: Deploy router worker (staging)
         env:

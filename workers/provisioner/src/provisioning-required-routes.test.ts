@@ -27,9 +27,12 @@ function makeEnv(failingPath: "registry" | "install-record"): { env: Env; calls:
       prepare(query: string) {
         sql.push(query);
         return {
-          bind() {
+          bind(...args: unknown[]) {
             return {
-              async first() { return { status: "provisioning" }; },
+              async first() {
+                if (query.includes("RETURNING lease_token")) return { lease_token: args[2] };
+                return { status: "provisioning" };
+              },
               async run() { return { meta: { changes: 1 } }; },
             };
           },

@@ -100,6 +100,12 @@ jobs:
           npx wrangler d1 execute "$DB_ID" \
             --command="SELECT check_name FROM synthetic_check_state LIMIT 0" \
             --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0121_space_provisioning_leases.sql \
+            --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT lease_token FROM space_provisioning_leases LIMIT 0" \
+            --remote
 
       - name: Deploy all workers (production)
         env:
