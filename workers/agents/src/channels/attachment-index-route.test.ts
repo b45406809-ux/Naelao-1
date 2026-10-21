@@ -17,7 +17,10 @@ function env(options: { owned?: boolean } = {}) {
             queries.push({ sql, values });
             return {
               async all() { return { results: [row] }; },
-              async first() { return options.owned === false ? null : row; },
+              async first() {
+                if (sql.includes("SELECT s.id FROM spaces s WHERE")) return { id: "space-a" };
+                return options.owned === false ? null : row;
+              },
             };
           } };
         },
@@ -40,8 +43,9 @@ describe("scoped attachment metadata routes", () => {
     const response = await post("/internal/attachments/list", context, {});
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ attachments: [row] });
-    expect(context.queries[0]?.sql).toContain("tenant_id=? AND space_id=? AND task_id=? AND expires_at>?");
-    expect(context.queries[0]?.values.slice(0, 3)).toEqual(["tenant-a", "space-a", "task-a"]);
+    const attachmentQuery = context.queries.find((query) => query.sql.includes("FROM channel_attachments"));
+    expect(attachmentQuery?.sql).toContain("tenant_id=? AND space_id=? AND task_id=? AND expires_at>?");
+    expect(attachmentQuery?.values.slice(0, 3)).toEqual(["tenant-a", "space-a", "task-a"]);
   });
 
   it("inspects metadata without accessing object storage and hides cross-task ids", async () => {
@@ -49,8 +53,9 @@ describe("scoped attachment metadata routes", () => {
     const response = await post("/internal/attachments/inspect", context, { id: row.id });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ attachment: row });
-    expect(context.queries[0]?.sql).toContain("id=? AND tenant_id=? AND space_id=? AND task_id=? AND expires_at>?");
-    expect(context.queries[0]?.values.slice(0, 4)).toEqual([row.id, "tenant-a", "space-a", "task-a"]);
+    const attachmentQuery = context.queries.find((query) => query.sql.includes("FROM channel_attachments"));
+    expect(attachmentQuery?.sql).toContain("id=? AND tenant_id=? AND space_id=? AND task_id=? AND expires_at>?");
+    expect(attachmentQuery?.values.slice(0, 4)).toEqual([row.id, "tenant-a", "space-a", "task-a"]);
 
     const foreign = await post("/internal/attachments/inspect", env({ owned: false }), { id: row.id });
     expect(foreign.status).toBe(404);

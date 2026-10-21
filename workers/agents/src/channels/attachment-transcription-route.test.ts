@@ -3,13 +3,14 @@ import { mintInternalToken } from "@naelao/http";
 import { app } from "../index.js";
 
 const secret = "transcription-route-secret";
-function env(options: { owned?: boolean; airGapped?: boolean; mime?: string; oversizedMediaResponse?: boolean; mismatchedR2Size?: boolean } = {}) {
+function env(options: { owned?: boolean; airGapped?: boolean; active?: boolean; mime?: string; oversizedMediaResponse?: boolean; mismatchedR2Size?: boolean } = {}) {
   let reads = 0;
   let mediaCalls = 0;
   const ai = { run: vi.fn(async (_model: string, input?: Record<string, unknown>) => input?.task === "query" ? ({ answer: "A red truck at a loading dock." }) : ({ text: "recognized words" })) };
   const value = {
     PLATFORM_SECRET: secret,
     PLATFORM_DB: { prepare(sql: string) { return { bind(...values: unknown[]) { return { async first() {
+      if (sql.includes("SELECT s.id FROM spaces s WHERE")) return options.active === false ? null : { id: "space-a" };
       if (sql.includes("SELECT status,config_json FROM spaces")) return { status: "active", config_json: JSON.stringify({ productConfig: { compliance: { airGappedOnly: options.airGapped ?? false }, attachmentOcr: { enabled: true } } }) };
       if (sql.includes("SELECT config_json FROM spaces")) return { config_json: JSON.stringify({ productConfig: { compliance: { airGappedOnly: options.airGapped ?? false }, attachmentOcr: { enabled: true } } }) };
       if (sql.includes("FROM channel_attachments")) {
@@ -63,6 +64,33 @@ async function describeImage(value: never, options: { owned?: boolean; question?
 }
 
 describe("task-scoped audio transcription route", () => {
+  it("does not read or analyze attachments after the Space or organization is suspended", async () => {
+    const state = env({ active: false });
+    const response = await post(state.value);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(state.reads()).toBe(0);
+    expect(state.ai.run).not.toHaveBeenCalled();
+    expect(state.mediaCalls()).toBe(0);
+    const image = env({ active: false, mime: "image/png" });
+    const imageResponse = await describeImage(image.value, { question: "What is shown?" });
+    expect(imageResponse.status).toBe(403);
+    expect(image.reads()).toBe(0);
+    expect(image.ai.run).not.toHaveBeenCalled();
+    for (const [path, payload] of [
+      ["/internal/attachments/list", { taskId: "task-a" }],
+      ["/internal/attachments/inspect", { taskId: "task-a", id: "attachment-1" }],
+    ] as const) {
+      const response = await app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") },
+        body: JSON.stringify({ tenantId: "tenant-a", spaceId: "space-a", ...payload }),
+      }, image.value);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ error_code: "tenant_suspended" });
+    }
+  });
+
   it("transcribes only an authorized audio attachment and returns untrusted text", async () => {
     const state = env();
     const response = await post(state.value);

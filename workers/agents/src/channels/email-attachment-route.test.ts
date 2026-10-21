@@ -31,7 +31,7 @@ function onePagePdf(): Uint8Array {
   return new TextEncoder().encode(parts.join(""));
 }
 
-function makeEnv(options: { matchingTask?: boolean; bytes?: Uint8Array; mime?: string } = {}) {
+function makeEnv(options: { matchingTask?: boolean; active?: boolean; bytes?: Uint8Array; mime?: string } = {}) {
   let r2Reads = 0;
   const env = {
     PLATFORM_SECRET: secret,
@@ -39,6 +39,7 @@ function makeEnv(options: { matchingTask?: boolean; bytes?: Uint8Array; mime?: s
       prepare(sql: string) {
         return { bind(...values: unknown[]) {
           return { async first() {
+            if (sql.includes("SELECT s.id FROM spaces s WHERE")) return options.active === false ? null : { id: owned.space };
             expect(sql).toContain("WHERE object_key = ? AND tenant_id = ? AND space_id = ? AND task_id = ? AND expires_at > ?");
             expect(values).toEqual([owned.key, owned.tenant, owned.space, owned.task, expect.any(String)]);
             return options.matchingTask === false ? null : { object_key: owned.key };
@@ -67,7 +68,7 @@ function smallPng(): Uint8Array {
   return bytes;
 }
 
-function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGapped?: boolean; mime?: string; attemptAllowed?: boolean; bytes?: Uint8Array; oversizedRenderResponse?: boolean } = {}) {
+function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGapped?: boolean; active?: boolean; mime?: string; attemptAllowed?: boolean; bytes?: Uint8Array; oversizedRenderResponse?: boolean } = {}) {
   let r2Reads = 0;
   let documentSandboxCalls = 0;
   const ai = { run: vi.fn(async () => ({ answer: "Invoice 42\nTotal $10.00" })) };
@@ -77,6 +78,7 @@ function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGap
       prepare(sql: string) {
         return { bind(...values: unknown[]) {
           return { async first() {
+            if (sql.includes("SELECT s.id FROM spaces s WHERE")) return options.active === false ? null : { id: owned.space };
             if (sql.includes("SELECT status,config_json FROM spaces")) return {
               status: "active",
               config_json: JSON.stringify({ productConfig: { attachmentOcr: { enabled: options.enabled ?? true }, compliance: { airGappedOnly: options.airGapped ?? false } } }),
@@ -169,6 +171,14 @@ async function ocrAttachment(env: never, overrides: Partial<typeof owned> = {}) 
 }
 
 describe("task-scoped email PDF attachment endpoint", () => {
+  it("does not read an attachment after its tenant or Space is suspended", async () => {
+    const state = makeEnv({ active: false });
+    const response = await readAttachment(state.env);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(state.r2Reads()).toBe(0);
+  });
+
   it("parses a PDF only after matching tenant, Space, task, key, and expiry authorization", async () => {
     const state = makeEnv();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -228,6 +238,16 @@ describe("task-scoped email PDF attachment endpoint", () => {
 });
 
 describe("explicit task-scoped email image OCR endpoint", () => {
+  it("does not read or analyze attachments after their tenant or Space is suspended", async () => {
+    const state = makeOcrEnv({ active: false });
+    const response = await ocrAttachment(state.env);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(state.r2Reads()).toBe(0);
+    expect(state.documentSandboxCalls()).toBe(0);
+    expect(state.ai.run).not.toHaveBeenCalled();
+  });
+
   it("invokes hosted OCR only after owner opt-in, egress permission, and task ownership checks", async () => {
     const state = makeOcrEnv();
     const response = await ocrAttachment(state.env);

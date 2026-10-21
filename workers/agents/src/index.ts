@@ -6983,6 +6983,7 @@ app.post("/internal/attachments/list", async (c) => {
   }
   const body = await c.req.json<{ tenantId?: string; spaceId?: string; taskId?: string }>().catch(() => null);
   if (!body?.spaceId || !body.taskId || body.tenantId !== tenantId) return c.json({ error_code: "bad_request" }, 400);
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const rows = await c.env.PLATFORM_DB.prepare(
     `SELECT id, channel, filename, mime_type, size_bytes, created_at
      FROM channel_attachments WHERE tenant_id=? AND space_id=? AND task_id=? AND expires_at>?
@@ -7000,6 +7001,7 @@ app.post("/internal/attachments/inspect", async (c) => {
   }
   const body = await c.req.json<{ tenantId?: string; spaceId?: string; taskId?: string; id?: string }>().catch(() => null);
   if (!body?.spaceId || !body.taskId || !body.id || body.tenantId !== tenantId) return c.json({ error_code: "bad_request" }, 400);
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const attachment = await c.env.PLATFORM_DB.prepare(
     `SELECT id, channel, filename, mime_type, size_bytes, created_at, expires_at
      FROM channel_attachments WHERE id=? AND tenant_id=? AND space_id=? AND task_id=? AND expires_at>? LIMIT 1`,
@@ -7019,6 +7021,7 @@ app.post("/internal/attachments/transcribe", async (c) => {
   }
   const body = await c.req.json<{ tenantId?: string; spaceId?: string; taskId?: string; id?: string; languageHint?: string; projectId?: string; agentId?: string }>().catch(() => null);
   if (!body?.spaceId || !body.taskId || !body.id || body.tenantId !== tenantId) return c.json({ error_code: "bad_request" }, 400);
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.spaceId)) return c.json({ error_code: "attachment_transcription_egress_denied" }, 403);
   const row = await c.env.PLATFORM_DB.prepare(
     `SELECT object_key, mime_type, size_bytes FROM channel_attachments
@@ -7106,6 +7109,7 @@ app.post("/internal/attachments/describe-image", async (c) => {
   if (!body?.spaceId || !body.taskId || !body.id || body.tenantId !== tenantId || !question || question.length > 500) {
     return c.json({ error_code: "bad_request" }, 400);
   }
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const space = await c.env.PLATFORM_DB.prepare("SELECT status,config_json FROM spaces WHERE id=? AND tenant_id=?")
     .bind(body.spaceId, tenantId).first<{ status: string; config_json: string | null }>();
   if (!space || space.status !== "active") return c.json({ error_code: "space_inactive" }, 409);
@@ -7218,6 +7222,7 @@ app.post("/internal/business-email/attachment/read-text", async (c) => {
   if (!body?.spaceId || !body.taskId || (!body.id && !body.key) || body.tenantId !== tenantId) {
     return c.json({ error_code: "bad_request", message: "spaceId, taskId, id and matching tenantId are required" }, 400);
   }
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const now = new Date().toISOString();
   const attachment = body.id
     ? await c.env.PLATFORM_DB.prepare(
@@ -7299,6 +7304,7 @@ app.post("/internal/business-email/attachment/ocr", async (c) => {
   if (!body?.spaceId || !body.taskId || (!body.id && !body.key) || body.tenantId !== tenantId) {
     return c.json({ error_code: "bad_request", message: "spaceId, taskId, id and matching tenantId are required" }, 400);
   }
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const space = await c.env.PLATFORM_DB.prepare("SELECT status,config_json FROM spaces WHERE id=? AND tenant_id=?").bind(body.spaceId, tenantId).first<{ status: string; config_json: string | null }>();
   if (!space || space.status !== "active") return c.json({ error_code: "space_inactive" }, 409);
   try {

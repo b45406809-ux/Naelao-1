@@ -265,12 +265,26 @@ describe("/internal/business-email/send", () => {
 });
 
 describe("/internal/business-email/attachment/read-text", () => {
+  it("does not read an attachment when its tenant or Space is suspended", async () => {
+    const get = vi.fn();
+    const env = makeEnv({
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } as never,
+      SCRIPTS_R2: { get } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const res = await post("/internal/business-email/attachment/read-text", { tenantId: TENANT, spaceId: "s1", taskId: "run-1", key: "spaces/s1/email-inbound/run-1/hash/0-note.txt" }, env,
+      { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it("reads a small text attachment by opaque id only after tenant, Space and task authorization", async () => {
     const id = "attachment-1";
     const key = "spaces/s1/email-inbound/run-1/hash/0-note.txt";
     const get = vi.fn(async () => ({ size: 11, httpMetadata: { contentType: "text/plain" }, arrayBuffer: async () => new TextEncoder().encode("hello world").buffer }));
     const env = makeEnv({
-      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...values: unknown[]) => ({ first: async () => query.includes("channel_attachments") && values[0] === id && values[1] === TENANT && values[2] === "s1" && values[3] === "run-1" ? { id, object_key: key, filename: "note.txt", mime_type: "text/plain" } : null }) }) } as never,
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...values: unknown[]) => ({ first: async () => query.includes("SELECT s.id FROM spaces s WHERE") ? { id: "s1" } : query.includes("channel_attachments") && values[0] === id && values[1] === TENANT && values[2] === "s1" && values[3] === "run-1" ? { id, object_key: key, filename: "note.txt", mime_type: "text/plain" } : null }) }) } as never,
       SCRIPTS_R2: { get } as never,
     });
     const token = await mintInternalToken(SECRET, TENANT);
@@ -286,7 +300,7 @@ describe("/internal/business-email/attachment/read-text", () => {
   it("does not read an attachment registered to another task", async () => {
     const get = vi.fn();
     const env = makeEnv({
-      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } as never,
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: () => ({ first: async () => query.includes("SELECT s.id FROM spaces s WHERE") ? { id: "s1" } : null }) }) } as never,
       SCRIPTS_R2: { get } as never,
     });
     const token = await mintInternalToken(SECRET, TENANT);
