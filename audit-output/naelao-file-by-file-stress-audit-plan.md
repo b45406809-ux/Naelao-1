@@ -2516,7 +2516,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/sweeper/src`
 
 - [x] `workers/sweeper/src/index.test.ts`
-- [ ] `workers/sweeper/src/index.ts`
+- [x] `workers/sweeper/src/index.ts`
 
 ### `workers/synthetics`
 

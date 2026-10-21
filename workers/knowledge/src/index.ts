@@ -647,6 +647,12 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       allEmbedResults.push(...batchResults);
     }
 
+    // Persist the expected vector range before writes begin. If Vectorize partially accepts a
+    // batch and then fails, the failed-document sweeper can remove every possible chunk ID.
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE kb_documents SET chunk_count = ? WHERE id = ? AND status IN ('processing', 'flagged')"
+    ).bind(chunks.length, docId).run();
+
     // ── R2 storage + Vectorize upsert ───────────────────────────────────────
     const vectorUpserts: VectorizeVector[] = [];
 
@@ -908,6 +914,10 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     await c.env.PLATFORM_DB.prepare(
       "DELETE FROM kb_chunks WHERE document_id=? AND tenant_id=? AND space_id=? AND project_id=?"
     ).bind(docId, tenantId, spaceId, projectId ?? SPACE_WIDE_PROJECT_SENTINEL).run();
+
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE kb_documents SET chunk_count = ? WHERE id = ? AND status = 'processing'"
+    ).bind(chunks.length, docId).run();
 
     // Delete old R2 chunks
     const prefix = docR2Prefix(spaceId, projectId, docId);

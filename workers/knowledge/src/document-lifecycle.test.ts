@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const vectorUpserts: VectorizeVector[][] = [];
@@ -37,7 +37,11 @@ function fixture(options: { existing?: boolean; projectId?: string; allowedUserI
       metadata: { allowed_user_ids: options.allowedUserIds ?? [], required_role_rank: options.requiredRoleRank ?? 0 },
     }]),
     deleteByIds: vi.fn(async () => undefined),
-    upsert: vi.fn(async (vectors: VectorizeVector[]) => { vectorUpserts.push(vectors); return { count: vectors.length }; }),
+    upsert: vi.fn(async (vectors: VectorizeVector[]) => {
+      vectorUpserts.push(vectors);
+      if (options.vectorUpsertFails) throw new Error("partial vector write failure");
+      return { count: vectors.length };
+    }),
   };
   const env = {
     ENVIRONMENT: "test", PLATFORM_SECRET: "secret", PLATFORM_DB: db,
@@ -102,6 +106,18 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(f.vectorUpserts.flat()[0]?.metadata).toMatchObject({
       visibility: "restricted", required_role_rank: 30, allowed_roles: [], allowed_user_ids: ["user-1"],
     });
+  });
+
+  it("records the expected vector count before an upsert can partially fail", async () => {
+    const f = fixture({ vectorUpsertFails: true });
+    const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
+      title: "Retry cleanup", content: "This is a document for cleanup after a partial vector write.",
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(500);
+    const countUpdate = f.dbCalls.find(({ sql }) => sql.includes("SET chunk_count = ? WHERE id = ? AND status IN"));
+    expect(countUpdate?.args[0]).toBe(1);
+    expect(f.vectorize.upsert).toHaveBeenCalledTimes(1);
+    expect(f.dbCalls.some(({ sql }) => sql.includes("SET status = 'failed'"))).toBe(true);
   });
 
   it("preserves role and user ACLs when content is reindexed", async () => {

@@ -1260,4 +1260,17 @@ Validation: all 32 worker Wrangler configs parsed as TOML; all 32 production and
 
 Residual environment risk: where there was no explicit staging-specific resource override, staging now receives the resource ID/name already declared at top level. This follows the repository's existing shared-D1 configuration and restores runtime bindings, but does not establish staging data isolation. Remote resource IDs and service target names still need confirmation before relying on staging as an isolated environment.
 
+
+## Sweeper deletion and retry boundaries (2026-10-21)
+
+Traced the scheduled sweeper against Knowledge ingestion keys, Vectorize chunk IDs, D1 chunk rows, and the AutoRAG mirror. Both failed-document cleanup and deleted-space cleanup used `kb/{space}/{doc}/`, but Knowledge stores documents at `kb/{space}/{project-or-_space}/{doc}/`; cleanup therefore missed the R2 originals/chunks/citations. It also left `kb_chunks` and their FTS entries after deleting or purging the document, and did not remove the separate `autorag/` mirror. The sweeper allocated all vector IDs at once from unchecked D1 `chunk_count`, deleted each R2 page with unbounded parallelism, and could mark a space clean despite an incomplete R2 pass.
+
+Cleanup now uses the real project-aware prefixes, deletes the mirror and tenant/space/project-scoped D1 chunk rows, generates at most 100 vector IDs per request, limits R2 deletion to ten 1,000-object pages and 100 concurrent deletes at a time, detects broken/repeated cursors, and keeps documents pending for another sweep when R2 work remains. Rejects corrupt chunk counts above 12,000 without deleting the D1 record. Deleted-space selection also revisits previously purged documents with leftover chunk rows and removes remaining objects for the space. A bounded orphan repair groups old `kb_chunks` rows whose document rows were already deleted, then removes their project-scoped R2 objects, AutoRAG mirrors, vectors derived from chunk indexes, and D1/FTS rows. Expired session, API-key, and idempotency cleanup is capped at 1,000 rows per pass. Knowledge ingestion now saves the expected chunk count before Vectorize writes so the sweeper can remove a partially accepted vector batch.
+
+While validating limits, SQLite rejected direct `DELETE ... LIMIT` syntax in the test/runtime SQLite build. Rewrote bounded deletes as `DELETE ... WHERE rowid IN (SELECT rowid ... LIMIT 1000)` and executed all four query shapes against SQLite successfully.
+
+Validation: sweeper suite passed 1 file / 8 tests; Knowledge document lifecycle suite passed 1 file / 8 tests; both worker TypeScript checks passed; the complete Knowledge Worker suite passed 10 files / 50 tests; sweeper staging and production Wrangler dry-runs passed without configuration warnings; all worker config tests and inventory are unchanged by this slice. Executed the bounded cleanup and deleted-space selection SQL against SQLite. Full Knowledge Worker tests emit expected stderr for deliberately simulated provider and HTTP failures. No live R2, Vectorize, or D1 cleanup was run.
+
+Checked `workers/sweeper/src/index.ts` and its test file. `workers/knowledge/src/index.ts` remains unchecked overall; this slice covers its document ingestion/reindex cleanup metadata path only.
+
 Checked the bundle workflow and every worker `wrangler.toml`. Runtime source, APIs, Durable Object state behavior, and provider-side resource targets remain under audit.
