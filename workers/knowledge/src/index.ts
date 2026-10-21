@@ -543,6 +543,12 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
   const rawChunks = body.chunks as string[];
   const rawBytes = rawChunks.reduce((total, chunk) => total + new TextEncoder().encode(chunk).byteLength, 0);
   if (rawBytes > 5 * 1024 * 1024) throw new HttpError(413, "payload_too_large", "Workflow chunks exceed 5 MiB");
+  for (const chunk of rawChunks) {
+    for (let start = 0; start < chunk.length; start += 2_000) {
+      const moderation = moderateInput(chunk.slice(start, start + 2_000));
+      if (moderation.blocked) throw badRequest(`Document content contains disallowed content: ${moderation.reason}`);
+    }
+  }
 
   const doc = await c.env.PLATFORM_DB.prepare(
     "SELECT id, title, status, chunk_count FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ? AND project_id = ?"
@@ -602,7 +608,7 @@ app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c
     } });
   }
   for (let start = 0; start < vectors.length; start += 100) await c.env.KB_VECTORS.upsert(vectors.slice(start, start + 100));
-  await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytes, true);
+  await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytes, true, `workflow-ingest:${docId}:${chunkOffset}`);
   return c.json({ id: docId, chunk_count: doc.chunk_count, batch_count: chunks.length });
 });
 
