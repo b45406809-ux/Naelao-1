@@ -22,9 +22,10 @@ const ORGS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0002
 const BILLING_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0004_billing.sql"), "utf8");
 const TOKEN_VERSION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0030_token_version.sql"), "utf8");
 const RESET_TOKENS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0057_builder_password_reset_tokens.sql"), "utf8");
+const RESET_TOKEN_EXPIRY_INDEX_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0123_builder_reset_token_expiry_index.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([USERS_MIGRATION, ORGS_MIGRATION, BILLING_MIGRATION, TOKEN_VERSION_MIGRATION, RESET_TOKENS_MIGRATION]);
+  const fakeDb = createFakeD1([USERS_MIGRATION, ORGS_MIGRATION, BILLING_MIGRATION, TOKEN_VERSION_MIGRATION, RESET_TOKENS_MIGRATION, RESET_TOKEN_EXPIRY_INDEX_MIGRATION]);
   const notifyCalls: Array<{ to: string; subject: string; body: string; tenantId: string | null }> = [];
   return {
     ENVIRONMENT: "test",
@@ -181,6 +182,14 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     if (!match) throw new Error("no reset token found in notify body");
     return match[1]!;
   }
+
+  it("installs the indexed expiry path used by the daily token-retention sweep", async () => {
+    const env = makeEnv();
+    const index = await env.__db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_builder_password_reset_tokens_expiry'"
+    ).first<{ name: string }>();
+    expect(index?.name).toBe("idx_builder_password_reset_tokens_expiry");
+  });
 
   it("issues a token by email and the token resets the password", async () => {
     const env = makeEnv();

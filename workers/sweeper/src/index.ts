@@ -292,6 +292,16 @@ export async function cleanExpiredApiKeys(db: D1Database): Promise<number> {
   return result.meta.changes ?? 0;
 }
 
+export async function cleanExpiredBuilderPasswordResetTokens(db: D1Database): Promise<number> {
+  const result = await db.prepare(
+    `DELETE FROM builder_password_reset_tokens WHERE rowid IN (
+       SELECT rowid FROM builder_password_reset_tokens
+       WHERE julianday(expires_at) < julianday('now') LIMIT 1000
+     )`
+  ).run();
+  return result.meta.changes ?? 0;
+}
+
 export async function cleanExpiredIdempotencyKeys(db: D1Database): Promise<number> {
   const result = await db.prepare(
     `DELETE FROM idempotency_keys WHERE rowid IN (
@@ -321,6 +331,7 @@ export default {
       cleanDeletedSpaces(env.PLATFORM_DB, env.KB_BUCKET, env.KB_VECTORS).then((n) => console.log(`[sweeper] Cascade-cleaned ${n} deleted spaces`)),
       cleanExpiredApiKeys(env.PLATFORM_DB).then((n) => console.log(`[sweeper] Cleaned ${n} expired API keys`)),
       cleanExpiredIdempotencyKeys(env.PLATFORM_DB).then((n) => console.log(`[sweeper] Cleaned ${n} expired idempotency keys`)),
+      cleanExpiredBuilderPasswordResetTokens(env.PLATFORM_DB).then((n) => console.log(`[sweeper] Cleaned ${n} expired builder password reset tokens`)),
       cleanOrphanedKnowledgeChunks(env.PLATFORM_DB, env.KB_BUCKET, env.KB_VECTORS).then((n) => console.log(`[sweeper] Cleaned ${n} orphaned KB chunks`)),
     ]));
   },

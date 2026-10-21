@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2030` tracked files; `1824` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` refreshed after platform assistant session commit `4bc55f6b`.
+Inventory basis: `2031` tracked files; `1825` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` refreshed for the builder reset-token retention migration.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -746,6 +746,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `infra/migrations/0120_synthetics_storage.sql`
 - [x] `infra/migrations/0121_space_provisioning_leases.sql`
 - [x] `infra/migrations/0122_platform_assistant_sessions.sql`
+- [ ] `infra/migrations/0123_builder_reset_token_expiry_index.sql`
 
 ### `infra/scripts`
 

@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2030
-Files with source or executable-configuration extensions: 1824
-Inventory revision: refreshed 2026-10-21 after platform assistant session commit 4bc55f6b
+Files: 2031
+Files with source or executable-configuration extensions: 1825
+Inventory revision: refreshed 2026-10-21 for the builder reset-token retention and required-migration deployment audit
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -606,6 +606,7 @@ infra/
     0120_synthetics_storage.sql
     0121_space_provisioning_leases.sql
     0122_platform_assistant_sessions.sql
+    0123_builder_reset_token_expiry_index.sql
   scripts/
     audit-ui.mjs
     await-quota-then-matrix.sh

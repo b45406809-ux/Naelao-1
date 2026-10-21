@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   cleanDeletedSpaces,
   cleanExpiredApiKeys,
+  cleanExpiredBuilderPasswordResetTokens,
   cleanExpiredIdempotencyKeys,
   cleanFailedDocs,
   cleanOrphanedKnowledgeChunks,
@@ -45,6 +46,10 @@ describe("sweeper cursor migration deployment", () => {
       expect(text).toContain("--file=infra/migrations/0115_sweeper_fairness_cursors.sql");
       expect(text).toContain("npx wrangler d1 execute \"$DB_ID\"");
       expect(text).toContain('--command="SELECT suspension_reason FROM spaces LIMIT 0"');
+      expect(text).toContain("--file=infra/migrations/0122_platform_assistant_sessions.sql");
+      expect(text).toContain('--command="SELECT session_id FROM assistant_messages LIMIT 0"');
+      expect(text).toContain("--file=infra/migrations/0123_builder_reset_token_expiry_index.sql");
+      expect(text).toContain('--command="SELECT expires_at FROM builder_password_reset_tokens LIMIT 0"');
     }
   });
 });
@@ -72,6 +77,20 @@ describe("API key expiry cleanup", () => {
       `DELETE FROM api_keys WHERE rowid IN (
        SELECT rowid FROM api_keys
        WHERE expires_at IS NOT NULL AND julianday(expires_at) < julianday('now') LIMIT 1000
+     )`
+    );
+  });
+});
+
+describe("builder reset-token expiry cleanup", () => {
+  it("deletes a bounded batch using SQLite date parsing for ISO timestamps", async () => {
+    const run = vi.fn().mockResolvedValue({ meta: { changes: 7 } });
+    const prepare = vi.fn().mockReturnValue({ run });
+    await expect(cleanExpiredBuilderPasswordResetTokens({ prepare } as never)).resolves.toBe(7);
+    expect(prepare).toHaveBeenCalledWith(
+      `DELETE FROM builder_password_reset_tokens WHERE rowid IN (
+       SELECT rowid FROM builder_password_reset_tokens
+       WHERE julianday(expires_at) < julianday('now') LIMIT 1000
      )`
     );
   });
