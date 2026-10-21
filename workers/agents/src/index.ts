@@ -7090,6 +7090,8 @@ app.post("/internal/attachments/copy", async (c) => {
     if (await c.env.SCRIPTS_R2.head(destinationKey)) throw new R2CasConflictError(destinationKey);
     const object = await c.env.SCRIPTS_R2.get(attachment.object_key);
     if (!object) throw new Error("attachment_not_found");
+    if (object.size !== attachment.size_bytes) throw new Error("attachment_copy_size_mismatch");
+    if (object.size > MAX_EMAIL_ATTACHMENT_BYTES) throw new Error("attachment_copy_size_mismatch");
     const bytes = await object.arrayBuffer();
     if (bytes.byteLength !== attachment.size_bytes || bytes.byteLength > MAX_EMAIL_ATTACHMENT_BYTES) throw new Error("attachment_copy_size_mismatch");
     await putBytesCas(c.env.SCRIPTS_R2, destinationKey, new Uint8Array(bytes), null,

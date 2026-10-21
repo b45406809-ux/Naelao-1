@@ -5,9 +5,10 @@ import { app } from "../index.js";
 const secret = "attachment-copy-secret";
 const attachment = { object_key: "spaces/space-a/email-inbound/private.pdf", filename: "private.pdf", mime_type: "application/pdf", size_bytes: 4 };
 
-function makeEnv(options: { owned?: boolean; claimAllowed?: boolean; destinationExists?: boolean } = {}) {
+function makeEnv(options: { owned?: boolean; claimAllowed?: boolean; destinationExists?: boolean; sourceSize?: number } = {}) {
   const queries: Array<{ sql: string; values: unknown[] }> = [];
   let sourceRead = 0;
+  let sourceBytesRead = 0;
   const destinationWrites: Array<{ key: string; bytes: ArrayBuffer }> = [];
   const env = {
     PLATFORM_SECRET: secret,
@@ -28,11 +29,11 @@ function makeEnv(options: { owned?: boolean; claimAllowed?: boolean; destination
     },
     SCRIPTS_R2: {
       async head() { return options.destinationExists ? {} : null; },
-      async get(key: string) { sourceRead++; expect(key).toBe(attachment.object_key); return { arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer }; },
+      async get(key: string) { sourceRead++; expect(key).toBe(attachment.object_key); return { size: options.sourceSize ?? attachment.size_bytes, arrayBuffer: async () => { sourceBytesRead++; return new Uint8Array([1, 2, 3, 4]).buffer; } }; },
       async put(key: string, bytes: Uint8Array) { destinationWrites.push({ key, bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer }); return { etag: "created" }; },
     },
   };
-  return { env: env as never, queries, sourceRead: () => sourceRead, destinationWrites };
+  return { env: env as never, queries, sourceRead: () => sourceRead, sourceBytesRead: () => sourceBytesRead, destinationWrites };
 }
 
 async function copy(env: never, body: Record<string, unknown>) {
@@ -75,5 +76,14 @@ describe("storage-only attachment copy", () => {
     const exists = makeEnv({ destinationExists: true });
     expect((await copy(exists.env, {})).status).toBe(409);
     expect(exists.sourceRead()).toBe(0);
+  });
+
+  it("rejects inconsistent R2 size metadata before reading or copying the object", async () => {
+    const state = makeEnv({ sourceSize: attachment.size_bytes + 1 });
+    const response = await copy(state.env, {});
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "attachment_copy_size_mismatch" });
+    expect(state.sourceBytesRead()).toBe(0);
+    expect(state.destinationWrites).toHaveLength(0);
   });
 });
