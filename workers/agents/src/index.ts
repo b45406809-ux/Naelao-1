@@ -2532,6 +2532,9 @@ app.post("/internal/triggers/fire", async (c) => {
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
   }
+  if (!await isActiveTenantSpace(c.env, body.spaceId, body.tenantId)) {
+    return c.json({ error_code: "tenant_suspended", message: "Space or organization is not active" }, 403);
+  }
   const policy = await resolveWakeContext(c.env, body.spaceId, body.tenantId);
   const doResp = await fireScriptDirectly(c.env, { ...body, airGappedOnly: policy.airGappedOnly }, c.get("requestId"));
   const doBody = await doResp.json<unknown>();
@@ -2551,6 +2554,7 @@ app.post("/internal/workflows/effect", async (c) => {
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   const body = await c.req.json<{ identity: DurableWorkflowIdentity; key: string; operation: string; params: Record<string, unknown>; idempotencyKey: string }>();
   if (!body.identity || body.identity.tenantId !== tenantId || body.idempotencyKey !== body.identity.runId + ":" + body.key) return c.json({ error_code: "workflow_scope_mismatch" }, 403);
+  if (!await isActiveTenantSpace(c.env, body.identity.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const canonical = await workflowRunStub(c.env as unknown as DurableWorkflowHostEnv, body.identity).authorize(body.identity.runId);
   if (JSON.stringify(canonical) !== JSON.stringify(body.identity)) return c.json({ error_code: "workflow_scope_mismatch" }, 403);
   const wake = await resolveWakeContext(c.env, canonical.spaceId, tenantId);
@@ -2580,6 +2584,9 @@ app.post("/internal/scripts/run-durable", async (c) => {
   }
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
+  }
+  if (!await isActiveTenantSpace(c.env, body.spaceId, body.tenantId)) {
+    return c.json({ error_code: "tenant_suspended", message: "Space or organization is not active" }, 403);
   }
   const policy = await resolveWakeContext(c.env, body.spaceId, body.tenantId);
   const doResp = await fireScriptDirectly(c.env, { ...body, airGappedOnly: policy.airGappedOnly }, c.get("requestId"));

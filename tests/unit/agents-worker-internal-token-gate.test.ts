@@ -129,6 +129,44 @@ describe("F1 — agents-worker routes reject a spoofed tenant header with no val
     expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
     expect(env.agentDoFetch).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["/internal/triggers/fire", { spaceId: "space-1", tenantId: TENANT, scriptName: "cleanup" }],
+    ["/internal/scripts/run-durable", { spaceId: "space-1", tenantId: TENANT, scriptName: "cleanup" }],
+  ])("POST %s → blocks a signed script dispatch after suspension", async (path, payload) => {
+    const token = await mintInternalToken(SECRET, TENANT);
+    const env = makeEnv(false) as AgentsEnv & { agentDoFetch: ReturnType<typeof vi.fn> };
+    const res = await app.fetch(
+      new Request(`https://agents.naelao.com${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token },
+        body: JSON.stringify(payload),
+      }),
+      env
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(env.agentDoFetch).not.toHaveBeenCalled();
+  });
+
+  it("POST /internal/workflows/effect → blocks a resumed side effect after suspension", async () => {
+    const token = await mintInternalToken(SECRET, TENANT);
+    const env = makeEnv(false) as AgentsEnv & { agentDoFetch: ReturnType<typeof vi.fn> };
+    const res = await app.fetch(
+      new Request("https://agents.naelao.com/internal/workflows/effect", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token },
+        body: JSON.stringify({
+          identity: { tenantId: TENANT, spaceId: "space-1", runId: "run-1" },
+          key: "effect-1", operation: "external.send", params: {}, idempotencyKey: "run-1:effect-1",
+        }),
+      }),
+      env
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(env.agentDoFetch).not.toHaveBeenCalled();
+  });
 });
 
 /**
