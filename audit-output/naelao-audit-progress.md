@@ -1443,6 +1443,8 @@ After the auth/workflow/browser fixes, the full shared suite reports 3,577 passi
 
 The remaining connector-catalogue failure was a stale Notion expectation: the catalogue declares Notion as Composio-routed, and the unified directory explicitly chooses Composio when both providers list the same slug. Updated the test and the adjacent directory-test comment to match that policy. Validation: catalogue and directory tests passed 2 files / 39 tests.
 
+Committed and pushed as `64ec6cf9`; refreshed the inventory: 1,976 tracked files, 1,770 source/config checklist rows, 383 checked rows.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.
