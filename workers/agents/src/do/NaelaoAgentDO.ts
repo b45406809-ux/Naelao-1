@@ -8237,16 +8237,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async handleChannelHeartbeat(request: Request): Promise<Response> {
     this.ensureInit();
-    // businessContext: resolved by the caller (index.ts's heartbeat dispatch) — this DO has no
-    // PLATFORM_DB binding. Without it the agent answering a real customer on WhatsApp/Slack knows
-    // its role but not what the business actually sells, which is the one thing that conversation
-    // is about.
+    // businessContext is resolved by the caller (index.ts's heartbeat dispatch).
     type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; channel?: string; max?: number; businessContext?: BusinessContext; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
     const body = await request.json<HeartbeatBody>().catch(() => ({}) as HeartbeatBody);
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
     const agentId = body.agentId ?? "naelao-agent";
     const tenantId = body.tenantId ?? "";
+    const tenantSuspended = async () => Boolean(
+      this.env.PLATFORM_DB && await this.tenantSpaceSuspended(tenantId, spaceId),
+    );
+    if (await tenantSuspended()) return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
     const limit = Number.isSafeInteger(body.max)
       ? Math.max(1, Math.min(body.max!, 20))
       : 5;
@@ -8280,11 +8281,36 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       `UPDATE channel_messages SET answered = 2 WHERE id IN (${pending.map(() => "?").join(",")})`,
       ...pending.map((m) => m.id)
     );
+    const releasePendingClaims = () => this.ctx.storage.sql.exec(
+      `UPDATE channel_messages SET answered = 0 WHERE answered = 2 AND id IN (${pending.map(() => "?").join(",")})`,
+      ...pending.map((m) => m.id)
+    );
+    const stopForSuspension = () => {
+      releasePendingClaims();
+      this.ctx.storage.sql.exec(
+        `UPDATE channel_extension_dispatches SET status='failed',error_code='tenant_suspended'
+         WHERE status='running' AND message_id IN (${pending.map(() => "?").join(",")})`,
+        ...pending.map((m) => m.id),
+      );
+      return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+    };
+
+    // Status can change between the initial check and the claim. Do not leave the batch stuck
+    // in the in-flight state if the tenant was suspended during that window.
+    if (await tenantSuspended()) {
+      return stopForSuspension();
+    }
 
     const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId);
-    if (!engineEnv) return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
+    if (!engineEnv) {
+      releasePendingClaims();
+      return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
+    }
     const config = await this.loadAgentConfigHealed(engineEnv.scriptsBucket, spaceId, agentId);
-    if (!config) return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
+    if (!config) {
+      releasePendingClaims();
+      return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
+    }
     // Same structural-config-first, agents.md-parse-fallback precedence as handleScriptRun above.
     const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
     // This queue is exclusively external-channel traffic. Construct a separate allow-listed
@@ -8304,6 +8330,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       channelModelPricing = await this.resolveDynamicModelPricing(model, byokOverride.openRouterApiKey);
     } catch (error) {
+      releasePendingClaims();
       return Response.json({ error_code: "model_price_unavailable", error: error instanceof Error ? error.message : "Fresh model price evidence unavailable" }, { status: 503 });
     }
     const channelReservation = { enabled: false, projectId: "", runId: "", sequence: 0, reserved: false, estimatedCredits: 0, estimatedTokens: 0 };
@@ -8370,6 +8397,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     for (const msg of pending) {
       try {
+      if (await tenantSuspended()) {
+        return stopForSuspension();
+      }
       const msgProjectConfig = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
       channelReservation.enabled = Boolean(msg.project_id && msgProjectConfig?.status === "found" && msgProjectConfig.daily_spend_cap_credits > 0);
       channelReservation.projectId = msg.project_id ?? "";
@@ -8456,6 +8486,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ? (matchedRule.reply_text ?? "")
           : null;
         if (replyText) {
+          if (await tenantSuspended()) {
+            return stopForSuspension();
+          }
           const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText,
             { installationId: msg.channel_extension_instance_id ?? "", providerConnectionId: msg.provider_connection_id, recipientId: msg.recipient_id, threadId: msg.thread_id }));
           if (deliver.ok) {
@@ -8477,6 +8510,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             continue;
           }
           if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
+          if (await tenantSuspended()) {
+            return stopForSuspension();
+          }
           const scriptResult = await tools.run(matchedRule.script_name, { text: msg.text, channel_user_id: msg.channel_user_id });
           if (scriptResult.ok) {
             this.markOutbound(msg.session_id, msg.id, `(handled by rule → ${matchedRule.script_name})`);
@@ -8648,6 +8684,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             takeover("The handler's approved conversation state could not be read. Review the conversation manually."); escalated++; continue;
           }
         }
+        if (await tenantSuspended()) {
+          return stopForSuspension();
+        }
         const run = await channelRunner.call(engineEnv.codeRunner, {
           name: handler.name, code: handler.code, args: {}, tenantId, spaceId, agentId,
           installationId: msg.channel_extension_instance_id, maxConcurrency: handler.maxConcurrency,
@@ -8655,6 +8694,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             conversation: { id: msg.session_id }, ...(handler.session ? { session: { state: channelSessionState, maxBytes: handler.session.maxBytes }, sessions: { states: channelNamedSessionStates, maxBytes: handler.session.maxBytes } } : {}) },
           limits: handler.limits,
         });
+        if (await tenantSuspended()) return stopForSuspension();
         let replyText = run.ok && run.channel_replies?.length === 1 && !(run.channel_answers?.length)
           ? run.channel_replies[0]!.trim() : "";
         if (run.ok && run.channel_answers?.length === 1 && !(run.channel_replies?.length)) {
@@ -8664,6 +8704,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           }
           let answer: Awaited<ReturnType<GatewayReasoner["answerExternal"]>>;
           try {
+            if (await tenantSuspended()) {
+              return stopForSuspension();
+            }
             answer = await reasoner.answerExternal({ question: run.channel_answers[0]!,
               sources: publishedKnowledge.map(source => ({ title: source.title, content: source.content })), maxOutputTokens: 320 });
           } catch {
@@ -8715,6 +8758,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           takeover("The extension did not produce one valid, moderated text reply. Review the conversation and handler before responding."); escalated++; continue;
         }
         this.ctx.storage.sql.exec("UPDATE channel_extension_dispatches SET status='delivering',reply_text=? WHERE message_id=? AND status='running'", replyText, msg.id);
+      if (await tenantSuspended()) {
+        return stopForSuspension();
+      }
       const delivery = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText,
         { installationId: msg.channel_extension_instance_id ?? "", providerConnectionId: msg.provider_connection_id, recipientId: msg.recipient_id, threadId: msg.thread_id }));
         if (msg.project_id) {
@@ -8868,6 +8914,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         result = { level: "L4", result: { ok: false, error: String(err), tier: 1, duration_ms: 0, tokens_used: 0 }, notes: [], trace: [] };
       }
 
+      if (result.result?.error === "tenant_suspended" || await tenantSuspended()) return stopForSuspension();
+
       if (msg.project_id && result.result?.tokens_used) {
         // Real per-model USD→credit conversion (billing-core), not the old "1 token ≈ 1
         // credit" proxy — falls back to the raw token count only if a future producer of
@@ -8890,6 +8938,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       const deliveredDirectly = result.script_name?.startsWith("notify.") && result.result?.ok;
       if (deliveredDirectly) {
+        if (await tenantSuspended()) {
+          return stopForSuspension();
+        }
         this.markOutbound(msg.session_id, msg.id, "(sent via notify)");
         answered++;
         continue;
@@ -8902,6 +8953,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         continue;
       }
       // The reasoner answered in text rather than calling notify.* itself — deliver it now.
+      if (await tenantSuspended()) {
+        return stopForSuspension();
+      }
       const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, text,
         { installationId: msg.channel_extension_instance_id ?? "", providerConnectionId: msg.provider_connection_id, recipientId: msg.recipient_id, threadId: msg.thread_id }));
       if (!deliver.ok) { escalated++; continue; }
