@@ -72,4 +72,11 @@ describe("Cloudflare for SaaS hostname boundary", () => {
     await expect(deleteCustomHostname(config, "../other")).rejects.toThrow(/Invalid/);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+
+  it("rejects an oversized provider response before parsing it", async () => {
+    const body = JSON.stringify({ success: true, padding: "x".repeat(70 * 1024) });
+    const fetchMock = vi.fn(async () => new Response(body, { headers: { "content-length": String(body.length) } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(deleteCustomHostname(config, "cf-id")).rejects.toThrow(/response.*maximum|response.*large|limit/i);
+  });
 });
