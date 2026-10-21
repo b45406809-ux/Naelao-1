@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1999` tracked files; `1793` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `318851b3`.
+Inventory basis: `2000` tracked files; `1794` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `eb7e5383`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -703,6 +703,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/migrations/0112_extension_provider_connections.sql`
 - [ ] `infra/migrations/0113_whatsapp_extension_phone_routing.sql`
 - [x] `infra/migrations/0114_thread_last_active_at.sql`
+- [x] `infra/migrations/0115_sweeper_fairness_cursors.sql`
 
 ### `infra/scripts`
 

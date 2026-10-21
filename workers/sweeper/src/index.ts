@@ -12,6 +12,29 @@ const MAX_DOCUMENT_CHUNKS = 12_000;
 const R2_DELETE_BATCH_SIZE = 100;
 const MAX_R2_PAGES_PER_PASS = 10;
 
+/** Read a bounded, ordered slice after the last examined key, then advance the cursor.
+ * Once the end is reached the next pass wraps to the beginning. Cursor advancement happens
+ * before external cleanup so a provider failure cannot pin the scan at the same first row.
+ */
+export async function selectFairSweepBatch<T>(
+  db: D1Database,
+  cursorName: string,
+  select: (after: string | null) => D1PreparedStatement,
+  key: (row: T) => string,
+): Promise<T[]> {
+  const stored = await db.prepare("SELECT cursor_value FROM sweeper_cursors WHERE name = ?")
+    .bind(cursorName).first<{ cursor_value: string }>();
+  let rows = (await select(stored?.cursor_value ?? null).all<T>()).results;
+  if (rows.length === 0 && stored?.cursor_value) rows = (await select(null).all<T>()).results;
+  if (rows.length > 0) {
+    await db.prepare(
+      `INSERT INTO sweeper_cursors (name, cursor_value, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(name) DO UPDATE SET cursor_value = excluded.cursor_value, updated_at = excluded.updated_at`
+    ).bind(cursorName, key(rows[rows.length - 1]!)).run();
+  }
+  return rows;
+}
+
 function validChunkCount(value: number | null): number {
   if (value === null) return 0;
   if (!Number.isSafeInteger(value) || value < 0 || value > MAX_DOCUMENT_CHUNKS) {
@@ -73,15 +96,22 @@ export async function cleanOrphanedKnowledgeChunks(
   bucket: R2Bucket,
   vectors: VectorizeIndex
 ): Promise<number> {
-  const { results: orphanedDocs } = await db.prepare(
+  const orphanedDocs = await selectFairSweepBatch<{
+    id: string; tenant_id: string; space_id: string; project_id: string; chunk_count: number;
+  }>(
+    db,
+    "orphaned_kb_chunks",
+    (after) => db.prepare(
     `SELECT kc.document_id AS id, kc.tenant_id, kc.space_id, kc.project_id,
        MAX(kc.chunk_index) + 1 AS chunk_count
      FROM kb_chunks kc
      LEFT JOIN kb_documents d ON d.id = kc.document_id
-     WHERE d.id IS NULL
+     WHERE d.id IS NULL AND kc.document_id > COALESCE(?, '')
      GROUP BY kc.document_id, kc.tenant_id, kc.space_id, kc.project_id
-     LIMIT 100`
-  ).all<{ id: string; tenant_id: string; space_id: string; project_id: string; chunk_count: number }>();
+     ORDER BY kc.document_id ASC LIMIT 100`
+    ).bind(after),
+    (row: { id: string }) => row.id,
+  );
 
   let cleaned = 0;
   for (const doc of orphanedDocs) {
@@ -129,9 +159,18 @@ export async function cleanOldSessions(db: D1Database): Promise<number> {
 
 export async function cleanFailedDocs(db: D1Database, bucket: R2Bucket, vectors: VectorizeIndex): Promise<number> {
   // Failed KB docs older than 7 days — clean up
-  const { results: failedDocs } = await db.prepare(
-    `SELECT id, tenant_id, space_id, project_id, chunk_count FROM kb_documents WHERE status = 'failed' AND updated_at < datetime('now', '-7 days') LIMIT 100`
-  ).all<{ id: string; tenant_id: string; space_id: string; project_id: string | null; chunk_count: number | null }>();
+  const failedDocs = await selectFairSweepBatch<{
+    id: string; tenant_id: string; space_id: string; project_id: string | null; chunk_count: number | null;
+  }>(
+    db,
+    "failed_kb_documents",
+    (after) => db.prepare(
+      `SELECT id, tenant_id, space_id, project_id, chunk_count FROM kb_documents
+       WHERE status = 'failed' AND updated_at < datetime('now', '-7 days')
+         AND id > COALESCE(?, '') ORDER BY id ASC LIMIT 100`
+    ).bind(after),
+    (row: { id: string }) => row.id,
+  );
 
   let cleaned = 0;
   for (const doc of failedDocs) {
@@ -161,14 +200,20 @@ export async function cleanFailedDocs(db: D1Database, bucket: R2Bucket, vectors:
 export async function cleanDeletedSpaces(db: D1Database, bucket: R2Bucket, vectors: VectorizeIndex): Promise<number> {
   // Find deleted spaces with either non-purged documents or leftover D1 chunks, including
   // chunks left behind by older sweeper versions that already marked their document purged.
-  const { results: deletedSpaces } = await db.prepare(
+  const deletedSpaces = await selectFairSweepBatch(
+    db,
+    "deleted_spaces",
+    (after) => db.prepare(
     `SELECT s.id AS space_id FROM spaces s
      WHERE s.status = 'deleted' AND (
        EXISTS (SELECT 1 FROM kb_documents kd WHERE kd.space_id = s.id AND kd.status != 'purged')
        OR EXISTS (SELECT 1 FROM kb_chunks kc WHERE kc.space_id = s.id)
      )
-     LIMIT 20`
-  ).all<{ space_id: string }>();
+       AND s.id > COALESCE(?, '')
+     ORDER BY s.id ASC LIMIT 20`
+    ).bind(after),
+    (row: { space_id: string }) => row.space_id,
+  );
 
   let cleaned = 0;
   for (const { space_id: spaceId } of deletedSpaces) {

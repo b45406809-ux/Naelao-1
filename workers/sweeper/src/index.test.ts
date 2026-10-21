@@ -5,7 +5,31 @@ import {
   cleanExpiredIdempotencyKeys,
   cleanFailedDocs,
   cleanOrphanedKnowledgeChunks,
+  selectFairSweepBatch,
 } from "./index.js";
+
+describe("fair cleanup pagination", () => {
+  it("advances past failed candidates and wraps to retry them after reaching the end", async () => {
+    let cursor: string | null = "a";
+    const writes: string[] = [];
+    const db = {
+      prepare(sql: string) {
+        if (sql.includes("SELECT cursor_value")) return { bind: () => ({ first: async () => cursor ? { cursor_value: cursor } : null }) };
+        return { bind: (...args: unknown[]) => ({ run: async () => { writes.push(String(args[1])); cursor = String(args[1]); return {}; } }) };
+      },
+    } as never;
+    const select = (after: string | null) => ({
+      all: async <T,>() => ({ results: (after === "a" ? [{ id: "b" }] : after === "b" ? [] : [{ id: "a" }]) as T[] }),
+    }) as never;
+
+    await expect(selectFairSweepBatch(db, "failed_docs", select, (row: { id: string }) => row.id))
+      .resolves.toEqual([{ id: "b" }]);
+    expect(writes).toEqual(["b"]);
+    await expect(selectFairSweepBatch(db, "failed_docs", select, (row: { id: string }) => row.id))
+      .resolves.toEqual([{ id: "a" }]);
+    expect(writes).toEqual(["b", "a"]);
+  });
+});
 
 describe("idempotency expiry cleanup", () => {
   it("compares ISO timestamps as dates and reports deleted rows", async () => {
@@ -39,12 +63,17 @@ describe("bounded knowledge cleanup", () => {
   function failedDocHarness(chunkCount: number | null = 201) {
     const run = vi.fn().mockResolvedValue({ meta: { changes: 1 } });
     const select = vi.fn().mockReturnValue({
+      bind: vi.fn().mockReturnThis(),
       all: vi.fn().mockResolvedValue({ results: [{
         id: "doc-a", space_id: "space-a", project_id: "project-a", chunk_count: chunkCount,
       }] }),
     });
     const deletion = vi.fn().mockReturnValue({ bind: vi.fn().mockReturnValue({ run }) });
-    const prepare = vi.fn((sql: string) => sql.startsWith("SELECT") ? select() : deletion());
+    const prepare = vi.fn((sql: string) => {
+      if (sql.includes("SELECT cursor_value")) return { bind: vi.fn().mockReturnValue({ first: vi.fn().mockResolvedValue(null) }) };
+      if (sql.includes("INSERT INTO sweeper_cursors")) return { bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({}) }) };
+      return sql.startsWith("SELECT") ? select() : deletion();
+    });
     const db = { prepare };
     const list = vi.fn().mockResolvedValue({
       objects: [{ key: "kb/space-a/project-a/doc-a/chunk_0.json" }],
@@ -103,8 +132,10 @@ describe("bounded knowledge cleanup", () => {
   it("uses the project prefix when cascading a deleted space", async () => {
     const run = vi.fn().mockResolvedValue({ meta: { changes: 1 } });
     const statements = vi.fn((sql: string) => {
+      if (sql.includes("SELECT cursor_value")) return { bind: vi.fn().mockReturnValue({ first: vi.fn().mockResolvedValue(null) }) };
+      if (sql.includes("INSERT INTO sweeper_cursors")) return { bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({}) }) };
       if (sql.includes("FROM spaces s")) {
-        return { all: vi.fn().mockResolvedValue({ results: [{ space_id: "space-a" }] }) };
+        return { bind: vi.fn().mockReturnValue({ all: vi.fn().mockResolvedValue({ results: [{ space_id: "space-a" }] }) }) };
       }
       if (sql.includes("SELECT d.id, d.tenant_id, d.project_id")) {
         return { bind: vi.fn().mockReturnValue({ all: vi.fn().mockResolvedValue({ results: [{
@@ -135,9 +166,13 @@ describe("bounded knowledge cleanup", () => {
   it("cleans orphaned D1 chunks together with their R2 objects and vectors", async () => {
     const run = vi.fn().mockResolvedValue({ meta: { changes: 2 } });
     const prepare = vi.fn((sql: string) => sql.startsWith("SELECT")
-      ? { all: vi.fn().mockResolvedValue({ results: [{
+      ? (sql.includes("cursor_value")
+        ? { bind: vi.fn().mockReturnValue({ first: vi.fn().mockResolvedValue(null) }) }
+        : { bind: vi.fn().mockReturnValue({ all: vi.fn().mockResolvedValue({ results: [{
           id: "orphan-doc", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", chunk_count: 2,
-        }] }) }
+        }] }) }) })
+      : sql.includes("INSERT INTO sweeper_cursors")
+        ? { bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({}) }) }
       : { bind: vi.fn().mockReturnValue({ run }) });
     const list = vi.fn().mockResolvedValue({ objects: [], truncated: false });
     const deleteObject = vi.fn().mockResolvedValue(undefined);
@@ -160,8 +195,10 @@ describe("bounded knowledge cleanup", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const run = vi.fn().mockResolvedValue({ meta: { changes: 1 } });
     const prepare = vi.fn((sql: string) => {
+      if (sql.includes("SELECT cursor_value")) return { bind: vi.fn().mockReturnValue({ first: vi.fn().mockResolvedValue(null) }) };
+      if (sql.includes("INSERT INTO sweeper_cursors")) return { bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({}) }) };
       if (sql.includes("FROM spaces s")) {
-        return { all: vi.fn().mockResolvedValue({ results: [{ space_id: "space-a" }] }) };
+        return { bind: vi.fn().mockReturnValue({ all: vi.fn().mockResolvedValue({ results: [{ space_id: "space-a" }] }) }) };
       }
       if (sql.includes("SELECT id, tenant_id, project_id")) {
         return { bind: vi.fn().mockReturnValue({ all: vi.fn().mockResolvedValue({ results: [{
