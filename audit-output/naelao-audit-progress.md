@@ -1770,6 +1770,10 @@ This closes message delivery into the agent runtime, not the full external chann
 
 The tracked inventory now contains 2,008 files, including 1,802 source or executable-configuration files, anchored at code commit `7d4f998f`. The checklist has 437 reviewed rows and 1,365 still open; new queue and tenant-status source and regression files are included. This is an inventory refresh and focused review, not completion of the full Naelao audit.
 
+### Inventory refresh after queue and workflow suspension checks
+
+Regenerated `naelao-repository-tree.txt` from `git ls-files` at code commit `e88aa8d7` after adding three tracked TypeScript files. The inventory now records 2,011 tracked files and 1,805 source or executable-configuration files. Added the three files to the per-file checklist; the counts are 437 reviewed and 1,368 open. The classification follows the previously recorded extension policy; this refresh does not indicate broader audit completion.
+
 ## Public router tenant suspension gate (2026-10-21)
 
 After adding the gate, an initial router stress run failed 36 assertions because test environments did not bind the D1 database needed to establish organization status. Updated the affected router fixtures to model an active tenant, then added an integration regression proving a suspended tenant is rejected before feature routing. The focused router set passes 79/79, including product-session, agent-key, dispatch, pre-auth, CORS, rate-limit, and dynamic-origin cases; tenant status tests pass 3/3; Router TypeScript and `git diff --check` pass. The enforcement currently covers public requests through `naelao-router`; worker-to-worker invocations need their own scoped audit and this does not yet make tenant suspension a complete platform-wide stop.

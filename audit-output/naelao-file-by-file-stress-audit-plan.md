@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2008` tracked files; `1802` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `7d4f998f`.
+Inventory basis: `2011` tracked files; `1805` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `e88aa8d7`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -15,7 +15,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - **Organization erasure lifecycle and coverage:** the queue consumer accepts `data.erasure`, but no producer or request route was found. `DataErasureWorkflow` suspends an org, waits 24 hours, then permanently deletes data; no cancellation or restoration path was found despite the “reversible window” description. Cleanup currently has only the KB bucket and quota KV bindings, while artifacts, exported files, scripts/workspaces, and other space records use separate storage and D1 tables. Build a tenant-scoped resource inventory, add safely scoped cleanup, and trace authorization, initiation, cancellation, and suspended-state recovery before describing this feature as usable or complete.
 - **Webhook DNS rebinding:** webhook delivery now rejects private literal IPs and private DNS answers, rejects redirects, and has a deadline. Cloudflare `fetch` resolves DNS again after validation, so a rebinding response could change the target between check and connection. Use a controlled egress proxy with address pinning to close this race.
 - **MCP Hub DNS rebinding:** direct MCP URLs use the same preflight DNS validation before `fetch`, but the runtime resolves again at connection time. A controlled egress proxy with address pinning is still needed to close this network-level race for direct connectors.
-- **Tenant suspension enforcement:** admin can set `orgs.status` to `suspended`, but no runtime worker checks that state as an authorization gate. Product-space restoration now refuses to activate a space under a suspended org; add a centralized tenant gate and a restoration model that preserves independently suspended spaces before treating org status as a platform freeze.
+- **Tenant suspension enforcement:** public router requests and selected agent, notification, provisioner, workflow, and Knowledge entrypoints now check `orgs.status`; the enforcement is not yet universal across internal routes, queues, Durable Object alarms, already-running workflows, or other worker paths. Add complete cross-service coverage and a restoration model that preserves independently suspended spaces before treating org status as a platform freeze.
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 
 ## Work sequence
@@ -2361,6 +2361,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/provisioner/src`
 
 - [ ] `workers/provisioner/src/index.ts`
+- [ ] `workers/provisioner/src/tenant-suspension.test.ts`
 - [x] `workers/provisioner/src/manifest-contract.test.ts`
 - [x] `workers/provisioner/src/manifest-contract.ts`
 - [x] `workers/provisioner/src/message-contract.test.ts`
@@ -2619,6 +2620,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/workflows/src/workflows/KbIngestionWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/QueueHealthWorkflow.ts`
 - [ ] `workers/workflows/src/workflows/SpaceProvisioningWorkflow.ts`
+- [ ] `workers/workflows/src/workflows/space-provisioning-state.test.ts`
+- [ ] `workers/workflows/src/workflows/space-provisioning-state.ts`
 - [x] `workers/workflows/src/workflows/erasure-cleanup.test.ts`
 - [x] `workers/workflows/src/workflows/erasure-cleanup.ts`
 
