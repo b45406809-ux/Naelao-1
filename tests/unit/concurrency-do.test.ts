@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ConcurrencyDO } from "../../workers/agents/src/do/ConcurrencyDO.js";
 import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
@@ -64,13 +64,19 @@ describe("ConcurrencyDO — account-level concurrency ceiling", () => {
   });
 
   it("a slot whose TTL has expired is reclaimed automatically on the next acquire (deadlock fix)", async () => {
-    await call(doInstance, "/acquire", "POST", { key: "tree:space1", holder_id: "run-a", limit: 1, ttl_ms: -1 });
-    // ttl_ms: -1 means expires_at is already in the past — the crashed-holder scenario.
-    const status = await call(doInstance, "/status?key=tree:space1", "GET");
-    expect(status.json.active).toBe(1); // still counted until the next sweep runs
+    vi.useFakeTimers();
+    try {
+      await call(doInstance, "/acquire", "POST", { key: "tree:space1", holder_id: "run-a", limit: 1, ttl_ms: 1_000 });
+      const beforeExpiry = await call(doInstance, "/status?key=tree:space1", "GET");
+      expect(beforeExpiry.json.active).toBe(1);
 
-    const granted = await call(doInstance, "/acquire", "POST", { key: "tree:space1", holder_id: "run-b", limit: 1 });
-    expect(granted.json.granted).toBe(true); // inline sweep in acquire() reclaimed the stale slot
+      await vi.advanceTimersByTimeAsync(1_001);
+      const granted = await call(doInstance, "/acquire", "POST", { key: "tree:space1", holder_id: "run-b", limit: 1 });
+      expect(granted.json.granted).toBe(true); // inline sweep reclaimed the now-expired slot
+      expect(granted.json.active).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("the alarm handler sweeps expired slots across all keys", async () => {

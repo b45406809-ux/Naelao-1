@@ -1365,7 +1365,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/compact-conversation.test.ts`
 - [ ] `tests/unit/composio-connector-connect.test.ts`
 - [ ] `tests/unit/composio-tool-execution.test.ts`
-- [ ] `tests/unit/concurrency-do.test.ts`
+- [x] `tests/unit/concurrency-do.test.ts`
 - [ ] `tests/unit/connector-catalogue.test.ts`
 - [ ] `tests/unit/connector-channel-vault-write.test.ts`
 - [ ] `tests/unit/connector-directory.test.ts`
@@ -1517,7 +1517,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/reasoner-streaming.test.ts`
 - [ ] `tests/unit/reasoner-tool-calling.test.ts`
 - [ ] `tests/unit/reasoner-transient-retry.test.ts`
-- [ ] `tests/unit/repl-primitives.test.ts`
+- [x] `tests/unit/repl-primitives.test.ts`
 - [ ] `tests/unit/requirements-trace-matrix.test.ts`
 - [ ] `tests/unit/reseller-attribution.test.ts`
 - [ ] `tests/unit/reserved-capabilities.test.ts`

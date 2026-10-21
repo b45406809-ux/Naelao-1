@@ -1378,3 +1378,11 @@ The repository-wide suite remains red and is not represented as fully passing. T
 Reviewed semantic memory isolation and hybrid project/thread recall after the shared suite flagged two cases. The implementation filters Vectorize queries by tenant, space, project, and user; the test asserted an obsolete two-field filter. Updated it to assert the full isolation predicate. Structured facts intentionally require at least 0.80 query-token coverage before crossing into another thread; the end-to-end fixture used a three-topic query for a one-topic fact and expected it to bypass the relevance gate. Reworked the fixture so its episodic note and project fact are both relevant to the same `payout` query, preserving strict privacy/relevance behavior.
 
 Validation: memory OS end-to-end and per-user scope suites passed 2 files / 15 tests. No production code change was required.
+
+## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
+
+The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.
+
+The expired-slot test itself used `ttl_ms: -1`, which the API correctly rejects as invalid, then expected an active count that intentionally excludes expired rows. Reworked it to acquire with a valid 1-second lease, advance fake time past expiry, and verify the next acquire reclaims the slot.
+
+Validation: private tool output stress suite passed 1 file / 46 tests; ConcurrencyDO suite passed 1 file / 7 tests; Agents TypeScript check passed.

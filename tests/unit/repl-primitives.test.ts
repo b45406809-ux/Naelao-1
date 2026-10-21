@@ -407,6 +407,13 @@ describe("gating — reads are safe/auto-approved, writes/exec stay gated", () =
 });
 
 describe("private durable tool output", () => {
+  it("keeps multibyte previews inside the full 1,500-token response budget", async () => {
+    const { offloadToolOutput, estimateTokens } = await import("../../workers/agents/src/script-engine/tool-output.js");
+    const ctx = makeCtx(makeR2(), { platformSecret: "test-only-encryption-secret", outputSessionId: "session-unicode", runId: "run-unicode", scheduleToolOutputExpiry: async () => undefined });
+    const limited = await offloadToolOutput(ctx.env, "界😀漢字".repeat(4_000));
+    expect(estimateTokens(JSON.stringify(limited))).toBeLessThanOrEqual(1_500);
+  });
+
   it("offloads large results, reads windows after restart and isolates other sessions", async () => {
     const { offloadToolOutput, estimateTokens } = await import("../../workers/agents/src/script-engine/tool-output.js");
     const bucket = makeR2(), original = Array.from({ length: 500 }, (_, i) => `line-${i + 1}: ${"x".repeat(20)}`).join("\n");

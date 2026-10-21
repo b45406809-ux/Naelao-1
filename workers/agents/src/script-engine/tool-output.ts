@@ -15,6 +15,35 @@ export function estimateTokens(text: string): number {
 const PREVIEW_CHARS = Math.floor(TOOL_OUTPUT_TOKEN_LIMIT * 3.85) - 600;
 const pathPattern = /^\/\.avos\/tmp\/tool_out_[a-f0-9-]+\.log$/;
 
+function boundedOutputEnvelope(input: {
+  outputPath: string;
+  instruction: string;
+  estimatedTokens: number;
+  previewSource: string;
+}): { output_path: string; instruction: string; _truncated: true; estimated_tokens: number; preview: string } {
+  let low = 0;
+  let high = input.previewSource.length;
+  while (low < high) {
+    const candidateLength = Math.ceil((low + high) / 2);
+    const candidate = {
+      output_path: input.outputPath,
+      instruction: input.instruction,
+      _truncated: true as const,
+      estimated_tokens: input.estimatedTokens,
+      preview: input.previewSource.slice(0, candidateLength),
+    };
+    if (estimateTokens(JSON.stringify(candidate)) <= TOOL_OUTPUT_TOKEN_LIMIT) low = candidateLength;
+    else high = candidateLength - 1;
+  }
+  return {
+    output_path: input.outputPath,
+    instruction: input.instruction,
+    _truncated: true,
+    estimated_tokens: input.estimatedTokens,
+    preview: input.previewSource.slice(0, low),
+  };
+}
+
 /** Private outputs never live in shared Git/workspace prefixes. No caller supplies scope. */
 export function toolOutputKey(env: ScriptEngineEnv, path: string): string {
   if (!pathPattern.test(path)) throw new Error("invalid_tool_output_path");
@@ -46,8 +75,9 @@ export async function offloadToolOutput(env: ScriptEngineEnv, output: unknown): 
     await (env.workspaceBucket ?? env.scriptsBucket).delete(storageKey).catch(() => undefined);
     throw new Error(`tool_output_expiry_registration_failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { output_path: path, instruction: `Full output saved to ${path}. Use Read with line_start/line_end or read_file with offset/length.`,
-    _truncated: true, estimated_tokens: estimatedTokens, preview: terminalOutputText(output).slice(0, PREVIEW_CHARS) };
+  const instruction = `Full output saved to ${path}. Use Read with line_start/line_end or read_file with offset/length.`;
+  return boundedOutputEnvelope({ outputPath: path, instruction, estimatedTokens,
+    previewSource: terminalOutputText(output).slice(0, PREVIEW_CHARS) });
 }
 
 /** Terminal display keeps stdout/stderr, not the transport envelope. */
