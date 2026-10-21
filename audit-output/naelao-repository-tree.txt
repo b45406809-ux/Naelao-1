@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2021
-Files with source or executable-configuration extensions: 1815
-Inventory revision: 2026-10-21 audit refresh at c6332670
+Files: 2025
+Files with source or executable-configuration extensions: 1818
+Inventory revision: 2026-10-21 audit refresh at b20dacbf
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -21,6 +21,10 @@ Empty directories are not represented because Git does not track them.
     pr-checks.yml
 .gitignore
 .nvmrc
+AGENTS.md
+CLAUDE.md
+NAELAO_BUILD_PROMPT.md
+NAELAO_FILE_TREE.md
 _BUILD_PLAN/
   184 - 186 And.txt
   187 - 189.txt
@@ -54,9 +58,9 @@ _BUILD_PLAN/
   316 - 318 But.txt
   319 - 320 What.txt
   AVOS Master Architectural Blueprint 1.json
-  avos1.json
   FILE_TREE.md
   NEXT_GAP_PASS_PROMPT.md
+  avos1.json
   plan.md
   prompts/
     01_config.md
@@ -98,7 +102,6 @@ _BUILD_PLAN/
     26_naelao_portal_router.md
     27_naelao_artifact.md
     28_wrangler_configs.md
-AGENTS.md
 ai_studio_code (2).sh
 ai_studio_code.sh
 apps/
@@ -119,6 +122,7 @@ apps/
           page.tsx
           products/
             [productId]/
+              OnboardingChecklist.tsx
               activity/
                 page.tsx
               agents/
@@ -126,8 +130,8 @@ apps/
               analytics/
                 page.tsx
               billing/
-                page.tsx
                 PaymentsAccountCard.tsx
+                page.tsx
               configuration/
                 page.tsx
               danger-zone/
@@ -141,7 +145,6 @@ apps/
                 page.tsx
               local-machine/
                 page.tsx
-              OnboardingChecklist.tsx
               page.tsx
               pricing/
                 page.tsx
@@ -387,6 +390,7 @@ apps/
         SubthreadPanel.tsx
         TerminalStreamBlock.tsx
         UpgradeDialog.tsx
+        WorkflowPlanComposer.tsx
         viewports/
           ContainerTerminalCanvas.tsx
           DocumentRedlineCanvas.tsx
@@ -396,7 +400,6 @@ apps/
           VirtualDesktopGuiCanvas.tsx
         widgets/
           GeneratedWidget.tsx
-        WorkflowPlanComposer.tsx
       lib/
         active-space-context.tsx
         api.ts
@@ -428,7 +431,6 @@ audit-output/
   naelao-platform-surface-inventory.md
   naelao-repository-tree.txt
 biome.json
-CLAUDE.md
 create_patch.js
 docs/
   AUDIT_2026-07-11_reaudit_blueprint.md
@@ -439,20 +441,24 @@ docs/
   BATCH_02_CHECKLIST.md
   BATCH_03_CHECKLIST.md
   BATCH_04_CHECKLIST.md
-  browser-web-push.md
-  cloudflare-agents-extension-review.md
   COMPETITIVE_2026-08-05_openclaw_hermes.md
   COMPETITIVE_2026-08-08_autonomy_matrix.md
-  composio-custom-api-access.md
   CUSTOM_BUSINESS.md
-  DEPLOY_SECRETS.md
   DEPLOYMENT_SECRETS.md
-  developer-preview.md
+  DEPLOY_SECRETS.md
   E2E_2026-08-09_end_user_journey.md
-  fast-python-execution.md
   LAUNCHPAD_ARCHITECTURE.md
   MODEL_EVAL_2026-07-25.md
   PHASE_01_INTEGRATION_AUDIT.md
+  SPEC_HEADER_INDEX.md
+  SYSTEM_ONE_DECISION_SENTRY.md
+  THINK_ALIGNMENT.md
+  TOKEN_EFFICIENCY.md
+  browser-web-push.md
+  cloudflare-agents-extension-review.md
+  composio-custom-api-access.md
+  developer-preview.md
+  fast-python-execution.md
   private-model-adapter-lifecycle.md
   project-lsp-indexer.md
   requirements-trace-matrix.md
@@ -460,14 +466,10 @@ docs/
   space-data-retention-and-backup.md
   spec-appendix/
     A1-script-agents-and-space-assistants.md
-  SPEC_HEADER_INDEX.md
   specialized-runtime-workspaces.md
   staging-smoke-test.md
-  SYSTEM_ONE_DECISION_SENTRY.md
   task-scoped-email-replies.md
-  THINK_ALIGNMENT.md
   timekeeper-pattern.md
-  TOKEN_EFFICIENCY.md
   trusted-package-egress.md
   ui-feature-inventory.md
 harness/
@@ -602,6 +604,7 @@ infra/
     0118_gdpr_erasure_outbox.sql
     0119_portal_domains.sql
     0120_synthetics_storage.sql
+    0121_space_provisioning_leases.sql
   scripts/
     audit-ui.mjs
     await-quota-then-matrix.sh
@@ -638,9 +641,7 @@ infra/
     providers.tf
     terraform.tfvars.example
     variables.tf
-NAELAO_BUILD_PROMPT.md
 naelao_expanded_gaps_resolved.html
-NAELAO_FILE_TREE.md
 naelao_whop_businesses_spec.html
 new plan/
   ATTACHMENT-MULTIMODAL-IMPLEMENTATION-PLAN.md
@@ -648,7 +649,6 @@ new plan/
   CODEX-CLOUD-PROMPTS.md
   CONTINUATION-IMPLEMENTATION-PROGRESS.md
   DEPLOYMENT-ACCEPTANCE-LOG.md
-  extract_ai_studio_messages.py
   FDE-EXTENSIONS-AND-MICROAPPS-ARCHITECTURE.md
   FOUNDRY-IMPLEMENTATION-PROGRESS.md
   FOUNDRY-REMAINING.md
@@ -659,21 +659,22 @@ new plan/
   OPEN-GAPS-IMPLEMENTATION-PLAN.md
   PROJECT-BOTS-UNIVERSAL-AGENT-OS-ROADMAP.md
   SCALEDOWN-AND-DEEPSEEK-INTEGRATION.md
-  test_extract_ai_studio_messages.py
-  Tokenizers vs. Embedding Models Explained.continuation.messages.txt
-  Tokenizers vs. Embedding Models Explained.messages.txt
   TOKENIZERS-CONTINUATION-IMPLEMENTATION-LEDGER.md
   TOKENIZERS-FIRST-IMPLEMENTATION-AUDIT.md
   TRANSCRIPT-CROSS-SOURCE-RECONCILIATION.md
+  Tokenizers vs. Embedding Models Explained.continuation.messages.txt
+  Tokenizers vs. Embedding Models Explained.messages.txt
+  extract_ai_studio_messages.py
+  test_extract_ai_studio_messages.py
 package.json
 packages/
   agent-sdk/
     examples/
       trading-mentor-channel/
+        README.md
         console.html
         manifest.json
         place-order.ts
-        README.md
         student-answer.ts
     package.json
     src/
@@ -788,8 +789,8 @@ packages/
       reseller.ts
     tsconfig.json
   bridge/
-    package.json
     README.md
+    package.json
     services/
       com.naelao.bridge.plist
       naelao-bridge.service
@@ -1006,7 +1007,6 @@ packages/
         Button.tsx
         Card.tsx
         Form.tsx
-        icons.tsx
         Modal.tsx
         NavItem.tsx
         PageView.tsx
@@ -1016,6 +1016,7 @@ packages/
         SpaceSwitcher.tsx
         Toast.tsx
         TopBar.tsx
+        icons.tsx
       index.ts
       qr.ts
       styles.css
@@ -1044,6 +1045,10 @@ pnpm-workspace.yaml
 project_tree.md
 prompts.xml
 repomix/
+  IMPLEMENTATION_PLAN.md
+  README.md
+  Update the batches.md
+  Updates2.md
   apply-batch-patch.mjs
   batch-01-foundation-storage.json
   batch-02-runtime-vault-cli.json
@@ -1059,15 +1064,16 @@ repomix/
   batch-12-billing-export.json
   batch-13-marketplace-distribution.json
   build-prompts.mjs
-  IMPLEMENTATION_PLAN.md
   outputs/
     batch-01-context.xml
     batch-02-context.xml
   patches/
-    batch-01.patch
     README.md
+    batch-01.patch
   prepare-authority-context.mjs
   prompts/
+    Update the batches.md
+    Updates2.md
     batch-01-items-1-19.md
     batch-02-items-20-24.md
     batch-03-items-25-38.md
@@ -1081,11 +1087,6 @@ repomix/
     batch-11-items-104-111.md
     batch-12-items-112-119.md
     batch-13-items-120-130.md
-    Update the batches.md
-    Updates2.md
-  README.md
-  Update the batches.md
-  Updates2.md
   verify-configs.mjs
 repomix-output.xml
 repomix.shell.config.json
@@ -1110,8 +1111,8 @@ tests/
   isolation/
     tenant-isolation.test.ts
   load/
-    platform-health.js
     README.md
+    platform-health.js
   package.json
   plan/
     01-baseline.test.ts
@@ -1331,6 +1332,7 @@ tests/
     naelaoagentdo-customer-bot-heartbeat.test.ts
     new-business-wallet-gate.test.ts
     notifications-internal-notify.test.ts
+    notifications-push-subscription-cap.test.ts
     onboarding-business-membership.test.ts
     onboarding-oauth-availability.test.ts
     owner-voice-ticket-route.test.ts
@@ -1389,6 +1391,7 @@ tests/
     provisioner-owner-member.test.ts
     provisioner-rollback-gc.test.ts
     provisioner-seed-wallet.test.ts
+    provisioning-lease.test.ts
     qr-encoder.test.ts
     quota-atomic.test.ts
     quota-windowed.test.ts
@@ -1510,6 +1513,14 @@ workers/
     wrangler.toml
   agents/
     CLOUDFLARE-VOICE-TWILIO-MIT.txt
+    Dockerfile.documents
+    Dockerfile.media
+    Dockerfile.toolsandbox
+    FFLATE-MIT.txt
+    PDFJS-APACHE-2.0.txt
+    THIRD-PARTY-NOTICES.md
+    TWILIO-MIT.txt
+    UNPDF-MIT.txt
     container/
       artifact-fs.mjs
       artifact-fs.test.mjs
@@ -1519,15 +1530,10 @@ workers/
       process-supervisor.mjs
       server.mjs
       start.sh
-    Dockerfile.documents
-    Dockerfile.media
-    Dockerfile.toolsandbox
-    FFLATE-MIT.txt
     local-agent/
-      naelao-local-agent.mjs
       README.md
+      naelao-local-agent.mjs
     package.json
-    PDFJS-APACHE-2.0.txt
     src/
       agent-approval-routes.test.ts
       agent-run-session-scope.test.ts
@@ -1590,36 +1596,36 @@ workers/
         framing.ts
       daily-digest-prerequisites.test.ts
       do/
+        ConcurrencyDO.test.ts
+        ConcurrencyDO.ts
+        HITLApprovalDO.ts
+        LocalTunnelDO.test.ts
+        LocalTunnelDO.ts
+        NaelaoAgentDO.ts
+        RiskGuardDO.ts
+        TaskDO.ts
+        ToolSandboxDO.test.ts
+        ToolSandboxDO.ts
+        WorkflowRunDO.test.ts
+        WorkflowRunDO.ts
         additional-do-request-boundaries.test.ts
         channel-conversation-transcript.test.ts
         channel-extension-inbox.test.ts
         channel-heartbeat-suspension.test.ts
         citation-metadata.test.ts
-        ConcurrencyDO.test.ts
-        ConcurrencyDO.ts
         conversation-compaction.test.ts
         delegation-admission.test.ts
         direct-do-request-boundaries.test.ts
         external-channel-spend.test.ts
         external-channel-spend.ts
         hitl-approval-boundaries.test.ts
-        HITLApprovalDO.ts
         ingress-memory.test.ts
-        LocalTunnelDO.test.ts
-        LocalTunnelDO.ts
         memory-maintenance-route.test.ts
-        NaelaoAgentDO.ts
         project-llm-usage.test.ts
         project-llm-usage.ts
-        RiskGuardDO.ts
         specialized-workspaces.test.ts
-        TaskDO.ts
-        ToolSandboxDO.test.ts
-        ToolSandboxDO.ts
         usage-event-outbox.test.ts
         usage-event-outbox.ts
-        WorkflowRunDO.test.ts
-        WorkflowRunDO.ts
       env.ts
       extension-provider-auth.test.ts
       index.ts
@@ -1893,9 +1899,10 @@ workers/
         voice-ticket.ts
         voice.test.ts
       workflows/
+        AgentTaskWorkflow.ts
+        ScriptRunWorkflow.ts
         agent-task-checkpoints.test.ts
         agent-task-checkpoints.ts
-        AgentTaskWorkflow.ts
         chunked-subagent-workflow.ts
         company-automation-workflow.ts
         customer-analytics-workflow.ts
@@ -1906,7 +1913,6 @@ workers/
         reconciliation-a2.test.ts
         report-infra-usage.test.ts
         report-infra-usage.ts
-        ScriptRunWorkflow.ts
         workflow-compiler.ts
         workflow-control.ts
         workflow-extension-scope.test.ts
@@ -1916,10 +1922,7 @@ workers/
         workflow-orchestration.ts
         workflow-state.test.ts
         workflow-state.ts
-    THIRD-PARTY-NOTICES.md
     tsconfig.json
-    TWILIO-MIT.txt
-    UNPDF-MIT.txt
     vitest.config.ts
     wrangler.toml
   analytics/
@@ -1937,13 +1940,13 @@ workers/
   artifact/
     package.json
     src/
+      RepositoryDO-boundaries.test.ts
+      RepositoryDO.ts
       index.ts
       repository-token.test.ts
       repository-token.ts
       repository.test.ts
       repository.ts
-      RepositoryDO-boundaries.test.ts
-      RepositoryDO.ts
       request-body-boundaries.test.ts
     tsconfig.json
     vitest.config.ts
@@ -1987,10 +1990,10 @@ workers/
   browser/
     package.json
     src/
-      browser-session-state.ts
       BrowserSessionDO-boundaries.test.ts
       BrowserSessionDO.test.ts
       BrowserSessionDO.ts
+      browser-session-state.ts
       index.ts
     tsconfig.json
     wrangler.local.toml
@@ -2095,6 +2098,7 @@ workers/
       manifest-contract.ts
       message-contract.test.ts
       message-contract.ts
+      provisioning-lease.ts
       provisioning-required-routes.test.ts
       provisioning-state.test.ts
       provisioning-state.ts
@@ -2107,6 +2111,8 @@ workers/
   router/
     package.json
     src/
+      RateLimitDO-boundaries.test.ts
+      RateLimitDO.ts
       customer-voice-routing.test.ts
       extension-product-paths.test.ts
       extension-provider-routing.test.ts
@@ -2115,8 +2121,6 @@ workers/
       portal-domain-routing.test.ts
       preferred-language.test.ts
       preferred-language.ts
-      RateLimitDO-boundaries.test.ts
-      RateLimitDO.ts
       routes/
         bounded-ingress.test.ts
         bounded-request-body.ts
@@ -2156,9 +2160,22 @@ workers/
       create-space.ts
       customer-voice-bridge.test.ts
       do/
+        BuilderAccountDO.ts
+        FeatureFlagDO.test.ts
+        FeatureFlagDO.ts
+        LockDO.test.ts
+        LockDO.ts
+        MicroAppDO.ts
+        ProductUserDO-credit-reservations.test.ts
+        ProductUserDO.ts
+        SpaceDO-migrations.test.ts
+        SpaceDO.ts
+        SpaceTypeRegistryDO.test.ts
+        SpaceTypeRegistryDO.ts
+        TransactionCoordinatorDO.test.ts
+        TransactionCoordinatorDO.ts
         additional-space-do-request-boundaries.test.ts
         artifact-linter.test.ts
-        BuilderAccountDO.ts
         custom-model-lifecycle-do.test.ts
         custom-model-lifecycle.test.ts
         custom-model-lifecycle.ts
@@ -2168,14 +2185,7 @@ workers/
         domain-glossary.test.ts
         executive-contacts.test.ts
         extension-runtime-install.test.ts
-        FeatureFlagDO.test.ts
-        FeatureFlagDO.ts
         gadget-mcp-crud.test.ts
-        LockDO.test.ts
-        LockDO.ts
-        MicroAppDO.ts
-        ProductUserDO-credit-reservations.test.ts
-        ProductUserDO.ts
         project-spend-reservations.test.ts
         project-subspace-migration-preflight.test.ts
         provenance-ledger.test.ts
@@ -2190,12 +2200,6 @@ workers/
         space-do-request-boundaries.test.ts
         space-retention.test.ts
         space-retention.ts
-        SpaceDO-migrations.test.ts
-        SpaceDO.ts
-        SpaceTypeRegistryDO.test.ts
-        SpaceTypeRegistryDO.ts
-        TransactionCoordinatorDO.test.ts
-        TransactionCoordinatorDO.ts
       domain-glossary-routes.test.ts
       domain-glossary.test.ts
       domain-glossary.ts
@@ -2289,13 +2293,13 @@ workers/
       workflows/
         DataErasureWorkflow.ts
         DunningWorkflow.ts
-        erasure-cleanup.test.ts
-        erasure-cleanup.ts
         KbIngestionWorkflow.ts
         QueueHealthWorkflow.ts
+        SpaceProvisioningWorkflow.ts
+        erasure-cleanup.test.ts
+        erasure-cleanup.ts
         space-provisioning-state.test.ts
         space-provisioning-state.ts
-        SpaceProvisioningWorkflow.ts
     tsconfig.json
     wrangler.toml
   ws-gateway/
