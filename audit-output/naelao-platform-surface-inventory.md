@@ -72,6 +72,28 @@ Literal route-registration matches: 1079
 - `workers/agents/wrangler.toml:134` — class_name = "DocumentSandboxDO"; image = "./Dockerfile.documents"; max_instances = 3; instance_type = "standard-1"; [[containers]]
 - `workers/agents/wrangler.toml:140` — class_name = "MediaSandboxDO"; image = "./Dockerfile.media"; max_instances = 3; instance_type = "standard-1"
 
+## Queue producer and consumer bindings (Wrangler)
+
+- `workers/admin` consumes `naelao-dlq` in development/default, staging, production.
+- `workers/agents` consumes `naelao-agent-ticks` in development/default, staging, production.
+- `workers/agents` produces `naelao-agent-ticks` in development/default, staging, production.
+- `workers/analytics` consumes `naelao-analytics` in development/default, staging, production.
+- `workers/billing` consumes `naelao-billing-events` in development/default, staging, production.
+- `workers/billing` produces `naelao-billing-events` in development/default, staging, production.
+- `workers/channels` produces `naelao-channel-sessions` in development/default, staging, production.
+- `workers/knowledge` produces `naelao-events` in development/default, staging, production.
+- `workers/mini-agi` produces `naelao-channel-sessions` in development/default, staging, production.
+- `workers/notifications` consumes `naelao-notifications-queue` in development/default, staging, production.
+- `workers/provisioner` consumes `naelao-provisioning-queue` in development/default, staging, production.
+- `workers/spaces` produces `naelao-provisioning-queue` in development/default, staging, production.
+- `workers/threads` produces `naelao-channel-sessions` in development/default, staging, production.
+- `workers/triggers` produces `naelao-channel-sessions` in development/default, staging, production.
+- `workers/workflows` consumes `naelao-events` in development/default, staging, production.
+- `workers/workflows` produces `naelao-analytics` in development/default, staging, production.
+- `workers/workflows` produces `naelao-events` in development/default, staging, production.
+
+Queue resources are declared separately in `infra/terraform/main.tf`; compare their names with these worker bindings during deployment review. Queue entries are runtime triggers just like HTTP routes and Durable Objects.
+
 ## Files with literal API route registrations
 
 - `workers/admin/src/index.ts` — 16 route/middleware registration calls
