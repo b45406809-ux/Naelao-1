@@ -1,5 +1,5 @@
 // G-N01: Notifications worker — email + in-app notification consumer
-import { badRequest, errorResponse, requestId, mintInternalToken, requireInternalHmac, readBoundedRequestText, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
+import { badRequest, errorResponse, requestId, requireInternalHmac, readBoundedRequestText, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { Hono } from "hono";
 import { checkSsrf, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { decryptSubscription, deliverWebPush, encryptSubscription, hashEndpoint, validatePushSubscription, type BrowserPushSubscription } from "./web-push.js";
@@ -62,6 +62,24 @@ const CHANNEL_SEND_CREDENTIAL: Record<string, string> = {
   whatsapp: "WHATSAPP_ACCESS_TOKEN",
 };
 
+/** Sign the Credentials worker's short-lived v3 resolver token for this Space. The generic
+ * internal-worker token is intentionally not accepted by the plaintext endpoint. */
+async function generateCredentialToken(platformSecret: string, tenantId: string, spaceId: string): Promise<string> {
+  const agentId = "notifications-channel-reply";
+  if (![tenantId, spaceId, agentId].every((value) => /^[A-Za-z0-9_-]{1,128}$/.test(value))) {
+    throw new Error("invalid_credential_token_scope");
+  }
+  const timestamp = Math.floor(Date.now() / 1000);
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(platformSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC", key, new TextEncoder().encode(`${tenantId}:${spaceId}:${agentId}::${timestamp}`)
+  );
+  const hex = [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `t=${timestamp},aid=${agentId},tid=${tenantId},v3=${hex}`;
+}
+
 /**
  * Read a space's own channel credential out of the vault.
  *
@@ -77,7 +95,7 @@ async function resolveChannelCredential(
 ): Promise<string | null> {
   if (!env.CREDENTIALS_WORKER || !env.PLATFORM_SECRET || !spaceId) return null;
   try {
-    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+    const token = await generateCredentialToken(env.PLATFORM_SECRET, tenantId, spaceId);
     const resp = await env.CREDENTIALS_WORKER.fetch(new Request(
       `http://credentials-worker/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(name)}/plaintext`,
       {
@@ -85,7 +103,7 @@ async function resolveChannelCredential(
         headers: {
           "content-type": "application/json",
           "x-naelao-tenant-id": tenantId,
-          "x-naelao-internal-token": token,
+          "x-naelao-credential-token": token,
         },
         body: "{}",
       }

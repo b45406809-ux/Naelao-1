@@ -1,5 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type NotificationsEnv } from "./index.js";
+
+async function isValidCredentialToken(token: string | null, tenantId: string, spaceId: string): Promise<boolean> {
+  if (!token) return false;
+  const parts: Record<string, string> = {};
+  for (const part of token.split(",")) {
+    const separator = part.indexOf("=");
+    if (separator <= 0) return false;
+    parts[part.slice(0, separator)] = part.slice(separator + 1);
+  }
+  if (!parts.t || !parts.v3 || parts.aid !== "notifications-channel-reply" || parts.tid !== tenantId) return false;
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode("platform-secret"), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]
+  );
+  const signature = new Uint8Array((parts.v3.match(/.{2}/g) ?? []).map((byte: string) => Number.parseInt(byte, 16)));
+  return crypto.subtle.verify(
+    "HMAC", key, signature,
+    new TextEncoder().encode(`${tenantId}:${spaceId}:notifications-channel-reply::${parts.t}`)
+  );
+}
 function env(): NotificationsEnv {
   return { ENVIRONMENT: "test", RESEND_API_KEY: "resend", RESEND_API_URL: "https://api.resend.test", WEBHOOK_SIGNING_SECRET: "secret",
     TELEGRAM_BOT_TOKEN: "telegram-test", WHATSAPP_ACCESS_TOKEN: "123456789012345:meta-test",
@@ -101,6 +120,8 @@ describe("interactive mobile approval delivery", () => {
     vi.stubGlobal("fetch", outbound);
     const credentials = {
       async fetch(request: Request) {
+        expect(request.headers.has("x-naelao-internal-token")).toBe(false);
+        expect(await isValidCredentialToken(request.headers.get("x-naelao-credential-token"), "tenant", "space")).toBe(true);
         const name = new URL(request.url).pathname.split("/").at(-2);
         const value = name === "WHATSAPP_TRANSPORT" ? "meta"
           : name === "WHATSAPP_PHONE_NUMBER_ID" ? "123456789012345"
@@ -129,7 +150,11 @@ describe("interactive mobile approval delivery", () => {
       async first() { return sql.includes("FROM orgs") ? { status: "active" } : { credential_name: "EXT_SLACK_install_conn_generation" }; },
       async run() { updates.push({ sql, args }); return { success: true }; },
     }; } }; } };
-    const credentials = { async fetch() { return Response.json({ value: "xoxb-install-token" }); } };
+    const credentials = { async fetch(request: Request) {
+      expect(request.headers.has("x-naelao-internal-token")).toBe(false);
+      expect(await isValidCredentialToken(request.headers.get("x-naelao-credential-token"), "tenant", "space")).toBe(true);
+      return Response.json({ value: "xoxb-install-token" });
+    } };
     const outbound = vi.fn(async () => Response.json({ ok: false, error: "token_revoked" })); vi.stubGlobal("fetch", outbound);
     const response = await worker.fetch!(new Request("https://notifications/internal/notify", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
       body: JSON.stringify({ channel: "slack", space_id: "space", to: "D123", message: "Reply", installation_id: "install", provider_connection_id: "slack-main" }) }),
