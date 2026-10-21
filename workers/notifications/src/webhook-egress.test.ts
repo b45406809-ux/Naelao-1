@@ -5,7 +5,11 @@ function makeEnv() {
   return {
     WEBHOOK_SIGNING_SECRET: "test-webhook-secret",
     PLATFORM_DB: {
-      prepare: () => ({ bind: () => ({ first: async () => ({ config_json: "{}" }) }) }),
+      prepare: (query: string) => ({
+        bind: () => ({
+          first: async () => query.includes("FROM orgs") ? { status: "active" } : { config_json: "{}" },
+        }),
+      }),
     },
   } as never;
 }

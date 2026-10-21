@@ -428,7 +428,7 @@ describe("AgentMail inbound webhook delivery", () => {
       const env = makeEnv({
         PLATFORM_DB: {
           prepare: (query: string) => ({ bind: () => ({ first: async () => {
-            if (query.includes("SELECT tenant_id, status FROM spaces")) return { tenant_id: TENANT, status: "active" };
+            if (query.includes("FROM spaces s JOIN orgs o")) return { tenant_id: TENANT, status: "active" };
             if (query.includes("SELECT name, config_json FROM spaces")) return { name: "test", config_json: "{}" };
             return null;
           } }) }),

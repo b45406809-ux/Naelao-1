@@ -531,6 +531,14 @@ export async function queue(
   for (const message of batch.messages) {
     const msg = message.body;
     try {
+      const tenant = msg.tenantId
+        ? await env.PLATFORM_DB.prepare("SELECT status FROM orgs WHERE id = ?").bind(msg.tenantId).first<{ status: string }>()
+        : null;
+      if (tenant?.status !== "active") {
+        console.warn(`[notifications/queue] dropped delivery for inactive or unknown tenant ${msg.tenantId || "(missing)"}`);
+        message.ack();
+        continue;
+      }
       if (msg.type !== "in_app" && msg.spaceId && await isSpaceNetworkEgressDenied(env.PLATFORM_DB, msg.spaceId)) {
         console.warn(`[notifications/queue] blocked ${msg.type} egress for air-gapped space ${msg.spaceId}`);
         message.ack();
@@ -706,6 +714,11 @@ app.use("*", async (c, next) => {
 // here and report `delivered: false` rather than pretending to work.
 app.post("/internal/notify", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
+  const tenant = await c.env.PLATFORM_DB.prepare("SELECT status FROM orgs WHERE id = ?").bind(tenantId).first<{ status: string }>();
+  if (tenant?.status !== "active") {
+    return c.json({ delivered: false, reason: tenant ? "tenant_suspended" : "tenant_not_found" }, 403);
+  }
   const body = await c.req.json<{
     channel?: string;
     space_id?: string;

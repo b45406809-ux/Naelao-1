@@ -3,11 +3,28 @@ import worker, { type NotificationsEnv } from "./index.js";
 function env(): NotificationsEnv {
   return { ENVIRONMENT: "test", RESEND_API_KEY: "resend", RESEND_API_URL: "https://api.resend.test", WEBHOOK_SIGNING_SECRET: "secret",
     TELEGRAM_BOT_TOKEN: "telegram-test", WHATSAPP_ACCESS_TOKEN: "123456789012345:meta-test",
-    PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ config_json: "{}" }) }) }) } as unknown as D1Database,
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: () => ({ first: async () => sql.includes("FROM orgs") ? { status: "active" } : { config_json: "{}" } }) }) } as unknown as D1Database,
   };
 }
 describe("interactive mobile approval delivery", () => {
   afterEach(() => vi.unstubAllGlobals());
+  it("blocks synchronous delivery for suspended tenants", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ channel: "email", to: "customer@example.net", body: "Hello" }),
+    }), {
+      ...env(),
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ status: "suspended" }) }) }) } as unknown as D1Database,
+    }, {} as ExecutionContext);
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ delivered: false, reason: "tenant_suspended" });
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
   it("reports the sender actually configured on the outbound Resend request", async () => {
     const outbound = vi.fn(async () => Response.json({ id: "email-1" }));
     vi.stubGlobal("fetch", outbound);
@@ -34,7 +51,7 @@ describe("interactive mobile approval delivery", () => {
   });
   it("reports provider rejection instead of claiming delivery", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("Rejected", { status: 400 })));
-    const res = await worker.fetch!(new Request("https://notifications/internal/notify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channel: "whatsapp", space_id: "space", to: "1", message: "Escalation" }) }), env(), {} as ExecutionContext);
+    const res = await worker.fetch!(new Request("https://notifications/internal/notify", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" }, body: JSON.stringify({ channel: "whatsapp", space_id: "space", to: "1", message: "Escalation" }) }), env(), {} as ExecutionContext);
     expect(res.status).toBe(502); expect(await res.json()).toMatchObject({ delivered: false });
   });
 
@@ -68,7 +85,7 @@ describe("interactive mobile approval delivery", () => {
   it("marks an installation-scoped Slack credential for reconnect after provider revocation", async () => {
     const updates: Array<{ sql: string; args: unknown[] }> = [];
     const db = { prepare(sql: string) { return { bind(...args: unknown[]) { return {
-      async first() { return { credential_name: "EXT_SLACK_install_conn_generation" }; },
+      async first() { return sql.includes("FROM orgs") ? { status: "active" } : { credential_name: "EXT_SLACK_install_conn_generation" }; },
       async run() { updates.push({ sql, args }); return { success: true }; },
     }; } }; } };
     const credentials = { async fetch() { return Response.json({ value: "xoxb-install-token" }); } };
@@ -87,6 +104,7 @@ describe("interactive mobile approval delivery", () => {
     const updates: Array<{ sql: string; args: unknown[] }> = [];
     const db = { prepare(sql: string) { return { bind(...args: unknown[]) { return {
       async first() {
+        if (sql.includes("FROM orgs")) return { status: "active" };
         if (sql.includes("SELECT credential_name")) return { credential_name: "EXT_WHATSAPP_install_connection_generation" };
         if (sql.includes("SELECT account_id")) return { account_id: "987654321012345" };
         return { config_json: "{}" };

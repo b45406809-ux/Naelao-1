@@ -659,6 +659,7 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
           async first() {
             if (/INSERT INTO scheduled_job_dispatches/.test(sql)) return { claim_token: "claim-test" };
             if (/FROM scheduled_jobs WHERE id = \? AND enabled = 1/.test(sql)) return opts.jobRow ?? null;
+            if (/FROM spaces s WHERE s.id =/.test(sql)) return { id: "space-1" };
             if (/SELECT name, config_json FROM spaces/.test(sql)) return { name: "Test Space", config_json: "{}" };
             return null;
           },
@@ -869,9 +870,9 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
     expect(fireCalls).toHaveLength(4);
   });
 
-  it("fails closed and acknowledges when the Space policy lookup is unavailable", async () => {
-    // resolveWakeContext treats unknown/missing Space configuration as air-gapped and fails
-    // closed rather than retrying with a cloud provider or dispatching a planner run.
+  it("retries when tenant authorization lookup is unavailable", async () => {
+    // Unknown tenant status must not run background work, and a transient D1 outage should retry
+    // rather than silently ack and lose a legitimate tick.
     const throwingEnv = {
       PLATFORM_SECRET: "test-secret",
       PLATFORM_DB: { prepare() { throw new Error("unreachable in this test"); } },
@@ -879,8 +880,8 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
     } as unknown as AgentsEnv;
     const { batch, acked, retried } = makeBatch([{ kind: "heartbeat", spaceId: "space-1", tenantId: "tenant-1" }]);
     await handleAgentTicksQueue(batch as never, throwingEnv);
-    expect(acked).toHaveLength(1);
-    expect(retried).toHaveLength(0);
+    expect(acked).toHaveLength(0);
+    expect(retried).toHaveLength(1);
   });
 });
 

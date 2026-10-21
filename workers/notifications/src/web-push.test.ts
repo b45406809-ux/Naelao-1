@@ -39,7 +39,7 @@ describe("browser Web Push", () => {
           bind(...args: unknown[]) {
             return {
               all: async () => ({ results: [{ endpoint_hash: "hash-1", encrypted_subscription: encrypted }] }),
-              first: async () => ({ config_json: "{}" }),
+              first: async () => sql.includes("FROM orgs") ? { status: "active" } : { config_json: "{}" },
               run: async () => { deleted.push(args); return { meta: { changes: 1 } }; },
             };
           },
@@ -61,7 +61,7 @@ describe("browser Web Push", () => {
 
   it("requires a tenant-bound internal token and encrypts subscriptions before D1 storage", async () => {
     const writes: unknown[][] = [];
-    const db = { prepare: (sql: string) => ({ bind: (...args: unknown[]) => ({ first: async () => ({ count: 0 }), run: async () => { writes.push([sql, ...args]); return { meta: { changes: 1 } }; } }) }) };
+    const db = { prepare: (sql: string) => ({ bind: (...args: unknown[]) => ({ first: async () => sql.includes("FROM orgs") ? { status: "active" } : { count: 0 }, run: async () => { writes.push([sql, ...args]); return { meta: { changes: 1 } }; } }) }) };
     const env = {
       ENVIRONMENT: "test", RESEND_API_KEY: "test", WEBHOOK_SIGNING_SECRET: "secret", PLATFORM_SECRET: "platform-secret",
       WEB_PUSH_VAPID_PUBLIC_KEY: "public", PLATFORM_DB: db,

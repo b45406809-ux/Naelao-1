@@ -8,7 +8,13 @@ function env(): NotificationsEnv {
     RESEND_API_URL: "https://api.resend.test",
     WEBHOOK_SIGNING_SECRET: "secret",
     PLATFORM_DB: {
-      prepare: vi.fn(() => ({ bind: vi.fn(() => ({ first: vi.fn(async () => ({ config_json: '{"compliance":{"airGappedOnly":true}}' })) })) })),
+      prepare: vi.fn((query: string) => ({
+        bind: vi.fn(() => ({
+          first: vi.fn(async () => query.includes("FROM orgs")
+            ? { status: "active" }
+            : { config_json: '{"compliance":{"airGappedOnly":true}}' }),
+        })),
+      })),
     } as unknown as D1Database,
   };
 }

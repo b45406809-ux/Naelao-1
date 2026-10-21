@@ -58,6 +58,10 @@ describe("daily Project Steward dispatch claims", () => {
 
   it("generates and persists an advisory report using only the scoped summary grant", async () => {
     const platformDb = database();
+    platformDb.db.exec("CREATE TABLE orgs (id TEXT PRIMARY KEY, status TEXT NOT NULL)");
+    platformDb.db.exec("INSERT INTO orgs (id, status) VALUES ('tenant-review', 'active')");
+    platformDb.db.exec("CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL)");
+    platformDb.db.exec("INSERT INTO spaces (id, tenant_id, status) VALUES ('space-review', 'tenant-review', 'active')");
     const archive: string[] = [];
     const env = {
       PLATFORM_SECRET: "test-secret",

@@ -33,6 +33,7 @@ function makeEnv(opts: {
       const stmt = {
         bind(...a: unknown[]) { args = a; return stmt; },
         async first() {
+          if (/FROM spaces s WHERE s.id =/.test(sql)) return { id: "space-1" };
           if (sql.includes("INSERT INTO scheduled_job_dispatches")) return { claim_token: "claim-1" };
           if (sql.includes("FROM scheduled_jobs")) return jobRow;
           return null;

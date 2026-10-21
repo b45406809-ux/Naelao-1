@@ -852,7 +852,7 @@ app.post("/customer-voice/twilio/answer/:bindingId", async (c) => {
   if (!/^CA[a-fA-F0-9]{32}$/.test(callSid) || !isE164(caller) || called !== binding.phone_number || await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, binding.space_id)) {
     return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 403 });
   }
-  const space = await c.env.PLATFORM_DB.prepare("SELECT status FROM spaces WHERE id=? AND tenant_id=?").bind(binding.space_id, binding.tenant_id).first<{ status: string }>();
+  const space = await c.env.PLATFORM_DB.prepare("SELECT s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id=? AND s.tenant_id=?").bind(binding.space_id, binding.tenant_id).first<{ status: string }>();
   if (!space || space.status !== "active") return twiml({ body: "<?xml version=\"1.0\"?><Response><Reject/></Response>", status: 403 });
   const existing = await c.env.PLATFORM_DB.prepare("SELECT ticket_token,status FROM customer_voice_call_admissions WHERE call_sid=? AND number_binding_id=?").bind(callSid, binding.id).first<{ ticket_token: string; status: string }>();
   if (existing) {
@@ -2274,6 +2274,14 @@ async function createHeartbeatSession(env: AgentsEnv, spaceId: string, tenantId:
   }
 }
 
+async function isActiveTenantSpace(env: AgentsEnv, spaceId: string, tenantId: string): Promise<boolean> {
+  const row = await env.PLATFORM_DB.prepare(
+    `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
+     AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = s.tenant_id AND o.status = 'active')`,
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  return !!row;
+}
+
 async function stableChannelSessionId(spaceId: string, channelType: string, endUserId: string): Promise<string> {
   const value = new TextEncoder().encode(`${spaceId}\0${channelType}\0${endUserId}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
@@ -2287,11 +2295,7 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
   const projectId = inbound ? undefined : message.projectId;
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(queueMessageId)) throw new Error("invalid_queue_message_id");
   const sessionIdForDelivery = `queue-${queueMessageId}`;
-  const space = await env.PLATFORM_DB.prepare(
-    `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
-     AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = s.tenant_id AND o.status = 'active')`,
-  ).bind(spaceId, tenantId).first<{ id: string }>();
-  if (!space) return; // Stale delivery for a deleted, suspended, or cross-tenant space.
+  if (!await isActiveTenantSpace(env, spaceId, tenantId)) return; // Stale delivery for an inactive tenant/space.
 
   let sessionId: string | null;
   let goal: string;
@@ -5402,7 +5406,7 @@ app.post("/connectors/:platform/webhook/:spaceId", async (c) => {
 
   // Resolve the space + its tenant; ignore events for unknown/inactive spaces (ack 200).
   const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, status, config_json FROM spaces WHERE id = ?"
+    "SELECT s.tenant_id, s.status, s.config_json FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id = ?"
   ).bind(spaceId).first<{ tenant_id: string; status: string; config_json: string | null }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
   const wake = await resolveWakeContext(c.env, spaceId, space.tenant_id);
@@ -6142,7 +6146,7 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
   }
 
   const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT status FROM spaces WHERE id = ?"
+    "SELECT s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id = ?"
   ).bind(paired.spaceId).first<{ status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
   const wakeContext = await resolveWakeContext(c.env, paired.spaceId, paired.tenantId);
@@ -6441,7 +6445,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
   const adapter = getAdapter(channel)!;
 
   const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, status FROM spaces WHERE id = ?"
+    "SELECT s.tenant_id, s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id = ?"
   ).bind(spaceId).first<{ tenant_id: string; status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
   const wakeContext = await resolveWakeContext(c.env, spaceId, space.tenant_id, channel);
@@ -6692,6 +6696,7 @@ app.post("/channels/whatsapp/extensions", async c => {
     // app-level webhook carries no Naelao tenant or installation identifier.
     const candidates = await c.env.PLATFORM_DB.prepare(`SELECT c.project_id,c.installation_id,c.connection_id,c.credential_name,c.handler_sha256,c.tenant_id,c.space_id
       FROM extension_provider_connections c JOIN spaces s ON s.id=c.space_id AND s.tenant_id=c.tenant_id
+      JOIN orgs o ON o.id=s.tenant_id AND o.status='active'
       WHERE c.provider='whatsapp' AND c.account_id=? AND c.status='active' AND s.status='active' LIMIT 2`)
       .bind(item.phoneNumberId).all<{ project_id: string; installation_id: string; connection_id: string; credential_name: string; handler_sha256: string | null; tenant_id: string; space_id: string }>();
     if ((candidates.results ?? []).length !== 1) continue;
@@ -6729,7 +6734,7 @@ app.post("/channels/whatsapp/extensions", async c => {
 
 app.post("/channels/telegram/extensions/:spaceId/:installationId/:connectionId", async c => {
   const spaceId = c.req.param("spaceId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
-  const space = await c.env.PLATFORM_DB.prepare("SELECT tenant_id,status FROM spaces WHERE id=?").bind(spaceId).first<{ tenant_id: string; status: string }>();
+  const space = await c.env.PLATFORM_DB.prepare("SELECT s.tenant_id,s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id=?").bind(spaceId).first<{ tenant_id: string; status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
   const connection = await c.env.PLATFORM_DB.prepare(`SELECT project_id,credential_name,webhook_secret_name,handler_sha256
     FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=? AND provider='telegram' AND status='active'`)
@@ -7158,7 +7163,7 @@ app.post("/internal/attachments/copy", async (c) => {
   if (!attachment) return c.json({ error_code: "attachment_not_found" }, 404);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "attachment_storage_unavailable" }, 503);
   if (attachment.size_bytes > MAX_EMAIL_ATTACHMENT_BYTES) return c.json({ error_code: "attachment_copy_too_large", max_bytes: MAX_EMAIL_ATTACHMENT_BYTES }, 413);
-  const space = await c.env.PLATFORM_DB.prepare("SELECT status FROM spaces WHERE id=? AND tenant_id=?").bind(body.spaceId, tenantId).first<{ status: string }>();
+  const space = await c.env.PLATFORM_DB.prepare("SELECT s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id=? AND s.tenant_id=?").bind(body.spaceId, tenantId).first<{ status: string }>();
   if (!space || space.status !== "active") return c.json({ error_code: "space_inactive" }, 409);
   const claimId = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
@@ -7498,7 +7503,7 @@ async function cloudflareSpaceSenderAddress(tenantId: string, spaceId: string, d
 app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, status FROM spaces WHERE id = ?"
+    "SELECT s.tenant_id, s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id = ?"
   ).bind(spaceId).first<{ tenant_id: string; status: string }>();
   if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
   const wakeContext = await resolveWakeContext(c.env, spaceId, space.tenant_id);
@@ -9765,6 +9770,8 @@ async function isProjectRoutineEligible(env: AgentsEnv, row: { space_id: string;
 
 async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<void> {
   if (msg.kind === "scheduled_job" && !msg.jobId) return;
+  if (msg.kind === "connector_poll" && !msg.connectorName) return;
+  if (!await isActiveTenantSpace(env, msg.spaceId, msg.tenantId)) return;
   if (msg.kind === "project_steward_review") {
     const runDay = msg.runDay ?? new Date().toISOString().slice(0, 10);
     const dayStart = Date.parse(`${runDay}T00:00:00.000Z`);
@@ -10156,7 +10163,7 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
     return;
   }
   const space = await env.PLATFORM_DB.prepare(
-    "SELECT status FROM spaces WHERE id = ? AND tenant_id = ?"
+    "SELECT s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id = ? AND s.tenant_id = ?"
   ).bind(route.space_id, route.tenant_id).first<{ status: string }>();
   if (!space || space.status !== "active") {
     message.setReject("Naelao workspace is unavailable");
