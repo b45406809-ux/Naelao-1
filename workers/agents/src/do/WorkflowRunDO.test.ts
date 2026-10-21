@@ -4,6 +4,9 @@ import { readWorkflowGrant } from "../workflows/workflow-host.js";
 import type { WorkflowJournalRecord } from "../workflows/workflow-state.js";
 import { WorkflowRunDO } from "./WorkflowRunDO.js";
 
+const { dynamicBinding } = vi.hoisted(() => ({ dynamicBinding: { create: undefined as unknown, get: undefined as unknown } }));
+vi.mock("@cloudflare/dynamic-workflows", () => ({ wrapWorkflowBinding: () => dynamicBinding }));
+
 function harness() {
   const values = new Map<string, unknown>();
   const artifacts = new Set<string>();
@@ -97,6 +100,90 @@ describe("WorkflowRunDO persisted authorization", () => {
     h.suspendTenant();
     await h.instance.cancel("actor-a");
     expect((await h.instance.existing())?.status).toBe("cancelled");
+  });
+
+  it("releases a reserved budget instead of launching after suspension races reservation", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-launch-race", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-launch-race",
+      startKey: "start-launch-race", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    await h.instance.initialize(identity, {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-launch-race/input.json", sha256: "b".repeat(64), bytes: 2,
+    }, { budgetCredits: 5 });
+    const create = vi.fn();
+    const billingPaths: string[] = [];
+    h.env.AGENT_SCRIPT_WORKFLOW = { create, get: vi.fn() };
+    h.env.BILLING_WORKER = { async fetch(request: Request) {
+      const path = new URL(request.url).pathname;
+      billingPaths.push(path);
+      if (path.endsWith("/reserve")) h.suspendTenant();
+      return Response.json({ ok: true });
+    } };
+
+    await expect(h.instance.launch()).rejects.toThrow("workflow_tenant_suspended");
+    expect(create).not.toHaveBeenCalled();
+    expect(billingPaths).toContain("/internal/workflows/budget/release");
+    expect((await h.instance.existing())?.status).toBe("queued");
+  });
+
+  it("does not restart a failed workflow after suspension races retry reservation", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-retry-race", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-retry-race",
+      startKey: "start-retry-race", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    await h.instance.initialize(identity, {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-retry-race/input.json", sha256: "b".repeat(64), bytes: 2,
+    }, { budgetCredits: 5 });
+    await h.instance.finish(identity.runId, "failed", "prior failure");
+    const restart = vi.fn();
+    h.env.AGENT_SCRIPT_WORKFLOW = { create: vi.fn(), get: vi.fn(() => ({ restart })) };
+    const billingPaths: string[] = [];
+    h.env.BILLING_WORKER = { async fetch(request: Request) {
+      const path = new URL(request.url).pathname;
+      billingPaths.push(path);
+      if (path.endsWith("/reserve")) h.suspendTenant();
+      return Response.json({ ok: true });
+    } };
+
+    await expect(h.instance.retry("actor-a")).rejects.toThrow("workflow_tenant_suspended");
+    expect(restart).not.toHaveBeenCalled();
+    expect(billingPaths).toContain("/internal/workflows/budget/release");
+    expect((await h.instance.existing())?.status).toBe("failed");
+  });
+
+  it("terminates a provider workflow if suspension races workflow creation", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-provider-race", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-provider-race",
+      startKey: "start-provider-race", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    await h.instance.initialize(identity, {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-provider-race/input.json", sha256: "b".repeat(64), bytes: 2,
+    }, { budgetCredits: 5 });
+    const terminate = vi.fn(async () => undefined);
+    const create = vi.fn(async () => { h.suspendTenant(); });
+    const getWorkflow = vi.fn(() => ({ terminate, async status() { return { status: "running" }; } }));
+    dynamicBinding.create = create;
+    dynamicBinding.get = getWorkflow;
+    h.env.AGENT_SCRIPT_WORKFLOW = {
+      create: vi.fn(), get: getWorkflow,
+    };
+    h.env.BILLING_WORKER = { async fetch() { return Response.json({ ok: true }); } };
+
+    expect(await h.instance.existing()).toMatchObject({ status: "queued", launched: false });
+    const launch = h.instance.launch();
+    await expect(launch).rejects.toThrow("workflow_tenant_suspended");
+    expect(create).toHaveBeenCalledOnce();
+    expect(terminate).toHaveBeenCalledOnce();
+    expect((await h.instance.existing())?.status).toBe("failed");
   });
 
   it("keeps a failed run retryable when budget reservation is unavailable", async () => {

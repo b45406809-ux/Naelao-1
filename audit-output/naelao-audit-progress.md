@@ -1899,3 +1899,9 @@ Validation: focused ToolSandboxDO suite passed 16/16; full Agents suite passed 1
 Gadget app routes and public dynamic pages treated any non-deleted Space as available and did not check the parent organization. This allowed suspended tenants to continue accessing app data, invoking extension gadget operations, viewing public pages, and submitting public actions. Gadget and project bridges now require both the Space and organization to be active; public page lookup and publishing use the same active-state gate. Added regressions that assert no Durable Object dispatch occurs for inactive tenants/Spaces.
 
 Validation: focused gadget, extension-gadget, and dynamic-page suites passed 20/20; full Spaces suite passed 66 files / 260 tests; Spaces TypeScript, targeted Biome security rule checks, and `git diff --check` passed. No new tracked files were added; the tree remains current. Direct Durable Object and queued side-effect audit continues.
+
+## Durable workflow launch and retry suspension races (2026-10-21)
+
+Workflow authorization was checked before reserving budget, but suspension could race the reservation call and still allow provider create/restart. `WorkflowRunDO.launch()` and `retry()` now reauthorize immediately after reservation and release the reservation if the grant was revoked. A second check after provider creation terminates the workflow and marks the run failed if suspension raced startup; its first workflow step also remains independently guarded. Added race regressions for launch reservation, retry reservation, and suspension during provider creation.
+
+Validation: workflow DO suite passed 10/10; full Agents suite passed 156 files / 724 tests; Agents TypeScript, targeted Biome security checks, and `git diff --check` passed. No new tracked files were added. Alarm and DO review continues; the full repository audit remains incomplete.

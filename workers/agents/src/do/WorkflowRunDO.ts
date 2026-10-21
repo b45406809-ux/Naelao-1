@@ -47,6 +47,11 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     if (!this.env.AGENT_SCRIPT_WORKFLOW) throw new Error("workflow_provider_unavailable");
     await reserveWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.spaceId, record.identity.runId, record.budgetKey, record.budgetCredits, record.identity.expiresAt,
       { ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}), ...(record.identity.installationId ? { installationId: record.identity.installationId } : {}) });
+    try { await this.authorize(record.identity.runId); }
+    catch (error) {
+      await finalizeWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.runId, "release");
+      throw error;
+    }
     const binding = wrapWorkflowBinding({ tenantId: record.identity.tenantId, spaceId: record.identity.spaceId, runId: record.identity.runId }, { bindingName: "AGENT_SCRIPT_WORKFLOW" });
     try {
       await binding.create({ id: record.identity.runId, params: { runId: record.identity.runId } });
@@ -56,8 +61,14 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
       catch { await this.journal.transition("failed", undefined, "workflow_start_failed"); await this.cleanup(); throw error; }
     }
     await this.journal.patch({ launched: true });
-    const latest = await this.journal.read();
-    if (["cancelled", "expired"].includes(latest.status)) await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).terminate();
+    try { await this.authorize(record.identity.runId); }
+    catch (error) {
+      await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).terminate().catch(() => undefined);
+      const current = await this.journal.read();
+      if (!isTerminalWorkflow(current.status)) await this.journal.transition("failed", undefined, "workflow_launch_authorization_revoked");
+      await this.cleanup();
+      throw error;
+    }
   }
   async state(runId: string, status: "running" | "sleeping" | "waiting"): Promise<void> {
     await this.authorize(runId);
@@ -153,6 +164,11 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     // retryable instead of stranding it in a queued state with no provider restart.
     await reserveWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.spaceId, record.identity.runId, record.budgetKey, record.budgetCredits, record.identity.expiresAt,
       { ...(record.identity.projectId ? { projectId: record.identity.projectId } : {}), ...(record.identity.installationId ? { installationId: record.identity.installationId } : {}) });
+    try { await this.authorize(record.identity.runId); }
+    catch (error) {
+      await finalizeWorkflowBudget(this.env as Env, record.identity.tenantId, record.identity.runId, "release");
+      throw error;
+    }
     await this.journal.retry(WORKFLOW_CLASS_POLICIES[record.identity.workflowClass].maxAttempts);
     await this.journal.patch({ launched: true });
     await this.ctx.storage.setAlarm(record.identity.expiresAt);
