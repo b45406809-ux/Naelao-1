@@ -219,13 +219,20 @@ export async function cleanDeletedSpaces(db: D1Database, bucket: R2Bucket, vecto
   for (const { space_id: spaceId } of deletedSpaces) {
     try {
       // Get all KB documents for this space
-      const { results: docs } = await db.prepare(
+      const docs = await selectFairSweepBatch<{
+        id: string; tenant_id: string; project_id: string | null; chunk_count: number | null;
+      }>(
+        db,
+        `deleted_space_docs:${spaceId}`,
+        (after) => db.prepare(
         `SELECT d.id, d.tenant_id, d.project_id, d.chunk_count FROM kb_documents d
          WHERE d.space_id = ? AND (
            d.status != 'purged'
            OR EXISTS (SELECT 1 FROM kb_chunks kc WHERE kc.document_id = d.id)
-         ) LIMIT 200`
-      ).bind(spaceId).all<{ id: string; tenant_id: string; project_id: string | null; chunk_count: number | null }>();
+         ) AND d.id > COALESCE(?, '') ORDER BY d.id ASC LIMIT 200`
+        ).bind(spaceId, after),
+        (doc: { id: string }) => doc.id,
+      );
 
       let allDocumentsComplete = true;
       for (const doc of docs) {
