@@ -361,10 +361,15 @@ app.post("/request-password-reset", async (c) => {
   const token = crypto.randomUUID() + crypto.randomUUID();
   const tokenHash = await sha256Hex(token);
   const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS).toISOString();
-  await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO builder_password_reset_tokens (id, user_id, token_hash, expires_at)
-     VALUES (?1, ?2, ?3, ?4)`
-  ).bind(crypto.randomUUID(), user.id, tokenHash, expiresAt).run();
+  await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(
+      "DELETE FROM builder_password_reset_tokens WHERE user_id = ?1 AND used_at IS NULL"
+    ).bind(user.id),
+    c.env.PLATFORM_DB.prepare(
+      `INSERT INTO builder_password_reset_tokens (id, user_id, token_hash, expires_at)
+       VALUES (?1, ?2, ?3, ?4)`
+    ).bind(crypto.randomUUID(), user.id, tokenHash, expiresAt),
+  ]);
 
   await sendResetEmail(c.env, user.org_id, user.email, token);
   return ALWAYS_OK;
@@ -406,6 +411,12 @@ app.post("/reset-password", async (c) => {
          SELECT 1 FROM builder_password_reset_tokens WHERE id = ?3 AND used_at = ?4
        )`
     ).bind(passwordHash, row.user_id, row.id, claimMarker),
+    c.env.PLATFORM_DB.prepare(
+      `UPDATE builder_password_reset_tokens SET used_at = ?1
+       WHERE user_id = ?2 AND id != ?3 AND used_at IS NULL AND EXISTS (
+         SELECT 1 FROM builder_password_reset_tokens WHERE id = ?3 AND used_at = ?1
+       )`
+    ).bind(claimMarker, row.user_id, row.id),
   ]);
   if (!results[0] || results[0].meta.changes === 0 || !results[1] || results[1].meta.changes === 0) {
     throw badRequest("This reset link is invalid or has expired");

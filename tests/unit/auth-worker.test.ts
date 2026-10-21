@@ -265,6 +265,35 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     expect(second.status).toBe(400);
   });
 
+  it("a new reset request invalidates the previously emailed link", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const firstToken = extractResetToken(env.__notifyCalls);
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const secondToken = extractResetToken(env.__notifyCalls);
+
+    expect((await authWorker.fetch(req("/reset-password", { token: firstToken, new_password: "anotherpass1" }), env as never, execCtx)).status).toBe(400);
+    expect((await authWorker.fetch(req("/reset-password", { token: secondToken, new_password: "anotherpass1" }), env as never, execCtx)).status).toBe(200);
+  });
+
+  it("a successful reset invalidates any other outstanding reset token for that user", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const token = extractResetToken(env.__notifyCalls);
+    const otherToken = crypto.randomUUID() + crypto.randomUUID();
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(otherToken));
+    const tokenHash = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const user = await env.__db.prepare("SELECT id FROM users WHERE email = 'jane@acme.com'").first<{ id: string }>();
+    await env.__db.prepare(
+      "INSERT INTO builder_password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)"
+    ).bind("other-token", user?.id, tokenHash, new Date(Date.now() + 60_000).toISOString()).run();
+
+    expect((await authWorker.fetch(req("/reset-password", { token, new_password: "anotherpass1" }), env as never, execCtx)).status).toBe(200);
+    expect((await authWorker.fetch(req("/reset-password", { token: otherToken, new_password: "thirdpassword1" }), env as never, execCtx)).status).toBe(400);
+  });
+
   it("allows only one concurrent reset request to claim and apply a reset token", async () => {
     const env = makeEnv();
     await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
