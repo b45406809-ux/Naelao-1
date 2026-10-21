@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2002` tracked files; `1796` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `32b2d6c4`.
+Inventory basis: `2005` tracked files; `1799` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `9f42f460`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1546,7 +1546,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/router-agent-key-gate.test.ts`
 - [ ] `tests/unit/router-assistant-panel-allowlist.test.ts`
 - [ ] `tests/unit/router-cors-allowlist.test.ts`
-- [ ] `tests/unit/router-dispatch.test.ts`
+- [x] `tests/unit/router-dispatch.test.ts`
 - [ ] `tests/unit/router-dynamic-cors.test.ts`
 - [ ] `tests/unit/router-preauth-rate-limit.test.ts`
 - [ ] `tests/unit/router-product-end-user-auth.test.ts`
@@ -1629,6 +1629,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `tests/unit/helpers`
 
+- [x] `tests/unit/helpers/active-tenant-db.ts`
 - [ ] `tests/unit/helpers/fake-do-namespace.ts`
 - [ ] `tests/unit/helpers/r2-bucket.ts`
 - [ ] `tests/unit/helpers/sqlite-do-shim.ts`
@@ -2385,6 +2386,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/router/src/extension-provider-routing.test.ts`
 - [ ] `workers/router/src/health.test.ts`
 - [x] `workers/router/src/index.ts`
+- [x] `workers/router/src/tenant-status.test.ts`
+- [x] `workers/router/src/tenant-status.ts`
 - [ ] `workers/router/src/preferred-language.test.ts`
 - [ ] `workers/router/src/preferred-language.ts`
 

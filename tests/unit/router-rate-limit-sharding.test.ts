@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
-import routerWorker from "../../workers/router/src/index.js";
 import { signJwt } from "@naelao/auth";
+import { describe, expect, it, vi } from "vitest";
+import routerWorker from "../../workers/router/src/index.js";
+import { activeTenantDb } from "./helpers/active-tenant-db.js";
 
 // F7: the rate limiter routed EVERY authenticated request on the whole platform through a
 // single Durable Object (idFromName("global-rate-limiter")) — a chokepoint that caps total
@@ -11,7 +12,10 @@ import { signJwt } from "@naelao/auth";
 // calling idFromName(bucketKey) directly (one DO per key, not one DO for the platform) and key
 // on cf-connecting-ip (edge-set, unspoofable) instead of XFF.
 
-const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+const execCtx = {
+  waitUntil() {},
+  passThroughOnException() {},
+} as unknown as ExecutionContext;
 const JWT_SECRET = "test-jwt-secret";
 
 function makeRateLimitDoNamespace() {
@@ -24,7 +28,11 @@ function makeRateLimitDoNamespace() {
     get(_id: DurableObjectId) {
       return {
         async fetch() {
-          return Response.json({ allowed: true, remaining: 119, retry_after_ms: 0 });
+          return Response.json({
+            allowed: true,
+            remaining: 119,
+            retry_after_ms: 0,
+          });
         },
       } as unknown as DurableObjectStub;
     },
@@ -37,17 +45,30 @@ function makeEnv(rateLimitDo: DurableObjectNamespace) {
     ENVIRONMENT: "test",
     JWT_SECRET,
     PLATFORM_SECRET: "test-platform-secret",
+    PLATFORM_DB: activeTenantDb(),
     RATE_LIMIT_DO: rateLimitDo,
   };
 }
 
-async function authedRequest(url: string, headers: Record<string, string>, env: unknown) {
+async function authedRequest(
+  url: string,
+  headers: Record<string, string>,
+  env: unknown
+) {
   const token = await signJwt(
-    { sub: "user-1", tid: "tenant-1", email: "u@example.com", role: "owner", scopes: [] },
+    {
+      sub: "user-1",
+      tid: "tenant-1",
+      email: "u@example.com",
+      role: "owner",
+      scopes: [],
+    },
     JWT_SECRET
   );
   return routerWorker.fetch(
-    new Request(url, { headers: { ...headers, authorization: `Bearer ${token}` } }),
+    new Request(url, {
+      headers: { ...headers, authorization: `Bearer ${token}` },
+    }),
     env as never,
     execCtx
   );
@@ -94,16 +115,26 @@ describe("router — rate limiter sharding + trusted key (F7)", () => {
   it("two different authenticated users land on two different DO ids", async () => {
     const { namespace, idFromNameCalls } = makeRateLimitDoNamespace();
     const env = makeEnv(namespace);
-    const tokenA = await signJwt({ sub: "user-a", tid: "t", email: "a@x.com", role: "owner", scopes: [] }, JWT_SECRET);
-    const tokenB = await signJwt({ sub: "user-b", tid: "t", email: "b@x.com", role: "owner", scopes: [] }, JWT_SECRET);
+    const tokenA = await signJwt(
+      { sub: "user-a", tid: "t", email: "a@x.com", role: "owner", scopes: [] },
+      JWT_SECRET
+    );
+    const tokenB = await signJwt(
+      { sub: "user-b", tid: "t", email: "b@x.com", role: "owner", scopes: [] },
+      JWT_SECRET
+    );
 
     await routerWorker.fetch(
-      new Request("https://router.naelao.com/v1/does-not-exist", { headers: { authorization: `Bearer ${tokenA}` } }),
+      new Request("https://router.naelao.com/v1/does-not-exist", {
+        headers: { authorization: `Bearer ${tokenA}` },
+      }),
       env as never,
       execCtx
     );
     await routerWorker.fetch(
-      new Request("https://router.naelao.com/v1/does-not-exist", { headers: { authorization: `Bearer ${tokenB}` } }),
+      new Request("https://router.naelao.com/v1/does-not-exist", {
+        headers: { authorization: `Bearer ${tokenB}` },
+      }),
       env as never,
       execCtx
     );

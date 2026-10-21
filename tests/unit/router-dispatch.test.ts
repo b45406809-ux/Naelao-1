@@ -1,6 +1,8 @@
-import { describe, it, expect } from "vitest";
-import routerWorker from "../../workers/router/src/index.js";
 import { signJwt } from "@naelao/auth";
+import { describe, expect, it } from "vitest";
+import routerWorker from "../../workers/router/src/index.js";
+import { clearTenantStatusCacheForTests } from "../../workers/router/src/tenant-status.js";
+import { activeTenantDb } from "./helpers/active-tenant-db.js";
 
 // F15: api.all("/spaces/*") and api.all("/spaces") were registered BEFORE the more specific
 // /spaces/:spaceId/kb/*, /credentials, /sessions*, /bootstrap/*, /projects/from-template, and
@@ -19,18 +21,24 @@ import { signJwt } from "@naelao/auth";
 // agent-run/approvals sub-paths → AGENTS_WORKER (registered first so they win over the general
 // catch-all, same F15 reasoning).
 
-const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+const execCtx = {
+  waitUntil() {},
+  passThroughOnException() {},
+} as unknown as ExecutionContext;
 const JWT_SECRET = "test-jwt-secret";
 
 function namedFetcher(name: string): Fetcher {
-  return { fetch: async () => Response.json({ worker: name }) } as unknown as Fetcher;
+  return {
+    fetch: async () => Response.json({ worker: name }),
+  } as unknown as Fetcher;
 }
 
-function makeEnv() {
+function makeEnv(tenantStatus = "active") {
   return {
     ENVIRONMENT: "test",
     JWT_SECRET,
     PLATFORM_SECRET: "test-platform-secret",
+    PLATFORM_DB: activeTenantDb(tenantStatus),
     SPACES_WORKER: namedFetcher("SPACES"),
     KNOWLEDGE_WORKER: namedFetcher("KNOWLEDGE"),
     AGENTS_WORKER: namedFetcher("AGENTS"),
@@ -41,7 +49,13 @@ function makeEnv() {
 
 async function authedFetch(method: string, path: string, env: unknown) {
   const token = await signJwt(
-    { sub: "user-1", tid: "tenant-1", email: "u@example.com", role: "owner", scopes: [] },
+    {
+      sub: "user-1",
+      tid: "tenant-1",
+      email: "u@example.com",
+      role: "owner",
+      scopes: [],
+    },
     JWT_SECRET
   );
   return routerWorker.fetch(
@@ -56,12 +70,28 @@ async function authedFetch(method: string, path: string, env: unknown) {
 
 describe("router — /spaces dispatch order (F15)", () => {
   it("GET /v1/spaces/s1/kb/documents → KNOWLEDGE_WORKER", async () => {
-    const res = await authedFetch("GET", "/v1/spaces/s1/kb/documents", makeEnv());
+    const res = await authedFetch(
+      "GET",
+      "/v1/spaces/s1/kb/documents",
+      makeEnv()
+    );
     expect(await res.json()).toEqual({ worker: "KNOWLEDGE" });
   });
 
+  it("rejects all authenticated feature requests for a suspended tenant", async () => {
+    clearTenantStatusCacheForTests();
+    const res = await authedFetch("GET", "/v1/spaces/s1", makeEnv("suspended"));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    clearTenantStatusCacheForTests();
+  });
+
   it("GET /v1/spaces/s1/credentials → CREDENTIALS_WORKER", async () => {
-    const res = await authedFetch("GET", "/v1/spaces/s1/credentials", makeEnv());
+    const res = await authedFetch(
+      "GET",
+      "/v1/spaces/s1/credentials",
+      makeEnv()
+    );
     expect(await res.json()).toEqual({ worker: "CREDENTIALS" });
   });
 
@@ -82,33 +112,53 @@ describe("router — /spaces dispatch order (F15)", () => {
 
   it("returns 503 for /v1/billing/subscription when BILLING_WORKER isn't bound", async () => {
     const env = makeEnv() as Record<string, unknown>;
-    delete env.BILLING_WORKER;
+    env.BILLING_WORKER = undefined;
     const res = await authedFetch("GET", "/v1/billing/subscription", env);
     expect(res.status).toBe(503);
   });
 
   it("POST /v1/spaces/s1/sessions/sess1/messages → SPACES_WORKER", async () => {
-    const res = await authedFetch("POST", "/v1/spaces/s1/sessions/sess1/messages", makeEnv());
+    const res = await authedFetch(
+      "POST",
+      "/v1/spaces/s1/sessions/sess1/messages",
+      makeEnv()
+    );
     expect(await res.json()).toEqual({ worker: "SPACES" });
   });
 
   it("POST /v1/spaces/s1/sessions/sess1/agent/run → AGENTS_WORKER", async () => {
-    const res = await authedFetch("POST", "/v1/spaces/s1/sessions/sess1/agent/run", makeEnv());
+    const res = await authedFetch(
+      "POST",
+      "/v1/spaces/s1/sessions/sess1/agent/run",
+      makeEnv()
+    );
     expect(await res.json()).toEqual({ worker: "AGENTS" });
   });
 
   it("GET /v1/spaces/s1/sessions/sess1/agent/runs/run1/stream → AGENTS_WORKER", async () => {
-    const res = await authedFetch("GET", "/v1/spaces/s1/sessions/sess1/agent/runs/run1/stream", makeEnv());
+    const res = await authedFetch(
+      "GET",
+      "/v1/spaces/s1/sessions/sess1/agent/runs/run1/stream",
+      makeEnv()
+    );
     expect(await res.json()).toEqual({ worker: "AGENTS" });
   });
 
   it("PUT /v1/spaces/s1/sessions/sess1/approvals/a1/approve → AGENTS_WORKER", async () => {
-    const res = await authedFetch("PUT", "/v1/spaces/s1/sessions/sess1/approvals/a1/approve", makeEnv());
+    const res = await authedFetch(
+      "PUT",
+      "/v1/spaces/s1/sessions/sess1/approvals/a1/approve",
+      makeEnv()
+    );
     expect(await res.json()).toEqual({ worker: "AGENTS" });
   });
 
   it("POST /v1/spaces/s1/channels/slack/connect → AGENTS_WORKER", async () => {
-    const res = await authedFetch("POST", "/v1/spaces/s1/channels/slack/connect", makeEnv());
+    const res = await authedFetch(
+      "POST",
+      "/v1/spaces/s1/channels/slack/connect",
+      makeEnv()
+    );
     expect(await res.json()).toEqual({ worker: "AGENTS" });
   });
 
@@ -124,8 +174,11 @@ describe("router — /spaces dispatch order (F15)", () => {
 
   it("POST /v1/spaces/s1/end-users/signup → SPACES_WORKER, with NO auth at all (Phase 6)", async () => {
     const res = await routerWorker.fetch(
-      new Request("https://router.naelao.com/v1/spaces/s1/end-users/signup", { method: "POST" }),
-      makeEnv() as never, execCtx
+      new Request("https://router.naelao.com/v1/spaces/s1/end-users/signup", {
+        method: "POST",
+      }),
+      makeEnv() as never,
+      execCtx
     );
     expect(await res.json()).toEqual({ worker: "SPACES" });
   });
@@ -149,18 +202,26 @@ describe("router — Lemon Squeezy webhook ingress (F-2)", () => {
   it("POST /v1/webhooks/lemon-squeezy → BILLING_WORKER, with NO JWT", async () => {
     const env = { ...makeEnv(), BILLING_WORKER: namedFetcher("BILLING") };
     const res = await routerWorker.fetch(
-      new Request("https://router.naelao.com/v1/webhooks/lemon-squeezy", { method: "POST", body: "{}" }),
-      env as never, execCtx
+      new Request("https://router.naelao.com/v1/webhooks/lemon-squeezy", {
+        method: "POST",
+        body: "{}",
+      }),
+      env as never,
+      execCtx
     );
     expect(await res.json()).toEqual({ worker: "BILLING" });
   });
 
   it("returns 503 when the billing worker is not bound", async () => {
     const env = makeEnv() as Record<string, unknown>;
-    delete env.BILLING_WORKER; // makeEnv now binds BILLING by default (F2); this case needs it absent
+    env.BILLING_WORKER = undefined; // makeEnv now binds BILLING by default (F2); this case needs it absent
     const res = await routerWorker.fetch(
-      new Request("https://router.naelao.com/v1/webhooks/lemon-squeezy", { method: "POST", body: "{}" }),
-      env as never, execCtx
+      new Request("https://router.naelao.com/v1/webhooks/lemon-squeezy", {
+        method: "POST",
+        body: "{}",
+      }),
+      env as never,
+      execCtx
     );
     expect(res.status).toBe(503);
   });
@@ -175,7 +236,10 @@ describe("router — frontend route-parity (F-STRUCT)", () => {
   it("registers a proxy for every top-level API prefix the frontends call", async () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
-    const routerSrc = readFileSync(join(__dirname, "../../workers/router/src/index.ts"), "utf8");
+    const routerSrc = readFileSync(
+      join(__dirname, "../../workers/router/src/index.ts"),
+      "utf8"
+    );
     // Prefixes the dashboard (builder) and shell (end-user) clients depend on, each with the
     // registration substring that must exist in the router source.
     const REQUIRED_PREFIXES: Array<[label: string, needle: RegExp]> = [
@@ -187,14 +251,25 @@ describe("router — frontend route-parity (F-STRUCT)", () => {
       ["/products/by-slug (shell)", /\/v1\/products\/by-slug/],
       ["/webhooks/lemon-squeezy (money-in)", /\/v1\/webhooks\/lemon-squeezy/],
       // F2: the builder's own platform subscription surface (Settings page) — was a dead route.
-      ["/billing/subscription (dashboard settings)", /["'`]\/billing\/subscription["'`]/],
-      ["/billing/checkout (dashboard settings)", /["'`]\/billing\/checkout["'`]/],
+      [
+        "/billing/subscription (dashboard settings)",
+        /["'`]\/billing\/subscription["'`]/,
+      ],
+      [
+        "/billing/checkout (dashboard settings)",
+        /["'`]\/billing\/checkout["'`]/,
+      ],
       // The eval worker had NO router route at all, so the benchmark runner
       // (infra/scripts/run-eval-suite.mjs) could never reach a real deployment — exactly the
       // "entire route group is unrouted" class this guard exists to catch.
       ["/evals (eval harness runner)", /["'`]\/evals\/\*["'`]/],
     ];
-    const missing = REQUIRED_PREFIXES.filter(([, needle]) => !needle.test(routerSrc)).map(([label]) => label);
-    expect(missing, `router is missing a route for: ${missing.join(", ")}`).toEqual([]);
+    const missing = REQUIRED_PREFIXES.filter(
+      ([, needle]) => !needle.test(routerSrc)
+    ).map(([label]) => label);
+    expect(
+      missing,
+      `router is missing a route for: ${missing.join(", ")}`
+    ).toEqual([]);
   });
 });

@@ -5,6 +5,7 @@ import type { NaelaoJwtClaims } from "@naelao/types";
 import { loadSavedLanguagePreference } from "./preferred-language";
 import { transcribeAudio } from "./routes/transcribe";
 import { readBoundedRequestBytes } from "./routes/bounded-request-body";
+import { isTenantActive } from "./tenant-status";
 export { RateLimitDO } from "./RateLimitDO";
 
 export interface Env {
@@ -987,6 +988,20 @@ api.use("*", async (c, next) => {
   // through to the ordinary platform JWT path. A Bearer nps_/nak_ token on a non-matching path
   // is rejected here, same as any other malformed/foreign token.
   return jwtAuth((cc) => (cc as unknown as { env: Env }).env.JWT_SECRET)(c, next);
+});
+
+// Tenant suspension is the organization-wide emergency gate. Resolve it after every public
+// identity path (JWT, product session, and agent key) has populated claims, before proxying to
+// any feature worker. A short isolate cache bounds D1 load while keeping the kill switch prompt.
+api.use("*", async (c, next) => {
+  const tenantId = c.get("claims")?.tid;
+  if (tenantId) {
+    if (!c.env.PLATFORM_DB) return c.json({ error_code: "tenant_status_unavailable" }, 503);
+    if (!(await isTenantActive(c.env.PLATFORM_DB, tenantId))) {
+      return c.json({ error_code: "tenant_suspended", message: "This tenant is suspended" }, 403);
+    }
+  }
+  return next();
 });
 
 // §A1.17 Phase O: "agents are given a default API key that requires approval for actions — but
