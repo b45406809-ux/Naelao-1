@@ -6,11 +6,13 @@ const SECRET = "owner-voice-route-secret";
 const TENANT = "tenant-voice";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
-async function requestTicket(configJson: string, role = "owner") {
+async function requestTicket(configJson: string, role = "owner", tenantActive = true) {
   let sessionChecks = 0;
   const env = {
     PLATFORM_SECRET: SECRET,
-    PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ status: "active", config_json: configJson }) }) }) },
+    PLATFORM_DB: { prepare: (sql: string) => ({ bind: () => ({ first: async () => sql.includes("SELECT s.id FROM spaces s WHERE")
+      ? tenantActive ? { id: "space-1" } : null
+      : { status: "active", config_json: configJson } }) }) },
     SPACES_WORKER: { fetch: async () => { sessionChecks++; return Response.json({ id: "session-1" }); } },
   } as unknown as AgentsEnv;
   const response = await app.fetch(new Request("https://agents.naelao.test/spaces/space-1/sessions/session-1/voice-ticket", {
@@ -49,6 +51,13 @@ describe("owner voice ticket route", () => {
   it("refuses non-owner caller roles", async () => {
     const { response } = await requestTicket("{}", "viewer");
     expect(response.status).toBe(403);
+  });
+
+  it("does not issue a voice ticket for a suspended organization even when the Space remains active", async () => {
+    const { response, sessionChecks } = await requestTicket("{}", "owner", false);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(sessionChecks).toBe(0);
   });
 });
 

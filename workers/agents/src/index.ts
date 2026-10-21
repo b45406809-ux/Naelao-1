@@ -990,6 +990,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/voice-ticket", async (c) => {
   if (!userId || (role !== "owner" && role !== "admin")) throw forbidden("Owner voice calls require Space owner or admin access");
   const sessionId = c.req.param("sessionId");
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(sessionId)) throw badRequest("Invalid session id");
+  if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const space = await c.env.PLATFORM_DB.prepare("SELECT status, config_json FROM spaces WHERE id = ? AND tenant_id = ?")
     .bind(spaceId, tenantId).first<{ status: string; config_json: string | null }>();
   if (!space || space.status !== "active") throw notFound("Space");

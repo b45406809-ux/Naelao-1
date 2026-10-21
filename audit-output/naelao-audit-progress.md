@@ -1849,3 +1849,9 @@ Validation: connector suites passed 50/50, including a regression proving a pre-
 Review of connector OAuth start routes found that authenticated business members could request shared built-in OAuth or hosted provider consent, even though connecting an integration changes Space-wide provider/MCP state. Both routes now require owner/admin authority, resolving product-end-user membership through the Spaces Worker. A regression confirms an ordinary member is rejected before any Pipedream call or MCP registration.
 
 Validation: built-in OAuth, custom OAuth, Composio, and Pipedream suites passed 51/51; the full Agents suite passed 156 files / 714 tests; Agents TypeScript, focused security lint and `git diff --check` passed. The broader audit remains open.
+
+## Owner voice ticket suspension check (2026-10-21)
+
+The owner voice-ticket route checked `spaces.status` but did not verify the parent organization. A suspended organization whose Space remained active could still mint a short-lived hosted voice ticket. It now uses the shared active tenant/Space gate before session lookup; the regression confirms it returns 403 without contacting the Spaces Worker.
+
+Validation: owner voice route suite 5/5; full Agents suite 156 files / 714 tests; Agents TypeScript, focused security lint and `git diff --check` passed. Other tenant-scoped read/write routes remain under review.
