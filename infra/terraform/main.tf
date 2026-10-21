@@ -117,6 +117,18 @@ resource "cloudflare_queue" "agent_ticks" {
   name       = "naelao-agent-ticks"
 }
 
+# Legacy channel and trigger producers publish here. The Agents worker consumes both
+# inbound_channel and space_trigger messages and sends poison deliveries to the DLQ.
+resource "cloudflare_queue" "channel_sessions" {
+  account_id = var.account_id
+  name       = "naelao-channel-sessions"
+}
+
+resource "cloudflare_queue" "channel_sessions_dlq" {
+  account_id = var.account_id
+  name       = "naelao-channel-sessions-dlq"
+}
+
 # ── Vectorize Indexes ─────────────────────────────────────────────────────────
 
 resource "cloudflare_vectorize_index" "kb" {

@@ -1719,6 +1719,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/agents/src/channels`
 
+- [x] `workers/agents/src/channels/session-queue.test.ts`
+- [x] `workers/agents/src/channels/session-queue.ts`
 - [x] `workers/agents/src/channels/agentmail.test.ts`
 - [ ] `workers/agents/src/channels/agentmail.ts`
 - [x] `workers/agents/src/channels/attachment-copy-route.test.ts`
@@ -2509,6 +2511,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/do/public-dynamic-pages.test.ts`
 - [ ] `workers/spaces/src/do/pull-request-cards.test.ts`
 - [ ] `workers/spaces/src/do/session-compact-scope.test.ts`
+- [x] `workers/spaces/src/do/session-create-idempotency.test.ts`
 - [ ] `workers/spaces/src/do/session-message-pagination.test.ts`
 - [ ] `workers/spaces/src/do/space-backup.test.ts`
 - [ ] `workers/spaces/src/do/space-backup.ts`

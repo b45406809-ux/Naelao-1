@@ -4320,6 +4320,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const body = await request.json<{
       space_id: string;
       tenant_id: string;
+      id?: string;
       end_user_id?: string;
       metadata?: Record<string, unknown>;
       /**
@@ -4343,7 +4344,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
     }
 
-    const id = crypto.randomUUID();
+    const id = body.id ?? crypto.randomUUID();
+    if (typeof id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(id)) {
+      return Response.json({ error_code: "bad_request", message: "id is invalid" }, { status: 400 });
+    }
+    // Queue consumers may redeliver after the session was created but before their ack was
+    // recorded. A caller-supplied internal ID is therefore an idempotency key; never let it
+    // claim an existing session from another space or tenant.
+    const existing = queryOne<{ id: string; space_id: string; tenant_id: string; end_user_id: string | null }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, space_id, tenant_id, end_user_id FROM sessions WHERE id = ?",
+      id,
+    );
+    if (existing) {
+      if (existing.space_id !== body.space_id || existing.tenant_id !== body.tenant_id || existing.end_user_id !== (body.end_user_id ?? null)) {
+        return Response.json({ error_code: "conflict", message: "Session id is already in use" }, { status: 409 });
+      }
+      return Response.json({ id, space_id: body.space_id, status: "active" }, { status: 200 });
+    }
     const now = new Date().toISOString();
 
     execute(

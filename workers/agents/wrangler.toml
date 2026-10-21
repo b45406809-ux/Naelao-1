@@ -240,6 +240,14 @@ max_retries = 3
 max_concurrency = 50
 dead_letter_queue = "naelao-agent-ticks-dlq"
 
+[[queues.consumers]]
+queue = "naelao-channel-sessions"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 10
+dead_letter_queue = "naelao-channel-sessions-dlq"
+
 [triggers]
 # Hourly → poll webhook-less connectors (e.g. Gumroad) + drain each space's channel heartbeat
 # (unanswered messages) + Memory OS maintenance. (The old "0 2 * * *" daily trigger drove the
@@ -631,6 +639,14 @@ max_retries = 3
 max_concurrency = 50
 dead_letter_queue = "naelao-agent-ticks-dlq"
 
+[[env.staging.queues.consumers]]
+queue = "naelao-channel-sessions"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 10
+dead_letter_queue = "naelao-channel-sessions-dlq"
+
 
 [env.staging.triggers]
 # Hourly → poll webhook-less connectors (e.g. Gumroad) + drain each space's channel heartbeat
@@ -885,6 +901,14 @@ max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 50
 dead_letter_queue = "naelao-agent-ticks-dlq"
+
+[[env.production.queues.consumers]]
+queue = "naelao-channel-sessions"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 10
+dead_letter_queue = "naelao-channel-sessions-dlq"
 
 
 [env.production.triggers]
