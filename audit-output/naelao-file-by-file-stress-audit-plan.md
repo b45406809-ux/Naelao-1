@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2039` tracked files; `1833` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `e25b2c99`.
+Inventory basis: `2040` tracked files; `1834` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `68abcd3e`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -2157,8 +2157,8 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/analytics/src`
 
 - [ ] `workers/analytics/src/events.ts`
-- [ ] `workers/analytics/src/index.test.ts`
-- [ ] `workers/analytics/src/index.ts`
+- [x] `workers/analytics/src/index.test.ts`
+- [x] `workers/analytics/src/index.ts`
 - [ ] `workers/analytics/src/query.test.ts`
 - [ ] `workers/analytics/src/query.ts`
 - [x] `workers/analytics/src/queue.test.ts`
@@ -2252,7 +2252,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/channels/src`
 
-- [ ] `workers/channels/src/index.ts`
+- [x] `workers/channels/src/index.test.ts`
+- [x] `workers/channels/src/index.ts`
 
 ### `workers/connector-gumroad`
 
@@ -2651,8 +2652,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/triggers/src`
 
-- [ ] `workers/triggers/src/index.test.ts`
-- [ ] `workers/triggers/src/index.ts`
+- [x] `workers/triggers/src/index.test.ts`
+- [x] `workers/triggers/src/index.ts`
 
 ### `workers/workflows`
 

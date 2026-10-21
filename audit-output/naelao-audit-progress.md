@@ -2005,3 +2005,7 @@ Validation: focused Analytics suite passed 5/5; Analytics TypeScript, targeted B
 Email and Slack ingress parsed unbounded JSON bodies, while their queue consumer accepts at most 100,000 content bytes and 16 KiB of metadata. Oversized but otherwise valid requests could therefore consume excess memory and then be silently dropped by the consumer. All channel paths now bound inbound JSON to 1 MiB and validate the exact queued content, end-user ID, and metadata limits before enqueueing. Channel listing, creation, deletion, and ingress also require active tenant/Space ownership, preventing suspended routes from being configured or queued. Added regressions for the 1 MiB body limit, queue payload limit, and suspended ingress.
 
 Validation: focused Channels tests passed 2/2; Channels TypeScript, full targeted Biome lint, and `git diff --check` passed. Inventory refreshed; 2,038 tracked files / 1,832 code and configuration files, 462 checklist rows reviewed. The audit remains active.
+
+## File checklist status after reviewed service slices (2026-10-21)
+
+Marked the complete Triggers, Channels, and Analytics entrypoint/test files reviewed; the large Knowledge and Agent files remain unchecked because only specific paths were examined. The refreshed inventory contains 2,040 tracked files / 1,834 code and executable-configuration files, with 468 checklist files marked reviewed. These are scoped increments; the remaining file-by-file audit and runtime stress coverage are still open.
