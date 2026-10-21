@@ -857,6 +857,11 @@ app.use("/internal/spaces/:spaceId/owner-contact", requireInternalHmac((c) => (c
 app.get("/internal/spaces/:spaceId/owner-contact", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const active = await c.env.PLATFORM_DB.prepare(
+    `SELECT s.id FROM spaces s WHERE s.id=? AND s.tenant_id=? AND s.status='active'
+     AND EXISTS (SELECT 1 FROM orgs o WHERE o.id=s.tenant_id AND o.status='active')`,
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (!active) return c.json({ found: false }, 404);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/members?space_id=${encodeURIComponent(spaceId)}`, "GET");
   if (!res.ok) return c.json({ found: false }, 404);

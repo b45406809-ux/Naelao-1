@@ -1937,3 +1937,5 @@ Validation: focused maintenance route tests passed 2/2; full Agents suite passed
 The scheduled Project Steward's internal installation and summary routes used `loadOwnedSpace`, which allows any non-deleted Space even when its organization or Space is suspended. A delayed tick could therefore provision the managed extension or read its portfolio summary after suspension. Both routes now require an active organization and active Space before accessing SpaceDO. Added a regression that verifies both suspended paths stop before Durable Object access.
 
 Validation: focused Spaces test passed 1/1; full Spaces suite passed 68 files / 263 tests; Spaces TypeScript, targeted Biome security lint, and `git diff --check` passed. The broad audit remains open.
+
+Follow-up: the same `loadOwnedSpace` status gap exposed `/internal/spaces/:spaceId/owner-contact`, which could return an owner's email to the scheduled digest worker after suspension. It now returns no contact unless both tenant and Space remain active. The Project Steward suspension regression also asserts owner-contact is withheld.

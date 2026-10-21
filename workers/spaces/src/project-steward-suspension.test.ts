@@ -33,11 +33,14 @@ describe("Project Steward scheduler suspension boundary", () => {
     const h = harness();
     const summary = await worker.fetch(await request("/internal/spaces/space-a/project-steward/summary"), h.env, { waitUntil: vi.fn() } as never);
     const installation = await worker.fetch(await request("/internal/spaces/space-a/project-steward/installation", "POST"), h.env, { waitUntil: vi.fn() } as never);
+    const ownerContact = await worker.fetch(await request("/internal/spaces/space-a/owner-contact"), h.env, { waitUntil: vi.fn() } as never);
 
     expect(summary.status).toBe(403);
     expect(await summary.json()).toEqual({ error_code: "tenant_suspended" });
     expect(installation.status).toBe(403);
     expect(await installation.json()).toEqual({ error_code: "tenant_suspended" });
+    expect(ownerContact.status).toBe(404);
+    expect(await ownerContact.json()).toEqual({ found: false });
     expect(h.get).not.toHaveBeenCalled();
     expect(h.doFetch).not.toHaveBeenCalled();
   });
