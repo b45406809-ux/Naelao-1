@@ -36,6 +36,8 @@ import {
   gradeTrace,
   hasTraceGrade,
   summarizeFailures,
+  isValidTraceCheck,
+  isValidTraceStep,
   type TraceCheck,
   type TraceStepLike,
 } from "./trace-checks.js";
@@ -109,7 +111,11 @@ async function fetchRunTrace(
     if (!resp.ok) return { trace: [], error: `trace HTTP ${resp.status}` };
     const raw = await readBoundedResponseText(resp, 2 * 1024 * 1024);
     const body = JSON.parse(raw) as { trace?: TraceStepLike[]; steps?: TraceStepLike[] };
-    return { trace: body.trace ?? body.steps ?? [] };
+    const trace = body.trace ?? body.steps;
+    if (!Array.isArray(trace) || trace.length > 10_000 || trace.some((step) => !isValidTraceStep(step))) {
+      return { trace: [], error: "trace response has an invalid schema" };
+    }
+    return { trace };
   } catch (err: unknown) {
     return { trace: [], error: err instanceof Error ? err.message : String(err) };
   }
@@ -194,7 +200,7 @@ function isValidEvalCase(value: unknown): value is EvalCase {
   if (item.criteria !== undefined && (typeof item.criteria !== "string" || item.criteria.length > 2_000)) return false;
   if (item.judge !== undefined && typeof item.judge !== "boolean") return false;
   if (item.tags !== undefined && (!Array.isArray(item.tags) || item.tags.length > 16 || item.tags.some((tag) => typeof tag !== "string" || tag.length > 64))) return false;
-  if (item.trace_checks !== undefined && (!Array.isArray(item.trace_checks) || item.trace_checks.length > 32)) return false;
+  if (item.trace_checks !== undefined && (!Array.isArray(item.trace_checks) || item.trace_checks.length > 32 || !item.trace_checks.every(isValidTraceCheck))) return false;
   return true;
 }
 
