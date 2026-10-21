@@ -1,3 +1,5 @@
+import { readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
+
 /**
  * Whop OAuth-delegated checkout — lets a business's OWN connected Whop company (via the
  * "Connect with Whop" OAuth2+PKCE flow, `connectors/oauth.ts` + catalogue.ts's `WHOP.oauth`)
@@ -27,6 +29,8 @@
  */
 
 const WHOP_API = "https://api.whop.com/api/v5";
+const MAX_WHOP_OAUTH_RESPONSE_BYTES = 128 * 1024;
+const WHOP_OAUTH_REQUEST_TIMEOUT_MS = 15_000;
 
 async function whopOAuthRequest<T>(
   accessToken: string,
@@ -42,19 +46,22 @@ async function whopOAuthRequest<T>(
       Accept: "application/json",
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(WHOP_OAUTH_REQUEST_TIMEOUT_MS),
   });
-  const text = await resp.text();
-  let json: unknown;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = { raw: text };
-  }
   if (!resp.ok) {
-    const detail = typeof json === "object" && json !== null ? JSON.stringify(json) : text;
+    const text = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
+    let detail = text;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed === "object" && parsed !== null) detail = JSON.stringify(parsed);
+    } catch { /* keep the bounded plain-text diagnostic */ }
     throw new Error(`Whop OAuth ${method} ${path} failed: ${resp.status} ${detail}`.slice(0, 500));
   }
-  return json as T;
+  try {
+    return await readBoundedResponseJson<T>(resp, MAX_WHOP_OAUTH_RESPONSE_BYTES);
+  } catch {
+    throw new Error(`Whop OAuth ${method} ${path} returned an invalid or oversized response`);
+  }
 }
 
 function pick(obj: Record<string, unknown> | undefined, ...keys: string[]): string {
@@ -81,7 +88,7 @@ export async function createOrGetAccessPass(
     title: params.title,
     visibility: "hidden", // not listed on the company's public storefront — reached only via the direct checkout link
   });
-  if (!result.id) throw new Error("Whop access_pass creation returned no id");
+  if (typeof result.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(result.id)) throw new Error("Whop access_pass creation returned no valid id");
   return { access_pass_id: result.id };
 }
 
@@ -111,7 +118,7 @@ export async function createWhopOAuthPlan(
       ? { billing_period: params.billingPeriodDays ?? 30, release_method: "buy_now" }
       : { release_method: "buy_now" }),
   });
-  if (!result.id) throw new Error("Whop plan creation returned no id");
+  if (typeof result.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(result.id)) throw new Error("Whop plan creation returned no valid id");
   return { plan_id: result.id };
 }
 
@@ -135,7 +142,7 @@ export async function createWhopOAuthCheckoutLink(
     metadata: params.metadata ?? {},
   });
   const url = pick(result, "checkout_url", "purchase_url", "url");
-  if (!url) throw new Error("Whop checkout_configuration response did not include a checkout url");
+  if (!url || url.length > 2048 || new URL(url).protocol !== "https:") throw new Error("Whop checkout_configuration response did not include a valid HTTPS checkout url");
   return { checkout_url: url };
 }
 

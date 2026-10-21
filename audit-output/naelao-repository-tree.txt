@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1987
-Files with source or executable-configuration extensions: 1781
-Inventory revision: 2026-10-21 audit refresh for Lemon Squeezy provider bounds
+Files: 1988
+Files with source or executable-configuration extensions: 1782
+Inventory revision: 2026-10-21 audit refresh for Whop checkout bounds
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -770,6 +770,7 @@ packages/
         lemon-squeezy.test.ts
         lemon-squeezy.ts
         types.ts
+        whop-oauth-checkout.test.ts
         whop-oauth-checkout.ts
         whop-platform-plan.ts
         whop.ts

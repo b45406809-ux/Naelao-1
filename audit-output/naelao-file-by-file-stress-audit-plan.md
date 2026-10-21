@@ -869,6 +869,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/billing-core/src/providers/lemon-squeezy.test.ts`
 - [ ] `packages/billing-core/src/providers/lemon-squeezy.ts`
 - [ ] `packages/billing-core/src/providers/types.ts`
+- [x] `packages/billing-core/src/providers/whop-oauth-checkout.test.ts`
 - [ ] `packages/billing-core/src/providers/whop-oauth-checkout.ts`
 - [ ] `packages/billing-core/src/providers/whop-platform-plan.ts`
 - [ ] `packages/billing-core/src/providers/whop.ts`
