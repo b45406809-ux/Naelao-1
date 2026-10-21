@@ -44,7 +44,6 @@
     "workers/knowledge/**",
     "workers/mcp-hub/**",
     "workers/credentials/**",
-    "workers/search/**",
     "workers/spaces/src/do/SpaceDO.ts",
     "workers/spaces/src/index.ts",
     "workers/agents/src/script-engine/prebuilt/knowledge-base.ts",

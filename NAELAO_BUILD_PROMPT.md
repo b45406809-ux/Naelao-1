@@ -163,9 +163,6 @@ Daily CF Cron Trigger. Cleans up: old sessions with no messages (> 90 days), fai
 #### `workers/admin/`
 Platform ops. JWT-gated with `role: 'platform_admin'`. Tenant management, feature flags, usage reports, user impersonation log, billing overrides.
 
-#### `workers/search/`
-Semantic search across SpaceTypes in a dedicated Vectorize index. Hybrid retrieval. Powers marketplace discovery.
-
 #### `workers/triggers/`
 Scheduled and event-driven Space activation. Stores trigger definitions in D1. CF Cron Triggers fire the worker. Creates synthetic sessions with injected user messages.
 

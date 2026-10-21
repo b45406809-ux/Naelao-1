@@ -4,9 +4,9 @@ Generated from the current source/config tree using Wrangler worker manifests, e
 
 Supplemental routes added after the last full discovery refresh: `workers/spaces/src/index.ts` registers owner-only `POST /builder/erasure`, `GET /builder/erasure/:requestId`, and `DELETE /builder/erasure/:requestId`; the latter two are the only request paths exempted from router tenant suspension. Internal `DELETE /internal/tenant/:tenantId/spaces/:spaceId/product-users/erase` and `DELETE /internal/tenant/:tenantId/spaces/:spaceId/business-services/erase` routes are protected by `requireInternalHmac`. Aggregate route counts and other line references above predate these additions and still need a full discovery refresh.
 
-Workers with Wrangler manifests: 30
+Workers with Wrangler manifests: 29
 Exported DurableObject declarations: 22
-Literal route-registration matches: 1066
+Literal route-registration matches: 1062
 
 ## Worker services
 
@@ -30,7 +30,6 @@ Literal route-registration matches: 1066
 - `workers/portal-router` — manifest `workers/portal-router/wrangler.toml`; entrypoint `workers/portal-router/src/index.ts`
 - `workers/provisioner` — manifest `workers/provisioner/wrangler.toml`; entrypoint `workers/provisioner/src/index.ts`
 - `workers/router` — manifest `workers/router/wrangler.toml`; entrypoint `workers/router/src/index.ts`
-- `workers/search` — manifest `workers/search/wrangler.toml`; entrypoint `workers/search/src/index.ts`
 - `workers/security-gateway` — manifest `workers/security-gateway/wrangler.toml`; entrypoint `workers/security-gateway/src/index.ts`
 - `workers/spaces` — manifest `workers/spaces/wrangler.toml`; entrypoint `workers/spaces/src/index.ts`
 - `workers/sweeper` — manifest `workers/sweeper/wrangler.toml`; entrypoint `workers/sweeper/src/index.ts`
@@ -118,7 +117,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/portal-router/src/index.ts` — 11 route/middleware registration calls
 - `workers/provisioner/src/index.ts` — 3 route/middleware registration calls
 - `workers/router/src/index.ts` — 84 route/middleware registration calls
-- `workers/search/src/index.ts` — 4 route/middleware registration calls
 - `workers/security-gateway/src/index.ts` — 4 route/middleware registration calls
 - `workers/spaces/src/builder-routes.ts` — 28 route/middleware registration calls
 - `workers/spaces/src/business-routes.ts` — 7 route/middleware registration calls
@@ -605,10 +603,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/router/src/index.ts:1446` — `api.all("/templates/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
 - `workers/router/src/index.ts:1450` — `api.all("/channels/:channel/connect", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
 - `workers/router/src/index.ts:1453` — `api.all("/project-templates", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));`
-- `workers/search/src/index.ts:19` — `app.use("*", requestId);`
-- `workers/search/src/index.ts:20` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
-- `workers/search/src/index.ts:31` — `app.get("/search/spacetypes", async (c) => {`
-- `workers/search/src/index.ts:95` — `app.post("/search/spacetypes/:id/index", async (c) => {`
 - `workers/security-gateway/src/index.ts:60` — `app.use("*", securityHeaders());`
 - `workers/security-gateway/src/index.ts:61` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
 - `workers/security-gateway/src/index.ts:64` — `app.use("*", wafMiddleware());`

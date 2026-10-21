@@ -254,9 +254,6 @@ naelao/
 │   ├── categorizer/                  # naelao-categorizer — cron: project categorization
 │   │   └── src/{index.ts}
 │   │
-│   ├── search/                       # naelao-search — marketplace + knowledge search backend (G-AE26)
-│   │   └── src/{index.ts,index-builder.ts}
-│   │
 │   └── synthetics/                   # naelao-synthetics — end-to-end journey monitors (G-AE47)
 │       └── src/{index.ts,journeys/{chat.ts,install.ts,channel.ts,voice.ts}}
 │
@@ -328,7 +325,7 @@ naelao/
 
 | Resource type | Instances |
 |---|---|
-| **Workers** (~31) | router, ws-gateway, auth, spaces, provisioner, credentials, threads, agents, assistant, knowledge, billing, mcp-hub, triggers, workflows, artifact, browser, mini-agi, together-ai, eval, analytics, notifications, marketplace, portal-router, apps-registry, admin, sweeper, categorizer, search, synthetics |
+| **Workers** (~30) | router, ws-gateway, auth, spaces, provisioner, credentials, threads, agents, assistant, knowledge, billing, mcp-hub, triggers, workflows, artifact, browser, mini-agi, together-ai, eval, analytics, notifications, marketplace, portal-router, apps-registry, admin, sweeper, categorizer, synthetics |
 | **Durable Objects** | SpaceDO, SpaceMetaDO, UserRegistryDO, ConversationShardDO, ShardRouterDO, ChildUserDO, NaelaoAgentDO, ConcurrencyDO, WalletDO, BuilderWalletDO, OrchestrationBudgetDO, AlarmSchedulerDO, AssistantDO, AssistantSandboxDO, HybridQueryDO, RefreshTokenDO, SigningKeyDO, TursoRegistryDO, StripeRateLimiterDO, RateLimitDO, WorkflowRegistryDO, WorkerDefinitionDO, AppRegistryDO, SpaceTypeRegistryDO, MiniAGIDO, FinetuneJobDO, ProjectDO, MaintenanceConfigDO, AdmissionControllerDO, ChannelDispatchDO, ReconnectSemaphoreDO |
 | **KV namespaces** | CONFIG, CIRCUIT, ARTIFACT, PORTAL_ROUTES, MCP_TOOL_CACHE, IDEMPOTENCY, SESSION_REVOCATION |
 | **R2 buckets** | workspace, knowledge-docs, assets, artifacts, uploads, workflows, training-files, backups, exports |
