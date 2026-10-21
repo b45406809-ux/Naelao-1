@@ -746,7 +746,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `infra/migrations/0120_synthetics_storage.sql`
 - [x] `infra/migrations/0121_space_provisioning_leases.sql`
 - [x] `infra/migrations/0122_platform_assistant_sessions.sql`
-- [ ] `infra/migrations/0123_builder_reset_token_expiry_index.sql`
+- [x] `infra/migrations/0123_builder_reset_token_expiry_index.sql`
 
 ### `infra/scripts`
 
