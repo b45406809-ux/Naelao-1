@@ -15,17 +15,24 @@ import type { NaelaoSpaceTypeManifestV2 } from "../../workers/spaces/src/do/Spac
 // structural in-space events; billing/lemon-squeezy.ts resolves fulfillment routing directly).
 
 function makeR2(): R2Bucket {
-  const store = new Map<string, string>();
+  const store = new Map<string, { text: string; etag: string; customMetadata?: Record<string, string> }>();
+  let revision = 0;
   const bucket = {
-    async put(key: string, value: unknown) {
-      store.set(key, typeof value === "string" ? value : String(value));
-      return {} as R2Object;
+    async put(key: string, value: unknown, options?: { customMetadata?: Record<string, string>; onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string } }) {
+      const previous = store.get(key);
+      if (options?.onlyIf?.etagMatches && previous?.etag !== options.onlyIf.etagMatches) return null;
+      if (options?.onlyIf?.etagDoesNotMatch === "*" && previous) return null;
+      const text = typeof value === "string" ? value : new TextDecoder().decode(value as ArrayBuffer);
+      const etag = `test-etag-${++revision}`;
+      store.set(key, { text, etag, ...(options?.customMetadata ? { customMetadata: options.customMetadata } : {}) });
+      return { etag } as R2Object;
     },
     async get(key: string) {
-      if (!store.has(key)) return null;
-      const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date(), async text() { return text; } } as unknown as R2ObjectBody;
+      const object = store.get(key);
+      if (!object) return null;
+      return { size: object.text.length, etag: object.etag, uploaded: new Date(), async text() { return object.text; }, async arrayBuffer() { return new TextEncoder().encode(object.text).buffer; } } as unknown as R2ObjectBody;
     },
+    async head(key: string) { const object = store.get(key); return object ? { size: object.text.length, etag: object.etag, customMetadata: object.customMetadata } as R2Object : null; },
   };
   return bucket as unknown as R2Bucket;
 }
@@ -49,6 +56,12 @@ function makeEnv(): { env: Env; calls: Array<{ url: string; body: unknown }> } {
     PLATFORM_DB: {} as unknown as D1Database,
     SPACES_KV: {} as unknown as KVNamespace,
     SPACES_WORKER: spacesWorker as unknown as Fetcher,
+    AGENTS_WORKER: { async fetch(reqInput: Request | string, init?: RequestInit) {
+      const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+      return new URL(req.url).pathname.endsWith("/acquire")
+        ? Response.json({ granted: true, active: 1, limit: 1, fencingToken: 1 })
+        : Response.json({ ok: true, active: 0 });
+    } } as unknown as Fetcher,
     SCRIPTS_R2: makeR2(),
   } as unknown as Env;
   return { env, calls };
@@ -101,6 +114,12 @@ describe("installLaunchpadAgents / installAgentTrigger (provisioner step 9 trigg
       ENVIRONMENT: "test",
       PLATFORM_SECRET: "test-secret",
       SPACES_WORKER: spacesWorker as unknown as Fetcher,
+      AGENTS_WORKER: { async fetch(reqInput: Request | string, init?: RequestInit) {
+        const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        return new URL(req.url).pathname.endsWith("/acquire")
+          ? Response.json({ granted: true, active: 1, limit: 1, fencingToken: 1 })
+          : Response.json({ ok: true, active: 0 });
+      } } as unknown as Fetcher,
       SCRIPTS_R2: makeR2(),
     } as unknown as Env;
 

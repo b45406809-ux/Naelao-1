@@ -3982,7 +3982,6 @@ app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
   if (!userId || (role !== "owner" && role !== "admin")) throw forbidden("Only a Space owner or admin may activate a model");
   const body = await c.req.json<{ model?: string; preflight_confirmed?: boolean }>().catch((): { model?: string; preflight_confirmed?: boolean } => ({}));
   if (!body.model || !body.model.startsWith("openrouter/")) return c.json({ error_code: "bad_request", message: "model must be an OpenRouter catalog model" }, 400);
-  if (body.preflight_confirmed !== true) return c.json({ error_code: "explicit_confirmation_required", message: "Confirm the provider may charge the selected Space key for a fixed one-token model access check" }, 400);
   const space = await c.env.PLATFORM_DB.prepare("SELECT config_json, status FROM spaces WHERE id = ? AND tenant_id = ?")
     .bind(spaceId, tenantId).first<{ config_json: string | null; status: string }>();
   if (!space || space.status !== "active") throw notFound("Space");
@@ -3994,6 +3993,7 @@ app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
   const policyResult = validateModelForSpacePolicy(body.model, policy);
   if (!policyResult.ok) return c.json({ error_code: policyResult.error_code, message: policyResult.message }, 400);
   if (airGappedOnlyFromConfig(JSON.stringify(config))) return c.json({ error_code: "compliance_violation", message: "Air-gapped spaces cannot activate cloud models" }, 400);
+  if (body.preflight_confirmed !== true) return c.json({ error_code: "explicit_confirmation_required", message: "Confirm the provider may charge the selected Space key for a fixed one-token model access check" }, 400);
 
   let candidate: OpenRouterModelCandidate | null;
   try { candidate = await validateDynamicOpenRouterPlannerModel(c.env, tenantId, spaceId, body.model); }

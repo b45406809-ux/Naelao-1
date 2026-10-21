@@ -7,6 +7,7 @@ import { ProductUserDO } from "../../workers/spaces/src/do/ProductUserDO.js";
 import { SpaceTypeRegistryDO } from "../../workers/spaces/src/do/SpaceTypeRegistryDO.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
+import { mintInternalToken } from "@naelao/http";
 
 // Three-Tier Platform Model, Phase 4 (docs/spec-appendix A1.17): the Product Creation Wizard.
 // No frontend-render test harness exists in this repo (no playwright/puppeteer dependency), so
@@ -46,9 +47,12 @@ function makeEnv() {
   };
 }
 
-function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Request {
+async function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Promise<Request> {
   const headers = new Headers();
-  if (opts.tenant) headers.set("x-naelao-tenant-id", opts.tenant);
+  if (opts.tenant) {
+    headers.set("x-naelao-tenant-id", opts.tenant);
+    headers.set("x-naelao-internal-token", await mintInternalToken("s", opts.tenant));
+  }
   if (opts.body !== undefined) headers.set("content-type", "application/json");
   return new Request(`https://spaces.naelao.com${path}`, {
     method: opts.method ?? "GET",
@@ -76,7 +80,7 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
   it("creates a real product carrying the Temple's template_id, the platform slug, and every step's product_config", async () => {
     const env = makeEnv();
     const res = await spacesWorker.fetch(
-      req("/builder/products", { method: "POST", tenant: "tenant-1", body: WIZARD_LAUNCH_PAYLOAD }),
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: WIZARD_LAUNCH_PAYLOAD }),
       env as never, execCtx
     );
     expect(res.status).toBe(201);
@@ -87,7 +91,7 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
     // No PROVISION_QUEUE bound in this test env — matches local-dev fallback, same as /spaces POST.
     expect(created.status).toBe("active");
 
-    const detail = await (await spacesWorker.fetch(req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as {
+    const detail = await (await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as {
       product_config: { branding: { brandColor: string }; authProvider: { provider: string; allowedEmailDomains: string[] }; pricingConfig: { model: string; creditsIncludedPerMonth: number } };
     };
     expect(detail.product_config.branding.brandColor).toBe("#4f46e5");
@@ -100,17 +104,17 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
   it("registers the created product in the builder's BuilderAccountDO index (so it appears in the Products list)", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      req("/builder/products", { method: "POST", tenant: "tenant-1", body: WIZARD_LAUNCH_PAYLOAD }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: WIZARD_LAUNCH_PAYLOAD }), env as never, execCtx
     )).json() as { id: string };
 
-    const list = await (await spacesWorker.fetch(req("/builder/products", { tenant: "tenant-1" }), env as never, execCtx)).json() as { data: Array<{ id: string }> };
+    const list = await (await spacesWorker.fetch(await req("/builder/products", { tenant: "tenant-1" }), env as never, execCtx)).json() as { data: Array<{ id: string }> };
     expect(list.data.map((p) => p.id)).toContain(created.id);
   });
 
   it("rejects launch when the Identity step's slug is malformed (defense-in-depth behind client-side validation)", async () => {
     const env = makeEnv();
     const res = await spacesWorker.fetch(
-      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { ...WIZARD_LAUNCH_PAYLOAD, product_slug: "Not Valid!" } }),
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { ...WIZARD_LAUNCH_PAYLOAD, product_slug: "Not Valid!" } }),
       env as never, execCtx
     );
     expect(res.status).toBe(400);
@@ -120,9 +124,9 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
     const env = makeEnv();
     const { template_id: _templateId, ...withoutTemple } = WIZARD_LAUNCH_PAYLOAD;
     const created = await (await spacesWorker.fetch(
-      req("/builder/products", { method: "POST", tenant: "tenant-1", body: withoutTemple }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: withoutTemple }), env as never, execCtx
     )).json() as { id: string };
-    const detail = await (await spacesWorker.fetch(req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as Record<string, unknown>;
+    const detail = await (await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as Record<string, unknown>;
     expect(detail["template_id"]).toBeUndefined();
   });
 });
@@ -130,7 +134,7 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
 describe("Product Creation Wizard — GET /builder/space-types (the Space-Type Selection step's data source)", () => {
   it("wraps SpaceTypeRegistryDO's real GET /types — always renders a list, never an error", async () => {
     const env = makeEnv();
-    const res = await spacesWorker.fetch(req("/builder/space-types", { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/space-types", { tenant: "tenant-1" }), env as never, execCtx);
     expect(res.status).toBe(200);
     const body = await res.json() as { types: unknown[] };
     expect(Array.isArray(body.types)).toBe(true);
@@ -140,7 +144,7 @@ describe("Product Creation Wizard — GET /builder/space-types (the Space-Type S
     const env = makeEnv();
     // No /register call at all — a brand-new SpaceTypeRegistryDO instance, exactly like a
     // fresh deploy whose one-time seed step was never (or no longer) run.
-    const res = await spacesWorker.fetch(req("/builder/space-types", { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/space-types", { tenant: "tenant-1" }), env as never, execCtx);
     const body = await res.json() as { types: Array<{ id: string; name: string }> };
     expect(body.types.some((t) => t.id === "launchpad" && t.name === "Launchpad")).toBe(true);
   });
@@ -161,7 +165,7 @@ describe("Product Creation Wizard — GET /builder/space-types (the Space-Type S
       }),
     }));
 
-    const res = await spacesWorker.fetch(req("/builder/space-types", { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/space-types", { tenant: "tenant-1" }), env as never, execCtx);
     const body = await res.json() as { types: Array<{ id: string; name: string }> };
     expect(body.types.some((t) => t.id === "launchpad")).toBe(true);
   });

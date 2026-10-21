@@ -39,13 +39,14 @@ describe("enqueueAgentTicks — daily_digest roster", () => {
         const stmt = {
           bind(...a: unknown[]) { args = a; return stmt; },
           async all() {
-            if (/FROM spaces/.test(sql)) {
+            if (/last_digest_sent_at/.test(sql)) {
               const cursor = String(args[args.length - 2] ?? "");
               const limit = Number(args[args.length - 1] ?? Number.MAX_SAFE_INTEGER);
               return { results: paginate(roots, (r) => r.id, cursor, limit) };
             }
             return { results: [] };
           },
+          async first() { return { name: "Product", config_json: "{}" }; },
           async run() { return { meta: { changes: 1 } }; },
         };
         return stmt;
@@ -132,6 +133,7 @@ describe("handleAgentTick — daily_digest send", () => {
         let args: unknown[] = [];
         const stmt = {
           bind(...a: unknown[]) { args = a; return stmt; },
+          async first() { return { name: "Product", config_json: "{}" }; },
           async run() { dbCalls.push({ sql, args }); return { meta: { changes: 1 } }; },
         };
         return stmt;
