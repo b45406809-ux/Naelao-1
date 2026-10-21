@@ -12,7 +12,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 
 ## Open cross-file findings
 
-- **Organization erasure lifecycle and coverage:** the queue consumer accepts `data.erasure`, but no producer or request route was found. The 24-hour delay still has no cancellation/restoration path. The workflow now clears tenant/space operational D1 records, artifact and workspace R2 prefixes, repository Git-object/publication prefixes, scoped export objects, credentials, and non-financial access state, while retaining audit and financial records. RepositoryDO SQLite metadata, browser and other Durable Object state, repo/workspace materialization races, and some other resource classes remain. Record-retention policy for financial/content tables is unreviewed. Build an authenticated request/cancel path and complete the runtime/storage inventory before describing erasure as usable or complete.
+- **Organization erasure lifecycle and coverage:** the queue consumer accepts `data.erasure`, but no producer or request route was found. The 24-hour delay still has no cancellation/restoration path. The workflow now clears tenant/space operational D1 records, ProductUserDO user state, artifact and workspace R2 prefixes, repository Git-object/publication prefixes, scoped export objects, credentials, and non-financial access state, while retaining audit and financial records. RepositoryDO SQLite metadata, SpaceDO/BrowserSessionDO and other Durable Object state, repo/workspace materialization races, and some other resource classes remain. Record-retention policy for financial/content tables is unreviewed. Build a safe authenticated request/cancel path and complete the runtime/storage inventory before describing erasure as usable or complete.
 - **Webhook DNS rebinding:** webhook delivery now rejects private literal IPs and private DNS answers, rejects redirects, and has a deadline. Cloudflare `fetch` resolves DNS again after validation, so a rebinding response could change the target between check and connection. Use a controlled egress proxy with address pinning to close this race.
 - **MCP Hub DNS rebinding:** direct MCP URLs use the same preflight DNS validation before `fetch`, but the runtime resolves again at connection time. A controlled egress proxy with address pinning is still needed to close this network-level race for direct connectors.
 - **Tenant suspension enforcement:** public router requests check org and reseller relationship status; selected agent, notification, provisioner, workflow, and Knowledge entrypoints also gate work. Enforcement is not universal across internal routes, queues, Durable Object alarms, already-running workflows, or other worker paths. A `spaces.suspension_reason` migration now preserves admin-product, reseller, and erasure holds for updated writers, but legacy suspended rows and other suspension writers still need source reconciliation before restoration is fully safe.
@@ -1503,6 +1503,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/product-sessions-verify.test.ts`
 - [ ] `tests/unit/product-shell-manifest.test.ts`
 - [ ] `tests/unit/product-user-do.test.ts`
+- [ ] `tests/unit/product-user-erasure.test.ts`
 - [ ] `tests/unit/product-wizard-api.test.ts`
 - [ ] `tests/unit/progressive-tool-disclosure.test.ts`
 - [ ] `tests/unit/project-assistant-mode.test.ts`
@@ -2464,6 +2465,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/product-end-user-air-gap.test.ts`
 - [x] `workers/spaces/src/product-end-user-routes.test.ts`
 - [x] `workers/spaces/src/product-end-user-routes.ts`
+- [ ] `workers/spaces/src/product-user-erasure.ts`
 - [ ] `workers/spaces/src/project-automation.test.ts`
 - [ ] `workers/spaces/src/project-external-quota.ts`
 - [ ] `workers/spaces/src/project-steward-decisions.test.ts`

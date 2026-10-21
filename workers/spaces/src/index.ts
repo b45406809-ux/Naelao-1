@@ -37,6 +37,7 @@ import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectSteward
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
 import { reportExtensionArtifactWrite } from "./extension-storage-usage.js";
+import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -118,6 +119,18 @@ const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 app.get("/health", (c) => c.json({ ok: true, service: "spaces", env: c.env.ENVIRONMENT }));
+app.use("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.delete("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", async (c) => {
+  const tenantId = c.req.param("tenantId");
+  const spaceId = c.req.param("spaceId");
+  if (c.req.header("x-naelao-tenant-id") !== tenantId) return c.json({ error_code: "tenant_scope_mismatch" }, 403);
+  const usersErased = await eraseProductUsersForSpace(c.env.PLATFORM_DB, tenantId, spaceId, async (productSpaceId, userId) => {
+    const stub = await productUserDoStub(c.env, productSpaceId, userId, tenantId);
+    const response = await stub.fetch(new Request("http://product-user/erase", { method: "DELETE" }));
+    if (!response.ok) throw new Error(`ProductUserDO erasure failed with status ${response.status}`);
+  });
+  return c.json({ erased: true, space_id: spaceId, users_erased: usersErased });
+});
 registerGadgetMcpRoutes(app);
 registerExtensionGadgetRoutes(app);
 registerDynamicPageRoutes(app);

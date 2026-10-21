@@ -16,6 +16,8 @@ Erasure object-scope review also found that export keys were trusted from D1 aft
 
 The organization-level D1 pass found more non-`space_id` records: business invites/membership indexes and product end-user profiles. These are now deleted by their space relationships. Existing `gdpr_requests` keep the rights-request audit row while clearing subject identifiers and cancelling pending requests. Full-migration SQLite tests cover those actions along with wallet/order PII scrubbing (4 D1 tests); the workflow erasure suite passes 12 tests and Workflows TypeScript passes. ProductUserDO sessions and other durable state remain open.
 
+ProductUserDO records are now erased through a tenant-HMAC-protected internal Spaces route before deleting their D1 roster rows. The D1 helper keyset-pages users in batches of 100, stops on any DO failure, and only removes a profile after the DO confirms success. Validation: 205-user SQLite-backed paging test plus cross-tenant and retry-preservation cases (2 pass); Workflows and Spaces TypeScript checks; workflow erasure/queue suites 20/20. ProductUserDO credit ledgers remain by design for accounting; other durable-object namespaces are still unaudited for organization erasure.
+
 This is not complete erasure coverage. RepositoryDO SQLite state, durable object state in other services, repo/workspace materialization races, export request/cancellation/restoration lifecycle, storage surfaces outside these prefixes, and a legal retention schedule for financial/audit records remain open. The current pass deletes the repository R2 prefix but does not yet purge per-repository Durable Object metadata.
 
 ## Completed focused review

@@ -18,6 +18,7 @@
  */
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
+import { mintInternalToken } from "@naelao/http";
 import type { Env } from "../env";
 import {
   anonymizeOrgUsers,
@@ -161,6 +162,14 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
 
           // Remove every tenant-owned searchable/session record, including parent summaries
           // that are not covered by the session table's cascade.
+          const productUserErasure = await this.env.SPACES_WORKER.fetch(new Request(
+            `https://spaces.internal/internal/tenant/${encodeURIComponent(params.orgId)}/spaces/${encodeURIComponent(space.id)}/product-users/erase`,
+            { method: "DELETE", headers: {
+              "x-naelao-tenant-id": params.orgId,
+              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, params.orgId),
+            } },
+          ));
+          if (!productUserErasure.ok) throw new Error(`Product-user erasure failed with status ${productUserErasure.status}`);
           await eraseSpaceD1Records(this.env.PLATFORM_DB, space.id);
 
           console.log(`[DataErasure] Cleaned space=${space.id} for org=${params.orgId}`);
