@@ -1939,3 +1939,11 @@ The scheduled Project Steward's internal installation and summary routes used `l
 Validation: focused Spaces test passed 1/1; full Spaces suite passed 68 files / 263 tests; Spaces TypeScript, targeted Biome security lint, and `git diff --check` passed. The broad audit remains open.
 
 Follow-up: the same `loadOwnedSpace` status gap exposed `/internal/spaces/:spaceId/owner-contact`, which could return an owner's email to the scheduled digest worker after suspension. It now returns no contact unless both tenant and Space remain active. The Project Steward suspension regression also asserts owner-contact is withheld.
+
+Validation: full Spaces suite passed 68 files / 263 tests after the owner-contact change; Spaces TypeScript, focused security lint, and `git diff --check` passed.
+
+## Scheduled job queue tenant/Space binding (2026-10-21)
+
+The scheduled-job consumer checked that the queue message's tenant and Space were active, then looked up the job by `id` alone. A malformed or mismatched internal queue message could validate one tenant's Space and dispatch a job belonging to another active tenant. The lookup now also binds `space_id` and `tenant_id` to the validated message scope. Added a regression asserting all three identifiers are present in the D1 lookup.
+
+Validation: focused queue-scope test passed 1/1; full Agents suite passed 160 files / 732 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed. The audit continues across queue variants and other worker surfaces.

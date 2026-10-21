@@ -10043,8 +10043,8 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const row = await env.PLATFORM_DB.prepare(
         `SELECT id, space_id, tenant_id, project_id, cron_expression, script_name, params, agent_id, goal,
                 quiet_hours_start, quiet_hours_end, quiet_hours_timezone, last_run_at, created_at, consecutive_failures
-           FROM scheduled_jobs WHERE id = ? AND enabled = 1`
-      ).bind(msg.jobId).first<ScheduledJobRow>();
+           FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ? AND enabled = 1`
+      ).bind(msg.jobId, msg.spaceId, msg.tenantId).first<ScheduledJobRow>();
       if (!row) return; // deleted or already disabled since enqueue — nothing to do.
       void sweepUndeliveredNotifications(env, row.space_id, row.tenant_id);
 

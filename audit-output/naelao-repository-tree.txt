@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2033
-Files with source or executable-configuration extensions: 1827
-Inventory revision: 2026-10-21 audit refresh at 0c6bd7f2
+Files: 2034
+Files with source or executable-configuration extensions: 1828
+Inventory revision: 2026-10-21 audit refresh at 97b9bad0
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1660,6 +1660,7 @@ workers/
       scheduled-air-gap.test.ts
       scheduled-job-dispatch.test.ts
       scheduled-job-dispatch.ts
+      scheduled-job-tenant-scope.test.ts
       script-engine/
         agent-archetypes.ts
         agent-config.test.ts
