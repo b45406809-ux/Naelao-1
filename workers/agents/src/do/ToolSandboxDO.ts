@@ -77,6 +77,7 @@ interface SandboxBindings {
   PLATFORM_SECRET?: string;
   BILLING_WORKER?: Fetcher;
   ANALYTICS?: AnalyticsEngineDataset;
+  PLATFORM_DB?: D1Database;
 }
 
 interface WorkspacePublication {
@@ -170,7 +171,7 @@ function isSyncableWorkspacePath(path: string): boolean {
 export class ToolSandboxDO extends DurableObject {
   private lastUsedAt = Date.now();
   private executionQueue: Promise<void> = Promise.resolve();
-  private activeExecution: { id: string; controller: AbortController } | undefined;
+  private activeExecution: { id: string; scope: ContainerInvocationScope; controller: AbortController } | undefined;
 
   override async fetch(request: Request): Promise<Response> {
     if (request.body) {
@@ -223,9 +224,25 @@ export class ToolSandboxDO extends DurableObject {
     return scope;
   }
 
+  private async tenantSpaceIsActive(tenantId: string, spaceId: string): Promise<boolean> {
+    const db = (this.env as SandboxBindings).PLATFORM_DB;
+    // Production agents bind the platform database. Isolated container harnesses may not.
+    if (!db) return true;
+    try {
+      const active = await db.prepare(
+        `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
+         AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = s.tenant_id AND o.status = 'active')`
+      ).bind(spaceId, tenantId).first<{ id: string }>();
+      return Boolean(active);
+    } catch {
+      return false;
+    }
+  }
+
   private async output(request: Request): Promise<Response> {
     let scope: ContainerInvocationScope;
     try { scope = await this.authenticatedScope(request); } catch { return Response.json({ error: "container_scope_denied" }, { status: 403 }); }
+    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
     const record = await this.ctx.storage.get<ExecutionRecord>("execution:" + scope.executionId);
     if (!record || JSON.stringify(record.scope) !== JSON.stringify(scope)) return Response.json({ error: "container_execution_not_found" }, { status: 404 });
     if (!this.container?.running) return Response.json({ stdout: "", stderr: "" });
@@ -235,6 +252,7 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   private async ensureMeter(scope: ContainerInvocationScope): Promise<void> {
+    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) throw new Error("tenant_suspended");
     const existing = await this.ctx.storage.get<ContainerMeter>("container_meter");
     if (existing?.endedAt !== undefined) await this.settleMeter();
     if (existing && existing.endedAt === undefined) {
@@ -254,6 +272,11 @@ export class ToolSandboxDO extends DurableObject {
     await reserveWorkflowBudget(this.env as Env, pending.tenantId, pending.spaceId, pending.reservationId,
       "container:" + scope.spaceId + ":" + (scope.projectId ?? "assistant"), infraTimeToCredits("container", 360000), pending.expiresAt,
       { ...(scope.projectId ? { projectId: scope.projectId } : {}), ...(scope.installationId ? { installationId: scope.installationId } : {}), runtimeTier: 5 });
+    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) {
+      await finalizeWorkflowBudget(this.env as Env, pending.tenantId, pending.reservationId, "release");
+      await this.ctx.storage.delete("container_reservation_pending");
+      throw new Error("tenant_suspended");
+    }
     await this.ctx.storage.put("container_meter", pending);
     await this.ctx.storage.delete("container_reservation_pending");
   }
@@ -304,6 +327,7 @@ export class ToolSandboxDO extends DurableObject {
   private async cancel(request: Request): Promise<Response> {
     let scope: ContainerInvocationScope;
     try { scope = await this.authenticatedScope(request); } catch { return Response.json({ ok: false, error: "container_scope_denied" }, { status: 403 }); }
+    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
     const record = await this.ctx.storage.get<ExecutionRecord>("execution:" + scope.executionId);
     if (!record || record.scope.runId !== scope.runId || record.scope.actorId !== scope.actorId || record.scope.installationId !== scope.installationId) return Response.json({ ok: false, error: "container_execution_not_found" }, { status: 404 });
     if (record.status === "committed") return Response.json({ ok: true, already_completed: true });
@@ -318,6 +342,7 @@ export class ToolSandboxDO extends DurableObject {
   private async executeScoped(request: Request): Promise<Response> {
     let scope: ContainerInvocationScope;
     try { scope = await this.authenticatedScope(request); } catch (error) { return Response.json({ ok: false, error: String(error) }, { status: 403 }); }
+    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
     const body = await request.clone().text();
     const payloadHash = await hashWorkspaceContent(new URL(request.url).pathname + body);
     const key = "execution:" + scope.executionId;
@@ -333,7 +358,7 @@ export class ToolSandboxDO extends DurableObject {
     const startedAt = Date.now();
     const sidecarWasWarm = Boolean(scope.installationId && this.container?.running);
     const controller = new AbortController();
-    this.activeExecution = { id: scope.executionId, controller };
+    this.activeExecution = { id: scope.executionId, scope, controller };
     const abort = () => controller.abort();
     let executionLimitExceeded = false;
     request.signal.addEventListener("abort", abort, { once: true });
@@ -439,6 +464,11 @@ export class ToolSandboxDO extends DurableObject {
   }
 
   private async publishWorkspaceChanges(container: ContainerRuntime, scope: SandboxWorkspaceScope, holderId: string): Promise<{ changed: number }> {
+    const invocation = this.activeExecution?.scope;
+    const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
+    const tenantId = invocation?.tenantId ?? meter?.tenantId;
+    const spaceId = invocation?.spaceId ?? meter?.spaceId;
+    if (tenantId && spaceId && !await this.tenantSpaceIsActive(tenantId, spaceId)) throw new Error("tenant_suspended");
     const bindings = this.env as unknown as SandboxBindings;
     if (!bindings.SCRIPTS_R2 || !bindings.CONCURRENCY_DO) throw new Error("Fenced workspace publication is unavailable");
     const prefix = this.workspacePrefix(scope);
@@ -538,6 +568,27 @@ export class ToolSandboxDO extends DurableObject {
       await this.ctx.storage.delete("container_reservation_pending");
     }
     const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
+    const executionScope = this.activeExecution?.scope;
+    const ownerTenantId = executionScope?.tenantId ?? meter?.tenantId ?? pending?.tenantId;
+    const ownerSpaceId = executionScope?.spaceId ?? meter?.spaceId ?? pending?.spaceId;
+    if (ownerTenantId && ownerSpaceId && !await this.tenantSpaceIsActive(ownerTenantId, ownerSpaceId)) {
+      this.activeExecution?.controller.abort();
+      // Do not snapshot or publish dirty workspace state after suspension.
+      const container = this.container;
+      if (container?.running) {
+        if (!container.destroy) throw new Error("container_hard_stop_unsupported");
+        await container.destroy();
+      }
+      const pendingReservation = await this.ctx.storage.get<ContainerMeter>("container_reservation_pending");
+      if (pendingReservation) {
+        await finalizeWorkflowBudget(this.env as Env, pendingReservation.tenantId, pendingReservation.reservationId, "release");
+        await this.ctx.storage.delete("container_reservation_pending");
+      }
+      await this.settleMeter();
+      await this.ctx.storage.delete("sidecar_warm_expires_at");
+      await this.ctx.storage.put("container_status", "hibernated");
+      return;
+    }
     if (meter?.endedAt !== undefined || meter && meter.expiresAt <= Date.now()) {
       this.activeExecution?.controller.abort();
       await this.stopContainer(); return;
@@ -576,6 +627,11 @@ export class ToolSandboxDO extends DurableObject {
 
   private async handleRequest(request: Request): Promise<Response> {
     if (request.signal.aborted) throw new Error("container_cancelled");
+    const scopeHeader = request.headers.get("x-naelao-container-scope");
+    if (scopeHeader) {
+      const scope = JSON.parse(scopeHeader) as ContainerInvocationScope;
+      if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
+    }
     const url = new URL(request.url);
     let execScope: SandboxWorkspaceScope | undefined;
     if (url.pathname === "/exec" && request.method === "POST") {

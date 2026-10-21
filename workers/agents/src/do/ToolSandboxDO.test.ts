@@ -17,11 +17,17 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
     let containerRunning = false;
+    let tenantActive = true;
+    let announceReservation: (() => void) | undefined;
+    let releaseReservation: (() => void) | undefined;
+    const reservationStarted = new Promise<void>(resolve => { announceReservation = resolve; });
+    const reservationGate = new Promise<Response>(resolve => { releaseReservation = () => resolve(Response.json({ ok: true })); });
+    const billingCalls: string[] = [];
 
     const mockContainer = {
       get running() {
@@ -76,8 +82,17 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       PLATFORM_SECRET: "test-secret",
       SCRIPTS_R2: { list: async () => ({ objects: [], truncated: false }), get: async () => null },
       CONCURRENCY_DO: {},
-      BILLING_WORKER: { fetch: async () => Response.json({ ok: true }) },
+      BILLING_WORKER: { fetch: async (request: Request) => {
+        const path = new URL(request.url).pathname;
+        billingCalls.push(path);
+        if (options.hangReservation && path.endsWith("/reserve")) {
+          announceReservation?.();
+          return reservationGate;
+        }
+        return Response.json({ ok: true });
+      } },
       ANALYTICS: { writeDataPoint: (point) => { analyticsPoints.push(point); } },
+      ...(options.platformDb ? { PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => tenantActive ? { id: "space" } : null }) }) } } : {}),
     } as never);
     const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {
       const headers = new Headers(request.headers);
@@ -87,9 +102,51 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
         executionId: crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
       return realSandbox.fetch(new Request(request, { headers }));
     } };
-    const initialPrewarm = await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
-    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints };
+    const initialPrewarm = options.hangReservation ? undefined : await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
+    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; } };
   }
+
+  it("rejects container operations for a suspended tenant before reserving or starting execution", async () => {
+    const { sandbox, storage, mockContainer, setTenantActive } = await createTestSandbox({ platformDb: true });
+    const reservationId = storage.get("container_meter")?.reservationId;
+    const starts = mockContainer.start.mock.calls.length;
+    setTenantActive(false);
+    const response = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ ok: false, error: "tenant_suspended" });
+    expect(storage.get("container_meter")?.reservationId).toBe(reservationId);
+    expect(mockContainer.start).toHaveBeenCalledTimes(starts);
+  });
+
+  it("aborts and destroys active execution on suspension without publishing its workspace", async () => {
+    const { sandbox, storage, mockContainer, setTenantActive } = await createTestSandbox({ platformDb: true, hangExecution: true });
+    const preparedBefore = [...storage.keys()].filter(key => String(key).startsWith("execution:")).length;
+    const execution = sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    for (let attempt = 0; attempt < 100 && [...storage.keys()].filter(key => String(key).startsWith("execution:")).length <= preparedBefore; attempt++) await new Promise(resolve => setTimeout(resolve, 0));
+    expect([...storage.keys()].filter(key => String(key).startsWith("execution:")).length).toBeGreaterThan(preparedBefore);
+    setTenantActive(false);
+    await sandbox.alarm();
+    const response = await execution;
+    expect(response.status).toBe(409);
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
+    expect(storage.has("workspace_pending_publication")).toBe(false);
+  });
+
+  it("releases a reservation that completes after suspension", async () => {
+    const { sandbox, storage, mockContainer, billingCalls, reservationStarted, releaseReservation, setTenantActive } = await createTestSandbox({ platformDb: true, hangReservation: true });
+    const execution = sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
+    await reservationStarted;
+    expect(storage.has("container_reservation_pending")).toBe(true);
+    setTenantActive(false);
+    await sandbox.alarm();
+    releaseReservation();
+    const response = await execution;
+    expect(response.status).toBe(409);
+    expect(storage.has("container_reservation_pending")).toBe(false);
+    expect(storage.has("container_meter")).toBe(false);
+    expect(mockContainer.start).not.toHaveBeenCalled();
+    expect(billingCalls.filter(path => path.endsWith("/release")).length).toBeGreaterThanOrEqual(1);
+  });
 
   it("coordinates 4D shell state and rejects conflicting revisions", async () => {
     const { sandbox } = await createTestSandbox();
@@ -270,6 +327,8 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000_000);
     const { sandbox, storage, getAlarmTime, mockContainer, initialPrewarm, analyticsPoints } = await createTestSandbox({ sidecar: true, runId: "worker-run" });
+    expect(initialPrewarm).toBeDefined();
+    if (!initialPrewarm) throw new Error("expected initial prewarm response");
     expect(initialPrewarm.status, await initialPrewarm.clone().text()).toBe(200);
     expect(mockContainer.start).toHaveBeenCalledOnce();
     expect(mockContainer.destroy).not.toHaveBeenCalled();
