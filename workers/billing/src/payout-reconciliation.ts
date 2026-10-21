@@ -1,5 +1,8 @@
+import { readBoundedResponseJson } from "@naelao/http";
+
 interface Env { PLATFORM_DB: D1Database; STRIPE_CONNECT_SECRET_KEY?: string }
 interface Payout { id: string; amount_cents: number; destination_snapshot: string | null; attempt_started_at: number | null; status: string }
+const MAX_STRIPE_PAYOUT_RESPONSE_BYTES = 64 * 1024;
 
 /** Capture the exact earning rows atomically before computing the payout amount. */
 export async function reserveDeveloperPayout(db: D1Database, developerId: string): Promise<{ id: string; amount_cents: number } | null> {
@@ -39,14 +42,14 @@ export async function reconcileDeveloperPayouts(env: Env, now = Date.now(), swee
     }
     try {
       const account = await fetch(`https://api.stripe.com/v1/accounts/${payout.destination_snapshot}`, { headers: { authorization: `Bearer ${env.STRIPE_CONNECT_SECRET_KEY}` }, signal: AbortSignal.timeout(8000) });
-      const readiness = account.ok ? await account.json<{ capabilities?: { transfers?: string } }>() : null;
+      const readiness = account.ok ? await readBoundedResponseJson<{ capabilities?: { transfers?: string } }>(account, MAX_STRIPE_PAYOUT_RESPONSE_BYTES) : null;
       if (readiness?.capabilities?.transfers !== "active") throw new Error("connect_transfers_not_enabled");
       const response = await fetch("https://api.stripe.com/v1/transfers", {
         method: "POST", headers: { authorization: `Bearer ${env.STRIPE_CONNECT_SECRET_KEY}`, "content-type": "application/x-www-form-urlencoded", "Idempotency-Key": `naelao-developer-payout:${id}` },
         body: new URLSearchParams({ amount: String(payout.amount_cents), currency: "usd", destination: payout.destination_snapshot, "metadata[naelao_payout_id]": id }), signal: AbortSignal.timeout(8000),
       });
       if (!response.ok) throw new Error(`connect_transfer_http_${response.status}`);
-      const transfer = await response.json<{ id?: string; amount?: number; currency?: string; destination?: string }>();
+      const transfer = await readBoundedResponseJson<{ id?: string; amount?: number; currency?: string; destination?: string }>(response, MAX_STRIPE_PAYOUT_RESPONSE_BYTES);
       if (!transfer.id?.startsWith("tr_") || transfer.amount !== payout.amount_cents || transfer.currency !== "usd" || transfer.destination !== payout.destination_snapshot) throw new Error("connect_transfer_response_mismatch");
       await env.PLATFORM_DB.prepare("UPDATE developer_payouts SET status = 'paid', provider_reference = ?, last_error = NULL, updated_at = datetime('now') WHERE id = ? AND status = 'processing'").bind(transfer.id, id).run(); report.paid++;
     } catch (err) {
