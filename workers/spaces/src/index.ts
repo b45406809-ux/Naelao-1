@@ -895,6 +895,13 @@ const handleSpaceSessions = async (c: any) => {
     const qs = new URLSearchParams();
     if (isProductEndUser) qs.set("end_user_id", callerId);
     search = qs.size ? `?${qs.toString()}` : "";
+  } else if (isProductEndUser && /^\/sessions\/[^/]+(?:\/.*)?$/.test(doPath)) {
+    // Every remaining session subroute (metadata, state, connector preferences, and future
+    // session-local APIs) receives the verified owner identity too. SpaceDO enforces it before
+    // dispatch; never trust an end_user_id supplied in the original query string.
+    const qs = new URLSearchParams(url.searchParams);
+    qs.set("end_user_id", callerId);
+    search = `?${qs.toString()}`;
   }
   const doUrl = new URL(doPath + search, "http://space-do");
 

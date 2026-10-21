@@ -1308,3 +1308,9 @@ Validation: Spaces pagination suite passed 1 file / 4 tests; Spaces TypeScript c
 The automatic transcript loader and `conversation.search` both stopped on an empty page without checking `has_more`. A contradictory/failed page response could therefore be treated as complete history and make the agent infer a fact was never discussed. Both paths now reject that state as incomplete; the compactor refuses to replace context from it, and search returns an explicit unavailable/incomplete result. Added regressions to both readers.
 
 Validation: Agents conversation search, transcript loader, and compaction suites passed 3 files / 24 tests; Agents TypeScript check passed.
+
+## Product end-user ownership on all SpaceDO session subroutes (2026-10-21)
+
+Traced the router's product-session allowlist through `handleSpaceSessions` into SpaceDO. The router derived `end_user_id` for session/message reads and writes, but left other session-local requests untouched. SpaceDO's `PATCH /sessions/:id`, state GET/PUT, and connector-mode GET/PATCH therefore lacked an owner check. Product-session callers could target those routes with another known session ID. The Spaces router now overwrites the owner query value from its verified claims for every remaining session subroute, and SpaceDO checks it before dispatching any session-scoped endpoint. This keeps ownership enforcement at the storage boundary and preserves internal callers that omit end-user identity.
+
+Added regressions proving a foreign customer cannot read connector preferences or write agent state while the owner can read its preference. Validation: Spaces session scope, message pagination, and private scratchpad suites passed 3 files / 9 tests; Spaces TypeScript check passed. Router-level forwarding was traced in code but not exercised end-to-end with a full Hono/D1 fixture.

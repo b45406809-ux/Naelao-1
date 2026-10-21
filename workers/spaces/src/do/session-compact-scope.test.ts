@@ -35,4 +35,26 @@ describe("session compaction scope", () => {
     const other = await object.fetch(new Request("https://space/sessions/session-1/compact-scope?end_user_id=customer-2"));
     expect(other.status).toBe(404);
   });
+
+  it("applies session ownership to state and connector subroutes, not just transcript APIs", async () => {
+    const { object } = fixture();
+    const foreignRead = await object.fetch(new Request(
+      "https://space/sessions/session-1/connector-mode?end_user_id=customer-2"
+    ));
+    expect(foreignRead.status).toBe(404);
+    expect(await foreignRead.json()).toMatchObject({ error_code: "not_found", message: "Session not found" });
+
+    const foreignWrite = await object.fetch(new Request(
+      "https://space/sessions/session-1/state?end_user_id=customer-2",
+      { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ context: { altered: true } }) }
+    ));
+    expect(foreignWrite.status).toBe(404);
+    expect(await foreignWrite.json()).toMatchObject({ error_code: "not_found", message: "Session not found" });
+
+    const ownerRead = await object.fetch(new Request(
+      "https://space/sessions/session-1/connector-mode?end_user_id=customer-1"
+    ));
+    expect(ownerRead.status).toBe(200);
+    expect(await ownerRead.json()).toEqual({ modes: {} });
+  });
 });

@@ -2780,6 +2780,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const url = new URL(request.url);
     const method = request.method;
 
+    // Product sessions authenticate the customer at the router, which forwards their verified
+    // identity as end_user_id. Enforce ownership before dispatching ANY session-local endpoint,
+    // including state and connector preferences that do not themselves return transcript rows.
+    // This also ignores a caller's attempted ownership override because the proxy always replaces
+    // this query parameter from the verified product-session claim.
+    const sessionOwnerMatch = url.pathname.match(/^\/sessions\/([^/]+)(?:\/|$)/);
+    const sessionOwnerId = url.searchParams.get("end_user_id");
+    if (sessionOwnerMatch?.[1] && sessionOwnerId) {
+      const ownedSession = queryOne<{ end_user_id: string | null }>(
+        this.ctx.storage.sql as never,
+        "SELECT end_user_id FROM sessions WHERE id = ?",
+        sessionOwnerMatch[1]
+      );
+      if (!ownedSession || ownedSession.end_user_id !== sessionOwnerId) {
+        return Response.json({ error_code: "not_found", message: "Session not found" }, { status: 404 });
+      }
+    }
+
     try {
       if (method === "POST" && url.pathname === "/internal/user-budget/debit") return this.debitUserDailyBudget(request);
       if (url.pathname === "/data-ops" && (method === "GET" || method === "POST")) {
