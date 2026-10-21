@@ -154,6 +154,14 @@ describe("POST /connectors/whop/oauth/start", () => {
     expect(u.searchParams.get("state")).toBeTruthy();
   });
 
+  it("does not issue an OAuth ticket for a suspended tenant or Space", async () => {
+    const env = makeEnv({ PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } as unknown as D1Database });
+    const res = await startReq(env);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect([...((env.AGENT_CACHE as unknown as FakeKv) as unknown as { store: Map<string, string> }).store.keys()]).toHaveLength(0);
+  });
+
   it("degrades honestly to oauth_not_configured when the OAuth app isn't set up", async () => {
     const env = makeEnv({ WHOP_OAUTH_CLIENT_ID: undefined });
     const res = await startReq(env);

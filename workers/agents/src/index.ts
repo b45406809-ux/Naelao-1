@@ -4557,6 +4557,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   const { userId, role: callerRole } = getCallerIdentity(c);
   const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect a provider to an extension");
+  if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
   if (!c.env.SLACK_CLIENT_ID || !c.env.SLACK_CLIENT_SECRET || !c.env.PUBLIC_AGENTS_URL || !c.env.AGENT_CACHE) return c.json({ error_code: "extension_provider_oauth_unavailable" }, 503);
   const body = await c.req.json<{ return_url?: unknown }>().catch(() => ({} as { return_url?: unknown }));
@@ -4580,6 +4581,7 @@ app.get("/extensions/oauth/slack/callback", async c => {
   if (!ticket || ticket.platform !== "extension-slack" || !ticket.extensionConnection) return c.html(pairingPage("This connection link expired or was already used.", "Return to the extension settings and start again."), 400);
   const connection = ticket.extensionConnection;
   const fail = (reason: string) => { const target = new URL(ticket.returnUrl); target.searchParams.set("extension_connection_error", reason); return c.redirect(target.toString(), 302); };
+  if (!await isActiveTenantSpace(c.env, ticket.spaceId, ticket.tenantId)) return fail("tenant_suspended");
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, ticket.spaceId)) return fail("air_gap_egress_denied");
   if (c.req.query("error")) return fail("authorization_denied");
   const code = c.req.query("code");
@@ -4884,6 +4886,7 @@ app.post("/connectors/custom-oauth/:connectorId/oauth/start", async (c) => {
   interface StartBody extends TenantOAuthConfig { space_id: string; return_url: string }
   const body = await c.req.json<StartBody>().catch(() => ({} as StartBody));
   if (!body.space_id || !body.return_url || !body.client_id || !body.client_secret || !body.display_name || !body.mcp_url) throw badRequest("space_id, return_url, mcp_url, display_name and OAuth client credentials are required");
+  if (!await isActiveTenantSpace(c.env, body.space_id, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (!Array.isArray(body.scopes) || body.scopes.length > 32 || body.scopes.some((scope) => typeof scope !== "string" || scope.length > 128)) throw badRequest("scopes must be an array of at most 32 strings");
   if (!isTrustedConnectorReturnUrl(body.return_url, c.env)) throw badRequest("return_url must use an approved Naelao app origin");
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
@@ -4909,6 +4912,7 @@ app.get("/connectors/custom-oauth/:connectorId/oauth/callback", async (c) => {
   const ticket = c.req.query("state") ? await consumeOAuthTicket(c.env.AGENT_CACHE, c.req.query("state")!) : null;
   if (!ticket || ticket.platform !== `custom-oauth:${id}`) return c.text("This connection link expired or was already used. Try again.", 400);
   const fail = (reason: string) => { const url = new URL(ticket.returnUrl); url.searchParams.set(`${id}_oauth_error`, reason); return c.redirect(url.toString(), 302); };
+  if (!await isActiveTenantSpace(c.env, ticket.spaceId, ticket.tenantId)) return fail("tenant_suspended");
   if (c.req.query("error")) return fail("authorization_denied");
   const code = c.req.query("code");
   if (!code || !c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER || !c.env.MCP_HUB) return fail("oauth_unavailable");
@@ -4958,6 +4962,7 @@ app.post("/connectors/:platform/oauth/start", async (c) => {
   const body = await c.req.json<StartBody>().catch(() => ({ space_id: "", return_url: "" } as StartBody));
   if (!body.space_id) throw badRequest("space_id is required");
   if (!body.return_url) throw badRequest("return_url is required");
+  if (!await isActiveTenantSpace(c.env, body.space_id, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
     return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
   }
@@ -5003,6 +5008,7 @@ app.get("/connectors/:platform/oauth/callback", async (c) => {
     u.searchParams.set(`${platform}_oauth_error`, reason);
     return c.redirect(u.toString(), 302);
   };
+  if (!await isActiveTenantSpace(c.env, ticket.spaceId, ticket.tenantId)) return failRedirect("tenant_suspended");
   if (errorParam) return failRedirect(errorParam);
   if (!code) return failRedirect("missing_code");
 
@@ -5194,6 +5200,7 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
   if (!isTrustedConnectorReturnUrl(body.return_url, c.env)) {
     return c.json({ error_code: "bad_request", message: "return_url must use an approved Naelao app origin" }, 400);
   }
+  if (!await isActiveTenantSpace(c.env, body.space_id, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
     return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
   }
@@ -5327,6 +5334,7 @@ app.get("/connectors/:platform/provider-connect/callback", async (c) => {
     u.searchParams.set(`${platform}_oauth_error`, reason);
     return c.redirect(u.toString(), 302);
   };
+  if (!await isActiveTenantSpace(c.env, ticket.spaceId, ticket.tenantId)) return failRedirect("tenant_suspended");
 
   try {
     const provider = ticket.provider ?? "composio";

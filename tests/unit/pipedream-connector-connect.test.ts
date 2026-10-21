@@ -263,6 +263,28 @@ describe("GET /connectors/:platform/provider-connect/callback (Pipedream)", () =
     expect(replay.status).toBe(400);
   });
 
+  it("does not poll or register after the organization is suspended during consent", async () => {
+    const env = makeEnv();
+    mockPipedream({});
+    const startRes = await startReq(env);
+    expect(startRes.status).toBe(200);
+    const kv = env.AGENT_CACHE as unknown as FakeKv;
+    const ticketKey = [...(kv as unknown as { store: Map<string, string> }).store.keys()].find((key) => key.startsWith("connector-provider-ticket:"));
+    expect(ticketKey).toBeTruthy();
+    const ticketId = ticketKey!.replace("connector-provider-ticket:", "");
+    const callsBeforeCallback = calls.length;
+    env.PLATFORM_DB = { prepare: () => ({ bind: () => ({ first: async () => null }) }) } as unknown as D1Database;
+
+    const response = await app.fetch(
+      new Request(`https://agents.naelao.com/connectors/notion/provider-connect/callback?ticket=${ticketId}`),
+      env as never,
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("notion_oauth_error=tenant_suspended");
+    expect(calls).toHaveLength(callsBeforeCallback);
+    expect(env.__mcpServers).toHaveLength(0);
+  });
+
   it("does NOT register the connector when no connected account exists yet (bailed-out consent)", async () => {
     const env = makeEnv();
     mockPipedream({ accountsBody: { data: [] } });
