@@ -198,7 +198,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
       // G-AZ34: Analytics Engine is append-only — cannot delete rows.
       // Emit an analytics.user_erased correction record so the analytics worker
       // can write a null_user_id anonymization marker into Analytics Engine.
-      await this.env.EVENTS_QUEUE.send({
+      await this.env.ANALYTICS_QUEUE.send({
         eventType: "user_erased",
         tenantId: params.orgId,
         metadata: { erasedAt: completedAt, reason: params.reason.slice(0, 500) },

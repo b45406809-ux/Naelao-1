@@ -21,6 +21,14 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
+[[queues.consumers]]
+queue = "naelao-analytics"
+max_batch_size = 100
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 20
+dead_letter_queue = "naelao-events-dlq"
+
 [vars]
 ENVIRONMENT = "development"
 CF_ACCOUNT_ID = ""
@@ -51,6 +59,14 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
+[[env.staging.queues.consumers]]
+queue = "naelao-analytics"
+max_batch_size = 100
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 20
+dead_letter_queue = "naelao-events-dlq"
+
 
 [[env.production.analytics_engine_datasets]]
 binding = "ANALYTICS"
@@ -66,3 +82,11 @@ id = "6e38f2bdab314df480fc82d0f2c2adbb"
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
+[[env.production.queues.consumers]]
+queue = "naelao-analytics"
+max_batch_size = 100
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 20
+dead_letter_queue = "naelao-events-dlq"

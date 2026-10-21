@@ -60,6 +60,10 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 binding = "EVENTS_QUEUE"
 queue = "naelao-events"
 
+[[queues.producers]]
+binding = "ANALYTICS_QUEUE"
+queue = "naelao-analytics"
+
 [[queues.consumers]]
 queue = "naelao-events"
 max_batch_size = 100
@@ -144,6 +148,10 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 binding = "EVENTS_QUEUE"
 queue = "naelao-events"
 
+[[env.staging.queues.producers]]
+binding = "ANALYTICS_QUEUE"
+queue = "naelao-analytics"
+
 
 [[env.staging.queues.consumers]]
 queue = "naelao-events"
@@ -222,6 +230,10 @@ id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 [[env.production.queues.producers]]
 binding = "EVENTS_QUEUE"
 queue = "naelao-events"
+
+[[env.production.queues.producers]]
+binding = "ANALYTICS_QUEUE"
+queue = "naelao-analytics"
 
 
 [[env.production.queues.consumers]]

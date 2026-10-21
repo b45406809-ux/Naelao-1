@@ -31,6 +31,8 @@ export interface Env {
 
   // Queue — main event bus
   EVENTS_QUEUE: Queue;
+  /** Dedicated analytics queue; the shared events queue has a single workflow consumer. */
+  ANALYTICS_QUEUE: Queue;
 
   // Service bindings
   SPACES_WORKER: Fetcher;

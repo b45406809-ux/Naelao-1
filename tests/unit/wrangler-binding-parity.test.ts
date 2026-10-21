@@ -116,6 +116,20 @@ describe("wrangler.toml declares every binding the worker's code actually uses",
     expect(toml).toContain('database_name = "naelao-platform"');
   });
 
+  it("routes analytics through its dedicated single-consumer queue in each environment", () => {
+    const analytics = readFileSync(join(WORKERS_DIR, "analytics", "wrangler.toml"), "utf8");
+    const workflows = readFileSync(join(WORKERS_DIR, "workflows", "wrangler.toml"), "utf8");
+    for (const environment of ["", "env.staging.", "env.production."]) {
+      const consumerTable = `${environment}queues.consumers`;
+      const producerTable = `${environment}queues.producers`;
+      expect(getTableEntries(analytics, consumerTable).map((entry) => entry.match(/^\s*queue\s*=\s*"([^"]+)"/m)?.[1]))
+        .toContain("naelao-analytics");
+      expect(getTableEntries(workflows, producerTable).some((entry) =>
+        /^\s*binding\s*=\s*"ANALYTICS_QUEUE"/m.test(entry) && /^\s*queue\s*=\s*"naelao-analytics"/m.test(entry)
+      )).toBe(true);
+    }
+  });
+
   it.each(workerDirs())("preserves top-level resource bindings in staging and production for %s", (dir) => {
     const toml = readFileSync(join(WORKERS_DIR, dir, "wrangler.toml"), "utf8");
     const tables = [...new Set(resourceTables(toml))];
