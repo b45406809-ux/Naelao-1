@@ -254,6 +254,44 @@ describe("Builder Dashboard API — /builder/products CRUD", () => {
     )).status).toBe(409);
   });
 
+  it("applies role permissions to the legacy space update and delete APIs", async () => {
+    const env = makeEnv();
+    const created = await (await spacesWorker.fetch(
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+
+    const viewerPatch = await spacesWorker.fetch(
+      await req(`/spaces/${created.id}`, { method: "PATCH", tenant: "tenant-1", role: "viewer", body: { name: "Changed" } }), env as never, execCtx
+    );
+    expect(viewerPatch.status).toBe(403);
+    const viewerDelete = await spacesWorker.fetch(
+      await req(`/spaces/${created.id}`, { method: "DELETE", tenant: "tenant-1", role: "viewer" }), env as never, execCtx
+    );
+    expect(viewerDelete.status).toBe(403);
+    const editorStatus = await spacesWorker.fetch(
+      await req(`/spaces/${created.id}`, { method: "PATCH", tenant: "tenant-1", role: "editor", body: { status: "paused" } }), env as never, execCtx
+    );
+    expect(editorStatus.status).toBe(403);
+    const editorName = await spacesWorker.fetch(
+      await req(`/spaces/${created.id}`, { method: "PATCH", tenant: "tenant-1", role: "editor", body: { name: "Changed" } }), env as never, execCtx
+    );
+    expect(editorName.status).toBe(200);
+    await expect(env.PLATFORM_DB.prepare("SELECT name FROM spaces WHERE id = ?").bind(created.id).first())
+      .resolves.toEqual({ name: "Changed" });
+  });
+
+  it("requires a space writer role to create a space through the legacy endpoint", async () => {
+    const env = makeEnv();
+    const viewer = await spacesWorker.fetch(
+      await req("/spaces", { method: "POST", tenant: "tenant-1", role: "viewer", body: { name: "Viewer Space", spacetype_id: "launchpad" } }), env as never, execCtx
+    );
+    expect(viewer.status).toBe(403);
+    const editor = await spacesWorker.fetch(
+      await req("/spaces", { method: "POST", tenant: "tenant-1", role: "editor", body: { name: "Editor Space", spacetype_id: "launchpad" } }), env as never, execCtx
+    );
+    expect(editor.status).toBe(201);
+  });
+
   it("DELETE soft-deletes — the product then 404s", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(

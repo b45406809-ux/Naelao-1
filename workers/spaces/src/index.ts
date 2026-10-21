@@ -324,8 +324,9 @@ app.get("/spaces", async (c) => {
 
 // ── POST /spaces — create a space ───────────────────────────────────────────
 app.post("/spaces", async (c) => {
-  const { tenantId, userId } = getCallerIdentity(c);
+  const { tenantId, userId, role } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (!["owner", "admin", "editor"].includes(role)) return c.json({ error_code: "forbidden" }, 403);
 
   const body = await c.req.json<{
     name: string;
@@ -546,6 +547,9 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
 // ── PATCH /spaces/:id ───────────────────────────────────────────────────────
 app.patch("/spaces/:id", async (c) => {
   const { tenantId, role } = getCallerIdentity(c);
+  if (!["owner", "admin", "editor"].includes(role)) {
+    return c.json({ error_code: "forbidden" }, 403);
+  }
   const spaceId = c.req.param("id");
   const body = await c.req.json<{
     name?: string;
@@ -598,7 +602,8 @@ app.patch("/spaces/:id", async (c) => {
 
 // ── DELETE /spaces/:id (soft delete) ────────────────────────────────────────
 app.delete("/spaces/:id", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, role } = getCallerIdentity(c);
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
   const spaceId = c.req.param("id");
   const now = new Date().toISOString();
 
