@@ -160,9 +160,6 @@ CF Cron Trigger (every minute). Runs synthetic transactions against each worker.
 #### `workers/sweeper/`
 Daily CF Cron Trigger. Cleans up: old sessions with no messages (> 90 days), failed KB documents (> 7 days), orphaned R2 objects, stale DO state. Uses CF Workflow for timeout safety.
 
-#### `workers/feedback/`
-`POST /v1/sessions/:sessionId/messages/:messageId/feedback`. Stores in D1. Emits to Analytics Engine. Weekly quality score per SpaceType.
-
 #### `workers/admin/`
 Platform ops. JWT-gated with `role: 'platform_admin'`. Tenant management, feature flags, usage reports, user impersonation log, billing overrides.
 

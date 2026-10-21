@@ -4,9 +4,9 @@ Generated from the current source/config tree using Wrangler worker manifests, e
 
 Supplemental routes added after the last full discovery refresh: `workers/spaces/src/index.ts` registers owner-only `POST /builder/erasure`, `GET /builder/erasure/:requestId`, and `DELETE /builder/erasure/:requestId`; the latter two are the only request paths exempted from router tenant suspension. Internal `DELETE /internal/tenant/:tenantId/spaces/:spaceId/product-users/erase` and `DELETE /internal/tenant/:tenantId/spaces/:spaceId/business-services/erase` routes are protected by `requireInternalHmac`. Aggregate route counts and other line references above predate these additions and still need a full discovery refresh.
 
-Workers with Wrangler manifests: 31
+Workers with Wrangler manifests: 30
 Exported DurableObject declarations: 22
-Literal route-registration matches: 1071
+Literal route-registration matches: 1066
 
 ## Worker services
 
@@ -22,7 +22,6 @@ Literal route-registration matches: 1071
 - `workers/connector-whop` — manifest `workers/connector-whop/wrangler.toml`; entrypoint `workers/connector-whop/src/index.ts`
 - `workers/credentials` — manifest `workers/credentials/wrangler.toml`; entrypoint `workers/credentials/src/index.ts`
 - `workers/eval` — manifest `workers/eval/wrangler.toml`; entrypoint `workers/eval/src/index.ts`
-- `workers/feedback` — manifest `workers/feedback/wrangler.toml`; entrypoint `workers/feedback/src/index.ts`
 - `workers/knowledge` — manifest `workers/knowledge/wrangler.toml`; entrypoint `workers/knowledge/src/index.ts`
 - `workers/marketplace` — manifest `workers/marketplace/wrangler.toml`; entrypoint `workers/marketplace/src/index.ts`
 - `workers/mcp-hub` — manifest `workers/mcp-hub/wrangler.toml`; entrypoint `workers/mcp-hub/src/index.ts`
@@ -111,7 +110,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/connector-whop/src/index.ts` — 5 route/middleware registration calls
 - `workers/credentials/src/index.ts` — 10 route/middleware registration calls
 - `workers/eval/src/index.ts` — 7 route/middleware registration calls
-- `workers/feedback/src/index.ts` — 5 route/middleware registration calls
 - `workers/knowledge/src/index.ts` — 27 route/middleware registration calls
 - `workers/marketplace/src/index.ts` — 10 route/middleware registration calls
 - `workers/mcp-hub/src/index.ts` — 16 route/middleware registration calls
@@ -441,11 +439,6 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/eval/src/index.ts:457` — `app.get("/evals", async (c) => {`
 - `workers/eval/src/index.ts:484` — `app.post("/evals/:id/run", async (c) => {`
 - `workers/eval/src/index.ts:697` — `app.get("/evals/:id/results", async (c) => {`
-- `workers/feedback/src/index.ts:17` — `app.use("*", requestId);`
-- `workers/feedback/src/index.ts:18` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
-- `workers/feedback/src/index.ts:28` — `app.post("/v1/sessions/:sessionId/messages/:messageId/feedback", async (c) => {`
-- `workers/feedback/src/index.ts:78` — `app.get("/v1/sessions/:sessionId/feedback", async (c) => {`
-- `workers/feedback/src/index.ts:91` — `app.get("/v1/spaces/:spaceId/feedback/summary", async (c) => {`
 - `workers/knowledge/src/index.ts:93` — `app.use("*", requestId);`
 - `workers/knowledge/src/index.ts:94` — `app.use("*", async (c, next) => { validateEnv(c.env); await next(); });`
 - `workers/knowledge/src/index.ts:170` — `app.get("/spaces/:spaceId/kb/projects/:projectId/external-publications", async (c) => {`
