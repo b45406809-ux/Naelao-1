@@ -234,7 +234,9 @@ queue = "naelao-agent-ticks"
 
 [[queues.consumers]]
 queue = "naelao-agent-ticks"
-max_batch_size = 100
+# A tick can run an agent planner or connector workflow. Keep each long-running job in its own
+# queue invocation; max_concurrency supplies parallelism without serial batch head-of-line stalls.
+max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 50
@@ -633,7 +635,7 @@ queue = "naelao-agent-ticks"
 
 [[env.staging.queues.consumers]]
 queue = "naelao-agent-ticks"
-max_batch_size = 100
+max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 50
@@ -896,7 +898,7 @@ queue = "naelao-agent-ticks"
 
 [[env.production.queues.consumers]]
 queue = "naelao-agent-ticks"
-max_batch_size = 100
+max_batch_size = 1
 max_batch_timeout = 5
 max_retries = 3
 max_concurrency = 50

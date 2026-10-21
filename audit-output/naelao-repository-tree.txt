@@ -1,8 +1,8 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2026
-Files with source or executable-configuration extensions: 1820
+Files: 2027
+Files with source or executable-configuration extensions: 1821
 Inventory revision: refreshed 2026-10-21 after Provisioner commit b20dacbf
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
@@ -1539,6 +1539,7 @@ workers/
       agent-run-session-scope.test.ts
       agent-templates.test.ts
       agent-templates.ts
+      agent-ticks-queue-config.test.ts
       batch09-foundations.test.ts
       batch10-workflows.test.ts
       batch11-phase2.test.ts
