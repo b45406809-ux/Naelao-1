@@ -129,6 +129,7 @@ describe("bounded knowledge cleanup", () => {
       "DELETE FROM kb_chunks WHERE document_id = ? AND tenant_id = ? AND space_id = ? AND project_id = ?"
     );
     expect(statements).toHaveBeenCalledWith("DELETE FROM kb_chunks WHERE space_id = ?");
+    expect(statements).toHaveBeenCalledWith("UPDATE threads SET session_count = 0 WHERE space_id = ?");
   });
 
   it("cleans orphaned D1 chunks together with their R2 objects and vectors", async () => {

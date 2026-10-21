@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1991
-Files with source or executable-configuration extensions: 1785
-Inventory revision: 2026-10-21 audit refresh for thread schema integrity
+Files: 1992
+Files with source or executable-configuration extensions: 1786
+Inventory revision: 2026-10-21 audit refresh for sweeper retention
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1414,12 +1414,13 @@ tests/
     scheduled-jobs-business-membership.test.ts
     scheduled-jobs-fires-events.test.ts
     scheduled-jobs.test.ts
+    sweeper-thread-session-retention.test.ts
     script-engine.test.ts
     script-name-recoverable.test.ts
     script-run-hmac-gate.test.ts
     seed-general-project.test.ts
     send-to-thread-orchestration-hook.test.ts
-  thread-last-active-migration.test.ts
+    thread-last-active-migration.test.ts
     session-budget-guard.test.ts
     shell-request.test.ts
     shell-role-gate.test.ts

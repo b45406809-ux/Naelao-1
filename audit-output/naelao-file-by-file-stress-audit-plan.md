@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1991` tracked files; `1785` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the thread-schema integrity refresh.
+Inventory basis: `1992` tracked files; `1786` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the sweeper retention refresh.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1553,6 +1553,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/scheduled-jobs-business-membership.test.ts`
 - [ ] `tests/unit/scheduled-jobs-fires-events.test.ts`
 - [ ] `tests/unit/scheduled-jobs.test.ts`
+- [x] `tests/unit/sweeper-thread-session-retention.test.ts`
 - [ ] `tests/unit/script-engine.test.ts`
 - [ ] `tests/unit/script-name-recoverable.test.ts`
 - [ ] `tests/unit/script-run-hmac-gate.test.ts`

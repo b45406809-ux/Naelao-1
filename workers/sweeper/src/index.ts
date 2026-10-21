@@ -100,22 +100,31 @@ export async function cleanOrphanedKnowledgeChunks(
   return cleaned;
 }
 
-async function cleanOldSessions(db: D1Database): Promise<number> {
+export async function cleanOldSessions(db: D1Database): Promise<number> {
   // Clean ended sessions from the D1 active_sessions registry (messages live in SpaceDO SQLite)
-  const result = await db.prepare(
-    `DELETE FROM active_sessions WHERE rowid IN (
+  const oldThreadSessions = await db.prepare(
+    `SELECT DISTINCT thread_id, tenant_id FROM thread_sessions
+     WHERE status = 'ended' AND ended_at < datetime('now', '-90 days') LIMIT 1000`
+  ).all<{ thread_id: string; tenant_id: string }>();
+  const statements = [
+    db.prepare(`DELETE FROM active_sessions WHERE rowid IN (
        SELECT rowid FROM active_sessions
        WHERE status = 'ended' AND ended_at < datetime('now', '-90 days') LIMIT 1000
-     )`
-  ).run();
-  // Also clean ended thread_sessions entries older than 90 days
-  const result2 = await db.prepare(
-    `DELETE FROM thread_sessions WHERE rowid IN (
+     )`),
+    // Also clean ended thread_sessions entries older than 90 days. Recount their parents in
+    // the same D1 batch so the denormalized session_count cannot drift after retention.
+    db.prepare(`DELETE FROM thread_sessions WHERE rowid IN (
        SELECT rowid FROM thread_sessions
        WHERE status = 'ended' AND ended_at < datetime('now', '-90 days') LIMIT 1000
-     )`
-  ).run();
-  return (result.meta.changes ?? 0) + (result2.meta.changes ?? 0);
+     )`),
+    ...oldThreadSessions.results.map(({ thread_id, tenant_id }) => db.prepare(
+      `UPDATE threads SET session_count = (
+         SELECT COUNT(*) FROM thread_sessions WHERE thread_id = ? AND tenant_id = ?
+       ) WHERE id = ? AND tenant_id = ?`
+    ).bind(thread_id, tenant_id, thread_id, tenant_id)),
+  ];
+  const results = await db.batch(statements);
+  return (results[0]?.meta.changes ?? 0) + (results[1]?.meta.changes ?? 0);
 }
 
 export async function cleanFailedDocs(db: D1Database, bucket: R2Bucket, vectors: VectorizeIndex): Promise<number> {
@@ -207,6 +216,9 @@ export async function cleanDeletedSpaces(db: D1Database, bucket: R2Bucket, vecto
 
       await db.prepare(
         `DELETE FROM thread_sessions WHERE space_id = ?`
+      ).bind(spaceId).run();
+      await db.prepare(
+        "UPDATE threads SET session_count = 0 WHERE space_id = ?"
       ).bind(spaceId).run();
 
       cleaned++;
