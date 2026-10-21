@@ -873,6 +873,8 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       .map(([role]) => role);
   const accessMask = allowedRoles.reduce((mask, role) => mask | KNOWLEDGE_ROLE_MASK[role as KnowledgeRole], 0);
 
+  const storageOperationId = crypto.randomUUID();
+  let storageBytesWritten = 0;
   let reindexStarted = false;
   try {
     // Finish every fallible embedding request before replacing the current index. A provider
@@ -928,15 +930,15 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       const chunkId = `${docId}_chunk_${i}`;
       const contentHash = await sha256Hex(chunk);
 
-      await c.env.KB_BUCKET.put(
-        chunkR2Key(spaceId, projectId, docId, i),
-        JSON.stringify({ docId, chunkIndex: i, content: chunk, spaceId, tenantId,
+      const serializedChunk = JSON.stringify({ docId, chunkIndex: i, content: chunk, spaceId, tenantId,
           projectId: projectId ?? SPACE_WIDE_PROJECT_SENTINEL, visibility: projectId ? "project" : "space",
-          requiredRoleRank: 0, chunkId, contentHash, sourceFreshness: indexedAt, headingPath: [], ...coordinate } satisfies ChunkRecord)
-      );
+          requiredRoleRank, chunkId, contentHash, sourceFreshness: indexedAt, headingPath: [], ...coordinate } satisfies ChunkRecord);
+      await c.env.KB_BUCKET.put(chunkR2Key(spaceId, projectId, docId, i), serializedChunk);
+      storageBytesWritten += new TextEncoder().encode(serializedChunk).byteLength;
       await c.env.KB_BUCKET.put(citationR2Key(spaceId, projectId, docId, i), chunk, {
         customMetadata: { contentHash, tenantId, spaceId, projectId: projectId ?? SPACE_WIDE_PROJECT_SENTINEL },
       });
+      storageBytesWritten += new TextEncoder().encode(chunk).byteLength;
       await c.env.PLATFORM_DB.prepare(
         `INSERT INTO kb_chunks (id,tenant_id,space_id,project_id,document_id,chunk_index,content,
          content_hash,visibility,required_role_rank,source_freshness,heading_path,r2_key,byte_start,
@@ -977,6 +979,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     if (c.env.AUTORAG_KB_INSTANCE) {
       try {
         await c.env.KB_BUCKET.put(autoragKbKey(spaceId, projectId, docId), newContent);
+        storageBytesWritten += new TextEncoder().encode(newContent).byteLength;
       } catch {
         /* best-effort — legacy retrieval is unaffected */
       }
@@ -987,6 +990,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     ).bind(newTitle, chunks.length, docId).run();
 
     const updated = await c.env.PLATFORM_DB.prepare("SELECT * FROM kb_documents WHERE id = ?").bind(docId).first();
+    await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, true, storageOperationId);
     return c.json(updated, 200);
   } catch (err) {
     if (reindexStarted) {
@@ -994,6 +998,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
         "UPDATE kb_documents SET status = 'failed', updated_at = datetime('now') WHERE id = ?"
       ).bind(docId).run().catch(() => {});
     }
+    await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, false, storageOperationId);
     throw internalError(`Document update failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 });

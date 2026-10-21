@@ -1202,3 +1202,14 @@ Added route regressions for foreign-space lookup/store/invalidation, query/resul
 Validation: Knowledge Worker suite passed 10 files / 47 tests; RAG suite passed 4 files / 26 tests; both TypeScript checks and `git diff --check` passed.
 
 Checked the semantic-cache route test and shared RAG helper/test. Storage cleanup for old generations beyond the 1,000-vector best-effort delete batch is still incomplete: those vectors remain stored but are excluded from lookup by generation. They should be reclaimed by a later maintenance sweep or a paginated provider cleanup API.
+
+
+## Knowledge storage usage metering on reindex (2026-10-21)
+
+Traced `reportKnowledgeStorageWrite` to Billing Worker's authenticated `/billing/usage` route and checked the accepted usage-event schema. Storage metering used the document ID as its idempotency key, so every later rewrite of the same document was silently deduplicated. The document PATCH route also wrote R2 chunk records, citation text, and optional AutoRAG mirrors without reporting their bytes.
+
+Storage reports now accept an operation ID and derive idempotency from that write operation. Reindexing generates one operation ID and reports the serialized chunk records, citation chunks, and mirror bytes on success or partial failure. Billing remains best effort; a 5xx or network failure does not roll back already-written content. Added tests for distinct rewrite keys, invalid/zero byte suppression, and billing outage behavior.
+
+Validation: Knowledge Worker focused storage/lifecycle suites passed 2 files / 10 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
+
+Checked `storage-usage.ts` and `storage-usage.test.ts`. Document deletion usage accounting and retrying failed billing events remain unimplemented; these events measure bytes written and do not claim retained GB-months or a price.

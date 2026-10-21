@@ -13,8 +13,10 @@ export async function reportKnowledgeStorageWrite(
   documentId: string,
   bytesWritten: number,
   succeeded: boolean,
+  operationId = documentId,
 ): Promise<void> {
-  if (!env.BILLING_WORKER || !Number.isSafeInteger(bytesWritten) || bytesWritten <= 0) return;
+  if (!env.BILLING_WORKER || !Number.isSafeInteger(bytesWritten) || bytesWritten <= 0
+    || typeof operationId !== "string" || !operationId || operationId.length > 160) return;
   try {
     const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
     await env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
@@ -23,7 +25,7 @@ export async function reportKnowledgeStorageWrite(
       body: JSON.stringify({
         schema_version: 2, event_type: "storage_bytes_written", quantity: bytesWritten, unit: "bytes",
         space_id: spaceId, ...(projectId ? { project_id: projectId } : {}),
-        idempotency_key: `knowledge-storage:${documentId}`, payer_kind: "unknown",
+        idempotency_key: `knowledge-storage:${operationId}`, payer_kind: "unknown",
         decision: succeeded ? "allowed" : "failed",
       }),
     }));

@@ -21,4 +21,22 @@ describe("Knowledge storage usage reporting", () => {
     await reportKnowledgeStorageWrite(env, "tenant-a", "space-a", null, "doc-b", Number.NaN, false);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("uses a distinct idempotency key per rewrite and treats billing outages as best effort", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = vi.fn(async (request: Request) => {
+      bodies.push(await request.json() as Record<string, unknown>);
+      return new Response(null, { status: 503 });
+    });
+    const env = { PLATFORM_SECRET: "secret", BILLING_WORKER: { fetch } as never };
+    await expect(reportKnowledgeStorageWrite(env, "tenant-a", "space-a", null, "doc-a", 10, true, "rewrite-1"))
+      .resolves.toBeUndefined();
+    await expect(reportKnowledgeStorageWrite(env, "tenant-a", "space-a", null, "doc-a", 11, true, "rewrite-2"))
+      .resolves.toBeUndefined();
+    expect(bodies.map((body) => body.idempotency_key)).toEqual([
+      "knowledge-storage:rewrite-1", "knowledge-storage:rewrite-2",
+    ]);
+    await reportKnowledgeStorageWrite({ ...env, BILLING_WORKER: { fetch: vi.fn().mockRejectedValue(new Error("offline")) } as never },
+      "tenant-a", "space-a", null, "doc-a", 1, false, "rewrite-3");
+  });
 });
