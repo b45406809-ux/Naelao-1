@@ -7409,6 +7409,9 @@ app.post("/internal/business-email/send", async (c) => {
   const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; taskId?: string; to?: string | string[]; subject?: string; text?: string; html?: string; replyTo?: string }>().catch(() => null);
   if (!body?.spaceId || !body.tenantId || !body.to) return c.json({ error_code: "bad_request", message: "spaceId, tenantId, to are required" }, 400);
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
+  if (!await isActiveTenantSpace(c.env, body.spaceId, body.tenantId)) {
+    return c.json({ ok: false, configured: true, error_code: "tenant_suspended" }, 403);
+  }
   // All email providers, including the task-correlated reply fallback, perform network egress.
   // Apply Space policy before branching to any provider.
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.spaceId)) {

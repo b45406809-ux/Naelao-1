@@ -140,6 +140,7 @@ describe("/internal/business-email/send", () => {
       PLATFORM_DB: {
         prepare: (query: string) => ({ bind: () => ({ first: async () => query.includes("email_reply_routes")
           ? { address_hash: replyHash }
+          : query.includes("SELECT s.id FROM spaces") ? { id: "s1" }
           : query.includes("config_json") ? { config_json: "{}" } : null }) }),
       } as never,
       NOTIFICATIONS_WORKER: { fetch: async (request: Request) => { sent.push(request); return Response.json({ delivered: true, from: "team@example.test" }); } } as unknown as Fetcher,
@@ -221,6 +222,26 @@ describe("/internal/business-email/send", () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error_code: "air_gap_egress_denied" });
     expect(called).toBe(false);
+  });
+
+  it("blocks all provider sends when the Space or organization is inactive", async () => {
+    const send = vi.fn(async () => ({ messageId: "should-not-send" }));
+    const env = makeEnv({
+      EMAIL_SENDING_DOMAIN: "mail.example.com",
+      EMAIL: { send } as never,
+      AGENTMAIL_API_KEY: "agentmail-key",
+      PLATFORM_DB: {
+        prepare: () => ({ bind: () => ({ first: async () => null }) }),
+      } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const res = await post("/internal/business-email/send", {
+      spaceId: "s1", tenantId: TENANT, to: "customer@example.net",
+    }, env, { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("blocks task-correlated reply email in air-gapped Spaces before calling notifications", async () => {
