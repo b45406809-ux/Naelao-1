@@ -1357,7 +1357,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/channel-inbound-immediate-drain.test.ts`
 - [ ] `tests/unit/channel-inbound-no-anthropic-key.test.ts`
 - [ ] `tests/unit/channel-outbound-delivery.test.ts`
-- [ ] `tests/unit/channel-pairing.test.ts`
+- [x] `tests/unit/channel-pairing.test.ts`
 - [ ] `tests/unit/channel-replay-dedup-drain.test.ts`
 - [ ] `tests/unit/channels-routing-key-tenant-guard.test.ts`
 - [x] `tests/unit/chat-uploads.test.ts`
@@ -1686,7 +1686,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/channel-extension-source-validation.test.ts`
 - [ ] `workers/agents/src/channel-external-quota.ts`
 - [ ] `workers/agents/src/env.ts`
-- [ ] `workers/agents/src/extension-provider-auth.test.ts`
+- [x] `workers/agents/src/extension-provider-auth.test.ts`
 - [ ] `workers/agents/src/index.ts`
 - [ ] `workers/agents/src/model-policy.test.ts`
 - [ ] `workers/agents/src/model-policy.ts`

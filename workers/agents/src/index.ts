@@ -78,6 +78,7 @@ import { downloadTwilioWhatsAppAttachments, downloadWhatsAppAttachments, hasWhat
 import { downloadTelegramAttachments, hasTelegramMedia } from "./launchpad/telegram-media.js";
 import { downloadSlackAttachments, hasSlackFiles } from "./launchpad/slack-media.js";
 import { downloadDiscordAttachments, hasDiscordAttachments } from "./launchpad/discord-media.js";
+import { readBoundedProviderJson } from "./launchpad/bounded-provider-json.js";
 import { storeChannelAttachments } from "./channels/channel-attachment-store.js";
 import { indexChatUploads } from "./channels/chat-upload-attachments.js";
 import { resolveChatUploadScope } from "./channels/chat-upload-scope.js";
@@ -4468,6 +4469,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   const { userId, role: callerRole } = getCallerIdentity(c);
   const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect a provider to an extension");
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
   if (!c.env.SLACK_CLIENT_ID || !c.env.SLACK_CLIENT_SECRET || !c.env.PUBLIC_AGENTS_URL || !c.env.AGENT_CACHE) return c.json({ error_code: "extension_provider_oauth_unavailable" }, 503);
   const body = await c.req.json<{ return_url?: unknown }>().catch(() => ({} as { return_url?: unknown }));
   if (typeof body.return_url !== "string" || !isTrustedConnectorReturnUrl(body.return_url, c.env)) throw badRequest("return_url must use an approved Naelao app origin");
@@ -4490,6 +4492,7 @@ app.get("/extensions/oauth/slack/callback", async c => {
   if (!ticket || ticket.platform !== "extension-slack" || !ticket.extensionConnection) return c.html(pairingPage("This connection link expired or was already used.", "Return to the extension settings and start again."), 400);
   const connection = ticket.extensionConnection;
   const fail = (reason: string) => { const target = new URL(ticket.returnUrl); target.searchParams.set("extension_connection_error", reason); return c.redirect(target.toString(), 302); };
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, ticket.spaceId)) return fail("air_gap_egress_denied");
   if (c.req.query("error")) return fail("authorization_denied");
   const code = c.req.query("code");
   if (!code || !c.env.SLACK_CLIENT_ID || !c.env.SLACK_CLIENT_SECRET || !c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER) return fail("provider_oauth_unavailable");
@@ -4502,7 +4505,7 @@ app.get("/extensions/oauth/slack/callback", async c => {
   try {
     const response = await fetch("https://slack.com/api/oauth.v2.access", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ client_id: c.env.SLACK_CLIENT_ID, client_secret: c.env.SLACK_CLIENT_SECRET, code, redirect_uri: redirectUri }), signal: AbortSignal.timeout(15_000) });
-    const result = await response.json<{ ok?: boolean; error?: string; team?: { id?: string; name?: string }; access_token?: string; scope?: string }>().catch(() => ({} as { ok?: boolean; error?: string; team?: { id?: string; name?: string }; access_token?: string; scope?: string }));
+    const result = await readBoundedProviderJson(response) as { ok?: boolean; error?: string; team?: { id?: string; name?: string }; access_token?: string; scope?: string };
     if (!result.ok || !result.team?.id || !result.access_token) return fail("slack_install_rejected");
     teamId = result.team.id; teamName = result.team.name ?? "Slack workspace"; botToken = result.access_token; scopes = (result.scope ?? "").split(",").filter(Boolean);
   } catch { return fail("slack_token_exchange_failed"); }
@@ -4555,6 +4558,7 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connect
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
   const { role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
   if (!role || !["owner", "admin"].includes(role)) throw forbidden("Only a Space owner or admin may view provider routing targets");
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
   const row = await c.env.PLATFORM_DB.prepare(`SELECT credential_name FROM extension_provider_connections
     WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND provider='slack' AND status='active'`)
     .bind(tenantId, spaceId, projectId, installationId, connectionId).first<{ credential_name: string }>();
@@ -4569,7 +4573,7 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connect
     if (cursor) url.searchParams.set("cursor", cursor);
     try {
       const response = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8_000) });
-      const result = await response.json<{ ok?: boolean; error?: string; channels?: Array<{ id?: string; name?: string; is_member?: boolean; is_private?: boolean }>; response_metadata?: { next_cursor?: string } }>();
+      const result = await readBoundedProviderJson(response) as { ok?: boolean; error?: string; channels?: Array<{ id?: string; name?: string; is_member?: boolean; is_private?: boolean }>; response_metadata?: { next_cursor?: string } };
       if (!result.ok) return c.json({ error_code: result.error === "missing_scope" ? "slack_channel_list_scope_missing" : "slack_channel_list_failed" }, 502);
       for (const item of result.channels ?? []) if (item.id && item.name && item.is_member) channels.push({ id: item.id, name: item.name.slice(0, 120), private: item.is_private === true });
       cursor = result.response_metadata?.next_cursor ?? "";
@@ -4616,6 +4620,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
   const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect a Telegram bot");
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
   if (!c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER) return c.json({ error_code: "telegram_connection_unavailable" }, 503);
   const body = await c.req.json<{ bot_token?: unknown }>().catch(() => ({} as { bot_token?: unknown }));
   const botToken = typeof body.bot_token === "string" ? body.bot_token.trim() : "";
@@ -4628,14 +4633,14 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   let botId = "", username = "";
   try {
     const response = await fetch(`https://api.telegram.org/bot${botToken}/getMe`, { signal: AbortSignal.timeout(8_000) });
-    const result = await response.json<{ ok?: boolean; result?: { id?: number; username?: string } }>();
+    const result = await readBoundedProviderJson(response) as { ok?: boolean; result?: { id?: number; username?: string } };
     if (!result.ok || !result.result?.id) return c.json({ error_code: "telegram_bot_token_rejected" }, 400);
     botId = String(result.result.id); username = result.result.username ?? botId;
   } catch { return c.json({ error_code: "telegram_bot_verification_unavailable" }, 503); }
   const webhookUrl = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/channels/telegram/extensions/${encodeURIComponent(spaceId)}/${encodeURIComponent(installationId)}/${encodeURIComponent(connectionId)}`;
   try {
     const response = await fetch(`https://api.telegram.org/bot${botToken}/getWebhookInfo`, { signal: AbortSignal.timeout(8_000) });
-    const result = await response.json<{ ok?: boolean; result?: { url?: string } }>();
+    const result = await readBoundedProviderJson(response) as { ok?: boolean; result?: { url?: string } };
     if (!result.ok) return c.json({ error_code: "telegram_webhook_status_unavailable" }, 503);
     if (result.result?.url && result.result.url !== webhookUrl) return c.json({ error_code: "telegram_webhook_already_configured" }, 409);
   } catch { return c.json({ error_code: "telegram_webhook_status_unavailable" }, 503); }
@@ -4669,7 +4674,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   try {
     const response = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ url: webhookUrl, secret_token: webhookSecret, allowed_updates: ["message"], drop_pending_updates: false }), signal: AbortSignal.timeout(10_000) });
-    const result = await response.json<{ ok?: boolean; description?: string }>();
+    const result = await readBoundedProviderJson(response) as { ok?: boolean; description?: string };
     if (!result.ok) throw new Error("set_webhook_rejected");
   } catch {
     await c.env.PLATFORM_DB.prepare(`UPDATE extension_provider_connections SET status='error',updated_at=? WHERE tenant_id=? AND space_id=? AND installation_id=? AND connection_id=?`)
@@ -4686,6 +4691,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
   const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect WhatsApp to an extension");
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
   if (!c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER || !c.env.WHATSAPP_APP_ID || !c.env.WHATSAPP_APP_SECRET || !c.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) return c.json({ error_code: "whatsapp_connection_unavailable" }, 503);
   const body = await c.req.json<{ access_token?: unknown; phone_number_id?: unknown }>().catch(() => ({} as { access_token?: unknown; phone_number_id?: unknown }));
   const accessToken = typeof body.access_token === "string" ? body.access_token.trim() : "", phoneNumberId = typeof body.phone_number_id === "string" ? body.phone_number_id.trim() : "";
@@ -4704,19 +4710,19 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
     debugUrl.searchParams.set("input_token", accessToken);
     debugUrl.searchParams.set("access_token", appToken);
     const debugResponse = await fetch(debugUrl, { signal: AbortSignal.timeout(10_000) });
-    const debug = await debugResponse.json<{ data?: { is_valid?: boolean; app_id?: string; scopes?: string[]; expires_at?: number } }>().catch(() => ({} as { data?: { is_valid?: boolean; app_id?: string; scopes?: string[]; expires_at?: number } }));
+    const debug = await readBoundedProviderJson(debugResponse).catch(() => ({} as { data?: { is_valid?: boolean; app_id?: string; scopes?: string[]; expires_at?: number } })) as { data?: { is_valid?: boolean; app_id?: string; scopes?: string[]; expires_at?: number } };
     const data = debug.data;
     if (!debugResponse.ok || data?.is_valid !== true || data.app_id !== c.env.WHATSAPP_APP_ID || (data.expires_at && data.expires_at > 0 && data.expires_at <= Date.now() / 1000)) return c.json({ error_code: "whatsapp_access_token_rejected" }, 400);
     scopes = Array.isArray(data.scopes) ? data.scopes.filter(scope => typeof scope === "string" && ["whatsapp_business_messaging", "whatsapp_business_management"].includes(scope)) : [];
     if (!scopes.includes("whatsapp_business_messaging") || !scopes.includes("whatsapp_business_management")) return c.json({ error_code: "whatsapp_management_and_messaging_scopes_required" }, 400);
     const phoneResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(phoneNumberId)}?fields=id,display_phone_number,verified_name,whatsapp_business_account`, { headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10_000) });
-    const phone = await phoneResponse.json<{ id?: string; display_phone_number?: string; verified_name?: string; whatsapp_business_account?: { id?: string }; error?: { code?: number } }>().catch(() => ({} as { id?: string; display_phone_number?: string; verified_name?: string; whatsapp_business_account?: { id?: string }; error?: { code?: number } }));
+    const phone = await readBoundedProviderJson(phoneResponse).catch(() => ({} as { id?: string; display_phone_number?: string; verified_name?: string; whatsapp_business_account?: { id?: string }; error?: { code?: number } })) as { id?: string; display_phone_number?: string; verified_name?: string; whatsapp_business_account?: { id?: string }; error?: { code?: number } };
     if (!phoneResponse.ok || phone.id !== phoneNumberId) return c.json({ error_code: "whatsapp_phone_number_unavailable" }, 400);
     wabaId = phone.whatsapp_business_account?.id ?? "";
     if (!/^\d{5,32}$/.test(wabaId)) return c.json({ error_code: "whatsapp_business_account_unavailable" }, 400);
     const subscribeResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(wabaId)}/subscribed_apps`, { method: "POST",
       headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10_000) });
-    const subscription = await subscribeResponse.json<{ success?: boolean }>().catch(() => ({} as { success?: boolean }));
+    const subscription = await readBoundedProviderJson(subscribeResponse).catch(() => ({} as { success?: boolean })) as { success?: boolean };
     if (!subscribeResponse.ok || subscription.success !== true) return c.json({ error_code: "whatsapp_webhook_subscription_failed" }, 502);
     accountLabel = `${phone.verified_name ?? "WhatsApp Business"}${phone.display_phone_number ? ` · ${phone.display_phone_number}` : ""}`.slice(0, 120);
   } catch { return c.json({ error_code: "whatsapp_provider_verification_unavailable" }, 503); }
@@ -4758,13 +4764,14 @@ app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/conn
       WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status IN ('active','error','expired')`).bind(now, now, tenantId, spaceId, projectId, installationId, connectionId),
   ]);
   const token = await resolveConnectorCredential(c.env, tenantId, spaceId, row.credential_name);
+  const egressDenied = await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId);
   if (row.provider === "slack") {
-    if (token) {
+    if (token && !egressDenied) {
       try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) }); } catch { /* local revocation remains authoritative */ }
     }
-  } else if (row.provider === "telegram" && token) {
+  } else if (row.provider === "telegram" && token && !egressDenied) {
     try { await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ drop_pending_updates: false }), signal: AbortSignal.timeout(5_000) }); } catch { /* local revocation remains authoritative */ }
-  } else if (row.provider === "whatsapp" && token) {
+  } else if (row.provider === "whatsapp" && token && !egressDenied) {
     let wabaId = "";
     try { const saved = JSON.parse(row.routing_keys_json) as unknown; if (Array.isArray(saved) && typeof saved[0] === "string") wabaId = saved[0]; } catch { /* local revocation remains authoritative */ }
     const activeRows = await c.env.PLATFORM_DB.prepare(`SELECT routing_keys_json FROM extension_provider_connections WHERE provider='whatsapp' AND status='active'`).all<{ routing_keys_json: string }>();
@@ -6049,6 +6056,9 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
         "That connection link has expired or was already used. Generate a new one and try again.");
       return c.json({ ok: true, paired: false });
     }
+    if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, ticket.spaceId)) {
+      return c.json({ ok: true, paired: false, skipped: "air_gapped" });
+    }
     await bindPairedChannel(c.env, ticket, inbound.channel_user_id);
     await replyOnPlatformChannel(c.env, channel, inbound.channel_user_id,
       "Connected. Messages here now reach your business — go ahead and say something.");
@@ -6217,6 +6227,9 @@ app.get("/channels/pair-callback/:channel", async (c) => {
   if (!code) {
     return c.html(pairingPage("Connection cancelled.", "Nothing was changed. You can try again whenever you like."));
   }
+  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, ticket.spaceId)) {
+    return c.html(pairingPage("Connection blocked.", "This Space does not allow network egress."), 403);
+  }
 
   try {
     const install = await exchangeInstall(c.env, channel, code);
@@ -6258,7 +6271,7 @@ async function exchangeInstall(env: AgentsEnv, channel: PairableChannel, code: s
     // Slack answers 200 with ok:false on failure — treating the status alone as success would
     // record a binding for an install that never happened.
     type SlackInstall = { ok?: boolean; error?: string; team?: { id?: string }; access_token?: string; token_type?: string };
-    const json = await resp.json<SlackInstall>().catch(() => ({}) as SlackInstall);
+    const json = await readBoundedProviderJson(resp).catch(() => ({}) as SlackInstall) as SlackInstall;
     if (!json.ok) throw new Error(json.error ?? "Slack rejected the install.");
     const externalId = json.team?.id;
     if (!externalId) return null;
@@ -6276,7 +6289,7 @@ async function exchangeInstall(env: AgentsEnv, channel: PairableChannel, code: s
     signal: AbortSignal.timeout(15_000),
   });
   type DiscordInstall = { guild?: { id?: string }; error_description?: string };
-  const json = await resp.json<DiscordInstall>().catch(() => ({}) as DiscordInstall);
+  const json = await readBoundedProviderJson(resp).catch(() => ({}) as DiscordInstall) as DiscordInstall;
   if (!resp.ok) throw new Error(json.error_description ?? "Discord rejected the install.");
   return json.guild?.id ? { externalId: json.guild.id } : null;
 }
@@ -8160,6 +8173,9 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
         error_code: "not_pairable",
         message: "Email is provisioned automatically — there is nothing to pair.",
       }, 400);
+    }
+    if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) {
+      return c.json({ error_code: "air_gap_egress_denied" }, 403);
     }
     const { status, body: out } = await startPairing(c.env, {
       spaceId, tenantId, channel, projectId: body.project_id, userId,

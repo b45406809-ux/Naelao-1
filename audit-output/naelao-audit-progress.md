@@ -1620,3 +1620,11 @@ Reviewing the other provision path confirmed it already checks active Space stat
 After the email-boundary changes, the full configured package/Worker workspace passed **1,632 tests across 342 files**, the Agents Worker suite passed **697 tests across 152 files**, and the Agents Worker TypeScript check passed. These local tests do not cover live Cloudflare bindings or AgentMail/Svix delivery conditions.
 
 Refreshed the tracked tree and source/config checklist at code commit `92cd6ee4`: **1,981 tracked files, 1,775 source/config files, 404 checked and 1,371 unchecked**. This refresh includes the new AgentMail adapter test and preserves all prior checked rows. The whole-repository review remains substantially incomplete.
+
+## Channel provider air-gap and response-bound pass (2026-10-21)
+
+The extension provider setup paths (Slack OAuth, Slack channel listing, Telegram setup, WhatsApp setup) did not consult Space egress policy before calling provider APIs. The platform Slack/Discord pairing callback and owner pairing-link action also lacked a policy check, and a valid inbound pairing token could bind a channel and send an external confirmation after the Space had become air-gapped. These paths now check policy before provider requests or pairing/binding side effects. Provider disconnect still performs local revocation and skips remote cleanup calls when egress is denied.
+
+The same provider calls used unbounded `response.json()` parsing. Replaced provider metadata parsing in the Slack, Discord, Telegram, and WhatsApp setup/list paths with the shared 256 KiB bounded JSON reader. Air-gap regressions cover extension Slack/Telegram/WhatsApp setup and Slack channel listing, plus pairing start and OAuth callback; existing helper tests stress declared/streamed response ceilings and malformed JSON.
+
+Validation passed: platform channel-pairing tests 27/27, extension provider tests 4/4, Agents Worker TypeScript. The related test files are checked. Full `workers/agents/src/index.ts` review remains open, including deployed provider API contracts, webhook retry behavior, and runtime egress verification.

@@ -32,12 +32,12 @@ class FakeKv {
 }
 
 /** A D1 double that keeps the two tables this flow actually touches. */
-function makeDb() {
+function makeDb(airGapped = false) {
   const pairings = new Map<string, { space_id: string; tenant_id: string; project_id: string | null }>();
   const links: Array<{ space_id: string; channel: string }> = [];
-  const spaces = new Map<string, { tenant_id: string; status: string }>([
-    ["space-a", { tenant_id: "tenant-a", status: "active" }],
-    ["space-b", { tenant_id: "tenant-b", status: "active" }],
+  const spaces = new Map<string, { tenant_id: string; status: string; config_json: string }>([
+    ["space-a", { tenant_id: "tenant-a", status: "active", config_json: airGapped ? '{"compliance":{"airGappedOnly":true}}' : "{}" }],
+    ["space-b", { tenant_id: "tenant-b", status: "active", config_json: airGapped ? '{"compliance":{"airGappedOnly":true}}' : "{}" }],
   ]);
 
   const db = {
@@ -76,8 +76,8 @@ function makeDb() {
   return { db, pairings, links };
 }
 
-function makeEnv(over: Partial<AgentsEnv> = {}) {
-  const { db, pairings, links } = makeDb();
+function makeEnv(over: Partial<AgentsEnv> = {}, airGapped = false) {
+  const { db, pairings, links } = makeDb(airGapped);
   const forwarded: Array<{ url: string; body: unknown }> = [];
   const kv = new FakeKv();
   const env = {
@@ -374,6 +374,17 @@ describe("GET /channels/pair-callback/:channel", () => {
     expect(await res.text()).toMatch(/cancelled/i);
     expect([...pairings.keys()]).toHaveLength(0);
   });
+
+  it("does not exchange an OAuth code or bind a channel after the Space becomes air-gapped", async () => {
+    const { env, kv, pairings } = makeEnv({}, true);
+    const token = await issuePairingToken(kv as unknown as KVNamespace, {
+      spaceId: "space-a", tenantId: "tenant-a", channel: "slack", userId: "u1",
+    });
+    const res = await app.fetch(new Request(`https://agents.naelao.com/channels/pair-callback/slack?state=${token}&code=provider-code`), env as never);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toMatch(/blocked/i);
+    expect(pairings.size).toBe(0);
+  });
 });
 
 describe("POST /spaces/:spaceId/assistant/channels with action:pair", () => {
@@ -418,6 +429,14 @@ describe("POST /spaces/:spaceId/assistant/channels with action:pair", () => {
     const { env, kv } = makeEnv({ TELEGRAM_BOT_USERNAME: undefined });
     const res = await pair(env, "telegram");
     expect(res.status).toBe(503);
+    expect(kv.store.size).toBe(0);
+  });
+
+  it("does not mint pairing links for air-gapped Spaces", async () => {
+    const { env, kv } = makeEnv({}, true);
+    const res = await pair(env, "telegram");
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "air_gap_egress_denied" });
     expect(kv.store.size).toBe(0);
   });
 });
