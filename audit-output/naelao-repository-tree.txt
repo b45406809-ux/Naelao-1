@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1975
-Files with source or executable-configuration extensions: 1769
-Inventory revision: 2026-10-21 audit refresh at e90123e1
+Files: 1976
+Files with source or executable-configuration extensions: 1770
+Inventory revision: 2026-10-21 audit refresh at 638b4b8b
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1502,6 +1502,7 @@ workers/
     package.json
     PDFJS-APACHE-2.0.txt
     src/
+      agent-run-session-scope.test.ts
       agent-templates.test.ts
       agent-templates.ts
       batch09-foundations.test.ts
