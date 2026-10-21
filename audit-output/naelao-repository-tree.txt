@@ -7,7 +7,6 @@ Inventory revision: 2026-10-21 audit refresh at e88aa8d7
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
-.gitattributes
 .github/
   workflows/
     apply-gemini-batch.yml
@@ -19,49 +18,7 @@ Empty directories are not represented because Git does not track them.
     implement-full-plan.yml
     manual-cmd.yml
     pr-checks.yml
-.gitignore
-.nvmrc
-AGENTS.md
-CLAUDE.md
-NAELAO_BUILD_PROMPT.md
-NAELAO_FILE_TREE.md
 _BUILD_PLAN/
-  184 - 186 And.txt
-  187 - 189.txt
-  190 - 192 We.txt
-  193 - 195 No.txt
-  196 - 198 what.txt
-  199 - 201 What.txt
-  202 - 204 Now.txt
-  208 - 210 And.txt
-  211 - 213 What.txt
-  215 - 219 With.txt
-  220 - 222 I.txt
-  223 - 225.txt
-  231 This is a.txt
-  234 ### Axis.txt
-  235 - 240 Mini.txt
-  241 - 243 I.txt
-  244 - 245.txt
-  247 - 249 Plus.txt
-  250 - 252 What.txt
-  265 - 270 What.txt
-  271 - 276.txt
-  283 - 285 So a.txt
-  286 - 288 Plus.txt
-  292 - 294 Just.txt
-  295 - 297 In.txt
-  298 - 300 For.txt
-  301 - 303 What.txt
-  304 - 309 What.txt
-  310 - Should.txt
-  316 - 318 But.txt
-  319 - 320 What.txt
-  AVOS Master Architectural Blueprint 1.json
-  FILE_TREE.md
-  NEXT_GAP_PASS_PROMPT.md
-  avos1.json
-  plan.md
   prompts/
     01_config.md
     02_shared_types.md
@@ -102,13 +59,44 @@ _BUILD_PLAN/
     26_naelao_portal_router.md
     27_naelao_artifact.md
     28_wrangler_configs.md
-ai_studio_code (2).sh
-ai_studio_code.sh
+  184 - 186 And.txt
+  187 - 189.txt
+  190 - 192 We.txt
+  193 - 195 No.txt
+  196 - 198 what.txt
+  199 - 201 What.txt
+  202 - 204 Now.txt
+  208 - 210 And.txt
+  211 - 213 What.txt
+  215 - 219 With.txt
+  220 - 222 I.txt
+  223 - 225.txt
+  231 This is a.txt
+  234 ### Axis.txt
+  235 - 240 Mini.txt
+  241 - 243 I.txt
+  244 - 245.txt
+  247 - 249 Plus.txt
+  250 - 252 What.txt
+  265 - 270 What.txt
+  271 - 276.txt
+  283 - 285 So a.txt
+  286 - 288 Plus.txt
+  292 - 294 Just.txt
+  295 - 297 In.txt
+  298 - 300 For.txt
+  301 - 303 What.txt
+  304 - 309 What.txt
+  310 - Should.txt
+  316 - 318 But.txt
+  319 - 320 What.txt
+  AVOS Master Architectural Blueprint 1.json
+  FILE_TREE.md
+  NEXT_GAP_PASS_PROMPT.md
+  avos1.json
+  plan.md
 apps/
   dashboard/
-    next.config.mjs
-    package.json
-    postcss.config.js
     src/
       app/
         catalog/
@@ -118,11 +106,8 @@ apps/
             page.tsx
           clients/
             page.tsx
-          layout.tsx
-          page.tsx
           products/
             [productId]/
-              OnboardingChecklist.tsx
               activity/
                 page.tsx
               agents/
@@ -140,21 +125,21 @@ apps/
                 page.tsx
               feature-flags/
                 page.tsx
-              layout.tsx
               legal/
                 page.tsx
               local-machine/
                 page.tsx
-              page.tsx
               pricing/
                 page.tsx
-              productContext.tsx
               users/
                 page.tsx
               wallet/
                 page.tsx
-            new/
+              OnboardingChecklist.tsx
+              layout.tsx
               page.tsx
+              productContext.tsx
+            new/
               steps/
                 AuthConfigStep.tsx
                 DomainStep.tsx
@@ -162,6 +147,7 @@ apps/
                 PricingStep.tsx
                 ReviewStep.tsx
                 SpaceTypeStep.tsx
+              page.tsx
               wizardTypes.ts
             page.tsx
           settings/
@@ -185,13 +171,15 @@ apps/
               webhooks/
                 page.tsx
             page.tsx
-        globals.css
-        layout.tsx
+          layout.tsx
+          page.tsx
         login/
           page.tsx
-        page.tsx
         reset-password/
           page.tsx
+        globals.css
+        layout.tsx
+        page.tsx
       components/
         ByokKeysPanel.tsx
         ConfirmByTypingDialog.tsx
@@ -201,34 +189,34 @@ apps/
         auth.ts
         product-url.ts
         temples.ts
+    next.config.mjs
+    package.json
+    postcss.config.js
     tailwind.config.ts
     tsconfig.json
   launchpad/
     src/
       index.html
   marketplace-web/
-    next.config.mjs
-    package.json
-    postcss.config.js
     src/
       app/
         categories/
           [category]/
             page.tsx
-        globals.css
-        layout.tsx
         listing/
           [id]/
             page.tsx
+        globals.css
+        layout.tsx
         page.tsx
       lib/
         api.ts
-    tailwind.config.ts
-    tsconfig.json
-  portal/
     next.config.mjs
     package.json
     postcss.config.js
+    tailwind.config.ts
+    tsconfig.json
+  portal/
     src/
       app/
         [spaceId]/
@@ -241,12 +229,12 @@ apps/
         embed/
           [spaceId]/
             page.tsx
-        globals.css
         launch/
           page.tsx
-        layout.tsx
         login/
           page.tsx
+        globals.css
+        layout.tsx
         page.tsx
       lib/
         account.ts
@@ -254,12 +242,13 @@ apps/
         i18n.ts
         productAccount.ts
         session.ts
+    next.config.mjs
+    package.json
+    postcss.config.js
     tailwind.config.ts
     tsconfig.json
     wrangler.toml
   shell/
-    next.config.mjs
-    package.json
     public/
       sw.js
     src/
@@ -268,8 +257,6 @@ apps/
           naelao/
             [...path]/
               route.ts
-        globals.css
-        layout.tsx
         p/
           [slug]/
             (shell)/
@@ -293,20 +280,18 @@ apps/
                 page.tsx
               knowledge/
                 page.tsx
-              layout.tsx
               new/
                 page.tsx
               notifications/
                 page.tsx
-              page.tsx
               plugins/
                 page.tsx
               projects/
                 [projectId]/
-                  page.tsx
                   threads/
                     [threadId]/
                       page.tsx
+                  page.tsx
                 all/
                   page.tsx
                 page.tsx
@@ -334,16 +319,29 @@ apps/
                 page.tsx
               workflows/
                 page.tsx
-            layout.tsx
+              layout.tsx
+              page.tsx
             login/
               page.tsx
             signup/
               page.tsx
             verify-email/
               page.tsx
+            layout.tsx
           error.tsx
+        globals.css
+        layout.tsx
         page.tsx
       components/
+        viewports/
+          ContainerTerminalCanvas.tsx
+          DocumentRedlineCanvas.tsx
+          DomainCanvases.tsx
+          MicroAppCanvas.tsx
+          SpreadsheetFormulaGrid.tsx
+          VirtualDesktopGuiCanvas.tsx
+        widgets/
+          GeneratedWidget.tsx
         ActivityFeed.tsx
         AgentPolicyPanel.tsx
         AppCard.tsx
@@ -390,15 +388,6 @@ apps/
         TerminalStreamBlock.tsx
         UpgradeDialog.tsx
         WorkflowPlanComposer.tsx
-        viewports/
-          ContainerTerminalCanvas.tsx
-          DocumentRedlineCanvas.tsx
-          DomainCanvases.tsx
-          MicroAppCanvas.tsx
-          SpreadsheetFormulaGrid.tsx
-          VirtualDesktopGuiCanvas.tsx
-        widgets/
-          GeneratedWidget.tsx
       lib/
         active-space-context.tsx
         api.ts
@@ -416,20 +405,22 @@ apps/
         user-facing-errors.ts
       types/
         mammoth-browser.d.ts
+    next.config.mjs
+    package.json
     tsconfig.json
   widget/
-    package.json
     src/
       naelao-chat.ts
+    package.json
     tsconfig.json
 audit-output/
   naelao-audit-progress.md
   naelao-file-by-file-stress-audit-plan.md
   naelao-platform-surface-inventory.md
   naelao-repository-tree.txt
-biome.json
-create_patch.js
 docs/
+  spec-appendix/
+    A1-script-agents-and-space-assistants.md
   AUDIT_2026-07-11_reaudit_blueprint.md
   AUDIT_TODO.md
   AVOS_COWORK_ARCHITECTURE_AUDIT.md
@@ -461,8 +452,6 @@ docs/
   requirements-trace-matrix.md
   runtime-discovery-and-installation.md
   space-data-retention-and-backup.md
-  spec-appendix/
-    A1-script-agents-and-space-assistants.md
   specialized-runtime-workspaces.md
   staging-smoke-test.md
   task-scoped-email-replies.md
@@ -479,7 +468,6 @@ infra/
   deployment/
     eu-residency-manifest.example.json
     unit-economics-input.example.json
-  gen-spec-index.py
   migrations/
     0001_users.sql
     0002_orgs.sql
@@ -632,8 +620,7 @@ infra/
     providers.tf
     terraform.tfvars.example
     variables.tf
-naelao_expanded_gaps_resolved.html
-naelao_whop_businesses_spec.html
+  gen-spec-index.py
 new plan/
   ATTACHMENT-MULTIMODAL-IMPLEMENTATION-PLAN.md
   CLOUD-PROGRESS.md
@@ -657,7 +644,6 @@ new plan/
   Tokenizers vs. Embedding Models Explained.messages.txt
   extract_ai_studio_messages.py
   test_extract_ai_studio_messages.py
-package.json
 packages/
   agent-sdk/
     examples/
@@ -667,8 +653,13 @@ packages/
         manifest.json
         place-order.ts
         student-answer.ts
-    package.json
     src/
+      dogfood-extensions/
+        index.test.ts
+        index.ts
+      templates/
+        dev-foundry.test.ts
+        dev-foundry.ts
       artifact-client.test.ts
       artifact-client.ts
       artifact-linters.test.ts
@@ -693,9 +684,6 @@ packages/
       document-node.ts
       document-processing.test.ts
       document-processing.ts
-      dogfood-extensions/
-        index.test.ts
-        index.ts
       extension-publisher-signatures.test.ts
       extension-publisher-signatures.ts
       extensions.test.ts
@@ -722,9 +710,6 @@ packages/
       scratchpad.ts
       subagent-context.test.ts
       subagent-context.ts
-      templates/
-        dev-foundry.test.ts
-        dev-foundry.ts
       token-accounting.test.ts
       token-accounting.ts
       tunnel-protocol.ts
@@ -734,25 +719,35 @@ packages/
       workflow-taxonomy.test.ts
       workflow-taxonomy.ts
       write-guard-sentry.test.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   analytics-schema/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
   auth/
-    package.json
     src/
       index.ts
       jwt.ts
       rbac.test.ts
       rbac.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   billing-core/
-    package.json
     src/
+      providers/
+        index.ts
+        lemon-squeezy.test.ts
+        lemon-squeezy.ts
+        types.ts
+        whop-oauth-checkout.test.ts
+        whop-oauth-checkout.ts
+        whop-platform-plan.ts
+        whop-provider-boundaries.test.ts
+        whop.ts
       credits.test.ts
       credits.ts
       effort.ts
@@ -767,21 +762,10 @@ packages/
       plans.ts
       price-floor.test.ts
       price-floor.ts
-      providers/
-        index.ts
-        lemon-squeezy.test.ts
-        lemon-squeezy.ts
-        types.ts
-        whop-oauth-checkout.test.ts
-        whop-oauth-checkout.ts
-        whop-platform-plan.ts
-        whop-provider-boundaries.test.ts
-        whop.ts
       reseller.ts
+    package.json
     tsconfig.json
   bridge/
-    README.md
-    package.json
     services/
       com.naelao.bridge.plist
       naelao-bridge.service
@@ -792,49 +776,50 @@ packages/
       runtime.mjs
     test/
       model-discovery.test.mjs
+    README.md
+    package.json
     tsconfig.json
   client-sdk/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
   config/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
   crypto/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   db/
-    package.json
     src/
       index.ts
       migrate.test.ts
       migrate.ts
       sql.test.ts
       sql.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   entitlements/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
   events/
-    package.json
     src/
       business-feature-kinds.ts
       failure-classification.ts
       index.ts
+    package.json
     tsconfig.json
   http/
-    package.json
     src/
       bounded-response.test.ts
       bounded-response.ts
@@ -854,40 +839,40 @@ packages/
       pagination.ts
       realtime.test.ts
       realtime.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   idempotency/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   llm-gateway/
-    package.json
     src/
       gateway.test.ts
       gateway.ts
       index.ts
       types.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   logger/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   moderation/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   rag/
-    package.json
     src/
       batch05-permissions.test.ts
       batch05-phase2.test.ts
@@ -901,10 +886,10 @@ packages/
       index.ts
       semantic-cache.ts
       vectorize.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   sdk/
-    package.json
     src/
       canvas.test.ts
       canvas.ts
@@ -914,10 +899,10 @@ packages/
       testing.ts
       workflow.test.ts
       workflow.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   security/
-    package.json
     src/
       air-gap.test.ts
       air-gap.ts
@@ -960,37 +945,37 @@ packages/
       waf.ts
       write-guard-stress.test.ts
       write-guard.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   testing/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   tool-runtime/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   tracing/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     vitest.config.ts
   types/
-    package.json
     src/
       index.ts
       scheduled-quiet-hours.test.ts
+    package.json
     tsconfig.json
   ui/
-    package.json
     src/
       components/
         Avatar.tsx
@@ -1012,9 +997,9 @@ packages/
       styles.css
       tokens.css
       useTheme.ts
+    package.json
     tsconfig.json
   webhooks/
-    package.json
     src/
       index.test.ts
       index.ts
@@ -1026,15 +1011,34 @@ packages/
       replay-lake.ts
       schema-repair.test.ts
       schema-repair.ts
+    package.json
     tsconfig.json
     vitest.config.ts
 patches/
   @eshaz__web-worker@1.2.2.patch
-pnpm-lock.yaml
-pnpm-workspace.yaml
-project_tree.md
-prompts.xml
 repomix/
+  outputs/
+    batch-01-context.xml
+    batch-02-context.xml
+  patches/
+    README.md
+    batch-01.patch
+  prompts/
+    Update the batches.md
+    Updates2.md
+    batch-01-items-1-19.md
+    batch-02-items-20-24.md
+    batch-03-items-25-38.md
+    batch-04-items-39-46.md
+    batch-05-items-47-54.md
+    batch-06-items-55-60.md
+    batch-07-items-61-70.md
+    batch-08-items-71-75.md
+    batch-09-items-76-87.md
+    batch-10-items-88-103.md
+    batch-11-items-104-111.md
+    batch-12-items-112-119.md
+    batch-13-items-120-130.md
   IMPLEMENTATION_PLAN.md
   README.md
   Update the batches.md
@@ -1054,34 +1058,8 @@ repomix/
   batch-12-billing-export.json
   batch-13-marketplace-distribution.json
   build-prompts.mjs
-  outputs/
-    batch-01-context.xml
-    batch-02-context.xml
-  patches/
-    README.md
-    batch-01.patch
   prepare-authority-context.mjs
-  prompts/
-    Update the batches.md
-    Updates2.md
-    batch-01-items-1-19.md
-    batch-02-items-20-24.md
-    batch-03-items-25-38.md
-    batch-04-items-39-46.md
-    batch-05-items-47-54.md
-    batch-06-items-55-60.md
-    batch-07-items-61-70.md
-    batch-08-items-71-75.md
-    batch-09-items-76-87.md
-    batch-10-items-88-103.md
-    batch-11-items-104-111.md
-    batch-12-items-112-119.md
-    batch-13-items-120-130.md
   verify-configs.mjs
-repomix-output.xml
-repomix.shell.config.json
-run-phase (1).mjs
-run-phase.mjs
 scripts/
   codex-goals.sh
   plan-syntax-check.cjs
@@ -1103,8 +1081,12 @@ tests/
   load/
     README.md
     platform-health.js
-  package.json
   plan/
+    browser/
+      01-shell.spec.ts
+    support/
+      browser-fixtures.mjs
+      runtime.ts
     01-baseline.test.ts
     02-contracts.test.ts
     03-tenancy.test.ts
@@ -1120,18 +1102,36 @@ tests/
     13-browser-runtime.test.ts
     14-containers.test.ts
     15-tunnel-mesh.test.ts
-    browser/
-      01-shell.spec.ts
-    support/
-      browser-fixtures.mjs
-      runtime.ts
-  playwright.plan.config.ts
   stubs/
     agents-voice.ts
     agents.ts
     cloudflare-workers.ts
     d1-sqlite.ts
   unit/
+    helpers/
+      active-tenant-db.ts
+      fake-do-namespace.ts
+      r2-bucket.ts
+      sqlite-do-shim.ts
+    packages/
+      analytics-schema.test.ts
+      auth.test.ts
+      billing-core.test.ts
+      crypto.test.ts
+      entitlements.test.ts
+      events-cron.test.ts
+      events.test.ts
+      http-internal-hmac.test.ts
+      idempotency.test.ts
+      llm-gateway-native-web-search.test.ts
+      llm-gateway.test.ts
+      mentions.test.ts
+      model-benchmarks-and-effort.test.ts
+      moderation.test.ts
+      rag.test.ts
+      realtime-broadcast.test.ts
+      security.test.ts
+      webhooks.test.ts
     action-ledger.test.ts
     admin-worker-schema.test.ts
     agent-api-keys.test.ts
@@ -1256,11 +1256,6 @@ tests/
     gemini-provider-routing.test.ts
     grounded-search-contract.test.ts
     handlescriptrun-spend-cap.test.ts
-    helpers/
-      active-tenant-db.ts
-      fake-do-namespace.ts
-      r2-bucket.ts
-      sqlite-do-shim.ts
     hitl-approval-consume.test.ts
     implicit-signals.test.ts
     infra-usage-metering.test.ts
@@ -1325,25 +1320,6 @@ tests/
     onboarding-business-membership.test.ts
     onboarding-oauth-availability.test.ts
     owner-voice-ticket-route.test.ts
-    packages/
-      analytics-schema.test.ts
-      auth.test.ts
-      billing-core.test.ts
-      crypto.test.ts
-      entitlements.test.ts
-      events-cron.test.ts
-      events.test.ts
-      http-internal-hmac.test.ts
-      idempotency.test.ts
-      llm-gateway-native-web-search.test.ts
-      llm-gateway.test.ts
-      mentions.test.ts
-      model-benchmarks-and-effort.test.ts
-      moderation.test.ts
-      rag.test.ts
-      realtime-broadcast.test.ts
-      security.test.ts
-      webhooks.test.ts
     parse-bounded-integer.test.ts
     personal-plan-whop-checkout.test.ts
     phase-runner-safety.test.ts
@@ -1480,31 +1456,21 @@ tests/
     workspace-scoping.test.ts
     wrangler-binding-parity.test.ts
     wrangler-vars-parity.test.ts
+  package.json
+  playwright.plan.config.ts
   vitest.config.ts
   vitest.plan.config.ts
-tsconfig.base.json
-turbo.json
-vitest.workspace.ts
 work/
   refresh_naelao_inventory.py
 workers/
   admin/
-    package.json
     src/
       index.ts
       queue.test.ts
+    package.json
     tsconfig.json
     wrangler.toml
   agents/
-    CLOUDFLARE-VOICE-TWILIO-MIT.txt
-    Dockerfile.documents
-    Dockerfile.media
-    Dockerfile.toolsandbox
-    FFLATE-MIT.txt
-    PDFJS-APACHE-2.0.txt
-    THIRD-PARTY-NOTICES.md
-    TWILIO-MIT.txt
-    UNPDF-MIT.txt
     container/
       artifact-fs.mjs
       artifact-fs.test.mjs
@@ -1517,18 +1483,10 @@ workers/
     local-agent/
       README.md
       naelao-local-agent.mjs
-    package.json
     src/
-      agent-run-session-scope.test.ts
-      agent-templates.test.ts
-      agent-templates.ts
-      batch09-foundations.test.ts
-      batch10-workflows.test.ts
-      batch11-phase2.test.ts
-      channel-extension-session-route.test.ts
-      channel-extension-source-validation.test.ts
-      channel-external-quota.ts
       channels/
+        fixtures/
+          encrypted-email.pdf
         agentmail.test.ts
         agentmail.ts
         attachment-copy-route.test.ts
@@ -1556,8 +1514,6 @@ workers/
         email-pdf.test.ts
         email-pdf.ts
         executive-channel.ts
-        fixtures/
-          encrypted-email.pdf
         foundry-command.test.ts
         foundry-command.ts
         session-queue.test.ts
@@ -1604,9 +1560,6 @@ workers/
         specialized-workspaces.test.ts
         usage-event-outbox.test.ts
         usage-event-outbox.ts
-      env.ts
-      extension-provider-auth.test.ts
-      index.ts
       launchpad/
         autonomy-policy.test.ts
         autonomy-policy.ts
@@ -1637,74 +1590,15 @@ workers/
         attachment-capabilities.ts
         modality-task.test.ts
         modality-task.ts
-      model-policy.test.ts
-      model-policy.ts
-      project-steward-dispatch.ts
-      prompt-injection-quarantine.test.ts
-      pull-request-review.test.ts
-      reconciliation-b2.test.ts
-      request-body-boundaries.test.ts
-      safety.ts
-      scheduled-air-gap.test.ts
-      scheduled-job-dispatch.test.ts
-      scheduled-job-dispatch.ts
       script-engine/
-        agent-archetypes.ts
-        agent-config.test.ts
-        agent-config.ts
-        agent-firewall.ts
-        agent-topology.ts
-        assistant-access.ts
-        batch04-kernel.test.ts
-        batch04-phase2-memory.test.ts
-        browser-perception.test.ts
-        browser-perception.ts
-        code-rpc-broker.ts
-        code-runner.ts
-        container-catalogue.ts
-        container-policy.test.ts
-        container-policy.ts
-        conversation-context.ts
-        customer-triage.test.ts
-        customer-triage.ts
         daemons/
           daemon-mcp.test.ts
           daemon-mcp.ts
           daemons.test.ts
           durable-daemon.ts
           tree-sitter-indexer.ts
-        delegation-contract.test.ts
-        delegation-contract.ts
-        delegation.test.ts
-        deliberation-state.test.ts
-        deliberation-state.ts
-        distill.test.ts
-        distill.ts
-        dynamic-code.test.ts
-        dynamic-code.ts
-        execution-ladder.test.ts
-        execution-ladder.ts
-        federation.ts
-        fingerprint.ts
-        goal-dag.test.ts
-        goal-dag.ts
-        index.ts
-        isolated-runtime.ts
-        loop-budget.ts
-        loop-evaluator.test.ts
-        loop-evaluator.ts
-        loop.ts
         memory/
           gate-memory.ts
-        memory-os.ts
-        mention-router.ts
-        observe.ts
-        package-egress.test.ts
-        package-egress.ts
-        perception.test.ts
-        perception.ts
-        phase4-security.test.ts
-        planner-first.ts
         prebuilt/
           approvals.ts
           artifacts.ts
@@ -1778,6 +1672,54 @@ workers/
           wiki.ts
           workspace-admin.ts
           workspace.ts
+        agent-archetypes.ts
+        agent-config.test.ts
+        agent-config.ts
+        agent-firewall.ts
+        agent-topology.ts
+        assistant-access.ts
+        batch04-kernel.test.ts
+        batch04-phase2-memory.test.ts
+        browser-perception.test.ts
+        browser-perception.ts
+        code-rpc-broker.ts
+        code-runner.ts
+        container-catalogue.ts
+        container-policy.test.ts
+        container-policy.ts
+        conversation-context.ts
+        customer-triage.test.ts
+        customer-triage.ts
+        delegation-contract.test.ts
+        delegation-contract.ts
+        delegation.test.ts
+        deliberation-state.test.ts
+        deliberation-state.ts
+        distill.test.ts
+        distill.ts
+        dynamic-code.test.ts
+        dynamic-code.ts
+        execution-ladder.test.ts
+        execution-ladder.ts
+        federation.ts
+        fingerprint.ts
+        goal-dag.test.ts
+        goal-dag.ts
+        index.ts
+        isolated-runtime.ts
+        loop-budget.ts
+        loop-evaluator.test.ts
+        loop-evaluator.ts
+        loop.ts
+        memory-os.ts
+        mention-router.ts
+        observe.ts
+        package-egress.test.ts
+        package-egress.ts
+        perception.test.ts
+        perception.ts
+        phase4-security.test.ts
+        planner-first.ts
         profiles.ts
         project-journal-hibernation.test.ts
         project-journal.ts
@@ -1897,22 +1839,54 @@ workers/
         workflow-orchestration.ts
         workflow-state.test.ts
         workflow-state.ts
+      agent-run-session-scope.test.ts
+      agent-templates.test.ts
+      agent-templates.ts
+      batch09-foundations.test.ts
+      batch10-workflows.test.ts
+      batch11-phase2.test.ts
+      channel-extension-session-route.test.ts
+      channel-extension-source-validation.test.ts
+      channel-external-quota.ts
+      env.ts
+      extension-provider-auth.test.ts
+      index.ts
+      model-policy.test.ts
+      model-policy.ts
+      project-steward-dispatch.ts
+      prompt-injection-quarantine.test.ts
+      pull-request-review.test.ts
+      reconciliation-b2.test.ts
+      request-body-boundaries.test.ts
+      safety.ts
+      scheduled-air-gap.test.ts
+      scheduled-job-dispatch.test.ts
+      scheduled-job-dispatch.ts
+    CLOUDFLARE-VOICE-TWILIO-MIT.txt
+    Dockerfile.documents
+    Dockerfile.media
+    Dockerfile.toolsandbox
+    FFLATE-MIT.txt
+    PDFJS-APACHE-2.0.txt
+    THIRD-PARTY-NOTICES.md
+    TWILIO-MIT.txt
+    UNPDF-MIT.txt
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   analytics/
-    package.json
     src/
       events.ts
       index.ts
       query.test.ts
       query.ts
       queue.test.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   artifact/
-    package.json
     src/
       RepositoryDO-boundaries.test.ts
       RepositoryDO.ts
@@ -1922,25 +1896,25 @@ workers/
       repository.test.ts
       repository.ts
       request-body-boundaries.test.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   assistant/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   auth/
-    package.json
     src/
       health.test.ts
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   billing/
-    package.json
     src/
       index.ts
       lemon-squeezy.ts
@@ -1958,63 +1932,63 @@ workers/
       wallet-checkout.ts
       whop-oauth-billing.ts
       whop-wallet.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   browser/
-    package.json
     src/
       BrowserSessionDO-boundaries.test.ts
       BrowserSessionDO.test.ts
       BrowserSessionDO.ts
       browser-session-state.ts
       index.ts
+    package.json
     tsconfig.json
     wrangler.local.toml
     wrangler.toml
   channels/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   connector-gumroad/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   connector-whop/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   credentials/
-    package.json
     src/
       air-gap.test.ts
       index.ts
       outbound-auth.test.ts
       request-body-boundaries.test.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   eval/
-    package.json
     src/
       index.ts
       trace-checks.ts
+    package.json
     tsconfig.json
     wrangler.toml
   feedback/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   knowledge/
-    package.json
     src/
       air-gap.test.ts
       document-lifecycle.test.ts
@@ -2030,17 +2004,17 @@ workers/
       storage-usage.test.ts
       storage-usage.ts
       web-fetch.test.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   marketplace/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   mcp-hub/
-    package.json
     src/
       air-gap.test.ts
       composio.test.ts
@@ -2051,16 +2025,16 @@ workers/
       pipedream.ts
       tenant-space-boundary.test.ts
       upstream-response-boundaries.test.ts
+    package.json
     tsconfig.json
     wrangler.toml
   mini-agi/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   notifications/
-    package.json
     src/
       air-gap.test.ts
       index.ts
@@ -2069,17 +2043,17 @@ workers/
       web-push.test.ts
       web-push.ts
       webhook-egress.test.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   portal-router/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   provisioner/
-    package.json
     src/
       index.ts
       manifest-contract.test.ts
@@ -2091,12 +2065,19 @@ workers/
       queue-message-handler.test.ts
       queue-message-handler.ts
       tenant-suspension.test.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   router/
-    package.json
     src/
+      routes/
+        bounded-ingress.test.ts
+        bounded-request-body.ts
+        ogg-opus.test.ts
+        ogg-opus.ts
+        transcribe.test.ts
+        transcribe.ts
       RateLimitDO-boundaries.test.ts
       RateLimitDO.ts
       customer-voice-routing.test.ts
@@ -2106,49 +2087,28 @@ workers/
       index.ts
       preferred-language.test.ts
       preferred-language.ts
-      routes/
-        bounded-ingress.test.ts
-        bounded-request-body.ts
-        ogg-opus.test.ts
-        ogg-opus.ts
-        transcribe.test.ts
-        transcribe.ts
       tenant-status.test.ts
       tenant-status.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   search/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   security-gateway/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   spaces/
-    package.json
     src/
-      BlueprintConformanceWorkflow.ts
-      builder-routes.ts
-      business-auth.ts
-      business-create.test.ts
-      business-create.ts
-      business-routes.test.ts
-      business-routes.ts
-      business-services.test.ts
-      cf-saas.test.ts
-      cf-saas.ts
-      conformance-state.test.ts
-      conformance-state.ts
-      create-space.ts
-      customer-voice-bridge.test.ts
       do/
         BuilderAccountDO.ts
         FeatureFlagDO.test.ts
@@ -2190,6 +2150,39 @@ workers/
         space-do-request-boundaries.test.ts
         space-retention.test.ts
         space-retention.ts
+      routes/
+        channel-extensions.test.ts
+        desk-drop.ts
+        dynamic-pages.test.ts
+        dynamic-pages.ts
+        extension-gadget.test.ts
+        extension-gadget.ts
+        gadget-mcp.test.ts
+        gadget-mcp.ts
+        graduation.ts
+        market-radar.test.ts
+        market-radar.ts
+        marketplace.test.ts
+        marketplace.ts
+        mcp.test.ts
+        mcp.ts
+        project-subspaces.test.ts
+        recipes.test.ts
+        recipes.ts
+      BlueprintConformanceWorkflow.ts
+      builder-routes.ts
+      business-auth.ts
+      business-create.test.ts
+      business-create.ts
+      business-routes.test.ts
+      business-routes.ts
+      business-services.test.ts
+      cf-saas.test.ts
+      cf-saas.ts
+      conformance-state.test.ts
+      conformance-state.ts
+      create-space.ts
+      customer-voice-bridge.test.ts
       domain-glossary-routes.test.ts
       domain-glossary.test.ts
       domain-glossary.ts
@@ -2215,25 +2208,6 @@ workers/
       project-steward.ts
       remediation-pass-2.test.ts
       request-body-boundaries.test.ts
-      routes/
-        channel-extensions.test.ts
-        desk-drop.ts
-        dynamic-pages.test.ts
-        dynamic-pages.ts
-        extension-gadget.test.ts
-        extension-gadget.ts
-        gadget-mcp.test.ts
-        gadget-mcp.ts
-        graduation.ts
-        market-radar.test.ts
-        market-radar.ts
-        marketplace.test.ts
-        marketplace.ts
-        mcp.test.ts
-        mcp.ts
-        project-subspaces.test.ts
-        recipes.test.ts
-        recipes.ts
       space-hierarchy-policy.test.ts
       state-delta-conformance.ts
       task-coordination.test.ts
@@ -2243,51 +2217,47 @@ workers/
       thread-hierarchy.test.ts
       webhook-defense.test.ts
       workflow-plan-authoring.test.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   sweeper/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     vitest.config.ts
     wrangler.toml
   synthetics/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   threads/
-    package.json
     src/
       index.test.ts
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   together-ai/
-    package.json
     src/
       bounded-response.test.ts
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   triggers/
-    package.json
     src/
       index.ts
+    package.json
     tsconfig.json
     wrangler.toml
   workflows/
-    package.json
     src/
-      env.ts
-      index.ts
-      queue-consumer.test.ts
-      queue-consumer.ts
       workflows/
         DataErasureWorkflow.ts
         DunningWorkflow.ts
@@ -2298,10 +2268,14 @@ workers/
         erasure-cleanup.ts
         space-provisioning-state.test.ts
         space-provisioning-state.ts
+      env.ts
+      index.ts
+      queue-consumer.test.ts
+      queue-consumer.ts
+    package.json
     tsconfig.json
     wrangler.toml
   ws-gateway/
-    package.json
     src/
       index.ts
       node-lease-gate.test.ts
@@ -2309,5 +2283,31 @@ workers/
       session-meta.test.ts
       session-meta.ts
       ui-action-delegation.test.ts
+    package.json
     tsconfig.json
     wrangler.toml
+.gitattributes
+.gitignore
+.nvmrc
+AGENTS.md
+CLAUDE.md
+NAELAO_BUILD_PROMPT.md
+NAELAO_FILE_TREE.md
+ai_studio_code (2).sh
+ai_studio_code.sh
+biome.json
+create_patch.js
+naelao_expanded_gaps_resolved.html
+naelao_whop_businesses_spec.html
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+project_tree.md
+prompts.xml
+repomix-output.xml
+repomix.shell.config.json
+run-phase (1).mjs
+run-phase.mjs
+tsconfig.base.json
+turbo.json
+vitest.workspace.ts
