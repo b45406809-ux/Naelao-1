@@ -1596,3 +1596,9 @@ The adjacent video attachment transcription path had the same unbounded sandbox-
 The same review found that audio/video transcription and image description trusted the D1 attachment size without comparing it to the fetched R2 object. Those routes now reject size disagreement before reading, and verify the actual audio buffer length after reading. Image dimensions are validated before reserving the per-Space OCR attempt, so malformed images do not spend the quota. The combined email OCR and attachment transcription suites pass 16/16, with Agents Worker TypeScript passing. The existing PDF.js fixture warning remains. These focused cases do not complete the broader route-file review.
 
 The storage-only attachment copy path also trusted D1 size metadata until after loading the R2 object's full `ArrayBuffer`. It now compares the R2 object size to the authorized D1 row and rejects over-limit objects before reading bytes. Regression coverage proves no byte read or destination write occurs on inconsistent metadata. Copy and transcription suites pass 8/8; Agents Worker TypeScript passes. The attachment-copy route test is checked; the route implementation remains part of the open Agents Worker file review.
+
+## Cloudflare inbound email parser byte ceiling (2026-10-21)
+
+The email worker entrypoint checked Cloudflare's declared `rawSize`, but the reusable MIME parser accepted an unrestricted stream on its own. Added a streaming transform at the parser boundary that rejects input once it crosses the same 20 MiB cap, even if an upstream caller omits or misstates the metadata. The regression feeds repeated 6 MiB chunks and confirms parsing stops and rejects at the ceiling.
+
+Validation passed: parser helper suite 5/5, Cloudflare email handler suite 20/20, and Agents Worker TypeScript. The email parser test file is checked; the parser source and ingress handler remain unchecked pending partial-write cleanup and idempotency review.

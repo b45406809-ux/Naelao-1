@@ -13,9 +13,20 @@ export interface ParsedCloudflareEmail {
   attachments: Array<{ filename: string; mimeType: string; bytes: Uint8Array }>;
 }
 
+function boundedEmailStream(raw: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  let totalBytes = 0;
+  return raw.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      totalBytes += chunk.byteLength;
+      if (totalBytes > MAX_INBOUND_EMAIL_BYTES) throw new Error("email_too_large");
+      controller.enqueue(chunk);
+    },
+  }));
+}
+
 /** Parse a Cloudflare Email Routing message without treating HTML as trusted agent instructions. */
 export async function parseCloudflareEmail(raw: ReadableStream<Uint8Array>): Promise<ParsedCloudflareEmail> {
-  const parsed = await PostalMime.parse(raw, {
+  const parsed = await PostalMime.parse(boundedEmailStream(raw), {
     attachmentEncoding: "arraybuffer",
     maxNestingDepth: 5,
     maxRfc822NestingDepth: 2,

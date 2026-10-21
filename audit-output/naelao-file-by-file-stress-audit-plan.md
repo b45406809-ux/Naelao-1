@@ -1717,7 +1717,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/agents/src/channels/chat-upload-route.test.ts`
 - [x] `workers/agents/src/channels/chat-upload-scope.test.ts`
 - [x] `workers/agents/src/channels/chat-upload-scope.ts`
-- [ ] `workers/agents/src/channels/cloudflare-email.test.ts`
+- [x] `workers/agents/src/channels/cloudflare-email.test.ts`
 - [ ] `workers/agents/src/channels/cloudflare-email.ts`
 - [x] `workers/agents/src/channels/email-attachment-route.test.ts`
 - [x] `workers/agents/src/channels/email-docx.test.ts`

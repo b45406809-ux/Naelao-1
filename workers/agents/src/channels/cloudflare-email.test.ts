@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createAgentEmailAddress, createReplyAddress, emailReplyBody, hashEmailAddress, normalizeIngressDomain,
-  parseCloudflareEmail, safeFilename,
+  MAX_INBOUND_EMAIL_BYTES, parseCloudflareEmail, safeFilename,
 } from "./cloudflare-email.js";
 
 function stream(value: string): ReadableStream<Uint8Array> {
@@ -56,6 +56,20 @@ describe("Cloudflare email ingress helpers", () => {
     expect(parsed.attachments).toHaveLength(1);
     expect(parsed.attachments[0]).toMatchObject({ filename: "invoice.pdf", mimeType: "application/pdf" });
     expect(new TextDecoder().decode(parsed.attachments[0]!.bytes)).toBe("%PDF-1.4");
+  });
+
+  it("stops consuming an inbound MIME stream at the raw email byte ceiling", async () => {
+    const chunk = new Uint8Array(6 * 1024 * 1024);
+    chunk.set(new TextEncoder().encode("From: vendor@example.test\r\nSubject: large\r\n\r\n"));
+    let pulled = 0;
+    const raw = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(chunk);
+      },
+    });
+    await expect(parseCloudflareEmail(raw)).rejects.toThrow("email_too_large");
+    expect(pulled).toBeLessThanOrEqual(Math.ceil(MAX_INBOUND_EMAIL_BYTES / chunk.byteLength) + 1);
   });
 
   it("normalizes domains, sanitizes attachment paths, and emits task/attachment context", () => {
