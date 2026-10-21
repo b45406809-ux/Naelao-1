@@ -5,7 +5,8 @@ import worker from "./index.js";
 function env() {
   const prepare = vi.fn((sql: string) => ({
     bind: (...args: unknown[]) => ({
-      first: async () => sql.includes("FROM kb_documents") ? { id: "doc-1", title: "Policy", source_url: null, status: "indexed", project_id: null } : null,
+      first: async () => sql.includes("FROM spaces") ? { id: "source" }
+        : sql.includes("FROM kb_documents") ? { id: "doc-1", title: "Policy", source_url: null, status: "indexed", project_id: null } : null,
       all: async () => sql.includes("FROM kb_chunks")
         ? { results: [{ chunk_index: 0, content: "Sanitized policy text." }] }
         : { results: [{ id: String(args[2]), title: "Policy", status: "indexed", project_id: null }] },

@@ -53,6 +53,15 @@ export async function queue(
                 body.allowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256)))) {
             throw new Error("kb.ingest requires valid document scope, staging key, and access policy");
           }
+          const activeSpace = await env.PLATFORM_DB.prepare(
+            `SELECT s.id FROM spaces s JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active'
+             WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'`,
+          ).bind(body.spaceId, body.tenantId).first<{ id: string }>();
+          if (!activeSpace) {
+            console.warn(`[queue] dropping stale KB ingestion for inactive tenant/space ${body.tenantId}/${body.spaceId}`);
+            message.ack();
+            break;
+          }
           await createWorkflowOnce(env.KB_INGESTION, message.id, body);
           message.ack();
           break;

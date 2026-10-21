@@ -141,6 +141,13 @@ app.use("/spaces/:spaceId/kb/*", async (c, next) => {
   if (!owned) throw notFound("Space not found");
   await next();
 });
+app.use("/internal/spaces/:spaceId/kb/*", async (c, next) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const owned = await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId);
+  if (!owned) throw notFound("Space not found");
+  await next();
+});
 
 // ── Helper: extract + validate tenant ────────────────────────────────────────
 
@@ -168,7 +175,8 @@ function airGapResponse(c: { json: (body: unknown, status: 403) => Response }): 
 // tenant before running the (otherwise unscoped) Vectorize query.
 async function verifySpaceOwnership(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
   const row = await db
-    .prepare("SELECT 1 FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'")
+    .prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active'
+              WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'`)
     .bind(spaceId, tenantId)
     .first();
   return row !== null;

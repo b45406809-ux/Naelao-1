@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; queueFails?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; queueFails?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const vectorUpserts: VectorizeVector[][] = [];
@@ -12,6 +12,7 @@ function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?
         dbCalls.push({ sql, args });
         return {
           first: async () => {
+            if (sql.includes("JOIN orgs")) return options.spaceActive === false ? null : { id: "space-1" };
             if (sql.includes("FROM spaces")) return { id: "space-1" };
             if (sql.includes("COUNT(*) as count FROM kb_documents")) return { count: 0 };
             if (sql.includes("SELECT id, title, status, chunk_count FROM kb_documents")) return options.workflowDoc
@@ -92,6 +93,20 @@ describe("Knowledge document lifecycle boundaries", () => {
       "kb/space-1/project-1/doc-1/chunk_0.json", "kb/space-1/project-1/doc-1/chunk_0.txt",
       "kb/space-1/project-1/doc-1/chunk_1.json", "kb/space-1/project-1/doc-1/chunk_1.txt",
     ]);
+  });
+
+  it("stops internal workflow writes after the tenant or space is suspended", async () => {
+    const f = fixture({ workflowDoc: true, spaceActive: false });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["must not persist"], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+      },
+    ), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(404);
+    expect(f.vectorUpserts).toHaveLength(0);
+    expect(f.writes).toHaveLength(0);
+    expect(f.dbCalls.some(({ sql }) => sql.includes("INSERT INTO kb_chunks"))).toBe(false);
   });
 
   it("preserves restrictive ACLs through workflow chunk ingestion", async () => {
@@ -187,7 +202,8 @@ describe("Knowledge document lifecycle boundaries", () => {
       "/internal/spaces/space-1/kb/documents/doc-1/status", "PUT", body,
     ), f.env, {} as ExecutionContext);
     expect(response.status).toBe(400);
-    expect(f.dbCalls).toHaveLength(0);
+    expect(f.dbCalls).toHaveLength(1); // Tenant/space activity gate runs before the handler parses the body.
+    expect(f.dbCalls[0]?.sql).toContain("JOIN orgs");
   });
 
   it("rejects malformed ACL and PDF payloads before creating document rows", async () => {
