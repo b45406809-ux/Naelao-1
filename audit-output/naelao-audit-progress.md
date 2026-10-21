@@ -2159,3 +2159,9 @@ Slack and Telegram success responses were parsed with unbounded `response.json()
 Regressions send oversized `ok: true` Slack and Telegram responses and assert the notification is rejected, the provider request carries an abort signal, and Resend also receives a deadline. Notifications tests passed 24/24, TypeScript passed, and `git diff --check` passed. No live provider timeout or response was exercised. The Notifications entrypoint and test file remain unchecked overall.
 
 The same Notifications pass found that `sendChatMessage` returned raw fetch exception messages. A provider error can include its request URL, which contains Telegram's bot token. The route now returns only a generic channel failure; a regression injects a token-bearing exception and verifies the response does not contain the token. The full Notifications suite passed 25/25 after this fix, and TypeScript passed.
+
+## Notifications webhook and provider log redaction (2026-10-21)
+
+Queue logging included webhook URLs verbatim on SSRF rejection and delivery failure. These URLs can contain shared secrets in their path or query. APNs, browser-push, and queue-level provider exceptions were also logged with raw error messages; Resend failure handling logged provider response text and email recipients. Logs now retain only safe status/error-class data and no endpoint, recipient, or provider exception body. Added blocked-webhook and failed-delivery regressions with secret-bearing URLs.
+
+The full Notifications suite passed 26/26, TypeScript passed, and `git diff --check` passed. The worker entrypoint and webhook test remain unchecked overall; the reviewed log paths are a scoped pass.

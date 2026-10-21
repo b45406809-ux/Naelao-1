@@ -72,6 +72,10 @@ async function readProviderJson<T>(response: Response): Promise<T | null> {
   }
 }
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name.slice(0, 80) : "UnknownError";
+}
+
 /** Sign the Credentials worker's short-lived v3 resolver token for this Space. The generic
  * internal-worker token is intentionally not accepted by the plaintext endpoint. */
 async function generateCredentialToken(platformSecret: string, tenantId: string, spaceId: string): Promise<string> {
@@ -531,7 +535,7 @@ async function sendEmailNow(
 
   if (!res.ok) {
     // eslint-disable-next-line no-console -- diagnostic only, Resend never echoes secrets back
-    console.error("resend send failed", res.status, (await readBoundedResponseText(res, 8 * 1024).catch(() => "")).slice(0, 300));
+    console.error("resend send failed", res.status);
     return { ok: false, status: res.status };
   }
 
@@ -640,7 +644,7 @@ export async function queue(
           // G-AS03: SSRF guard — reject webhooks targeting internal/private ranges
           const ssrfCheck = await checkSsrf(msg.webhookUrl);
           if (ssrfCheck.blocked) {
-            console.warn(`[notifications/queue] webhook blocked by SSRF guard: ${ssrfCheck.reason} url=${msg.webhookUrl}`);
+            console.warn(`[notifications/queue] webhook blocked by SSRF guard: ${ssrfCheck.reason}`);
             message.ack();
             break;
           }
@@ -660,9 +664,7 @@ export async function queue(
           });
 
           if (!res.ok) {
-            console.error(
-              `[notifications/queue] webhook delivery failed status=${res.status} url=${msg.webhookUrl}`
-            );
+            console.error(`[notifications/queue] webhook delivery failed status=${res.status}`);
             message.retry();
             break;
           }
@@ -695,7 +697,7 @@ export async function queue(
             );
             message.ack();
           } catch (pushErr) {
-            console.error("[notifications/queue] APNs push failed:", pushErr);
+            console.error(`[notifications/queue] APNs push failed (${safeErrorName(pushErr)})`);
             message.retry();
           }
           break;
@@ -706,7 +708,7 @@ export async function queue(
             await sendBrowserPush(env, msg);
             message.ack();
           } catch (pushErr) {
-            console.error("[notifications/queue] browser push failed:", pushErr);
+            console.error(`[notifications/queue] browser push failed (${safeErrorName(pushErr)})`);
             message.retry();
           }
           break;
@@ -721,7 +723,7 @@ export async function queue(
         }
       }
     } catch (err) {
-      console.error("[notifications/queue] error processing message:", err);
+      console.error(`[notifications/queue] error processing message (${safeErrorName(err)})`);
       message.retry();
     }
   }

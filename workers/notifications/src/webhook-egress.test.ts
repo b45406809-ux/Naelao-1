@@ -14,18 +14,22 @@ function makeEnv() {
   } as never;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("notification webhook egress", () => {
   it("blocks a public hostname that resolves to a private address", async () => {
     const fetch = vi.fn(async () => Response.json({ Answer: [{ data: "10.12.0.8" }] }));
     vi.stubGlobal("fetch", fetch);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const ack = vi.fn();
     const retry = vi.fn();
 
     await queue({ messages: [{
       id: "webhook-private-dns",
-      body: { type: "webhook", tenantId: "tenant-a", spaceId: "space-a", webhookUrl: "https://hooks.example.test/callback", data: { ok: true } },
+      body: { type: "webhook", tenantId: "tenant-a", spaceId: "space-a", webhookUrl: "https://hooks.example.test/path/secret-token?key=secret-query", data: { ok: true } },
       ack,
       retry,
     }] } as never, makeEnv());
@@ -33,6 +37,7 @@ describe("notification webhook egress", () => {
     expect(fetch).toHaveBeenCalledTimes(2); // A and AAAA DNS lookups only; webhook was never called.
     expect(ack).toHaveBeenCalledOnce();
     expect(retry).not.toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join(" ")).not.toMatch(/secret-token|secret-query/);
   });
 
   it("blocks private IPv6 literal destinations", async () => {
@@ -75,5 +80,28 @@ describe("notification webhook egress", () => {
     expect(webhookSignal).toBeInstanceOf(AbortSignal);
     expect(webhookRedirect).toBe("error");
     expect(ack).toHaveBeenCalledOnce();
+  });
+
+  it("does not log secret-bearing webhook URLs when delivery fails", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("cloudflare-dns.com")) return Response.json({ Answer: [{ data: "93.184.216.34" }] });
+      return new Response("rejected", { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const retry = vi.fn();
+
+    await queue({ messages: [{
+      id: "webhook-secret-failure",
+      body: {
+        type: "webhook", tenantId: "tenant-a", spaceId: "space-a",
+        webhookUrl: "https://hooks.example.test/path/secret-token?key=secret-query",
+      },
+      ack: vi.fn(),
+      retry,
+    }] } as never, makeEnv());
+
+    expect(retry).toHaveBeenCalledOnce();
+    expect(error.mock.calls.flat().join(" ")).not.toMatch(/secret-token|secret-query/);
   });
 });
