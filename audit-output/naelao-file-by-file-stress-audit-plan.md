@@ -45,6 +45,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 - **SpaceType resource quota enforcement:** the old manifest accepted `maxDOsPerInstance`, `maxR2WritesPerDay`, `maxContainerHoursPerDay`, `maxLLMTokensPerDay`, `maxCronJobsPerInstance`, and `maxWorkflowsPerInstance`, but repository-wide source search found no runtime enforcement. These fields and the Provisioner `workflowTemplates`/`cronJobs` placeholders are removed from the active manifest contract so operators do not mistake declarations for protections. Actual per-tenant limits still need explicit, metered enforcement tied to platform resource usage and billing; do not restore these manifest claims until that path exists.
 - **Space deprovision lifecycle:** `space_deprovision` is accepted by the queue contract, but no source producer sends it. The handler currently removes the script R2 prefix and portal/space KV entries but does not enumerate SpaceDO or D1 data. The public space/product delete paths are soft deletes, so do not wire destructive cleanup until retention and restore semantics are established. Audit the caller and all storage owners before enabling purge; separately add an idempotent durable cleanup workflow if true deletion is required.
+- **Provision queue duplicate delivery:** Queue delivery is at-least-once and the consumer allows concurrent batches. `provisionSpace` reads a `provisioning` row and then updates it with a predicate that still allows `provisioning`, so two deliveries for one Space can both enter the saga. Most individual writes are intended to be idempotent, but that is not a global claim and some external provisioning effects may duplicate. Add a per-Space claim with lease recovery and test concurrent delivery plus worker-crash retry before treating provisioning as single-run.
 
 ## Work sequence
 
@@ -2391,10 +2392,10 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/provisioner/src/manifest-contract.ts`
 - [x] `workers/provisioner/src/message-contract.test.ts`
 - [x] `workers/provisioner/src/message-contract.ts`
-- [ ] `workers/provisioner/src/provisioning-state.test.ts`
-- [ ] `workers/provisioner/src/provisioning-state.ts`
-- [ ] `workers/provisioner/src/queue-message-handler.test.ts`
-- [ ] `workers/provisioner/src/queue-message-handler.ts`
+- [x] `workers/provisioner/src/provisioning-state.test.ts`
+- [x] `workers/provisioner/src/provisioning-state.ts`
+- [x] `workers/provisioner/src/queue-message-handler.test.ts`
+- [x] `workers/provisioner/src/queue-message-handler.ts`
 - [ ] `workers/provisioner/src/tenant-suspension.test.ts`
 
 ### `workers/router`
