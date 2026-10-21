@@ -39,6 +39,14 @@ Literal route-registration matches: 1059
 - `workers/workflows` — manifest `workers/workflows/wrangler.toml`; entrypoint `workers/workflows/src/index.ts`
 - `workers/ws-gateway` — manifest `workers/ws-gateway/wrangler.toml`; entrypoint `workers/ws-gateway/src/index.ts`
 
+## D1 tables added or repaired during the ongoing worker audit
+
+- `portal_domains` — `infra/migrations/0119_portal_domains.sql`; the Portal Router uses the unique `(kind, hostname)` key for atomic owner reservations and active-tenant host resolution.
+- `synthetic_results` — `infra/migrations/0120_synthetics_storage.sql`; the Synthetics cron writes bounded probe results and prunes records older than 30 days.
+- `synthetic_check_state` — `infra/migrations/0120_synthetics_storage.sql`; the Synthetics cron tracks failure/recovery transitions to suppress duplicate outage alerts.
+
+These are the tables covered by the corresponding scoped audit entries, not a complete D1 schema inventory.
+
 ## Durable Object classes
 
 - `workers/agents/src/do/ConcurrencyDO.ts:44` — `export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {`

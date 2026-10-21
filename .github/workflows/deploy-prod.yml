@@ -94,6 +94,12 @@ jobs:
           npx wrangler d1 execute "$DB_ID" \
             --command="SELECT hostname FROM portal_domains LIMIT 0" \
             --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0120_synthetics_storage.sql \
+            --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT check_name FROM synthetic_check_state LIMIT 0" \
+            --remote
 
       - name: Deploy all workers (production)
         env:

@@ -97,6 +97,14 @@ jobs:
             --command="SELECT hostname FROM portal_domains LIMIT 0" \
             --remote \
             --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0120_synthetics_storage.sql \
+            --remote \
+            --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT check_name FROM synthetic_check_state LIMIT 0" \
+            --remote \
+            --env=staging
 
       - name: Deploy router worker (staging)
         env:

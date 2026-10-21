@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2028` tracked files; `1822` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `fea8e252`.
+Inventory basis: `2029` tracked files; `1823` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `d63aca4f`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -740,6 +740,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/migrations/0117_org_suspension_reason.sql`
 - [ ] `infra/migrations/0118_gdpr_erasure_outbox.sql`
 - [ ] `infra/migrations/0119_portal_domains.sql`
+- [x] `infra/migrations/0120_synthetics_storage.sql`
 
 ### `infra/scripts`
 
@@ -2588,14 +2589,14 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/synthetics`
 
-- [ ] `workers/synthetics/package.json`
-- [ ] `workers/synthetics/tsconfig.json`
+- [x] `workers/synthetics/package.json`
+- [x] `workers/synthetics/tsconfig.json`
 - [x] `workers/synthetics/wrangler.toml`
 
 ### `workers/synthetics/src`
 
-- [ ] `workers/synthetics/src/index.test.ts`
-- [ ] `workers/synthetics/src/index.ts`
+- [x] `workers/synthetics/src/index.test.ts`
+- [x] `workers/synthetics/src/index.ts`
 
 ### `workers/threads`
 
