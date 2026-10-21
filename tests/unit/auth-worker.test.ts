@@ -360,6 +360,18 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     expect(res.status).toBe(400);
   });
 
+  it("fails closed when a stored reset token has a malformed expiry timestamp", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const token = extractResetToken(env.__notifyCalls);
+    await env.__db.prepare("UPDATE builder_password_reset_tokens SET expires_at = 'not-a-date'").run();
+    const reset = await authWorker.fetch(req("/reset-password", { token, new_password: "anotherpass1" }), env as never, execCtx);
+    expect(reset.status).toBe(400);
+    const login = await authWorker.fetch(req("/login", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    expect(login.status).toBe(200);
+  });
+
   it("rejects a short new_password", async () => {
     const env = makeEnv();
     await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);

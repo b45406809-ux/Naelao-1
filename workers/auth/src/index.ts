@@ -410,7 +410,8 @@ app.post("/reset-password", async (c) => {
   const row = await c.env.PLATFORM_DB.prepare(
     `SELECT id, user_id, expires_at, used_at FROM builder_password_reset_tokens WHERE token_hash = ?1`
   ).bind(tokenHash).first<{ id: string; user_id: string; expires_at: string; used_at: string | null }>();
-  if (!row || row.used_at || new Date(row.expires_at) < new Date()) {
+  const expiresAtMs = row ? Date.parse(row.expires_at) : Number.NaN;
+  if (!row || row.used_at || !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
     throw badRequest("This reset link is invalid or has expired");
   }
 
