@@ -9606,6 +9606,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     messages: Array<{ id: string; role: string; content: string; created_at: string }>;
     complete: boolean;
     error?: string;
+    nextCursor?: string;
   }> {
     const messages: Array<{ id: string; role: string; content: string; created_at: string }> = [];
     const pageLimit = Math.max(1, Math.min(10_000, Math.floor(options?.limit ?? 10_000)));
@@ -9636,7 +9637,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         for (const row of rows) {
           const size = new TextEncoder().encode(row.text ?? "").byteLength;
           if (messages.length >= pageLimit || contentBytes + size > 16 * 1024 * 1024) {
-            return { messages, complete: false };
+            return { messages, complete: false, nextCursor: row.id };
           }
           contentBytes += size;
           messages.unshift({ id: row.id, role: row.direction === "inbound" ? "user" : "assistant",

@@ -99,7 +99,7 @@ async function loadMessages(ctx: PrebuiltOpContext, sessionId: string, startBefo
         selected.unshift(message);
       }
       const incomplete = !loaded.complete || selected.length < loaded.messages.length;
-      const nextCursor = incomplete ? selected[0]?.id : undefined;
+      const nextCursor = incomplete ? (loaded.nextCursor ?? selected[0]?.id) : undefined;
       return {
         messages: selected,
         incomplete,

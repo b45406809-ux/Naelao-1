@@ -1125,6 +1125,7 @@ export interface ScriptEngineEnv {
     messages: Array<{ id?: string; role: string; content: string; created_at?: string }>;
     complete: boolean;
     error?: string;
+    nextCursor?: string;
   }>;
   /** Host-owned session scope for private temporary tool logs. */
   outputSessionId?: string;

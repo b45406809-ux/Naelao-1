@@ -192,6 +192,21 @@ describe("conversation.search", () => {
     expect(result.results[0]?.message_id).toBe("channel-event-4");
   });
 
+  it("preserves the host continuation cursor when a channel message exceeds the byte budget", async () => {
+    const ctx = context(async () => Response.json({ data: [] }));
+    ctx.env.loadCurrentConversation = async () => ({
+      messages: [{ id: "last-retained", role: "user", content: "Earlier decision about the launch" }],
+      complete: false,
+      nextCursor: "oversized-older-message",
+    });
+    const result = (await conversation.operations["conversation.search"](
+      { query: "launch decision" },
+      ctx
+    )) as { complete: boolean; next_cursor?: string };
+    expect(result.complete).toBe(false);
+    expect(result.next_cursor).toBe("oversized-older-message");
+  });
+
   it("does not report an incomplete or failed scan as proof that a topic was never discussed", async () => {
     let call = 0;
     const result = (await conversation.operations["conversation.search"](

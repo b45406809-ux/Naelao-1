@@ -93,4 +93,39 @@ describe("channel conversation transcript paging", () => {
       "long-event-1", "long-event-2", "long-event-3", "long-event-4", "long-event-5",
     ]);
   });
+
+  it("returns a cursor when the byte budget encounters one oversized message", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO(
+      { storage, id: { toString: () => "agent" } } as never,
+      { PLATFORM_SECRET: "channel-conversation-test-secret" } as never
+    );
+    await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    storage.sql.exec(
+      "INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES(?,?,?,?)",
+      "channel-thread-c", "telegram", "customer-c", "project-a"
+    );
+    storage.sql.exec(
+      "INSERT INTO channel_messages(id,session_id,direction,text,created_at) VALUES(?,?,?,?,?)",
+      "older-event", "channel-thread-c", "inbound", "Old launch decision", 1_700_000_000_000
+    );
+    storage.sql.exec(
+      "INSERT INTO channel_messages(id,session_id,direction,text,created_at) VALUES(?,?,?,?,?)",
+      "oversized-event", "channel-thread-c", "inbound", "x".repeat(16 * 1024 * 1024 + 1), 1_700_000_000_000
+    );
+    const read = (agent as unknown as {
+      loadChannelTranscript: (sessionId: string, options?: { beforeId?: string }) => Promise<{
+        messages: Array<{ id: string; content: string }>;
+        complete: boolean;
+        nextCursor?: string;
+      }>;
+    }).loadChannelTranscript.bind(agent);
+
+    await expect(read("channel-thread-c")).resolves.toEqual({
+      messages: [], complete: false, nextCursor: "oversized-event",
+    });
+    await expect(read("channel-thread-c", { beforeId: "oversized-event" })).resolves.toMatchObject({
+      complete: true, messages: [{ id: "older-event", content: "Old launch decision" }],
+    });
+  });
 });
