@@ -66,6 +66,25 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM eval_results WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM portal_domains WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM space_provisioning_leases WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM marketplace_reviews WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM marketplace_forks WHERE tenant_id = ?").bind(orgId),
+    db.prepare(
+      `UPDATE marketplace_listings
+       SET status = 'archived', author_name = 'Erased publisher',
+           name = 'Unavailable listing', description = 'This listing is no longer available.',
+           long_description = NULL, tags_json = '[]', preview_config_json = NULL, embedding_json = NULL,
+           reviewed_by = NULL, review_note = NULL, conformance_artifact_json = NULL,
+           conformance_certificate_json = NULL, developer_user_id = NULL,
+           ls_license_provisioning_token = NULL, ls_license_provisioning_started_at = NULL
+       WHERE tenant_id = ?`,
+    ).bind(orgId),
+    db.prepare("DELETE FROM developer_partner_profiles WHERE user_id IN (SELECT id FROM users WHERE org_id = ?)").bind(orgId),
+    db.prepare("DELETE FROM reseller_accounts WHERE tenant_id = ?").bind(orgId),
+    db.prepare(
+      `UPDATE tenant_hierarchy SET status = 'terminated',
+       child_owner_user_id = CASE WHEN child_tenant_id = ? THEN NULL ELSE child_owner_user_id END
+       WHERE child_tenant_id = ? OR parent_tenant_id = ?`,
+    ).bind(orgId, orgId, orgId),
     // The queue has already accepted the request before the workflow can start. Once erasure
     // begins, remove the retry payload too; it contains the owner's ID and free-text reason.
     db.prepare("DELETE FROM gdpr_erasure_outbox WHERE tenant_id = ?").bind(orgId),

@@ -147,6 +147,18 @@ describe("data erasure D1 records", () => {
       .run("run-a", "suite-a", "space-a", "org-a");
     db.db.prepare("INSERT INTO eval_results (id, run_id, suite_id, tenant_id, case_index, input, actual_output) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("result-a", "run-a", "suite-a", "org-a", 0, "private input", "private output");
+    db.db.prepare("INSERT INTO marketplace_listings (id, space_type_id, tenant_id, author_name, name, description, long_description, tags_json, preview_config_json, embedding_json, conformance_artifact_json, conformance_certificate_json, developer_user_id, ls_license_provisioning_token, ls_license_provisioning_started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("listing-a", "type-a", "org-a", "Person Name", "Private listing", "Private description", "Private detail", '["private"]', "private-preview", "private-vector", "private-artifact", "private-certificate", "user-a", "private-token", 123);
+    db.db.prepare("INSERT INTO marketplace_reviews (id, listing_id, tenant_id, reviewer_name, rating, body) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("review-a", "listing-a", "org-a", "Person Name", 5, "Private review");
+    db.db.prepare("INSERT INTO marketplace_forks (id, tenant_id, listing_id, blueprint_id, artifact_json, certificate_json) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("fork-a", "org-a", "listing-a", "blueprint-a", "private-fork", "private-cert");
+    db.db.prepare("INSERT INTO developer_partner_profiles (user_id, handle, payout_destination) VALUES (?, ?, ?)")
+      .run("user-a", "private-handle", "private-destination");
+    db.db.prepare("INSERT INTO reseller_accounts (tenant_id, product_space_id) VALUES (?, ?)")
+      .run("org-a", "space-a");
+    db.db.prepare("INSERT INTO tenant_hierarchy (child_tenant_id, parent_tenant_id, reseller_product_space_id, child_space_id, child_owner_user_id) VALUES (?, ?, ?, ?, ?)")
+      .run("org-a", "parent-org", "parent-space", "space-a", "user-a");
     db.db.prepare("INSERT INTO audit_log (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run("audit-a", "org-a", "user-a", "user", "erasure_requested", "org", "org-a", "{}");
 
@@ -160,6 +172,14 @@ describe("data erasure D1 records", () => {
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM eval_results WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM space_provisioning_leases WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM gdpr_erasure_outbox WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT status, author_name, name, description, long_description, tags_json, preview_config_json, embedding_json, reviewed_by, review_note, conformance_artifact_json, conformance_certificate_json, developer_user_id, ls_license_provisioning_token, ls_license_provisioning_started_at FROM marketplace_listings WHERE id = ?").get("listing-a"))
+      .toEqual({ status: "archived", author_name: "Erased publisher", name: "Unavailable listing", description: "This listing is no longer available.", long_description: null, tags_json: "[]", preview_config_json: null, embedding_json: null, reviewed_by: null, review_note: null, conformance_artifact_json: null, conformance_certificate_json: null, developer_user_id: null, ls_license_provisioning_token: null, ls_license_provisioning_started_at: null });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM marketplace_reviews WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM marketplace_forks WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM developer_partner_profiles WHERE user_id = ?").get("user-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM reseller_accounts WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT status, child_owner_user_id FROM tenant_hierarchy WHERE child_tenant_id = ?").get("org-a"))
+      .toEqual({ status: "terminated", child_owner_user_id: null });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE tenant_id = ?").get("org-a")).toEqual({ count: 1 });
     expect(db.db.prepare("SELECT status FROM template_subscriptions WHERE id = ?").get("sub-a")).toEqual({ status: "cancelled" });
     expect(db.db.prepare("SELECT owner_email FROM whop_sub_merchants WHERE id = ?").get("merchant-a"))
