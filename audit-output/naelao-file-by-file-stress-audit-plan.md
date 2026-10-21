@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2005` tracked files; `1799` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `9f42f460`.
+Inventory basis: `2008` tracked files; `1802` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `7d4f998f`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract

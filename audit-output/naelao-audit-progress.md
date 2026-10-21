@@ -1768,7 +1768,7 @@ The channel and trigger Workers published to `naelao-channel-sessions`, but no W
 
 This closes message delivery into the agent runtime, not the full external channel loop. The legacy channel endpoint still lacks provider signature verification and a configured outbound reply path, so the caller receives only its immediate queued acknowledgement and the agent's answer is retained in Naelao rather than delivered back to Slack/email/webhook. Multi-event agent dispatch idempotency after an uncertain model-run success also needs a durable run receipt; the session and inbound message writes are idempotent, but a redelivered run may execute twice. These are open channel reliability/security items. The broader per-file audit remains substantially incomplete.
 
-The tracked inventory now contains 2,005 files, including 1,799 source or executable-configuration files, anchored at code commit `9f42f460`. The checklist has 433 reviewed rows and 1,366 still open; new queue source and regression files are included. This is an inventory refresh and focused queue review, not completion of the full Naelao audit.
+The tracked inventory now contains 2,008 files, including 1,802 source or executable-configuration files, anchored at code commit `7d4f998f`. The checklist has 437 reviewed rows and 1,365 still open; new queue and tenant-status source and regression files are included. This is an inventory refresh and focused review, not completion of the full Naelao audit.
 
 ## Public router tenant suspension gate (2026-10-21)
 
