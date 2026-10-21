@@ -3,6 +3,31 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.j
 import { NaelaoAgentDO } from "./NaelaoAgentDO.js";
 
 describe("channel heartbeat tenant suspension", () => {
+  it("rejects signed ingress forwarded to the DO after the tenant is suspended", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO(
+      { storage, id: { toString: () => "agent" } } as never,
+      {
+        PLATFORM_SECRET: "channel-heartbeat-test-secret",
+        PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) },
+      } as never,
+    );
+
+    const response = await agent.fetch(new Request("http://agent/channels/email/inbound", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spaceId: "space-a", tenantId: "tenant-a",
+        raw: { from: "customer@example.test", text: "Hello", message_id: "event-a" },
+      }),
+    }));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error_code: "tenant_suspended" });
+    expect(storage.sql.exec("SELECT id FROM channel_sessions").toArray()).toEqual([]);
+    expect(storage.sql.exec("SELECT id FROM channel_messages").toArray()).toEqual([]);
+  });
+
   it("does not claim or process a queued reply for an already suspended tenant", async () => {
     const storage = createDOStorage();
     const agent = new NaelaoAgentDO(

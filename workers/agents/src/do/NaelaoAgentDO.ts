@@ -5786,6 +5786,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     type InboundBody = { raw?: Record<string, unknown>; projectId?: string; extensionInstanceId?: string; extensionScriptSha256?: string; providerConnectionId?: string; taskId?: string; spaceId?: string; tenantId?: string; channel?: string; apiKey?: string; model?: string; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
+    if (body.spaceId && body.tenantId && this.env.PLATFORM_DB && await this.tenantSpaceSuspended(body.tenantId, body.spaceId)) {
+      return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
+    }
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
     const envelope = toNormalizedInboundMessage({ channel: norm.channel, senderId: norm.channel_user_id,
