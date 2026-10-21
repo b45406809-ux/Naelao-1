@@ -31,7 +31,7 @@ describe("web-search.grounded_answer — direct op behavior", () => {
   it("throws when 'query' is missing (consistent with the other ops' validation)", async () => {
     const callWithNativeWebSearch = vi.fn();
     const ctx = ctxWith({ callWithNativeWebSearch });
-    await expect(webSearch.operations["grounded_answer"]!({}, ctx)).rejects.toThrow(/requires 'query'/);
+    await expect(webSearch.operations["grounded_answer"]!({}, ctx)).rejects.toThrow(/web search query must be 1\.\.1000 characters/);
     expect(callWithNativeWebSearch).not.toHaveBeenCalled();
   });
 

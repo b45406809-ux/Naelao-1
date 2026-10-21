@@ -40,7 +40,7 @@ describe("memory prebuilt — the Hermes-pattern self-managed memory tool", () =
 
     const result = await memory.operations["memory.recall"]!({ query: "tea" }, ctx);
     expect(recall).toHaveBeenCalledWith(expect.objectContaining({ userId: "alice", text: "tea" }));
-    expect(result).toHaveLength(1);
+    expect(result).toMatchObject({ results: [{ id: "f1", text: "alice likes tea" }] });
   });
 
   it("memory.forget deletes by id", async () => {

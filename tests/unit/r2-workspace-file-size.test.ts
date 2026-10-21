@@ -17,7 +17,7 @@ function makeR2(initial: Record<string, string> = {}): R2Bucket {
     async get(key: string) {
       if (!store.has(key)) return null;
       const text = store.get(key)!;
-      return { size: text.length, uploaded: new Date("2026-01-01T00:00:00Z"), async text() { return text; } } as unknown as R2ObjectBody;
+      return { size: text.length, uploaded: new Date("2026-01-01T00:00:00Z"), async text() { return text; }, async arrayBuffer() { return new TextEncoder().encode(text).buffer; } } as unknown as R2ObjectBody;
     },
     async head(key: string) {
       if (!store.has(key)) return null;
