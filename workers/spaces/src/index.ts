@@ -3838,6 +3838,11 @@ app.get("/internal/spaces/:spaceId/project-steward/summary", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const active = await c.env.PLATFORM_DB.prepare(
+    `SELECT s.id FROM spaces s WHERE s.id=? AND s.tenant_id=? AND s.status='active'
+     AND EXISTS (SELECT 1 FROM orgs o WHERE o.id=s.tenant_id AND o.status='active')`,
+  ).bind(spaceId, owned.tenantId).first<{ id: string }>();
+  if (!active) return c.json({ error_code: "tenant_suspended" }, 403);
   const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
   const projectResponse = await forwardToSpaceDO(stub, `/project-steward-facts?${new URLSearchParams({ space_id: spaceId })}`, "GET");
   if (!projectResponse.ok) return c.json({ error_code: "project_review_unavailable" }, 503);
@@ -3879,6 +3884,11 @@ app.post("/internal/spaces/:spaceId/project-steward/installation", async (c) => 
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const active = await c.env.PLATFORM_DB.prepare(
+    `SELECT s.id FROM spaces s WHERE s.id=? AND s.tenant_id=? AND s.status='active'
+     AND EXISTS (SELECT 1 FROM orgs o WHERE o.id=s.tenant_id AND o.status='active')`,
+  ).bind(spaceId, owned.tenantId).first<{ id: string }>();
+  if (!active) return c.json({ error_code: "tenant_suspended" }, 403);
   const manifest = validateExtensionManifest(PROJECT_STEWARD_EXTENSION_MANIFEST, {
     gatekeeperCapabilities: ["space.project_steward.read_summary"],
   });

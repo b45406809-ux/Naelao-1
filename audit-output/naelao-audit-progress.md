@@ -1931,3 +1931,9 @@ Validation: focused heartbeat suspension tests passed 2/2; full Agents suite pas
 The hourly agent heartbeat sent `{spaceId}` to `/memory/maintenance`, while the Durable Object route required `tenantId`, `userId`, `sessionId`, and `callerRole`; the scheduled maintenance request therefore always returned 400 and its result was ignored. The queue now sends the tenant scope and an explicit space-maintenance intent. The DO has a separate scheduled-only path that performs the per-space decay/prune pass without pretending to be an interactive user, and checks active tenant/Space status before and after the pass. Interactive compaction still uses its caller identity and normal run gates. Added regressions for the scheduled path and suspended tenants.
 
 Validation: focused maintenance route tests passed 2/2; full Agents suite passed 159 files / 731 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed. The audit remains open across the rest of the queued tick variants and other workers.
+
+## Project Steward tenant suspension gates (2026-10-21)
+
+The scheduled Project Steward's internal installation and summary routes used `loadOwnedSpace`, which allows any non-deleted Space even when its organization or Space is suspended. A delayed tick could therefore provision the managed extension or read its portfolio summary after suspension. Both routes now require an active organization and active Space before accessing SpaceDO. Added a regression that verifies both suspended paths stop before Durable Object access.
+
+Validation: focused Spaces test passed 1/1; full Spaces suite passed 68 files / 263 tests; Spaces TypeScript, targeted Biome security lint, and `git diff --check` passed. The broad audit remains open.

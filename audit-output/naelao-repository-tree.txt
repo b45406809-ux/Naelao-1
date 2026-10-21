@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2032
-Files with source or executable-configuration extensions: 1826
-Inventory revision: 2026-10-21 audit refresh at 700d4758
+Files: 2033
+Files with source or executable-configuration extensions: 1827
+Inventory revision: 2026-10-21 audit refresh at 0c6bd7f2
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -2231,6 +2231,7 @@ workers/
       project-steward-decisions.test.ts
       project-steward-decisions.ts
       project-steward-extension.ts
+      project-steward-suspension.test.ts
       project-steward.test.ts
       project-steward.ts
       remediation-pass-2.test.ts
