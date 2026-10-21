@@ -17,7 +17,7 @@ function makeSpacesWorkerStub(businessRoleOk: boolean, projectId?: string): Fetc
       if (url.pathname.endsWith("/compact-scope")) {
         // Session ownership and product membership are both resolved by the canonical
         // SpaceDO-backed scope endpoint. Inaccessible sessions are intentionally concealed.
-        return businessRoleOk ? Response.json({ project_id: projectId ?? null, private_scratchpad: false }) : Response.json({ error_code: "not_found" }, { status: 404 });
+        return businessRoleOk ? Response.json({ project_id: projectId ?? null, private_scratchpad: false, owned_by_caller: true }) : Response.json({ error_code: "not_found" }, { status: 404 });
       }
       if (url.pathname.includes("/projects/")) return Response.json({ id: projectId });
       return new Response("not found", { status: 404 });

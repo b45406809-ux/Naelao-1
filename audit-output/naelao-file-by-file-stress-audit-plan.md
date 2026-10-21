@@ -1295,11 +1295,11 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/agent-conversation-pagination.test.ts`
 - [ ] `tests/unit/agent-diagnostics-rollup.test.ts`
 - [ ] `tests/unit/agent-loop-unbounded.test.ts`
-- [ ] `tests/unit/agent-run-content-moderation.test.ts`
+- [x] `tests/unit/agent-run-content-moderation.test.ts`
 - [ ] `tests/unit/agent-run-durable-default.test.ts`
-- [ ] `tests/unit/agent-run-model-override.test.ts`
-- [ ] `tests/unit/agent-run-script-native-dispatch.test.ts`
-- [ ] `tests/unit/agent-run-trace-endpoint.test.ts`
+- [x] `tests/unit/agent-run-model-override.test.ts`
+- [x] `tests/unit/agent-run-script-native-dispatch.test.ts`
+- [x] `tests/unit/agent-run-trace-endpoint.test.ts`
 - [ ] `tests/unit/agent-signals-and-session-spend.test.ts`
 - [ ] `tests/unit/agent-task-workflow-failure-handling.test.ts`
 - [ ] `tests/unit/agent-templates.test.ts`
@@ -1359,7 +1359,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/channel-pairing.test.ts`
 - [ ] `tests/unit/channel-replay-dedup-drain.test.ts`
 - [ ] `tests/unit/channels-routing-key-tenant-guard.test.ts`
-- [ ] `tests/unit/chat-uploads.test.ts`
+- [x] `tests/unit/chat-uploads.test.ts`
 - [ ] `tests/unit/code-runner.test.ts`
 - [ ] `tests/unit/commerce-prebuilt-hmac.test.ts`
 - [ ] `tests/unit/compact-conversation.test.ts`

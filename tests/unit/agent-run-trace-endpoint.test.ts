@@ -26,11 +26,15 @@ function makeDb() {
   };
 }
 
-function makeEnv(agentDoStub: { fetch: () => Promise<Response> }) {
+function makeEnv(agentDoStub: { fetch: () => Promise<Response> }, businessRole?: string) {
   return {
     PLATFORM_SECRET: SECRET,
     PLATFORM_DB: makeDb(),
     NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },
+    SPACES_WORKER: { async fetch(request: Request) {
+      if (new URL(request.url).pathname.endsWith("/compact-scope")) return Response.json({ project_id: "project-1", owned_by_caller: true, private_scratchpad: false });
+      return businessRole ? Response.json({ role: businessRole }) : new Response(null, { status: 404 });
+    } },
   } as unknown as AgentsEnv;
 }
 
@@ -56,10 +60,10 @@ describe("GET .../sessions/:sessionId/agent/runs/:runId/trace", () => {
     expect(body).toEqual(traceBody);
   });
 
-  it("rejects a product_end_user caller who isn't a member of the business (no SPACES_WORKER to prove it, fails closed)", async () => {
+  it("rejects a product_end_user caller who owns the session but isn't a business member", async () => {
     let called = false;
     const agentDoStub = { async fetch() { called = true; return Response.json({ run_id: "run-1", trace: [] }); } };
-    const res = await getTrace(makeEnv(agentDoStub), "product_end_user");
+    const res = await getTrace(makeEnv(agentDoStub), "product_end_user", "user-1");
     expect(res.status).toBe(403);
     expect(called).toBe(false);
   });
@@ -67,10 +71,7 @@ describe("GET .../sessions/:sessionId/agent/runs/:runId/trace", () => {
   it("allows a product_end_user who IS a member of the business", async () => {
     const traceBody = { run_id: "run-1", trace: [{ seq: 0, phase: "observe", ts: 1000 }] };
     const agentDoStub = { async fetch() { return Response.json(traceBody); } };
-    const env = {
-      ...makeEnv(agentDoStub),
-      SPACES_WORKER: { async fetch() { return Response.json({ role: "member" }); } },
-    } as unknown as AgentsEnv;
+    const env = makeEnv(agentDoStub, "member");
     const res = await getTrace(env, "product_end_user", "user-1");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(traceBody);

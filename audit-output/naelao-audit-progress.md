@@ -1366,3 +1366,9 @@ Validation: Fast Decision suite passed 1 file / 25 tests; Agent SDK and Agents T
 ### Broad Agents verification after ETag and retry-deadline changes
 
 Re-ran the complete Agents suite on the latest tree: 151 files / 683 tests passed, including the new same-size attachment replacement regression. Expected PDF.js standard-font warnings appeared. Agents and Agent SDK TypeScript checks both passed.
+
+## Reconcile shared integration fixtures with session ownership checks (2026-10-21)
+
+The first broad `tests/` run reported 3,443 passing and 264 failing tests across 356 files, plus one unhandled mock error. Comparison with the saved Oct 20 report showed 118 failure cases were newly present. Several were caused by the new fail-closed session-scope lookup: older `/agent/run`, trace, and upload fixtures returned 404 for `/compact-scope` or omitted `owned_by_caller`, so tests never reached the behavior they intended to cover. Updated five shared integration fixtures to represent an owned non-private session; the trace test now separately represents a non-member business-role response. Focused rerun passed 5 files / 34 tests.
+
+The repository-wide suite remains red and is not represented as fully passing. The machine-readable report is at `/tmp/naelao-root-vitest-20261021.json` for this workspace session. Remaining failures span many older test doubles and several route/model/billing contracts; they require individual triage. The report is execution evidence only and is not committed.

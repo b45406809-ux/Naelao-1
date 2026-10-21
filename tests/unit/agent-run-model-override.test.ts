@@ -59,6 +59,7 @@ function makeEnv(configJson = "{}") {
       async fetch(reqInput: Request) {
         const url = new URL((reqInput as Request).url);
         if (/\/me\/injection$/.test(url.pathname)) return Response.json({ rate_limited: false });
+        if (/\/sessions\/[^/]+\/compact-scope$/.test(url.pathname)) return Response.json({ project_id: null, private_scratchpad: false, owned_by_caller: true });
         return new Response("not found", { status: 404 });
       },
     },

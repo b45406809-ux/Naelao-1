@@ -39,6 +39,7 @@ function makeEnv(): AgentsEnv & { __runCalls: unknown[] } {
         if (/\/me\/injection$/.test(url.pathname)) {
           return Response.json({ rate_limited: false, attempts_last_hour: 1 });
         }
+        if (/\/sessions\/[^/]+\/compact-scope$/.test(url.pathname)) return Response.json({ project_id: null, private_scratchpad: false, owned_by_caller: true });
         return new Response("not found", { status: 404 });
       },
     },
