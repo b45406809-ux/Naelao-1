@@ -26,6 +26,30 @@ describe("vault proxy", () => {
     expect(JSON.stringify(vault)).not.toContain("platform");
   });
 
+  it("signs the acting user into a read-only credential scope when the caller has no run ID", async () => {
+    let token = "";
+    let payload: Record<string, unknown> = {};
+    const vault = createVaultProxy({
+      credentialsWorker: {
+        fetch: async (request: Request) => {
+          token = request.headers.get("x-naelao-credential-token") ?? "";
+          payload = await request.json() as Record<string, unknown>;
+          return new Response("ok");
+        },
+      } as unknown as Fetcher,
+      platformSecret: "platform",
+      tenantId: "tenant",
+      spaceId: "space",
+      agentId: "agent",
+      userId: "actor-42",
+    });
+
+    await vault.fetchWithAuth("https://api.example.test", { credentialName: "SERVICE_KEY" });
+    expect(token).toContain(",uid=actor-42,");
+    expect(token).toContain(",v4=");
+    expect(payload.onBehalfOfUserId).toBe("actor-42");
+  });
+
   it("forwards an explicit Basic-auth mode and username through the signed vault boundary", async () => {
     const fetch = vi.fn(async (request: Request) => {
       const payload = await request.json<Record<string, unknown>>();

@@ -274,8 +274,10 @@ describe("credential hierarchy", () => {
   });
 
   describe("resolution order (internal plaintext endpoint)", () => {
-    async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
-      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1");
+    async function makeToken(spaceId: string, agentId = "agent-1", actorId = "user-1"): Promise<string> {
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1", {
+        actorId, runId: "run-1", traceId: "a".repeat(32), spanId: "b".repeat(16),
+      });
     }
 
     it("rejects legacy tenantless tokens before plaintext credential resolution", async () => {
@@ -368,8 +370,10 @@ describe("credential hierarchy", () => {
   // §A1 connector default-vs-personal switch: prefer_scope lets the caller (mcp-hub, forwarding
   // the chat session's own toggle) override the implicit "personal always wins" default above.
   describe("prefer_scope override", () => {
-    async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
-      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1");
+    async function makeToken(spaceId: string, agentId = "agent-1", actorId = "user-1"): Promise<string> {
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1", {
+        actorId, runId: "run-1", traceId: "a".repeat(32), spanId: "b".repeat(16),
+      });
     }
 
     it("prefer_scope='business' skips the personal credential even when one is connected", async () => {
@@ -453,8 +457,10 @@ describe("credential hierarchy", () => {
   // Naelao -> Product -> Business -> Personal hierarchy (user's own design, this session):
   // a business with no local match falls through to its PRODUCT ROOT's own shared credential.
   describe("product-root tier (business -> product fallback)", () => {
-    async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
-      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1");
+    async function makeToken(spaceId: string, agentId = "agent-1", actorId = "user-1"): Promise<string> {
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1", {
+        actorId, runId: "run-1", traceId: "a".repeat(32), spanId: "b".repeat(16),
+      });
     }
 
     it("a business with nothing of its own falls through to the product root's shared credential", async () => {
@@ -465,7 +471,7 @@ describe("credential hierarchy", () => {
         env, execCtx
       );
 
-      const token = await makeToken("biz-1");
+      const token = await makeToken("biz-1", "agent-1", "end-user-1");
       const res = await credentialsWorker.fetch(
         await req("/v1/internal/spaces/biz-1/credentials/TAVILY/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "end-user-1" } }),
         env, execCtx
@@ -535,8 +541,10 @@ describe("credential hierarchy", () => {
   });
 
   describe("selective business sharing (shared_with_user_ids)", () => {
-    async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
-      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1");
+    async function makeToken(spaceId: string, agentId = "agent-1", actorId = "user-1"): Promise<string> {
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId, undefined, "tenant-1", {
+        actorId, runId: "run-1", traceId: "a".repeat(32), spanId: "b".repeat(16),
+      });
     }
 
     it("a non-admin cannot set shared_with_user_ids", async () => {
@@ -560,7 +568,7 @@ describe("credential hierarchy", () => {
         await req("/spaces/space-3/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "SLACK", value: "s", scope: "space", shared_with_user_ids: ["user-allowed"] } }),
         env, execCtx
       );
-      const token = await makeToken("space-3");
+      const token = await makeToken("space-3", "agent-1", "user-blocked");
       const res = await credentialsWorker.fetch(
         await req("/v1/internal/spaces/space-3/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-blocked" } }),
         env, execCtx
@@ -573,7 +581,7 @@ describe("credential hierarchy", () => {
         await req("/spaces/space-4/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "SLACK", value: "s", scope: "space", shared_with_user_ids: ["user-allowed"] } }),
         env, execCtx
       );
-      const token = await makeToken("space-4");
+      const token = await makeToken("space-4", "agent-1", "user-allowed");
       const res = await credentialsWorker.fetch(
         await req("/v1/internal/spaces/space-4/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-allowed" } }),
         env, execCtx
@@ -591,7 +599,7 @@ describe("credential hierarchy", () => {
       await env.PLATFORM_DB.prepare("UPDATE space_credentials SET shared_with_user_ids = '{' WHERE space_id = ? AND name = ?")
         .bind("space-corrupt", "SLACK").run();
 
-      const token = await makeToken("space-corrupt");
+      const token = await makeToken("space-corrupt", "agent-1", "user-blocked");
       const plaintext = await credentialsWorker.fetch(
         await req("/v1/internal/spaces/space-corrupt/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-blocked" } }),
         env, execCtx
@@ -615,7 +623,7 @@ describe("credential hierarchy", () => {
       );
       expect(patch.status).toBe(400);
 
-      const token = await makeToken("space-patch");
+      const token = await makeToken("space-patch", "agent-1", "user-blocked");
       const plaintext = await credentialsWorker.fetch(
         await req("/v1/internal/spaces/space-patch/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-blocked" } }),
         env, execCtx
@@ -650,15 +658,16 @@ describe("credential hierarchy", () => {
       );
       expect(patch.status).toBe(200);
 
-      const token = await makeToken("space-5");
+      const token = await makeToken("space-5", "agent-1", "someone-else");
       const blocked = await credentialsWorker.fetch(
         await req("/v1/internal/spaces/space-5/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "someone-else" } }),
         env, execCtx
       );
       expect(blocked.status).toBe(404);
 
+      const allowedToken = await makeToken("space-5", "agent-1", "user-x");
       const allowed = await credentialsWorker.fetch(
-        await req("/v1/internal/spaces/space-5/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-x" } }),
+        await req("/v1/internal/spaces/space-5/credentials/SLACK/plaintext", { method: "POST", credToken: allowedToken, body: { on_behalf_of_user_id: "user-x" } }),
         env, execCtx
       );
       expect(allowed.status).toBe(200);

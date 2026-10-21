@@ -39,9 +39,9 @@ export function createVaultProxy(options: VaultProxyOptions) {
       const dlp = scanAndScrubEgress(init, "block");
       if (dlp.findings.length) console.warn("[vault-proxy] outbound payload blocked by DLP rules", dlp.audit);
       const spanId = generateSpanId();
-      const runContext = options.runId ? {
+      const runContext = options.runId || options.userId ? {
         actorId: options.userId ?? options.agentId,
-        runId: options.runId,
+        runId: options.runId ?? crypto.randomUUID(),
         ...(options.taskId ? { taskId: options.taskId } : {}),
         traceId,
         spanId,

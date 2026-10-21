@@ -1038,6 +1038,9 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
     // Empty/absent body is fine — resolves at the space level.
   }
 
+  if (onBehalfOfUserId && onBehalfOfUserId !== tokenCheck.actorId) {
+    throw forbidden("Credential user scope does not match the signed actor");
+  }
   if (requestedProjectId && requestedProjectId !== tokenCheck.projectId) throw forbidden("Project scope does not match the signed credential token");
   const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credName, onBehalfOfUserId, tokenCheck.projectId ?? null, preferScope);
   if (!resolved) {
@@ -1131,6 +1134,9 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   }
   if (body.onBehalfOfUserId !== undefined && typeof body.onBehalfOfUserId !== "string") {
     return c.json({ error_code: "egress_request_invalid", message: "The acting user is invalid" }, 400);
+  }
+  if (body.onBehalfOfUserId && body.onBehalfOfUserId !== tokenCheck.actorId) {
+    throw forbidden("Credential user scope does not match the signed actor");
   }
   const requestHeaders = body.headers ?? {};
   if (!requestHeaders || typeof requestHeaders !== "object" || Array.isArray(requestHeaders) || Object.keys(requestHeaders).length > 64) {

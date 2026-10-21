@@ -52,8 +52,10 @@ function mockFetchWithDohResolution(dohIp: string): void {
 describe("buildAuthHeaders — acting user threading (unit)", () => {
   it("includes on_behalf_of_user_id in the credentials-worker request body when given", async () => {
     let capturedBody: unknown;
+    let capturedToken: string | null = null;
     const credentialsWorker = {
       fetch: async (input: Request) => {
+        capturedToken = input.headers.get("x-naelao-credential-token");
         capturedBody = await input.clone().json().catch(() => null);
         return new Response(JSON.stringify({ value: "secret-value" }));
       },
@@ -63,6 +65,8 @@ describe("buildAuthHeaders — acting user threading (unit)", () => {
 
     await buildAuthHeaders(server, env as never, "agent-1", "end-user-42");
     expect(capturedBody).toEqual({ on_behalf_of_user_id: "end-user-42" });
+    expect(capturedToken).toContain(",uid=end-user-42,");
+    expect(capturedToken).toContain(",v4=");
   });
 
   it("omits on_behalf_of_user_id (empty body) when no acting user is given — resolves exactly as before", async () => {

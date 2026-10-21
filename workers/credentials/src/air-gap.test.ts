@@ -75,6 +75,32 @@ describe("credential egress air-gap boundary", () => {
     expect(outbound).not.toHaveBeenCalled();
   });
 
+  it("does not let an internal caller substitute another user's personal credential scope", async () => {
+    const runtime = env(true, false);
+    const token = await generateCredentialToken("secret", "s", "agent", undefined, "tenant", {
+      actorId: "actor-a", runId: "run-a", traceId: "a".repeat(32), spanId: "b".repeat(16),
+    });
+    const headers = {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": "tenant",
+      "x-naelao-credential-token": token,
+    };
+
+    const plaintext = await worker.fetch!(new Request("https://credentials/v1/internal/spaces/s/credentials/gemini/plaintext", {
+      method: "POST", headers, body: JSON.stringify({ on_behalf_of_user_id: "actor-b" }),
+    }), runtime, {} as ExecutionContext);
+    const outbound = await worker.fetch!(new Request("https://credentials/v1/internal/spaces/s/outbound", {
+      method: "POST", headers, body: JSON.stringify({ credentialName: "gemini", url: "https://example.com", onBehalfOfUserId: "actor-b" }),
+    }), runtime, {} as ExecutionContext);
+
+    expect(plaintext.status).toBe(403);
+    expect(outbound.status).toBe(403);
+    expect(await plaintext.json()).toMatchObject({ message: "Credential user scope does not match the signed actor" });
+    expect(await outbound.json()).toMatchObject({ message: "Credential user scope does not match the signed actor" });
+    const queries = vi.mocked(runtime.PLATFORM_DB.prepare).mock.calls.map(([sql]) => sql);
+    expect(queries.some((sql) => /FROM\s+credentials\b/i.test(sql))).toBe(false);
+  });
+
   it("rejects non-canonical and duplicated HMAC token fields", async () => {
     const token = await generateCredentialToken("secret", "s", "agent", undefined, "tenant");
     for (const malformed of [token.replace(/^(t=\d+)/, "$1suffix"), `${token},aid=other`]) {

@@ -2250,6 +2250,10 @@ Validation: Credentials full focused suite passed 3 files / 13 tests; Credential
 
 The write idempotency key now also requires an actual string instead of accepting a numeric JSON value through regular-expression coercion. The same 13-test Credentials suite passed with this malformed-write case included.
 
+The Credentials token's signed `uid` was not compared with `on_behalf_of_user_id` on plaintext or outbound requests. That let a caller holding a valid actor-scoped token ask the vault to resolve a different member's personal credential. Both routes now require the requested user to equal the HMAC-signed actor and reject mismatches before credential lookup or network egress. MCP Hub and the Agents vault proxy now mint actor-bearing credential tokens whenever they request a personal scope; legacy actorless calls remain valid only for shared/space-level resolution.
+
+Validation: Credentials Worker suites passed 3 files / 14 tests; real SQLite credential hierarchy plus MCP connector-scope suites passed 46/46; Agents vault-proxy tests passed 4/4. Credentials, MCP Hub, and Agents TypeScript checks passed; `git diff --check` passed. The test cases confirm cross-user requests stop before credential table reads and valid actor-bound resolution remains supported. No deployed service-binding caller was exercised.
+
 ## Router builder-auth ingress follow-up (2026-10-21)
 
 Traced the public `/v1/auth/*` routes through IP-bucketed pre-auth rate limiting and streaming body forwarding. Login, registration, and reset endpoints were bounded, but authenticated `/verify` and `/revoke` were forwarded without a pre-auth rate budget; both can trigger D1 reads/writes and were exposed to avoidable request amplification. Added separate per-IP limits (30/minute for verify, 10/minute for revoke) and route regressions asserting each uses its own bucket and rejects when the RateLimitDO blocks it. The Wrangler manifest contains the RateLimitDO binding in development, staging, and production; no public request header can select a bucket key other than the edge-provided client IP in deployed Workers.

@@ -113,15 +113,23 @@ export function isReservedToolName(toolName: string): boolean {
  * Format: "t=<unix>,aid=<agentId>,v1=<hmac-hex>"; HMAC payload "<spaceId>:<agentId>:<timestamp>".
  * The credentials worker verifies signature + spaceId + 60s freshness before returning plaintext.
  */
-async function generateCredentialToken(platformSecret: string, tenantId: string, spaceId: string, agentId: string): Promise<string> {
+async function generateCredentialToken(platformSecret: string, tenantId: string, spaceId: string, agentId: string, actorId?: string): Promise<string> {
   const timestamp = Math.floor(Date.now() / 1000);
-  if (![tenantId, spaceId, agentId].every((value) => /^[A-Za-z0-9_-]{1,128}$/.test(value))) throw new Error("invalid_credential_token_scope");
+  if (![tenantId, spaceId, agentId, ...(actorId ? [actorId] : [])].every((value) => /^[A-Za-z0-9._:-]{1,160}$/.test(value))) throw new Error("invalid_credential_token_scope");
+  const runId = actorId ? crypto.randomUUID() : "";
+  const traceId = actorId ? crypto.randomUUID().replace(/-/g, "") : "";
+  const spanId = actorId ? crypto.randomUUID().replace(/-/g, "").slice(0, 16) : "";
+  const signingInput = actorId
+    ? `${tenantId}:${spaceId}:${agentId}::${actorId}:${runId}::${traceId}:${spanId}:${timestamp}`
+    : `${tenantId}:${spaceId}:${agentId}::${timestamp}`;
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(platformSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${tenantId}:${spaceId}:${agentId}::${timestamp}`));
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput));
   const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `t=${timestamp},aid=${agentId},tid=${tenantId},v3=${hex}`;
+  return actorId
+    ? `t=${timestamp},aid=${agentId},tid=${tenantId},uid=${actorId},rid=${runId},tr=${traceId},sp=${spanId},v4=${hex}`
+    : `t=${timestamp},aid=${agentId},tid=${tenantId},v3=${hex}`;
 }
 
 type ConnectorProvider = "direct" | "composio" | "pipedream";
@@ -352,7 +360,7 @@ export async function buildAuthHeaders(
   if (!env.CREDENTIALS_WORKER) {
     throw new Error("Credential resolution requires CREDENTIALS_WORKER binding");
   }
-  const token = await generateCredentialToken(env.PLATFORM_SECRET, server.tenant_id, server.space_id, agentId);
+  const token = await generateCredentialToken(env.PLATFORM_SECRET, server.tenant_id, server.space_id, agentId, actingUserId);
   const resp = await env.CREDENTIALS_WORKER.fetch(
     new Request(
       `http://credentials/v1/internal/spaces/${server.space_id}/credentials/${encodeURIComponent(server.auth_secret_name)}/plaintext`,
