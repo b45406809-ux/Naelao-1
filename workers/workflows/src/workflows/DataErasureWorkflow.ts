@@ -24,6 +24,7 @@ import {
   anonymizeOrgUsers,
   claimErasureRequest,
   deleteKvPrefix,
+  erasureAuditId,
   eraseOrgOperationalRecords,
   eraseSpaceD1Records,
   eraseSpaceKnowledgeDocumentResources,
@@ -58,7 +59,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
 
     // ── Step 1: Record erasure request in audit log ──────────────────────────
     await step.do("record-erasure-request", async () => {
-      const auditId = crypto.randomUUID();
+      const auditId = erasureAuditId("requested", params.requestId);
       await this.env.PLATFORM_DB.prepare(
         `INSERT OR IGNORE INTO audit_log
            (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data)
@@ -271,7 +272,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     // ── Step 6: Emit erasure-completed event ──────────────────────────────────
     await step.do("emit-completed", async () => {
       // Final audit log entry
-      const completionAuditId = crypto.randomUUID();
+      const completionAuditId = erasureAuditId("completed", params.requestId);
       await this.env.PLATFORM_DB.prepare(
         `INSERT OR IGNORE INTO audit_log
            (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data)

@@ -18,6 +18,12 @@ export const SPACE_ERASURE_TABLES = [
   "webhook_subscriptions", "whop_sub_merchants", "workflow_budget_reservations", "workflow_executions_v2",
 ] as const;
 
+/** Stable audit keys make D1 writes idempotent when a Workflow step retries after a lost response. */
+export function erasureAuditId(kind: "requested" | "completed", requestId: string): string {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) throw new Error("Invalid erasure request identifier");
+  return `erasure-${kind}-${requestId}`;
+}
+
 export async function deleteKvPrefix(
   kv: Pick<KVNamespace, "list" | "delete">,
   prefix: string

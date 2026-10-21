@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { deleteKvPrefix, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, validateBlueprintExportKey } from "./erasure-cleanup.js";
+import { deleteKvPrefix, erasureAuditId, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, validateBlueprintExportKey } from "./erasure-cleanup.js";
+
+describe("erasure workflow audit idempotency", () => {
+  it("uses stable request-scoped identifiers for retried workflow audit steps", () => {
+    expect(erasureAuditId("requested", "request-a")).toBe("erasure-requested-request-a");
+    expect(erasureAuditId("completed", "request-a")).toBe("erasure-completed-request-a");
+    expect(erasureAuditId("completed", "request-a")).toBe(erasureAuditId("completed", "request-a"));
+    expect(() => erasureAuditId("completed", "../other")).toThrow(/identifier/);
+  });
+});
 
 describe("KV erasure pagination", () => {
   it("deletes every page and returns the number of deleted keys", async () => {
