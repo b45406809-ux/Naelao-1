@@ -213,6 +213,10 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
       "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_builder_password_reset_tokens_expiry'"
     ).first<{ name: string }>();
     expect(index?.name).toBe("idx_builder_password_reset_tokens_expiry");
+    const plan = await env.__db.prepare(
+      "EXPLAIN QUERY PLAN SELECT rowid FROM builder_password_reset_tokens WHERE julianday(expires_at) < julianday('now') LIMIT 1000"
+    ).all<{ detail: string }>();
+    expect(plan.results.some((row) => row.detail.includes("idx_builder_password_reset_tokens_expiry"))).toBe(true);
   });
 
   it("sweeps expired token rows while preserving a live reset token", async () => {
