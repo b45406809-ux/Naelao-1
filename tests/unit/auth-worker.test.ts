@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import authWorker from "../../workers/auth/src/index.js";
+import { cleanExpiredBuilderPasswordResetTokens } from "../../workers/sweeper/src/index.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 // Launch-readiness audit follow-up: workers/auth (login/register/password-reset — the builder's
@@ -189,6 +190,23 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
       "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_builder_password_reset_tokens_expiry'"
     ).first<{ name: string }>();
     expect(index?.name).toBe("idx_builder_password_reset_tokens_expiry");
+  });
+
+  it("sweeps expired token rows while preserving a live reset token", async () => {
+    const env = makeEnv();
+    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    const user = await env.__db.prepare("SELECT id FROM users WHERE email = 'jane@acme.com'").first<{ id: string }>();
+    await env.__db.prepare(
+      "INSERT INTO builder_password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)"
+    ).bind("expired", user?.id, "expired-hash", "2000-01-01T00:00:00.000Z").run();
+    await env.__db.prepare(
+      "INSERT INTO builder_password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)"
+    ).bind("live", user?.id, "live-hash", "2999-01-01T00:00:00.000Z").run();
+
+    await expect(cleanExpiredBuilderPasswordResetTokens(env.__db)).resolves.toBe(1);
+    expect(await env.__db.prepare("SELECT id FROM builder_password_reset_tokens ORDER BY id").all()).toMatchObject({
+      results: [{ id: "live" }],
+    });
   });
 
   it("issues a token by email and the token resets the password", async () => {
