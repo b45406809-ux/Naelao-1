@@ -1705,7 +1705,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/channels/agentmail.ts`
 - [ ] `workers/agents/src/channels/attachment-copy-route.test.ts`
 - [ ] `workers/agents/src/channels/attachment-index-route.test.ts`
-- [ ] `workers/agents/src/channels/attachment-transcription-route.test.ts`
+- [x] `workers/agents/src/channels/attachment-transcription-route.test.ts`
 - [ ] `workers/agents/src/channels/channel-attachment-store.test.ts`
 - [ ] `workers/agents/src/channels/channel-attachment-store.ts`
 - [ ] `workers/agents/src/channels/channel-extension-session.test.ts`

@@ -3,7 +3,7 @@ import { mintInternalToken } from "@naelao/http";
 import { app } from "../index.js";
 
 const secret = "transcription-route-secret";
-function env(options: { owned?: boolean; airGapped?: boolean; mime?: string } = {}) {
+function env(options: { owned?: boolean; airGapped?: boolean; mime?: string; oversizedMediaResponse?: boolean } = {}) {
   let reads = 0;
   let mediaCalls = 0;
   const ai = { run: vi.fn(async (_model: string, input?: Record<string, unknown>) => input?.task === "query" ? ({ answer: "A red truck at a loading dock." }) : ({ text: "recognized words" })) };
@@ -29,6 +29,16 @@ function env(options: { owned?: boolean; airGapped?: boolean; mime?: string } = 
       expect(new URL(request.url).pathname).toBe("/media/extract-audio");
       const input = await request.json() as { tenantId: string; spaceId: string; taskId: string; videoBase64: string };
       expect(input).toMatchObject({ tenantId: "tenant-a", spaceId: "space-a", taskId: "task-a", videoBase64: "AQID" });
+      if (options.oversizedMediaResponse) {
+        let chunks = 0;
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            chunks++;
+            if (chunks <= 3) controller.enqueue(new Uint8Array(1024 * 1024));
+            else controller.close();
+          },
+        }));
+      }
       return Response.json({ audioBase64: btoa("OggS"), mimeType: "audio/ogg", durationLimitSeconds: 60 });
     } }) },
     AI: ai,
@@ -78,6 +88,14 @@ describe("task-scoped audio transcription route", () => {
     const airGapped = env({ airGapped: true });
     expect((await post(airGapped.value)).status).toBe(403);
     expect(airGapped.reads()).toBe(0);
+  });
+
+  it("rejects oversized media sandbox output before calling the transcription provider", async () => {
+    const state = env({ mime: "video/mp4", oversizedMediaResponse: true });
+    const response = await post(state.value);
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error_code: "video_audio_output_limit" });
+    expect(state.ai.run).not.toHaveBeenCalled();
   });
 
   it("answers visual questions only for an authorized image after owner and egress checks", async () => {

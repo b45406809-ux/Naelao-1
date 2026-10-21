@@ -6958,8 +6958,14 @@ app.post("/internal/attachments/transcribe", async (c) => {
         },
         body: JSON.stringify({ tenantId, spaceId: body.spaceId, projectId: body.projectId ?? null, taskId: body.taskId, videoBase64: bytesToBase64(video) }),
       }));
-      const extracted = await response.json<{ audioBase64?: string; mimeType?: string; error?: string }>()
-        .catch((): { audioBase64?: string; mimeType?: string; error?: string } => ({}));
+      // A valid response is limited to a 1 MiB audio payload plus JSON/base64 overhead.
+      // Read under a hard cap before parsing so a faulty container cannot exhaust Worker memory.
+      let extracted: { audioBase64?: string; mimeType?: string; error?: string } = {};
+      try {
+        extracted = JSON.parse(await readBoundedResponseText(response, 2 * 1024 * 1024));
+      } catch {
+        return c.json({ error_code: "video_audio_output_limit" }, 413);
+      }
       if (!response.ok || typeof extracted.audioBase64 !== "string" || extracted.mimeType !== "audio/ogg") {
         return c.json({ error_code: extracted.error ?? "video_audio_extract_failed" }, response.status === 413 ? 413 : response.status === 503 ? 503 : 422);
       }
