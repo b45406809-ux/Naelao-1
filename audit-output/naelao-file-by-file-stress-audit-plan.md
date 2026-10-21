@@ -866,7 +866,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `packages/billing-core/src/providers`
 
 - [ ] `packages/billing-core/src/providers/index.ts`
-- [ ] `packages/billing-core/src/providers/lemon-squeezy.test.ts`
+- [x] `packages/billing-core/src/providers/lemon-squeezy.test.ts`
 - [ ] `packages/billing-core/src/providers/lemon-squeezy.ts`
 - [ ] `packages/billing-core/src/providers/types.ts`
 - [ ] `packages/billing-core/src/providers/whop-oauth-checkout.ts`

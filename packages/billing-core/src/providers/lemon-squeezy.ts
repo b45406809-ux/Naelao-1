@@ -24,8 +24,23 @@ import type {
   CheckoutParams,
   NormalizedBillingEvent,
 } from "./types.js";
+import { readBoundedResponseJson } from "@naelao/http";
 
 const LS_API = "https://api.lemonsqueezy.com/v1";
+const MAX_LS_PROVIDER_RESPONSE_BYTES = 256 * 1024;
+const LS_PROVIDER_TIMEOUT_MS = 15_000;
+
+async function readLsJson<T>(response: Response, operation: string): Promise<T> {
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`Lemon Squeezy ${operation} failed: ${response.status}`);
+  }
+  try {
+    return await readBoundedResponseJson<T>(response, MAX_LS_PROVIDER_RESPONSE_BYTES);
+  } catch {
+    throw new Error(`Lemon Squeezy ${operation} returned an invalid or oversized response`);
+  }
+}
 
 const EVENT_MAP: Record<string, NormalizedBillingEvent["type"]> = {
   order_created: "payment.success",
@@ -140,6 +155,7 @@ export class LemonSqueezyProvider implements BillingProvider {
         "Content-Type": "application/vnd.api+json",
         Accept: "application/vnd.api+json",
       },
+      signal: AbortSignal.timeout(LS_PROVIDER_TIMEOUT_MS),
       body: JSON.stringify({
         data: {
           type: "checkouts",
@@ -162,34 +178,36 @@ export class LemonSqueezyProvider implements BillingProvider {
         },
       }),
     });
-    if (!resp.ok) throw new Error(`Lemon Squeezy checkout failed: ${resp.status}`);
-    const json = (await resp.json()) as { data?: { attributes?: { url?: string } } };
+    const json = await readLsJson<{ data?: { attributes?: { url?: string } } }>(resp, "checkout");
     const url = json.data?.attributes?.url;
-    if (!url) throw new Error("Lemon Squeezy checkout returned no url");
+    if (typeof url !== "string" || url.length > 2048 || new URL(url).protocol !== "https:") throw new Error("Lemon Squeezy checkout returned an invalid url");
     return { url };
   }
 
   async getCustomerPortalUrl(subscriptionId: string): Promise<string> {
     const apiKey = this.env.LEMON_SQUEEZY_API_KEY;
     if (!apiKey) throw new Error("Lemon Squeezy not configured");
-    const resp = await fetch(`${LS_API}/subscriptions/${subscriptionId}`, {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(subscriptionId)) throw new Error("Invalid Lemon Squeezy subscription ID");
+    const resp = await fetch(`${LS_API}/subscriptions/${encodeURIComponent(subscriptionId)}`, {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/vnd.api+json" },
+      signal: AbortSignal.timeout(LS_PROVIDER_TIMEOUT_MS),
     });
-    if (!resp.ok) throw new Error(`Lemon Squeezy subscription fetch failed: ${resp.status}`);
-    const json = (await resp.json()) as {
+    const json = await readLsJson<{
       data?: { attributes?: { urls?: { customer_portal?: string } } };
-    };
+    }>(resp, "subscription fetch");
     const url = json.data?.attributes?.urls?.customer_portal;
-    if (!url) throw new Error("No customer portal url");
+    if (typeof url !== "string" || url.length > 2048 || new URL(url).protocol !== "https:") throw new Error("Invalid customer portal URL");
     return url;
   }
 
   async cancelSubscription(subscriptionId: string): Promise<void> {
     const apiKey = this.env.LEMON_SQUEEZY_API_KEY;
     if (!apiKey) throw new Error("Lemon Squeezy not configured");
-    const resp = await fetch(`${LS_API}/subscriptions/${subscriptionId}`, {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(subscriptionId)) throw new Error("Invalid Lemon Squeezy subscription ID");
+    const resp = await fetch(`${LS_API}/subscriptions/${encodeURIComponent(subscriptionId)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/vnd.api+json" },
+      signal: AbortSignal.timeout(LS_PROVIDER_TIMEOUT_MS),
     });
     if (!resp.ok) throw new Error(`Lemon Squeezy cancel failed: ${resp.status}`);
   }
@@ -212,11 +230,11 @@ export interface LsStoreSummary {
 export async function lsListStores(apiKey: string): Promise<LsStoreSummary[]> {
   const resp = await fetch(`${LS_API}/stores`, {
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/vnd.api+json" },
+    signal: AbortSignal.timeout(LS_PROVIDER_TIMEOUT_MS),
   });
-  if (!resp.ok) throw new Error(`Lemon Squeezy store list failed: ${resp.status}`);
-  const json = (await resp.json()) as {
+  const json = await readLsJson<{
     data?: Array<{ id?: string; attributes?: { name?: string; url?: string } }>;
-  };
+  }>(resp, "store list");
   return (json.data ?? []).map((store) => ({
     id: String(store.id ?? ""),
     name: String(store.attributes?.name ?? ""),
@@ -241,6 +259,7 @@ export async function lsCreateWebhook(
       "Content-Type": "application/vnd.api+json",
       Accept: "application/vnd.api+json",
     },
+    signal: AbortSignal.timeout(LS_PROVIDER_TIMEOUT_MS),
     body: JSON.stringify({
       data: {
         type: "webhooks",
@@ -249,8 +268,7 @@ export async function lsCreateWebhook(
       },
     }),
   });
-  if (!resp.ok) throw new Error(`Lemon Squeezy webhook create failed: ${resp.status}`);
-  const json = (await resp.json()) as { data?: { id?: string } };
+  const json = await readLsJson<{ data?: { id?: string } }>(resp, "webhook create");
   const id = json.data?.id;
   if (!id) throw new Error("Lemon Squeezy webhook create returned no id");
   return { id: String(id) };
@@ -261,6 +279,7 @@ export async function lsDeleteWebhook(apiKey: string, webhookId: string): Promis
   const resp = await fetch(`${LS_API}/webhooks/${encodeURIComponent(webhookId)}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/vnd.api+json" },
+    signal: AbortSignal.timeout(LS_PROVIDER_TIMEOUT_MS),
   });
   if (!resp.ok && resp.status !== 404) {
     throw new Error(`Lemon Squeezy webhook delete failed: ${resp.status}`);
