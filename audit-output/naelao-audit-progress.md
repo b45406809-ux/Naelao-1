@@ -1411,6 +1411,8 @@ The fresh suite showed the older failure-handling test bypassed the newly requir
 
 Validation: `agent-task-workflow-failure-handling.test.ts` passed 1 file / 9 tests. The shared suite's other failures remain open.
 
+Committed and pushed as `99cbef0c`; refreshed the inventory: 1,976 tracked files, 1,770 source/config checklist rows, and 379 checked rows.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.
