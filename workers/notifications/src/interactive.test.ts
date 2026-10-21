@@ -99,6 +99,7 @@ describe("interactive mobile approval delivery", () => {
     const payload = JSON.parse((outbound.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
     expect(payload.from).toBe("team@example.org");
     expect(payload.reply_to).toBe("reply-a1@example.test");
+    expect((outbound.mock.calls[0] as unknown as [string, RequestInit])[1].signal).toBeInstanceOf(AbortSignal);
   });
 
   for (const channel of ["telegram", "whatsapp"]) it(`sends provider-format review buttons for ${channel}`, async () => {
@@ -114,6 +115,35 @@ describe("interactive mobile approval delivery", () => {
     const res = await worker.fetch!(new Request("https://notifications/internal/notify", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" }, body: JSON.stringify({ channel: "whatsapp", space_id: "space", to: "1", message: "Escalation" }) }), env(), {} as ExecutionContext);
     expect(res.status).toBe(502); expect(await res.json()).toMatchObject({ delivered: false });
   });
+
+  for (const channel of ["slack", "telegram"]) {
+    it(`rejects oversized ${channel} response JSON and sets an upstream deadline`, async () => {
+      const outbound = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(
+        JSON.stringify({ ok: true, padding: "x".repeat(20 * 1024) }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ));
+      vi.stubGlobal("fetch", outbound);
+      const credentials = { async fetch() { return Response.json({ value: "provider-token" }); } };
+      const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+        body: JSON.stringify({ channel, space_id: "space", to: "recipient", message: "hello" }),
+      }), {
+        ...env(),
+        PLATFORM_SECRET: "platform-secret",
+        CREDENTIALS_WORKER: credentials as unknown as Fetcher,
+      }, {} as ExecutionContext);
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({ delivered: false });
+      if (channel === "slack") {
+        expect(new Headers(outbound.mock.calls[0]?.[1]?.headers).get("authorization")).toContain("provider-token");
+      } else {
+        expect(String(outbound.mock.calls[0]?.[0])).toContain("botprovider-token");
+      }
+      expect(outbound.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+    });
+  }
 
   it("uses an explicitly selected per-Space Meta direct transport even when platform Twilio is configured", async () => {
     const outbound = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ messages: [{ id: "wamid.1" }] }));

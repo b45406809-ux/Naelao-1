@@ -61,6 +61,16 @@ const CHANNEL_SEND_CREDENTIAL: Record<string, string> = {
   telegram: "TELEGRAM_BOT_TOKEN",
   whatsapp: "WHATSAPP_ACCESS_TOKEN",
 };
+const CHANNEL_SEND_TIMEOUT_MS = 8_000;
+const PROVIDER_JSON_RESPONSE_MAX_BYTES = 16 * 1024;
+
+async function readProviderJson<T>(response: Response): Promise<T | null> {
+  try {
+    return JSON.parse(await readBoundedResponseText(response, PROVIDER_JSON_RESPONSE_MAX_BYTES)) as T;
+  } catch {
+    return null;
+  }
+}
 
 /** Sign the Credentials worker's short-lived v3 resolver token for this Space. The generic
  * internal-worker token is intentionally not accepted by the plaintext endpoint. */
@@ -185,7 +195,7 @@ async function sendChatMessage(
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chat_id: to, text: message, ...(opts.messageThreadId ? { message_thread_id: opts.messageThreadId } : {}), ...(actions.length ? { reply_markup: { inline_keyboard: [actions.map(action => ({ text: action.label, callback_data: action.id }))] } } : {}) }),
-        signal: AbortSignal.timeout(8_000),
+        signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
       if (resp.status === 401 && opts.installationId && opts.providerConnectionId) {
         await markExtensionConnectionError(env, { tenantId: opts.tenantId, spaceId: opts.spaceId, installationId: opts.installationId, connectionId: opts.providerConnectionId });
@@ -195,22 +205,23 @@ async function sendChatMessage(
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${cred}` },
         body: JSON.stringify({ channel: to, text: message, ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}) }),
+        signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
       // Slack answers 200 with ok:false for real failures (bad token, not in channel), so the
       // HTTP status alone would report a silent drop as a success.
-      const payload = await resp.clone().json<{ ok?: boolean; error?: string }>()
-        .catch(() => ({ ok: false }) as { ok?: boolean; error?: string });
-      if (!payload.ok) {
-        if (opts.installationId && opts.providerConnectionId && ["invalid_auth", "token_revoked", "account_inactive", "missing_scope"].includes(payload.error ?? "")) {
+      const payload = await readProviderJson<{ ok?: boolean; error?: string }>(resp);
+      if (!payload?.ok) {
+        if (opts.installationId && opts.providerConnectionId && ["invalid_auth", "token_revoked", "account_inactive", "missing_scope"].includes(payload?.error ?? "")) {
           await markExtensionConnectionError(env, { tenantId: opts.tenantId, spaceId: opts.spaceId, installationId: opts.installationId, connectionId: opts.providerConnectionId });
         }
-        return { delivered: false, reason: `slack: ${payload.error ?? "rejected"}`, status: resp.status };
+        return { delivered: false, reason: `slack: ${payload?.error ?? "rejected"}`, status: resp.status };
       }
     } else if (channel === "discord") {
       resp = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(to)}/messages`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bot ${cred}` },
         body: JSON.stringify({ content: message }),
+        signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
     } else if (viaTwilio) {
       // Twilio transport (see launchpad/channel-pairing.ts): checked FIRST, because when the
@@ -228,6 +239,7 @@ async function sendChatMessage(
           To: `whatsapp:+${to.replace(/^\+/, "")}`,
           Body: message,
         }),
+        signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
     } else if (channel === "whatsapp") {
       // The Space vault stores Meta's access token and phone-number ID separately. Accept the old
@@ -253,7 +265,7 @@ async function sendChatMessage(
         body: JSON.stringify(actions.length ? { messaging_product: "whatsapp", to, type: "interactive", interactive: {
           type: "button", body: { text: message.slice(0, 1024) }, action: { buttons: actions.map(action => ({ type: "reply", reply: { id: action.id, title: action.label } })) },
         } } : { messaging_product: "whatsapp", to, type: "text", text: { body: message } }),
-        signal: AbortSignal.timeout(8_000),
+        signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
       if ((resp.status === 401 || resp.status === 403) && opts.installationId && opts.providerConnectionId) {
         await markExtensionConnectionError(env, { tenantId: opts.tenantId, spaceId: opts.spaceId, installationId: opts.installationId, connectionId: opts.providerConnectionId });
@@ -263,7 +275,7 @@ async function sendChatMessage(
     }
 
     if (!resp.ok) return { delivered: false, reason: `${channel} returned ${resp.status}`, status: resp.status };
-    if (channel === "telegram" && !(await resp.clone().json<{ ok?: boolean; description?: string }>().catch(() => ({ ok: false }))).ok) return { delivered: false, reason: "telegram rejected the message", status: resp.status };
+    if (channel === "telegram" && !(await readProviderJson<{ ok?: boolean; description?: string }>(resp))?.ok) return { delivered: false, reason: "telegram rejected the message", status: resp.status };
     return { delivered: true };
   } catch (err) {
     return { delivered: false, reason: `${channel} send failed: ${(err as Error).message}` };
@@ -383,6 +395,7 @@ async function sendApnsPush(
       "content-type": "application/json",
     },
     body: payload,
+    signal: AbortSignal.timeout(8_000),
   });
 
   if (!res.ok) {
@@ -513,6 +526,7 @@ async function sendEmailNow(
       subject,
       html,
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!res.ok) {

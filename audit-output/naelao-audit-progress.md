@@ -2151,3 +2151,9 @@ The Vault contract suite passed 5/5, Credentials TypeScript passed, and `git dif
 Credential resolution checked that the requesting Space was active but fetched its parent product's shared credential without checking the product root's tenant or status. A suspended/deleted root could therefore keep supplying secrets to an active child. Product fallback now requires the active child and an active same-tenant root before loading the root credential. The regression suspends the product root and confirms its secret is no longer returned to the active business child.
 
 Credential hierarchy tests passed 42/42, Credentials TypeScript passed, and `git diff --check` passed. The Credentials entrypoint remains unchecked overall; this closes only the product-fallback status path.
+
+## Notifications provider response and deadline limits (2026-10-21)
+
+Slack and Telegram success responses were parsed with unbounded `response.json()`. Replaced these with a 16 KiB streaming JSON reader. The first stress test exposed that parsing a clone and canceling the oversized tee branch can hang while the original branch remains open; the handlers now consume the response directly. Added 8-second deadlines to Slack, Discord, and Twilio sends, and 8-second APNs / 15-second Resend deadlines; Telegram and WhatsApp use the shared 8-second channel limit.
+
+Regressions send oversized `ok: true` Slack and Telegram responses and assert the notification is rejected, the provider request carries an abort signal, and Resend also receives a deadline. Notifications tests passed 24/24, TypeScript passed, and `git diff --check` passed. No live provider timeout or response was exercised. The Notifications entrypoint and test file remain unchecked overall.
