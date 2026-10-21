@@ -104,6 +104,23 @@ describe("/internal/business-email/provision", () => {
     expect(writes[0]?.query).toContain("INSERT INTO agent_email_addresses");
     expect(writes[0]?.values).toEqual([await hashEmailAddress(address), TENANT, "s1", "agent-a", expect.any(String)]);
   });
+
+  it("does not provision email for a suspended organization even when the Space row is active", async () => {
+    const writes: string[] = [];
+    const env = makeEnv({
+      EMAIL_INGRESS_DOMAIN: "agents.example.test",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: () => ({
+        first: async () => query.includes("SELECT s.id FROM spaces s WHERE") ? null : { id: "s1", status: "active", config_json: "{}" },
+        run: async () => { writes.push(query); return { success: true }; },
+      }) }) } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const response = await post("/internal/business-email/provision", { spaceId: "s1", tenantId: TENANT, agentId: "agent-a" }, env,
+      { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(writes).toEqual([]);
+  });
 });
 
 describe("/internal/business-email/send", () => {
@@ -113,7 +130,7 @@ describe("/internal/business-email/send", () => {
       PLATFORM_DB: {
         prepare: (query: string) => ({ bind: () => ({
           first: async () => {
-            if (query.includes("SELECT id FROM spaces")) return { id: "s1" };
+            if (query.includes("SELECT s.id FROM spaces s WHERE")) return { id: "s1" };
             if (query.includes("SELECT address_hash")) return null;
             if (query.includes("COUNT(*)")) return { count: 0 };
             return null;
@@ -129,6 +146,24 @@ describe("/internal/business-email/send", () => {
     const body = await response.json() as { address: string };
     expect(response.status).toBe(200);
     expect(body.address).toBe(await createReplyAddress({ domain: "agents.example.test", tenantId: TENANT, spaceId: "s1", taskId: "run-1", secret: SECRET }));
+  });
+
+  it("does not mint a reply address for a suspended organization", async () => {
+    const writes: string[] = [];
+    const env = makeEnv({
+      EMAIL_INGRESS_DOMAIN: "agents.example.test",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: () => ({
+        first: async () => query.includes("SELECT s.id FROM spaces s WHERE") ? null : null,
+        run: async () => { writes.push(query); return { success: true }; },
+      }) }) } as never,
+    });
+    const token = await mintInternalToken(SECRET, TENANT);
+    const response = await post("/internal/business-email/reply-address", {
+      tenantId: TENANT, spaceId: "s1", taskId: "run-1", agentId: "naelao-agent",
+    }, env, { "x-naelao-tenant-id": TENANT, "x-naelao-internal-token": token });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(writes).toEqual([]);
   });
 
   it("does not send task-correlated mail unless Reply-To belongs to the current task", async () => {

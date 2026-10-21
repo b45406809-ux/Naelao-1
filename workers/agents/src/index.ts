@@ -2485,6 +2485,7 @@ app.post("/internal/document-node-lease/:operation", async (c) => {
   if (!spaceId || !projectId || !/^[A-Za-z0-9._:-]{1,160}$/.test(nodeId) || !holderId || !["HUMAN", "AGENT"].includes(String(holderType))) {
     return c.json({ error_code: "bad_request", message: "space_id, project_id, node_id, holder_id and holder_type are required" }, 400);
   }
+  if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (!c.env.CONCURRENCY_DO) return c.json({ error_code: "unavailable", message: "node lease coordinator is not bound" }, 503);
   const operation = c.req.param("operation");
   if (!["claim", "renew", "release", "status"].includes(operation)) return c.json({ error_code: "not_found" }, 404);
@@ -3569,6 +3570,7 @@ app.post("/internal/agent-approvals", async (c) => {
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
   }
+  if (!await isActiveTenantSpace(c.env, body.spaceId, headerTenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const stub = await getAgentDOForSpace(c.env, headerTenantId, body.spaceId, "naelao-agent", c.get("requestId"));
   const doResp = await stub.fetch(new Request("http://agent-do/approvals/create-external", {
     method: "POST",
@@ -3588,6 +3590,7 @@ app.post("/internal/agent-approvals/consume", async (c) => {
   if (!body?.spaceId || !body.approvalId || !body.agentId || !body.actionKey) {
     return c.json({ consumed: false, reason: "bad_request" }, 400);
   }
+  if (!await isActiveTenantSpace(c.env, body.spaceId, headerTenantId)) return c.json({ consumed: false, reason: "tenant_suspended" }, 403);
   const stub = getHitlDo(c.env, body.spaceId);
   const consumeResp = await stub.fetch(new Request(`http://hitl/requests/${body.approvalId}/consume`, {
     method: "POST",
@@ -6845,6 +6848,7 @@ app.post("/internal/business-email/provision", async (c) => {
   const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; slug?: string; displayName?: string }>().catch(() => null);
   if (!body?.spaceId || !body.tenantId) return c.json({ error_code: "bad_request", message: "spaceId and tenantId are required" }, 400);
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
+  if (!await isActiveTenantSpace(c.env, body.spaceId, body.tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   const activeSpace = await c.env.PLATFORM_DB.prepare("SELECT status, config_json FROM spaces WHERE id = ? AND tenant_id = ?")
     .bind(body.spaceId, body.tenantId).first<{ status: string; config_json: string | null }>();
   if (!activeSpace || activeSpace.status !== "active") return c.json({ error_code: "space_not_found" }, 404);
@@ -6942,10 +6946,7 @@ app.post("/internal/business-email/reply-address", async (c) => {
   }
   const domain = normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN);
   if (!domain) return c.json({ error_code: "email_ingress_not_configured" }, 409);
-  const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active'"
-  ).bind(body.spaceId, tenantId).first<{ id: string }>();
-  if (!space) return c.json({ error_code: "space_not_found" }, 404);
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
 
   const address = await createReplyAddress({ domain, tenantId, spaceId: body.spaceId, taskId: body.taskId, secret: c.env.PLATFORM_SECRET });
   const addressHash = await hashEmailAddress(address);
