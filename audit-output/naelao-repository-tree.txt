@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2025
-Files with source or executable-configuration extensions: 1818
-Inventory revision: 2026-10-21 audit refresh at b20dacbf
+Files: 2026
+Files with source or executable-configuration extensions: 1820
+Inventory revision: refreshed 2026-10-21 after Provisioner commit b20dacbf
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1044,6 +1044,8 @@ pnpm-lock.yaml
 pnpm-workspace.yaml
 project_tree.md
 prompts.xml
+repomix-output.xml
+repomix.shell.config.json
 repomix/
   IMPLEMENTATION_PLAN.md
   README.md
@@ -1088,8 +1090,6 @@ repomix/
     batch-12-items-112-119.md
     batch-13-items-120-130.md
   verify-configs.mjs
-repomix-output.xml
-repomix.shell.config.json
 run-phase (1).mjs
 run-phase.mjs
 scripts/
@@ -1718,9 +1718,9 @@ workers/
         loop-evaluator.test.ts
         loop-evaluator.ts
         loop.ts
+        memory-os.ts
         memory/
           gate-memory.ts
-        memory-os.ts
         mention-router.ts
         observe.ts
         package-egress.test.ts
@@ -2077,6 +2077,7 @@ workers/
       air-gap.test.ts
       index.ts
       interactive.test.ts
+      queue-config.test.ts
       queue-idempotency.test.ts
       web-push.test.ts
       web-push.ts

@@ -10,7 +10,7 @@ workers_dev = false
 
 [[queues.consumers]]
 queue = "naelao-notifications-queue"
-max_batch_size = 100
+max_batch_size = 10
 max_batch_timeout = 10
 max_retries = 3
 max_concurrency = 50
@@ -39,7 +39,7 @@ service = "naelao-credentials"
 
 [[env.staging.queues.consumers]]
 queue = "naelao-notifications-queue"
-max_batch_size = 100
+max_batch_size = 10
 max_batch_timeout = 10
 max_retries = 3
 max_concurrency = 50
@@ -58,7 +58,7 @@ service = "naelao-credentials"
 
 [[env.production.queues.consumers]]
 queue = "naelao-notifications-queue"
-max_batch_size = 100
+max_batch_size = 10
 max_batch_timeout = 10
 max_retries = 3
 max_concurrency = 50

@@ -2165,3 +2165,11 @@ The same Notifications pass found that `sendChatMessage` returned raw fetch exce
 Queue logging included webhook URLs verbatim on SSRF rejection and delivery failure. These URLs can contain shared secrets in their path or query. APNs, browser-push, and queue-level provider exceptions were also logged with raw error messages; Resend failure handling logged provider response text and email recipients. Logs now retain only safe status/error-class data and no endpoint, recipient, or provider exception body. Added blocked-webhook and failed-delivery regressions with secret-bearing URLs.
 
 The full Notifications suite passed 26/26, TypeScript passed, and `git diff --check` passed. The worker entrypoint and webhook test remain unchecked overall; the reviewed log paths are a scoped pass.
+
+## Notifications queue batch runtime bound (2026-10-21)
+
+The Notifications queue processes messages serially, and external provider operations can wait up to 15 seconds. A 100-message batch could therefore occupy a consumer invocation for roughly 25 minutes before database and application overhead, creating a timeout and retry risk. Reduced `max_batch_size` to 10 in development, staging, and production, bounding the provider-wait portion to about 150 seconds per batch. Added a regression that checks all three consumer blocks retain this bound and their retry/timeout settings.
+
+Notifications tests passed 27/27 after the new config regression, the focused config test passed 1/1, Notifications TypeScript passed, Wrangler dry runs passed for development, staging, and production, and `git diff --check` passed. The first TypeScript check found a mismatch between the test's DOM `URL` and installed Node URL types; the test now uses the package working directory. Throughput under deployed queue load and provider throttling remain unmeasured; the existing maximum consumer concurrency is 50.
+
+Refreshed the repository tree and source checklist after adding the queue-config regression: 2,026 tracked files / 1,820 source or executable-configuration files; 493 checks recorded and 1,327 source/config files remain open. The inventory reconciliation also found that the already exercised SQLite push-subscription cap test was missing from the checklist; added it as checked based on its existing 2/2 execution recorded in the prior Web Push audit.
