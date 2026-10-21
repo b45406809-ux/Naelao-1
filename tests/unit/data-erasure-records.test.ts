@@ -31,7 +31,8 @@ describe("data erasure D1 records", () => {
     const db = createFakeD1(platformMigrations);
     const retainedOrSeparatelyHandled = new Set([
       "developer_earnings_ledger", "launchpad_orders", "platform_provenance", "template_subscriptions",
-      "usage_events", "wallet_transactions", "whop_payout_requests", "whop_sub_merchants",
+      "portal_domains", "space_provisioning_leases", "usage_events", "wallet_transactions",
+      "whop_payout_requests", "whop_sub_merchants",
     ]);
     const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
     const scoped = new Set<string>();
@@ -130,6 +131,22 @@ describe("data erasure D1 records", () => {
       .run("invite-a", "space-a", "space-a", "invitee@example.com", "token-hash", "user-a", "2026-12-01");
     db.db.prepare("INSERT INTO gdpr_requests (id, tenant_id, request_type, subject_type, subject_id, subject_email, requested_by) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("gdpr-a", "org-a", "export", "org_member", "user-a", "person@example.com", "user-a");
+    db.db.prepare("INSERT INTO gdpr_requests (id, tenant_id, request_type, subject_type, subject_id, requested_by) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("erasure-a", "org-a", "erasure", "org_member", "user-a", "user-a");
+    db.db.prepare("INSERT INTO gdpr_erasure_outbox (request_id, tenant_id, payload_json) VALUES (?, ?, ?)")
+      .run("erasure-a", "org-a", JSON.stringify({ requestedBy: "user-a", reason: "private reason" }));
+    db.db.prepare("INSERT INTO portal_domains (kind, hostname, tenant_id, space_id) VALUES (?, ?, ?, ?)")
+      .run("domain", "private.example", "org-a", "space-a");
+    db.db.prepare("INSERT INTO idempotency_keys (id, tenant_id, resource_type, request_hash, response_json, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("idem-a", "org-a", "api_call", "private-hash", "private-response", "2099-01-01");
+    db.db.prepare("INSERT INTO space_provisioning_leases (space_id, tenant_id, lease_token, lease_expires_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run("space-a", "org-a", "private-lease-token", 9999999999, 9999999999);
+    db.db.prepare("INSERT INTO eval_suites (id, space_id, tenant_id, name) VALUES (?, ?, ?, ?)")
+      .run("suite-a", "space-a", "org-a", "Sensitive evaluation");
+    db.db.prepare("INSERT INTO eval_runs (id, suite_id, space_id, tenant_id) VALUES (?, ?, ?, ?)")
+      .run("run-a", "suite-a", "space-a", "org-a");
+    db.db.prepare("INSERT INTO eval_results (id, run_id, suite_id, tenant_id, case_index, input, actual_output) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run("result-a", "run-a", "suite-a", "org-a", 0, "private input", "private output");
     db.db.prepare("INSERT INTO audit_log (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run("audit-a", "org-a", "user-a", "user", "erasure_requested", "org", "org-a", "{}");
 
@@ -138,6 +155,11 @@ describe("data erasure D1 records", () => {
 
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM org_members WHERE org_id = ?").get("org-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM portal_domains WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM idempotency_keys WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM eval_results WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM space_provisioning_leases WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM gdpr_erasure_outbox WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE tenant_id = ?").get("org-a")).toEqual({ count: 1 });
     expect(db.db.prepare("SELECT status FROM template_subscriptions WHERE id = ?").get("sub-a")).toEqual({ status: "cancelled" });
     expect(db.db.prepare("SELECT owner_email FROM whop_sub_merchants WHERE id = ?").get("merchant-a"))

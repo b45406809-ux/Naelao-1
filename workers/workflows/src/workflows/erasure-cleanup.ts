@@ -61,6 +61,14 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
   await db.batch([
     db.prepare("DELETE FROM org_members WHERE org_id = ?").bind(orgId),
     db.prepare("DELETE FROM api_keys WHERE org_id = ?").bind(orgId),
+    // Remove tenant-keyed request material and records that are not reliably space-cascaded.
+    db.prepare("DELETE FROM idempotency_keys WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM eval_results WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM portal_domains WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM space_provisioning_leases WHERE tenant_id = ?").bind(orgId),
+    // The queue has already accepted the request before the workflow can start. Once erasure
+    // begins, remove the retry payload too; it contains the owner's ID and free-text reason.
+    db.prepare("DELETE FROM gdpr_erasure_outbox WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM business_memberships WHERE business_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?) OR product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId, orgId),

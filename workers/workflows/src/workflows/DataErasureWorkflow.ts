@@ -2,17 +2,17 @@
  * DataErasureWorkflow
  *
  * Organization data-erasure workflow. Permanently removes the data covered by its cleanup steps.
- * It includes a 24-hour delay after suspension. A request/cancellation and restoration path is
- * not currently wired, so this delay is not a reversible cooling-off window.
+ * It includes a 24-hour delay after suspension. The owner may cancel during that window; a
+ * conditional request claim arbitrates cancellation against destructive cleanup.
  *
  * Steps:
  *   1. record-erasure-request  — insert audit_log entry
  *   2. suspend-org             — suspend org + all its spaces
  *   [24-hour cooling-off sleep]
- *   3. delete-spaces-data      — delete usage_events; log R2 deletion intent
+ *   3. delete-spaces-data      — erase space D1, R2, Vectorize, ProductUserDO and provider state
  *   4. delete-user-pii         — anonymize user email / password_hash
  *   5. cancel-subscription     — mark subscription cancelled
- *   6. emit-completed          — audit log + emit org.erased event
+ *   6. emit-completed          — audit log + emit org.erased and analytics correction events
  *
  * Gap IDs fulfilled: G-D01, G-D02, G-D03 (GDPR erasure pipeline)
  */
