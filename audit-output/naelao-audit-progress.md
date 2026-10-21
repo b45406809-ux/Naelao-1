@@ -1993,3 +1993,9 @@ Validation: trigger regression passed 1/1; Triggers TypeScript, Biome lint, and 
 The Knowledge worker's HMAC-protected internal reference resolution, shared-document read, workflow document-status update, and chunk-ingestion routes checked tenant and row scope but did not require an active tenant and Space. Delayed internal work could therefore read content or continue writing R2, D1, and Vectorize state after suspension. These routes now check active ownership before processing, and chunk ingestion rechecks after embedding and before each chunk and vector batch write. Added regressions showing all four internal routes reject a suspended Space before reading or mutating document data.
 
 Validation: focused Knowledge regressions passed 8/8; Knowledge TypeScript, targeted Biome security lint, and `git diff --check` passed. Full repository lint includes existing diagnostics outside this change, so it was not used as a clean gate. Refreshed inventory: 2,038 tracked files / 1,832 code and configuration files; 462 checklist rows reviewed. The exhaustive audit remains in progress.
+
+## Analytics metrics active-tenant gates (2026-10-21)
+
+The Analytics space-metrics ownership check accepted suspended Spaces (`status != 'deleted'`), and tenant metrics trusted the tenant header without checking organization status. Both routes now require active status before reading the tenant-scoped cache or querying provider analytics. Added regressions asserting suspended space and tenant requests return not found before cache access.
+
+Validation: focused Analytics suite passed 5/5; Analytics TypeScript, targeted Biome security lint, and `git diff --check` passed. Inventory remains 2,038 tracked files / 1,832 code and configuration files with 462 checklist rows reviewed. The audit remains active.

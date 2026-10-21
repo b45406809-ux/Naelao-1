@@ -47,9 +47,15 @@ export interface AnalyticsEnv {
 
 async function verifySpaceOwnership(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
   const row = await db
-    .prepare("SELECT 1 FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'")
+    .prepare(`SELECT 1 FROM spaces s JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active'
+              WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'`)
     .bind(spaceId, tenantId)
     .first();
+  return row !== null;
+}
+
+async function verifyActiveTenant(db: D1Database, tenantId: string): Promise<boolean> {
+  const row = await db.prepare("SELECT 1 FROM orgs WHERE id = ? AND status = 'active'").bind(tenantId).first();
   return row !== null;
 }
 
@@ -213,6 +219,10 @@ app.get("/metrics/tenant", async (c) => {
       { error_code: "unauthorized", message: "Missing x-naelao-tenant-id header" },
       401
     );
+  }
+
+  if (!(await verifyActiveTenant(c.env.PLATFORM_DB, tenantId))) {
+    return c.json({ error_code: "not_found", message: "Tenant not found" }, 404);
   }
 
   const period = parsePeriod(new URL(c.req.url).searchParams.get("period"));
