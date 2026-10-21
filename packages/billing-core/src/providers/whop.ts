@@ -1,3 +1,5 @@
+import { readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
+
 /**
  * Whop platform-managed sub-merchant wallets — the business-bank-account rail that REPLACES the
  * Stripe/LS Wallet Connect rail entirely (see git history for the removed
@@ -30,6 +32,8 @@
  */
 
 const WHOP_API = "https://api.whop.com";
+const MAX_WHOP_RESPONSE_BYTES = 128 * 1024;
+const WHOP_REQUEST_TIMEOUT_MS = 15_000;
 
 async function whopRequest<T>(
   apiKey: string,
@@ -45,19 +49,17 @@ async function whopRequest<T>(
       Accept: "application/json",
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(WHOP_REQUEST_TIMEOUT_MS),
   });
-  const text = await resp.text();
-  let json: unknown;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = { raw: text };
-  }
   if (!resp.ok) {
-    const detail = typeof json === "object" && json !== null ? JSON.stringify(json) : text;
+    const detail = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
     throw new Error(`Whop ${method} ${path} failed: ${resp.status} ${detail}`.slice(0, 500));
   }
-  return json as T;
+  try {
+    return await readBoundedResponseJson<T>(resp, MAX_WHOP_RESPONSE_BYTES);
+  } catch {
+    throw new Error(`Whop ${method} ${path} returned an invalid or oversized response`);
+  }
 }
 
 export interface WhopSubMerchant {
@@ -108,10 +110,10 @@ export async function createSubMerchant(
       metadata: { naelao_tenant_id: params.tenantId, naelao_business_id: params.businessId },
     }
   );
-  if (!result.id) throw new Error("Whop sub-merchant creation returned no company id");
+  if (typeof result.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(result.id)) throw new Error("Whop sub-merchant creation returned no valid company id");
 
   const onboardingUrl = result.onboarding_url ?? result.account_link ?? result.verification_url;
-  if (onboardingUrl) {
+  if (onboardingUrl && onboardingUrl.length <= 2048 && new URL(onboardingUrl).protocol === "https:") {
     return { company_id: result.id, status: "awaiting_kyc", onboarding_url: onboardingUrl };
   }
   if (result.requires_onboarding) {
@@ -202,7 +204,7 @@ export async function createSubMerchantCheckout(
     }
   );
   const url = result.checkout_url ?? result.url;
-  if (!url) throw new Error("Whop checkout link returned no url");
+  if (!url || url.length > 2048 || new URL(url).protocol !== "https:") throw new Error("Whop checkout link returned no valid HTTPS url");
   return { checkout_url: url };
 }
 
@@ -224,7 +226,7 @@ export async function createWithdrawal(
     `/v5/platforms/sub_merchants/${encodeURIComponent(companyId)}/withdrawals`,
     { destination_id: params.destinationId, amount: params.amountCents }
   );
-  if (!result.id) throw new Error("Whop withdrawal returned no id");
+  if (typeof result.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(result.id)) throw new Error("Whop withdrawal returned no valid id");
   return { withdrawal_id: result.id, status: result.status ?? "pending" };
 }
 
@@ -241,7 +243,7 @@ export async function transferPlatformFee(
     `/v5/platforms/sub_merchants/${encodeURIComponent(companyId)}/transfers`,
     { amount: amountCents, destination: "platform" }
   );
-  if (!result.id) throw new Error("Whop platform-fee transfer returned no id");
+  if (typeof result.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(result.id)) throw new Error("Whop platform-fee transfer returned no valid id");
   return { transfer_id: result.id };
 }
 

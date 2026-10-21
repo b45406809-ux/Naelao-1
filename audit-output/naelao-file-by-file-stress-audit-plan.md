@@ -872,6 +872,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/billing-core/src/providers/whop-oauth-checkout.test.ts`
 - [ ] `packages/billing-core/src/providers/whop-oauth-checkout.ts`
 - [ ] `packages/billing-core/src/providers/whop-platform-plan.ts`
+- [x] `packages/billing-core/src/providers/whop-provider-boundaries.test.ts`
 - [ ] `packages/billing-core/src/providers/whop.ts`
 
 ### `packages/bridge`

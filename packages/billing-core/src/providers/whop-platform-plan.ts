@@ -1,3 +1,5 @@
+import { readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
+
 /**
  * Whop as the PLATFORM billing provider (builder Growth/Business plan checkout) — a replacement
  * for Lemon Squeezy's `/billing/checkout`/`/billing/portal`/webhook path specifically (item 45's
@@ -28,6 +30,8 @@
 import type { NormalizedBillingEvent } from "./types.js";
 
 const WHOP_API = "https://api.whop.com/api/v5";
+const MAX_WHOP_PLAN_RESPONSE_BYTES = 128 * 1024;
+const WHOP_PLAN_REQUEST_TIMEOUT_MS = 15_000;
 
 async function whopSellerRequest<T>(
   apiKey: string,
@@ -43,19 +47,17 @@ async function whopSellerRequest<T>(
       Accept: "application/json",
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(WHOP_PLAN_REQUEST_TIMEOUT_MS),
   });
-  const text = await resp.text();
-  let json: unknown;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = { raw: text };
-  }
   if (!resp.ok) {
-    const detail = typeof json === "object" && json !== null ? JSON.stringify(json) : text;
+    const detail = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
     throw new Error(`Whop platform-plan ${method} ${path} failed: ${resp.status} ${detail}`.slice(0, 500));
   }
-  return json as T;
+  try {
+    return await readBoundedResponseJson<T>(resp, MAX_WHOP_PLAN_RESPONSE_BYTES);
+  } catch {
+    throw new Error(`Whop platform-plan ${method} ${path} returned an invalid or oversized response`);
+  }
 }
 
 function pick(obj: Record<string, unknown> | undefined, ...keys: string[]): string {
@@ -86,7 +88,7 @@ export async function createWhopPlatformPlanCheckout(
     metadata: params.metadata,
   });
   const url = pick(result, "checkout_url", "purchase_url", "url");
-  if (!url) throw new Error("Whop platform-plan checkout_configuration response did not include a checkout url");
+  if (!url || url.length > 2048 || new URL(url).protocol !== "https:") throw new Error("Whop platform-plan checkout_configuration response did not include a valid HTTPS checkout url");
   return { checkout_url: url };
 }
 

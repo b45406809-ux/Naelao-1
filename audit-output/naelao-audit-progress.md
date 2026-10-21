@@ -1677,4 +1677,10 @@ Extended the provider tests for oversized streamed checkout and store-list respo
 
 The OAuth-delegated Whop checkout helper buffered complete response text and had no request deadline while performing access-pass, plan, and checkout-configuration calls. It now caps successful JSON at 128 KiB, error diagnostics at 8 KiB, applies 15-second timeouts, validates provider IDs before using them in later steps, and only returns HTTPS checkout links. Oversized or invalid responses stop the flow before further provider requests.
 
-Added tests for the three-step success path, timeout signals, oversized first-step response, and insecure checkout URLs. Validation passed: billing-core package suite 25/25 across seven files, package TypeScript, and `git diff --check`. The new test file is checked; the implementation remains open for idempotency/recovery after partial provider creation and live Whop OAuth contract validation. Inventory refresh and commit are pending.
+Added tests for the three-step success path, timeout signals, oversized first-step response, and insecure checkout URLs. Validation passed: billing-core package suite 25/25 across seven files, package TypeScript, and `git diff --check`. The new test file is checked; the implementation remains open for idempotency/recovery after partial provider creation and live Whop OAuth contract validation. Inventory refreshed and code pushed in `a357c61b`.
+
+## Whop platform checkout and sub-merchant response ceilings (2026-10-21)
+
+The platform sub-merchant and platform-plan adapters also buffered unbounded Whop response text and had no request timeout. Both now cap JSON at 128 KiB, cap upstream error diagnostics at 8 KiB, use 15-second deadlines, and only return HTTPS checkout links. The sub-merchant helper validates returned company, withdrawal, and transfer IDs before using or persisting them.
+
+Added tests for oversized responses, deadline signals, and insecure checkout links on both checkout rails. Validation passed: billing-core suite 28/28 across eight files, package TypeScript, and `git diff --check`. The new test is checked; both provider files remain open for full state-transition, provider idempotency, and live API-contract testing. Inventory refresh and commit are pending.
