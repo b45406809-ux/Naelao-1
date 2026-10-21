@@ -1628,3 +1628,5 @@ The extension provider setup paths (Slack OAuth, Slack channel listing, Telegram
 The same provider calls used unbounded `response.json()` parsing. Replaced provider metadata parsing in the Slack, Discord, Telegram, and WhatsApp setup/list paths with the shared 256 KiB bounded JSON reader. Air-gap regressions cover extension Slack/Telegram/WhatsApp setup and Slack channel listing, plus pairing start and OAuth callback; existing helper tests stress declared/streamed response ceilings and malformed JSON.
 
 Validation passed: platform channel-pairing tests 27/27, extension provider tests 4/4, Agents Worker TypeScript. The related test files are checked. Full `workers/agents/src/index.ts` review remains open, including deployed provider API contracts, webhook retry behavior, and runtime egress verification.
+
+Inventory refreshed after the provider pass at code commit `25cce99d`: **1,981 tracked files, 1,775 source/config files, 406 checked and 1,369 unchecked**. The audited source additions did not change file counts; two existing test files were checked.
