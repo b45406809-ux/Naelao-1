@@ -736,6 +736,15 @@ app.post("/internal/notify", async (c) => {
     thread_ts?: string;
     message_thread_id?: string;
   }>();
+  if (body.space_id) {
+    const activeSpace = await c.env.PLATFORM_DB.prepare(
+      `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
+       AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = s.tenant_id AND o.status = 'active')`,
+    ).bind(body.space_id, tenantId).first<{ id: string }>();
+    if (!activeSpace) {
+      return c.json({ delivered: false, reason: "space_inactive" }, 403);
+    }
+  }
 
   if (body.channel === "email") {
     if (!body.to) throw badRequest("email notification requires 'to'");

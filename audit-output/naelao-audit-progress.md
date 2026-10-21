@@ -1975,3 +1975,9 @@ Validation: focused email suspension tests passed 2/2; full Agents suite passed 
 Channel heartbeat claims were released per-message, but an exception during shared setup (engine/config/pricing/policy/wallet preparation) occurs before that loop and could leave the whole claimed batch permanently stuck at `answered = 2`. The method now has a batch-level `finally` that releases any remaining in-flight claims on every return or exception. Added an injected setup-failure regression.
 
 Validation: focused channel suspension/claim tests passed 4/4; full Agents suite passed 163 files / 740 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed.
+
+## Shared notification outbound tenant/Space authorization (2026-10-21)
+
+The shared `/internal/notify` route checked organization status but trusted any supplied `space_id`; stale internal callers could still send email, web push, or chat messages for a suspended Space or a Space outside the header tenant. The route now validates that the supplied Space belongs to the active tenant and is active before any outbound branch. Added a regression proving an inactive/mismatched Space is rejected before provider fetch.
+
+Validation: focused notification tests passed 11/11; full Notifications suite passed 5 files / 21 tests; Notifications TypeScript, targeted Biome security lint, and `git diff --check` passed. The audit continues across remaining service bindings and worker APIs.

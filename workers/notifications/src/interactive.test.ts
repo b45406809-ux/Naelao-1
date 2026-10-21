@@ -25,6 +25,24 @@ describe("interactive mobile approval delivery", () => {
     expect(outbound).not.toHaveBeenCalled();
   });
 
+  it("blocks outbound delivery when the supplied Space is inactive or belongs to another tenant", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const db = { prepare: (sql: string) => ({ bind: () => ({ first: async () => {
+      if (sql.includes("SELECT s.id FROM spaces")) return null;
+      return sql.includes("FROM orgs") ? { status: "active" } : null;
+    } }) }) } as unknown as D1Database;
+    const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ channel: "email", space_id: "space", to: "customer@example.net", body: "Hello" }),
+    }), { ...env(), PLATFORM_DB: db }, {} as ExecutionContext);
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ delivered: false, reason: "space_inactive" });
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
   it("reports the sender actually configured on the outbound Resend request", async () => {
     const outbound = vi.fn(async () => Response.json({ id: "email-1" }));
     vi.stubGlobal("fetch", outbound);
