@@ -86,6 +86,27 @@ describe("router — /spaces dispatch order (F15)", () => {
     clearTenantStatusCacheForTests();
   });
 
+  it("rejects a signed JWT whose token version is ahead of the persisted revocation epoch", async () => {
+    const userId = `future-version-user-${crypto.randomUUID()}`;
+    const token = await signJwt({
+      sub: userId,
+      tid: "tenant-1",
+      email: "u@example.com",
+      role: "owner",
+      scopes: [],
+      tv: 2,
+    }, JWT_SECRET);
+    const response = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/s1", {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      makeEnv() as never,
+      execCtx
+    );
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error_code: "token_revoked" });
+  });
+
   it("rejects child-tenant requests while its reseller hierarchy is suspended", async () => {
     clearTenantStatusCacheForTests();
     const res = await authedFetch("GET", "/v1/spaces/s1", makeEnv("active", "suspended"));

@@ -103,7 +103,7 @@ async function checkTokenVersion(
     tokenVersionCache.set(userId, { version: currentVersion, expiresAt: Date.now() + TOKEN_VERSION_CACHE_TTL_MS });
   }
 
-  return claimedVersion >= currentVersion;
+  return claimedVersion === currentVersion;
 }
 
 // Extend Hono context variables for this worker
@@ -1158,7 +1158,9 @@ api.use("*", async (c, next) => {
   return next();
 });
 
-// G-AD02: Token version check — reject tokens whose version is behind the DB value.
+// G-AD02: Token version check — only the exact current version is valid. A signed claim from a
+// future version can exist after DB restore/rollback, so treating it as "newer" would bypass the
+// revocation epoch check until that version catches up.
 // Uses 5s in-memory cache to avoid a D1 read on every request.
 api.use("*", async (c, next) => {
   const claims = c.get("claims");
