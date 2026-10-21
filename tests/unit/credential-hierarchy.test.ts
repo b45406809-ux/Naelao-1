@@ -30,15 +30,18 @@ const PROJECT_BOUND_CREDENTIALS_SQL = readFileSync(
 const SPACES_STUB_SQL = `
   CREATE TABLE IF NOT EXISTS spaces (
     id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant-1',
     parent_space_id TEXT,
     status TEXT NOT NULL DEFAULT 'active'
   );
+  CREATE TABLE IF NOT EXISTS orgs (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active');
 `;
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 function makeEnv(): CredentialsEnv & { PLATFORM_DB: unknown; ANALYTICS: unknown } {
   const fakeDb = createFakeD1([SPACES_STUB_SQL, MIGRATION_SQL, SHARING_MIGRATION_SQL, PROJECT_BOUND_CREDENTIALS_SQL]);
+  fakeDb.db.exec("INSERT INTO orgs (id, status) VALUES ('tenant-1', 'active')");
   const analytics = { writeDataPoint() {} };
   return {
     ENVIRONMENT: "test",
@@ -55,12 +58,21 @@ async function insertSpace(env: ReturnType<typeof makeEnv>, id: string, parentSp
     .bind(id, parentSpaceId).run();
 }
 
+let activeEnv: ReturnType<typeof makeEnv>;
+
 async function req(
   path: string,
   opts: { method?: string; body?: unknown; tenant?: string; user?: string; role?: string; credToken?: string } = {}
 ): Promise<Request> {
   const headers = new Headers();
   const tenant = opts.tenant ?? "tenant-1";
+  const spaceMatch = path.match(/^\/(?:v1\/internal\/)?spaces\/([^/]+)\/credentials/);
+  if (spaceMatch?.[1]) {
+    const db = activeEnv.PLATFORM_DB as D1Database;
+    await db.prepare("INSERT OR IGNORE INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')")
+      .bind(decodeURIComponent(spaceMatch[1]), tenant).run();
+    await db.prepare("INSERT OR IGNORE INTO orgs (id, status) VALUES (?, 'active')").bind(tenant).run();
+  }
   headers.set("x-naelao-tenant-id", tenant);
   headers.set("x-naelao-user-id", opts.user ?? "user-1");
   headers.set("x-naelao-role", opts.role ?? "member");
@@ -84,6 +96,7 @@ describe("credential hierarchy", () => {
 
   beforeEach(() => {
     env = makeEnv();
+    activeEnv = env;
   });
 
   describe("creation + scoping rules", () => {
@@ -522,6 +535,60 @@ describe("credential hierarchy", () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { resolved_tier: string };
       expect(json.resolved_tier).toBe("business_shared");
+    });
+
+    it("fails closed when persisted sharing metadata is malformed", async () => {
+      await credentialsWorker.fetch(
+        await req("/spaces/space-corrupt/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "SLACK", value: "s", scope: "space", shared_with_user_ids: ["user-allowed"] } }),
+        env, execCtx
+      );
+      await env.PLATFORM_DB.prepare("UPDATE space_credentials SET shared_with_user_ids = '{' WHERE space_id = ? AND name = ?")
+        .bind("space-corrupt", "SLACK").run();
+
+      const token = await makeToken("space-corrupt");
+      const plaintext = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-corrupt/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-blocked" } }),
+        env, execCtx
+      );
+      expect(plaintext.status).toBe(404);
+
+      const list = await credentialsWorker.fetch(await req("/spaces/space-corrupt/credentials", { user: "admin-1", role: "admin" }), env, execCtx);
+      expect(list.status).toBe(200);
+      expect(await list.json()).toMatchObject({ credentials: [{ shared_with_user_ids: [] }] });
+    });
+
+    it("requires an explicit sharing list in PATCH so an empty patch cannot widen access", async () => {
+      const create = await credentialsWorker.fetch(
+        await req("/spaces/space-patch/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "SLACK", value: "s", scope: "space", shared_with_user_ids: ["user-allowed"] } }),
+        env, execCtx
+      );
+      const { id } = await create.json() as { id: string };
+      const patch = await credentialsWorker.fetch(
+        await req(`/spaces/space-patch/credentials/${id}`, { method: "PATCH", user: "admin-1", role: "admin", body: {} }),
+        env, execCtx
+      );
+      expect(patch.status).toBe(400);
+
+      const token = await makeToken("space-patch");
+      const plaintext = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-patch/credentials/SLACK/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-blocked" } }),
+        env, execCtx
+      );
+      expect(plaintext.status).toBe(404);
+    });
+
+    it("caps and de-duplicates selected user identifiers", async () => {
+      const tooMany = await credentialsWorker.fetch(
+        await req("/spaces/space-many/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "SLACK", value: "s", scope: "space", shared_with_user_ids: Array.from({ length: 101 }, (_, index) => `user-${index}`) } }),
+        env, execCtx
+      );
+      expect(tooMany.status).toBe(400);
+
+      const created = await credentialsWorker.fetch(
+        await req("/spaces/space-dedupe/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "SLACK", value: "s", scope: "space", shared_with_user_ids: ["user-a", "user-a"] } }),
+        env, execCtx
+      );
+      expect(await created.json()).toMatchObject({ shared_with_user_ids: ["user-a"] });
     });
 
     it("PATCH updates sharing without touching the encrypted value", async () => {

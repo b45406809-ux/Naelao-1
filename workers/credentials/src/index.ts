@@ -563,16 +563,35 @@ interface CredentialRow {
 
 export type CredentialResolvedTier = "business_override" | "project_bound" | "user" | "business_shared" | "product";
 
+function parseSharedUserIds(serialized: string | null): string[] | null {
+  if (serialized === null) return null; // NULL = shared with everyone
+  try {
+    const parsed: unknown = JSON.parse(serialized);
+    if (!Array.isArray(parsed) || parsed.length > 100 || parsed.some((id) =>
+      typeof id !== "string" || id.length === 0 || id.length > 128 || /[\u0000-\u001f\u007f]/.test(id)
+    )) return []; // malformed persisted data must fail closed
+    return [...new Set(parsed)];
+  } catch {
+    return []; // corrupted/legacy data never widens access
+  }
+}
+
+function validateSharedUserIds(value: unknown): string[] | null {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length > 100 || value.some((id) =>
+    typeof id !== "string" || id.trim().length === 0 || id.length > 128 || /[\u0000-\u001f\u007f]/.test(id)
+  )) {
+    throw badRequest("shared_with_user_ids must contain at most 100 valid user ids, or be null");
+  }
+  return [...new Set(value)];
+}
+
 /** Does a business-shared row (is_override=0) apply to this specific acting user? */
 function sharedRowAppliesToUser(row: CredentialRow, actingUserId: string | null): boolean {
-  if (!row.shared_with_user_ids) return true; // NULL = shared with everyone (default)
+  const allowed = parseSharedUserIds(row.shared_with_user_ids);
+  if (allowed === null) return true; // NULL = shared with everyone
   if (!actingUserId) return false; // a selective share needs a known acting user to match against
-  try {
-    const allowed = JSON.parse(row.shared_with_user_ids) as string[];
-    return allowed.includes(actingUserId);
-  } catch {
-    return true; // malformed data must not silently deny an otherwise-valid shared credential
-  }
+  return allowed.includes(actingUserId);
 }
 
 async function fetchSpaceRow(
@@ -717,7 +736,9 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
     shared_with_user_ids?: string[] | null;
   };
   try {
-    body = await c.req.json();
+    const parsed: unknown = await c.req.json();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid body");
+    body = parsed as typeof body;
   } catch {
     throw badRequest("Invalid JSON body");
   }
@@ -743,7 +764,7 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
   if ((scope === "space" || isOverride) && !isPrivileged(role)) {
     throw forbidden("Only owner/admin may set a business-shared credential or override");
   }
-  const sharedWithUserIds = body.shared_with_user_ids ?? null;
+  const sharedWithUserIds = validateSharedUserIds(body.shared_with_user_ids);
   if (sharedWithUserIds !== null) {
     if (scope !== "space" || isOverride || projectId) {
       throw badRequest("shared_with_user_ids is only valid with scope='space' and is_override=false");
@@ -865,7 +886,7 @@ app.get("/spaces/:spaceId/credentials", async (c) => {
       scope: r.project_id ? "project" : r.scope,
       credential_scope: credentialScopeForRow(r),
       is_override: Boolean(r.is_override),
-      shared_with_user_ids: r.shared_with_user_ids ? (JSON.parse(r.shared_with_user_ids) as string[]) : null,
+      shared_with_user_ids: parseSharedUserIds(r.shared_with_user_ids),
     })),
   });
 });
@@ -926,23 +947,22 @@ app.patch("/spaces/:spaceId/credentials/:credId", async (c) => {
 
   let body: { shared_with_user_ids?: string[] | null };
   try {
-    body = await c.req.json();
+    const parsed: unknown = await c.req.json();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid body");
+    body = parsed as { shared_with_user_ids?: string[] | null };
   } catch {
     throw badRequest("Invalid JSON body");
   }
-  if (body.shared_with_user_ids !== undefined && body.shared_with_user_ids !== null) {
-    if (!Array.isArray(body.shared_with_user_ids) || body.shared_with_user_ids.some((u) => typeof u !== "string" || !u)) {
-      throw badRequest("shared_with_user_ids must be an array of user ids, or null");
-    }
-  }
+  if (body.shared_with_user_ids === undefined) throw badRequest("shared_with_user_ids is required");
+  const sharedWithUserIds = validateSharedUserIds(body.shared_with_user_ids);
   if (row.is_override) throw badRequest("An override credential is always shared with everyone — clear is_override first");
 
-  const sharedWithJson = body.shared_with_user_ids ? JSON.stringify(body.shared_with_user_ids) : null;
+  const sharedWithJson = sharedWithUserIds ? JSON.stringify(sharedWithUserIds) : null;
   await c.env.PLATFORM_DB.prepare(
     `UPDATE space_credentials SET shared_with_user_ids = ?, updated_at = ? WHERE id = ? AND space_id = ? AND tenant_id = ?`
   ).bind(sharedWithJson, new Date().toISOString(), credId, spaceId, tenantId).run();
 
-  return c.json({ id: credId, shared_with_user_ids: body.shared_with_user_ids ?? null });
+  return c.json({ id: credId, shared_with_user_ids: sharedWithUserIds });
 });
 
 // POST /v1/internal/spaces/:spaceId/credentials/:name/plaintext

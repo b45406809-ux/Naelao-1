@@ -1431,7 +1431,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/conversation-context.test.ts`
 - [ ] `tests/unit/conversation-search.test.ts`
 - [x] `tests/unit/create-space-record.test.ts`
-- [ ] `tests/unit/credential-hierarchy.test.ts`
+- [x] `tests/unit/credential-hierarchy.test.ts`
 - [ ] `tests/unit/credits-monthly-refresh.test.ts`
 - [ ] `tests/unit/cron-next-run.test.ts`
 - [ ] `tests/unit/cross-project-handoff.test.ts`
