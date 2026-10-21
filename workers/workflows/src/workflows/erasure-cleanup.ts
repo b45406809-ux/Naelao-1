@@ -63,10 +63,15 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM api_keys WHERE org_id = ?").bind(orgId),
     db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM business_memberships WHERE business_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?) OR product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId, orgId),
+    db.prepare("DELETE FROM business_invites WHERE business_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?) OR product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId, orgId),
+    db.prepare("DELETE FROM product_end_users WHERE product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM notifications WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM web_push_subscriptions WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM do_registry WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM space_type_tools WHERE tenant_id = ?").bind(orgId),
+    // Keep the data-rights audit trail while removing subject identifiers and cancelling open work.
+    db.prepare("UPDATE gdpr_requests SET subject_id = 'erased', subject_email = NULL, status = CASE WHEN status = 'pending' THEN 'cancelled' ELSE status END, updated_at = datetime('now') WHERE tenant_id = ?").bind(orgId),
     // Earnings rows reference these subscriptions; preserve financial history while stopping renewals.
     db.prepare("UPDATE template_subscriptions SET status = 'cancelled', updated_at = datetime('now') WHERE space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
     // Preserve the wallet's financial/provider identifiers, but remove the direct owner email.

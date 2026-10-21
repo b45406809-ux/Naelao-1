@@ -99,6 +99,12 @@ describe("data erasure D1 records", () => {
       .run("merchant-a", "org-a", "space-a", "company-a", "person@example.com");
     db.db.prepare("INSERT INTO launchpad_orders (id, space_id, tenant_id, customer_email, customer_name, ls_order_id) VALUES (?, ?, ?, ?, ?, ?)")
       .run("order-a", "space-a", "org-a", "buyer@example.com", "Buyer Name", "provider-order-a");
+    db.db.prepare("INSERT INTO product_end_users (product_space_id, end_user_id, email, display_name) VALUES (?, ?, ?, ?)")
+      .run("space-a", "end-user-a", "end-user@example.com", "End User");
+    db.db.prepare("INSERT INTO business_invites (id, business_space_id, product_space_id, email, token_hash, invited_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run("invite-a", "space-a", "space-a", "invitee@example.com", "token-hash", "user-a", "2026-12-01");
+    db.db.prepare("INSERT INTO gdpr_requests (id, tenant_id, request_type, subject_type, subject_id, subject_email, requested_by) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run("gdpr-a", "org-a", "export", "org_member", "user-a", "person@example.com", "user-a");
     db.db.prepare("INSERT INTO audit_log (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run("audit-a", "org-a", "user-a", "user", "erasure_requested", "org", "org-a", "{}");
 
@@ -113,6 +119,12 @@ describe("data erasure D1 records", () => {
       .toEqual({ owner_email: "erased@deleted.invalid" });
     expect(db.db.prepare("SELECT customer_email, customer_name, ls_order_id, gross_cents FROM launchpad_orders WHERE id = ?").get("order-a"))
       .toEqual({ customer_email: "erased@deleted.invalid", customer_name: null, ls_order_id: null, gross_cents: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM product_end_users WHERE product_space_id = ?").get("space-a"))
+      .toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM business_invites WHERE business_space_id = ?").get("space-a"))
+      .toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT subject_id, subject_email FROM gdpr_requests WHERE id = ?").get("gdpr-a"))
+      .toEqual({ subject_id: "erased", subject_email: null });
     expect(db.db.prepare("SELECT org_id FROM users WHERE id = ?").get("user-a")).toEqual({ org_id: null });
     expect(db.db.prepare("SELECT name, owner_id, status FROM orgs WHERE id = ?").get("org-a"))
       .toEqual({ name: "Erased organization", owner_id: "system-erasure", status: "erased" });
