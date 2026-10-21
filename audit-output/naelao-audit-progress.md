@@ -1187,3 +1187,5 @@ Added lifecycle tests for malformed ACL/PDF requests, valid private ACL storage,
 Validation: Knowledge Worker suite passed 9 files / 42 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
 
 This is a focused pass of the five document routes and their test module. `workers/knowledge/src/index.ts` remains unchecked overall; cancellation/partial-write behavior after destructive reindex begins, deletion partial failures, and other route groups need further review.
+
+During the same route pass, I replaced every remaining `c.req.json()` in the Knowledge Worker with the shared streaming request-byte reader and per-endpoint ceilings. Document JSON allows 6.5 MB to support the existing 1 MiB character contract with JSON escaping; smaller metadata, search, and URL operations have 16–64 KiB ceilings; semantic-cache writes allow 2 MiB. Oversized bodies now stop at the byte ceiling before JSON parsing, and malformed JSON remains a 400/fallback according to each route's existing contract. The lifecycle test verifies a declared oversized body is rejected before any DB or R2 write. Knowledge Worker suite passed 9 files / 43 tests after this extension.

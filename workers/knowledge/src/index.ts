@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono";
-import { HttpError, requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger, readBoundedResponseJson } from "@naelao/http";
+import { HttpError, RequestBodyTooLargeError, requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger, readBoundedRequestText, readBoundedResponseJson } from "@naelao/http";
 import { chunkText, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope, type StructuralChunk } from "@naelao/rag";
 import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNetworkEgressDenied, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
@@ -87,6 +87,30 @@ const SPACE_WIDE_PROJECT_SENTINEL = "_space";
 // G-A11: Validate required secrets at startup
 function validateEnv(env: KnowledgeEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
+}
+
+async function readBoundedJson<T>(request: Request, maximumBytes: number): Promise<T> {
+  let text: string;
+  try {
+    text = await readBoundedRequestText(request, maximumBytes);
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) throw new HttpError(413, "payload_too_large", "Request body exceeds its size limit");
+    throw badRequest("Request body must contain valid UTF-8 JSON");
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw badRequest("Request body must contain valid JSON");
+  }
+}
+
+async function readBoundedJsonOr<T>(request: Request, maximumBytes: number, fallback: T): Promise<T> {
+  try {
+    return await readBoundedJson<T>(request, maximumBytes);
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 413) throw err;
+    return fallback;
+  }
 }
 
 function preserveHttpStatus(err: unknown): never {
@@ -211,7 +235,7 @@ app.put("/spaces/:spaceId/kb/projects/:projectId/external-publications/:publicat
   if (!EXTERNAL_PUBLICATION_ID.test(publicationId)) throw badRequest("Invalid publication id");
   const access = await requireProjectAccess(c, projectId, 40);
   if (access instanceof Response) return access;
-  const body = await c.req.json<{ name?: unknown; document_ids?: unknown }>().catch(() => null);
+  const body = await readBoundedJsonOr(c.req.raw, 64 * 1024, null as { name?: unknown; document_ids?: unknown } | null);
   if (!body || typeof body.name !== "string" || !body.name.trim() || body.name.length > 120
     || !Array.isArray(body.document_ids) || body.document_ids.length > 100
     || body.document_ids.some((id) => typeof id !== "string" || id.length < 1 || id.length > 160)) {
@@ -264,7 +288,7 @@ app.post("/internal/spaces/:spaceId/kb/projects/:projectId/external-search", asy
   const { spaceId, projectId } = c.req.param();
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space not found");
-  const body = await c.req.json<{ publication_id?: unknown; query?: unknown; top_k?: unknown }>().catch(() => null);
+  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, null as { publication_id?: unknown; query?: unknown; top_k?: unknown } | null);
   if (!body || typeof body.publication_id !== "string" || !EXTERNAL_PUBLICATION_ID.test(body.publication_id)
     || typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000) throw badRequest("publication_id and query are required");
   const publication = await c.env.PLATFORM_DB.prepare(
@@ -403,7 +427,7 @@ function chunkCoordinates(document: string, chunks: string[], sourceChunks?: Str
 app.post("/internal/spaces/:spaceId/kb/references/resolve", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
-  const body = await c.req.json<{ document_ids?: unknown }>().catch(() => ({} as { document_ids?: unknown }));
+  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, {} as { document_ids?: unknown });
   if (!Array.isArray(body.document_ids) || body.document_ids.length > 30 || body.document_ids.some((id) => typeof id !== "string" || id.length > 160)) {
     throw badRequest("document_ids must be an array of at most 30 IDs");
   }
@@ -482,7 +506,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   const spaceId = c.req.param("spaceId");
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
 
-  const body = await c.req.json<{
+  const body = await readBoundedJson<{
     title?: string;
     content?: string;
     content_type?: string;
@@ -493,7 +517,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     required_role_rank?: number;
     /** Explicit sovereign-user allowlist. IDs are indexed, never evaluated after ranking. */
     allowed_user_ids?: string[];
-  }>();
+  }>(c.req.raw, 6_500_000);
   if (body.project_id !== undefined && (typeof body.project_id !== "string" || !body.project_id || body.project_id.length > 256)) {
     throw badRequest("project_id must be a nonempty string of at most 256 characters");
   }
@@ -757,10 +781,10 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const docId = c.req.param("docId");
 
-  const body = await c.req.json<{
+  const body = await readBoundedJson<{
     title?: string;
     content?: string;
-  }>();
+  }>(c.req.raw, 6_500_000);
 
   if (body.title !== undefined && (typeof body.title !== "string" || !body.title.trim() || body.title.length > 500)) {
     throw badRequest("title must contain 1 to 500 characters");
@@ -1293,7 +1317,7 @@ const SEMANTIC_CACHE_TTL_SECS = 24 * 60 * 60;
 app.use("/internal/semantic-cache/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
 
 app.post("/internal/semantic-cache/lookup", async (c) => {
-  const body = await c.req.json<{ query: string; spaceId: string }>();
+  const body = await readBoundedJson<{ query: string; spaceId: string }>(c.req.raw, 16 * 1024);
   if (!body.query || !body.spaceId) {
     return c.json({ error: "query and spaceId required" }, 400);
   }
@@ -1344,7 +1368,7 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
 });
 
 app.post("/internal/semantic-cache/store", async (c) => {
-  const body = await c.req.json<{ query: string; spaceId: string; response: string }>();
+  const body = await readBoundedJson<{ query: string; spaceId: string; response: string }>(c.req.raw, 2 * 1024 * 1024);
   if (!body.query || !body.spaceId || !body.response) {
     return c.json({ error: "query, spaceId, and response required" }, 400);
   }
@@ -1462,7 +1486,7 @@ async function requireWebToolEgress(c: Parameters<typeof airGapResponse>[0] & {
 app.post("/internal/web-search/search", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
-  const body = await c.req.json<{ query?: string; max_results?: number }>().catch(() => ({} as { query?: string; max_results?: number }));
+  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, {} as { query?: string; max_results?: number });
   const query = typeof body.query === "string" ? body.query.trim() : "";
   if (!query || query.length > WEB_SEARCH_QUERY_MAX_CHARS)
     return c.json({ error_code: "bad_request", message: "query must be 1..1000 characters" }, 400);
@@ -1507,7 +1531,7 @@ app.post("/internal/web-search/search", async (c) => {
 app.post("/internal/web-search/fetch", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
-  const body = await c.req.json<{ url?: string; format?: "markdown" | "html" }>().catch(() => ({} as { url?: string; format?: "markdown" | "html" }));
+  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, {} as { url?: string; format?: "markdown" | "html" });
   const rawUrl = typeof body.url === "string" ? body.url.trim() : "";
   if (!rawUrl || rawUrl.length > WEB_TARGET_URL_MAX_CHARS)
     return c.json({ error_code: "bad_request", message: "url must be 1..2048 characters" }, 400);
@@ -1641,7 +1665,7 @@ async function fetchSsrfGuarded(rawUrl: string, init: RequestInit): Promise<Guar
 app.post("/internal/web-search/extract", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
-  const body = await c.req.json<{ url?: string; schema?: unknown }>().catch(() => ({} as { url?: string }));
+  const body = await readBoundedJsonOr(c.req.raw, 32 * 1024, {} as { url?: string; schema?: unknown });
   const rawUrl = typeof body.url === "string" ? body.url.trim() : "";
   if (!rawUrl || rawUrl.length > WEB_TARGET_URL_MAX_CHARS)
     return c.json({ error_code: "bad_request", message: "url must be 1..2048 characters" }, 400);
@@ -1724,7 +1748,7 @@ function isTextualContentType(contentType: string): boolean {
 app.post("/internal/web-search/download", async (c) => {
   const denied = await requireWebToolEgress(c);
   if (denied) return denied;
-  const body = await c.req.json<{ url?: string }>().catch(() => ({} as { url?: string }));
+  const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, {} as { url?: string });
   const rawUrl = typeof body.url === "string" ? body.url.trim() : "";
   if (!rawUrl || rawUrl.length > WEB_TARGET_URL_MAX_CHARS)
     return c.json({ error_code: "bad_request", message: "url must be 1..2048 characters" }, 400);

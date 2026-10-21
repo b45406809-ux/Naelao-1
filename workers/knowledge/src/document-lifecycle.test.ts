@@ -80,6 +80,19 @@ describe("Knowledge document lifecycle boundaries", () => {
     }
   });
 
+  it("rejects oversized JSON before parsing or writing any document state", async () => {
+    const f = fixture();
+    const token = await mintInternalToken("secret", "tenant-1");
+    const response = await worker.fetch(new Request("https://knowledge/spaces/space-1/kb/documents", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "6500001", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      body: JSON.stringify({ title: "valid", content: "x" }),
+    }), f.env, {} as ExecutionContext);
+    expect(response.status).toBe(413);
+    expect(f.dbCalls.some(({ sql }) => sql.includes("INSERT INTO kb_documents"))).toBe(false);
+    expect(f.writes).toHaveLength(0);
+  });
+
   it("stores validated role and user ACLs on the indexed vectors", async () => {
     const f = fixture();
     const response = await worker.fetch(await request("/spaces/space-1/kb/documents", "POST", {
