@@ -48,8 +48,6 @@ export interface NaelaoSpaceTypeManifestV2 {
   backend: {
     platformDOs: Array<{ type: string; namingPattern: string }>;
     spaceDoInitHook?: string;
-    workflowTemplates: Array<{ id: string; name: string; triggerType: string }>;
-    cronJobs: Array<{ id: string; cron: string; workerBinding: string }>;
     r2Prefixes: string[];
     /** WS-6 (audit plan): opts into the provisioner's script-agent install step (writing agent
      *  R2 config files + registering a SpaceDO index + seeding an assistant policy) — replaces a
@@ -68,14 +66,6 @@ export interface NaelaoSpaceTypeManifestV2 {
      *  worker needing a second SpaceType's name added to its own source. Absent = no such
      *  specialist exists for this SpaceType (payment events just wake the Space Assistant). */
     fulfillment?: { agentId: string; projectNameFallback?: string };
-    resourceBudget: {
-      maxDOsPerInstance: number;
-      maxR2WritesPerDay: number;
-      maxContainerHoursPerDay: number;
-      maxLLMTokensPerDay: number;
-      maxCronJobsPerInstance: number;
-      maxWorkflowsPerInstance: number;
-    };
   };
 
   // ── Layer 3: UI ───────────────────────────────────────────────────────────
@@ -693,12 +683,6 @@ export class SpaceTypeRegistryDO extends DurableObject {
       if (!m.id || !m.name || !m.version) {
         return Response.json(
           { accepted: false, reason: "Manifest missing required fields: id, name, version" },
-          { status: 400 }
-        );
-      }
-      if (!m.backend?.resourceBudget) {
-        return Response.json(
-          { accepted: false, reason: "Resource budget declaration required" },
           { status: 400 }
         );
       }

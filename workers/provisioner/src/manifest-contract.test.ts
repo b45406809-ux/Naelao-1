@@ -15,8 +15,6 @@ describe("provisioner manifest contract", () => {
     [{ ...manifest, backend: { ...manifest.backend, platformDOs: "not-an-array" } }, "launchpad"],
     [{ ...manifest, backend: { ...manifest.backend, r2Prefixes: ["../other-space"] } }, "launchpad"],
     [{ ...manifest, backend: { ...manifest.backend, r2Prefixes: ["x".repeat(129)] } }, "launchpad"],
-    [{ ...manifest, backend: { ...manifest.backend, workflowTemplates: Array(101).fill({ id: "x", name: "x", triggerType: "event" }) } }, "launchpad"],
-    [{ ...manifest, backend: { ...manifest.backend, workflowTemplates: [{ id: 1, name: "x", triggerType: "event" }] } }, "launchpad"],
     [{ ...manifest, ui: { ...manifest.ui, externalPortal: { enabled: true, templateId: "", defaultSlug: "bad slug" } } }, "launchpad"],
     [{ ...manifest, lifecycle: { provisionerWorker: "http://example.com/provision" } }, "launchpad"],
     [{ ...manifest, lifecycle: { provisionerWorker: "https://user:pass@example.com/provision" } }, "launchpad"],

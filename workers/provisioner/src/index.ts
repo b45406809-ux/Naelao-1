@@ -7,11 +7,10 @@
  *   3. Instantiate declared platform DOs
  *   4. Initialize R2 prefixes from manifest
  *   5. SpaceDO init hook (space-type-specific initialization)
- *   6. Register workflow templates
- *   7. Deploy external portal (if declared in manifest)
- *   8. Call custom lifecycle.provisionerWorker (for future non-Naelao types — no-op for Launchpad)
- *   9. Install SpaceType agents (4 R2 config files per agent) + register index in SpaceDO
- *  10. Record install in SpaceTypeRegistryDO + flip space to 'active'
+ *   6. Deploy external portal (if declared in manifest)
+ *   7. Call custom lifecycle.provisionerWorker (for future non-Naelao types — no-op for Launchpad)
+ *   8. Install SpaceType agents (4 R2 config files per agent) + register index in SpaceDO
+ *   9. Record install in SpaceTypeRegistryDO + flip space to 'active'
  *
  * On any failure: rollback by calling deprovisionSpace with the partial provisioned list.
  */
@@ -249,7 +248,7 @@ export async function seedLaunchpadAssistantPolicy(spaceId: string, tenantId: st
  *   - manual → nothing to wire; it only runs when the owner messages it directly.
  *
  * Best-effort: a failed trigger install logs and does not fail provisioning (same posture as
- * the other non-critical install steps above — spacedo_init_hook, workflow_templates).
+ * the other non-critical install steps above — spacedo_init_hook, scheduled-job seed).
  */
 async function installAgentTrigger(
   spaceId: string,
@@ -784,18 +783,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       provisioned.push("owner_member");
     }
 
-    // Step 6: Store workflow templates in Space KV so rollback can remove their provisioned state.
-    for (const wf of manifest.backend.workflowTemplates) {
-      await env.SPACES_KV.put(
-        `workflow-template:${spaceId}:${wf.id}`,
-        JSON.stringify({ ...wf, spaceId, tenantId, registeredAt: now })
-      );
-    }
-    if (manifest.backend.workflowTemplates.length > 0) {
-      provisioned.push("workflow_templates");
-    }
-
-    // Step 7: Deploy external portal (register slug→spaceId in PORTAL_KV)
+    // Step 6: Deploy external portal (register slug→spaceId in PORTAL_KV)
     if (manifest.ui.externalPortal?.enabled) {
       const portal = manifest.ui.externalPortal;
       const slug = `${portal.defaultSlug}-${spaceId.slice(0, 8)}`;
@@ -808,7 +796,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       provisioned.push("external_portal");
     }
 
-    // Step 8: Custom lifecycle.provisionerWorker (no-op for Launchpad; reserved for future types)
+    // Step 7: Custom lifecycle.provisionerWorker (no-op for Launchpad; reserved for future types)
     // Naelao-authored SpaceTypes don't declare provisionerWorkers (they are fully managed here).
     if (manifest.lifecycle.provisionerWorker) {
       const workerResp = await env.SPACES_WORKER.fetch(
@@ -823,7 +811,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       provisioned.push("custom_provisioner");
     }
 
-    // Step 9: Install agents — write 4 R2 config files per agent + register index in SpaceDO.
+    // Step 8: Install agents — write 4 R2 config files per agent + register index in SpaceDO.
     // Manifest-driven (WS-6, audit plan): the provisioner no longer names a SpaceType — any
     // manifest that opts in via `backend.scriptAgentsEnabled` gets this step; a manifest that
     // doesn't declare it (the default for a future SpaceType with no script-agent story yet)
@@ -833,7 +821,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     }
     provisioned.push("agents");
 
-    // Step 9a: Seed a wallet project + starter balance — the payer for this space's own
+    // Step 8a: Seed a wallet project + starter balance — the payer for this space's own
     // project-scoped agent runs (metering enforcement follow-up). Same manifest gate as agent
     // installation: any SpaceType with script-agent projects gets one, not just Launchpad.
     // F-42: for a SpaceType with script-agent projects, the wallet is ESSENTIAL — it is the payer
@@ -848,7 +836,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       provisioned.push("wallet");
     }
 
-    // Step 9a-bis: every business (templated or blank/"build from scratch") gets one ordinary
+    // Step 8a-bis: every business (templated or blank/"build from scratch") gets one ordinary
     // "General" project to land in — /projects (bare, no id) redirects straight into it instead
     // of showing a picker first. Deliberately OUTSIDE the `effectiveTemplateIds.length > 0` gate
     // below (unlike seedTemplateProjects, which only applies to a templated business): a blank
@@ -904,7 +892,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       }
     }
 
-    // Step 9b: Template bootstrap — inherit the shared template skill library (federated
+    // Step 8b: Template bootstrap — inherit the shared template skill library (federated
     // learning) so the space starts with what the fleet has learned, then record the first-run
     // onboarding state (credential/preference prompts + projects) for the dashboard wizard.
     // Phase C (§A1.17): a business built from multiple templates inherits skills from EACH one
@@ -1001,7 +989,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       provisioned.push("bootstrap");
     }
 
-    // Step 10: Record install in SpaceTypeRegistryDO + flip space to 'active'
+    // Step 9: Record install in SpaceTypeRegistryDO + flip space to 'active'
     await env.SPACES_WORKER.fetch(
       new Request(`http://spaces-worker/internal/space-types-record-install/${spaceTypeId}`, {
         method: "POST",
@@ -1059,28 +1047,18 @@ export async function rollbackSpace(
         cursor = list.truncated ? list.cursor : undefined;
       } while (cursor);
     }
-    // Remove workflow template KV entries (step 6)
-    if (has("workflow_templates")) {
-      let cursor2: string | undefined;
-      const wfPrefix = `workflow-template:${spaceId}:`;
-      do {
-        const list = await env.SPACES_KV.list(cursor2 ? { prefix: wfPrefix, cursor: cursor2 } : { prefix: wfPrefix });
-        for (const key of list.keys) await env.SPACES_KV.delete(key.name);
-        cursor2 = list.list_complete ? undefined : list.cursor;
-      } while (cursor2);
-    }
-    // Remove portal slug (step 7)
+    // Remove portal slug (step 6)
     if (has("external_portal") && env.PORTAL_KV) {
       await env.PORTAL_KV.delete(`portal-space:${spaceId}`);
     }
-    // Remove any scheduled_jobs installAgentTrigger wrote (step 9, PLATFORM_DB — not under the
+    // Remove any scheduled_jobs installAgentTrigger wrote (step 8, PLATFORM_DB — not under the
     // R2 prefix the block above already wipes) so a retried provisionSpace doesn't accumulate
-    // duplicate cron rows for the same agent. Unconditional: harmless no-op when step 9 never
+    // duplicate cron rows for the same agent. Unconditional: harmless no-op when step 8 never
     // ran or installed none.
     await env.PLATFORM_DB.prepare("DELETE FROM scheduled_jobs WHERE space_id = ?").bind(spaceId).run();
 
     // WS-8.6 (audit plan): agent_definitions and the owner space_members row live in SpaceDO, not
-    // PLATFORM_DB — a failed provision that got as far as step 9 (agents) or step 5c (owner
+    // PLATFORM_DB — a failed provision that got as far as step 8 (agents) or step 5c (owner
     // member) previously left these as orphans referencing a space stuck in 'error' status
     // forever, with no GC. Both SpaceDO stores expose the CRUD the provisioner's own forward path
     // already uses (installLaunchpadAgents / seedOwnerMember), so rollback reuses the same

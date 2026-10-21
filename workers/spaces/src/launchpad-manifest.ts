@@ -30,25 +30,9 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
 
   backend: {
     platformDOs: [], // Launchpad relies on SpaceDO + NaelaoAgentDO (already instantiated)
-    workflowTemplates: [
-      { id: "order-fulfillment", name: "Order Fulfillment", triggerType: "event" },
-      { id: "subscription-renewal", name: "Subscription Renewal", triggerType: "schedule" },
-      { id: "customer-onboarding", name: "Customer Onboarding", triggerType: "event" },
-    ],
-    cronJobs: [
-      { id: "daily-analytics", cron: "0 8 * * *", workerBinding: "ANALYTICS_WORKER" },
-    ],
     r2Prefixes: ["workspace", "agents", "scripts", "portal"],
     scriptAgentsEnabled: true,
     fulfillment: { agentId: "launchpad-fulfillment-v1", projectNameFallback: "orders" },
-    resourceBudget: {
-      maxDOsPerInstance: 5,
-      maxR2WritesPerDay: 10_000,
-      maxContainerHoursPerDay: 2,
-      maxLLMTokensPerDay: 1_000_000,
-      maxCronJobsPerInstance: 5,
-      maxWorkflowsPerInstance: 20,
-    },
   },
 
   ui: {

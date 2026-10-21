@@ -40,22 +40,8 @@ export function isProvisionableManifest(value: unknown, expectedId: string): val
   if (!boundedArray(backend.r2Prefixes, 100) || !backend.r2Prefixes.every((prefix) =>
     text(prefix, 128) && /^[A-Za-z0-9._/-]+$/.test(prefix) && !prefix.split("/").some((part) => part === "." || part === "..")
   )) return false;
-  if (!boundedArray(backend.workflowTemplates, 100) || !backend.workflowTemplates.every((entry) =>
-    record(entry) && text(entry.id, 128) && text(entry.name, 256) && text(entry.triggerType, 64)
-  )) return false;
-  if (!boundedArray(backend.cronJobs, 100) || !backend.cronJobs.every((entry) =>
-    record(entry) && text(entry.id, 128) && text(entry.cron, 128) && text(entry.workerBinding, 128)
-  )) return false;
   if (backend.scriptAgentsEnabled !== undefined && typeof backend.scriptAgentsEnabled !== "boolean") return false;
   if (backend.spaceDoInitHook !== undefined && !text(backend.spaceDoInitHook, 128)) return false;
-  if (!record(backend.resourceBudget) || ![
-    backend.resourceBudget.maxDOsPerInstance,
-    backend.resourceBudget.maxR2WritesPerDay,
-    backend.resourceBudget.maxContainerHoursPerDay,
-    backend.resourceBudget.maxLLMTokensPerDay,
-    backend.resourceBudget.maxCronJobsPerInstance,
-    backend.resourceBudget.maxWorkflowsPerInstance,
-  ].every((limit) => finiteNumber(limit))) return false;
   if (value.productConfig !== undefined && value.productConfig !== null && !record(value.productConfig)) return false;
 
   const shell = value.ui.operatorShell;

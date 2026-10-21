@@ -161,7 +161,7 @@ describe("Product Creation Wizard — GET /builder/space-types (the Space-Type S
         manifest: {
           id: "launchpad", name: "Launchpad", description: "Build a business", version: "1.0.0",
           marketplace: { priceUsdPerMonth: 0 },
-          backend: { resourceBudget: {} },
+          backend: {},
         },
       }),
     }));

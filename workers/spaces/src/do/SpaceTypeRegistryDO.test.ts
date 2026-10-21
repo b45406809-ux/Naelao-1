@@ -32,5 +32,11 @@ describe("SpaceTypeRegistryDO install accounting", () => {
     }));
     expect((await register("{" )).status).toBe(400);
     expect((await register(JSON.stringify({ authorId: "tenant-a", manifest: { id: "evil" } }))).status).toBe(403);
+    const registered = await register(JSON.stringify({
+      authorId: "naelao",
+      manifest: { id: "bounded-type", name: "Bounded type", description: "Test", version: "1", marketplace: { priceUsdPerMonth: 0 } },
+    }));
+    expect(registered.status).toBe(200);
+    expect(await registered.json()).toEqual({ accepted: true });
   });
 });

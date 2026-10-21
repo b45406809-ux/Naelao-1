@@ -52,10 +52,7 @@ const FAKE_MANIFEST = {
     alwaysLoadedSkills: ["secret-internal-skill"], disabledSkills: [], networkPolicy: "open",
     maxContextTokens: 1, agentPermissions: ["secret-permission"],
   },
-  backend: { platformDOs: [], workflowTemplates: [], cronJobs: [], r2Prefixes: [], resourceBudget: {
-    maxDOsPerInstance: 1, maxR2WritesPerDay: 1, maxContainerHoursPerDay: 1, maxLLMTokensPerDay: 1,
-    maxCronJobsPerInstance: 1, maxWorkflowsPerInstance: 1,
-  } },
+  backend: { platformDOs: [], r2Prefixes: [] },
   ui: {
     operatorShell: {
       sidebarItems: [{ id: "revenue", label: "Revenue", icon: "dollar", path: "/revenue" }],
@@ -258,7 +255,7 @@ describe("GET /spaces/:spaceId/shell/manifest", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("never serializes internal manifest fields (agentEnvironment, backend, lifecycle, marketplace, commerce)", async () => {
+  it("never serializes internal manifest fields (agentEnvironment, backend, lifecycle, marketplace)", async () => {
     const env = makeEnv();
     await seedSpace(env, "prod-1", "tenant-1");
     const res = await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
@@ -266,7 +263,6 @@ describe("GET /spaces/:spaceId/shell/manifest", () => {
     expect(raw).not.toContain("secret-internal-skill");
     expect(raw).not.toContain("secret-permission");
     expect(raw).not.toContain("agentEnvironment");
-    expect(raw).not.toContain("resourceBudget");
     expect(raw).not.toContain("naelaoFeeBps");
     expect(raw).not.toContain("commerce");
   });

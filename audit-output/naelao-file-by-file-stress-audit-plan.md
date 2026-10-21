@@ -43,7 +43,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - **Lint enforcement gap (partially closed):** the previous CI `pnpm --recursive --parallel --if-present lint` step had no package-level `lint` scripts and was a no-op. CI now runs Biome's `security` rule group over the repository; that focused gate passes locally. The full root `biome check .` still has 7,600 diagnostics across 1,972 files, mostly existing style/formatting rules, so broad style/format enforcement and cleanup remain open.
 - **Tenant suspension enforcement:** public router requests check org and reseller relationship status; selected agent, notification, provisioner, workflow, and Knowledge entrypoints also gate work. HMAC-protected task, trigger, script and workflow effect paths recheck tenant and Space activity. Business-email send/provision/reply-address, OAuth refresh and consent start/callback, attachment read/analysis, external approval create/consume, and document-node leases reject inactive tenant/Space scopes before provider, data, or DO access. Regression tests cover these rejection boundaries. Enforcement is still not universal across internal routes, queues, Durable Object alarms, in-flight direct script runs, or other worker paths. `spaces.suspension_reason` and `orgs.suspension_reason` now distinguish admin, reseller/product, and erasure holds in updated writers; legacy suspended rows are conservatively not reactivated through product APIs, but their original owner/control still requires reconciliation. Legacy `/spaces` creation, update, and delete now enforce writer/admin roles, including owner/admin-only status changes and deletes. Other suspension writers and all worker/DO entrypoints remain to be traced.
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
-- **Provisioned workflow template reachability:** Provisioner writes `workflow-template:{spaceId}:{templateId}` records to `SPACES_KV` and deletes them on rollback, but repository search found no reader of that key prefix. Trace the workflow manifest path and deployed consumer before treating these templates as usable; either wire a scoped consumer or retire the write and update claims.
+- **SpaceType resource quota enforcement:** the old manifest accepted `maxDOsPerInstance`, `maxR2WritesPerDay`, `maxContainerHoursPerDay`, `maxLLMTokensPerDay`, `maxCronJobsPerInstance`, and `maxWorkflowsPerInstance`, but repository-wide source search found no runtime enforcement. These fields and the Provisioner `workflowTemplates`/`cronJobs` placeholders are removed from the active manifest contract so operators do not mistake declarations for protections. Actual per-tenant limits still need explicit, metered enforcement tied to platform resource usage and billing; do not restore these manifest claims until that path exists.
 
 ## Work sequence
 
@@ -2474,7 +2474,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/index.ts`
 - [ ] `workers/spaces/src/infra-migrations.test.ts`
 - [x] `workers/spaces/src/language-preference-routes.test.ts`
-- [ ] `workers/spaces/src/launchpad-manifest.ts`
+- [x] `workers/spaces/src/launchpad-manifest.ts`
 - [x] `workers/spaces/src/members-suspension.test.ts`
 - [ ] `workers/spaces/src/private-scratchpad.test.ts`
 - [x] `workers/spaces/src/product-end-user-air-gap.test.ts`
