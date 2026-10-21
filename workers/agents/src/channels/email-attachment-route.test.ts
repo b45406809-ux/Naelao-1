@@ -67,7 +67,7 @@ function smallPng(): Uint8Array {
   return bytes;
 }
 
-function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGapped?: boolean; mime?: string; attemptAllowed?: boolean; bytes?: Uint8Array } = {}) {
+function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGapped?: boolean; mime?: string; attemptAllowed?: boolean; bytes?: Uint8Array; oversizedRenderResponse?: boolean } = {}) {
   let r2Reads = 0;
   let documentSandboxCalls = 0;
   const ai = { run: vi.fn(async () => ({ answer: "Invoice 42\nTotal $10.00" })) };
@@ -118,6 +118,16 @@ function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGap
           const input = await request.json() as { firstPage: number; lastPage: number; pdfBase64: string };
           expect(input).toMatchObject({ firstPage: 1, lastPage: 5 });
           expect(input.pdfBase64).toBeTruthy();
+          if (options.oversizedRenderResponse) {
+            let chunks = 0;
+            return new Response(new ReadableStream<Uint8Array>({
+              pull(controller) {
+                chunks++;
+                if (chunks <= 3) controller.enqueue(new Uint8Array(3 * 1024 * 1024));
+                else controller.close();
+              },
+            }));
+          }
           return Response.json({ pages: [{ page: 1, width: 5, height: 5, pngBase64: btoa(String.fromCharCode(...smallPng())) }], output_bytes: 24 });
         },
       }),
@@ -276,5 +286,13 @@ describe("explicit task-scoped email image OCR endpoint", () => {
     expect(response.status).toBe(429);
     expect(exhausted.documentSandboxCalls()).toBe(0);
     expect(exhausted.ai.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized document sandbox response before parsing or OCR", async () => {
+    const state = makeOcrEnv({ mime: "application/pdf", bytes: new TextEncoder().encode("%PDF-1.4\nfixture"), oversizedRenderResponse: true });
+    const response = await ocrAttachment(state.env);
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error_code: "pdf_render_output_limit" });
+    expect(state.ai.run).not.toHaveBeenCalled();
   });
 });

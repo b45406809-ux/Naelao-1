@@ -1584,3 +1584,9 @@ Validation passed: conversation prebuilt 18/18, channel transcript DO 3/3, Agent
 ## Repository regression suites after this audit batch (2026-10-21)
 
 After the file-manager, DOCX, PDF, OCR, and conversation-cursor changes, the package/Worker Vitest workspace passed **1,623 tests across 341 files**. The repository-root Vitest suite passed **5,272 tests across 709 files**. Both commands were run directly through the installed Vitest binary to avoid this workspace's pnpm shim attempting an install. These runs validate the local test doubles and configured projects; they do not exercise deployed Cloudflare storage, live AI provider latency, or production container failures. Earlier native Node and conformance runs remain 27/27 and 4/4, respectively.
+
+## Scanned email PDF OCR response bound (2026-10-21)
+
+The task-scoped attachment OCR endpoint previously called `response.json()` on the document sandbox response before validating its page count and per-page PNG sizes. A faulty or compromised container could return an arbitrarily large streamed body and cause a large Worker allocation. The endpoint now reads the response under an 8 MiB streamed byte ceiling before JSON parsing; invalid or oversized responses return `pdf_render_output_limit` without invoking hosted OCR.
+
+Added a regression where the sandbox returns more than 8 MiB without a `Content-Length` header. The email attachment route suite passes 11/11 tests, and the Agents Worker `tsc --noEmit` check passes. The suite emits the existing PDF.js missing-standard-font warning for its PDF fixture. The package-filter pnpm command could not run because the pnpm shim attempted an install and rejected an ignored dependency build script; direct installed Vitest and TypeScript binaries were used. The attachment route test file is checked; the large `workers/agents/src/index.ts` implementation remains unchecked pending review of its other routes and deeper sandbox/provider failure modes.

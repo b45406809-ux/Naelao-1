@@ -1719,7 +1719,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/agents/src/channels/chat-upload-scope.ts`
 - [ ] `workers/agents/src/channels/cloudflare-email.test.ts`
 - [ ] `workers/agents/src/channels/cloudflare-email.ts`
-- [ ] `workers/agents/src/channels/email-attachment-route.test.ts`
+- [x] `workers/agents/src/channels/email-attachment-route.test.ts`
 - [x] `workers/agents/src/channels/email-docx.test.ts`
 - [ ] `workers/agents/src/channels/email-docx.ts`
 - [ ] `workers/agents/src/channels/email-ocr-settings-route.test.ts`

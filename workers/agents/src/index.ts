@@ -7232,8 +7232,15 @@ app.post("/internal/business-email/attachment/ocr", async (c) => {
         },
         body: JSON.stringify({ spaceId: body.spaceId, projectId: projectId ?? null, pdfBase64: bytesToBase64(inputBytes), firstPage: 1, lastPage: 5 }),
       }));
-      const rendered = await renderResponse.json<{ error?: string; pages?: Array<{ page: number; pngBase64: string }>; output_bytes?: number }>()
-        .catch((): { error?: string; pages?: Array<{ page: number; pngBase64: string }>; output_bytes?: number } => ({}));
+      // At most five 1 MiB PNGs can be returned (base64 plus JSON overhead). Bound the
+      // sandbox response before parsing so a faulty container cannot force an unbounded
+      // allocation in this Worker.
+      let rendered: { error?: string; pages?: Array<{ page: number; pngBase64: string }>; output_bytes?: number } = {};
+      try {
+        rendered = JSON.parse(await readBoundedResponseText(renderResponse, 8 * 1024 * 1024));
+      } catch {
+        return c.json({ error_code: "pdf_render_output_limit" }, 413);
+      }
       if (!renderResponse.ok || !Array.isArray(rendered.pages) || rendered.pages.length < 1 || rendered.pages.length > 5) {
         const code = rendered.error ?? "scanned_pdf_ocr_unavailable";
         return c.json({ error_code: code === "pdf_encrypted_unsupported" ? "attachment_pdf_encrypted" : code }, code === "pdf_encrypted_unsupported" ? 415 : code === "pdf_input_too_large_or_invalid" ? 413 : 422);
