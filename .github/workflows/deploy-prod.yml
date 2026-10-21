@@ -85,6 +85,9 @@ jobs:
           npx wrangler d1 execute "$DB_ID" \
             --command="SELECT suspension_reason FROM orgs LIMIT 0" \
             --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT request_id FROM gdpr_erasure_outbox LIMIT 0" \
+            --remote
 
       - name: Deploy all workers (production)
         env:

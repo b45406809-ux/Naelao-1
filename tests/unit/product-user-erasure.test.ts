@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { eraseProductUsersForSpace } from "../../workers/spaces/src/product-user-erasure.js";
 import { eraseBusinessServiceProviders } from "../../workers/spaces/src/business-erasure.js";
-import { cancelPendingErasure, createPendingErasureRequest } from "../../workers/spaces/src/erasure-request-state.js";
+import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "../../workers/spaces/src/erasure-request-state.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 const migration = (name: string) => readFileSync(join(__dirname, `../../infra/migrations/${name}`), "utf8");
@@ -82,7 +82,7 @@ describe("business provider erasure", () => {
 });
 
 describe("organization erasure cancellation", () => {
-  it("persists an owner request before queueing it and marks a failed send", async () => {
+  it("persists the request and outbox atomically, then retries failed Queue sends", async () => {
     const db = createFakeD1(migrations);
     const messages: unknown[] = [];
     await createPendingErasureRequest(db as never, { send: async (message: unknown) => { messages.push(message); } }, {
@@ -95,13 +95,36 @@ describe("organization erasure cancellation", () => {
 
     await expect(createPendingErasureRequest(db as never, { send: async () => { throw new Error("queue unavailable"); } }, {
       id: "request-b", tenantId: "tenant-b", userId: "owner-b", reason: "Close account",
-    })).rejects.toThrow("queue unavailable");
-    expect(db.db.prepare("SELECT status FROM gdpr_requests WHERE id = ?").get("request-b")).toEqual({ status: "failed" });
+    })).resolves.toBe(true);
+    expect(db.db.prepare("SELECT status FROM gdpr_requests WHERE id = ?").get("request-b")).toEqual({ status: "pending" });
+    expect(db.db.prepare("SELECT status, attempt_count, last_error FROM gdpr_erasure_outbox WHERE request_id = ?").get("request-b"))
+      .toEqual({ status: "pending", attempt_count: 1, last_error: "queue_send_failed" });
+    db.db.prepare("UPDATE gdpr_erasure_outbox SET next_attempt_at = '2000-01-01 00:00:00' WHERE request_id = ?").run("request-b");
+    await expect(dispatchPendingErasureOutbox(db as never, { send: async (message: unknown) => { messages.push(message); } }))
+      .resolves.toEqual({ sent: 1, deferred: 0 });
+    expect(db.db.prepare("SELECT status FROM gdpr_erasure_outbox WHERE request_id = ?").get("request-b"))
+      .toEqual({ status: "sent" });
     await expect(createPendingErasureRequest(db as never, { send: async () => undefined }, {
       id: "request-c", tenantId: "tenant-a", userId: "owner-a", reason: "Duplicate request",
     })).resolves.toBe(false);
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM gdpr_requests WHERE tenant_id = ? AND status = 'pending'").get("tenant-a"))
       .toEqual({ count: 1 });
+  });
+
+  it("bounds outbox work and continues across batches", async () => {
+    const db = createFakeD1(migrations);
+    for (let index = 0; index < 26; index++) {
+      await createPendingErasureRequest(db as never, { send: async () => { throw new Error("queue unavailable"); } }, {
+        id: `request-${index}`, tenantId: `tenant-${index}`, userId: `owner-${index}`, reason: "Close account",
+      });
+    }
+    db.db.prepare("UPDATE gdpr_erasure_outbox SET next_attempt_at = '2000-01-01 00:00:00'").run();
+    const sent: unknown[] = [];
+    await expect(dispatchPendingErasureOutbox(db as never, { send: async (message: unknown) => { sent.push(message); } }))
+      .resolves.toEqual({ sent: 25, deferred: 0 });
+    await expect(dispatchPendingErasureOutbox(db as never, { send: async (message: unknown) => { sent.push(message); } }))
+      .resolves.toEqual({ sent: 1, deferred: 0 });
+    expect(sent).toHaveLength(26);
   });
 
   it("cancels once and restores only erasure-owned suspension reasons", async () => {
@@ -114,6 +137,8 @@ describe("organization erasure cancellation", () => {
       .run("space-b", "tenant-a", "type-a", "Space B", "suspended", "admin_product");
     db.db.prepare("INSERT INTO gdpr_requests (id, tenant_id, request_type, subject_type, subject_id, requested_by, status) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("request-a", "tenant-a", "erasure", "org_member", "owner-a", "owner-a", "pending");
+    db.db.prepare("INSERT INTO gdpr_erasure_outbox (request_id, tenant_id, payload_json, status) VALUES (?, ?, ?, ?)")
+      .run("request-a", "tenant-a", "{}", "pending");
 
     await expect(cancelPendingErasure(db as never, "tenant-a", "owner-a", "request-a")).resolves.toBe(true);
     await expect(cancelPendingErasure(db as never, "tenant-a", "owner-a", "request-a")).resolves.toBe(false);
@@ -123,6 +148,8 @@ describe("organization erasure cancellation", () => {
       .toEqual({ status: "active", suspension_reason: null });
     expect(db.db.prepare("SELECT status, suspension_reason FROM spaces WHERE id = ?").get("space-b"))
       .toEqual({ status: "suspended", suspension_reason: "admin_product" });
+    expect(db.db.prepare("SELECT status FROM gdpr_erasure_outbox WHERE request_id = ?").get("request-a"))
+      .toEqual({ status: "cancelled" });
 
     // A retry of an old cancelled ID must not release a later erasure's holds.
     db.db.prepare("UPDATE orgs SET status = 'suspended', suspension_reason = 'erasure' WHERE id = ?").run("tenant-a");

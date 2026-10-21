@@ -39,7 +39,7 @@ import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.
 import { reportExtensionArtifactWrite } from "./extension-storage-usage.js";
 import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 import { eraseBusinessServiceProviders } from "./business-erasure.js";
-import { cancelPendingErasure, createPendingErasureRequest } from "./erasure-request-state.js";
+import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "./erasure-request-state.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -153,10 +153,7 @@ app.post("/builder/erasure", async (c) => {
     });
     if (!created) return c.json({ error_code: "erasure_already_pending" }, 409);
   } catch {
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE gdpr_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ? AND status = 'pending'",
-    ).bind(requestId).run();
-    return c.json({ error_code: "erasure_enqueue_failed" }, 503);
+    return c.json({ error_code: "erasure_persistence_unavailable" }, 503);
   }
   return c.json({ request_id: requestId, status: "pending", cooling_off_hours: 24 }, 202);
 });
@@ -7040,5 +7037,10 @@ export default {
         return Response.json({ error_code: "request_body_too_large", message: "Request body exceeds the 8 MiB limit" }, { status: 413 });
       return errorResponse(error, "unknown");
     }
+  },
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    if (!env.EVENTS_QUEUE) return;
+    const result = await dispatchPendingErasureOutbox(env.PLATFORM_DB, env.EVENTS_QUEUE);
+    console.log(`[erasure-outbox] sent=${result.sent} deferred=${result.deferred}`);
   },
 } satisfies ExportedHandler<Env>;

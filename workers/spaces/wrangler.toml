@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
+[[triggers]]
+crons = ["*/5 * * * *"]
+
 # B1 fix: this worker must never be reachable directly — naelao-router is the only public
 # API surface. Identity headers (x-naelao-tenant-id/role/user-id) are trusted as-is by
 # downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
@@ -250,6 +253,9 @@ service = "naelao-spaces"
 binding = "ANALYTICS"
 dataset = "naelao_agent_events"
 
+[[env.staging.triggers]]
+crons = ["*/5 * * * *"]
+
 
 [[env.staging.durable_objects.bindings]]
 name = "SPACE_DO"
@@ -363,6 +369,9 @@ service = "naelao-spaces"
 [[env.production.analytics_engine_datasets]]
 binding = "ANALYTICS"
 dataset = "naelao_agent_events"
+
+[[env.production.triggers]]
+crons = ["*/5 * * * *"]
 
 
 [[env.production.durable_objects.bindings]]

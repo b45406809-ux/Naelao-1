@@ -33,9 +33,10 @@ const COMMERCE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/
 const LEDGER_KIND_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0061_reseller_ledger_kind.sql"), "utf8");
 const RESELLER_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0033_reseller_accounts.sql"), "utf8");
 const GDPR_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0025_gdpr_requests.sql"), "utf8");
+const ERASURE_OUTBOX_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0118_gdpr_erasure_outbox.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, GDPR_MIGRATION, NAELAO_PRODUCT_MIGRATION, BUILDER_DASHBOARD_MIGRATION, COMMERCE_MIGRATION, RESELLER_MIGRATION, LEDGER_KIND_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, GDPR_MIGRATION, ERASURE_OUTBOX_MIGRATION, NAELAO_PRODUCT_MIGRATION, BUILDER_DASHBOARD_MIGRATION, COMMERCE_MIGRATION, RESELLER_MIGRATION, LEDGER_KIND_MIGRATION]);
   const events: unknown[] = [];
   return {
     PLATFORM_SECRET: "s",

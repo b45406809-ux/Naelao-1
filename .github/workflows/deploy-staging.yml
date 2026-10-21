@@ -85,6 +85,10 @@ jobs:
             --command="SELECT suspension_reason FROM orgs LIMIT 0" \
             --remote \
             --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT request_id FROM gdpr_erasure_outbox LIMIT 0" \
+            --remote \
+            --env=staging
 
       - name: Deploy router worker (staging)
         env:
