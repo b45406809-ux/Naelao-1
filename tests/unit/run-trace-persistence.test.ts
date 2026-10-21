@@ -76,8 +76,8 @@ describe("NaelaoAgentDO — run_traces persistence (§A1 Phase HX1)", () => {
   });
 
   it("best-effort mirrors one root span + one child span per step to Analytics Engine when bound", async () => {
-    const points: unknown[] = [];
-    const doInstance = makeDO({ writeDataPoint: (p) => points.push(p) }) as unknown as {
+    const points: Array<{ blobs: string[] }> = [];
+    const doInstance = makeDO({ writeDataPoint: (p) => points.push(p as { blobs: string[] }) }) as unknown as {
       persistRunTrace: (runId: string, tenantId: string, trace: TraceStep[]) => void;
       fetch: (req: Request) => Promise<Response>;
     };
@@ -87,6 +87,10 @@ describe("NaelaoAgentDO — run_traces persistence (§A1 Phase HX1)", () => {
     await new Promise((r) => setTimeout(r, 0));
     // 1 root span + 4 step spans = 5 data points.
     expect(points.length).toBe(5);
+    expect(new Set(points.map((point) => point.blobs[0])).size).toBe(1);
+    expect(points[0]!.blobs[0]).toMatch(/^[0-9a-f]{32}$/);
+    expect(points.some((point) => point.blobs[4] === "script_loop.run")).toBe(true);
+    expect(points.some((point) => JSON.parse(point.blobs[6]!).run_id === "run-4")).toBe(true);
   });
 
   it("does not touch Analytics Engine at all when ANALYTICS is unbound (honest degradation)", async () => {

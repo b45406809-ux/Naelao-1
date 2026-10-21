@@ -70,7 +70,7 @@ import {
   stableStringify,
   approvalPolicyFingerprint,
 } from "../script-engine/index.js";
-import { createTracer } from "@naelao/tracing";
+import { createTracer, generateTraceId } from "@naelao/tracing";
 import { emitWorkflowReceiptCard, resolveOperatingMode, SystemOneDecisionClient, verifyCapabilityGrant, validateExtensionManifest } from "@naelao/agent-sdk";
 import { applyDurableObjectJurisdiction, issueDelegationClaim, verifyDelegationClaim } from "@naelao/security";
 import { routeMentionsWithSentry } from "../script-engine/mention-router.js";
@@ -6720,7 +6720,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     if (!this.env.ANALYTICS) return;
     try {
-      const tracer = createTracer({ service: "agents-worker", dataset: this.env.ANALYTICS }, runId);
+      // Run IDs are opaque application identifiers, not necessarily W3C trace IDs. Keep the
+      // run ID as a span attribute and mint a valid trace ID for Analytics Engine otherwise.
+      const traceId = /^[0-9a-f]{32}$/i.test(runId) && !/^0+$/.test(runId) ? runId : generateTraceId();
+      const tracer = createTracer({ service: "agents-worker", dataset: this.env.ANALYTICS }, traceId);
       const root = tracer.startSpan("script_loop.run");
       root.setAttribute("tenant_id", tenantId).setAttribute("run_id", runId).setAttribute("steps", trace.length);
       for (const step of trace) {

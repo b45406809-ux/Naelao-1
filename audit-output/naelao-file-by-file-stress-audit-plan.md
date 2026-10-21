@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2023` tracked files; `1817` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `753a4d6b`.
+Inventory basis: `2024` tracked files; `1818` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `753a4d6b` plus the container digest regression test.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -21,6 +21,10 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - The recursive TypeScript check passed for all 63 workspace projects with workspace concurrency limited to 2. The unconstrained parallel invocation exceeded this environment's memory limit (exit 137); rerunning at low concurrency completed cleanly. CI now uses the proven concurrency limit of 2. That pass found and fixed a Sweeper test type mismatch between the Cloudflare `URL` type and Node `readFileSync`; the Sweeper test file passed 10/10 afterward.
 - Workspace build validation completed 50 tasks before stopping at the Agents worker's container dry run: Wrangler could not pull `node:22-slim` because Docker Hub DNS/network access is unavailable in this environment. The remaining Agents container image build and any downstream tasks need CI or a Docker-enabled environment. Earlier build tasks compiled and dry-ran successfully; the full build is not marked passed.
 - **HTML preview XSS boundary:** repository lint identified unsafe HTML insertion in DOCX preview and inline SVG QR rendering. DOCX output now renders in a sandboxed iframe with a restrictive CSP; interactive previews allow only a random-nonce inspector script and require messages to come from a registered inspector frame with bounded fields. QR codes render as React SVG elements, so uploaded text and labels remain escaped text/data. The focused preview/inspector/QR suites passed 24 tests and the shell/UI TypeScript checks passed. A local Chromium check confirmed untrusted inline script messages are blocked, the nonce-authorized inspector script runs, and a hostile meta-refresh cannot deliver a forged click message.
+- **Container base-image integrity:** `Dockerfile.toolsandbox` and `Dockerfile.media` now pin the same `node:22-slim` manifest digest already used by `Dockerfile.documents`; the floating base tags previously let rebuilds silently change their OS/runtime. The Agents container dry run remains unverified here because Docker Hub DNS is blocked.
+- **Container pin regression check:** a root unit test now asserts all three Agents Node container Dockerfiles use the same pinned digest. Its focused run passed 1/1.
+- A follow-up root-suite run exposed an Analytics Engine trace regression: opaque run IDs were passed directly to the tracing package, which accepts only 32-character hexadecimal trace IDs and silently dropped all span writes otherwise. The writer now preserves the run ID as an attribute and generates a valid trace ID when the run ID is not W3C-compatible. Regression coverage asserts the five spans share a valid trace ID and retain the run ID; trace persistence and container pin tests passed 6/6.
+- After the trace fix, the full root unit/integration configuration passed 2,017 test suites / 5,422 tests. The Agents worker TypeScript check passed; its targeted trace and container pin tests passed 6/6. Full worker/package workspace, native Node, and conformance results are recorded above from the preceding pass.
 - These runs cover the exercised code paths only. The full repository audit remains open.
 
 ## Open cross-file findings
@@ -1402,6 +1406,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/composio-connector-connect.test.ts`
 - [ ] `tests/unit/composio-tool-execution.test.ts`
 - [x] `tests/unit/concurrency-do.test.ts`
+- [ ] `tests/unit/container-image-pin.test.ts`
 - [x] `tests/unit/connector-catalogue.test.ts`
 - [ ] `tests/unit/connector-channel-vault-write.test.ts`
 - [ ] `tests/unit/connector-directory.test.ts`
@@ -1696,6 +1701,9 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/agents`
 
+- [ ] `workers/agents/Dockerfile.documents`
+- [ ] `workers/agents/Dockerfile.media`
+- [ ] `workers/agents/Dockerfile.toolsandbox`
 - [ ] `workers/agents/package.json`
 - [ ] `workers/agents/tsconfig.json`
 - [ ] `workers/agents/vitest.config.ts`
