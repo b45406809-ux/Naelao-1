@@ -1,6 +1,12 @@
 // G-AS01..G-AS06: Platform-level Claude assistant for builders — pre-loaded with platform docs KB
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, requestId, readBoundedRequestText, readBoundedResponseJson, RequestBodyTooLargeError } from "@naelao/http";
+
+const MAX_CHAT_REQUEST_BYTES = 64 * 1024;
+const MAX_CHAT_MESSAGE_BYTES = 16 * 1024;
+const MAX_HISTORY_ROW_CHARS = 4_000;
+const MAX_HISTORY_TOTAL_CHARS = 32_000;
+const MAX_KB_CONTEXT_CHARS = 32_000;
 
 interface Env {
   ENVIRONMENT: string;
@@ -75,9 +81,20 @@ app.get("/v1/assistant/sessions/:id", async (c) => {
 app.post("/v1/assistant/chat", async (c) => {
   const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized", message: "Missing tenant or user" }, 401);
-  const body = await c.req.json<{ message: string; session_id?: string }>();
-  if (!body.message?.trim()) {
+  let body: { message: string; session_id?: string };
+  try {
+    body = JSON.parse(await readBoundedRequestText(c.req.raw, MAX_CHAT_REQUEST_BYTES)) as { message: string; session_id?: string };
+  } catch (error) {
+    return c.json({ error_code: error instanceof RequestBodyTooLargeError ? "request_body_too_large" : "invalid_request" }, error instanceof RequestBodyTooLargeError ? 413 : 400);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.message !== "string" || (body.session_id !== undefined && typeof body.session_id !== "string")) {
+    return c.json({ error_code: "bad_request", message: "message must be text" }, 400);
+  }
+  if (!body.message.trim()) {
     return c.json({ error_code: "bad_request", message: "message required" }, 400);
+  }
+  if (new TextEncoder().encode(body.message).byteLength > MAX_CHAT_MESSAGE_BYTES) {
+    return c.json({ error_code: "message_too_large", message: "Message exceeds the 16 KiB limit" }, 413);
   }
   const now = new Date().toISOString();
 
@@ -98,9 +115,17 @@ app.post("/v1/assistant/chat", async (c) => {
 
   // Load conversation history (last 20 turns)
   const { results: history } = await c.env.PLATFORM_DB.prepare(
-    "SELECT role, content FROM assistant_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 40"
+    "SELECT role, substr(content, 1, 4000) AS content FROM assistant_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 40"
   ).bind(sessionId).all<{ role: string; content: string }>();
-  const priorMessages = history.reverse().map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+  const newestFirst: Array<{ role: "user" | "assistant"; content: string }> = [];
+  let historyChars = 0;
+  for (const row of history) {
+    if (historyChars >= MAX_HISTORY_TOTAL_CHARS) break;
+    const content = row.content.slice(0, Math.min(MAX_HISTORY_ROW_CHARS, MAX_HISTORY_TOTAL_CHARS - historyChars));
+    newestFirst.push({ role: row.role as "user" | "assistant", content });
+    historyChars += content.length;
+  }
+  const priorMessages = newestFirst.reverse();
 
   // Retrieve relevant docs from Vectorize
   const kbContext = await retrievePlatformDocs(body.message, c.env);
@@ -154,14 +179,15 @@ async function retrievePlatformDocs(query: string, env: Env): Promise<string> {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${env.PLATFORM_SECRET}` },
       body: JSON.stringify({ input: query, model: "text-embedding-3-small" }),
+      signal: AbortSignal.timeout(15_000),
     });
     if (!resp.ok) return "";
-    const data = await resp.json<{ data: { embedding: number[] }[] }>();
+    const data = await readBoundedResponseJson<{ data: { embedding: number[] }[] }>(resp, 256 * 1024);
     const embedding = data.data[0]?.embedding;
     if (!embedding) return "";
 
     const results = await env.PLATFORM_DOCS_INDEX.query(embedding, { topK: 5, returnMetadata: "indexed" });
-    return results.matches.map((m) => (m.metadata as Record<string, string>)["text"] ?? "").filter(Boolean).join("\n\n");
+    return results.matches.map((m) => (m.metadata as Record<string, string>)["text"] ?? "").filter(Boolean).join("\n\n").slice(0, MAX_KB_CONTEXT_CHARS);
   } catch {
     return "";
   }
@@ -182,9 +208,10 @@ async function callLlm(
         system,
         messages,
       }),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!resp.ok) return "I encountered an error. Please try again.";
-    const data = await resp.json<{ content?: { type: string; text: string }[] }>();
+    const data = await readBoundedResponseJson<{ content?: { type: string; text: string }[] }>(resp, 256 * 1024);
     const block = data.content?.find((b) => b.type === "text");
     return block?.text ?? "I encountered an error. Please try again.";
   } catch {

@@ -2121,6 +2121,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/assistant/src`
 
 - [ ] `workers/assistant/src/index.ts`
+- [x] `workers/assistant/src/index.test.ts`
 
 ### `workers/auth`
 
