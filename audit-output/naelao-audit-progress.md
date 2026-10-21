@@ -1385,6 +1385,14 @@ Triaged the business-create/business-routes failures from the broad test report.
 
 Validation: `business-create.test.ts` and `business-routes.test.ts` passed 2 files / 39 tests. This closes those two test modules only; the full shared `tests/` suite remains open and has many unrelated failures.
 
+Committed and pushed as `99dbc446`. Refreshed the inventory afterward: 1,976 tracked files and 1,770 source/config checklist rows; 375 rows are checked.
+
+## Align R2 tool fixtures with CAS and tombstone semantics (2026-10-21)
+
+The workspace/download tests used incomplete R2 doubles that lacked `head`, `arrayBuffer`, ETags, and CAS metadata. Added those behaviors to the fakes so the tests exercise the production `r2-cas` path. The move test had expected a hard R2 delete; conditional deletes are represented by a tombstone, so it now verifies the deleted marker and confirms the source is no longer readable. Download tests now verify exact stored bytes, including plain text, and the missing-URL assertion matches the documented uppercase URL error.
+
+Validation: `workspace-prebuilt.test.ts` and `web-search-platform.test.ts` passed 2 files / 28 tests; Agents `tsc --noEmit` passed. The workspace command `pnpm --filter @naelao/agents-worker typecheck` could not start because pnpm stopped at its ignored dependency build-script policy; direct installed TypeScript execution passed.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.

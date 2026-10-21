@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1976` tracked files; `1770` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `240ad480`.
+Inventory basis: `1976` tracked files; `1770` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `99dbc446`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1589,7 +1589,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/wallet-topups-billing.test.ts`
 - [ ] `tests/unit/web-download-binary-route.test.ts`
 - [ ] `tests/unit/web-search-grounded-answer.test.ts`
-- [ ] `tests/unit/web-search-platform.test.ts`
+- [x] `tests/unit/web-search-platform.test.ts`
 - [ ] `tests/unit/webdev-agency-template.test.ts`
 - [ ] `tests/unit/webhook-idempotency.test.ts`
 - [ ] `tests/unit/webhook-normalizer.test.ts`
@@ -1602,7 +1602,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/workflow-tier-routing.test.ts`
 - [ ] `tests/unit/workspace-admin-prebuilt.test.ts`
 - [ ] `tests/unit/workspace-file-viewer.test.ts`
-- [ ] `tests/unit/workspace-prebuilt.test.ts`
+- [x] `tests/unit/workspace-prebuilt.test.ts`
 - [ ] `tests/unit/workspace-scoping.test.ts`
 - [x] `tests/unit/wrangler-binding-parity.test.ts`
 - [ ] `tests/unit/wrangler-vars-parity.test.ts`

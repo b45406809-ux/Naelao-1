@@ -10,16 +10,43 @@ import type { ScriptEngineEnv, ContainerWorkspaceGateway } from "../../workers/a
 
 function makeFakeR2() {
   const store = new Map<string, string>();
+  const metadata = new Map<string, Record<string, string>>();
+  const etags = new Map<string, number>();
+  function object(key: string) {
+    const value = store.get(key);
+    if (value === undefined) return null;
+    return {
+      key,
+      size: new TextEncoder().encode(value).byteLength,
+      etag: String(etags.get(key) ?? 1),
+      uploaded: new Date(),
+      customMetadata: metadata.get(key) ?? {},
+    };
+  }
   return {
     store,
+    async head(key: string) { return object(key) as R2Object | null; },
     async get(key: string) {
       const v = store.get(key);
-      return v === undefined ? null : ({ text: async () => v, size: v.length } as unknown as R2ObjectBody);
+      const meta = object(key);
+      return v === undefined || !meta ? null : ({
+        ...meta,
+        text: async () => v,
+        arrayBuffer: async () => new TextEncoder().encode(v).buffer,
+      } as unknown as R2ObjectBody);
     },
-    async put(key: string, value: string) { store.set(key, value); },
-    async delete(key: string) { store.delete(key); },
+    async put(key: string, value: string | Uint8Array, options?: R2PutOptions) {
+      const current = object(key);
+      if ((options?.onlyIf?.etagMatches && current?.etag !== options.onlyIf.etagMatches) ||
+          (options?.onlyIf?.etagDoesNotMatch === "*" && current)) return null;
+      store.set(key, typeof value === "string" ? value : new TextDecoder().decode(value));
+      metadata.set(key, options?.customMetadata ?? {});
+      etags.set(key, (etags.get(key) ?? 0) + 1);
+      return object(key) as R2Object;
+    },
+    async delete(key: string) { store.delete(key); metadata.delete(key); etags.delete(key); },
     async list({ prefix }: { prefix: string }) {
-      const objects = [...store.entries()].filter(([k]) => k.startsWith(prefix)).map(([key, value]) => ({ key, size: value.length, uploaded: new Date() }));
+      const objects = [...store.entries()].filter(([k]) => k.startsWith(prefix)).map(([key, value]) => ({ key, size: value.length, uploaded: new Date(), customMetadata: metadata.get(key) ?? {} }));
       return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
     },
   } as unknown as R2Bucket & { store: Map<string, string> };
@@ -139,7 +166,10 @@ describe("workspace prebuilt", () => {
       await call(ctx, "workspace.move", { from: "r2", to: "container", path: "notes.txt" });
 
       expect(container.store.get("notes.txt")).toBe("draft");
-      expect(r2.store.has("spaces/space-1/workspace/notes.txt")).toBe(false);
+      // R2 has no conditional DELETE. A successful move publishes a CAS tombstone, so readers
+      // treat the source as absent while its deleted marker remains physically stored.
+      expect((await r2.head("spaces/space-1/workspace/notes.txt"))?.customMetadata?.deleted).toBe("true");
+      await expect(call(ctx, "workspace.copy", { from: "r2", to: "container", path: "notes.txt" })).rejects.toThrow(/source file not found/);
     });
 
     it("moves a file container -> r2, deleting the container source", async () => {

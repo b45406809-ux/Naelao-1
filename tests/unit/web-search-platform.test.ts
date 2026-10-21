@@ -96,21 +96,34 @@ describe("web-search prebuilt — download_file", () => {
   // download that corrupted every PDF could look green here.
   function makeR2() {
     const store = new Map<string, { content: string | Uint8Array; meta: Record<string, string> | undefined; contentType?: string }>();
+    const etags = new Map<string, number>();
+    function object(key: string) {
+      const row = store.get(key);
+      if (!row) return null;
+      const size = typeof row.content === "string" ? new TextEncoder().encode(row.content).byteLength : row.content.byteLength;
+      return { key, size, etag: String(etags.get(key) ?? 1), uploaded: new Date(), customMetadata: row.meta ?? {} };
+    }
     const bucket = {
+      async head(key: string) { return object(key); },
       async put(
         key: string,
         value: unknown,
-        opts?: { customMetadata?: Record<string, string>; httpMetadata?: { contentType?: string } }
+        opts?: { customMetadata?: Record<string, string>; httpMetadata?: { contentType?: string }; onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string } }
       ) {
+        const current = object(key);
+        if ((opts?.onlyIf?.etagMatches && current?.etag !== opts.onlyIf.etagMatches) ||
+            (opts?.onlyIf?.etagDoesNotMatch === "*" && current)) return null;
         const raw = value instanceof Uint8Array ? value : String(value);
         store.set(key, { content: raw, meta: opts?.customMetadata, contentType: opts?.httpMetadata?.contentType });
-        return {} as R2Object;
+        etags.set(key, (etags.get(key) ?? 0) + 1);
+        return object(key) as R2Object;
       },
       async get(key: string) {
         const row = store.get(key);
         if (!row) return null;
         const text = typeof row.content === "string" ? row.content : new TextDecoder().decode(row.content);
-        return { size: text.length, uploaded: new Date(), async text() { return text; } } as unknown as R2ObjectBody;
+        const bytes = typeof row.content === "string" ? new TextEncoder().encode(row.content) : row.content;
+        return { ...object(key), async text() { return text; }, async arrayBuffer() { return bytes.slice().buffer; } } as unknown as R2ObjectBody;
       },
     };
     return { bucket: bucket as unknown as R2Bucket, store };
@@ -152,7 +165,7 @@ describe("web-search prebuilt — download_file", () => {
     // The content itself must never appear in the tool result — only in R2.
     expect(JSON.stringify(out)).not.toContain("a,b,c");
     const written = [...store.entries()].find(([k]) => k.endsWith("downloads/report.csv"));
-    expect(written?.[1].content).toBe("a,b,c\n1,2,3");
+    expect(written?.[1].content).toEqual(new TextEncoder().encode("a,b,c\n1,2,3"));
   });
 
   it("sanitizes an explicit filename and falls back to the URL's own last segment otherwise", async () => {
@@ -218,7 +231,7 @@ describe("web-search prebuilt — download_file", () => {
 
   it("requires url", async () => {
     const env = { tenantId: "t", platformSecret: PLATFORM_SECRET } as unknown as ScriptEngineEnv;
-    await expect(webSearch.operations["download_file"]!({}, { env, run: noopRun })).rejects.toThrow(/url/);
+    await expect(webSearch.operations["download_file"]!({}, { env, run: noopRun })).rejects.toThrow(/URL/);
   });
 
   // The live bug this covers: downloading a PDF returned "415 ... only handles text". Downloading
@@ -265,6 +278,6 @@ describe("web-search prebuilt — download_file", () => {
     const out = (await webSearch.operations["download_file"]!({ url: "https://x.com/a.csv" }, { env, run: noopRun })) as { binary: boolean };
     expect(out.binary).toBe(false);
     const written = [...store.entries()].find(([k]) => k.endsWith("downloads/a.csv"));
-    expect(written![1].content).toBe("a,b\n1,2");
+    expect(written![1].content).toEqual(new TextEncoder().encode("a,b\n1,2"));
   });
 });
