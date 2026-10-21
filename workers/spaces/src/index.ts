@@ -2914,10 +2914,16 @@ app.post("/spaces/:spaceId/tunnels/:machineId/:action", async c => {
 app.post("/spaces/:spaceId/tunnel-authority", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const spaceId = c.req.param("spaceId");
+  const active = await c.env.PLATFORM_DB.prepare(
+    `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
+     AND EXISTS (SELECT 1 FROM orgs o WHERE o.id = s.tenant_id AND o.status = 'active')`,
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (!active) return c.json({ error_code: "tenant_suspended" }, 403);
   const body = await c.req.json<Record<string, unknown>>();
   if (!["enroll", "authenticate", "lookup", "heartbeat"].includes(String(body.action))) return c.json({ error_code: "forbidden" }, 403);
-  const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
-  return stub.fetch(new Request("http://space-do/machine-authority", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, tenantId, spaceId: c.req.param("spaceId") }) }));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request("http://space-do/machine-authority", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, tenantId, spaceId }) }));
 });
 
 // ── Whop wallet shell wrapper ──────────────────────────────────────────────────────────────────

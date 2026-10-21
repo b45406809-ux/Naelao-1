@@ -1881,3 +1881,9 @@ Validation: focused loop regression 11/11; full Agents suite 156 files / 716 tes
 `WorkflowRunDO.authorize()` refreshed actor, project and installation grants but `readWorkflowGrant()` did not check tenant or Space status. Long-lived workflow code could continue between steps after suspension. Grant refreshes now query the Agents Worker's configured D1 binding and reject inactive scopes; D1 errors fail closed. Owner status and cancellation remain available while suspended so an authorized operator can stop outstanding work. A regression suspends an initialized workflow and proves execution authorization fails, while a second proves owner cancellation remains available.
 
 Validation: full Agents suite passed 156 files / 717 tests; updated workflow DO suite 7/7; Agents TypeScript and Biome security lint passed; `git diff --check` passed. No new files were added. The audit continues across alarm handlers, direct DO operations, and non-Agent workers.
+
+## Local-machine authority suspension gate (2026-10-21)
+
+The signed `/spaces/:spaceId/tunnel-authority` route forwarded machine authenticate, lookup, heartbeat and enrollment operations to SpaceDO after checking only the internal HMAC. A suspended tenant could therefore retain a live local-machine connection/grant. The Spaces Worker now verifies active org and Space status before every authority operation; stale machine heartbeats/requests fail before reaching SpaceDO. Added active and suspended regressions.
+
+Validation: full Spaces suite passed 66 files / 257 tests; Spaces TypeScript and Biome security lint passed; `git diff --check` passed. The repository tree will be refreshed with this new regression file before commit. Suspension audit still needs review of other long-lived resource and alarm surfaces; the whole repository audit remains open.

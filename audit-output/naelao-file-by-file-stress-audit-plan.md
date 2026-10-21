@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2027` tracked files; `1821` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `a621df58`.
+Inventory basis: `2028` tracked files; `1822` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `f1b9a44c`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1633,8 +1633,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/tasks-prebuilt.test.ts`
 - [ ] `tests/unit/template-bootstrap-execution.test.ts`
 - [ ] `tests/unit/template-royalty-webhook.test.ts`
-- [ ] `tests/unit/tenant-custom-oauth.test.ts`
 - [x] `tests/unit/tenant-continuation-gate.test.ts`
+- [ ] `tests/unit/tenant-custom-oauth.test.ts`
 - [ ] `tests/unit/terminal-output.test.ts`
 - [x] `tests/unit/thread-last-active-migration.test.ts`
 - [ ] `tests/unit/tool-addressing-robustness.test.ts`
@@ -1709,9 +1709,6 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/agents`
 
-- [ ] `workers/agents/Dockerfile.documents`
-- [ ] `workers/agents/Dockerfile.media`
-- [ ] `workers/agents/Dockerfile.toolsandbox`
 - [ ] `workers/agents/package.json`
 - [ ] `workers/agents/tsconfig.json`
 - [ ] `workers/agents/vitest.config.ts`
@@ -1734,6 +1731,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/agents/src`
 
+- [x] `workers/agents/src/agent-approval-routes.test.ts`
 - [x] `workers/agents/src/agent-run-session-scope.test.ts`
 - [ ] `workers/agents/src/agent-templates.test.ts`
 - [ ] `workers/agents/src/agent-templates.ts`
@@ -1746,7 +1744,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/env.ts`
 - [x] `workers/agents/src/extension-provider-auth.test.ts`
 - [ ] `workers/agents/src/index.ts`
-- [x] `workers/agents/src/agent-approval-routes.test.ts`
 - [x] `workers/agents/src/internal-scope-routes.test.ts`
 - [ ] `workers/agents/src/model-policy.test.ts`
 - [ ] `workers/agents/src/model-policy.ts`
@@ -2523,6 +2520,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/template-catalog.ts`
 - [x] `workers/spaces/src/tenancy.ts`
 - [ ] `workers/spaces/src/thread-hierarchy.test.ts`
+- [x] `workers/spaces/src/tunnel-authority-suspension.test.ts`
 - [ ] `workers/spaces/src/webhook-defense.test.ts`
 - [ ] `workers/spaces/src/workflow-plan-authoring.test.ts`
 
