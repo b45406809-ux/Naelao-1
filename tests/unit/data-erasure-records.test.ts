@@ -45,6 +45,32 @@ describe("data erasure D1 records", () => {
     expect([...SPACE_ERASURE_TABLES].filter((table) => !scoped.has(table)).sort()).toEqual([]);
   });
 
+  it("classifies every live tenant-scoped table under an erasure or retention policy", async () => {
+    const db = createFakeD1(platformMigrations);
+    const handledTenantScoped = new Set([
+      "api_keys", "builder_api_key_index", "do_registry", "eval_results", "gdpr_erasure_outbox",
+      "gdpr_requests", "idempotency_keys", "launchpad_orders", "marketplace_forks",
+      "marketplace_listings", "marketplace_reviews", "notifications", "org_members", "portal_domains",
+      "reseller_accounts", "service_accounts", "space_provisioning_leases", "space_type_tools",
+      "spaces", "spacetypes", "subscriptions", "usage_events", "users", "web_push_subscriptions",
+    ]);
+    // Financial records and immutable provenance are deliberately retained; their schedules need a
+    // separate policy rather than being removed by account erasure.
+    const retainedTenantScoped = new Set([
+      "audit_log", "invoices", "llm_token_run_settlements", "marketplace_license_overpayments",
+      "marketplace_license_purchases", "payout_requests", "platform_provenance",
+    ]);
+    const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
+    const tenantScoped = new Set<string>();
+    for (const { name } of tables) {
+      const columns = await db.prepare(`PRAGMA table_info(${JSON.stringify(name)})`).all<{ name: string }>();
+      if (columns.results.some((column) => column.name === "tenant_id" || column.name === "org_id")) tenantScoped.add(name);
+    }
+    const classified = new Set([...SPACE_ERASURE_TABLES, ...handledTenantScoped, ...retainedTenantScoped]);
+    expect([...tenantScoped].filter((table) => !classified.has(table)).sort()).toEqual([]);
+    expect([...handledTenantScoped, ...retainedTenantScoped].filter((table) => !tenantScoped.has(table)).sort()).toEqual([]);
+  });
+
   it("removes searchable chunks and parent threads as well as session shadows", async () => {
     const db = createFakeD1(platformMigrations);
     db.db.prepare(`INSERT INTO kb_documents (id, space_id, tenant_id, title) VALUES (?, ?, ?, ?)`)
@@ -153,6 +179,10 @@ describe("data erasure D1 records", () => {
       .run("review-a", "listing-a", "org-a", "Person Name", 5, "Private review");
     db.db.prepare("INSERT INTO marketplace_forks (id, tenant_id, listing_id, blueprint_id, artifact_json, certificate_json) VALUES (?, ?, ?, ?, ?, ?)")
       .run("fork-a", "org-a", "listing-a", "blueprint-a", "private-fork", "private-cert");
+    db.db.prepare("INSERT INTO marketplace_license_purchases (id, provider_event_id, tenant_id, listing_id, buyer_space_id, amount_cents) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("purchase-a", "provider-event-a", "org-a", "listing-a", "space-a", 5000);
+    db.db.prepare("INSERT INTO marketplace_license_overpayments (provider_event_id, purchase_id, tenant_id, listing_id, amount_cents) VALUES (?, ?, ?, ?, ?)")
+      .run("provider-overpayment-a", "purchase-a", "org-a", "listing-a", 5000);
     db.db.prepare("INSERT INTO developer_partner_profiles (user_id, handle, payout_destination) VALUES (?, ?, ?)")
       .run("user-a", "private-handle", "private-destination");
     db.db.prepare("INSERT INTO reseller_accounts (tenant_id, product_space_id) VALUES (?, ?)")
@@ -176,6 +206,8 @@ describe("data erasure D1 records", () => {
       .toEqual({ status: "archived", author_name: "Erased publisher", name: "Unavailable listing", description: "This listing is no longer available.", long_description: null, tags_json: "[]", preview_config_json: null, embedding_json: null, reviewed_by: null, review_note: null, conformance_artifact_json: null, conformance_certificate_json: null, developer_user_id: null, ls_license_provisioning_token: null, ls_license_provisioning_started_at: null });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM marketplace_reviews WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM marketplace_forks WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM marketplace_license_purchases WHERE tenant_id = ?").get("org-a")).toEqual({ count: 1 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM marketplace_license_overpayments WHERE tenant_id = ?").get("org-a")).toEqual({ count: 1 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM developer_partner_profiles WHERE user_id = ?").get("user-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM reseller_accounts WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
     expect(db.db.prepare("SELECT status, child_owner_user_id FROM tenant_hierarchy WHERE child_tenant_id = ?").get("org-a"))
