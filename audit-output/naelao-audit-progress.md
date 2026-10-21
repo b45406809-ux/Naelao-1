@@ -2242,6 +2242,12 @@ The expiry index now indexes the exact `julianday(expires_at)` expression used b
 
 Signup JWTs were missing `tv` even though login JWTs carried it. Router skips its revocation-epoch gate when `tv` is absent, so the token returned from signup remained usable after `/revoke`. Signup now includes the initial version `0`; the revocation regression now exercises the signup-issued token and confirms it is rejected after the epoch increments. Auth tests passed 32/32.
 
+## Credentials egress request shape bounds (2026-10-21)
+
+Continued the Credentials outbound route audit. The Worker already capped inbound JSON at 1 MiB, but the privileged egress route assumed a JSON object, accepted arbitrary header maps, serialized provider bodies without a separate bound, and could attempt GET/HEAD requests with bodies. It now rejects malformed/non-object requests, requires bounded URL/credential fields, limits headers to 64 entries / 16 KiB, limits serialized upstream bodies to 512 KiB, rejects bodies on GET/HEAD, and validates the relevant optional field types before policy lookup, credential resolution, or fetch. The DNS check/fetch race remains open because Workers fetch does not expose a validated-address pinning mechanism in this path.
+
+Validation: Credentials full focused suite passed 3 files / 13 tests; Credentials TypeScript and `git diff --check` passed. New boundary cases assert malformed input, invalid headers, GET body, and oversize provider body all stop before outbound fetch. Credential decryption and live provider behavior were not exercised in those malformed-input cases.
+
 ## Router builder-auth ingress follow-up (2026-10-21)
 
 Traced the public `/v1/auth/*` routes through IP-bucketed pre-auth rate limiting and streaming body forwarding. Login, registration, and reset endpoints were bounded, but authenticated `/verify` and `/revoke` were forwarded without a pre-auth rate budget; both can trigger D1 reads/writes and were exposed to avoidable request amplification. Added separate per-IP limits (30/minute for verify, 10/minute for revoke) and route regressions asserting each uses its own bucket and rejects when the RateLimitDO blocks it. The Wrangler manifest contains the RateLimitDO binding in development, staging, and production; no public request header can select a bucket key other than the edge-provided client IP in deployed Workers.

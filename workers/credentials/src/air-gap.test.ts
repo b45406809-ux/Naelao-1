@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { generateCredentialToken, type CredentialsEnv } from "./index.js";
 
-function env(spaceActive = true): CredentialsEnv {
+function env(spaceActive = true, airGapped = true): CredentialsEnv {
   return {
     ENVIRONMENT: "test",
     PLATFORM_SECRET: "secret",
@@ -12,7 +12,7 @@ function env(spaceActive = true): CredentialsEnv {
         bind: vi.fn(() => ({
           first: vi.fn(async () => sql.includes("JOIN orgs")
             ? spaceActive ? { id: "s" } : null
-            : { config_json: '{"compliance":{"airGappedOnly":true}}' }),
+            : { config_json: JSON.stringify(airGapped ? { compliance: { airGappedOnly: true } } : {}) }),
         })),
       })),
     } as unknown as D1Database,
@@ -36,6 +36,24 @@ describe("credential egress air-gap boundary", () => {
     }), env(), {} as ExecutionContext);
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error_code: "air_gap_egress_denied" });
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed egress shapes, invalid headers, GET bodies, and oversized provider bodies before fetch", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const runtime = env(true, false);
+    const token = await generateCredentialToken("secret", "s", "agent", undefined, "tenant");
+    const send = (body: string) => worker.fetch!(new Request("https://credentials/v1/internal/spaces/s/outbound", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-credential-token": token },
+      body,
+    }), runtime, {} as ExecutionContext);
+
+    expect((await send("null")).status).toBe(400);
+    expect((await send(JSON.stringify({ credentialName: "gemini", url: "https://example.com", headers: "not-an-object" }))).status).toBe(400);
+    expect((await send(JSON.stringify({ credentialName: "gemini", url: "https://example.com", method: "GET", body: "not-allowed" }))).status).toBe(400);
+    expect((await send(JSON.stringify({ credentialName: "gemini", url: "https://example.com", body: "x".repeat(512 * 1024 + 1) }))).status).toBe(413);
     expect(outbound).not.toHaveBeenCalled();
   });
 

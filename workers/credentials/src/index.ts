@@ -1109,10 +1109,52 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
     }, 403);
   }
 
-  const body = await c.req.json<{
+  let body: {
     url: string; credentialName: string; method?: string; idempotencyKey?: string; body?: unknown;
     headers?: Record<string, string>; auth?: { type: "basic"; username: string }; onBehalfOfUserId?: string; projectId?: string;
-  }>();
+  };
+  try {
+    const parsed: unknown = await c.req.json();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("body_not_object");
+    body = parsed as typeof body;
+  } catch {
+    return c.json({ error_code: "egress_request_invalid", message: "The outbound request must be a valid JSON object" }, 400);
+  }
+  if (typeof body.url !== "string" || body.url.length > 2048 || typeof body.credentialName !== "string") {
+    return c.json({ error_code: "egress_request_invalid", message: "A bounded destination URL and credential name are required" }, 400);
+  }
+  if (body.method !== undefined && typeof body.method !== "string") {
+    return c.json({ error_code: "egress_method_denied", message: "The request method must be a string" }, 400);
+  }
+  if (body.projectId !== undefined && typeof body.projectId !== "string") {
+    return c.json({ error_code: "egress_request_invalid", message: "The project scope is invalid" }, 400);
+  }
+  if (body.onBehalfOfUserId !== undefined && typeof body.onBehalfOfUserId !== "string") {
+    return c.json({ error_code: "egress_request_invalid", message: "The acting user is invalid" }, 400);
+  }
+  const requestHeaders = body.headers ?? {};
+  if (!requestHeaders || typeof requestHeaders !== "object" || Array.isArray(requestHeaders) || Object.keys(requestHeaders).length > 64) {
+    return c.json({ error_code: "egress_headers_invalid", message: "At most 64 outbound headers are allowed" }, 400);
+  }
+  let headerBytes = 0;
+  try {
+    for (const [name, value] of Object.entries(requestHeaders)) {
+      if (typeof value !== "string") throw new Error("header_value_invalid");
+      headerBytes += new TextEncoder().encode(name).byteLength + new TextEncoder().encode(value).byteLength;
+    }
+    if (headerBytes > 16 * 1024) throw new Error("headers_too_large");
+    new Headers(requestHeaders);
+  } catch {
+    return c.json({ error_code: "egress_headers_invalid", message: "Outbound headers are malformed or exceed 16 KiB" }, 400);
+  }
+  let serializedBody: string | undefined;
+  if (body.body !== undefined) {
+    try { serializedBody = typeof body.body === "string" ? body.body : JSON.stringify(body.body); }
+    catch { return c.json({ error_code: "egress_body_invalid", message: "The outbound body cannot be serialized" }, 400); }
+    if (new TextEncoder().encode(serializedBody ?? "").byteLength > 512 * 1024) {
+      return c.json({ error_code: "egress_body_too_large", message: "Outbound request bodies are limited to 512 KiB" }, 413);
+    }
+  }
   if (body.auth !== undefined && (body.auth?.type !== "basic" || typeof body.auth.username !== "string" || !/^[\x20-\x7e]{1,128}$/.test(body.auth.username) || body.auth.username.includes(":"))) {
     return c.json({ error_code: "egress_auth_invalid", message: "The requested authentication mode is invalid" }, 400);
   }
@@ -1120,6 +1162,9 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   validateCredentialName(body.credentialName);
   const method = (body.method ?? (body.body === undefined ? "GET" : "POST")).toUpperCase();
   if (!/^(GET|HEAD|POST|PUT|PATCH|DELETE)$/.test(method)) return c.json({ error_code: "egress_method_denied", message: "This request method is not allowed" }, 403);
+  if ((method === "GET" || method === "HEAD") && serializedBody !== undefined) {
+    return c.json({ error_code: "egress_body_method_invalid", message: "GET and HEAD requests cannot include a body" }, 400);
+  }
   const isWrite = method !== "GET" && method !== "HEAD";
   if (isWrite && (!body.idempotencyKey || !/^[A-Za-z0-9._:-]{1,120}$/.test(body.idempotencyKey))) {
     return c.json({ error_code: "egress_idempotency_required", message: "A valid idempotency key is required for external changes" }, 400);
@@ -1137,7 +1182,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   try {
     scanAndScrubEgress({
       url: body.url,
-      headers: body.headers ?? {},
+      headers: requestHeaders,
       auth: body.auth ?? null,
       body: body.body ?? null,
     }, "block");
@@ -1148,7 +1193,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   if (!resolved || "notFoundReason" in resolved) throw notFound("Credential");
   const secret = await decrypt(resolved.row.encrypted_value, resolved.row.iv, c.env, c.env.PLATFORM_DB, resolved.row.tenant_id, resolved.row.space_id, resolved.row);
 
-  const supplied = new Headers(body.headers);
+  const supplied = new Headers(requestHeaders);
   supplied.delete("authorization");
   supplied.delete("proxy-authorization");
   supplied.delete("host");
@@ -1194,7 +1239,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
       response = await fetch(destination, {
         method,
         headers: outboundHeaders,
-        ...(body.body === undefined ? {} : { body: typeof body.body === "string" ? body.body : JSON.stringify(body.body) }),
+        ...(serializedBody === undefined ? {} : { body: serializedBody }),
         redirect: "manual",
         signal: AbortSignal.timeout(30_000),
       });
