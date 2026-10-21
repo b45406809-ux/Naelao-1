@@ -498,6 +498,31 @@ describe("credential hierarchy", () => {
       expect(json.resolved_tier).toBe("business_shared");
     });
 
+    it("does not inherit a product credential when the product root is inactive", async () => {
+      await insertSpace(env, "inactive-product-root");
+      await insertSpace(env, "active-business", "inactive-product-root");
+      await credentialsWorker.fetch(
+        await req("/spaces/inactive-product-root/credentials", {
+          method: "POST", user: "builder-1", role: "owner",
+          body: { name: "TAVILY", value: "inactive-product-key", scope: "space" },
+        }),
+        env,
+        execCtx,
+      );
+      await env.PLATFORM_DB.prepare("UPDATE spaces SET status = 'suspended' WHERE id = ?")
+        .bind("inactive-product-root").run();
+
+      const token = await makeToken("active-business");
+      const response = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/active-business/credentials/TAVILY/plaintext", {
+          method: "POST", credToken: token,
+        }),
+        env,
+        execCtx,
+      );
+      expect(response.status).toBe(404);
+    });
+
     it("the product root itself (no parent) never walks further — 404s like any other space with nothing", async () => {
       await insertSpace(env, "root-only");
       const token = await makeToken("root-only");

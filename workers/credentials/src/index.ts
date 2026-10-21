@@ -680,11 +680,16 @@ async function resolveCredential(
   // rather than 500 the whole lookup.
   try {
     const space = await db.prepare(
-      `SELECT parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'`
-    ).bind(spaceId).first<{ parent_space_id: string | null }>();
+      `SELECT parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active'`
+    ).bind(spaceId, tenantId).first<{ parent_space_id: string | null }>();
     if (space?.parent_space_id) {
-      const rootRow = await fetchSpaceRow(db, space.parent_space_id, tenantId, name);
-      if (rootRow) return { row: rootRow, tier: "product" };
+      const activeRoot = await db.prepare(
+        `SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active'`
+      ).bind(space.parent_space_id, tenantId).first<{ id: string }>();
+      if (activeRoot) {
+        const rootRow = await fetchSpaceRow(db, space.parent_space_id, tenantId, name);
+        if (rootRow) return { row: rootRow, tier: "product" };
+      }
     }
   } catch {
     // Fall through — see comment above.

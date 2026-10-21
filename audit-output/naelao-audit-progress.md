@@ -2145,3 +2145,9 @@ Refreshed the tracked tree after code commit `b20dacbf`: 2,025 tracked files and
 The final Credentials egress boundary applied DLP only to the HTTP body; sensitive values in query strings or caller-controlled headers could bypass the block policy. The Credentials worker now scans the complete outbound envelope (URL, headers, Basic-auth username, and body) before credential decryption and upstream fetch. Added regressions proving an SSN in either the URL query or a custom header returns 403 without an upstream request. The existing Vault integration fixture also lacked the current active `orgs`/tenant schema, causing its outbound tests to fail before reaching the implementation; updated it to exercise the real tenant/Space gate.
 
 The Vault contract suite passed 5/5, Credentials TypeScript passed, and `git diff --check` passed. Biome still reports existing whole-file diagnostics in the legacy Credentials entrypoint and Vault integration test; no broad formatting was applied. The Vault test file is checked; Credentials `index.ts` remains unchecked as a full source file. Checklist coverage is now 491/1,818 source/config files (1,327 still open).
+
+## Product-root credential inheritance suspension gate (2026-10-21)
+
+Credential resolution checked that the requesting Space was active but fetched its parent product's shared credential without checking the product root's tenant or status. A suspended/deleted root could therefore keep supplying secrets to an active child. Product fallback now requires the active child and an active same-tenant root before loading the root credential. The regression suspends the product root and confirms its secret is no longer returned to the active business child.
+
+Credential hierarchy tests passed 42/42, Credentials TypeScript passed, and `git diff --check` passed. The Credentials entrypoint remains unchecked overall; this closes only the product-fallback status path.
