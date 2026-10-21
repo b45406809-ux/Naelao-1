@@ -1969,3 +1969,9 @@ Validation: focused digest prerequisite tests passed 2/2; full Agents suite pass
 Cloudflare email ingress checked status once before parsing MIME, then could persist attachments and dispatch an Agent turn after a long parse or while an R2 upload was in flight. It now rechecks tenant/Space status after parsing, before attachment writes, after each R2 write (deleting the object if suspension landed), and before DO dispatch. Added regressions for suspension after parse and during an attachment upload.
 
 Validation: focused email suspension tests passed 2/2; full Agents suite passed 163 files / 739 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed. The repository-wide file audit remains incomplete and active.
+
+## Channel heartbeat claim cleanup on setup faults (2026-10-21)
+
+Channel heartbeat claims were released per-message, but an exception during shared setup (engine/config/pricing/policy/wallet preparation) occurs before that loop and could leave the whole claimed batch permanently stuck at `answered = 2`. The method now has a batch-level `finally` that releases any remaining in-flight claims on every return or exception. Added an injected setup-failure regression.
+
+Validation: focused channel suspension/claim tests passed 4/4; full Agents suite passed 163 files / 740 tests; Agents TypeScript, focused Biome security lint, and `git diff --check` passed.

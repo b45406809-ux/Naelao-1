@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { NaelaoAgentDO } from "./NaelaoAgentDO.js";
 
@@ -84,5 +84,28 @@ describe("channel heartbeat tenant suspension", () => {
       { id: "event-a", answered: 0 },
       { id: "event-b", answered: 0 },
     ]);
+  });
+
+  it("releases the claimed batch if setup throws before entering the message loop", async () => {
+    const storage = createDOStorage();
+    const agent = new NaelaoAgentDO(
+      { storage, id: { toString: () => "agent" } } as never,
+      { PLATFORM_SECRET: "channel-heartbeat-test-secret" } as never,
+    );
+    await agent.fetch(new Request("http://agent/channels/extensions/inbox?project_id=project-a&installation_id=install-a"));
+    storage.sql.exec("INSERT INTO channel_sessions(id,channel,channel_user_id,project_id) VALUES('session-a','whatsapp','customer-a','project-a')");
+    storage.sql.exec("INSERT INTO channel_messages(id,session_id,direction,text,project_id,answered,created_at) VALUES('event-a','session-a','inbound','hello','project-a',0,1)");
+    (agent as unknown as { buildScriptEngineEnv: (...args: unknown[]) => Promise<null> }).buildScriptEngineEnv = vi.fn(async () => {
+      throw new Error("injected setup failure");
+    });
+
+    const request = agent.fetch(new Request("http://agent/channels/heartbeat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tenantId: "tenant-a", spaceId: "space-a" }),
+    }));
+
+    await expect(request).rejects.toThrow("injected setup failure");
+    expect(storage.sql.exec("SELECT answered FROM channel_messages WHERE id='event-a'").toArray()).toEqual([{ answered: 0 }]);
   });
 });

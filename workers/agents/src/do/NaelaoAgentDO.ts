@@ -8308,6 +8308,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error_code: "tenant_suspended" }, { status: 403 });
     };
 
+    try {
     // Status can change between the initial check and the claim. Do not leave the batch stuck
     // in the in-flight state if the tenant was suspended during that window.
     if (await tenantSuspended()) {
@@ -8983,6 +8984,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
     }
     return Response.json({ drained: pending.length, answered, escalated, rule_handled: ruleHandled, spend_capped: spendCapped });
+    } finally {
+      // The inner per-message finally handles ordinary retries. This outer guard covers failures
+      // during batch setup (config, pricing, policy, or wallet lookups) before that loop begins.
+      releasePendingClaims();
+    }
   }
 
   private async persistTerminatedCustomerSession(spaceId: string, tenantId: string, sessionId: string, channel: string, customerId: string, unresolved: boolean, escalated: boolean): Promise<void> {
