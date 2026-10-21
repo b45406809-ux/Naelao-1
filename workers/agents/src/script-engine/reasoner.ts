@@ -381,11 +381,8 @@ export function coerceOperationToolCall(toolCall: { name: string; arguments?: un
   const args = toolCall.arguments;
   const parsed = typeof args === "string" ? safeJsonObject(args) : args;
   const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-  // Some models nest the real arguments one level down under the wrapper key they were taught —
-  // and, since `params` is declared either as a JSON string (Gemini) or a real object with
-  // additionalProperties (everyone else — see decisionTools' own header), that nested value may
-  // be either shape. Only treat it as the arguments when a wrapper key is actually present;
-  // otherwise the outer object IS the argument list (the direct-operation-call shape).
+  // Older model prompts may nest arguments under a wrapper key. Only unwrap when one is present;
+  // otherwise the outer object is the argument list (the direct-operation-call shape).
   const wrapper = ["params", "arguments", "input"].find((k) => k in obj);
   const params = wrapper ? readParams(obj[wrapper]) : obj;
   return { action: "run", name, params };
@@ -394,12 +391,9 @@ export function coerceOperationToolCall(toolCall: { name: string; arguments?: un
 /**
  * Read a tool call's `params` argument, accepting either shape any provider can hand back.
  *
- * See decisionTools/PARAMS_PARAM_STRING/PARAMS_PARAM_OBJECT for why the DECLARED schema differs
- * by provider. A model that sends the other shape anyway is still honoured — a real object when
- * a string was declared, or vice versa — so this stays correct regardless of which schema a
- * given call was actually made under. Anything unusable (a bare array, a string that isn't JSON,
- * a missing field) degrades to no arguments, which is exactly what the caller would have seen
- * before.
+ * Older provider adapters emitted arguments as JSON strings, while newer ones emit objects.
+ * Continue accepting either form for persisted prompts and in-flight legacy calls. Anything
+ * unusable (a bare array or a string that isn't JSON) degrades to no arguments.
  */
 function readParams(value: unknown): Record<string, unknown> {
   const usable = (v: unknown): v is Record<string, unknown> =>
@@ -526,89 +520,8 @@ const SAY_PARAM = {
 };
 
 /**
- * The arguments for a chosen operation — declared as a JSON *string*, not an object.
- *
- * This is not a stylistic choice; it is the fix for a production failure that made the agent look
- * incapable of the most basic multi-step work. Declared the obvious way — `{type:"object"}` with
- * no `properties`, because the real fields differ per operation and cannot be enumerated
- * statically — a schema-constrained decoder has NO permitted keys to emit, so the only value it
- * can produce is `{}`. Gemini's function-calling schema is an OpenAPI subset with exactly that
- * behaviour, and two full live traces show the signature unmistakably: EVERY tool call came back
- * with `params: {}`, without a single exception, including calls the model plainly had the value
- * for — its own closing answer quoted the project id it had looked up a step earlier and could
- * never pass in. It then re-issued the same argument-less call five more times, because the one
- * action the grammar allowed it to express was the wrong one. None of that is a reasoning
- * failure. There was no slot to put the argument in.
- *
- * A string has no such restriction on any provider, so the model can always say what it means.
- * Providers that handle a bare object schema fine (Anthropic, OpenAI, most Workers AI models) may
- * still send a real object, and readParams accepts both — so this can only add reliability.
- *
- * Required, deliberately: a decoder must then emit the field, which forces the model to decide
- * what belongs in it rather than silently skipping it. An operation that genuinely takes no
- * arguments costs two characters.
- */
-const PARAMS_HINT_TEXT =
-  "Many groups carry \"param_hints\", keyed by exact operation name, naming each field and which " +
-  "are required: READ the hint for the operation you chose before writing this. A field left out " +
-  "is often not an error — it silently does the WRONG thing instead, e.g. creating a thread with " +
-  "no project attached because project_id was omitted, rather than failing loudly. Fill it from " +
-  "what you already have: an id you looked up a step ago, the text you were asked to send. When " +
-  "no hint exists, infer the fields from the operation's name.";
-
-/**
- * `params` as a JSON object STRING — the shape that fixed the Gemini/Workers-AI failure above.
- * Used ONLY for Google AI Studio models, whose native function-calling schema is an OpenAPI-3.0
- * subset requiring exactly one `type` string (not an array) — this is the one declared shape this
- * provider is proven, live, to accept and act on correctly (see PARAMS_PARAM_STRING's own header
- * and the two live traces it cites).
- */
-const PARAMS_PARAM_STRING = {
-  type: "string",
-  description:
-    "REQUIRED. Arguments for that op/script as a JSON object STRING — e.g. " +
-    "{\"project_id\":\"9d67a69a-981a-4c3e-b50d-83c3f51c679c\",\"title\":\"Kickoff\"}. Use {} only " +
-    `when the operation genuinely takes no arguments. ${PARAMS_HINT_TEXT}`,
-};
-
-/**
- * `params` as a real JSON OBJECT — for every provider that isn't Google AI Studio (Groq,
- * Anthropic, OpenAI, Workers AI's more capable models).
- *
- * A second, real, previously-unfixed failure — found live, on a Groq-dispatched heartbeat wake —
- * is why this exists as its own schema rather than sharing PARAMS_PARAM_STRING for every
- * non-Gemini provider too. Groq's own server validates a model's tool-call output against the
- * DECLARED schema and REJECTS the call outright when they don't match
- * ("tool call validation failed: parameters for tool run did not match schema: errors:
- * [`/params`: expected string, but got object]") — on both the streamed attempt and its
- * non-streamed retry, confirmed live. The model's own natural instinct on this provider is to
- * emit a real object, and Groq's own validator will not let a string-typed field through that.
- *
- * `additionalProperties: true` is what makes this SAFE to declare with no enumerable
- * `properties` — the exact defect PARAMS_PARAM_STRING's own header documents (a bare
- * `{type:"object"}` with neither `properties` nor `additionalProperties` gives a
- * schema-constrained decoder no permitted keys, so the only value it can emit is `{}`). This is
- * a DIFFERENT, more portable fix for that same underlying problem — explicitly allowing arbitrary
- * keys — which Google's OWN function-calling schema has historically not accepted (its
- * OpenAPI-3.0-subset `FunctionDeclaration.parameters` wants exactly one declared `type`, and this
- * platform's Gemini routing has not been verified against that shape) — which is why Gemini keeps
- * its own separately-declared string schema rather than sharing this one. readParams() already
- * accepts either shape from either provider, so this only widens what a valid decision can be.
- */
-const PARAMS_PARAM_OBJECT = {
-  type: "object",
-  additionalProperties: true,
-  description:
-    "REQUIRED. Arguments for that op/script, as a plain JSON object — e.g. " +
-    `{"project_id":"9d67a69a-981a-4c3e-b50d-83c3f51c679c","title":"Kickoff"}. Use {} only when ` +
-    `the operation genuinely takes no arguments. ${PARAMS_HINT_TEXT}`,
-};
-
-/**
- * The declared action space, built per-model so `run`/`distill`'s `params` field gets whichever
- * of PARAMS_PARAM_STRING/PARAMS_PARAM_OBJECT that model's provider actually accepts — see both
- * schemas' own headers for why this can't be one shared shape. `answer`/`give_up` never touch
- * `params`, so they're identical either way.
+ * The currently advertised action space. Legacy action envelopes are decoded separately below
+ * for compatibility with in-flight prompts; they are intentionally not exposed to new requests.
  */
 export function decisionTools(_model: string | undefined, availableOperations?: readonly string[]): ToolSpec[] {
   return [
