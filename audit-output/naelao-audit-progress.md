@@ -1542,3 +1542,5 @@ A full `turbo run test` attempt is not a valid result in this execution environm
 A repository unused-variable scan still reports 52 diagnostics across 51 files after excluding generated build/plan artifacts. Some are real dead state/functions, others are parameters required by test doubles or APIs; they need file-by-file triage. The existing CI recursive lint job excludes the root and there are no package lint scripts, so that job currently performs no checks. The root `biome check .` script remains red on its large pre-existing formatter/style baseline. I did not wire either command into required CI as a false passing or knowingly failing gate; lint-gate repair remains open.
 
 Inventory refresh pending this batch: one new checked test row was added; repository source file count will be refreshed after this commit.
+
+Inventory refreshed after CI and KB ingestion changes at `372f9e36`: 1,979 tracked files, 1,773 source/config checklist rows, 388 checked and 1,385 unchecked. The workflow implementation remains unchecked for its full durable retry/outage surface; its newly added boundary test file is checked.
