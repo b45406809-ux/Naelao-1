@@ -1616,3 +1616,5 @@ The public Svix webhook acknowledged with HTTP 200 even when forwarding the veri
 The task-correlated reply sender had branched to the notifications worker before calling the central air-gap policy. Moved the egress check ahead of all email provider branches and added a reply-to-specific air-gap regression. This also tightened the allowed test fixture to provide explicit non-air-gapped policy data because missing policy is correctly denied. The route suite now passes 22/22 and Agents Worker TypeScript passes.
 
 Reviewing the other provision path confirmed it already checks active Space state and stored air-gap policy before external mailbox creation. The business-email route tests now cover regular sends, reply-to sends, provisioning, and inbound dispatch failure behavior; this does not replace live provider verification.
+
+After the email-boundary changes, the full configured package/Worker workspace passed **1,632 tests across 342 files**, the Agents Worker suite passed **697 tests across 152 files**, and the Agents Worker TypeScript check passed. These local tests do not cover live Cloudflare bindings or AgentMail/Svix delivery conditions.
