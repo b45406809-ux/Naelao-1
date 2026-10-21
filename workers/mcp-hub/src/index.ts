@@ -226,6 +226,13 @@ function validateEnv(env: Env): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
 }
 
+async function hasActiveTenantSpace(db: D1Database, tenantId: string, spaceId: string): Promise<boolean> {
+  const space = await db.prepare(
+    "SELECT 1 AS active FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active' LIMIT 1"
+  ).bind(spaceId, tenantId).first();
+  return space !== null;
+}
+
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => {
@@ -246,6 +253,9 @@ app.post("/connectors/composio/connect", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const spaceId = c.req.header("x-naelao-space-id") ?? "";
   if (!spaceId) return c.json({ error_code: "bad_request", message: "Missing space" }, 400);
+  if (!await hasActiveTenantSpace(c.env.PLATFORM_DB, tenantId, spaceId)) {
+    return c.json({ error_code: "space_not_found", message: "Active space not found for tenant" }, 404);
+  }
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
   const body = await c.req.json<{ auth_config_id?: string; user_id?: string; callback_url?: string }>();
   if (!body.auth_config_id || !body.user_id || !body.callback_url) return c.json({ error_code: "bad_request", message: "auth_config_id, user_id, and callback_url are required" }, 400);
@@ -261,6 +271,9 @@ app.post("/connectors/composio/execute", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const spaceId = c.req.header("x-naelao-space-id") ?? "";
   if (!spaceId) return c.json({ error_code: "bad_request", message: "Missing space" }, 400);
+  if (!await hasActiveTenantSpace(c.env.PLATFORM_DB, tenantId, spaceId)) {
+    return c.json({ error_code: "space_not_found", message: "Active space not found for tenant" }, 404);
+  }
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
   const body = await c.req.json<{ connection_id?: string; action?: string; arguments?: Record<string, unknown> }>();
   if (!body.connection_id || !body.action) return c.json({ error_code: "bad_request", message: "connection_id and action are required" }, 400);
