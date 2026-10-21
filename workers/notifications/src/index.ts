@@ -1,5 +1,5 @@
 // G-N01: Notifications worker — email + in-app notification consumer
-import { badRequest, errorResponse, notFound, requestId, mintInternalToken, requireInternalHmac, readBoundedResponseText } from "@naelao/http";
+import { badRequest, errorResponse, requestId, mintInternalToken, requireInternalHmac, readBoundedRequestText, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { Hono } from "hono";
 import { checkSsrf, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { decryptSubscription, deliverWebPush, encryptSubscription, hashEndpoint, validatePushSubscription, type BrowserPushSubscription } from "./web-push.js";
@@ -698,6 +698,7 @@ export async function queue(
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
 const app = new Hono<{ Bindings: NotificationsEnv }>();
+const MAX_NOTIFY_REQUEST_BYTES = 256 * 1024;
 
 app.use("*", requestId);
 app.use("*", async (c, next) => {
@@ -719,7 +720,7 @@ app.post("/internal/notify", async (c) => {
   if (tenant?.status !== "active") {
     return c.json({ delivered: false, reason: tenant ? "tenant_suspended" : "tenant_not_found" }, 403);
   }
-  const body = await c.req.json<{
+  let body: {
     channel?: string;
     space_id?: string;
     to?: string;
@@ -735,7 +736,16 @@ app.post("/internal/notify", async (c) => {
     provider_connection_id?: string;
     thread_ts?: string;
     message_thread_id?: string;
-  }>();
+  };
+  try {
+    const raw = await readBoundedRequestText(c.req.raw, MAX_NOTIFY_REQUEST_BYTES);
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_request_body");
+    body = parsed as typeof body;
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_body_too_large" }, 413);
+    return c.json({ error_code: "invalid_request_body" }, 400);
+  }
   if (body.space_id) {
     const activeSpace = await c.env.PLATFORM_DB.prepare(
       `SELECT s.id FROM spaces s WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'
@@ -846,61 +856,6 @@ app.delete("/internal/push/subscription", async (c) => {
     "DELETE FROM web_push_subscriptions WHERE endpoint_hash = ? AND tenant_id = ? AND user_id = ?"
   ).bind(endpointHash, tenantId, userId).run();
   return c.json({ removed: true });
-});
-
-// GET /notifications — in-app notifications for user
-app.get("/notifications", async (c) => {
-  const userId = c.req.header("x-naelao-user-id") ?? "";
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-
-  if (!userId || !tenantId) {
-    throw badRequest("x-naelao-user-id and x-naelao-tenant-id headers are required");
-  }
-
-  const results = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, tenant_id, user_id, type, status, subject, created_at
-     FROM notifications
-     WHERE user_id = ? AND tenant_id = ? AND type = 'in_app'
-     ORDER BY created_at DESC
-     LIMIT 50`
-  )
-    .bind(userId, tenantId)
-    .all<{
-      id: string;
-      tenant_id: string;
-      user_id: string | null;
-      type: string;
-      status: string;
-      subject: string | null;
-      created_at: string;
-    }>();
-
-  return c.json({ notifications: results.results });
-});
-
-// PATCH /notifications/:id/read — mark notification as read
-app.patch("/notifications/:id/read", async (c) => {
-  const userId = c.req.header("x-naelao-user-id") ?? "";
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  const notifId = c.req.param("id");
-
-  if (!userId || !tenantId) {
-    throw badRequest("x-naelao-user-id and x-naelao-tenant-id headers are required");
-  }
-
-  const result = await c.env.PLATFORM_DB.prepare(
-    `UPDATE notifications
-     SET status = 'read'
-     WHERE id = ? AND user_id = ? AND tenant_id = ?`
-  )
-    .bind(notifId, userId, tenantId)
-    .run();
-
-  if (result.meta.changes === 0) {
-    throw notFound("Notification");
-  }
-
-  return c.json({ updated: true });
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────

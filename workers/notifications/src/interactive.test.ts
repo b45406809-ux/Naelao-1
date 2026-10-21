@@ -8,6 +8,29 @@ function env(): NotificationsEnv {
 }
 describe("interactive mobile approval delivery", () => {
   afterEach(() => vi.unstubAllGlobals());
+  it("rejects oversized and malformed synchronous notify payloads before provider egress", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const fetchWorker = worker.fetch;
+    if (!fetchWorker) throw new Error("notifications fetch handler missing");
+    const oversized = await fetchWorker(new Request("https://notifications/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ channel: "email", to: "customer@example.net", body: "x".repeat(270 * 1024) }),
+    }), env(), {} as ExecutionContext);
+    expect(oversized.status).toBe(413);
+    expect(await oversized.json()).toMatchObject({ error_code: "request_body_too_large" });
+
+    const malformed = await fetchWorker(new Request("https://notifications/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: "{",
+    }), env(), {} as ExecutionContext);
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({ error_code: "invalid_request_body" });
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
   it("blocks synchronous delivery for suspended tenants", async () => {
     const outbound = vi.fn();
     vi.stubGlobal("fetch", outbound);

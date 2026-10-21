@@ -2107,3 +2107,9 @@ After the manifest contract update, the complete Spaces worker suite passed 68 t
 ## Reconcile source tree and platform worker inventory (2026-10-21)
 
 Refreshed the tracked repository tree and file checklist after the Provisioner test additions and worker retirements: 2,021 tracked files, 1,815 source/executable-config files, and 484 scoped checks retained. Reconciled the platform inventory's Wrangler manifest count from 28 to the 26 manifests found in `workers/*/wrangler.toml`. Durable Object count remains 22. The inventory remains a discovery index; route counts and dynamic dispatch still require full tracing.
+
+## Notifications worker API reachability and request limits (2026-10-21)
+
+The Notifications worker duplicated `GET /notifications` and `PATCH /notifications/:id/read` using columns absent from migration `0010_notifications.sql`. Repository-wide caller and Wrangler binding review found no route to those handlers: the shell calls `/v1/spaces/:spaceId/notifications`, Router forwards that path to Spaces, and the live SpaceDO implementation uses the correct inbox store and `read_at` behavior. Removed the dead duplicate handlers and their stale surface-inventory entries. The synchronous `/internal/notify` service route also parsed an unbounded request body and let malformed JSON become a server error. It now rejects bodies over 256 KiB with 413 and invalid JSON/non-object payloads with 400 before any provider send; regression coverage checks both cases and no egress.
+
+Validation: Notifications worker suite passed 22/22; Notifications TypeScript check passed; live SpaceDO notification route tests passed 11/11; `git diff --check` passed. The full Notifications entrypoint remains unchecked; review here covered notification API reachability and notify ingress parsing.
