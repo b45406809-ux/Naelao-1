@@ -1,6 +1,6 @@
 // G-CH01..G-CH08: Channels — inbound email, Slack events, generic webhooks → sessions
 import { Hono } from "hono";
-import { errorResponse, readBoundedRequestText, requestId } from "@naelao/http";
+import { errorResponse, readBoundedRequestText, RequestBodyTooLargeError, requestId } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -36,6 +36,29 @@ function getCallerIdentity(c: { req: { header: (h: string) => string | undefined
   return { tenantId: c.req.header("x-naelao-tenant-id") ?? "" };
 }
 
+async function isActiveTenantSpace(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
+  const row = await db.prepare(
+    `SELECT s.id FROM spaces s JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active'
+     WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'`
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  return row !== null;
+}
+
+async function readInboundJson(request: Request): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; status: 400 | 413 }> {
+  try {
+    const parsed: unknown = JSON.parse(await readBoundedRequestText(request, 1024 * 1024));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, status: 400 };
+    return { ok: true, value: parsed as Record<string, unknown> };
+  } catch (error) {
+    return { ok: false, status: error instanceof RequestBodyTooLargeError ? 413 : 400 };
+  }
+}
+
+function inboundWithinQueueBounds(content: string, endUserId: string, metadata: Record<string, unknown>): boolean {
+  return new TextEncoder().encode(content).byteLength <= 100_000 && endUserId.length <= 320 &&
+    new TextEncoder().encode(JSON.stringify(metadata)).byteLength <= 16_384;
+}
+
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
@@ -46,7 +69,10 @@ app.get("/v1/channels", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const { results } = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, space_id, channel_type, routing_key, enabled, created_at FROM channels WHERE tenant_id = ? ORDER BY created_at DESC"
+    `SELECT c.id, c.space_id, c.channel_type, c.routing_key, c.enabled, c.created_at FROM channels c
+     JOIN spaces s ON s.id = c.space_id AND s.tenant_id = c.tenant_id AND s.status = 'active'
+     JOIN orgs o ON o.id = c.tenant_id AND o.status = 'active'
+     WHERE c.tenant_id = ? ORDER BY c.created_at DESC`
   ).bind(tenantId).all();
   return c.json({ data: results });
 });
@@ -59,7 +85,7 @@ app.post("/v1/channels", async (c) => {
     return c.json({ error_code: "bad_request", message: "space_id and channel_type required" }, 400);
   }
   const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+    "SELECT s.id FROM spaces s JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active' WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active'"
   ).bind(body.space_id, tenantId).first<{ id: string }>();
   if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
 
@@ -97,7 +123,10 @@ app.delete("/v1/channels/:id", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT routing_key FROM channels WHERE id = ? AND tenant_id = ?"
+    `SELECT c.routing_key FROM channels c
+     JOIN spaces s ON s.id = c.space_id AND s.tenant_id = c.tenant_id AND s.status = 'active'
+     JOIN orgs o ON o.id = c.tenant_id AND o.status = 'active'
+     WHERE c.id = ? AND c.tenant_id = ?`
   ).bind(c.req.param("id"), tenantId).first<{ routing_key: string }>();
   if (!row) return c.json({ error_code: "not_found", message: "Channel not found" }, 404);
   await c.env.PLATFORM_DB.prepare("DELETE FROM channels WHERE id = ? AND tenant_id = ?").bind(c.req.param("id"), tenantId).run();
@@ -114,19 +143,18 @@ app.post("/inbound/email/:routingKey", async (c) => {
   if (!configJson) return new Response("Not found", { status: 404 });
   const config = JSON.parse(configJson) as ChannelConfig;
   if (!config.enabled) return new Response("Channel disabled", { status: 403 });
+  if (!(await isActiveTenantSpace(c.env.PLATFORM_DB, config.space_id, config.tenant_id))) return new Response("Channel unavailable", { status: 404 });
 
-  const body = await c.req.json<{
-    from?: string;
-    subject?: string;
-    text?: string;
-    html?: string;
-    message_id?: string;
-  }>();
+  const parsed = await readInboundJson(c.req.raw);
+  if (!parsed.ok) return c.json({ error_code: parsed.status === 413 ? "payload_too_large" : "invalid_json" }, parsed.status);
+  const body = parsed.value as { from?: string; subject?: string; text?: string; html?: string; message_id?: string };
 
   const content = body.text ?? body.html ?? "";
   const subject = body.subject ?? "(no subject)";
   const from = body.from ?? "unknown@email";
   const endUserId = `email:${from}`;
+  const metadata = { from, subject, message_id: body.message_id ?? null };
+  if (!inboundWithinQueueBounds(`Subject: ${subject}\n\n${content}`, endUserId, metadata)) return c.json({ error_code: "payload_too_large" }, 413);
 
   await c.env.SESSIONS_QUEUE.send({
     type: "inbound_channel",
@@ -135,7 +163,7 @@ app.post("/inbound/email/:routingKey", async (c) => {
     tenant_id: config.tenant_id,
     end_user_id: endUserId,
     content: `Subject: ${subject}\n\n${content}`,
-    metadata: { from, subject, message_id: body.message_id ?? null },
+    metadata,
   } satisfies SessionQueueMessage);
 
   return new Response("OK", { status: 200 });
@@ -144,17 +172,9 @@ app.post("/inbound/email/:routingKey", async (c) => {
 // Slack Events API handler
 app.post("/inbound/slack/:routingKey", async (c) => {
   const routingKey = c.req.param("routingKey");
-  const body = await c.req.json<{
-    type?: string;
-    challenge?: string;
-    event?: {
-      type: string;
-      text?: string;
-      user?: string;
-      channel?: string;
-      ts?: string;
-    };
-  }>();
+  const parsed = await readInboundJson(c.req.raw);
+  if (!parsed.ok) return c.json({ error_code: parsed.status === 413 ? "payload_too_large" : "invalid_json" }, parsed.status);
+  const body = parsed.value as { type?: string; challenge?: string; event?: { type: string; text?: string; user?: string; channel?: string; ts?: string } };
 
   // Slack URL verification challenge
   if (body.type === "url_verification") {
@@ -165,6 +185,7 @@ app.post("/inbound/slack/:routingKey", async (c) => {
   if (!configJson) return new Response("Not found", { status: 404 });
   const config = JSON.parse(configJson) as ChannelConfig;
   if (!config.enabled) return new Response("Channel disabled", { status: 403 });
+  if (!(await isActiveTenantSpace(c.env.PLATFORM_DB, config.space_id, config.tenant_id))) return new Response("Channel unavailable", { status: 404 });
 
   if (body.type !== "event_callback" || body.event?.type !== "message") {
     return new Response("OK", { status: 200 });
@@ -173,6 +194,8 @@ app.post("/inbound/slack/:routingKey", async (c) => {
   const event = body.event;
   const content = event.text ?? "";
   const endUserId = `slack:${event.user ?? "unknown"}`;
+  const metadata = { slack_user: event.user, slack_channel: event.channel, slack_ts: event.ts };
+  if (!inboundWithinQueueBounds(content, endUserId, metadata)) return c.json({ error_code: "payload_too_large" }, 413);
 
   await c.env.SESSIONS_QUEUE.send({
     type: "inbound_channel",
@@ -181,7 +204,7 @@ app.post("/inbound/slack/:routingKey", async (c) => {
     tenant_id: config.tenant_id,
     end_user_id: endUserId,
     content,
-    metadata: { slack_user: event.user, slack_channel: event.channel, slack_ts: event.ts },
+    metadata,
   } satisfies SessionQueueMessage);
 
   return new Response("OK", { status: 200 });
@@ -194,6 +217,7 @@ app.post("/inbound/webhook/:routingKey", async (c) => {
   if (!configJson) return new Response("Not found", { status: 404 });
   const config = JSON.parse(configJson) as ChannelConfig;
   if (!config.enabled) return new Response("Channel disabled", { status: 403 });
+  if (!(await isActiveTenantSpace(c.env.PLATFORM_DB, config.space_id, config.tenant_id))) return new Response("Channel unavailable", { status: 404 });
 
   let body: Record<string, unknown> = {};
   let raw: string;
@@ -202,15 +226,17 @@ app.post("/inbound/webhook/:routingKey", async (c) => {
   try { body = JSON.parse(raw) as Record<string, unknown>; }
   catch { body = { raw }; }
 
-  const content = typeof body["content"] === "string"
-    ? body["content"]
-    : typeof body["message"] === "string"
-      ? body["message"]
+  const content = typeof body.content === "string"
+    ? body.content
+    : typeof body.message === "string"
+      ? body.message
       : JSON.stringify(body).slice(0, 4000);
 
-  const endUserId = typeof body["user_id"] === "string"
-    ? `webhook:${body["user_id"]}`
+  const endUserId = typeof body.user_id === "string"
+    ? `webhook:${body.user_id}`
     : `webhook:${crypto.randomUUID()}`;
+  const metadata = { source: body.source ?? null, webhook_routing_key: routingKey };
+  if (!inboundWithinQueueBounds(content, endUserId, metadata)) return c.json({ error_code: "payload_too_large" }, 413);
 
   await c.env.SESSIONS_QUEUE.send({
     type: "inbound_channel",
@@ -219,7 +245,7 @@ app.post("/inbound/webhook/:routingKey", async (c) => {
     tenant_id: config.tenant_id,
     end_user_id: endUserId,
     content,
-    metadata: { source: body["source"] ?? null, webhook_routing_key: routingKey },
+    metadata,
   } satisfies SessionQueueMessage);
 
   return c.json({ queued: true });

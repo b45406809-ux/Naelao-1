@@ -1999,3 +1999,9 @@ Validation: focused Knowledge regressions passed 8/8; Knowledge TypeScript, targ
 The Analytics space-metrics ownership check accepted suspended Spaces (`status != 'deleted'`), and tenant metrics trusted the tenant header without checking organization status. Both routes now require active status before reading the tenant-scoped cache or querying provider analytics. Added regressions asserting suspended space and tenant requests return not found before cache access.
 
 Validation: focused Analytics suite passed 5/5; Analytics TypeScript, targeted Biome security lint, and `git diff --check` passed. Inventory remains 2,038 tracked files / 1,832 code and configuration files with 462 checklist rows reviewed. The audit remains active.
+
+## Channel ingress size and suspension guards (2026-10-21)
+
+Email and Slack ingress parsed unbounded JSON bodies, while their queue consumer accepts at most 100,000 content bytes and 16 KiB of metadata. Oversized but otherwise valid requests could therefore consume excess memory and then be silently dropped by the consumer. All channel paths now bound inbound JSON to 1 MiB and validate the exact queued content, end-user ID, and metadata limits before enqueueing. Channel listing, creation, deletion, and ingress also require active tenant/Space ownership, preventing suspended routes from being configured or queued. Added regressions for the 1 MiB body limit, queue payload limit, and suspended ingress.
+
+Validation: focused Channels tests passed 2/2; Channels TypeScript, full targeted Biome lint, and `git diff --check` passed. Inventory refreshed; 2,038 tracked files / 1,832 code and configuration files, 462 checklist rows reviewed. The audit remains active.
