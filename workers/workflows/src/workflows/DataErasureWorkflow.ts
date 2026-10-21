@@ -19,7 +19,14 @@
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
 import type { Env } from "../env";
-import { anonymizeOrgUsers, deleteKvPrefix, eraseSpaceD1Records, eraseSpaceKnowledgeResources } from "./erasure-cleanup.js";
+import {
+  anonymizeOrgUsers,
+  deleteKvPrefix,
+  eraseOrgOperationalRecords,
+  eraseSpaceD1Records,
+  eraseSpaceKnowledgeResources,
+  eraseSpaceR2Resources,
+} from "./erasure-cleanup.js";
 
 export interface ErasureParams {
   orgId: string;
@@ -106,6 +113,13 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
 
         await eraseSpaceKnowledgeResources(space.id, docs, this.env.KB_BUCKET, this.env.KB_VECTORS);
 
+        const { results: exports } = await this.env.PLATFORM_DB.prepare(
+          "SELECT artifact_key FROM blueprint_export_jobs WHERE space_id = ? AND tenant_id = ?",
+        ).bind(space.id, params.orgId).all<{ artifact_key: string }>();
+        await eraseSpaceR2Resources(params.orgId, space.id, this.env.ARTIFACT_R2_BUCKET,
+          this.env.REPOSITORY_OBJECTS, this.env.SCRIPTS_R2,
+          exports.map(({ artifact_key }) => artifact_key));
+
         // Also remove vectors referenced only by the chunk registry (for orphaned/legacy docs).
         let afterRowId = 0;
         for (;;) {
@@ -138,6 +152,7 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     await step.do("delete-user-pii", async () => {
       // Preserve IDs needed by retained audit records, but remove credentials and direct PII.
       await anonymizeOrgUsers(this.env.PLATFORM_DB, params.orgId);
+      await eraseOrgOperationalRecords(this.env.PLATFORM_DB, params.orgId);
 
       console.log(`[DataErasure] PII anonymized for users in org=${params.orgId}`);
       return { piiErased: true };

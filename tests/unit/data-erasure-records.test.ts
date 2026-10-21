@@ -1,22 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { anonymizeOrgUsers, eraseSpaceD1Records } from "../../workers/workflows/src/workflows/erasure-cleanup.js";
+import { anonymizeOrgUsers, eraseOrgOperationalRecords, eraseSpaceD1Records } from "../../workers/workflows/src/workflows/erasure-cleanup.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 const migration = (name: string) => readFileSync(join(__dirname, `../../infra/migrations/${name}`), "utf8");
+const platformMigrations = readdirSync(join(__dirname, "../../infra/migrations"))
+  .filter((name) => /^\d+.*\.sql$/.test(name)).sort().map(migration);
 
 describe("data erasure D1 records", () => {
   it("removes searchable chunks and parent threads as well as session shadows", async () => {
-    const db = createFakeD1([
-      migration("0006_kb_documents.sql"),
-      migration("0018_active_sessions.sql"),
-      migration("0027_threads.sql"),
-      migration("0029_thread_sessions.sql"),
-      migration("0051_kb_documents_project.sql"),
-      migration("0074_items_45_87_security_models.sql"),
-      migration("0114_thread_last_active_at.sql"),
-    ]);
+    const db = createFakeD1(platformMigrations);
     db.db.prepare(`INSERT INTO kb_documents (id, space_id, tenant_id, title) VALUES (?, ?, ?, ?)`)
       .run("doc-a", "space-a", "tenant-a", "Document");
     db.db.prepare(`INSERT INTO kb_chunks (id, tenant_id, space_id, project_id, document_id, chunk_index,
@@ -31,6 +25,10 @@ describe("data erasure D1 records", () => {
     db.db.prepare(`INSERT INTO thread_sessions (id, thread_id, space_id, tenant_id, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?)`)
       .run("session-a", "thread-a", "space-a", "tenant-a", "ended", "2026-01-01");
+    db.db.prepare(`INSERT INTO space_credentials (id, space_id, tenant_id, name, encrypted_value, iv)
+      VALUES (?, ?, ?, ?, ?, ?)`).run("credential-a", "space-a", "tenant-a", "API_KEY", "ciphertext", "iv");
+    db.db.prepare(`INSERT INTO notifications (id, tenant_id, user_id, type, title, body)
+      VALUES (?, ?, ?, ?, ?, ?)`).run("notification-a", "tenant-a", "user-a", "agent", "Secret", "Sensitive output");
 
     await eraseSpaceD1Records(db as never, "space-a");
 
@@ -43,6 +41,8 @@ describe("data erasure D1 records", () => {
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM thread_sessions WHERE space_id = ?").get("space-a"))
       .toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM threads WHERE space_id = ?").get("space-a"))
+      .toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM space_credentials WHERE space_id = ?").get("space-a"))
       .toEqual({ count: 0 });
   });
 
@@ -58,12 +58,33 @@ describe("data erasure D1 records", () => {
 
     await anonymizeOrgUsers(db as never, "org-a");
 
-    expect(db.db.prepare("SELECT email, password_hash, preferred_language, last_login_at, status FROM users WHERE id = ?")
+    expect(db.db.prepare("SELECT email, password_hash, preferred_language, last_login_at, status, org_id FROM users WHERE id = ?")
       .get("user-a")).toEqual({
       email: "erased-user-a@deleted.invalid", password_hash: null,
-      preferred_language: null, last_login_at: null, status: "erased",
+      preferred_language: null, last_login_at: null, status: "erased", org_id: "org-a",
     });
     expect(db.db.prepare("SELECT email, password_hash FROM users WHERE id = ?").get("user-b"))
       .toEqual({ email: "other@example.com", password_hash: "other-hash" });
+  });
+
+  it("removes tenant access and notification records but retains erasure audit context", async () => {
+    const db = createFakeD1(platformMigrations);
+    db.db.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier) VALUES (?, ?, ?, ?)").run("org-a", "Acme", "user-a", "free");
+    db.db.prepare("INSERT INTO org_members (org_id, user_id, role) VALUES (?, ?, ?)").run("org-a", "user-a", "owner");
+    db.db.prepare("INSERT INTO users (id, email, org_id) VALUES (?, ?, ?)").run("user-a", "person@example.com", "org-a");
+    db.db.prepare("INSERT INTO notifications (id, tenant_id, user_id, type, title, body) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("n-a", "org-a", "user-a", "agent", "Private", "Body");
+    db.db.prepare("INSERT INTO audit_log (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("audit-a", "org-a", "user-a", "user", "erasure_requested", "org", "org-a", "{}");
+
+    await anonymizeOrgUsers(db as never, "org-a");
+    await eraseOrgOperationalRecords(db as never, "org-a");
+
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM org_members WHERE org_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE tenant_id = ?").get("org-a")).toEqual({ count: 1 });
+    expect(db.db.prepare("SELECT org_id FROM users WHERE id = ?").get("user-a")).toEqual({ org_id: null });
+    expect(db.db.prepare("SELECT name, owner_id, status FROM orgs WHERE id = ?").get("org-a"))
+      .toEqual({ name: "Erased organization", owner_id: "system-erasure", status: "erased" });
   });
 });

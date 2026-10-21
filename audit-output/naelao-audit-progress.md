@@ -2,6 +2,14 @@
 
 This records completed passes from the current change set. It does not represent a completed audit of all repository files. The file-by-file checklist remains pending until each file's callers, runtime registration, and trust boundaries have been reviewed and evidence recorded.
 
+## Data erasure infrastructure pass (2026-10-21)
+
+Extended the existing erasure worker coverage across the 53 per-space operational D1 tables, tenant access records, notifications, agent-authored artifacts, workspace objects, blueprint export files, and repository Git object/publication prefixes. Deletion walks R2 pages with cursor validation; exact export-key deletion uses batches of at most 100. Organization user PII is anonymized, operational tenant access is removed, spaces are marked erased, and `audit_log` remains for security/audit context. Financial records remain pending a retention policy decision.
+
+Evidence: `workers/workflows/src/workflows/erasure-cleanup.test.ts` (11 pass), `tests/unit/data-erasure-records.test.ts` (3 pass), and `workers/workflows` TypeScript check. Wrangler TOML R2 bindings are configured in default, staging, and production environments. The bindings now cover `naelao-artifacts`, `naelao-repository-objects`, and `naelao-agent-scripts`.
+
+This is not complete erasure coverage. RepositoryDO SQLite state, durable object state in other services, repo/workspace materialization races, export request/cancellation/restoration lifecycle, storage surfaces outside these prefixes, and a legal retention schedule for financial/audit records remain open. The current pass deletes the repository R2 prefix but does not yet purge per-repository Durable Object metadata.
+
 ## Completed focused review
 
 | Area | Review scope | Evidence | Status |
@@ -1787,6 +1795,14 @@ Fixed the reseller restoration risk recorded above. Migration `0116_space_suspen
 The deploy workflows' legacy migration loop suppresses failures. Staging and production now run a required `SELECT suspension_reason FROM spaces LIMIT 0` after the loop, which fails before deploy if migration 0116 did not apply. This new column does not retroactively identify the source of preexisting suspended rows; Admin restore fails closed for those rows and they need operator reconciliation. Other suspension writers and the broader erasure resource inventory remain under audit.
 
 Refreshed the tracked tree and checklist after migration 0116 and its real-SQLite test were added. At code commit `b2899390`, the tree records 2,013 tracked files / 1,807 source or executable-configuration files; checklist totals are 439 reviewed and 1,368 open. The full file-by-file and runtime audit remains incomplete.
+
+## Data-erasure resource coverage follow-up (2026-10-21)
+
+The D1 migration inventory showed the erasure workflow removed KB/session rows but left dozens of other operational records, including space credentials, extension/provider configuration, notifications, integrations, scheduled jobs, access records, and tenant API credentials. Expanded space cleanup to 53 per-space operational tables in FK-safe order; it preserves financial ledgers and platform audit context. Added organization cleanup that removes org memberships/API credentials/notifications/push subscriptions, anonymizes org and SpaceType labels, detaches erased users from the org, and marks spaces deleted after cleanup. R2 cleanup now walks the tenant/space artifact prefix and script workspace prefix, deletes exact tenant-scoped conformance export objects, and continues to use bounded pagination and batches. Workflows received explicit artifact and script bucket bindings in dev, staging, and production.
+
+Validation: full-migration SQLite erasure suite 3/3, workflow erasure/queue/provisioning tests 18/18, Workflows TypeScript, Wrangler TOML parsed with all required bucket bindings in all three environments, and `git diff --check`.
+
+This is still a partial erasure implementation. There is no request producer or cancellation/restoration route; live Durable Object state, repository objects, browser artifacts, and some financial/content tables remain outside the cleanup. Financial retention and external-provider resource cleanup need explicit policy and service coverage before claiming organization-wide erasure. These gaps stay open in the audit plan.
 
 ## Internal tenant suspension gates (2026-10-21)
 

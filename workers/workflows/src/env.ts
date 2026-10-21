@@ -22,6 +22,12 @@ export interface Env {
 
   // R2 — KB documents
   KB_BUCKET: R2Bucket;
+  /** Agent-authored deliverables keyed by tenant and space. */
+  ARTIFACT_R2_BUCKET: R2Bucket;
+  /** Git objects and publication journals keyed by tenant and space. */
+  REPOSITORY_OBJECTS: R2Bucket;
+  /** Agent scripts, workspace files, and exported blueprints. */
+  SCRIPTS_R2: R2Bucket;
 
   // Vectorize — KB semantic index
   KB_VECTORS: VectorizeIndex;

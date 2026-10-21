@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { deleteKvPrefix, eraseSpaceD1Records, eraseSpaceKnowledgeResources } from "./erasure-cleanup.js";
+import { deleteKvPrefix, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources } from "./erasure-cleanup.js";
 
 describe("KV erasure pagination", () => {
   it("deletes every page and returns the number of deleted keys", async () => {
@@ -86,12 +86,51 @@ describe("space D1 erasure", () => {
     };
     await eraseSpaceD1Records(db as never, "space-a");
     expect(db.batch).toHaveBeenCalledTimes(1);
-    expect(statements).toEqual([
-      "DELETE FROM kb_chunks WHERE space_id = ?",
-      "DELETE FROM kb_documents WHERE space_id = ?",
+    expect(statements.slice(0, 5)).toEqual([
       "DELETE FROM active_sessions WHERE space_id = ?",
       "DELETE FROM thread_sessions WHERE space_id = ?",
       "DELETE FROM threads WHERE space_id = ?",
+      "DELETE FROM kb_chunks WHERE space_id = ?",
+      "DELETE FROM kb_documents WHERE space_id = ?",
     ]);
+    expect(statements).toContain("DELETE FROM space_credentials WHERE space_id = ?");
+    expect(statements).toContain("DELETE FROM mcp_servers WHERE space_id = ?");
+    expect(statements).toContain("DELETE FROM webhook_subscriptions WHERE space_id = ?");
+    expect(statements).toHaveLength(53);
+  });
+});
+
+describe("space R2 erasure", () => {
+  it("deletes only the selected tenant/space artifact and workspace prefixes plus exact exports", async () => {
+    const artifactPrefixes: string[] = [];
+    const repositoryPrefixes: string[] = [];
+    const workspacePrefixes: string[] = [];
+    const deleted: string[] = [];
+    const bucket = (prefixes: string[]) => ({
+      async list(options: { prefix: string }) { prefixes.push(options.prefix); return { objects: [], truncated: false }; },
+      async delete(keys: string | string[]) { deleted.push(...(Array.isArray(keys) ? keys : [keys])); },
+    });
+
+    await eraseSpaceR2Resources("tenant-a", "space-a", bucket(artifactPrefixes) as never,
+      bucket(repositoryPrefixes) as never, bucket(workspacePrefixes) as never,
+      ["conformance-jobs/tenant-a/export-a.json"]);
+
+    expect(artifactPrefixes).toEqual(["tenant-a/space-a/"]);
+    expect(repositoryPrefixes).toEqual(["repositories/tenant-a/space-a/"]);
+    expect(workspacePrefixes).toEqual(["spaces/space-a/"]);
+    expect(deleted).toEqual(["conformance-jobs/tenant-a/export-a.json"]);
+  });
+
+  it("bounds exact export deletion batches and rejects keys outside the tenant namespace", async () => {
+    const deleteBatchSizes: number[] = [];
+    const bucket = () => ({
+      async list() { return { objects: [], truncated: false }; },
+      async delete(keys: string | string[]) { deleteBatchSizes.push(Array.isArray(keys) ? keys.length : 1); },
+    });
+    const keys = Array.from({ length: 205 }, (_, index) => `conformance-jobs/tenant-a/export-${index}.json`);
+    await eraseSpaceR2Resources("tenant-a", "space-a", bucket() as never, bucket() as never, bucket() as never, keys);
+    expect(deleteBatchSizes).toEqual([100, 100, 5]);
+    await expect(eraseSpaceR2Resources("tenant-a", "space-a", bucket() as never, bucket() as never, bucket() as never,
+      ["conformance-jobs/tenant-b/export.json"])).rejects.toThrow(/Invalid tenant-scoped/);
   });
 });

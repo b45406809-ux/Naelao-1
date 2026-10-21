@@ -48,6 +48,18 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 binding = "KB_BUCKET"
 bucket_name = "naelao-kb"
 
+[[r2_buckets]]
+binding = "ARTIFACT_R2_BUCKET"
+bucket_name = "naelao-artifacts"
+
+[[r2_buckets]]
+binding = "REPOSITORY_OBJECTS"
+bucket_name = "naelao-repository-objects"
+
+[[r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
 [[vectorize]]
 binding = "KB_VECTORS"
 index_name = "naelao-kb-prod"
@@ -133,6 +145,18 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 binding = "KB_BUCKET"
 bucket_name = "naelao-kb"
 
+[[env.staging.r2_buckets]]
+binding = "ARTIFACT_R2_BUCKET"
+bucket_name = "naelao-artifacts"
+
+[[env.staging.r2_buckets]]
+binding = "REPOSITORY_OBJECTS"
+bucket_name = "naelao-repository-objects"
+
+[[env.staging.r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
 
 [[env.staging.vectorize]]
 binding = "KB_VECTORS"
@@ -215,6 +239,18 @@ database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 [[env.production.r2_buckets]]
 binding = "KB_BUCKET"
 bucket_name = "naelao-kb"
+
+[[env.production.r2_buckets]]
+binding = "ARTIFACT_R2_BUCKET"
+bucket_name = "naelao-artifacts"
+
+[[env.production.r2_buckets]]
+binding = "REPOSITORY_OBJECTS"
+bucket_name = "naelao-repository-objects"
+
+[[env.production.r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
 
 
 [[env.production.vectorize]]

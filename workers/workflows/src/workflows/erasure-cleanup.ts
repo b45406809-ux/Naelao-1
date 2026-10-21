@@ -1,6 +1,21 @@
 const MAX_DOCUMENT_CHUNKS = 12_000;
 const R2_DELETE_BATCH_SIZE = 100;
 const KV_DELETE_BATCH_SIZE = 100;
+const SPACE_ERASURE_TABLES = [
+  "active_sessions", "thread_sessions", "threads", "kb_chunks", "kb_documents",
+  "agent_email_addresses", "agi_runs", "artifacts", "attachment_copy_claims", "blueprint_export_jobs",
+  "business_services", "capability_nonces", "channel_attachments", "channel_links", "channel_pairings",
+  "connector_alias_audit", "connector_aliases", "customer_voice_call_admissions",
+  "customer_voice_purchase_quotes", "customer_voice_number_bindings", "customer_voice_space_policies",
+  "desk_drop_tickets", "email_attachment_ocr_usage", "email_inbound_attachments", "email_reply_routes",
+  "eval_runs", "eval_suites", "extension_provider_routes", "extension_provider_connections",
+  "extension_publisher_keys", "installed_extensions", "kb_external_publication_documents",
+  "kb_external_publications", "mcp_servers", "oauth_sessions", "oauth_providers", "payment_connections",
+  "payout_destinations", "project_access", "project_steward_decisions", "project_steward_runs",
+  "recipe_installations", "scheduled_job_runs", "scheduled_jobs", "space_compliance_policy",
+  "space_credential_keys", "space_credentials", "space_members", "triggers", "virtual_cli_commands",
+  "webhook_subscriptions", "whop_sub_merchants", "workflow_executions_v2",
+] as const;
 
 export async function deleteKvPrefix(
   kv: Pick<KVNamespace, "list" | "delete">,
@@ -34,12 +49,27 @@ export interface ErasureDocument {
 }
 
 export async function eraseSpaceD1Records(db: D1Database, spaceId: string): Promise<void> {
+  // Children precede parents where the migrations declare foreign keys.
+  await db.batch(SPACE_ERASURE_TABLES.map((table) =>
+    db.prepare(`DELETE FROM ${table} WHERE space_id = ?`).bind(spaceId)
+  ));
+}
+
+/** Retain financial/audit records, but remove tenant login, notification, API, and registry state. */
+export async function eraseOrgOperationalRecords(db: D1Database, orgId: string): Promise<void> {
   await db.batch([
-    db.prepare("DELETE FROM kb_chunks WHERE space_id = ?").bind(spaceId),
-    db.prepare("DELETE FROM kb_documents WHERE space_id = ?").bind(spaceId),
-    db.prepare("DELETE FROM active_sessions WHERE space_id = ?").bind(spaceId),
-    db.prepare("DELETE FROM thread_sessions WHERE space_id = ?").bind(spaceId),
-    db.prepare("DELETE FROM threads WHERE space_id = ?").bind(spaceId),
+    db.prepare("DELETE FROM org_members WHERE org_id = ?").bind(orgId),
+    db.prepare("DELETE FROM api_keys WHERE org_id = ?").bind(orgId),
+    db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM notifications WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM web_push_subscriptions WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM do_registry WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM space_type_tools WHERE tenant_id = ?").bind(orgId),
+    db.prepare("UPDATE spacetypes SET name = 'Erased SpaceType', description = NULL, schema_json = '{}', status = 'archived' WHERE org_id = ?").bind(orgId),
+    db.prepare("UPDATE spaces SET name = 'Erased space', config_json = '{}', created_by = NULL, status = 'deleted', suspension_reason = 'erasure', updated_at = datetime('now') WHERE tenant_id = ?").bind(orgId),
+    db.prepare("UPDATE users SET org_id = NULL WHERE org_id = ?").bind(orgId),
+    db.prepare("UPDATE orgs SET name = 'Erased organization', owner_id = 'system-erasure', status = 'erased' WHERE id = ?").bind(orgId),
   ]);
 }
 
@@ -60,7 +90,7 @@ function autoragKey(spaceId: string, projectId: string | null, documentId: strin
   return `autorag/${spaceId}/${projectId ?? "_space"}/${documentId}.md`;
 }
 
-async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<void> {
+export async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<void> {
   let cursor: string | undefined;
   const seenCursors = new Set<string>();
   do {
@@ -74,6 +104,27 @@ async function deleteR2Prefix(bucket: R2Bucket, prefix: string): Promise<void> {
     seenCursors.add(nextCursor);
     cursor = nextCursor;
   } while (cursor !== undefined);
+}
+
+/** Remove artifacts and workspace files stored outside the Knowledge bucket. */
+export async function eraseSpaceR2Resources(
+  tenantId: string,
+  spaceId: string,
+  artifactBucket: R2Bucket,
+  repositoryBucket: R2Bucket,
+  workspaceBucket: R2Bucket,
+  extraWorkspaceKeys: string[] = [],
+): Promise<void> {
+  const exportPrefix = `conformance-jobs/${tenantId}/`;
+  if (extraWorkspaceKeys.some((key) => !key.startsWith(exportPrefix) || key.includes("..") || key.includes("\\"))) {
+    throw new Error("Invalid tenant-scoped erasure object key");
+  }
+  await deleteR2Prefix(artifactBucket, `${tenantId}/${spaceId}/`);
+  await deleteR2Prefix(repositoryBucket, `repositories/${tenantId}/${spaceId}/`);
+  for (let offset = 0; offset < extraWorkspaceKeys.length; offset += R2_DELETE_BATCH_SIZE) {
+    await workspaceBucket.delete(extraWorkspaceKeys.slice(offset, offset + R2_DELETE_BATCH_SIZE));
+  }
+  await deleteR2Prefix(workspaceBucket, `spaces/${spaceId}/`);
 }
 
 function validatedChunkCount(value: number | null): number {
