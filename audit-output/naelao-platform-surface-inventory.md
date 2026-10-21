@@ -4,7 +4,7 @@ Generated from the current source/config tree using Wrangler worker manifests, e
 
 Supplemental routes added after the last full discovery refresh: `workers/spaces/src/index.ts` registers owner-only `POST /builder/erasure`, `GET /builder/erasure/:requestId`, and `DELETE /builder/erasure/:requestId`; the latter two are the only request paths exempted from router tenant suspension. Internal `DELETE /internal/tenant/:tenantId/spaces/:spaceId/product-users/erase` and `DELETE /internal/tenant/:tenantId/spaces/:spaceId/business-services/erase` routes are protected by `requireInternalHmac`. Aggregate route counts and other line references above predate these additions and still need a full discovery refresh.
 
-Workers with Wrangler manifests: 28
+Workers with Wrangler manifests: 26 (reconciled against all `workers/*/wrangler.toml` files on 2026-10-21)
 Exported DurableObject declarations: 22
 Literal route-registration matches: 1059
 
