@@ -1,4 +1,7 @@
+import { readBoundedResponseJson } from "@naelao/http";
+
 const API = "https://api.pipedream.com/v1";
+const MAX_PIPEDREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export interface PipedreamConnectEnv {
   PIPEDREAM_CLIENT_ID?: string;
@@ -21,9 +24,8 @@ async function token(env: PipedreamConnectEnv): Promise<string> {
     }),
     signal: AbortSignal.timeout(15_000),
   });
-  const body = await response
-    .json<{ access_token?: string }>()
-    .catch(() => ({}) as { access_token?: string });
+  const body = await readBoundedResponseJson<{ access_token?: string }>(response, 16 * 1024)
+    .catch(() => ({} as { access_token?: string }));
   if (!response.ok || !body.access_token)
     throw new Error(`Pipedream token exchange failed (${response.status})`);
   return body.access_token;
@@ -36,8 +38,13 @@ function project(env: PipedreamConnectEnv): string {
 }
 
 async function json<T>(response: Response): Promise<T> {
-  const body = await response.json<Record<string, unknown>>().catch(() => ({}));
   if (!response.ok) throw new Error(`Pipedream returned ${response.status}`);
+  let body: Record<string, unknown>;
+  try {
+    body = await readBoundedResponseJson(response, MAX_PIPEDREAM_RESPONSE_BYTES);
+  } catch {
+    throw new Error("Pipedream returned an invalid or oversized response");
+  }
   return body as T;
 }
 

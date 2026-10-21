@@ -2280,12 +2280,13 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/mcp-hub/src`
 
 - [ ] `workers/mcp-hub/src/air-gap.test.ts`
-- [ ] `workers/mcp-hub/src/composio.test.ts`
+- [x] `workers/mcp-hub/src/composio.test.ts`
 - [ ] `workers/mcp-hub/src/composio.ts`
 - [ ] `workers/mcp-hub/src/connector-policy.test.ts`
 - [ ] `workers/mcp-hub/src/connector-policy.ts`
 - [ ] `workers/mcp-hub/src/index.ts`
 - [ ] `workers/mcp-hub/src/pipedream.ts`
+- [x] `workers/mcp-hub/src/upstream-response-boundaries.test.ts`
 
 ### `workers/mini-agi`
 

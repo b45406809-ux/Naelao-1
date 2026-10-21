@@ -1,6 +1,6 @@
 // G-I17: MCP Tool Server Registry — registers MCP servers per Space and proxies tool calls
 import { Hono } from "hono";
-import { errorResponse, requestId, requireInternalHmac, mintInternalToken, readBoundedRequestText, readBoundedResponseText } from "@naelao/http";
+import { errorResponse, requestId, requireInternalHmac, mintInternalToken, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
 import { checkSsrf, isSpaceNetworkEgressDenied, scanAndScrubEgress } from "@naelao/security";
 import { missingToolScopes } from "./connector-policy";
 import type { ConnectorScope } from "./connector-policy";
@@ -125,6 +125,7 @@ async function generateCredentialToken(platformSecret: string, tenantId: string,
 }
 
 type ConnectorProvider = "direct" | "composio" | "pipedream";
+const MAX_PROVIDER_JSON_BYTES = 4 * 1024 * 1024;
 
 export interface McpServer {
   id: string;
@@ -182,7 +183,12 @@ async function composioToolCall(
     const text = await readBoundedResponseText(resp, 8 * 1024).catch(() => "");
     return { error: `Composio returned ${resp.status}: ${text.slice(0, 200)}` };
   }
-  const data = await resp.json<{ data?: unknown; error?: string | null; successful?: boolean }>();
+  let data: { data?: unknown; error?: string | null; successful?: boolean };
+  try {
+    data = await readBoundedResponseJson(resp, MAX_PROVIDER_JSON_BYTES);
+  } catch {
+    return { error: "Composio returned an invalid or oversized response" };
+  }
   if (data.error) return { error: data.error };
   // The v3 response envelope reports success via a dedicated `successful` boolean rather than
   // relying solely on `error` being absent — a call whose HTTP status was 200 but whose
@@ -204,7 +210,7 @@ async function composioListTools(
     { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15_000) }
   );
   if (!acctResp.ok) return { tools: [] };
-  const acct = await acctResp.json<{ toolkit?: { slug?: string } }>().catch(() => ({}) as { toolkit?: { slug?: string } });
+  const acct = await readBoundedResponseJson<{ toolkit?: { slug?: string } }>(acctResp, MAX_PROVIDER_JSON_BYTES);
   const toolkitSlug = acct.toolkit?.slug;
   if (!toolkitSlug) return { tools: [] };
   const resp = await fetch(
@@ -212,7 +218,7 @@ async function composioListTools(
     { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15_000) }
   );
   if (!resp.ok) return { tools: [] };
-  const data = await resp.json<{ items?: unknown[] }>();
+  const data = await readBoundedResponseJson<{ items?: unknown[] }>(resp, MAX_PROVIDER_JSON_BYTES);
   return { tools: data.items ?? [] };
 }
 
@@ -352,7 +358,7 @@ export async function buildAuthHeaders(
     )
   );
   if (resp.status === 404) {
-    const body = await resp.json<{ error_code?: string }>().catch(() => ({}) as Record<string, never>);
+    const body = await readBoundedResponseJson<{ error_code?: string }>(resp, 8 * 1024).catch(() => ({} as { error_code?: string }));
     if (body.error_code === "personal_credential_required") {
       throw new Error(`personal_credential_required: no personal account connected for '${server.name}' — switch to the business account or connect your own`);
     }
@@ -360,7 +366,7 @@ export async function buildAuthHeaders(
   if (!resp.ok) {
     throw new Error(`Failed to resolve credential '${server.auth_secret_name}' (${resp.status})`);
   }
-  const { value } = await resp.json<{ value: string }>();
+  const { value } = await readBoundedResponseJson<{ value: string }>(resp, 16 * 1024);
   if (server.auth_type === "bearer") headers["Authorization"] = `Bearer ${value}`;
   else if (server.auth_type === "api_key") headers["X-API-Key"] = value;
   else if (server.auth_type === "oauth2") {
@@ -407,7 +413,7 @@ export async function resolveOAuthAccessToken(server: McpServer, env: Env, rawVa
       })
     );
     if (!resp.ok) return tokens.access_token;
-    const refreshed = await resp.json<{ access_token?: string }>();
+    const refreshed = await readBoundedResponseJson<{ access_token?: string }>(resp, 16 * 1024);
     return refreshed.access_token ?? tokens.access_token;
   } catch {
     return tokens.access_token;
@@ -631,7 +637,11 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
     if (!server.provider_connection_id) {
       return c.json({ error_code: "bad_request", message: "Provider connection_id missing" }, 400);
     }
-    return c.json(await composioListTools(server.provider_connection_id, keyRes.apiKey));
+    try {
+      return c.json(await composioListTools(server.provider_connection_id, keyRes.apiKey));
+    } catch {
+      return c.json({ error_code: "upstream_error", message: "Composio could not list actions for this app" }, 502);
+    }
   }
   if (server.connector_provider === "pipedream") {
     if (!server.provider_connection_id) return c.json({ error_code: "bad_request", message: "Pipedream external user id missing" }, 400);
@@ -690,7 +700,12 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
     );
   }
 
-  const result = await resp.json<{ result?: { tools?: unknown[] }; error?: { message: string } }>();
+  let result: { result?: { tools?: unknown[] }; error?: { message: string } };
+  try {
+    result = await readBoundedResponseJson(resp, 2 * 1024 * 1024);
+  } catch {
+    return c.json({ error_code: "upstream_error", message: "MCP server returned an invalid or oversized response" }, 502);
+  }
   if (result.error) {
     return c.json({ error_code: "tool_error", message: result.error.message }, 422);
   }
@@ -941,7 +956,12 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
     );
   }
 
-  const result = await resp.json<{ result?: unknown; error?: { message: string } }>();
+  let result: { result?: unknown; error?: { message: string } };
+  try {
+    result = await readBoundedResponseJson(resp, MAX_PROVIDER_JSON_BYTES);
+  } catch {
+    return c.json({ error_code: "upstream_error", message: "MCP server returned an invalid or oversized response" }, 502);
+  }
   if (result.error) {
     return c.json({ error_code: "tool_error", message: result.error.message }, 422);
   }

@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1981
-Files with source or executable-configuration extensions: 1775
-Inventory revision: 2026-10-21 audit refresh at 25cce99d
+Files: 1982
+Files with source or executable-configuration extensions: 1776
+Inventory revision: 2026-10-21 audit refresh for connector response bounds
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -2032,6 +2032,7 @@ workers/
       connector-policy.ts
       index.ts
       pipedream.ts
+      upstream-response-boundaries.test.ts
     tsconfig.json
     wrangler.toml
   mini-agi/

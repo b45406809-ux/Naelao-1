@@ -13,6 +13,20 @@ describe("Composio managed broker", () => {
     await expect(executeComposioAction({ COMPOSIO_API_KEY: "platform-key" }, { connectionId: "account", action: "GMAIL_SEND_EMAIL", arguments: { to: "a@example.com" } })).resolves.toEqual({ id: "message-1" });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+  it("fails closed on an oversized success response instead of returning empty tool output", async () => {
+    const oversized = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"successful":true,"data":"'));
+          controller.enqueue(new Uint8Array(4 * 1024 * 1024 + 1).fill(0x61));
+          controller.enqueue(new TextEncoder().encode('"}'));
+          controller.close();
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(oversized));
+    await expect(executeComposioAction({ COMPOSIO_API_KEY: "platform-key" }, { connectionId: "account", action: "GMAIL_LIST_MESSAGES" })).rejects.toThrow("invalid or oversized response");
+  });
   it("recognizes reserved money-in actions before provider dispatch", () => {
     expect(isReservedToolName("stripe_create_checkout_session")).toBe(true);
     expect(isReservedToolName("GMAIL_SEND_EMAIL")).toBe(false);

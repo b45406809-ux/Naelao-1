@@ -1,7 +1,10 @@
+import { readBoundedResponseJson } from "@naelao/http";
+
 /** Pipedream Connect REST calls. These use the platform's client-credentials grant; neither the
  * client secret nor the resulting bearer token is persisted in connector rows or returned to a
  * caller. Request/response shapes follow Pipedream's published @pipedream/sdk 3.1.6. */
 const API = "https://api.pipedream.com/v1";
+const MAX_PIPEDREAM_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 export interface PipedreamEnv {
   PIPEDREAM_CLIENT_ID?: string;
@@ -30,12 +33,8 @@ async function accessToken(env: PipedreamEnv): Promise<string> {
     }),
     signal: AbortSignal.timeout(15_000),
   });
-  const body = await response
-    .json<{ access_token?: string; expires_in?: number; error?: string }>()
-    .catch(
-      () =>
-        ({}) as { access_token?: string; expires_in?: number; error?: string }
-    );
+  const body = await readBoundedResponseJson<{ access_token?: string; expires_in?: number; error?: string }>(response, 16 * 1024)
+    .catch(() => ({} as { access_token?: string; expires_in?: number; error?: string }));
   if (!response.ok || !body.access_token)
     throw new Error(`Pipedream token exchange failed (${response.status})`);
   cached = {
@@ -60,8 +59,13 @@ function headers(env: PipedreamEnv, token: string): HeadersInit {
 }
 
 async function requestJson<T>(response: Response): Promise<T> {
-  const body = await response.json<Record<string, unknown>>().catch(() => ({}));
   if (!response.ok) throw new Error(`Pipedream returned ${response.status}`);
+  let body: Record<string, unknown>;
+  try {
+    body = await readBoundedResponseJson(response, MAX_PIPEDREAM_RESPONSE_BYTES);
+  } catch {
+    throw new Error("Pipedream returned an invalid or oversized response");
+  }
   return body as T;
 }
 

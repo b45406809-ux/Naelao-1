@@ -1,3 +1,5 @@
+import { readBoundedResponseJson } from "@naelao/http";
+
 /**
  * Composio "Connect Link" hosted-auth helpers — the mechanism behind a real "click Install"
  * connector experience (Claude/ChatGPT-style bundled connectors), for any of Composio's 500+
@@ -31,6 +33,7 @@
  */
 
 const COMPOSIO_API_BASE = "https://backend.composio.dev/api/v3";
+const MAX_COMPOSIO_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 function pick(obj: Record<string, unknown> | undefined, ...keys: string[]): string {
   if (!obj) return "";
@@ -65,7 +68,13 @@ export async function startComposioLink(params: {
     }),
     signal: AbortSignal.timeout(15_000),
   });
-  const json = await resp.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  let json: Record<string, unknown>;
+  try {
+    json = await readBoundedResponseJson(resp, MAX_COMPOSIO_RESPONSE_BYTES);
+  } catch {
+    if (resp.ok) throw new Error("Composio returned an invalid or oversized response");
+    json = {};
+  }
   if (!resp.ok) {
     const msg = pick(json, "error", "message") || `Composio connect-link failed: ${resp.status}`;
     throw new Error(msg);
@@ -95,7 +104,7 @@ export async function getComposioConnectionStatus(apiKey: string, connectionId: 
     signal: AbortSignal.timeout(15_000),
   });
   if (!resp.ok) return "UNKNOWN";
-  const json = await resp.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const json = await readBoundedResponseJson<Record<string, unknown>>(resp, MAX_COMPOSIO_RESPONSE_BYTES).catch(() => ({} as Record<string, unknown>));
   const data = (json["data"] as Record<string, unknown> | undefined) ?? json;
   const status = pick(data, "status").toUpperCase();
   if (status === "ACTIVE" || status === "ENABLED") return "ACTIVE";
@@ -228,7 +237,13 @@ export async function listComposioToolkits(params: {
     headers: { "x-api-key": params.apiKey },
     signal: AbortSignal.timeout(15_000),
   });
-  const json = await resp.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  let json: Record<string, unknown>;
+  try {
+    json = await readBoundedResponseJson(resp, MAX_COMPOSIO_RESPONSE_BYTES);
+  } catch {
+    if (resp.ok) throw new Error("Composio returned an invalid or oversized response");
+    json = {};
+  }
   if (!resp.ok) {
     throw new Error(pick(json, "error", "message") || `Composio toolkit listing failed: ${resp.status}`);
   }
@@ -274,7 +289,7 @@ export async function getComposioToolkit(params: {
     signal: AbortSignal.timeout(15_000),
   });
   if (!resp.ok) return null;
-  const raw = await resp.json<Record<string, unknown>>().catch(() => null);
+  const raw = await readBoundedResponseJson<Record<string, unknown>>(resp, MAX_COMPOSIO_RESPONSE_BYTES).catch(() => null);
   if (!raw) return null;
   const slug = pick(raw, "slug", "key", "name_slug") || params.slug;
   const meta = (raw["meta"] as Record<string, unknown> | undefined) ?? raw;
@@ -321,7 +336,7 @@ export async function ensureComposioAuthConfig(params: {
     }),
     signal: AbortSignal.timeout(15_000),
   });
-  const json = await resp.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const json = await readBoundedResponseJson<Record<string, unknown>>(resp, MAX_COMPOSIO_RESPONSE_BYTES).catch(() => ({} as Record<string, unknown>));
   if (!resp.ok) {
     const err = (json["error"] as Record<string, unknown> | undefined) ?? json;
     throw new Error(pick(err, "message", "error") || `Composio auth-config creation failed: ${resp.status}`);
