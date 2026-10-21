@@ -30,6 +30,7 @@ import {
   eraseSpaceKnowledgeDocumentResources,
   eraseSpaceKnowledgePrefixes,
   eraseSpaceR2Prefixes,
+  eraseSpacesInSteps,
   eraseTenantExportKeys,
   validateBlueprintExportKey,
 } from "./erasure-cleanup.js";
@@ -133,107 +134,94 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     if (!ownsErasure) return;
 
     // ── Step 3: Delete space data (R2, Vectorize, D1) ────────────────────────
-    // G-E08: Paginated R2 deletion — iterate all pages, not just first
-    await step.do("delete-spaces-data", async () => {
-      // Delete usage events for this org
+    await step.do("delete-usage-events", async () => {
       await this.env.PLATFORM_DB.prepare(
         `DELETE FROM usage_events WHERE org_id = ?`
       )
         .bind(params.orgId)
         .run();
-
-      // Page spaces and documents so a long-lived org cannot force unbounded D1 result arrays.
-      let afterSpaceId = "";
-      let spacesProcessed = 0;
-      for (;;) {
-        const { results: spaces } = await this.env.PLATFORM_DB.prepare(
-          "SELECT id FROM spaces WHERE tenant_id = ? AND id > ? ORDER BY id LIMIT 100",
-        ).bind(params.orgId, afterSpaceId).all<{ id: string }>();
-        if (spaces.length === 0) break;
-        const nextSpaceId = spaces[spaces.length - 1]?.id;
-        if (!nextSpaceId || nextSpaceId <= afterSpaceId) throw new Error("Invalid space erasure pagination cursor");
-
-        for (const space of spaces) {
-          let afterDocumentId = "";
-          for (;;) {
-            const { results: docs } = await this.env.PLATFORM_DB.prepare(
-              `SELECT id, project_id, chunk_count FROM kb_documents
-               WHERE space_id = ? AND id > ? ORDER BY id LIMIT 100`,
-            ).bind(space.id, afterDocumentId)
-              .all<{ id: string; project_id: string | null; chunk_count: number | null }>();
-            if (docs.length === 0) break;
-            for (const document of docs) {
-              await eraseSpaceKnowledgeDocumentResources(space.id, document, this.env.KB_BUCKET, this.env.KB_VECTORS);
-            }
-            const nextDocumentId = docs[docs.length - 1]?.id;
-            if (!nextDocumentId || nextDocumentId <= afterDocumentId) throw new Error("Invalid document erasure pagination cursor");
-            afterDocumentId = nextDocumentId;
-          }
-          await eraseSpaceKnowledgePrefixes(space.id, this.env.KB_BUCKET);
-
-          await eraseSpaceR2Prefixes(params.orgId, space.id, this.env.ARTIFACT_R2_BUCKET,
-            this.env.REPOSITORY_OBJECTS, this.env.SCRIPTS_R2);
-          let afterExportId = "";
-          for (;;) {
-            const { results: exports } = await this.env.PLATFORM_DB.prepare(
-              `SELECT id, artifact_key FROM blueprint_export_jobs
-               WHERE space_id = ? AND tenant_id = ? AND id > ? ORDER BY id LIMIT 100`,
-            ).bind(space.id, params.orgId, afterExportId).all<{ id: string; artifact_key: string }>();
-            if (exports.length === 0) break;
-            const scopedKeys = exports.map(({ id, artifact_key }) =>
-              validateBlueprintExportKey(params.orgId, id, artifact_key));
-            await eraseTenantExportKeys(params.orgId, this.env.SCRIPTS_R2, scopedKeys);
-            const nextExportId = exports[exports.length - 1]?.id;
-            if (!nextExportId || nextExportId <= afterExportId) throw new Error("Invalid blueprint export pagination cursor");
-            afterExportId = nextExportId;
-          }
-
-          // Also remove vectors referenced only by the chunk registry (for orphaned/legacy docs).
-          let afterRowId = 0;
-          for (;;) {
-            const { results: chunks } = await this.env.PLATFORM_DB.prepare(
-              `SELECT rowid AS row_id, document_id, chunk_index FROM kb_chunks
-               WHERE space_id = ? AND rowid > ? ORDER BY rowid ASC LIMIT 1000`
-            ).bind(space.id, afterRowId).all<{ row_id: number; document_id: string; chunk_index: number }>();
-            if (chunks.length === 0) break;
-            for (let start = 0; start < chunks.length; start += 100) {
-              await this.env.KB_VECTORS.deleteByIds(chunks.slice(start, start + 100)
-                .map((chunk) => `${chunk.document_id}_chunk_${chunk.chunk_index}`));
-            }
-            afterRowId = chunks[chunks.length - 1]!.row_id;
-          }
-
-          // Remove every tenant-owned searchable/session record, including parent summaries
-          // that are not covered by the session table's cascade.
-          const productUserErasure = await this.env.SPACES_WORKER.fetch(new Request(
-            `https://spaces.internal/internal/tenant/${encodeURIComponent(params.orgId)}/spaces/${encodeURIComponent(space.id)}/product-users/erase`,
-            { method: "DELETE", headers: {
-              "x-naelao-tenant-id": params.orgId,
-              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, params.orgId),
-            } },
-          ));
-          if (!productUserErasure.ok) throw new Error(`Product-user erasure failed with status ${productUserErasure.status}`);
-          const businessServiceErasure = await this.env.SPACES_WORKER.fetch(new Request(
-            `https://spaces.internal/internal/tenant/${encodeURIComponent(params.orgId)}/spaces/${encodeURIComponent(space.id)}/business-services/erase`,
-            { method: "DELETE", headers: {
-              "x-naelao-tenant-id": params.orgId,
-              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, params.orgId),
-            } },
-          ));
-          if (!businessServiceErasure.ok) throw new Error(`Business-service erasure failed with status ${businessServiceErasure.status}`);
-          await eraseSpaceD1Records(this.env.PLATFORM_DB, space.id);
-
-          console.log(`[DataErasure] Cleaned space=${space.id} for org=${params.orgId}`);
-          spacesProcessed++;
-        }
-        afterSpaceId = nextSpaceId;
-      }
-
-      console.log(
-        `[DataErasure] Deleted data for ${spacesProcessed} space(s) in org=${params.orgId}`,
-      );
-      return { spacesProcessed };
     });
+
+    // Checkpoint by Space instead of holding one Workflow step across the entire tenant.
+    // A retry resumes at the current Space rather than replaying every prior Space cleanup.
+    const spacesProcessed = await eraseSpacesInSteps(
+      this.env.PLATFORM_DB,
+      params.orgId,
+      step,
+      async (spaceId) => {
+        let afterDocumentId = "";
+        for (;;) {
+          const { results: docs } = await this.env.PLATFORM_DB.prepare(
+            `SELECT id, project_id, chunk_count FROM kb_documents
+             WHERE space_id = ? AND id > ? ORDER BY id LIMIT 100`,
+          ).bind(spaceId, afterDocumentId)
+            .all<{ id: string; project_id: string | null; chunk_count: number | null }>();
+          if (docs.length === 0) break;
+          for (const document of docs) {
+            await eraseSpaceKnowledgeDocumentResources(spaceId, document, this.env.KB_BUCKET, this.env.KB_VECTORS);
+          }
+          const nextDocumentId = docs[docs.length - 1]?.id;
+          if (!nextDocumentId || nextDocumentId <= afterDocumentId) throw new Error("Invalid document erasure pagination cursor");
+          afterDocumentId = nextDocumentId;
+        }
+        await eraseSpaceKnowledgePrefixes(spaceId, this.env.KB_BUCKET);
+
+        await eraseSpaceR2Prefixes(params.orgId, spaceId, this.env.ARTIFACT_R2_BUCKET,
+          this.env.REPOSITORY_OBJECTS, this.env.SCRIPTS_R2);
+        let afterExportId = "";
+        for (;;) {
+          const { results: exports } = await this.env.PLATFORM_DB.prepare(
+            `SELECT id, artifact_key FROM blueprint_export_jobs
+             WHERE space_id = ? AND tenant_id = ? AND id > ? ORDER BY id LIMIT 100`,
+          ).bind(spaceId, params.orgId, afterExportId).all<{ id: string; artifact_key: string }>();
+          if (exports.length === 0) break;
+          const scopedKeys = exports.map(({ id, artifact_key }) =>
+            validateBlueprintExportKey(params.orgId, id, artifact_key));
+          await eraseTenantExportKeys(params.orgId, this.env.SCRIPTS_R2, scopedKeys);
+          const nextExportId = exports[exports.length - 1]?.id;
+          if (!nextExportId || nextExportId <= afterExportId) throw new Error("Invalid blueprint export pagination cursor");
+          afterExportId = nextExportId;
+        }
+
+        // Also remove vectors referenced only by the chunk registry (for orphaned/legacy docs).
+        let afterRowId = 0;
+        for (;;) {
+          const { results: chunks } = await this.env.PLATFORM_DB.prepare(
+            `SELECT rowid AS row_id, document_id, chunk_index FROM kb_chunks
+             WHERE space_id = ? AND rowid > ? ORDER BY rowid ASC LIMIT 1000`
+          ).bind(spaceId, afterRowId).all<{ row_id: number; document_id: string; chunk_index: number }>();
+          if (chunks.length === 0) break;
+          for (let start = 0; start < chunks.length; start += 100) {
+            await this.env.KB_VECTORS.deleteByIds(chunks.slice(start, start + 100)
+              .map((chunk) => `${chunk.document_id}_chunk_${chunk.chunk_index}`));
+          }
+          afterRowId = chunks[chunks.length - 1]!.row_id;
+        }
+
+        // Remove every tenant-owned searchable/session record, including parent summaries
+        // that are not covered by the session table's cascade.
+        const productUserErasure = await this.env.SPACES_WORKER.fetch(new Request(
+          `https://spaces.internal/internal/tenant/${encodeURIComponent(params.orgId)}/spaces/${encodeURIComponent(spaceId)}/product-users/erase`,
+          { method: "DELETE", headers: {
+            "x-naelao-tenant-id": params.orgId,
+            "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, params.orgId),
+          } },
+        ));
+        if (!productUserErasure.ok) throw new Error(`Product-user erasure failed with status ${productUserErasure.status}`);
+        const businessServiceErasure = await this.env.SPACES_WORKER.fetch(new Request(
+          `https://spaces.internal/internal/tenant/${encodeURIComponent(params.orgId)}/spaces/${encodeURIComponent(spaceId)}/business-services/erase`,
+          { method: "DELETE", headers: {
+            "x-naelao-tenant-id": params.orgId,
+            "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, params.orgId),
+          } },
+        ));
+        if (!businessServiceErasure.ok) throw new Error(`Business-service erasure failed with status ${businessServiceErasure.status}`);
+        await eraseSpaceD1Records(this.env.PLATFORM_DB, spaceId);
+
+        console.log(`[DataErasure] Cleaned space=${spaceId} for org=${params.orgId}`);
+      },
+    );
+    console.log(`[DataErasure] Deleted data for ${spacesProcessed} space(s) in org=${params.orgId}`);
 
     // ── Step 4: Anonymize user PII ────────────────────────────────────────────
     await step.do("delete-user-pii", async () => {

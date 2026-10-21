@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { deleteKvPrefix, erasureAuditId, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, validateBlueprintExportKey } from "./erasure-cleanup.js";
+import { deleteKvPrefix, erasureAuditId, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, eraseSpacesInSteps, validateBlueprintExportKey } from "./erasure-cleanup.js";
 
 describe("erasure workflow audit idempotency", () => {
   it("uses stable request-scoped identifiers for retried workflow audit steps", () => {
@@ -7,6 +7,88 @@ describe("erasure workflow audit idempotency", () => {
     expect(erasureAuditId("completed", "request-a")).toBe("erasure-completed-request-a");
     expect(erasureAuditId("completed", "request-a")).toBe(erasureAuditId("completed", "request-a"));
     expect(() => erasureAuditId("completed", "../other")).toThrow(/identifier/);
+  });
+});
+
+describe("space erasure workflow checkpointing", () => {
+  it("runs every space in its own stable workflow step across D1 pages", async () => {
+    const stepNames: string[] = [];
+    const erased: string[] = [];
+    const stepResults = new Map<string, unknown>();
+    const allSpaces = Array.from({ length: 205 }, (_, index) => `space-${String(index).padStart(3, "0")}`);
+    const db = {
+      prepare: (_sql: string) => ({
+        bind: (_tenantId: string, after: string) => ({
+          all: async () => ({ results: allSpaces.filter((id) => id > after).slice(0, 100).map((id) => ({ id })) }),
+        }),
+      }),
+    };
+
+    const step = {
+      async do<T>(name: string, callback: () => Promise<T>): Promise<T> {
+        stepNames.push(name);
+        if (stepResults.has(name)) return stepResults.get(name) as T;
+        const result = await callback();
+        stepResults.set(name, result);
+        return result;
+      },
+    };
+    const processed = await eraseSpacesInSteps(
+      db as never,
+      "tenant-a",
+      step as never,
+      async (spaceId) => { erased.push(spaceId); },
+    );
+    const firstRunSteps = stepNames.length;
+    await eraseSpacesInSteps(db as never, "tenant-a", step as never, async (spaceId) => { erased.push(spaceId); });
+
+    expect(processed).toBe(205);
+    expect(erased).toHaveLength(205);
+    expect(new Set(stepNames.slice(0, firstRunSteps)).size).toBe(firstRunSteps);
+    expect(stepNames.slice(0, firstRunSteps).filter((name) => name.startsWith("list-space-page-"))).toEqual([
+      "list-space-page-0", "list-space-page-1", "list-space-page-2", "list-space-page-3",
+    ]);
+    expect(stepNames.slice(0, firstRunSteps).filter((name) => name.startsWith("erase-space-")).slice(0, 3)).toEqual([
+      "erase-space-0", "erase-space-1", "erase-space-2",
+    ]);
+  });
+
+  it("retries the failed space step without replaying completed space cleanup", async () => {
+    const allSpaces = Array.from({ length: 105 }, (_, index) => `space-${String(index).padStart(3, "0")}`);
+    const db = {
+      prepare: (_sql: string) => ({
+        bind: (_tenantId: string, after: string) => ({
+          all: async () => ({ results: allSpaces.filter((id) => id > after).slice(0, 100).map((id) => ({ id })) }),
+        }),
+      }),
+    };
+    const results = new Map<string, unknown>();
+    const calls = new Map<string, number>();
+    const step = {
+      async do<T>(name: string, callback: () => Promise<T>): Promise<T> {
+        if (results.has(name)) return results.get(name) as T;
+        const value = await callback();
+        results.set(name, value);
+        return value;
+      },
+    };
+    let failOnce = true;
+    const eraseSpace = async (spaceId: string) => {
+      calls.set(spaceId, (calls.get(spaceId) ?? 0) + 1);
+      if (spaceId === "space-101" && failOnce) {
+        failOnce = false;
+        throw new Error("temporary storage failure");
+      }
+    };
+
+    await expect(eraseSpacesInSteps(db as never, "tenant-a", step as never, eraseSpace))
+      .rejects.toThrow("temporary storage failure");
+    await expect(eraseSpacesInSteps(db as never, "tenant-a", step as never, eraseSpace)).resolves.toBe(105);
+
+    expect(calls.get("space-000")).toBe(1);
+    expect(calls.get("space-100")).toBe(1);
+    expect(calls.get("space-101")).toBe(2);
+    expect(calls.get("space-104")).toBe(1);
   });
 });
 

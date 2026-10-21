@@ -1,3 +1,5 @@
+import type { WorkflowStep } from "cloudflare:workers";
+
 const MAX_DOCUMENT_CHUNKS = 12_000;
 const R2_DELETE_BATCH_SIZE = 100;
 const KV_DELETE_BATCH_SIZE = 100;
@@ -22,6 +24,37 @@ export const SPACE_ERASURE_TABLES = [
 export function erasureAuditId(kind: "requested" | "completed", requestId: string): string {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) throw new Error("Invalid erasure request identifier");
   return `erasure-${kind}-${requestId}`;
+}
+
+/** Checkpoint tenant erasure after each space so large tenants do not occupy one workflow step. */
+export async function eraseSpacesInSteps(
+  db: Pick<D1Database, "prepare">,
+  tenantId: string,
+  step: WorkflowStep,
+  eraseSpace: (spaceId: string) => Promise<void>,
+): Promise<number> {
+  let afterSpaceId = "";
+  let pageIndex = 0;
+  let spacesProcessed = 0;
+  for (;;) {
+    const spaces = await step.do(`list-space-page-${pageIndex}`, async () => {
+      const { results } = await db.prepare(
+        "SELECT id FROM spaces WHERE tenant_id = ? AND id > ? ORDER BY id LIMIT 100",
+      ).bind(tenantId, afterSpaceId).all<{ id: string }>();
+      return results;
+    });
+    if (spaces.length === 0) return spacesProcessed;
+    const nextSpaceId = spaces[spaces.length - 1]?.id;
+    if (!nextSpaceId || nextSpaceId <= afterSpaceId) throw new Error("Invalid space erasure pagination cursor");
+    for (const { id } of spaces) {
+      if (!id || id <= afterSpaceId) throw new Error("Invalid space erasure pagination cursor");
+      await step.do(`erase-space-${spacesProcessed}`, () => eraseSpace(id));
+      spacesProcessed++;
+      afterSpaceId = id;
+    }
+    if (afterSpaceId !== nextSpaceId) throw new Error("Invalid space erasure pagination cursor");
+    pageIndex++;
+  }
 }
 
 export async function deleteKvPrefix(
