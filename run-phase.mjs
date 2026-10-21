@@ -2,9 +2,11 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { parseGeneratedPatchPaths } from "./infra/scripts/phase-runner-safety.mjs";
 
 const exec = promisify(execFile);
-const ROOT = new URL(".", import.meta.url).pathname;
+const ROOT = realpathSync(fileURLToPath(new URL(".", import.meta.url)));
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
   args.set(process.argv[index], process.argv[index + 1]);
@@ -20,6 +22,7 @@ const verifyCommand =
   process.env.PHASE_VERIFY_COMMAND ??
   "pnpm typecheck && pnpm test";
 const dryRun = process.argv.includes("--dry-run");
+const changedPaths = new Set();
 const apiKeys = (
   process.env.GEMINI_API_KEYS ??
   process.env.GEMINI_API_KEY ??
@@ -57,6 +60,12 @@ const configs = (await readdir(new URL("repomix/", import.meta.url)))
   .sort();
 if (configs.length !== 13)
   throw new Error(`Expected 13 Repomix configs, found ${configs.length}`);
+if (!dryRun) {
+  const status = await exec("git", ["status", "--porcelain"], { cwd: ROOT });
+  if (status.stdout.trim()) {
+    throw new Error("Refusing to apply generated patches while the working tree is not clean");
+  }
+}
 await mkdir(new URL(".phase-runs/", import.meta.url), { recursive: true });
 
 async function run(command, commandArgs, options = {}) {
@@ -151,8 +160,11 @@ async function requestModel(prompt, phase, turn) {
 }
 
 async function applyPatch(patchPath) {
+  const contents = await readFile(new URL(patchPath, import.meta.url), "utf8");
+  const paths = parseGeneratedPatchPaths(contents, ROOT);
   await run("git", ["apply", "--check", "--whitespace=error-all", patchPath]);
   await run("git", ["apply", "--3way", "--whitespace=fix", patchPath]);
+  for (const target of paths) changedPaths.add(target);
 }
 
 async function verify() {
@@ -207,13 +219,17 @@ for (let phase = start; phase <= end; phase++) {
     console.log(`Phase ${phase} reported complete with no repository changes.`);
   await verify();
   const status = await exec("git", ["status", "--porcelain"], { cwd: ROOT });
-  if (status.stdout.trim()) {
-    await run("git", ["add", "-A"]);
+  if (changedPaths.size > 0) {
+    await run("git", ["add", "-A", "--", ...changedPaths]);
+    const staged = await exec("git", ["diff", "--cached", "--name-only"], { cwd: ROOT });
+    if (!staged.stdout.trim()) continue;
     await run("git", [
       "commit",
       "-m",
       `feat(plan): complete AI implementation phase ${phase}`,
     ]);
+  } else if (status.stdout.trim()) {
+    throw new Error("Patch application left repository changes outside the validated patch paths");
   }
 }
 

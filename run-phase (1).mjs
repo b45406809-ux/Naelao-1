@@ -1,7 +1,9 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { execSync } from "child_process";
+import { execFileSync } from "node:child_process";
 import * as fs from "fs";
 import * as path from "path";
+import os from "node:os";
+import { resolveRepoOutputPath } from "./infra/scripts/phase-runner-safety.mjs";
 
 // ── 1. REPOMIX INCLUDES ARRAY PER CHUNK ─────────────────────────────────────
 const CHUNK_REPOMIX_INCLUDES = {
@@ -215,6 +217,19 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const phaseNum = process.env.PHASE_NUMBER || "6";
 const branchName = `feature/phase-0${phaseNum}`;
 const specsDir = `specs/phase-${phaseNum}`;
+const REPO_ROOT = fs.realpathSync(process.cwd());
+
+if (!/^(?:[1-9]|1[0-3])$/.test(phaseNum)) {
+  throw new Error("PHASE_NUMBER must be an integer from 1 through 13");
+}
+
+function git(args, options = {}) {
+  return execFileSync("git", args, { cwd: REPO_ROOT, ...options });
+}
+
+function resolveRepoFile(candidate) {
+  return resolveRepoOutputPath(candidate, REPO_ROOT);
+}
 
 async function callWithSlotPool(fn, maxAttempts = 40) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -339,13 +354,13 @@ function getBranchAccumulatedFiles() {
   try {
     let baseRef = "main";
     try {
-      execSync("git rev-parse --verify origin/main", { stdio: "ignore" });
+      git(["rev-parse", "--verify", "origin/main"], { stdio: "ignore" });
       baseRef = "origin/main";
     } catch {
       baseRef = "main";
     }
 
-    const stdout = execSync(`git diff --name-only ${baseRef}...HEAD`, {
+    const stdout = git(["diff", "--name-only", `${baseRef}...HEAD`], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "ignore"]
     });
@@ -362,8 +377,7 @@ function generateTargetedContext(files) {
   }
 
   try {
-    const includeArg = files.map(f => `"${f}"`).join(",");
-    execSync(`npx repomix --include ${includeArg} --no-security-check --style xml --show-line-numbers --output repomix-target.xml`, { stdio: "pipe" });
+    execFileSync("npx", ["repomix", "--include", files.join(","), "--no-security-check", "--style", "xml", "--show-line-numbers", "--output", "repomix-target.xml"], { cwd: REPO_ROOT, stdio: "pipe" });
     return fs.readFileSync("repomix-target.xml", "utf-8");
   } catch {
     console.warn("⚠️ Repomix CLI encountered an error. Using native Node.js XML packer fallback...");
@@ -381,7 +395,7 @@ function generateTargetedContext(files) {
 }
 
 function applyFileChanges(fileSpec) {
-  const filePath = fileSpec.path;
+  const filePath = resolveRepoFile(fileSpec.path);
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
@@ -406,13 +420,7 @@ function applyFileChanges(fileSpec) {
         if (normContent.includes(normSearch)) {
           fileContent = normContent.replace(normSearch, patch.replace.replace(/\r\n/g, "\n"));
         } else {
-          console.warn(`  ⚠️ Could not find exact patch search block in ${filePath}. Appending safely before end of file.`);
-          const lastBraceIdx = fileContent.lastIndexOf("}");
-          if (lastBraceIdx !== -1) {
-            fileContent = fileContent.slice(0, lastBraceIdx) + "\n" + patch.replace + "\n" + fileContent.slice(lastBraceIdx);
-          } else {
-            fileContent += "\n" + patch.replace;
-          }
+        throw new Error(`Patch search block was not found in ${filePath}; refusing to guess an insertion point`);
         }
       }
     }
@@ -430,11 +438,15 @@ function applyFileChanges(fileSpec) {
 function runLocalSyntaxCheck(files) {
   for (const f of files) {
     if (f.path.endsWith(".js") || f.path.endsWith(".mjs") || f.path.endsWith(".ts")) {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "naelao-syntax-check-"));
+      const tempFile = path.join(tempDir, "syntax_check.js");
       try {
-        fs.writeFileSync("/tmp/syntax_check.js", f.content || "");
-        execSync("node --check /tmp/syntax_check.js", { stdio: "pipe" });
+        fs.writeFileSync(tempFile, f.content || "", { flag: "wx" });
+        execFileSync("node", ["--check", tempFile], { stdio: "pipe" });
       } catch (err) {
         return { valid: false, error: `Syntax error in ${f.path}: ${err.message}` };
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     }
   }
@@ -466,18 +478,21 @@ async function main() {
   const chunkFiles = fs.readdirSync(specsDir).filter(f => f.endsWith(".md")).sort();
   console.log(`Found ${chunkFiles.length} chunk(s) in Phase ${phaseNum}.`);
 
-  // Clean local working directory and switch branch cleanly
+  // Preserve user changes. Never reset, clean, or force-move a branch automatically.
+  const initialStatus = git(["status", "--porcelain"], { encoding: "utf-8" }).trim();
+  if (initialStatus) throw new Error("Refusing to switch branches because the working tree is not clean");
+
   try {
-    execSync("git reset --hard HEAD", { stdio: "ignore" });
-    execSync("git clean -fd", { stdio: "ignore" });
-    execSync(`git fetch origin ${branchName}`, { stdio: "ignore" });
-    execSync(`git checkout ${branchName}`);
-    console.log(`✔ Pulled existing remote branch '${branchName}'.`);
+    git(["fetch", "origin", branchName], { stdio: "ignore" });
+    git(["checkout", branchName]);
+    console.log(`✔ Checked out existing branch '${branchName}'.`);
   } catch {
-    execSync(`git reset --hard HEAD`, { stdio: "ignore" });
-    execSync(`git clean -fd`, { stdio: "ignore" });
-    execSync(`git checkout -B ${branchName}`);
-    console.log(`✔ Initialized fresh branch '${branchName}'.`);
+    const localBranch = git(["branch", "--list", branchName], { encoding: "utf-8" }).trim();
+    if (localBranch) throw new Error(`Could not safely check out existing branch '${branchName}'`);
+    const remoteBranch = git(["branch", "-r", "--list", `origin/${branchName}`], { encoding: "utf-8" }).trim();
+    if (remoteBranch) git(["checkout", "-b", branchName, `origin/${branchName}`]);
+    else git(["checkout", "-b", branchName]);
+    console.log(`✔ Initialized branch '${branchName}'.`);
   }
 
   for (let i = 0; i < chunkFiles.length; i++) {
@@ -487,7 +502,7 @@ async function main() {
 
     // Skip chunk if already committed on this branch
     try {
-      const commitLog = execSync(`git log -n 25 --grep="\\[${chunkName}\\]" --oneline`, { encoding: "utf-8" });
+      const commitLog = git(["log", "-n", "25", `--grep=[${chunkName}]`, "--oneline"], { encoding: "utf-8" });
       if (commitLog.trim().length > 0) {
         console.log(`\n⏩ [Skipping] Chunk [${i + 1}/${chunkFiles.length}] ${chunkName} is already committed!`);
         continue;
@@ -609,16 +624,18 @@ ${rawChunkContent}${feedbackPrompt}`,
       applyFileChanges(f);
     }
 
-    // 5. Commit Locally AND Push Immediately ONLY IF WORKING TREE HAS STAGED CHANGES
-    execSync(`git add .`);
-    const gitStatus = execSync("git status --porcelain", { encoding: "utf-8" }).trim();
+    // Stage only validated model outputs; never include unrelated repository files.
+    const changedPaths = [...new Set(finalOutput.files.map((file) => path.relative(REPO_ROOT, resolveRepoFile(file.path))))];
+    if (changedPaths.length) git(["add", "--", ...changedPaths]);
+    const staged = git(["diff", "--cached", "--name-only"], { encoding: "utf-8" }).trim();
 
-    if (gitStatus.length > 0) {
-      execSync(`git commit -m "feat(phase-${phaseNum}): [${chunkName}] ${finalOutput.commitMessage}"`);
-      console.log(`✔ Committed chunk: "${finalOutput.commitMessage}"`);
+    if (staged.length > 0) {
+      const message = `feat(phase-${phaseNum}): [${chunkName}] ${String(finalOutput.commitMessage || "Apply reviewed chunk changes").slice(0, 300)}`;
+      git(["commit", "-m", message]);
+      console.log(`✔ Committed chunk: "${message}"`);
 
       console.log(`☁️ Syncing chunk progress to remote branch '${branchName}'...`);
-      execSync(`git push -u origin ${branchName}`);
+      git(["push", "-u", "origin", branchName]);
     } else {
       console.warn(`⚠️ Working tree clean for [${chunkName}]. Skipping empty commit.`);
     }
@@ -631,10 +648,7 @@ ${rawChunkContent}${feedbackPrompt}`,
 
   // 6. Open Pull Request on Completion
   try {
-    const prResult = execSync(
-      `gh pr create --title "AVOS: Complete Phase ${phaseNum}" --body "Automated Quality-First implementation of Phase ${phaseNum}." --base main --head ${branchName}`,
-      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
-    );
+    const prResult = execFileSync("gh", ["pr", "create", "--title", `AVOS: Complete Phase ${phaseNum}`, "--body", `Automated Quality-First implementation of Phase ${phaseNum}.`, "--base", "main", "--head", branchName], { cwd: REPO_ROOT, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
     console.log("🎉 Pull Request created successfully:\n", prResult.trim());
   } catch (e) {
     const errOutput = (e.stderr || e.stdout || e.message || "").toString();

@@ -700,6 +700,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `infra/scripts`
 
+- [x] `infra/scripts/phase-runner-safety.mjs`
 - [ ] `infra/scripts/audit-ui.mjs`
 - [ ] `infra/scripts/await-quota-then-matrix.sh`
 - [ ] `infra/scripts/capture-runtime-economics.mjs`
@@ -1288,6 +1289,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `tests/unit`
 
+- [x] `tests/unit/phase-runner-safety.test.ts`
 - [ ] `tests/unit/action-ledger.test.ts`
 - [ ] `tests/unit/admin-worker-schema.test.ts`
 - [ ] `tests/unit/agent-api-keys.test.ts`
