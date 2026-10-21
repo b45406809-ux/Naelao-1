@@ -176,7 +176,7 @@ export interface WorkerCapabilitySelection {
   selectedSkills: string[];
   selectedBundles: string[];
   provider: "deterministic" | "openrouter";
-  fallback: "none" | "full_toolset_ambiguous" | "decision_unavailable";
+  fallback: "none" | "no_capability_match" | "decision_unavailable";
 }
 
 const MAX_TASK_CHARS = 4_000;
@@ -360,13 +360,15 @@ export async function selectDefaultWorkerCapabilities(input: {
 
   if (selectedBundles.length === 0) {
     return {
-      enabledPrebuilts: [...configured],
-      selectedSkills: [...selectedSkills],
+      // Ambiguous tasks must not receive every configured tool. Keep only the planning
+      // substrate so the child can report that it needs a narrower task or more context.
+      enabledPrebuilts: configured.has("plan") ? ["plan"] : [],
+      selectedSkills: [],
       selectedBundles: [],
       provider,
       fallback: decisionUnavailable
         ? "decision_unavailable"
-        : "full_toolset_ambiguous",
+        : "no_capability_match",
     };
   }
   return {

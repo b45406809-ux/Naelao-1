@@ -1330,3 +1330,23 @@ Added coverage for foreign product sessions on run and connector-mode paths, and
 ### Full worker-suite verification after session-scope changes
 
 After the Agents middleware began requiring `owned_by_caller` in product-session scope responses, the complete Agents suite exposed two upload-route test fixtures that represented an owner scope without that field. Updated the fixtures to match the SpaceDO response contract. Re-ran full suites: Spaces passed 64 files / 250 tests; Agents passed 151 files / 679 tests. Expected PDF.js font-data warnings appeared in document/PDF tests; all tests passed. Spaces and Agents TypeScript checks passed in the focused validation runs.
+
+## Task-scoped worker capabilities and decision response cleanup (2026-10-21)
+
+Reviewed the default worker capability catalog, selection logic, delegation contract signing, and the child DO's tool/skill allowlist enforcement. The catalog maps every non-planner built-in to a task bundle; model selections are intersected with the parent's configured tools, and the signed delegation contract binds the exact selected tools and skills. Found that a task matching no bundle fell back to every configured worker tool, defeating task-scoped delegation. It now retains only `plan` (when configured), leaves skills empty, and records `no_capability_match`; added tests for ambiguous tasks with and without the planner substrate.
+
+The shared OpenRouter Decisions client also left non-2xx response streams open. It now cancels every unsuccessful response body before retrying or returning the status-only error. Added a retry-bound/resource-cancellation regression.
+
+Validation: worker capability suite passed 1 file / 9 tests; Fast Decision suite passed 1 file / 24 tests; Agent SDK and Agents TypeScript checks passed. Full Agents suite not rerun for this slice. Unrelated product verification (remote provider latency/availability, production Decisions API behavior, and end-to-end delegated execution under tenant load) remains outstanding.
+
+## Session upload route bounds and canonical scope review (2026-10-21)
+
+Reviewed the upload scope resolver and Agents POST/GET/DELETE session-upload handlers. Every operation resolves the canonical session scope through an authenticated Spaces request; private scratchpads and project-scope mismatches fail before R2 access. Upload request bodies are streamed through a byte-ceiling check before multipart parsing, then constrained to 6 files, 20 MiB each, and 60 MiB total. Filenames are reduced to basename and path traversal is removed before R2 keys are formed. Project-linked uploads also verify project access. Added regressions that seven files produce no R2 writes and traversal filenames remain inside the session prefix.
+
+Validation: upload route and worker-capability suites passed 2 files / 14 tests. Agent SDK and Agents TypeScript checks passed for the adjacent decision/worker-capability changes; the upload-only addition was covered by Vitest.
+
+This review did not test production R2 quotas, concurrent duplicate-name uploads, lifecycle cleanup, or the full multipart 60 MiB edge in a live Worker. Those remain open audit items; the R2 listing is also intentionally bounded, and cumulative storage quotas are not enforced by this route.
+
+### Broad Agents verification after worker/upload changes
+
+Full Agents worker suite passed 151 files / 682 tests (one new worker-capability regression and two new upload stress regressions). Agents TypeScript check passed. Existing PDF.js standard-font warnings were emitted by PDF tests; all suites passed.

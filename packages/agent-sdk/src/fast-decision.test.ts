@@ -25,10 +25,17 @@ describe("typed fast decisions", () => {
   });
 
   it("caps deployment retry overrides to two retries", async () => {
-    const fetcher = vi.fn(async () => new Response("busy", { status: 503 }));
+    const cancelBody = vi.fn();
+    let attempts = 0;
+    const fetcher = vi.fn(async () => {
+      attempts++;
+      const body = new ReadableStream<Uint8Array>({ cancel: cancelBody });
+      return new Response(body, { status: 503 });
+    });
     const client = new SystemOneDecisionClient({ fetch: fetcher as typeof fetch, maxRetries: 100 });
     await expect(client.choice({ state: "small", instructions: "Choose", criteria: { yes: null, no: null }, policyCode: "retry_bound" })).rejects.toThrow("system_one_http_503");
     expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(cancelBody).toHaveBeenCalledTimes(3);
   });
 
   it("aborts a hung OpenRouter decision within the total request budget", async () => {

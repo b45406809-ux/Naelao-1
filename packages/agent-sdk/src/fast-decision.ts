@@ -267,7 +267,12 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
         throw new Error("system_one_network_error");
       }
       if (signal.aborted) throw new Error("system_one_timeout");
-      if (response.ok || ![429, 529, 503].includes(response.status) || attempt === this.maxRetries) return { response, signal };
+      if (response.ok) return { response, signal };
+      // Retryable provider responses are deliberately not parsed or logged. Cancel their
+      // streams before backoff so a large error body cannot retain a socket or memory buffer.
+      const retryable = [429, 529, 503].includes(response.status);
+      await response.body?.cancel().catch(() => undefined);
+      if (!retryable || attempt === this.maxRetries) return { response, signal };
       await new Promise((resolve) => setTimeout(resolve, Math.min(100 * 2 ** attempt, 1_000)));
       if (signal.aborted) throw new Error("system_one_timeout");
     }

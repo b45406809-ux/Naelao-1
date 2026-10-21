@@ -166,14 +166,26 @@ describe("task-filtered default worker capabilities", () => {
     expect(result.enabledPrebuilts).not.toContain("code-exec");
   });
 
-  it("retains the full configured set for an ambiguous task rather than breaking legacy tasks", async () => {
+  it("fails closed to the planner substrate for an ambiguous task", async () => {
     const result = await selectDefaultWorkerCapabilities({
       task: "Do the task.",
       enabledPrebuilts: tools,
       skills: [],
       allowRemoteDecision: false,
     });
-    expect(result.enabledPrebuilts).toEqual(tools);
-    expect(result.fallback).toBe("full_toolset_ambiguous");
+    expect(result.enabledPrebuilts).toEqual(["plan"]);
+    expect(result.selectedSkills).toEqual([]);
+    expect(result.fallback).toBe("no_capability_match");
+  });
+
+  it("does not grant tools when an ambiguous task has no planner substrate", async () => {
+    const result = await selectDefaultWorkerCapabilities({
+      task: "Do the task.",
+      enabledPrebuilts: ["code-exec", "workspace-admin"],
+      skills: [],
+      allowRemoteDecision: false,
+    });
+    expect(result.enabledPrebuilts).toEqual([]);
+    expect(result.selectedSkills).toEqual([]);
   });
 });

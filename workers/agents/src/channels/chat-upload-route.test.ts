@@ -58,6 +58,27 @@ async function postUpload(env: never, projectId?: string, addFile = false) {
   );
 }
 
+async function postFiles(env: never, filenames: string[]) {
+  const form = new FormData();
+  for (const filename of filenames) {
+    form.append("files", new Blob(["safe attachment"], { type: "text/plain" }), filename);
+  }
+  return app.request(
+    "/spaces/space-a/sessions/session-a/uploads",
+    {
+      method: "POST",
+      headers: {
+        "x-naelao-tenant-id": "tenant-a",
+        "x-naelao-user-id": "user-a",
+        "x-naelao-role": "product_end_user",
+        "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a"),
+      },
+      body: form,
+    },
+    env
+  );
+}
+
 describe("chat upload route scope enforcement", () => {
   it("rejects an inaccessible session before touching R2", async () => {
     const state = makeEnv(() => new Response(null, { status: 404 }));
@@ -103,5 +124,29 @@ describe("chat upload route scope enforcement", () => {
     expect(new TextDecoder().decode(state.writes[0]?.bytes)).toBe(
       "safe attachment"
     );
+  });
+
+  it("rejects more than six files before writing any of them", async () => {
+    const state = makeEnv((request) =>
+      new URL(request.url).pathname.endsWith("compact-scope")
+        ? Response.json({ project_id: null, owned_by_caller: true, private_scratchpad: false })
+        : new Response(null, { status: 404 })
+    );
+    const response = await postFiles(state.env, Array.from({ length: 7 }, (_, index) => `file-${index}.txt`));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error_code: "too_many_files" });
+    expect(state.r2Calls).toEqual([]);
+  });
+
+  it("strips traversal components from uploaded filenames before creating R2 keys", async () => {
+    const state = makeEnv((request) =>
+      new URL(request.url).pathname.endsWith("compact-scope")
+        ? Response.json({ project_id: null, owned_by_caller: true, private_scratchpad: false })
+        : new Response(null, { status: 404 })
+    );
+    const response = await postFiles(state.env, ["../../brief.txt"]);
+    expect(response.status).toBe(201);
+    expect(state.writes[0]?.key).toBe("spaces/space-a/workspace/uploads/session-a/brief.txt");
+    expect(state.writes[0]?.key).not.toContain("..");
   });
 });
