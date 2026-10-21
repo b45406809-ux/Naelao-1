@@ -1464,7 +1464,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/message-list-tail.test.ts`
 - [ ] `tests/unit/message-truncate-on-edit.test.ts`
 - [ ] `tests/unit/model-placement.test.ts`
-- [ ] `tests/unit/model-switcher-config-resolution.test.ts`
+- [x] `tests/unit/model-switcher-config-resolution.test.ts`
 - [ ] `tests/unit/naelao-product-migration.test.ts`
 - [ ] `tests/unit/naelaoagentdo-activity-logging.test.ts`
 - [ ] `tests/unit/naelaoagentdo-customer-bot-heartbeat.test.ts`

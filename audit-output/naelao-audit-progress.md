@@ -1395,6 +1395,14 @@ Validation: `workspace-prebuilt.test.ts` and `web-search-platform.test.ts` passe
 
 Committed and pushed as `ef69f0d4`. Refreshed the inventory after both audit/test commits: 1,976 tracked files and 1,770 source/config checklist rows; 377 rows are checked.
 
+## Refresh shared-suite baseline and reconcile model-switcher fixtures (2026-10-21)
+
+Re-ran the full shared `tests/` suite after the business and R2 fixture updates. It now reports 3,527 passing assertions and 181 failing assertions across 127 of 1,182 suites (report: `/tmp/naelao-root-vitest-20261021-after-r2.json`). The previous report had 3,443 passing and 264 failing assertions, so 83 failures were removed; the suite remains red.
+
+The largest cluster was `model-switcher-config-resolution.test.ts` (18 assertions). Builder tests supplied an unsigned tenant header even though builder routes require a router-signed internal token; the agent-run fixture also omitted the current owned-session `/compact-scope` response. Added signed fixture requests and the session-scope response, and included the `users` table so the normal optional wallet-owner lookup behaves like the real schema without emitting a test-only SQL error.
+
+Validation: `model-switcher-config-resolution.test.ts` passed all 18 tests. This closes the test module only; builder model authorization implementation and broader agent-run authorization still have their own checklist rows and route coverage.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.

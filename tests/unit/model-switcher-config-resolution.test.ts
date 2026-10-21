@@ -29,6 +29,7 @@ const SPACES_TABLE_SQL = `
     agency_shell INTEGER NOT NULL DEFAULT 0, scenario_type TEXT
   );
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
+  CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT);
   CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
 `;
 const NAELAO_PRODUCT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0044_naelao_product.sql"), "utf8");
@@ -49,9 +50,12 @@ function makeSpacesEnv() {
   };
 }
 
-function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Request {
+async function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Promise<Request> {
   const headers = new Headers();
-  if (opts.tenant) headers.set("x-naelao-tenant-id", opts.tenant);
+  if (opts.tenant) {
+    headers.set("x-naelao-tenant-id", opts.tenant);
+    headers.set("x-naelao-internal-token", await mintInternalToken("s", opts.tenant));
+  }
   if (opts.body !== undefined) headers.set("content-type", "application/json");
   return new Request(`https://spaces.naelao.com${path}`, {
     method: opts.method ?? "GET",
@@ -64,10 +68,10 @@ describe("PATCH /builder/products/:id — modelConfig allowlist", () => {
   it("rejects a model not on the curated allowlist", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(
-      req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "gpt-5-super-mega" } } } }),
+      await req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "gpt-5-super-mega" } } } }),
       env as never, execCtx
     );
     expect(res.status).toBe(400);
@@ -76,14 +80,14 @@ describe("PATCH /builder/products/:id — modelConfig allowlist", () => {
   it("accepts an allowed model and persists it", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const ok = await spacesWorker.fetch(
-      req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "claude-opus-4-8" } } } }),
+      await req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "claude-opus-4-8" } } } }),
       env as never, execCtx
     );
     expect(ok.status).toBe(200);
-    const fetched = await (await spacesWorker.fetch(req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as { product_config: { modelConfig?: { model?: string } } };
+    const fetched = await (await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as { product_config: { modelConfig?: { model?: string } } };
     expect(fetched.product_config.modelConfig?.model).toBe("claude-opus-4-8");
   });
 
@@ -135,6 +139,7 @@ describe("POST /agent/run — resolves the configured model, not the dead spacet
       SPACES_WORKER: { async fetch(reqInput: Request) {
         const url = new URL(reqInput.url);
         if (/\/me\/injection$/.test(url.pathname)) return Response.json({ rate_limited: false });
+        if (/\/sessions\/[^/]+\/compact-scope$/.test(url.pathname)) return Response.json({ project_id: null, private_scratchpad: false, owned_by_caller: true });
         return new Response("not found", { status: 404 });
       } },
       KNOWLEDGE_WORKER: { async fetch() { return new Response("not found", { status: 404 }); } },
@@ -271,10 +276,10 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
   it("accepts ultra on a model with no native thinking mode", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(
-      req(`/spaces/${created.id}/model-config`, {
+      await req(`/spaces/${created.id}/model-config`, {
         method: "PATCH", tenant: "tenant-1",
         body: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", effort: "ultra" },
       }),
@@ -286,10 +291,10 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
   it("still rejects an effort value that is not a real level at all", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(
-      req(`/spaces/${created.id}/model-config`, {
+      await req(`/spaces/${created.id}/model-config`, {
         method: "PATCH", tenant: "tenant-1",
         body: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", effort: "turbo" },
       }),
@@ -301,10 +306,10 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
   it("accepts and persists a valid model+effort pair, readable back from shell/manifest's projection", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const ok = await spacesWorker.fetch(
-      req(`/spaces/${created.id}/model-config`, {
+      await req(`/spaces/${created.id}/model-config`, {
         method: "PATCH", tenant: "tenant-1",
         body: { model: "@cf/openai/gpt-oss-120b", effort: "high" },
       }),
