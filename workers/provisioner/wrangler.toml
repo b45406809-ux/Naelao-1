@@ -10,7 +10,9 @@ workers_dev = false
 
 [[queues.consumers]]
 queue = "naelao-provisioning-queue"
-max_batch_size = 10
+# A single Space provisioning/deprovisioning saga performs many service and storage operations.
+# Isolate one saga per invocation; max_concurrency retains bounded parallel throughput.
+max_batch_size = 1
 max_batch_timeout = 30
 max_retries = 3
 max_concurrency = 10
@@ -75,7 +77,7 @@ service = "naelao-agents"
 
 [[env.staging.queues.consumers]]
 queue = "naelao-provisioning-queue"
-max_batch_size = 10
+max_batch_size = 1
 max_batch_timeout = 30
 max_retries = 3
 max_concurrency = 10
@@ -109,7 +111,7 @@ id = "50fe6d17439d4b8082cdc827393fc87f"
 
 [[env.production.queues.consumers]]
 queue = "naelao-provisioning-queue"
-max_batch_size = 10
+max_batch_size = 1
 max_batch_timeout = 30
 max_retries = 3
 max_concurrency = 10

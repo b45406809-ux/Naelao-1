@@ -1,8 +1,8 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2027
-Files with source or executable-configuration extensions: 1821
+Files: 2028
+Files with source or executable-configuration extensions: 1822
 Inventory revision: refreshed 2026-10-21 after Provisioner commit b20dacbf
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
@@ -2104,6 +2104,7 @@ workers/
       provisioning-required-routes.test.ts
       provisioning-state.test.ts
       provisioning-state.ts
+      queue-config.test.ts
       queue-message-handler.test.ts
       queue-message-handler.ts
       tenant-suspension.test.ts
