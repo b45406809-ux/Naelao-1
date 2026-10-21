@@ -116,24 +116,24 @@ describe("Message attribution (author_type/author_id)", () => {
     return { doInstance, sessionId: created.json.id };
   }
 
-  it("a router-proxied agent-role message is attributed to that agent", async () => {
+  it("rejects a caller-provided agent role instead of allowing agent impersonation", async () => {
     const { doInstance, sessionId } = await makeSessionDO();
     const posted = await call(doInstance, `/sessions/${sessionId}/messages`, "POST",
       { role: "assistant", content: "Done." },
       { "x-naelao-role": "agent", "x-naelao-user-id": "agent-1" }
     );
-    expect(posted.json.author_type).toBe("agent");
-    expect(posted.json.author_id).toBe("agent-1");
+    expect(posted.status).toBe(403);
+    expect(posted.json).toMatchObject({ error_code: "message_author_fields_internal_only" });
   });
 
-  it("the Space Assistant's own agentId maps to author_type 'assistant', not 'agent'", async () => {
+  it("rejects a caller-provided Space Assistant identity", async () => {
     const { doInstance, sessionId } = await makeSessionDO();
     const posted = await call(doInstance, `/sessions/${sessionId}/messages`, "POST",
       { role: "assistant", content: "Hi." },
       { "x-naelao-role": "agent", "x-naelao-user-id": "naelao-agent" }
     );
-    expect(posted.json.author_type).toBe("assistant");
-    expect(posted.json.author_id).toBe("naelao-agent");
+    expect(posted.status).toBe(403);
+    expect(posted.json).toMatchObject({ error_code: "message_author_fields_internal_only" });
   });
 
   it("a trusted internal write-back (no x-naelao-role header) uses body.agent_id", async () => {
