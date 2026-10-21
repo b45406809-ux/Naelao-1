@@ -150,6 +150,16 @@ export async function eraseTenantExportKeys(
   }
 }
 
+export function validateBlueprintExportKey(tenantId: string, exportId: string, artifactKey: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(tenantId) || tenantId.includes("..") ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(exportId) || exportId.includes("..")) {
+    throw new Error("Invalid blueprint export identifier during erasure");
+  }
+  const expected = `conformance-jobs/${tenantId}/${exportId}.json`;
+  if (artifactKey !== expected) throw new Error("Blueprint export key does not match its scoped record");
+  return expected;
+}
+
 function validatedChunkCount(value: number | null): number {
   if (value === null) return 0;
   if (!Number.isSafeInteger(value) || value < 0 || value > MAX_DOCUMENT_CHUNKS) {

@@ -12,6 +12,8 @@ The queue consumer now rejects malformed or oversized `data.erasure` messages be
 
 An additional scale review found blueprint exports, organization spaces, and each space's KB documents were read with unbounded D1 queries. The workflow now keyset-pages spaces, documents, and exports in groups of 100 and validates monotonic progress. Vector, R2, and export-key deletes are bounded. The erasure helper and queue stress suites pass (19), the workflow TypeScript check passes, and migration-level D1 erasure tests pass (3).
 
+Erasure object-scope review also found that export keys were trusted from D1 after selecting rows by space. Since the R2 key namespace is tenant-level, a corrupted cross-space key could have deleted another space's export. The workflow now requires the stored key to equal `conformance-jobs/{tenantId}/{exportId}.json`; the 12-case erasure helper suite and Workflows TypeScript check pass.
+
 This is not complete erasure coverage. RepositoryDO SQLite state, durable object state in other services, repo/workspace materialization races, export request/cancellation/restoration lifecycle, storage surfaces outside these prefixes, and a legal retention schedule for financial/audit records remain open. The current pass deletes the repository R2 prefix but does not yet purge per-repository Durable Object metadata.
 
 ## Completed focused review

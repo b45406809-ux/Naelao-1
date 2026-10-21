@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { deleteKvPrefix, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources } from "./erasure-cleanup.js";
+import { deleteKvPrefix, eraseSpaceD1Records, eraseSpaceKnowledgeResources, eraseSpaceR2Resources, validateBlueprintExportKey } from "./erasure-cleanup.js";
 
 describe("KV erasure pagination", () => {
   it("deletes every page and returns the number of deleted keys", async () => {
@@ -104,6 +104,15 @@ describe("space D1 erasure", () => {
 });
 
 describe("space R2 erasure", () => {
+  it("checks each export object key against its tenant and record ID", () => {
+    expect(validateBlueprintExportKey("tenant-a", "export-a", "conformance-jobs/tenant-a/export-a.json"))
+      .toBe("conformance-jobs/tenant-a/export-a.json");
+    expect(() => validateBlueprintExportKey("tenant-a", "export-a", "conformance-jobs/tenant-a/other-space-export.json"))
+      .toThrow(/does not match/);
+    expect(() => validateBlueprintExportKey("tenant-a", "../other", "conformance-jobs/tenant-a/../other.json"))
+      .toThrow(/identifier/);
+  });
+
   it("deletes only the selected tenant/space artifact and workspace prefixes plus exact exports", async () => {
     const artifactPrefixes: string[] = [];
     const repositoryPrefixes: string[] = [];

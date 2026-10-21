@@ -28,6 +28,7 @@ import {
   eraseSpaceKnowledgePrefixes,
   eraseSpaceR2Prefixes,
   eraseTenantExportKeys,
+  validateBlueprintExportKey,
 } from "./erasure-cleanup.js";
 
 export interface ErasureParams {
@@ -135,7 +136,9 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
                WHERE space_id = ? AND tenant_id = ? AND id > ? ORDER BY id LIMIT 100`,
             ).bind(space.id, params.orgId, afterExportId).all<{ id: string; artifact_key: string }>();
             if (exports.length === 0) break;
-            await eraseTenantExportKeys(params.orgId, this.env.SCRIPTS_R2, exports.map(({ artifact_key }) => artifact_key));
+            const scopedKeys = exports.map(({ id, artifact_key }) =>
+              validateBlueprintExportKey(params.orgId, id, artifact_key));
+            await eraseTenantExportKeys(params.orgId, this.env.SCRIPTS_R2, scopedKeys);
             const nextExportId = exports[exports.length - 1]?.id;
             if (!nextExportId || nextExportId <= afterExportId) throw new Error("Invalid blueprint export pagination cursor");
             afterExportId = nextExportId;
