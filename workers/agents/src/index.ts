@@ -5355,6 +5355,8 @@ app.post("/internal/connectors/oauth/refresh", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   interface RefreshBody { space_id: string; platform: string; refresh_token: string }
   const body = await c.req.json<RefreshBody>().catch(() => ({ space_id: "", platform: "", refresh_token: "" } as RefreshBody));
+  if (!body.space_id || !body.platform || !body.refresh_token) return c.json({ error_code: "bad_request" }, 400);
+  if (!await isActiveTenantSpace(c.env, body.space_id, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (body.platform.startsWith("custom-oauth:")) {
     const id = body.platform.slice("custom-oauth:".length);
     if (!validTenantOAuthId(id) || !body.refresh_token || !body.space_id) return c.json({ error_code: "bad_request" }, 400);

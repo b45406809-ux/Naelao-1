@@ -315,6 +315,25 @@ describe("POST /internal/connectors/oauth/refresh", () => {
     expect(res.status).toBe(401);
   });
 
+  it("does not refresh OAuth credentials for a suspended or missing Space", async () => {
+    const env = makeEnv({
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } as unknown as D1Database,
+    });
+    mockWhopTokenEndpoint(() => { throw new Error("provider must not be called for an inactive Space"); });
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const res = await app.fetch(
+      new Request("https://agents.naelao.com/internal/connectors/oauth/refresh", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+        body: JSON.stringify({ space_id: "space-a", platform: "whop", refresh_token: "rt_old" }),
+      }),
+      env as never
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
+    expect(env.__credentialCalls).toEqual([]);
+  });
+
   it("refreshes and re-stores the rotated tokens", async () => {
     const env = makeEnv();
     mockWhopTokenEndpoint((body) => {
