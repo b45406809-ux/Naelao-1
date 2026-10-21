@@ -6236,7 +6236,7 @@ app.get("/internal/space-types/:id", async (c) => {
   return c.json(manifest);
 });
 
-// POST /internal/space-types-record-install/:id — called at end of provisioning (step 10).
+// POST /internal/space-types-record-install/:id — called at end of provisioning (step 9).
 // Path deliberately shaped with the static segment BEFORE the dynamic :id (not
 // /internal/space-types/:id/record-install) — root-caused via a reduced reproduction: Hono's
 // RegExpRouter throws "buildMatcherFromPreprocessedRoutes" (silently caught by SmartRouter,

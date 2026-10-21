@@ -765,7 +765,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         })
       );
       if (!rootResp.ok) {
-        console.warn(`[provisioner] root-space registry seed failed for ${spaceId}: ${await responseErrorDetail(rootResp)}`);
+        throw new Error(`root_space_registry_seed_failed: ${await responseErrorDetail(rootResp)}`);
       }
       provisioned.push("space_registry");
     }
@@ -990,7 +990,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     }
 
     // Step 9: Record install in SpaceTypeRegistryDO + flip space to 'active'
-    await env.SPACES_WORKER.fetch(
+    const installResp = await env.SPACES_WORKER.fetch(
       new Request(`http://spaces-worker/internal/space-types-record-install/${spaceTypeId}`, {
         method: "POST",
         headers: {
@@ -1001,6 +1001,9 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         body: JSON.stringify({ spaceId, version: manifest.version }),
       })
     );
+    if (!installResp.ok) {
+      throw new Error(`space_type_install_record_failed: ${await responseErrorDetail(installResp)}`);
+    }
     const activated = await env.PLATFORM_DB.prepare(
       "UPDATE spaces SET status = 'active', updated_at = ? WHERE id = ? AND tenant_id = ? AND status = 'provisioning'"
     ).bind(now, spaceId, tenantId).run();

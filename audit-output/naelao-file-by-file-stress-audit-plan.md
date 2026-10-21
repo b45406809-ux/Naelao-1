@@ -44,6 +44,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - **Tenant suspension enforcement:** public router requests check org and reseller relationship status; selected agent, notification, provisioner, workflow, and Knowledge entrypoints also gate work. HMAC-protected task, trigger, script and workflow effect paths recheck tenant and Space activity. Business-email send/provision/reply-address, OAuth refresh and consent start/callback, attachment read/analysis, external approval create/consume, and document-node leases reject inactive tenant/Space scopes before provider, data, or DO access. Regression tests cover these rejection boundaries. Enforcement is still not universal across internal routes, queues, Durable Object alarms, in-flight direct script runs, or other worker paths. `spaces.suspension_reason` and `orgs.suspension_reason` now distinguish admin, reseller/product, and erasure holds in updated writers; legacy suspended rows are conservatively not reactivated through product APIs, but their original owner/control still requires reconciliation. Legacy `/spaces` creation, update, and delete now enforce writer/admin roles, including owner/admin-only status changes and deletes. Other suspension writers and all worker/DO entrypoints remain to be traced.
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 - **SpaceType resource quota enforcement:** the old manifest accepted `maxDOsPerInstance`, `maxR2WritesPerDay`, `maxContainerHoursPerDay`, `maxLLMTokensPerDay`, `maxCronJobsPerInstance`, and `maxWorkflowsPerInstance`, but repository-wide source search found no runtime enforcement. These fields and the Provisioner `workflowTemplates`/`cronJobs` placeholders are removed from the active manifest contract so operators do not mistake declarations for protections. Actual per-tenant limits still need explicit, metered enforcement tied to platform resource usage and billing; do not restore these manifest claims until that path exists.
+- **Space deprovision lifecycle:** `space_deprovision` is accepted by the queue contract, but no source producer sends it. The handler currently removes the script R2 prefix and portal/space KV entries but does not enumerate SpaceDO or D1 data. The public space/product delete paths are soft deletes, so do not wire destructive cleanup until retention and restore semantics are established. Audit the caller and all storage owners before enabling purge; separately add an idempotent durable cleanup workflow if true deletion is required.
 
 ## Work sequence
 
@@ -2385,6 +2386,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/provisioner/src`
 
 - [ ] `workers/provisioner/src/index.ts`
+- [x] `workers/provisioner/src/provisioning-required-routes.test.ts`
 - [x] `workers/provisioner/src/manifest-contract.test.ts`
 - [x] `workers/provisioner/src/manifest-contract.ts`
 - [x] `workers/provisioner/src/message-contract.test.ts`
