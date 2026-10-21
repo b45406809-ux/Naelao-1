@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2028
-Files with source or executable-configuration extensions: 1822
-Inventory revision: 2026-10-21 audit refresh at f1b9a44c
+Files: 2029
+Files with source or executable-configuration extensions: 1823
+Inventory revision: 2026-10-21 audit refresh at a58bd16c
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1870,6 +1870,7 @@ workers/
         call-reconciliation.ts
         customer-telephony.test.ts
         customer-telephony.ts
+        customer-voice-agent-suspension.test.ts
         customer-voice-agent.ts
         owner-voice-agent.ts
         planner-turn.test.ts

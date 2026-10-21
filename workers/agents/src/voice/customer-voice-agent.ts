@@ -18,12 +18,24 @@ interface CustomerVoiceBinding {
   status: string;
 }
 
+async function tenantSpaceIsActive(db: D1Database, tenantId: string, spaceId: string): Promise<boolean> {
+  try {
+    const active = await db.prepare(`SELECT s.id FROM spaces s JOIN orgs o ON o.id=s.tenant_id
+      WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'`)
+      .bind(spaceId, tenantId).first<{ id: string }>();
+    return Boolean(active);
+  } catch {
+    return false;
+  }
+}
+
 class WorkersAIPcm16TTS {
   constructor(private readonly ai: AgentsEnv["AI"], private readonly db: D1Database, private readonly ticket: () => CustomerVoiceTicket | null) {}
 
   async synthesize(text: string, signal?: AbortSignal): Promise<ArrayBuffer | null> {
     const ticket = this.ticket();
-    if (!ticket || await isSpaceNetworkEgressDenied(this.db, ticket.spaceId)) throw new Error("customer_voice_egress_denied");
+    if (!ticket || !await tenantSpaceIsActive(this.db, ticket.tenantId, ticket.spaceId)
+      || await isSpaceNetworkEgressDenied(this.db, ticket.spaceId)) throw new Error("customer_voice_egress_denied");
     const result = await this.ai.run("@cf/deepgram/aura-1", {
       text: text.slice(0, 1_000),
       speaker: "asteria",
@@ -54,6 +66,10 @@ export class CustomerVoiceAgent extends CustomerVoiceMixin<AgentsEnv> {
       connection.close(1008, "customer_voice_ticket_invalid");
       return;
     }
+    if (!await tenantSpaceIsActive(this.env.PLATFORM_DB, ticket.tenantId, ticket.spaceId)) {
+      connection.close(1008, "tenant_suspended");
+      return;
+    }
     const scopedBinding = await this.env.PLATFORM_DB.prepare(
       `SELECT id,tenant_id,space_id,agent_id,provider_account_sid,provider_number_sid,phone_number,assistant_prompt,max_call_duration_seconds,status
        FROM customer_voice_number_bindings WHERE id=? AND tenant_id=? AND space_id=? AND agent_id=? AND phone_number=? AND status='active' LIMIT 1`
@@ -79,7 +95,8 @@ export class CustomerVoiceAgent extends CustomerVoiceMixin<AgentsEnv> {
 
   override async beforeCallStart(connection: Parameters<Agent<AgentsEnv>["onConnect"]>[0]): Promise<boolean> {
     const state = connection.state as { ticket?: CustomerVoiceTicket } | null;
-    return Boolean(state?.ticket && state.ticket.callSid === this.ctx.id.name && this.currentTicket?.nonce === state.ticket.nonce);
+    return Boolean(state?.ticket && state.ticket.callSid === this.ctx.id.name && this.currentTicket?.nonce === state.ticket.nonce
+      && await tenantSpaceIsActive(this.env.PLATFORM_DB, state.ticket.tenantId, state.ticket.spaceId));
   }
 
   override async onCallStart(connection: Parameters<Agent<AgentsEnv>["onConnect"]>[0]): Promise<void> {
@@ -87,6 +104,7 @@ export class CustomerVoiceAgent extends CustomerVoiceMixin<AgentsEnv> {
     const ticket = state?.ticket;
     const binding = state?.binding;
     if (!ticket || !binding || ticket.callSid !== this.ctx.id.name) throw new Error("customer_voice_scope_unavailable");
+    if (!await tenantSpaceIsActive(this.env.PLATFORM_DB, ticket.tenantId, ticket.spaceId)) throw new Error("tenant_suspended");
     await this.startSpaceCall(ticket);
     await this.ctx.storage.put("customerVoiceTicket", ticket);
     await this.ctx.storage.setAlarm(Date.now() + Math.max(30, binding.max_call_duration_seconds) * 1000);
@@ -111,7 +129,10 @@ export class CustomerVoiceAgent extends CustomerVoiceMixin<AgentsEnv> {
     const state = context.connection.state as { ticket?: CustomerVoiceTicket; binding?: CustomerVoiceBinding } | null;
     const ticket = state?.ticket;
     const binding = state?.binding;
-    if (!ticket || !binding || ticket.callSid !== this.ctx.id.name || await isSpaceNetworkEgressDenied(this.env.PLATFORM_DB, ticket.spaceId)) {
+    if (!ticket || !binding || ticket.callSid !== this.ctx.id.name
+      || !await tenantSpaceIsActive(this.env.PLATFORM_DB, ticket.tenantId, ticket.spaceId)
+      || await isSpaceNetworkEgressDenied(this.env.PLATFORM_DB, ticket.spaceId)) {
+      context.connection.close(1008, "tenant_suspended");
       throw new Error("customer_voice_egress_denied");
     }
     const active = await this.env.PLATFORM_DB.prepare(
@@ -130,6 +151,10 @@ export class CustomerVoiceAgent extends CustomerVoiceMixin<AgentsEnv> {
       messages: [{ role: "system", content: system }, ...messages],
       max_tokens: 140,
     }, { signal: context.signal }) as { response?: unknown };
+    if (!await tenantSpaceIsActive(this.env.PLATFORM_DB, ticket.tenantId, ticket.spaceId)) {
+      context.connection.close(1008, "tenant_suspended");
+      throw new Error("tenant_suspended");
+    }
     const answer = typeof result.response === "string" ? result.response.trim().slice(0, 600) : "";
     if (!answer) throw new Error("customer_voice_response_unavailable");
     return answer;
