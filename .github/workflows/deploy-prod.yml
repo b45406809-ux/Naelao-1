@@ -97,9 +97,10 @@ jobs:
           # F-16: a bash `for` loop's exit code is the LAST iteration's, so a mid-loop deploy
           # failure was silently masked by a later success — production could half-deploy and still
           # report green. Track every failure and fail the step (with a run summary) if any occurred.
-          WORKERS=(router spaces agents auth knowledge billing analytics \
-                   marketplace threads assistant browser mini-agi channels \
-                   security-gateway workflows ws-gateway)
+          WORKERS=(admin agents analytics artifact assistant auth billing browser \
+                   connector-gumroad connector-whop credentials eval knowledge marketplace \
+                   mcp-hub mini-agi notifications portal-router provisioner router \
+                   security-gateway spaces sweeper synthetics threads triggers workflows ws-gateway)
           failed=()
           for w in "${WORKERS[@]}"; do
             if [ -f "workers/$w/wrangler.toml" ]; then

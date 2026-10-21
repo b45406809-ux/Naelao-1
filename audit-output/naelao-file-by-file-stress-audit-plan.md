@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2025` tracked files; `1819` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `c0056c38`.
+Inventory basis: `2026` tracked files; `1820` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `0e83dac6`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1654,6 +1654,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `tests/unit/whop-oauth-connect.test.ts`
 - [ ] `tests/unit/whop-platform-plan-billing.test.ts`
 - [ ] `tests/unit/whop-wallet.test.ts`
+- [x] `tests/unit/worker-deployment-coverage.test.ts`
 - [ ] `tests/unit/workflow-budget-settlement-v2.test.ts`
 - [ ] `tests/unit/workflow-tier-routing.test.ts`
 - [ ] `tests/unit/workspace-admin-prebuilt.test.ts`

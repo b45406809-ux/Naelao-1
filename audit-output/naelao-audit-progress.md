@@ -2055,3 +2055,9 @@ Triple-checked `workers/search`: there is no router service binding, route, sour
 ## Retire the disconnected Together AI proxy (2026-10-21)
 
 The Together AI Worker had no router/service binding, runtime source caller, deployment workflow entry, own route, or platform resource configuration. `workers_dev = false` and its manifest declared no route; the only `/chat` handler was therefore unreachable through repository-managed ingress. Its implementation was an unmetered direct provider proxy, while current agent inference uses the shared AI Gateway. Removed this obsolete provider path, tests, workspace importer, active deployment-secret/build/tree/surface references, and stale Repomix inputs; historical build-plan archives remain. External manual Cloudflare routing cannot be established from repository files and is outside this repo audit.
+
+## Complete staging and production worker deployment coverage (2026-10-21)
+
+Manifest-to-workflow comparison found that both deployment workflows omitted multiple live worker manifests, including `provisioner`, `credentials`, `triggers`, `sweeper`, `synthetics`, and `portal-router`. Added every remaining manifest-backed worker to the staging/production deployment lists and removed the stale `channels` entry. Added a regression that compares each workflow's explicit/loop worker set against all `workers/*/wrangler.toml` manifests, so future additions and deletions stay synchronized.
+
+Validation: deployment coverage tests passed 2/2; both workflow YAML files parse; the staging shell loop passes `bash -n`; targeted Biome lint and `git diff --check` passed. The actual Cloudflare deployments remain environment-level operations.
