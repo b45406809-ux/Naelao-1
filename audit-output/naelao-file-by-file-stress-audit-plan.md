@@ -1311,7 +1311,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/plan/02-contracts.test.ts`
 - [ ] `tests/plan/03-tenancy.test.ts`
 - [x] `tests/plan/04-authorization.test.ts`
-- [ ] `tests/plan/05-vault.test.ts`
+- [x] `tests/plan/05-vault.test.ts`
 - [ ] `tests/plan/06-egress-receipts.test.ts`
 - [ ] `tests/plan/07-git-mesh.test.ts`
 - [ ] `tests/plan/08-concurrency.test.ts`

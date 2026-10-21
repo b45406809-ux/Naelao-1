@@ -563,12 +563,19 @@ interface CredentialRow {
 
 export type CredentialResolvedTier = "business_override" | "project_bound" | "user" | "business_shared" | "product";
 
+function hasControlCharacters(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+  });
+}
+
 function parseSharedUserIds(serialized: string | null): string[] | null {
   if (serialized === null) return null; // NULL = shared with everyone
   try {
     const parsed: unknown = JSON.parse(serialized);
     if (!Array.isArray(parsed) || parsed.length > 100 || parsed.some((id) =>
-      typeof id !== "string" || id.length === 0 || id.length > 128 || /[\u0000-\u001f\u007f]/.test(id)
+      typeof id !== "string" || id.length === 0 || id.length > 128 || hasControlCharacters(id)
     )) return []; // malformed persisted data must fail closed
     return [...new Set(parsed)];
   } catch {
@@ -579,7 +586,7 @@ function parseSharedUserIds(serialized: string | null): string[] | null {
 function validateSharedUserIds(value: unknown): string[] | null {
   if (value === undefined || value === null) return null;
   if (!Array.isArray(value) || value.length > 100 || value.some((id) =>
-    typeof id !== "string" || id.trim().length === 0 || id.length > 128 || /[\u0000-\u001f\u007f]/.test(id)
+    typeof id !== "string" || id.trim().length === 0 || id.length > 128 || hasControlCharacters(id)
   )) {
     throw badRequest("shared_with_user_ids must contain at most 100 valid user ids, or be null");
   }
@@ -1106,9 +1113,15 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
     const code = error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code) : "network_denied";
     return c.json({ error_code: `egress_${code}`, message: error instanceof Error ? error.message : "Destination denied by space policy" }, 403);
   }
-  if (body.body !== undefined) {
-    try { scanAndScrubEgress(body.body, "block"); }
-    catch { return c.json({ error_code: "egress_sensitive_payload", message: "The request contains data that space policy blocks from leaving" }, 403); }
+  try {
+    scanAndScrubEgress({
+      url: body.url,
+      headers: body.headers ?? {},
+      auth: body.auth ?? null,
+      body: body.body ?? null,
+    }, "block");
+  } catch {
+    return c.json({ error_code: "egress_sensitive_payload", message: "The request contains data that space policy blocks from leaving" }, 403);
   }
   const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, body.credentialName, body.onBehalfOfUserId ?? null, tokenCheck.projectId ?? null);
   if (!resolved || "notFoundReason" in resolved) throw notFound("Credential");

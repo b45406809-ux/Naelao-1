@@ -43,7 +43,11 @@ function sqlite(path: string, mode: string, sql: string, values: unknown[] = [])
 const here = dirname(fileURLToPath(import.meta.url));
 const migrationFiles = ["0040_space_credentials.sql", "0069_credential_sharing_and_product_tier.sql", "0082_project_bound_credentials.sql"];
 const migrationSql = migrationFiles.map((file) => readFileSync(join(here, "../../infra/migrations", file), "utf8"));
-const spaceSchema = `CREATE TABLE spaces (id TEXT PRIMARY KEY, parent_space_id TEXT, status TEXT NOT NULL DEFAULT 'active', config_json TEXT NOT NULL DEFAULT '{}');`;
+const spaceSchema = `
+  CREATE TABLE orgs (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active');
+  INSERT INTO orgs (id, status) VALUES ('tenant-step05', 'active');
+  CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT 'tenant-step05', parent_space_id TEXT, status TEXT NOT NULL DEFAULT 'active', config_json TEXT NOT NULL DEFAULT '{}');
+`;
 
 function asD1(db: SqliteDatabase): D1Database {
   return {
@@ -128,12 +132,13 @@ async function outbound(
   suppliedToken?: string,
   projectId?: string,
   tenantHeader = "tenant-step05",
+  extra: Record<string, unknown> = {},
 ): Promise<Response> {
   const token = suppliedToken ?? await generateCredentialToken(env.PLATFORM_SECRET, spaceId, "agent-step05", undefined, tenantHeader);
   return credentialWorker.fetch!(new Request(`https://credentials.test/v1/internal/spaces/${spaceId}/outbound`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantHeader, "x-naelao-credential-token": token },
-    body: JSON.stringify({ url: "https://8.8.8.8/model", credentialName, ...(projectId ? { projectId } : {}) }),
+    body: JSON.stringify({ url: "https://8.8.8.8/model", credentialName, ...(projectId ? { projectId } : {}), ...extra }),
   }), env, executionContext);
 }
 
@@ -198,6 +203,16 @@ describe("Step 05 encrypted credential vault and zero-leak boundary", () => {
     expect(boundaryOutputs).not.toContain(secondSecret);
     expect(JSON.stringify(auditEvents)).not.toContain(firstSecret);
     expect(JSON.stringify(auditEvents)).not.toContain(secondSecret);
+
+    const sensitiveQuery = await outbound(env, "vault-space", "GEMINI::PRIMARY", undefined, undefined, "tenant-step05", {
+      url: "https://8.8.8.8/model?customer=123-45-6789",
+    });
+    const sensitiveHeader = await outbound(env, "vault-space", "GEMINI::PRIMARY", undefined, undefined, "tenant-step05", {
+      headers: { "x-customer-record": "123-45-6789" },
+    });
+    expect(sensitiveQuery.status).toBe(403);
+    expect(sensitiveHeader.status).toBe(403);
+    expect(injected).toHaveLength(2);
 
     const unauthorized = await outbound(env, "vault-space", "GEMINI::PRIMARY", "t=1,aid=attacker,v1=00");
     expect(unauthorized.status).toBe(403);
