@@ -1413,6 +1413,12 @@ Validation: `agent-task-workflow-failure-handling.test.ts` passed 1 file / 9 tes
 
 Committed and pushed as `99cbef0c`; refreshed the inventory: 1,976 tracked files, 1,770 source/config checklist rows, and 379 checked rows.
 
+## Restore signed builder identity in conversation-access tests (2026-10-21)
+
+The conversation-access security tests sent only an `x-naelao-tenant-id` header. Builder routes intentionally treat that header as an assertion and require its router HMAC signature; without it, product creation never succeeded, later tests used an undefined product ID, and SQLite reported null binds. Converted the test request helper to issue signed tenant assertions and added the deployed `users` table so product creation's optional wallet-owner lookup is represented accurately. The authorization behavior and three independent disclosure gates remain unchanged.
+
+Validation: `conversation-access-gate.test.ts` passed 1 file / 11 tests. It verifies each gate independently, zero audit rows on denial, metadata-only response, successful audit attribution, and cross-tenant non-disclosure.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.

@@ -6,6 +6,7 @@ import { BuilderAccountDO } from "../../workers/spaces/src/do/BuilderAccountDO.j
 import { ProductUserDO } from "../../workers/spaces/src/do/ProductUserDO.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
+import { mintInternalToken } from "@naelao/http";
 
 // Three-Tier Platform Model, Phase 3 — the single highest-liability endpoint in the plan:
 // GET /builder/products/:id/users/:userId/conversations. Three INDEPENDENT gates, ALL required:
@@ -32,6 +33,7 @@ const SPACES_TABLE_SQL = `
   );
   -- createSpaceRecord (create-space.ts) queries these; real schema per 0002_orgs.sql / 0003_spaces.sql.
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
+  CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT);
   CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
 `;
 const NAELAO_PRODUCT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0044_naelao_product.sql"), "utf8");
@@ -49,9 +51,12 @@ function makeEnv() {
   };
 }
 
-function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Request {
+async function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Promise<Request> {
   const headers = new Headers();
-  if (opts.tenant) headers.set("x-naelao-tenant-id", opts.tenant);
+  if (opts.tenant) {
+    headers.set("x-naelao-tenant-id", opts.tenant);
+    headers.set("x-naelao-internal-token", await mintInternalToken("s", opts.tenant));
+  }
   if (opts.body !== undefined) headers.set("content-type", "application/json");
   return new Request(`https://spaces.naelao.com${path}`, {
     method: opts.method ?? "GET",
@@ -69,13 +74,13 @@ async function seedProduct(
   opts: { featureFlagOn?: boolean; staffApproved?: boolean; userConsented?: boolean } = {}
 ): Promise<{ productId: string; userId: string }> {
   const created = await (await spacesWorker.fetch(
-    req("/builder/products", { method: "POST", tenant, body: { name: "A", spacetype_id: "launchpad" } }),
+    await req("/builder/products", { method: "POST", tenant, body: { name: "A", spacetype_id: "launchpad" } }),
     env as never, execCtx
   )).json() as { id: string };
 
   if (opts.featureFlagOn) {
     await spacesWorker.fetch(
-      req(`/builder/products/${created.id}`, {
+      await req(`/builder/products/${created.id}`, {
         method: "PATCH", tenant,
         body: { product_config: { adminFeatures: { conversationLogAccess: true } } },
       }), env as never, execCtx
@@ -98,7 +103,7 @@ describe("conversation-access gate — each leg fails independently", () => {
   it("denies when the feature flag is off, even with staff approval + user consent", async () => {
     const env = makeEnv();
     const { productId, userId } = await seedProduct(env, "tenant-1", { featureFlagOn: false, staffApproved: true, userConsented: true });
-    const res = await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     expect(res.status).toBe(403);
     const body = await res.json() as { gate: string };
     expect(body.gate).toBe("feature_flag");
@@ -107,7 +112,7 @@ describe("conversation-access gate — each leg fails independently", () => {
   it("denies when staff has not approved the space, even with the flag on + user consent", async () => {
     const env = makeEnv();
     const { productId, userId } = await seedProduct(env, "tenant-1", { featureFlagOn: true, staffApproved: false, userConsented: true });
-    const res = await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     expect(res.status).toBe(403);
     const body = await res.json() as { gate: string };
     expect(body.gate).toBe("staff_approval");
@@ -116,7 +121,7 @@ describe("conversation-access gate — each leg fails independently", () => {
   it("denies when the end user has not consented, even with flag on + staff approved", async () => {
     const env = makeEnv();
     const { productId, userId } = await seedProduct(env, "tenant-1", { featureFlagOn: true, staffApproved: true, userConsented: false });
-    const res = await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     expect(res.status).toBe(403);
     const body = await res.json() as { gate: string };
     expect(body.gate).toBe("user_consent");
@@ -125,7 +130,7 @@ describe("conversation-access gate — each leg fails independently", () => {
   it("denies when NOTHING is set (the default-closed baseline)", async () => {
     const env = makeEnv();
     const { productId, userId } = await seedProduct(env, "tenant-1", {});
-    const res = await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     expect(res.status).toBe(403);
   });
 });
@@ -146,7 +151,7 @@ describe("conversation-access gate — all three legs pass", () => {
       body: JSON.stringify({ thread_id: "t1", space_id: productId, title: "Order question — SUPER SECRET MESSAGE CONTENT SHOULD NOT APPEAR" }),
     }));
 
-    const res = await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     expect(res.status).toBe(200);
     const body = await res.json() as { data: Array<{ thread_id: string; title: string }> };
     expect(body.data).toHaveLength(1);
@@ -162,7 +167,7 @@ describe("conversation-access gate — all three legs pass", () => {
     const env = makeEnv();
     const { productId, userId } = await seedProduct(env, "tenant-1", { featureFlagOn: true, staffApproved: true, userConsented: true });
 
-    await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations?purpose=support_ticket_42`, { tenant: "tenant-1" }), env as never, execCtx);
+    await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations?purpose=support_ticket_42`, { tenant: "tenant-1" }), env as never, execCtx);
 
     const rows = await env.PLATFORM_DB.prepare(
       "SELECT product_space_id, end_user_id, accessed_by, purpose FROM conversation_access_audit WHERE product_space_id = ?"
@@ -178,7 +183,7 @@ describe("conversation-access gate — denied attempts write no audit trail", ()
   it("a gate-1 denial (feature flag off) writes zero audit rows", async () => {
     const env = makeEnv();
     const { productId, userId } = await seedProduct(env, "tenant-1", { featureFlagOn: false, staffApproved: true, userConsented: true });
-    await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     const rows = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS n FROM conversation_access_audit").bind().all<{ n: number }>();
     expect(rows.results[0]!.n).toBe(0);
   });
@@ -186,7 +191,7 @@ describe("conversation-access gate — denied attempts write no audit trail", ()
   it("a gate-2 denial (no staff approval) writes zero audit rows", async () => {
     const env = makeEnv();
     const { productId, userId } = await seedProduct(env, "tenant-1", { featureFlagOn: true, staffApproved: false, userConsented: true });
-    await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     const rows = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS n FROM conversation_access_audit").bind().all<{ n: number }>();
     expect(rows.results[0]!.n).toBe(0);
   });
@@ -194,7 +199,7 @@ describe("conversation-access gate — denied attempts write no audit trail", ()
   it("a gate-3 denial (no user consent) writes zero audit rows", async () => {
     const env = makeEnv();
     const { productId, userId } = await seedProduct(env, "tenant-1", { featureFlagOn: true, staffApproved: true, userConsented: false });
-    await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     const rows = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS n FROM conversation_access_audit").bind().all<{ n: number }>();
     expect(rows.results[0]!.n).toBe(0);
   });
@@ -204,7 +209,7 @@ describe("conversation-access gate — ownership isolation", () => {
   it("a different tenant gets 404, never a gate-specific 403 that would confirm the product exists", async () => {
     const env = makeEnv();
     const { productId, userId } = await seedProduct(env, "tenant-1", { featureFlagOn: true, staffApproved: true, userConsented: true });
-    const res = await spacesWorker.fetch(req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-2" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req(`/builder/products/${productId}/users/${userId}/conversations`, { tenant: "tenant-2" }), env as never, execCtx);
     expect(res.status).toBe(404);
   });
 
@@ -213,10 +218,10 @@ describe("conversation-access gate — ownership isolation", () => {
     const approved = await seedProduct(env, "tenant-1", { featureFlagOn: true, staffApproved: true, userConsented: true });
     const unapproved = await seedProduct(env, "tenant-1", { featureFlagOn: true, staffApproved: false, userConsented: true });
 
-    const okRes = await spacesWorker.fetch(req(`/builder/products/${approved.productId}/users/${approved.userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    const okRes = await spacesWorker.fetch(await req(`/builder/products/${approved.productId}/users/${approved.userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     expect(okRes.status).toBe(200);
 
-    const deniedRes = await spacesWorker.fetch(req(`/builder/products/${unapproved.productId}/users/${unapproved.userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
+    const deniedRes = await spacesWorker.fetch(await req(`/builder/products/${unapproved.productId}/users/${unapproved.userId}/conversations`, { tenant: "tenant-1" }), env as never, execCtx);
     expect(deniedRes.status).toBe(403);
   });
 });

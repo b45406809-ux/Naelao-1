@@ -1375,7 +1375,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/container-marketplace-slots.test.ts`
 - [ ] `tests/unit/container-per-project.test.ts`
 - [ ] `tests/unit/context-window-usage-endpoint.test.ts`
-- [ ] `tests/unit/conversation-access-gate.test.ts`
+- [x] `tests/unit/conversation-access-gate.test.ts`
 - [ ] `tests/unit/conversation-context.test.ts`
 - [ ] `tests/unit/conversation-search.test.ts`
 - [x] `tests/unit/create-space-record.test.ts`
