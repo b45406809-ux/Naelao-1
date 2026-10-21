@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { anonymizeOrgUsers, eraseOrgOperationalRecords, eraseSpaceD1Records, SPACE_ERASURE_TABLES } from "../../workers/workflows/src/workflows/erasure-cleanup.js";
+import { anonymizeOrgUsers, claimErasureRequest, eraseOrgOperationalRecords, eraseSpaceD1Records, SPACE_ERASURE_TABLES } from "../../workers/workflows/src/workflows/erasure-cleanup.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 const migration = (name: string) => readFileSync(join(__dirname, `../../infra/migrations/${name}`), "utf8");
@@ -9,6 +9,24 @@ const platformMigrations = readdirSync(join(__dirname, "../../infra/migrations")
   .filter((name) => /^\d+.*\.sql$/.test(name)).sort().map(migration);
 
 describe("data erasure D1 records", () => {
+  it("allows only one workflow to claim a pending erasure request", async () => {
+    const db = createFakeD1(platformMigrations);
+    db.db.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier, status, suspension_reason) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("org-a", "Acme", "user-a", "free", "suspended", "erasure");
+    db.db.prepare("INSERT INTO gdpr_requests (id, tenant_id, request_type, subject_type, subject_id, requested_by, status) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run("request-a", "org-a", "erasure", "org_member", "user-a", "user-a", "pending");
+    await expect(claimErasureRequest(db as never, "org-a", "user-a", "request-a")).resolves.toBe(true);
+    await expect(claimErasureRequest(db as never, "org-a", "user-a", "request-a")).resolves.toBe(false);
+    await expect(claimErasureRequest(db as never, "other-org", "user-a", "request-a")).resolves.toBe(false);
+    expect(db.db.prepare("SELECT status FROM gdpr_requests WHERE id = ?").get("request-a")).toEqual({ status: "processing" });
+
+    db.db.prepare("INSERT INTO gdpr_requests (id, tenant_id, request_type, subject_type, subject_id, requested_by, status) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run("request-b", "org-a", "erasure", "org_member", "user-a", "user-a", "pending");
+    db.db.prepare("UPDATE orgs SET suspension_reason = 'admin' WHERE id = ?").run("org-a");
+    await expect(claimErasureRequest(db as never, "org-a", "user-a", "request-b")).resolves.toBe(false);
+    expect(db.db.prepare("SELECT status FROM gdpr_requests WHERE id = ?").get("request-b")).toEqual({ status: "pending" });
+  });
+
   it("classifies every live space-scoped table as deleted or deliberately retained", async () => {
     const db = createFakeD1(platformMigrations);
     const retainedOrSeparatelyHandled = new Set([

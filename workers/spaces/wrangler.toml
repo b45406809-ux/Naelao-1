@@ -151,6 +151,10 @@ id = "2816ec20283b4ecd8c5b43e3ebe18b77"
 binding = "PROVISION_QUEUE"
 queue = "naelao-provisioning-queue"
 
+[[queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "naelao-events"
+
 # Billing worker — called at product publish time to auto-create LS product + variant.
 [[services]]
 binding = "BILLING_WORKER"
@@ -324,6 +328,10 @@ id = "2816ec20283b4ecd8c5b43e3ebe18b77"
 binding = "PROVISION_QUEUE"
 queue = "naelao-provisioning-queue"
 
+[[env.staging.queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "naelao-events"
+
 # Billing worker — called at product publish time to auto-create LS product + variant.
 
 [[env.staging.services]]
@@ -433,6 +441,10 @@ id = "2816ec20283b4ecd8c5b43e3ebe18b77"
 [[env.production.queues.producers]]
 binding = "PROVISION_QUEUE"
 queue = "naelao-provisioning-queue"
+
+[[env.production.queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "naelao-events"
 
 # Billing worker — called at product publish time to auto-create LS product + variant.
 

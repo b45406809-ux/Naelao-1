@@ -39,6 +39,7 @@ import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.
 import { reportExtensionArtifactWrite } from "./extension-storage-usage.js";
 import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 import { eraseBusinessServiceProviders } from "./business-erasure.js";
+import { cancelPendingErasure, createPendingErasureRequest } from "./erasure-request-state.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -80,6 +81,8 @@ export interface Env {
   SCRIPTS_R2?: R2Bucket;
   /** Producer to the provisioning queue — consumed by naelao-provisioner. */
   PROVISION_QUEUE?: Queue<ProvisionMessage>;
+  /** Producer for workflow events such as organization data erasure. */
+  EVENTS_QUEUE?: Queue;
   /** Cloudflare for SaaS custom-hostname provisioning (deploy-time secrets; optional). */
   CF_API_TOKEN?: string;
   CF_SAAS_ZONE_ID?: string;
@@ -120,6 +123,71 @@ const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 app.get("/health", (c) => c.json({ ok: true, service: "spaces", env: c.env.ENVIRONMENT }));
+app.post("/builder/erasure", async (c) => {
+  const identity = getCallerIdentity(c);
+  if (!identity.tenantId || !identity.userId || !c.env.EVENTS_QUEUE) return c.json({ error_code: "erasure_unavailable" }, 503);
+  const owner = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM orgs WHERE id = ? AND owner_id = ? AND status = 'active' AND suspension_reason IS NULL",
+  ).bind(identity.tenantId, identity.userId).first<{ id: string }>();
+  if (!owner) return c.json({ error_code: "owner_or_active_tenant_required" }, 403);
+  const bytes = await readBoundedRequestBytes(c.req.raw, 8 * 1024).catch(() => null);
+  if (!bytes) return c.json({ error_code: "invalid_request_body" }, 400);
+  let body: { reason?: unknown };
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return c.json({ error_code: "invalid_request_body" }, 400);
+    body = parsed as { reason?: unknown };
+  } catch { return c.json({ error_code: "invalid_request_body" }, 400); }
+  if (body.reason !== undefined && (typeof body.reason !== "string" || body.reason.length > 2000)) {
+    return c.json({ error_code: "invalid_reason" }, 400);
+  }
+  const openRequest = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM gdpr_requests WHERE tenant_id = ? AND request_type = 'erasure' AND status IN ('pending', 'processing') LIMIT 1",
+  ).bind(identity.tenantId).first<{ id: string }>();
+  if (openRequest) return c.json({ error_code: "erasure_already_pending", request_id: openRequest.id }, 409);
+  const requestId = crypto.randomUUID();
+  const reason = body.reason ?? "Organization owner requested account erasure";
+  try {
+    const created = await createPendingErasureRequest(c.env.PLATFORM_DB, c.env.EVENTS_QUEUE, {
+      id: requestId, tenantId: identity.tenantId, userId: identity.userId, reason,
+    });
+    if (!created) return c.json({ error_code: "erasure_already_pending" }, 409);
+  } catch {
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE gdpr_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ? AND status = 'pending'",
+    ).bind(requestId).run();
+    return c.json({ error_code: "erasure_enqueue_failed" }, 503);
+  }
+  return c.json({ request_id: requestId, status: "pending", cooling_off_hours: 24 }, 202);
+});
+app.delete("/builder/erasure/:requestId", async (c) => {
+  const identity = getCallerIdentity(c);
+  const requestId = c.req.param("requestId");
+  if (!identity.tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
+  const owner = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM orgs WHERE id = ? AND owner_id = ?",
+  ).bind(identity.tenantId, identity.userId).first<{ id: string }>();
+  if (!owner) return c.json({ error_code: "owner_required" }, 403);
+  if (!await cancelPendingErasure(c.env.PLATFORM_DB, identity.tenantId, identity.userId, requestId)) {
+    return c.json({ error_code: "erasure_not_cancellable" }, 409);
+  }
+  return c.json({ request_id: requestId, status: "cancelled" });
+});
+app.get("/builder/erasure/:requestId", async (c) => {
+  const identity = getCallerIdentity(c);
+  const requestId = c.req.param("requestId");
+  if (!identity.tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
+  const owner = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM orgs WHERE id = ? AND owner_id = ?",
+  ).bind(identity.tenantId, identity.userId).first<{ id: string }>();
+  if (!owner) return c.json({ error_code: "owner_required" }, 403);
+  const request = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, status, created_at, updated_at, completed_at FROM gdpr_requests WHERE id = ? AND tenant_id = ? AND requested_by = ? AND request_type = 'erasure'",
+  ).bind(requestId, identity.tenantId, identity.userId)
+    .first<{ id: string; status: string; created_at: string; updated_at: string; completed_at: string | null }>();
+  if (!request) return c.json({ error_code: "not_found" }, 404);
+  return c.json({ request_id: request.id, status: request.status, created_at: request.created_at, updated_at: request.updated_at, completed_at: request.completed_at });
+});
 app.use("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.delete("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", async (c) => {
   const tenantId = c.req.param("tenantId");
@@ -477,7 +545,7 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
 
 // ── PATCH /spaces/:id ───────────────────────────────────────────────────────
 app.patch("/spaces/:id", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, role } = getCallerIdentity(c);
   const spaceId = c.req.param("id");
   const body = await c.req.json<{
     name?: string;
@@ -487,11 +555,21 @@ app.patch("/spaces/:id", async (c) => {
   const now = new Date().toISOString();
 
   const existing = await c.env.PLATFORM_DB.prepare(
-    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+    "SELECT id, suspension_reason FROM spaces WHERE id = ? AND tenant_id = ?"
   )
     .bind(spaceId, tenantId)
-    .first();
+    .first<{ id: string; status: string; suspension_reason: string | null }>();
   if (!existing) throw notFound("Space");
+
+  if (body.status !== undefined && !["draft", "active", "paused"].includes(body.status)) {
+    return c.json({ error_code: "invalid_status" }, 400);
+  }
+  if (body.status !== undefined && role !== "owner" && role !== "admin") {
+    return c.json({ error_code: "forbidden" }, 403);
+  }
+  if (body.status !== undefined && (existing.suspension_reason !== null || existing.status === "suspended")) {
+    return c.json({ error_code: "suspension_reason_mismatch" }, 409);
+  }
 
   if (body.name) {
     await c.env.PLATFORM_DB.prepare(
@@ -501,11 +579,12 @@ app.patch("/spaces/:id", async (c) => {
       .run();
   }
   if (body.status) {
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE spaces SET status = ?, updated_at = ? WHERE id = ?"
+    const updated = await c.env.PLATFORM_DB.prepare(
+      "UPDATE spaces SET status = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND suspension_reason IS NULL AND status != 'suspended'"
     )
-      .bind(body.status, now, spaceId)
+      .bind(body.status, now, spaceId, tenantId)
       .run();
+    if (updated.meta.changes === 0) return c.json({ error_code: "suspension_reason_mismatch" }, 409);
   }
   if (body.config_overrides) {
     await c.env.PLATFORM_DB.prepare(

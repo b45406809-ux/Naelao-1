@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2016` tracked files; `1810` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `bb4d6b18`.
+Inventory basis: `2018` tracked files; `1812` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `22c8a9af`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -12,10 +12,10 @@ Review each checklist file with its callers, callees, owning worker, route regis
 
 ## Open cross-file findings
 
-- **Organization erasure lifecycle and coverage:** the queue consumer accepts `data.erasure`, but no producer or request route was found. The 24-hour delay still has no cancellation/restoration path. The workflow now clears tenant/space operational D1 records, ProductUserDO user state, configured Cloudflare custom hostnames, artifact and workspace R2 prefixes, repository Git-object/publication prefixes, scoped export objects, credentials, and non-financial access state, while retaining audit and financial records. RepositoryDO SQLite metadata, SpaceDO/BrowserSessionDO and other Durable Object state, repo/workspace materialization races, Cloudflare SaaS cleanup when credentials are unavailable, and other provider resources remain. Record-retention policy for financial/content tables is unreviewed. Build a safe authenticated request/cancel path and complete the runtime/storage inventory before describing erasure as usable or complete.
+- **Organization erasure lifecycle and coverage:** an authenticated owner can now create, inspect, and cancel a request through `POST /builder/erasure`, `GET /builder/erasure/:requestId`, and `DELETE /builder/erasure/:requestId`. Request insertion prevents a second open request; a 24-hour hold is cancellable until an atomic `pending` → `processing` claim wins, and the claim requires the org still carry the erasure hold. Owner status/cancel requests remain reachable while suspended; admin suspensions are preserved. Product status APIs cannot clear known or legacy suspension holds. Focused tests cover the owner API, no-space organizations, duplicate requests, queue failure, repeated cancellation, status claim, admin holds, and the suspension-route exception. Queue insertion and send are separate operations rather than a durable outbox, so an uncertain queue-send failure can leave a pending request needing recovery. Remaining erasure gaps: RepositoryDO SQLite metadata, SpaceDO/BrowserSessionDO and other Durable Object state, repo/workspace materialization races, external provider resources beyond configured Cloudflare SaaS hostnames, provider cleanup failures, and financial/content retention policy. Runtime/storage inventory and lifecycle integration against deployed Cloudflare resources remain open, so erasure is not declared complete.
 - **Webhook DNS rebinding:** webhook delivery now rejects private literal IPs and private DNS answers, rejects redirects, and has a deadline. Cloudflare `fetch` resolves DNS again after validation, so a rebinding response could change the target between check and connection. Use a controlled egress proxy with address pinning to close this race.
 - **MCP Hub DNS rebinding:** direct MCP URLs use the same preflight DNS validation before `fetch`, but the runtime resolves again at connection time. A controlled egress proxy with address pinning is still needed to close this network-level race for direct connectors.
-- **Tenant suspension enforcement:** public router requests check org and reseller relationship status; selected agent, notification, provisioner, workflow, and Knowledge entrypoints also gate work. Enforcement is not universal across internal routes, queues, Durable Object alarms, already-running workflows, or other worker paths. A `spaces.suspension_reason` migration now preserves admin-product, reseller, and erasure holds for updated writers, but legacy suspended rows and other suspension writers still need source reconciliation before restoration is fully safe.
+- **Tenant suspension enforcement:** public router requests check org and reseller relationship status; selected agent, notification, provisioner, workflow, and Knowledge entrypoints also gate work. Enforcement is not universal across internal routes, queues, Durable Object alarms, already-running workflows, or other worker paths. `spaces.suspension_reason` and `orgs.suspension_reason` now distinguish admin, reseller/product, and erasure holds in updated writers; legacy suspended rows are conservatively not reactivated through product APIs, but their original owner/control still requires reconciliation. Other suspension writers and all worker/DO entrypoints remain to be traced.
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 
 ## Work sequence
@@ -708,6 +708,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `infra/migrations/0114_thread_last_active_at.sql`
 - [x] `infra/migrations/0115_sweeper_fairness_cursors.sql`
 - [x] `infra/migrations/0116_space_suspension_reason.sql`
+- [ ] `infra/migrations/0117_org_suspension_reason.sql`
 
 ### `infra/scripts`
 
@@ -2453,6 +2454,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/spaces/src/domain-glossary-routes.test.ts`
 - [ ] `workers/spaces/src/domain-glossary.test.ts`
 - [ ] `workers/spaces/src/domain-glossary.ts`
+- [ ] `workers/spaces/src/erasure-request-state.ts`
 - [ ] `workers/spaces/src/extension-storage-usage.test.ts`
 - [ ] `workers/spaces/src/extension-storage-usage.ts`
 - [x] `workers/spaces/src/extensions-gadgets.test.ts`

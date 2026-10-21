@@ -5,7 +5,7 @@ import type { NaelaoJwtClaims } from "@naelao/types";
 import { loadSavedLanguagePreference } from "./preferred-language";
 import { transcribeAudio } from "./routes/transcribe";
 import { readBoundedRequestBytes } from "./routes/bounded-request-body";
-import { isTenantActive } from "./tenant-status";
+import { isErasureLifecycleAccess, isTenantActive } from "./tenant-status";
 export { RateLimitDO } from "./RateLimitDO";
 
 export interface Env {
@@ -996,8 +996,11 @@ api.use("*", async (c, next) => {
 api.use("*", async (c, next) => {
   const tenantId = c.get("claims")?.tid;
   if (tenantId) {
+    // An org owner must be able to inspect or cancel an erasure during its cooling-off period.
+    // The Spaces route rechecks tenant, owner, request ID, and pending status before restoring.
+    const erasureLifecycleRoute = isErasureLifecycleAccess(c.req.method, c.req.path);
     if (!c.env.PLATFORM_DB) return c.json({ error_code: "tenant_status_unavailable" }, 503);
-    if (!(await isTenantActive(c.env.PLATFORM_DB, tenantId))) {
+    if (!(await isTenantActive(c.env.PLATFORM_DB, tenantId)) && !erasureLifecycleRoute) {
       return c.json({ error_code: "tenant_suspended", message: "This tenant is suspended" }, 403);
     }
   }

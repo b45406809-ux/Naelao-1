@@ -81,6 +81,10 @@ jobs:
             --command="SELECT suspension_reason FROM spaces LIMIT 0" \
             --remote \
             --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT suspension_reason FROM orgs LIMIT 0" \
+            --remote \
+            --env=staging
 
       - name: Deploy router worker (staging)
         env:

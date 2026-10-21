@@ -115,6 +115,14 @@ app.patch("/admin/tenants/:tenantId", async (c) => {
   const tenantId = c.req.param("tenantId");
   const body = await c.req.json<{ plan_tier?: string; status?: string }>();
   const now = new Date().toISOString();
+  const current = body.status !== undefined
+    ? await c.env.PLATFORM_DB.prepare("SELECT suspension_reason FROM orgs WHERE id = ?")
+      .bind(tenantId).first<{ suspension_reason: string | null }>()
+    : null;
+  if (body.status !== undefined && !current) return c.json({ error_code: "not_found", message: "Tenant not found" }, 404);
+  if (body.status === "active" && current?.suspension_reason === "erasure") {
+    return c.json({ error_code: "suspension_reason_mismatch", message: "An erasure hold can only be released by cancelling its pending request" }, 409);
+  }
 
   if (body.plan_tier !== undefined) {
     await c.env.PLATFORM_DB.prepare(
@@ -123,8 +131,12 @@ app.patch("/admin/tenants/:tenantId", async (c) => {
   }
   if (body.status !== undefined) {
     await c.env.PLATFORM_DB.prepare(
-      "UPDATE orgs SET status = ?, updated_at = ? WHERE id = ?"
-    ).bind(body.status, now, tenantId).run();
+      `UPDATE orgs SET status = ?,
+       suspension_reason = CASE WHEN suspension_reason = 'erasure' THEN 'erasure'
+                                WHEN ? = 'suspended' THEN 'admin'
+                                ELSE NULL END,
+       updated_at = ? WHERE id = ?`
+    ).bind(body.status, body.status, now, tenantId).run();
   }
 
   return c.json({ id: tenantId, updated_at: now });
@@ -332,9 +344,14 @@ app.post("/admin/products/:spaceId/suspend", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { reason } = await c.req.json<{ reason: string }>();
   if (!reason?.trim()) return c.json({ error_code: "bad_request", message: "reason is required for audit trail" }, 400);
-  const space = await c.env.PLATFORM_DB.prepare("SELECT id, status FROM spaces WHERE id = ?").bind(spaceId).first<{ id: string; status: string }>();
+  const space = await c.env.PLATFORM_DB.prepare("SELECT id, status, suspension_reason FROM spaces WHERE id = ?").bind(spaceId).first<{ id: string; status: string; suspension_reason: string | null }>();
   if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  if (space.status === "suspended") return c.json({ ok: true, already_suspended: true });
+  if (space.status === "suspended") {
+    if (space.suspension_reason !== "admin_product") {
+      return c.json({ error_code: "suspension_reason_mismatch", message: "This space is held by another platform control" }, 409);
+    }
+    return c.json({ ok: true, already_suspended: true });
+  }
   await c.env.PLATFORM_DB.prepare(
     "UPDATE spaces SET status = 'suspended', suspension_reason = 'admin_product', updated_at = datetime('now') WHERE id = ? AND status = 'active'"
   ).bind(spaceId).run();

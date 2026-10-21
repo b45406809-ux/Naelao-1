@@ -25,6 +25,7 @@ function makeEnv() {
     readMigration("0023_feature_flags.sql"),
     readMigration("0048_admin_schema_fixes.sql"),
     readMigration("0116_space_suspension_reason.sql"),
+    readMigration("0117_org_suspension_reason.sql"),
   ]);
   return {
     ENVIRONMENT: "test",
@@ -88,6 +89,34 @@ describe("admin worker against the real platform schema", () => {
       .get("org-1") as { plan_tier: string; updated_at: string | null };
     expect(row.plan_tier).toBe("business");
     expect(row.updated_at).not.toBeNull();
+  });
+
+  it("does not let an administrator clear an erasure hold through tenant status", async () => {
+    const env = makeEnv();
+    const db = (env.PLATFORM_DB as ReturnType<typeof createFakeD1>).db;
+    db.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier, status, suspension_reason) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("org-erase", "Acme", "u1", "free", "suspended", "erasure");
+    const response = await adminWorker.fetch(
+      adminReq("/admin/tenants/org-erase", { method: "PATCH", body: JSON.stringify({ status: "active" }) }), env as never, execCtx,
+    );
+    expect(response.status).toBe(409);
+    expect(db.prepare("SELECT status, suspension_reason FROM orgs WHERE id = ?").get("org-erase"))
+      .toEqual({ status: "suspended", suspension_reason: "erasure" });
+  });
+
+  it("does not report a product hold as admin-owned when another control suspended it", async () => {
+    const env = makeEnv();
+    const db = (env.PLATFORM_DB as ReturnType<typeof createFakeD1>).db;
+    db.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier) VALUES (?, ?, ?, ?)")
+      .run("org-erase", "Acme", "u1", "free");
+    db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, suspension_reason) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("space-erase", "org-erase", "launchpad", "Shop", "suspended", "erasure");
+    const response = await adminWorker.fetch(
+      adminReq("/admin/products/space-erase/suspend", { method: "POST", body: JSON.stringify({ reason: "Policy review" }) }), env as never, execCtx,
+    );
+    expect(response.status).toBe(409);
+    expect(db.prepare("SELECT status, suspension_reason FROM spaces WHERE id = ?").get("space-erase"))
+      .toEqual({ status: "suspended", suspension_reason: "erasure" });
   });
 
   it("POST then GET /admin/feature-flags round-trips against the real name/enabled/rollout_pct schema", async () => {

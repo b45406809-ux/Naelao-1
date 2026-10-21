@@ -22,6 +22,7 @@ import { mintInternalToken } from "@naelao/http";
 import type { Env } from "../env";
 import {
   anonymizeOrgUsers,
+  claimErasureRequest,
   deleteKvPrefix,
   eraseOrgOperationalRecords,
   eraseSpaceD1Records,
@@ -36,6 +37,7 @@ export interface ErasureParams {
   orgId: string;
   requestedBy: string; // userId who triggered the erasure
   reason: string;
+  requestId: string;
 }
 
 export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> {
@@ -44,6 +46,15 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     step: WorkflowStep,
   ): Promise<void> {
     const params = event.payload;
+
+    const requestIsPending = await step.do("verify-erasure-request", async () => {
+      const request = await this.env.PLATFORM_DB.prepare(
+        `SELECT id FROM gdpr_requests
+         WHERE id = ? AND tenant_id = ? AND requested_by = ? AND request_type = 'erasure' AND status = 'pending'`,
+      ).bind(params.requestId, params.orgId, params.requestedBy).first<{ id: string }>();
+      return Boolean(request);
+    });
+    if (!requestIsPending) return;
 
     // ── Step 1: Record erasure request in audit log ──────────────────────────
     await step.do("record-erasure-request", async () => {
@@ -67,27 +78,58 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     });
 
     // ── Step 2: Suspend org + spaces ─────────────────────────────────────────
-    await step.do("suspend-org", async () => {
+    const holdPlaced = await step.do("suspend-org", async () => {
       await this.env.PLATFORM_DB.prepare(
-        `UPDATE orgs SET status = 'suspended' WHERE id = ? AND status != 'suspended'`
+        `UPDATE orgs SET status = 'suspended', suspension_reason = 'erasure'
+         WHERE id = ? AND status = 'active' AND suspension_reason IS NULL
+           AND EXISTS (SELECT 1 FROM gdpr_requests WHERE id = ? AND tenant_id = ? AND status = 'pending')`
       )
-        .bind(params.orgId)
+        .bind(params.orgId, params.requestId, params.orgId)
         .run();
+      const request = await this.env.PLATFORM_DB.prepare(
+        "SELECT id FROM gdpr_requests WHERE id = ? AND tenant_id = ? AND status = 'pending'",
+      ).bind(params.requestId, params.orgId).first<{ id: string }>();
+      if (!request) return false;
+      const org = await this.env.PLATFORM_DB.prepare(
+        "SELECT status, suspension_reason FROM orgs WHERE id = ?",
+      ).bind(params.orgId).first<{ status: string; suspension_reason: string | null }>();
+      if (org?.status !== "suspended" || org.suspension_reason !== "erasure") {
+        throw new Error("Organization has an independent suspension hold");
+      }
 
       await this.env.PLATFORM_DB.prepare(
         `UPDATE spaces SET status = 'suspended', suspension_reason = 'erasure', updated_at = datetime('now')
-         WHERE tenant_id = ? AND status = 'active'`
+         WHERE tenant_id = ? AND status = 'active'
+           AND EXISTS (SELECT 1 FROM gdpr_requests WHERE id = ? AND tenant_id = ? AND status = 'pending')`
       )
-        .bind(params.orgId)
+        .bind(params.orgId, params.requestId, params.orgId)
         .run();
 
+      const stillPending = await this.env.PLATFORM_DB.prepare(
+        "SELECT id FROM gdpr_requests WHERE id = ? AND tenant_id = ? AND status = 'pending'",
+      ).bind(params.requestId, params.orgId).first<{ id: string }>();
+      if (!stillPending) {
+        await this.env.PLATFORM_DB.batch([
+          this.env.PLATFORM_DB.prepare("UPDATE orgs SET status = 'active', suspension_reason = NULL WHERE id = ? AND status = 'suspended' AND suspension_reason = 'erasure'").bind(params.orgId),
+          this.env.PLATFORM_DB.prepare("UPDATE spaces SET status = 'active', suspension_reason = NULL, updated_at = datetime('now') WHERE tenant_id = ? AND status = 'suspended' AND suspension_reason = 'erasure'").bind(params.orgId),
+        ]);
+        return false;
+      }
+
       console.log(`[DataErasure] Org ${params.orgId} and its spaces suspended.`);
-      return { suspended: true };
+      return true;
     });
+    if (!holdPlaced) return;
 
     // ── Delayed deletion: 24 hours ────────────────────────────────────────────
-    // This is only a delay. There is no cancellation or restoration path yet.
+    // Owners can cancel during this delay; the status claim below arbitrates cancellation
+    // against duplicate workflow deliveries before any destructive work begins.
     await step.sleep("cooling-off", "24 hours");
+
+    const ownsErasure = await step.do("claim-erasure-request", async () => {
+      return claimErasureRequest(this.env.PLATFORM_DB, params.orgId, params.requestedBy, params.requestId);
+    });
+    if (!ownsErasure) return;
 
     // ── Step 3: Delete space data (R2, Vectorize, D1) ────────────────────────
     // G-E08: Paginated R2 deletion — iterate all pages, not just first
@@ -243,6 +285,10 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
           JSON.stringify({ reason: params.reason, completedAt: new Date().toISOString() }),
         )
         .run();
+
+      await this.env.PLATFORM_DB.prepare(
+        "UPDATE gdpr_requests SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND status = 'processing'",
+      ).bind(new Date().toISOString(), new Date().toISOString(), params.requestId, params.orgId).run();
 
       const completedAt = new Date().toISOString();
 

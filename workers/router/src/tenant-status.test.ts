@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearTenantStatusCacheForTests,
+  isErasureLifecycleAccess,
   isTenantActive,
 } from "./tenant-status";
 
@@ -16,6 +17,14 @@ afterEach(() => {
 });
 
 describe("tenant suspension gate", () => {
+  it("allows only request-scoped status and cancellation paths through a suspension hold", () => {
+    expect(isErasureLifecycleAccess("GET", "/builder/erasure/request_123")).toBe(true);
+    expect(isErasureLifecycleAccess("DELETE", "/builder/erasure/request-123")).toBe(true);
+    expect(isErasureLifecycleAccess("POST", "/builder/erasure/request-123")).toBe(false);
+    expect(isErasureLifecycleAccess("GET", "/builder/erasure/request-123/other")).toBe(false);
+    expect(isErasureLifecycleAccess("GET", "/spaces/space-a/erasure/request-123")).toBe(false);
+  });
+
   it("allows active organizations and denies suspended or missing organizations", async () => {
     expect(await isTenantActive(database("active").db, "tenant-active")).toBe(
       true

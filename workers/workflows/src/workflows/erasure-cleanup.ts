@@ -87,6 +87,21 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
   ]);
 }
 
+/** Claim the post-delay deletion exactly once; cancellation and duplicate workflows lose this CAS. */
+export async function claimErasureRequest(
+  db: Pick<D1Database, "prepare">,
+  tenantId: string,
+  requestedBy: string,
+  requestId: string,
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE gdpr_requests SET status = 'processing', updated_at = datetime('now')
+     WHERE id = ? AND tenant_id = ? AND requested_by = ? AND request_type = 'erasure' AND status = 'pending'
+       AND EXISTS (SELECT 1 FROM orgs WHERE id = ? AND status = 'suspended' AND suspension_reason = 'erasure')`,
+  ).bind(requestId, tenantId, requestedBy, tenantId).run();
+  return result.meta.changes === 1;
+}
+
 export async function anonymizeOrgUsers(db: D1Database, orgId: string): Promise<void> {
   await db.prepare(
     "DELETE FROM builder_password_reset_tokens WHERE user_id IN (SELECT id FROM users WHERE org_id = ?)",

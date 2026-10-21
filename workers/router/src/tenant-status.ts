@@ -5,6 +5,12 @@ const tenantStatusCache = new Map<
   { active: boolean; expiresAt: number }
 >();
 
+/** Owner lifecycle lookups remain reachable while an erasure hold suspends the tenant. */
+export function isErasureLifecycleAccess(method: string, path: string): boolean {
+  return (method === "GET" || method === "DELETE") &&
+    /^\/builder\/erasure\/[A-Za-z0-9_-]{1,128}$/.test(path);
+}
+
 export async function isTenantActive(
   db: D1Database,
   tenantId: string

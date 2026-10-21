@@ -51,6 +51,7 @@ interface SpaceRow {
   tenant_id: string;
   name: string;
   status: string;
+  suspension_reason?: string | null;
   spacetype_id: string;
   config_json: string | null;
   product_slug: string | null;
@@ -60,7 +61,7 @@ interface SpaceRow {
   updated_at: string;
 }
 
-const ALLOWED_STATUSES = ["draft", "active", "paused", "suspended", "deleted"] as const;
+const ALLOWED_STATUSES = ["draft", "active", "paused"] as const;
 
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
@@ -142,7 +143,7 @@ async function resolveBuilderAuth(
 /** Load a product (space) this builder owns. Never leaks existence to a non-owner — 404 either way. */
 async function loadOwnedProduct(env: BuilderRoutesEnv, productId: string, tenantId: string): Promise<SpaceRow | null> {
   const row = await env.PLATFORM_DB.prepare(
-    `SELECT id, tenant_id, name, status, spacetype_id, config_json, product_slug,
+    `SELECT id, tenant_id, name, status, suspension_reason, spacetype_id, config_json, product_slug,
             conversation_access_approved_by, conversation_access_approved_at, created_at, updated_at
        FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'`
   ).bind(productId, tenantId).first<SpaceRow>();
@@ -309,8 +310,11 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       legal?: SpaceTypeProductConfig["legal"];
     }>();
 
-    if (body.status && !ALLOWED_STATUSES.includes(body.status as (typeof ALLOWED_STATUSES)[number])) {
+    if (body.status !== undefined && !ALLOWED_STATUSES.includes(body.status as (typeof ALLOWED_STATUSES)[number])) {
       return c.json({ error_code: "bad_request", message: `status must be one of ${ALLOWED_STATUSES.join(", ")}` }, 400);
+    }
+    if (body.status !== undefined && (product.suspension_reason != null || product.status === "suspended")) {
+      return c.json({ error_code: "suspension_reason_mismatch", message: "A platform suspension can only be released by its owner control" }, 409);
     }
     // Validate legal URLs are HTTPS (required — never allow http: ToS/Privacy links).
     if (body.legal) {
@@ -359,9 +363,14 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       config.productConfig = { ...(config.productConfig ?? {}), legal: body.legal };
     }
     const now = new Date().toISOString();
-    await env.PLATFORM_DB.prepare(
-      "UPDATE spaces SET name = COALESCE(?, name), status = COALESCE(?, status), config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
-    ).bind(body.name ?? null, body.status ?? null, JSON.stringify(config), now, product.id, auth.tenantId).run();
+    const update = body.status === undefined
+      ? await env.PLATFORM_DB.prepare(
+        "UPDATE spaces SET name = COALESCE(?, name), config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
+      ).bind(body.name ?? null, JSON.stringify(config), now, product.id, auth.tenantId).run()
+      : await env.PLATFORM_DB.prepare(
+        "UPDATE spaces SET name = COALESCE(?, name), status = ?, config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND suspension_reason IS NULL AND status != 'suspended'",
+      ).bind(body.name ?? null, body.status, JSON.stringify(config), now, product.id, auth.tenantId).run();
+    if (update.meta.changes === 0) return c.json({ error_code: "suspension_reason_mismatch", message: "Product status changed while the request was being applied" }, 409);
 
     return c.json({ ok: true });
   });
