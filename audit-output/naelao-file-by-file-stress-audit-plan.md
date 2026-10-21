@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2028` tracked files; `1822` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` refreshed after code commit `b20dacbf`.
+Inventory basis: `2029` tracked files; `1823` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` refreshed after artifact boundary commit `849ebb89`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -1364,7 +1364,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/approval-gates-structural.test.ts`
 - [ ] `tests/unit/approvals-prebuilt.test.ts`
 - [ ] `tests/unit/artifact-worker.test.ts`
-- [ ] `tests/unit/artifacts-prebuilt.test.ts`
+- [x] `tests/unit/artifacts-prebuilt.test.ts`
 - [ ] `tests/unit/assistant-delegation-grouping.test.ts`
 - [ ] `tests/unit/assistant-permission-clamp.test.ts`
 - [ ] `tests/unit/assistant-policy-and-model-config-business-membership.test.ts`
@@ -2010,7 +2010,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/agents/src/script-engine/prebuilt`
 
 - [ ] `workers/agents/src/script-engine/prebuilt/approvals.ts`
-- [ ] `workers/agents/src/script-engine/prebuilt/artifacts.ts`
+- [x] `workers/agents/src/script-engine/prebuilt/artifacts.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/attachments.test.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/attachments.ts`
 - [ ] `workers/agents/src/script-engine/prebuilt/browser-use.ts`
@@ -2182,8 +2182,9 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/artifact/src`
 
 - [x] `workers/artifact/src/RepositoryDO-boundaries.test.ts`
-- [x] `workers/artifact/src/RepositoryDO.ts`
-- [ ] `workers/artifact/src/index.ts`
+- [ ] `workers/artifact/src/RepositoryDO.ts`
+- [x] `workers/artifact/src/index.test.ts`
+- [x] `workers/artifact/src/index.ts`
 - [ ] `workers/artifact/src/repository-token.test.ts`
 - [ ] `workers/artifact/src/repository-token.ts`
 - [ ] `workers/artifact/src/repository.test.ts`
