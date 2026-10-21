@@ -341,6 +341,7 @@ app.post("/register", async (c) => {
       email,
       role: "owner",
       scopes: ["api:access"],
+      tv: 0,
     },
     c.env.JWT_SECRET,
     jwtExpirySeconds(c.env)

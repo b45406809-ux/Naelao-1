@@ -72,6 +72,7 @@ describe("POST /register — builder signup", () => {
     const registerBody = await registered.json() as { data: { token: string } };
     const registerClaims = await verifyJwt(registerBody.data.token, env.JWT_SECRET);
     expect(registerClaims.exp - registerClaims.iat).toBe(900);
+    expect(registerClaims.tv).toBe(0);
 
     const login = await authWorker.fetch(req("/login", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
     const loginBody = await login.json() as { data: { token: string } };
@@ -413,9 +414,8 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
 describe("token revocation verification", () => {
   it("rejects a still-unexpired JWT after /revoke increments its token version", async () => {
     const env = makeEnv();
-    await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
-    const login = await authWorker.fetch(req("/login", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
-    const { data } = await login.json() as { data: { token: string } };
+    const register = await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), env as never, execCtx);
+    const { data } = await register.json() as { data: { token: string } };
     const authRequest = (path: string) => new Request(`https://auth.naelao.com${path}`, {
       method: "POST",
       headers: { authorization: `Bearer ${data.token}` },

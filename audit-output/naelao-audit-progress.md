@@ -2240,6 +2240,8 @@ The reset route also previously treated an invalid stored expiry as unexpired be
 
 The expiry index now indexes the exact `julianday(expires_at)` expression used by the sweeper, rather than the raw text column. SQLite `EXPLAIN QUERY PLAN` confirms the bounded expiry query uses the new expression index; Auth tests remain 32/32.
 
+Signup JWTs were missing `tv` even though login JWTs carried it. Router skips its revocation-epoch gate when `tv` is absent, so the token returned from signup remained usable after `/revoke`. Signup now includes the initial version `0`; the revocation regression now exercises the signup-issued token and confirms it is rejected after the epoch increments. Auth tests passed 32/32.
+
 ## Router builder-auth ingress follow-up (2026-10-21)
 
 Traced the public `/v1/auth/*` routes through IP-bucketed pre-auth rate limiting and streaming body forwarding. Login, registration, and reset endpoints were bounded, but authenticated `/verify` and `/revoke` were forwarded without a pre-auth rate budget; both can trigger D1 reads/writes and were exposed to avoidable request amplification. Added separate per-IP limits (30/minute for verify, 10/minute for revoke) and route regressions asserting each uses its own bucket and rejects when the RateLimitDO blocks it. The Wrangler manifest contains the RateLimitDO binding in development, staging, and production; no public request header can select a bucket key other than the edge-provided client IP in deployed Workers.
