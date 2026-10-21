@@ -42,6 +42,7 @@ Literal route-registration matches: 1057 (recounted after removing two unreachab
 - `portal_domains` — `infra/migrations/0119_portal_domains.sql`; the Portal Router uses the unique `(kind, hostname)` key for atomic owner reservations and active-tenant host resolution.
 - `synthetic_results` — `infra/migrations/0120_synthetics_storage.sql`; the Synthetics cron writes bounded probe results and prunes records older than 30 days.
 - `synthetic_check_state` — `infra/migrations/0120_synthetics_storage.sql`; the Synthetics cron tracks failure/recovery transitions to suppress duplicate outage alerts.
+- `assistant_sessions` and `assistant_messages` — `infra/migrations/0122_platform_assistant_sessions.sql`; the platform documentation assistant stores private tenant/user sessions and cascades messages when a session or tenant is erased.
 
 These are the tables covered by the corresponding scoped audit entries, not a complete D1 schema inventory.
 
