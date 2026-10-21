@@ -41,26 +41,40 @@ export async function extractEmailPdfText(bytes: Uint8Array): Promise<{ text: st
 
     const pages: string[] = [];
     let bytesUsed = 0;
+    let textLimitExceeded = false;
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
       const reader = (await pdf.getPage(pageNumber)).streamTextContent({ includeMarkedContent: false }).getReader();
       const pageParts: string[] = [];
+      let streamDone = false;
       try {
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            streamDone = true;
+            break;
+          }
           for (const item of value.items) {
             if (!("str" in item) || typeof item.str !== "string") continue;
             const part = item.str + (item.hasEOL ? "\n" : "");
-            bytesUsed = appendBoundedPdfTextChunk(part, bytesUsed);
-            pageParts.push(part);
+            const partBytes = new TextEncoder().encode(part).byteLength;
+            if (bytesUsed + partBytes > EMAIL_PDF_MAX_TEXT_BYTES) {
+              textLimitExceeded = true;
+              continue;
+            }
+            bytesUsed += partBytes;
+            if (!textLimitExceeded) pageParts.push(part);
           }
         }
       } finally {
-        await reader.cancel().catch(() => undefined);
+        // PDF.js can race an early stream cancellation against its worker's final close. Continue
+        // draining after the output cap instead; cancel only if the stream itself failed early.
+        if (!streamDone) await reader.cancel().catch(() => undefined);
       }
-      if (pageNumber > 1) bytesUsed = appendBoundedPdfTextChunk("\n\n", bytesUsed);
+      if (pageNumber > 1 && bytesUsed + 2 > EMAIL_PDF_MAX_TEXT_BYTES) textLimitExceeded = true;
+      else if (pageNumber > 1) bytesUsed += 2;
       pages.push(pageParts.join(""));
     }
+    if (textLimitExceeded) throw new EmailPdfError("attachment_pdf_text_limit");
     return { text: pages.join("\n\n"), pages: pdf.numPages };
   } catch (error) {
     if (error instanceof EmailPdfError) throw error;

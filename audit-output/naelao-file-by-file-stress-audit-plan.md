@@ -1725,7 +1725,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/channels/email-ocr-settings-route.test.ts`
 - [ ] `workers/agents/src/channels/email-ocr.test.ts`
 - [ ] `workers/agents/src/channels/email-ocr.ts`
-- [ ] `workers/agents/src/channels/email-pdf.test.ts`
+- [x] `workers/agents/src/channels/email-pdf.test.ts`
 - [ ] `workers/agents/src/channels/email-pdf.ts`
 - [ ] `workers/agents/src/channels/executive-channel.ts`
 - [ ] `workers/agents/src/channels/foundry-command.test.ts`
