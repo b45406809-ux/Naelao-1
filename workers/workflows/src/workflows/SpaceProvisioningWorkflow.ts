@@ -14,6 +14,7 @@
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
 import { readBoundedResponseText } from "@naelao/http";
 import type { Env } from "../env";
+import { activateSpaceForActiveTenant } from "./space-provisioning-state.js";
 
 export interface ProvisioningParams {
   spaceId: string;
@@ -36,18 +37,19 @@ export class SpaceProvisioningWorkflow extends WorkflowEntrypoint<Env, Provision
       timeout: 30_000,
     };
 
-    await step.do("validate-space", networkRetry, async () => {
-      // Confirm the space record exists and belongs to the expected tenant
+    const eligible = await step.do("validate-space", networkRetry, async () => {
+      // Confirm the Space and its organization are still active enough to provision.
       const space = await this.env.PLATFORM_DB.prepare(
-        `SELECT id, status FROM spaces WHERE id = ? AND tenant_id = ? AND spacetype_id = ?`
+        `SELECT s.id, s.status FROM spaces s
+         JOIN orgs o ON o.id = s.tenant_id AND o.status = 'active'
+         WHERE s.id = ? AND s.tenant_id = ? AND s.spacetype_id = ? AND o.id = ? AND s.status = 'provisioning'`
       )
-        .bind(params.spaceId, params.tenantId, params.spaceTypeId)
+        .bind(params.spaceId, params.tenantId, params.spaceTypeId, params.orgId)
         .first<{ id: string; status: string }>();
 
       if (!space) {
-        throw new Error(
-          `Space ${params.spaceId} not found for tenant ${params.tenantId} with spaceTypeId ${params.spaceTypeId}`,
-        );
+        console.warn(`[SpaceProvisioning] Space or active tenant no longer eligible: ${params.spaceId}`);
+        return false;
       }
 
       // Confirm org has an active (or trialing) subscription
@@ -58,13 +60,13 @@ export class SpaceProvisioningWorkflow extends WorkflowEntrypoint<Env, Provision
         .first<{ id: string; status: string }>();
 
       if (!subscription) {
-        throw new Error(
-          `Org ${params.orgId} does not have an active subscription — cannot provision space`,
-        );
+        console.warn(`[SpaceProvisioning] Org ${params.orgId} has no active subscription`);
+        return false;
       }
 
-      return { spaceId: space.id, spaceStatus: space.status, subscriptionStatus: subscription.status };
+      return true;
     });
+    if (!eligible) return;
 
     // ── Step 2: Init SpaceDO via SPACES_WORKER ──────────────────────────────
     await step.do("init-space-do", networkRetry, async () => {
@@ -101,17 +103,13 @@ export class SpaceProvisioningWorkflow extends WorkflowEntrypoint<Env, Provision
     });
 
     // ── Step 4: Flip space status to active ──────────────────────────────────
-    await step.do("update-status", networkRetry, async () => {
-      await this.env.PLATFORM_DB.prepare(
-        `UPDATE spaces
-         SET status = 'active', updated_at = datetime('now')
-         WHERE id = ? AND status != 'active'`
-      )
-        .bind(params.spaceId)
-        .run();
-
-      return { status: "active" };
+    const activated = await step.do("update-status", networkRetry, async () => {
+      return activateSpaceForActiveTenant(this.env.PLATFORM_DB, params);
     });
+    if (!activated) {
+      console.warn(`[SpaceProvisioning] Activation lost tenant/space status race: ${params.spaceId}`);
+      return;
+    }
 
     // ── Step 5: Emit provisioned event ────────────────────────────────────────
     await step.do("emit-event", networkRetry, async () => {
