@@ -1290,3 +1290,9 @@ Reviewed `conversation.ts`, the transcript loader, the session message route, an
 A follow-up complexity check found every paginated message request also executed `COUNT(*)` plus `SUM(length(content))` over the full transcript, even though only the context-usage endpoint consumes those totals. Repeated page/search requests therefore reread every stored message body. The aggregate is now opt-in with `include_totals=1`; only context metering requests it. Added coverage that ordinary pages omit totals while explicit metering returns exact transcript-wide counts and character totals.
 
 Validation: Spaces pagination suite passed 1 file / 4 tests; Spaces and Agents TypeScript checks passed.
+
+## Stop duplicating full transcripts during compaction (2026-10-21)
+
+Searched all runtime references to `archived_messages`: the Agent DO created and wrote this table but no code ever read from it. The authoritative full transcript remains in Spaces and `conversation.search` reads that source. Compaction was therefore copying up to the entire bounded 16 MiB transcript into a second durable database for no retrieval benefit. Removed new archive-row writes and added a regression asserting compaction stores its summary/cursor without duplicating message bodies. Kept the table definition and any already-persisted rows for compatibility; their eventual cleanup remains a separate verified data-retention task.
+
+Validation: conversation compaction, conversation search, and transcript loader suites passed 3 files / 22 tests; Agents TypeScript check passed.

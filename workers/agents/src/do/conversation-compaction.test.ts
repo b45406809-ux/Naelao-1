@@ -139,6 +139,7 @@ describe("conversation compaction over large threads", () => {
     );
     expect(stored?.covered_messages).toBe(result?.summarized_messages);
     expect(stored?.summary).toBe(`Compacted summary revision ${summaryCalls}`);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM archived_messages WHERE session_id=?", "session-1").toArray()[0]).toMatchObject({ count: 0 });
 
     const repeated = await compact(
       "space-1",

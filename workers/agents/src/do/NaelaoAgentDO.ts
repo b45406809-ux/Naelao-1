@@ -91,7 +91,6 @@ import {
   messagesToSummarize,
   buildSummaryPrompt,
   shouldCompactContext,
-  splitForCompaction,
   type ConversationContext,
   type ConversationMessage,
 } from "../script-engine/conversation-context.js";
@@ -5706,15 +5705,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         offset = end;
       }
       if (summarizedNow === 0) return undefined;
-      const { archive } = splitForCompaction(messages);
       const archivedAt = new Date().toISOString();
-      for (let i = 0; i < archive.length; i++) {
-        const message = archive[i]!;
-        this.ctx.storage.sql.exec(
-          `INSERT OR IGNORE INTO archived_messages (id, session_id, role, content, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?)`,
-          `${sessionId}:${message.id ?? i}`, sessionId, message.role, message.content, message.created_at ?? null, archivedAt
-        );
-      }
       if (projectId && this.env.SCRIPTS_R2) {
         const key = journalKey(spaceId, projectId);
         const milestone = regenerated.replace(/\s+/g, " ").slice(0, 1000);
