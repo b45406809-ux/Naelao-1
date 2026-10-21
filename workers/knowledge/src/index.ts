@@ -436,7 +436,6 @@ function chunkCoordinates(document: string, chunks: string[], sourceChunks?: Str
 app.post("/internal/spaces/:spaceId/kb/references/resolve", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
-  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   const body = await readBoundedJsonOr(c.req.raw, 16 * 1024, {} as { document_ids?: unknown });
   if (!Array.isArray(body.document_ids) || body.document_ids.length > 30 || body.document_ids.some((id) => typeof id !== "string" || id.length > 160)) {
     throw badRequest("document_ids must be an array of at most 30 IDs");
@@ -458,7 +457,6 @@ app.post("/internal/spaces/:spaceId/kb/references/resolve", async (c) => {
 app.get("/internal/spaces/:spaceId/kb/documents/:documentId/shared", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
-  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   const documentId = c.req.param("documentId");
   const doc = await c.env.PLATFORM_DB.prepare(
     "SELECT id,title,source_url,status,project_id FROM kb_documents WHERE id=? AND tenant_id=? AND space_id=?"
@@ -515,7 +513,6 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
 app.put("/internal/spaces/:spaceId/kb/documents/:docId/status", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
-  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   const docId = c.req.param("docId");
   const body = await readBoundedJson<{ status?: unknown; chunk_count?: unknown; project_id?: unknown }>(c.req.raw, 16 * 1024);
   if (!body || typeof body !== "object" || Array.isArray(body) ||
@@ -540,7 +537,6 @@ app.put("/internal/spaces/:spaceId/kb/documents/:docId/status", async (c) => {
 app.post("/internal/spaces/:spaceId/kb/documents/:docId/ingest-chunks", async (c) => {
   const tenantId = requireTenant(c);
   const spaceId = c.req.param("spaceId");
-  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   const docId = c.req.param("docId");
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
   const body = await readBoundedJson<{

@@ -1988,11 +1988,11 @@ Trigger listing exposed records for suspended Spaces, and update/delete could st
 
 Validation: trigger regression passed 1/1; Triggers TypeScript, Biome lint, and `git diff --check` passed. Refreshed repository tree and file-by-file plan: 2,037 tracked files / 1,831 code and configuration files; 462 checklist rows reviewed. The exhaustive audit remains open.
 
-## Knowledge internal workflow suspension gates (2026-10-21)
+## Knowledge internal workflow suspension and race checks (2026-10-21)
 
-The Knowledge worker's HMAC-protected internal reference resolution, shared-document read, workflow document-status update, and chunk-ingestion routes checked tenant and row scope but did not require an active tenant and Space. Delayed internal work could therefore read content or continue writing R2, D1, and Vectorize state after suspension. These routes now check active ownership before processing, and chunk ingestion rechecks after embedding and before each chunk and vector batch write. Added regressions showing all four internal routes reject a suspended Space before reading or mutating document data.
+Correction after the full Knowledge suite: the worker already had active-tenant/Space verification in prefix middleware for `/internal/spaces/:spaceId/kb/*`; my initial route-level scan missed it, so the first pass added redundant reads. Those duplicate reads were removed. The actual race gap was long chunk ingestion continuing after embedding even if suspension occurred mid-request. Chunk ingestion now rechecks active ownership after embedding, before each chunk persistence step, and before Vectorize writes. Added regressions for suspended internal routes and a suspension that lands after the initial middleware check but before the first chunk write.
 
-Validation: focused Knowledge regressions passed 8/8; Knowledge TypeScript, targeted Biome security lint, and `git diff --check` passed. Full repository lint includes existing diagnostics outside this change, so it was not used as a clean gate. Refreshed inventory: 2,038 tracked files / 1,832 code and configuration files; 462 checklist rows reviewed. The exhaustive audit remains in progress.
+Validation: full Knowledge suite passed 10 files / 64 tests; Knowledge TypeScript, targeted Biome security lint, and `git diff --check` passed. Full repository lint includes existing diagnostics outside this change, so it was not used as a clean gate. The file-by-file audit remains in progress.
 
 ## Analytics metrics active-tenant gates (2026-10-21)
 

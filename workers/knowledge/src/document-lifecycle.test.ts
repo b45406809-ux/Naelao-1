@@ -2,17 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import worker from "./index.js";
 
-function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; queueFails?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean } = {}) {
+function fixture(options: { existing?: boolean; projectId?: string; workflowDoc?: boolean; workflowStatus?: string; queueFails?: boolean; allowedUserIds?: string[]; requiredRoleRank?: number; vectorPresent?: boolean; aiFails?: boolean; vectorUpsertFails?: boolean; spaceActive?: boolean; suspendAfterActiveCheck?: boolean } = {}) {
   const writes: Array<{ key: string; value: unknown }> = [];
   const dbCalls: Array<{ sql: string; args: unknown[] }> = [];
   const vectorUpserts: VectorizeVector[][] = [];
+  let activeChecks = 0;
   const db = {
     prepare: vi.fn((sql: string) => ({
       bind: (...args: unknown[]) => {
         dbCalls.push({ sql, args });
         return {
           first: async () => {
-            if (sql.includes("JOIN orgs")) return options.spaceActive === false ? null : { id: "space-1" };
+            if (sql.includes("JOIN orgs")) {
+              activeChecks += 1;
+              return options.spaceActive === false || (options.suspendAfterActiveCheck && activeChecks > 1) ? null : { id: "space-1" };
+            }
             if (sql.includes("FROM spaces")) return { id: "space-1" };
             if (sql.includes("COUNT(*) as count FROM kb_documents")) return { count: 0 };
             if (sql.includes("SELECT id, title, status, chunk_count FROM kb_documents")) return options.workflowDoc
@@ -106,6 +110,20 @@ describe("Knowledge document lifecycle boundaries", () => {
     expect(response.status).toBe(404);
     expect(f.vectorUpserts).toHaveLength(0);
     expect(f.writes).toHaveLength(0);
+    expect(f.dbCalls.some(({ sql }) => sql.includes("INSERT INTO kb_chunks"))).toBe(false);
+  });
+
+  it("rechecks Space activity after chunk embeddings before persisting chunks", async () => {
+    const f = fixture({ workflowDoc: true, suspendAfterActiveCheck: true });
+    const response = await worker.fetch(await request(
+      "/internal/spaces/space-1/kb/documents/doc-1/ingest-chunks", "POST", {
+        projectId: "project-1", chunks: ["must not persist"], chunkOffset: 0, byteOffset: 0, lineOffset: 1,
+      },
+    ), f.env, {} as ExecutionContext);
+
+    expect(response.status).toBe(404);
+    expect(f.writes).toHaveLength(0);
+    expect(f.vectorUpserts).toHaveLength(0);
     expect(f.dbCalls.some(({ sql }) => sql.includes("INSERT INTO kb_chunks"))).toBe(false);
   });
 
