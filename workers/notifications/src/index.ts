@@ -699,6 +699,7 @@ export async function queue(
 
 const app = new Hono<{ Bindings: NotificationsEnv }>();
 const MAX_NOTIFY_REQUEST_BYTES = 256 * 1024;
+const MAX_PUSH_REQUEST_BYTES = 16 * 1024;
 
 app.use("*", requestId);
 app.use("*", async (c, next) => {
@@ -828,28 +829,42 @@ app.put("/internal/push/subscription", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const userId = c.req.header("x-naelao-user-id") ?? "";
   if (!tenantId || !userId || !c.env.PLATFORM_SECRET) throw badRequest("authenticated tenant/user and platform encryption key required");
-  const input = await c.req.json<{ subscription?: unknown }>();
+  let input: { subscription?: unknown };
+  try {
+    input = JSON.parse(await readBoundedRequestText(c.req.raw, MAX_PUSH_REQUEST_BYTES)) as { subscription?: unknown };
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_body_too_large" }, 413);
+    return c.json({ error_code: "invalid_request_body" }, 400);
+  }
   const subscription = validatePushSubscription(input.subscription);
   if (!subscription) throw badRequest("invalid or unsupported browser push subscription");
   const endpointHash = await hashEndpoint(subscription.endpoint);
-  const count = await c.env.PLATFORM_DB.prepare(
-    "SELECT COUNT(*) AS count FROM web_push_subscriptions WHERE tenant_id = ? AND user_id = ? AND endpoint_hash != ?"
-  ).bind(tenantId, userId, endpointHash).first<{ count: number }>();
-  if ((count?.count ?? 0) >= 20) return c.json({ error_code: "too_many_subscriptions", message: "Remove an old browser before adding another" }, 429);
   const encrypted = await encryptSubscription(subscription, c.env.PLATFORM_SECRET);
-  await c.env.PLATFORM_DB.prepare(
+  const saved = await c.env.PLATFORM_DB.prepare(
     `INSERT INTO web_push_subscriptions (endpoint_hash, tenant_id, user_id, encrypted_subscription)
-     VALUES (?, ?, ?, ?)
+     SELECT ?, ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM web_push_subscriptions WHERE tenant_id = ? AND user_id = ? AND endpoint_hash = ?
+     ) OR (
+       SELECT COUNT(*) FROM web_push_subscriptions WHERE tenant_id = ? AND user_id = ?
+     ) < 20
      ON CONFLICT (tenant_id, user_id, endpoint_hash) DO UPDATE SET
        encrypted_subscription = excluded.encrypted_subscription, updated_at = datetime('now')`
-  ).bind(endpointHash, tenantId, userId, encrypted).run();
+  ).bind(endpointHash, tenantId, userId, encrypted, tenantId, userId, endpointHash, tenantId, userId).run();
+  if (saved.meta.changes === 0) return c.json({ error_code: "too_many_subscriptions", message: "Remove an old browser before adding another" }, 429);
   return c.json({ saved: true });
 });
 app.delete("/internal/push/subscription", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const userId = c.req.header("x-naelao-user-id") ?? "";
   if (!tenantId || !userId) throw badRequest("authenticated tenant and user required");
-  const input = await c.req.json<{ endpoint?: string }>();
+  let input: { endpoint?: string };
+  try {
+    input = JSON.parse(await readBoundedRequestText(c.req.raw, MAX_PUSH_REQUEST_BYTES)) as { endpoint?: string };
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_body_too_large" }, 413);
+    return c.json({ error_code: "invalid_request_body" }, 400);
+  }
   if (typeof input.endpoint !== "string") throw badRequest("subscription endpoint required");
   const endpointHash = await hashEndpoint(input.endpoint);
   await c.env.PLATFORM_DB.prepare(

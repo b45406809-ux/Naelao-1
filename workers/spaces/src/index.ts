@@ -4345,8 +4345,14 @@ app.all("/spaces/:spaceId/push-notifications", async (c) => {
     "x-naelao-internal-token": token,
   });
   let body: string | undefined;
-  if (c.req.method === "PUT") body = JSON.stringify(await c.req.json());
-  if (c.req.method === "DELETE") body = JSON.stringify(await c.req.json());
+  if (c.req.method === "PUT" || c.req.method === "DELETE") {
+    try {
+      body = JSON.stringify(JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)));
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_body_too_large" }, 413);
+      return c.json({ error_code: "invalid_request_body" }, 400);
+    }
+  }
   const response = await c.env.NOTIFICATIONS_WORKER.fetch(new Request(`http://notifications-worker${path}`, {
     method: c.req.method, headers, ...(body ? { body } : {}),
   }));

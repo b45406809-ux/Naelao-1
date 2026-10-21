@@ -21,6 +21,9 @@ describe("browser Web Push", () => {
     expect(validatePushSubscription({ ...subscription, endpoint: "http://fcm.googleapis.com/send" })).toBeNull();
     expect(validatePushSubscription({ ...subscription, endpoint: "https://127.0.0.1/send" })).toBeNull();
     expect(validatePushSubscription({ ...subscription, endpoint: "https://attacker.example/send" })).toBeNull();
+    expect(validatePushSubscription({ ...subscription, endpoint: "https://attacker.fcm.googleapis.com/send" })).toBeNull();
+    expect(validatePushSubscription({ ...subscription, expirationTime: "never" as never })).toBeNull();
+    expect(validatePushSubscription({ ...subscription, keys: [] as never })).toBeNull();
   });
 
   it("encrypts subscription capabilities and rejects ciphertext tampering", async () => {

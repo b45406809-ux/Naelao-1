@@ -2363,8 +2363,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/notifications/src/index.ts`
 - [ ] `workers/notifications/src/interactive.test.ts`
 - [x] `workers/notifications/src/queue-idempotency.test.ts`
-- [ ] `workers/notifications/src/web-push.test.ts`
-- [ ] `workers/notifications/src/web-push.ts`
+- [x] `workers/notifications/src/web-push.test.ts`
+- [x] `workers/notifications/src/web-push.ts`
 - [x] `workers/notifications/src/webhook-egress.test.ts`
 
 ### `workers/portal-router`

@@ -490,13 +490,13 @@ Queue resources are declared separately in `infra/terraform/main.tf`; compare th
 - `workers/mcp-hub/src/index.ts:756` — `app.delete("/v1/spaces/:spaceId/connector-aliases/:aliasId", async (c) => {`
 - `workers/mcp-hub/src/index.ts:767` — `app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) => {`
 - `workers/mcp-hub/src/index.ts:822` — `app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {`
-- `workers/notifications/src/index.ts:703` — `app.use("*", requestId);`
-- `workers/notifications/src/index.ts:704` — `app.use("*", async (c, next) => {`
-- `workers/notifications/src/index.ts:716` — `app.post("/internal/notify", async (c) => {`
-- `workers/notifications/src/index.ts:822` — `app.use("/internal/push/*", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
-- `workers/notifications/src/index.ts:823` — `app.get("/internal/push/config", (c) => {`
-- `workers/notifications/src/index.ts:827` — `app.put("/internal/push/subscription", async (c) => {`
-- `workers/notifications/src/index.ts:848` — `app.delete("/internal/push/subscription", async (c) => {`
+- `workers/notifications/src/index.ts:704` — `app.use("*", requestId);`
+- `workers/notifications/src/index.ts:705` — `app.use("*", async (c, next) => {`
+- `workers/notifications/src/index.ts:717` — `app.post("/internal/notify", async (c) => {`
+- `workers/notifications/src/index.ts:823` — `app.use("/internal/push/*", requireInternalHmac((c) => c.env.PLATFORM_SECRET ?? ""));`
+- `workers/notifications/src/index.ts:824` — `app.get("/internal/push/config", (c) => {`
+- `workers/notifications/src/index.ts:828` — `app.put("/internal/push/subscription", async (c) => {`
+- `workers/notifications/src/index.ts:857` — `app.delete("/internal/push/subscription", async (c) => {`
 - `workers/portal-router/src/index.ts:33` — `app.use("*", requestId);`
 - `workers/portal-router/src/index.ts:34` — `app.use("*", async (c, next) => {`
 - `workers/portal-router/src/index.ts:40` — `app.post("/v1/domains", async (c) => {`

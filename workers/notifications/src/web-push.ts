@@ -17,14 +17,17 @@ const ALLOWED_PUSH_HOSTS = [
 export function validatePushSubscription(value: unknown): BrowserPushSubscription | null {
   if (!value || typeof value !== "object") return null;
   const sub = value as Partial<BrowserPushSubscription>;
-  if (typeof sub.endpoint !== "string" || sub.endpoint.length > 2048 || !sub.keys) return null;
+  if (typeof sub.endpoint !== "string" || sub.endpoint.length > 2048 ||
+      !sub.keys || typeof sub.keys !== "object" || Array.isArray(sub.keys)) return null;
   let endpoint: URL;
   try { endpoint = new URL(sub.endpoint); } catch { return null; }
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.port) return null;
-  const hostAllowed = ALLOWED_PUSH_HOSTS.some((host) => endpoint.hostname === host || endpoint.hostname.endsWith(`.${host}`));
+  const hostAllowed = ALLOWED_PUSH_HOSTS.includes(endpoint.hostname);
   if (!hostAllowed || typeof sub.keys.p256dh !== "string" || typeof sub.keys.auth !== "string") return null;
   if (sub.keys.p256dh.length > 256 || sub.keys.auth.length > 128) return null;
   if (!/^[A-Za-z0-9_-]+$/.test(sub.keys.p256dh) || !/^[A-Za-z0-9_-]+$/.test(sub.keys.auth)) return null;
+  if (sub.expirationTime !== undefined && sub.expirationTime !== null &&
+      (typeof sub.expirationTime !== "number" || !Number.isFinite(sub.expirationTime) || sub.expirationTime < 0)) return null;
   return { endpoint: endpoint.toString(), keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth }, expirationTime: sub.expirationTime ?? null };
 }
 
