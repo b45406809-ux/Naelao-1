@@ -743,8 +743,15 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
     throw badRequest("Invalid JSON body");
   }
 
-  if (!body.name) throw badRequest("name is required");
-  if (!body.value) throw badRequest("value is required");
+  if (typeof body.name !== "string" || !body.name) throw badRequest("name is required");
+  if (typeof body.value !== "string" || !body.value) throw badRequest("value must be a non-empty string");
+  if (body.description !== undefined && body.description !== null &&
+      (typeof body.description !== "string" || body.description.length > 4000)) {
+    throw badRequest("description must be a string of at most 4000 characters");
+  }
+  if (body.is_override !== undefined && typeof body.is_override !== "boolean") {
+    throw badRequest("is_override must be a boolean");
+  }
   validateCredentialName(body.name);
 
   const inputScope = body.scope ?? "user";
@@ -753,7 +760,10 @@ app.post("/spaces/:spaceId/credentials", async (c) => {
     throw badRequest("scope must be USER_PERSONAL, SPACE_SHARED, or PROJECT_BOUND");
   }
   const scope: "user" | "space" = requestedScope === "project" ? "space" : requestedScope;
-  const projectId = requestedScope === "project" ? body.project_id?.trim() ?? null : null;
+  if (requestedScope === "project" && typeof body.project_id !== "string") {
+    throw badRequest("project_id must be a string for project-bound credentials");
+  }
+  const projectId = requestedScope === "project" ? body.project_id!.trim() : null;
   if (requestedScope === "project" && !projectId) throw badRequest("project_id is required for project-bound credentials");
   if (projectId && !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw badRequest("project_id has an invalid format");
   if (requestedScope !== "project" && body.project_id !== undefined) throw badRequest("project_id is only valid with scope='project'");

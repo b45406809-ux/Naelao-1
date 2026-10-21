@@ -100,6 +100,27 @@ describe("credential hierarchy", () => {
   });
 
   describe("creation + scoping rules", () => {
+    it("rejects non-string secrets and coercible override flags before storage", async () => {
+      for (const body of [
+        { name: "OBJECT_KEY", value: { token: "secret" } },
+        { name: "OBJECT_KEY", value: "secret", is_override: "false" },
+        { name: "OBJECT_KEY", value: "secret", description: { text: "metadata" } },
+      ]) {
+        const response = await credentialsWorker.fetch(
+          await req("/spaces/space-invalid-shapes/credentials", {
+            method: "POST", user: "admin-1", role: "admin", body,
+          }),
+          env,
+          execCtx,
+        );
+        expect(response.status).toBe(400);
+      }
+      const stored = await env.PLATFORM_DB.prepare(
+        "SELECT COUNT(*) AS count FROM space_credentials WHERE space_id = ?"
+      ).bind("space-invalid-shapes").first<{ count: number }>();
+      expect(stored?.count).toBe(0);
+    });
+
     it("a member can create their own user-scoped credential", async () => {
       const res = await credentialsWorker.fetch(
         await req("/spaces/space-1/credentials", {
