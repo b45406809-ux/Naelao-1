@@ -120,16 +120,34 @@ export async function eraseSpaceR2Resources(
   workspaceBucket: R2Bucket,
   extraWorkspaceKeys: string[] = [],
 ): Promise<void> {
-  const exportPrefix = `conformance-jobs/${tenantId}/`;
-  if (extraWorkspaceKeys.some((key) => !key.startsWith(exportPrefix) || key.includes("..") || key.includes("\\"))) {
-    throw new Error("Invalid tenant-scoped erasure object key");
-  }
+  await eraseSpaceR2Prefixes(tenantId, spaceId, artifactBucket, repositoryBucket, workspaceBucket);
+  await eraseTenantExportKeys(tenantId, workspaceBucket, extraWorkspaceKeys);
+}
+
+export async function eraseSpaceR2Prefixes(
+  tenantId: string,
+  spaceId: string,
+  artifactBucket: R2Bucket,
+  repositoryBucket: R2Bucket,
+  workspaceBucket: R2Bucket,
+): Promise<void> {
   await deleteR2Prefix(artifactBucket, `${tenantId}/${spaceId}/`);
   await deleteR2Prefix(repositoryBucket, `repositories/${tenantId}/${spaceId}/`);
-  for (let offset = 0; offset < extraWorkspaceKeys.length; offset += R2_DELETE_BATCH_SIZE) {
-    await workspaceBucket.delete(extraWorkspaceKeys.slice(offset, offset + R2_DELETE_BATCH_SIZE));
-  }
   await deleteR2Prefix(workspaceBucket, `spaces/${spaceId}/`);
+}
+
+export async function eraseTenantExportKeys(
+  tenantId: string,
+  workspaceBucket: R2Bucket,
+  keys: string[],
+): Promise<void> {
+  const exportPrefix = `conformance-jobs/${tenantId}/`;
+  if (keys.some((key) => !key.startsWith(exportPrefix) || key.includes("..") || key.includes("\\"))) {
+    throw new Error("Invalid tenant-scoped erasure object key");
+  }
+  for (let offset = 0; offset < keys.length; offset += R2_DELETE_BATCH_SIZE) {
+    await workspaceBucket.delete(keys.slice(offset, offset + R2_DELETE_BATCH_SIZE));
+  }
 }
 
 function validatedChunkCount(value: number | null): number {

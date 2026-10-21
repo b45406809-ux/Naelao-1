@@ -10,6 +10,8 @@ Evidence: `workers/workflows/src/workflows/erasure-cleanup.test.ts` (11 pass), `
 
 The queue consumer now rejects malformed or oversized `data.erasure` messages before workflow creation. Its focused queue and erasure tests pass (19 combined), and the workflows TypeScript check passes. No authenticated producer/request API was found, so this only protects the internal dispatch boundary and does not make organization erasure user-accessible.
 
+An additional scale review found blueprint export rows were read with one unbounded D1 query. The workflow now pages exports by ID in groups of 100 and validates monotonic progress before deleting tenant-scoped keys; exact object deletes remain batched. The erasure helper stress tests (11) and workflow TypeScript check pass. The migration-level D1 tests (3) also pass after adding the omitted operational tables.
+
 This is not complete erasure coverage. RepositoryDO SQLite state, durable object state in other services, repo/workspace materialization races, export request/cancellation/restoration lifecycle, storage surfaces outside these prefixes, and a legal retention schedule for financial/audit records remain open. The current pass deletes the repository R2 prefix but does not yet purge per-repository Durable Object metadata.
 
 ## Completed focused review

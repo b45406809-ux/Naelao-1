@@ -25,7 +25,8 @@ import {
   eraseOrgOperationalRecords,
   eraseSpaceD1Records,
   eraseSpaceKnowledgeResources,
-  eraseSpaceR2Resources,
+  eraseSpaceR2Prefixes,
+  eraseTenantExportKeys,
 } from "./erasure-cleanup.js";
 
 export interface ErasureParams {
@@ -113,12 +114,20 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
 
         await eraseSpaceKnowledgeResources(space.id, docs, this.env.KB_BUCKET, this.env.KB_VECTORS);
 
-        const { results: exports } = await this.env.PLATFORM_DB.prepare(
-          "SELECT artifact_key FROM blueprint_export_jobs WHERE space_id = ? AND tenant_id = ?",
-        ).bind(space.id, params.orgId).all<{ artifact_key: string }>();
-        await eraseSpaceR2Resources(params.orgId, space.id, this.env.ARTIFACT_R2_BUCKET,
-          this.env.REPOSITORY_OBJECTS, this.env.SCRIPTS_R2,
-          exports.map(({ artifact_key }) => artifact_key));
+        await eraseSpaceR2Prefixes(params.orgId, space.id, this.env.ARTIFACT_R2_BUCKET,
+          this.env.REPOSITORY_OBJECTS, this.env.SCRIPTS_R2);
+        let afterExportId = "";
+        for (;;) {
+          const { results: exports } = await this.env.PLATFORM_DB.prepare(
+            `SELECT id, artifact_key FROM blueprint_export_jobs
+             WHERE space_id = ? AND tenant_id = ? AND id > ? ORDER BY id LIMIT 100`,
+          ).bind(space.id, params.orgId, afterExportId).all<{ id: string; artifact_key: string }>();
+          if (exports.length === 0) break;
+          await eraseTenantExportKeys(params.orgId, this.env.SCRIPTS_R2, exports.map(({ artifact_key }) => artifact_key));
+          const nextExportId = exports[exports.length - 1]?.id;
+          if (!nextExportId || nextExportId <= afterExportId) throw new Error("Invalid blueprint export pagination cursor");
+          afterExportId = nextExportId;
+        }
 
         // Also remove vectors referenced only by the chunk registry (for orphaned/legacy docs).
         let afterRowId = 0;
