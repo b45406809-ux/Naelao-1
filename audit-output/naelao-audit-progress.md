@@ -1174,3 +1174,16 @@ Moved the shared HMAC and ownership middleware ahead of all routes. Added regres
 Validation: Knowledge Worker suite passed 8 files / 36 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
 
 This closes the early-route group (publication list/write/delete and external collection search) and their test module. The main `index.ts` remains unchecked overall; later route groups and every DB/R2/Vectorize side-effect path still need review.
+
+
+## Knowledge document lifecycle routes (2026-10-21)
+
+Reviewed list, ingest, update, delete, and citation retrieval paths. Project-scoped list/search/update/delete routes did not consult the project ACL, so a caller with a valid internal service token and space access could address a project by ID without proving project membership. Project document list/search/update/delete now call the shared project access guard.
+
+Ingestion silently filtered malformed `allowed_user_ids` and clamped invalid role ranks, which could turn a malformed private-document request into a broadly visible document. These ACL fields and project IDs now validate strictly; PDF Base64 is decoded and checked before a processing row or R2 object is created. Content reindexing previously rewrote every vector as public and dropped sovereign-user ACLs. It now reads the first chunk's ACL metadata before mutation, applies the more restrictive persisted role rank, and preserves the user allowlist; missing or malformed ACL metadata fails closed. Reindex embedding now completes before the old index is deleted, so model failure keeps the prior indexed content intact. Provider errors carrying HTTP status are translated into the shared `HttpError` contract instead of becoming generic 500s.
+
+Added lifecycle tests for malformed ACL/PDF requests, valid private ACL storage, ACL preservation, missing vector metadata, embedding failure before deletion, and project membership gates for listing/editing/deleting.
+
+Validation: Knowledge Worker suite passed 9 files / 42 tests; Knowledge Worker TypeScript check and `git diff --check` passed.
+
+This is a focused pass of the five document routes and their test module. `workers/knowledge/src/index.ts` remains unchecked overall; cancellation/partial-write behavior after destructive reindex begins, deletion partial failures, and other route groups need further review.

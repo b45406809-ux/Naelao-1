@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono";
-import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger, readBoundedResponseJson } from "@naelao/http";
+import { HttpError, requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac, parseBoundedInteger, readBoundedResponseJson } from "@naelao/http";
 import { chunkText, chunkStructuredMarkdown, embedText, embedBatch, googleModeSearch, lookupSemanticCache, searchPermissionedKnowledge, wrapContextChunk, UNTRUSTED_CONTEXT_INSTRUCTION, verifyCitationCoordinate, type GroundedSearchHit, type RetrievalScope, type StructuralChunk } from "@naelao/rag";
 import { buildRetrievalPredicate, checkSsrf, isRetrievalRecordAllowed, isSpaceNetworkEgressDenied, KNOWLEDGE_ROLE_MASK, type KnowledgeRole } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
@@ -87,6 +87,17 @@ const SPACE_WIDE_PROJECT_SENTINEL = "_space";
 // G-A11: Validate required secrets at startup
 function validateEnv(env: KnowledgeEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
+}
+
+function preserveHttpStatus(err: unknown): never {
+  if (err instanceof HttpError) throw err;
+  if (err && typeof err === "object" && "status" in err && Number.isInteger(err.status)
+    && Number(err.status) >= 400 && Number(err.status) <= 599) {
+    const status = Number(err.status);
+    throw new HttpError(status, status >= 500 ? "upstream_error" : "bad_request",
+      err instanceof Error ? err.message : "Request failed");
+  }
+  throw internalError(`Document processing failed: ${err instanceof Error ? err.message : String(err)}`);
 }
 
 const app = new Hono<{ Bindings: KnowledgeEnv }>();
@@ -324,6 +335,22 @@ function sanitizeKbContent(content: string): { sanitized: string; injectionDetec
   return { sanitized: stripped, injectionDetected };
 }
 
+function decodePdfContent(value: string): Uint8Array {
+  const match = /^data:application\/pdf;base64,([A-Za-z0-9+/]*={0,2})$/i.exec(value);
+  const encoded = match?.[1] ?? value;
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    throw badRequest("PDF content must be valid Base64 bytes");
+  }
+  try {
+    const binary = atob(encoded);
+    const bytes = Uint8Array.from(binary, (value) => value.charCodeAt(0));
+    if (!bytes.byteLength) throw badRequest("PDF document is empty");
+    return bytes;
+  } catch {
+    throw badRequest("PDF content must be valid Base64 bytes");
+  }
+}
+
 // ── Helper: sha256 hex digest (Web Crypto, available in Workers) ──────────────
 
 async function sha256Hex(input: string): Promise<string> {
@@ -422,6 +449,10 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
   // WS-4: no project_id param = the pre-existing default, space-wide documents only
   // (project_id IS NULL) — never mixes in a project's own isolated documents by accident.
   const projectId = url.searchParams.get("project_id");
+  if (projectId !== null) {
+    const access = await requireProjectAccess(c, projectId);
+    if (access instanceof Response) return access;
+  }
 
   const { results } = await c.env.PLATFORM_DB.prepare(
     projectId
@@ -463,9 +494,19 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     /** Explicit sovereign-user allowlist. IDs are indexed, never evaluated after ranking. */
     allowed_user_ids?: string[];
   }>();
+  if (body.project_id !== undefined && (typeof body.project_id !== "string" || !body.project_id || body.project_id.length > 256)) {
+    throw badRequest("project_id must be a nonempty string of at most 256 characters");
+  }
   const projectId = body.project_id ?? null;
-  const requiredRoleRank = Math.max(0, Math.min(body.required_role_rank ?? 0, 50));
-  const allowedUserIds = [...new Set((body.allowed_user_ids ?? []).filter((id) => typeof id === "string" && id.length > 0))].slice(0, 100);
+  if (body.required_role_rank !== undefined && (!Number.isSafeInteger(body.required_role_rank) || body.required_role_rank < 0 || body.required_role_rank > 50)) {
+    throw badRequest("required_role_rank must be an integer from 0 to 50");
+  }
+  const requiredRoleRank = body.required_role_rank ?? 0;
+  const rawAllowedUserIds: unknown = body.allowed_user_ids ?? [];
+  if (!Array.isArray(rawAllowedUserIds) || rawAllowedUserIds.length > 100 || rawAllowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256)) {
+    throw badRequest("allowed_user_ids must contain at most 100 nonempty IDs of at most 256 characters");
+  }
+  const allowedUserIds = [...new Set(rawAllowedUserIds as string[])];
   // An explicit user allowlist is USER_PRIVATE and therefore outranks role/project visibility.
   const allowedRoles = allowedUserIds.length > 0
     ? []
@@ -483,6 +524,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   if (!body.title || typeof body.title !== "string" || body.title.trim().length === 0) {
     throw badRequest("title is required");
   }
+  if (body.title.length > 500) throw badRequest("title exceeds maximum size of 500 characters");
   if (!body.content || typeof body.content !== "string") {
     throw badRequest("content is required");
   }
@@ -498,6 +540,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   if (body.content.length > MAX_CONTENT_CHARS) {
     throw badRequest(`content exceeds maximum size of 1MB (${MAX_CONTENT_CHARS} chars)`);
   }
+  if (body.source_url !== undefined && (typeof body.source_url !== "string" || body.source_url.length > 2_048)) {
+    throw badRequest("source_url must be a string of at most 2048 characters");
+  }
+  const originalBytes = contentType === "pdf" ? decodePdfContent(body.content) : new TextEncoder().encode(body.content);
 
   // G-AA26: Scan document content for prompt injection before indexing
   const titleMod = moderateInput(body.title.trim());
@@ -544,9 +590,6 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   let storageBytesWritten = 0;
   try {
     // ── G-BD01: Sanitize content — strip HTML, detect injection patterns ────
-    const originalBytes = contentType === "pdf"
-      ? Uint8Array.from(atob(body.content.replace(/^data:[^,]+,/, "")), (value) => value.charCodeAt(0))
-      : new TextEncoder().encode(body.content);
     const originalKey = `kb/${spaceId}/${projectId ?? "_space"}/${docId}/original`;
     await c.env.KB_BUCKET.put(originalKey, originalBytes, { httpMetadata: { contentType: contentType === "pdf" ? "application/pdf" : "text/plain; charset=utf-8" } });
     storageBytesWritten += originalBytes.byteLength;
@@ -702,8 +745,7 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       .catch(() => {/* best-effort */});
     await reportKnowledgeStorageWrite(c.env, tenantId, spaceId, projectId, docId, storageBytesWritten, false);
 
-    if (err && typeof err === "object" && "status" in err) throw err;
-    throw internalError(`Document ingestion failed: ${err instanceof Error ? err.message : String(err)}`);
+    preserveHttpStatus(err);
   }
 });
 
@@ -720,24 +762,36 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     content?: string;
   }>();
 
-  if (!body.title && !body.content) {
+  if (body.title !== undefined && (typeof body.title !== "string" || !body.title.trim() || body.title.length > 500)) {
+    throw badRequest("title must contain 1 to 500 characters");
+  }
+  if (body.content !== undefined && (typeof body.content !== "string" || !body.content || body.content.length > 1_048_576)) {
+    throw badRequest("content must contain 1 to 1048576 characters");
+  }
+  if (body.title === undefined && body.content === undefined) {
     throw badRequest("At least one of title or content is required");
   }
 
   // A title-only edit stays in D1. Content changes invoke Workers AI and Vectorize and therefore
   // must be rejected before document state or existing vectors are mutated.
-  if (body.content && await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
+  if (body.content !== undefined && await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
 
   // Verify ownership and get current state
   const existing = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, title, chunk_count, project_id FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?"
-  ).bind(docId, spaceId, tenantId).first<{ id: string; title: string; chunk_count: number; project_id: string | null }>();
+    `SELECT id, title, chunk_count, project_id,
+       (SELECT required_role_rank FROM kb_chunks WHERE document_id=kb_documents.id AND chunk_index=0 LIMIT 1) AS required_role_rank
+     FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?`
+  ).bind(docId, spaceId, tenantId).first<{ id: string; title: string; chunk_count: number; project_id: string | null; required_role_rank: number | null }>();
 
   if (!existing) throw notFound("KbDocument");
   const projectId = existing.project_id;
+  if (projectId) {
+    const access = await requireProjectAccess(c, projectId);
+    if (access instanceof Response) return access;
+  }
 
   // If only updating title (no content re-index needed)
-  if (body.title && !body.content) {
+  if (body.title !== undefined && body.content === undefined) {
     const newTitle = body.title.trim();
     const titleMod = moderateInput(newTitle);
     if (titleMod.blocked) throw badRequest(`Title contains disallowed content: ${titleMod.reason}`);
@@ -768,12 +822,53 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     throw badRequest(`content exceeds maximum size of 1MB`);
   }
 
-  // Mark as re-processing
-  await c.env.PLATFORM_DB.prepare(
-    "UPDATE kb_documents SET status = 'processing', updated_at = datetime('now') WHERE id = ?"
-  ).bind(docId).run();
+  // ACL metadata must survive a content rewrite. The chunk table stores the role rank and
+  // Vectorize stores the explicit sovereign-user allowlist. Read both before deleting anything;
+  // if the prior vector is unavailable, fail closed instead of silently making private content public.
+  let requiredRoleRank = Number.isSafeInteger(existing.required_role_rank) ? Number(existing.required_role_rank) : 0;
+  let allowedUserIds: string[] = [];
+  if ((existing.chunk_count ?? 0) > 0) {
+    const oldVectors = await c.env.KB_VECTORS.getByIds([`${docId}_chunk_0`]);
+    const oldVector = oldVectors.find((vector) => vector.id === `${docId}_chunk_0`);
+    if (!oldVector) throw new HttpError(503, "upstream_error", "Existing knowledge access metadata is unavailable");
+    const rawAllowedUserIds = oldVector.metadata?.allowed_user_ids;
+    if (rawAllowedUserIds !== undefined && (!Array.isArray(rawAllowedUserIds) || rawAllowedUserIds.some((id) => typeof id !== "string" || !id || id.length > 256))) {
+      throw internalError("Existing knowledge access metadata is invalid");
+    }
+    const vectorRoleRank = oldVector.metadata?.required_role_rank;
+    if (vectorRoleRank !== undefined && (!Number.isSafeInteger(vectorRoleRank) || Number(vectorRoleRank) < 0 || Number(vectorRoleRank) > 50)) {
+      throw internalError("Existing knowledge role metadata is invalid");
+    }
+    if (typeof vectorRoleRank === "number") requiredRoleRank = Math.max(requiredRoleRank, vectorRoleRank);
+    allowedUserIds = Array.isArray(rawAllowedUserIds) ? [...new Set(rawAllowedUserIds as string[])] : [];
+  }
+  const allowedRoles = allowedUserIds.length > 0
+    ? []
+    : Object.entries(ROLE_RANK)
+      .filter(([role, rank]) => role in KNOWLEDGE_ROLE_MASK && rank >= requiredRoleRank)
+      .map(([role]) => role);
+  const accessMask = allowedRoles.reduce((mask, role) => mask | KNOWLEDGE_ROLE_MASK[role as KnowledgeRole], 0);
 
+  let reindexStarted = false;
   try {
+    // Finish every fallible embedding request before replacing the current index. A provider
+    // timeout or malformed embedding must leave the previously indexed document usable.
+    const chunks = chunkText(newContent);
+    if (chunks.length === 0) chunks.push(newContent.trim());
+    const coordinates = chunkCoordinates(newContent, chunks);
+    const indexedAt = new Date().toISOString();
+    const EMBED_BATCH_SIZE = 50;
+    const allEmbedResults: Array<{ embedding: number[]; tokenCount: number }> = [];
+    for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
+      const batchResults = await embedBatch(c.env.AI, chunks.slice(i, i + EMBED_BATCH_SIZE));
+      allEmbedResults.push(...batchResults);
+    }
+
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE kb_documents SET status = 'processing', updated_at = datetime('now') WHERE id = ?"
+    ).bind(docId).run();
+    reindexStarted = true;
+
     // G-X09: Delete ALL old vectors before re-indexing to prevent stale accumulation
     const oldChunkCount = existing.chunk_count ?? 0;
     if (oldChunkCount > 0) {
@@ -800,19 +895,6 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       cursor = listed.truncated ? listed.cursor : undefined;
     } while (cursor);
 
-    // Re-chunk and re-embed
-    const chunks = chunkText(newContent);
-    if (chunks.length === 0) chunks.push(newContent.trim());
-    const coordinates = chunkCoordinates(newContent, chunks);
-    const indexedAt = new Date().toISOString();
-
-    const EMBED_BATCH_SIZE = 50;
-    const allEmbedResults: Array<{ embedding: number[]; tokenCount: number }> = [];
-    for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
-      const batchResults = await embedBatch(c.env.AI, chunks.slice(i, i + EMBED_BATCH_SIZE));
-      allEmbedResults.push(...batchResults);
-    }
-
     const vectorUpserts: VectorizeVector[] = [];
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
@@ -834,9 +916,9 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       await c.env.PLATFORM_DB.prepare(
         `INSERT INTO kb_chunks (id,tenant_id,space_id,project_id,document_id,chunk_index,content,
          content_hash,visibility,required_role_rank,source_freshness,heading_path,r2_key,byte_start,
-         byte_end,line_start,line_end,created_at,deleted_at) VALUES (?,?,?,?,?,?,?,?,?,0,?,'[]',?,?,?,?,?,?,NULL)`
+         byte_end,line_start,line_end,created_at,deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'[]',?,?,?,?,?,?,NULL)`
       ).bind(chunkId, tenantId, spaceId, projectId ?? SPACE_WIDE_PROJECT_SENTINEL, docId, i, chunk,
-        contentHash, projectId ? "project" : "space", indexedAt, citationR2Key(spaceId, projectId, docId, i),
+        contentHash, projectId ? "project" : "space", requiredRoleRank, indexedAt, citationR2Key(spaceId, projectId, docId, i),
         0, new TextEncoder().encode(chunk).byteLength, coordinate.lineStart, coordinate.lineEnd, indexedAt).run();
 
       vectorUpserts.push({
@@ -846,11 +928,12 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
           space_id: spaceId,
           tenant_id: tenantId,
           project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
-          visibility: "public",
-          allowed_roles: ["owner", "admin", "editor", "member", "viewer"],
-          allowed_user_ids: [],
-          access_mask: 31,
-          required_role_rank: 0,
+          visibility: requiredRoleRank === 0 && allowedUserIds.length === 0 ? "public" : "restricted",
+          allowed_roles: allowedRoles,
+          allowed_user_ids: allowedUserIds,
+          access_mask: accessMask,
+          allowedRolesMask: accessMask,
+          required_role_rank: requiredRoleRank,
           content_hash: contentHash,
           doc_id: docId,
           chunk_index: i,
@@ -882,9 +965,11 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     const updated = await c.env.PLATFORM_DB.prepare("SELECT * FROM kb_documents WHERE id = ?").bind(docId).first();
     return c.json(updated, 200);
   } catch (err) {
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE kb_documents SET status = 'failed', updated_at = datetime('now') WHERE id = ?"
-    ).bind(docId).run().catch(() => {});
+    if (reindexStarted) {
+      await c.env.PLATFORM_DB.prepare(
+        "UPDATE kb_documents SET status = 'failed', updated_at = datetime('now') WHERE id = ?"
+      ).bind(docId).run().catch(() => {});
+    }
     throw internalError(`Document update failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 });
@@ -904,6 +989,10 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     .first<{ id: string; chunk_count: number; project_id: string | null }>();
 
   if (!doc) throw notFound("KbDocument");
+  if (doc.project_id) {
+    const access = await requireProjectAccess(c, doc.project_id);
+    if (access instanceof Response) return access;
+  }
 
   const chunkCount = doc.chunk_count ?? 0;
 
@@ -1005,6 +1094,10 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // WS-4: no project_id param = the pre-existing default, search space-wide documents only —
   // never silently mixes in a project's own isolated KB.
   const projectId = url.searchParams.get("project_id");
+  if (projectId !== null) {
+    const access = await requireProjectAccess(c, projectId);
+    if (access instanceof Response) return access;
+  }
   // §A1.19: opt-in per request (the caller — e.g. the knowledge-base prebuilt or dashboard —
   // decides), not a stored per-space policy. Falls back to the legacy hybrid pipeline whenever
   // AutoRAG isn't configured on this worker, even if the caller asked for it — never a hard
