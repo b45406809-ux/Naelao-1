@@ -54,7 +54,7 @@ describe("tokensToCredits — the ONLY place tokens become the platform credit u
   it("is consistent with computeTokenCostMicro under CREDITS_PER_USD", () => {
     const micro = computeTokenCostMicro(500_000, 200_000, "claude-sonnet-4-6");
     const credits = tokensToCredits(500_000, 200_000, "claude-sonnet-4-6");
-    expect(credits).toBe(Math.max(1, Math.ceil((micro * CREDITS_PER_USD) / 1_000_000)));
+    expect(credits).toBe(Math.max(1, Math.ceil((micro * 1.15 * CREDITS_PER_USD) / 1_000_000)));
   });
 });
 

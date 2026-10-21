@@ -853,7 +853,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `packages/billing-core/src/marketplace-policy.test.ts`
 - [ ] `packages/billing-core/src/marketplace-policy.ts`
 - [ ] `packages/billing-core/src/model-benchmarks.ts`
-- [ ] `packages/billing-core/src/models.ts`
+- [x] `packages/billing-core/src/models.ts`
 - [ ] `packages/billing-core/src/personal-plan.ts`
 - [ ] `packages/billing-core/src/plans.test.ts`
 - [ ] `packages/billing-core/src/plans.ts`
@@ -1617,7 +1617,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `tests/unit/packages/analytics-schema.test.ts`
 - [x] `tests/unit/packages/auth.test.ts`
-- [ ] `tests/unit/packages/billing-core.test.ts`
+- [x] `tests/unit/packages/billing-core.test.ts`
 - [x] `tests/unit/packages/crypto.test.ts`
 - [ ] `tests/unit/packages/entitlements.test.ts`
 - [ ] `tests/unit/packages/events-cron.test.ts`

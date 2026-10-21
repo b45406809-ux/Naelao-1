@@ -282,6 +282,10 @@ const NO_REASONING: ModelCapability = { reasoningLevels: [], reasoningParam: "no
  * 400s a real request.
  */
 export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
+  // The current OpenRouter DeepSeek Flash candidate has no independently verified reasoning
+  // control in this app's outbound request contract; keep it explicit and unavailable until one
+  // is confirmed rather than letting the registry silently omit an allowed picker model.
+  "openrouter/deepseek/deepseek-v4.1-flash-1017": NO_REASONING,
   "claude-haiku-4-5-20251001": NO_REASONING,
   "claude-sonnet-4-6": NO_REASONING,
   "claude-opus-4-8": NO_REASONING,

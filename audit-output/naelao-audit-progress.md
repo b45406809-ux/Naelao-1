@@ -1386,3 +1386,9 @@ The shared suite exposed a real context-budget gap: preview length was estimated
 The expired-slot test itself used `ttl_ms: -1`, which the API correctly rejects as invalid, then expected an active count that intentionally excludes expired rows. Reworked it to acquire with a valid 1-second lease, advance fake time past expiry, and verify the next acquire reclaims the slot.
 
 Validation: private tool output stress suite passed 1 file / 46 tests; ConcurrencyDO suite passed 1 file / 7 tests; Agents TypeScript check passed.
+
+## Complete billing model registry and reconcile credit-margin assertion (2026-10-21)
+
+The shared integration suite found the allowed OpenRouter DeepSeek Flash slug had no explicit `MODEL_CAPABILITIES` entry. Runtime fallback was no-reasoning, but a missing row made model-picker capability introspection incomplete. Added an explicit `NO_REASONING` entry pending independent confirmation of a supported reasoning parameter. The same suite's credit conversion assertion omitted the documented 15% operating margin in `tokensToCredits`; corrected the assertion so it checks provider cost × margin × credits per USD.
+
+Validation: billing-core package suite passed 5 files / 16 tests; shared billing-core suite passed 1 file / 22 tests after rebuilding the workspace package.
