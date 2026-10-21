@@ -1,6 +1,6 @@
 // G-T01..G-T08: Threads — multi-session conversation threading with LLM-generated summaries
 import { Hono } from "hono";
-import { errorResponse, parseBoundedInteger, readBoundedResponseJson, requestId } from "@naelao/http";
+import { errorResponse, parseBoundedInteger, readBoundedRequestText, readBoundedResponseJson, RequestBodyTooLargeError, requestId } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 
 interface Env {
@@ -20,6 +20,19 @@ interface Thread {
   session_count: number;
   last_active_at: string;
   created_at: string;
+}
+
+const MAX_THREAD_REQUEST_BYTES = 64 * 1024;
+const MAX_THREAD_SESSION_SUMMARY_CHARS = 4_000;
+const MAX_THREAD_SUMMARY_INPUT_CHARS = 32_000;
+
+async function readThreadRequestJson(request: Request): Promise<unknown> {
+  return JSON.parse(await readBoundedRequestText(request, MAX_THREAD_REQUEST_BYTES)) as unknown;
+}
+
+function invalidBodyResponse(error: unknown): Response {
+  const tooLarge = error instanceof RequestBodyTooLargeError;
+  return Response.json({ error_code: tooLarge ? "request_body_too_large" : "invalid_request" }, { status: tooLarge ? 413 : 400 });
 }
 
 function validateEnv(env: Env): void {
@@ -70,18 +83,27 @@ app.get("/v1/threads/:id", async (c) => {
   ).bind(c.req.param("id"), tenantId).first<Thread>();
   if (!thread) return c.json({ error_code: "not_found", message: "Thread not found" }, 404);
 
-  const { results: sessions } = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, status, message_count, created_at, ended_at FROM thread_sessions WHERE thread_id = ? AND tenant_id = ? ORDER BY created_at ASC"
-  ).bind(thread.id, tenantId).all();
-  return c.json({ data: { ...thread, sessions } });
+  const limit = parseBoundedInteger(new URL(c.req.url).searchParams.get("limit"), 50, 1, 100);
+  const offset = parseBoundedInteger(new URL(c.req.url).searchParams.get("offset"), 0, 0, 100_000);
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, status, message_count, created_at, ended_at FROM thread_sessions WHERE thread_id = ? AND tenant_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?"
+  ).bind(thread.id, tenantId, limit + 1, offset).all();
+  const sessions = results.slice(0, limit);
+  const hasMore = results.length > limit;
+  return c.json({ data: { ...thread, sessions, sessions_pagination: { limit, offset, next_offset: hasMore ? offset + limit : null } } });
 });
 
 // Create thread
 app.post("/v1/threads", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const body = await c.req.json<{ space_id: string; end_user_id: string; title?: string }>();
-  if (!body.space_id || !body.end_user_id) {
+  let value: unknown;
+  try { value = await readThreadRequestJson(c.req.raw); } catch (error) { return invalidBodyResponse(error); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return c.json({ error_code: "bad_request", message: "Invalid thread body" }, 400);
+  const body = value as { space_id?: unknown; end_user_id?: unknown; title?: unknown };
+  if (typeof body.space_id !== "string" || !body.space_id.trim() || body.space_id.length > 256 ||
+      typeof body.end_user_id !== "string" || !body.end_user_id.trim() || body.end_user_id.length > 256 ||
+      (body.title !== undefined && (typeof body.title !== "string" || body.title.length > 160))) {
     return c.json({ error_code: "bad_request", message: "space_id and end_user_id required" }, 400);
   }
   // Verify space belongs to tenant
@@ -105,30 +127,60 @@ app.post("/v1/threads/:id/sessions", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const thread = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, space_id FROM threads WHERE id = ? AND tenant_id = ?"
-  ).bind(c.req.param("id"), tenantId).first<{ id: string; space_id: string }>();
+    "SELECT id, space_id, end_user_id FROM threads WHERE id = ? AND tenant_id = ?"
+  ).bind(c.req.param("id"), tenantId).first<{ id: string; space_id: string; end_user_id: string }>();
   if (!thread) return c.json({ error_code: "not_found", message: "Thread not found" }, 404);
 
-  const body = await c.req.json<{ session_id: string; end_user_id?: string }>();
-  if (!body.session_id) return c.json({ error_code: "bad_request", message: "session_id required" }, 400);
+  let value: unknown;
+  try { value = await readThreadRequestJson(c.req.raw); } catch (error) { return invalidBodyResponse(error); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return c.json({ error_code: "bad_request", message: "Invalid session body" }, 400);
+  const body = value as { session_id?: unknown; end_user_id?: unknown };
+  if (typeof body.session_id !== "string" || !body.session_id.trim() || body.session_id.length > 128 ||
+      (body.end_user_id !== undefined && (typeof body.end_user_id !== "string" || body.end_user_id.length > 256))) {
+    return c.json({ error_code: "bad_request", message: "valid session_id required" }, 400);
+  }
+  if (body.end_user_id !== undefined && body.end_user_id !== thread.end_user_id) {
+    return c.json({ error_code: "end_user_mismatch", message: "Session owner does not match thread owner" }, 403);
+  }
 
   const now = new Date().toISOString();
-  await c.env.PLATFORM_DB.prepare(
+  const result = await c.env.PLATFORM_DB.prepare(
     `INSERT INTO thread_sessions (id, thread_id, space_id, tenant_id, end_user_id, status, created_at)
      VALUES (?, ?, ?, ?, ?, 'active', ?)
-     ON CONFLICT(id) DO UPDATE SET thread_id = excluded.thread_id`
-  ).bind(body.session_id, thread.id, thread.space_id, tenantId, body.end_user_id ?? null, now).run();
+     ON CONFLICT(id) DO NOTHING`
+  ).bind(body.session_id, thread.id, thread.space_id, tenantId, thread.end_user_id, now).run();
+  if (result.meta.changes === 0) {
+    const existing = await c.env.PLATFORM_DB.prepare(
+      "SELECT thread_id FROM thread_sessions WHERE id = ? AND tenant_id = ?"
+    ).bind(body.session_id, tenantId).first<{ thread_id: string }>();
+    if (existing?.thread_id !== thread.id) {
+      return c.json({ error_code: "session_already_attached", message: "Session is already attached to another thread" }, 409);
+    }
+  }
+  const sessionCount = await c.env.PLATFORM_DB.prepare(
+    "SELECT COUNT(*) AS count FROM thread_sessions WHERE thread_id = ? AND tenant_id = ?"
+  ).bind(thread.id, tenantId).first<{ count: number }>();
   await c.env.PLATFORM_DB.prepare(
-    "UPDATE threads SET session_count = session_count + 1, last_active_at = ?, updated_at = ? WHERE id = ?"
-  ).bind(now, now, thread.id).run();
-  return c.json({ thread_id: thread.id, session_id: body.session_id });
+    "UPDATE threads SET session_count = ?, last_active_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+  ).bind(sessionCount?.count ?? 0, now, now, thread.id, tenantId).run();
+  return c.json({ thread_id: thread.id, session_id: body.session_id, ...(result.meta.changes === 0 ? { idempotent: true } : {}) });
 });
 
 // Update session status/message_count in thread_sessions shadow table
 app.patch("/v1/threads/sessions/:sessionId", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const body = await c.req.json<{ status?: string; message_count?: number; last_message_at?: string; ended_at?: string; summary?: string }>();
+  let value: unknown;
+  try { value = await readThreadRequestJson(c.req.raw); } catch (error) { return invalidBodyResponse(error); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return c.json({ error_code: "bad_request", message: "Invalid session update" }, 400);
+  const body = value as { status?: unknown; message_count?: unknown; last_message_at?: unknown; ended_at?: unknown; summary?: unknown };
+  if ((body.status !== undefined && (typeof body.status !== "string" || body.status.length > 32)) ||
+      (body.message_count !== undefined && (!Number.isSafeInteger(body.message_count) || Number(body.message_count) < 0 || Number(body.message_count) > 10_000_000)) ||
+      (body.last_message_at !== undefined && (typeof body.last_message_at !== "string" || body.last_message_at.length > 64 || !Number.isFinite(Date.parse(body.last_message_at)))) ||
+      (body.ended_at !== undefined && (typeof body.ended_at !== "string" || body.ended_at.length > 64 || !Number.isFinite(Date.parse(body.ended_at)))) ||
+      (body.summary !== undefined && (typeof body.summary !== "string" || body.summary.length > MAX_THREAD_SESSION_SUMMARY_CHARS))) {
+    return c.json({ error_code: "bad_request", message: "Invalid session update fields" }, 400);
+  }
   const now = new Date().toISOString();
 
   const updates: string[] = ["updated_at = ?"];
@@ -180,8 +232,9 @@ app.post("/v1/threads/:id/summarize", async (c) => {
   if (sessionRows.length === 0) return c.json({ summary: null });
 
   const transcript = sessionRows
-    .map((s, i) => `Session ${i + 1} (${s.message_count} messages): ${s.summary}`)
-    .join("\n\n");
+    .map((s, i) => `Session ${i + 1} (${s.message_count} messages): ${s.summary.slice(0, MAX_THREAD_SESSION_SUMMARY_CHARS)}`)
+    .join("\n\n")
+    .slice(0, MAX_THREAD_SUMMARY_INPUT_CHARS);
 
   const summary = await generateSummary(transcript, c.env);
   const now = new Date().toISOString();
@@ -221,6 +274,7 @@ async function generateSummary(transcript: string, env: Env): Promise<string> {
           },
         ],
       }),
+      signal: AbortSignal.timeout(15_000),
     });
     if (!resp.ok) return "Summary unavailable.";
     const data = await readBoundedResponseJson<{ content?: { type: string; text: string }[] }>(resp, 64 * 1024);

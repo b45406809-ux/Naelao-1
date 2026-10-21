@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `1981` tracked files; `1775` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `25cce99d`.
+Inventory basis: `1991` tracked files; `1785` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at the thread-schema integrity refresh.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -697,6 +697,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `infra/migrations/0111_extension_publisher_keys.sql`
 - [ ] `infra/migrations/0112_extension_provider_connections.sql`
 - [ ] `infra/migrations/0113_whatsapp_extension_phone_routing.sql`
+- [x] `infra/migrations/0114_thread_last_active_at.sql`
 
 ### `infra/scripts`
 
@@ -1557,6 +1558,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/script-run-hmac-gate.test.ts`
 - [ ] `tests/unit/seed-general-project.test.ts`
 - [ ] `tests/unit/send-to-thread-orchestration-hook.test.ts`
+- [x] `tests/unit/thread-last-active-migration.test.ts`
 - [ ] `tests/unit/session-budget-guard.test.ts`
 - [ ] `tests/unit/shell-request.test.ts`
 - [ ] `tests/unit/shell-role-gate.test.ts`
@@ -2551,7 +2553,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/threads/src`
 
-- [ ] `workers/threads/src/index.test.ts`
+- [x] `workers/threads/src/index.test.ts`
 - [ ] `workers/threads/src/index.ts`
 
 ### `workers/together-ai`

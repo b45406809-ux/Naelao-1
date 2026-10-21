@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 1989
-Files with source or executable-configuration extensions: 1783
-Inventory revision: 2026-10-21 audit refresh for Whop provider bounds
+Files: 1991
+Files with source or executable-configuration extensions: 1785
+Inventory revision: 2026-10-21 audit refresh for thread schema integrity
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -592,6 +592,7 @@ infra/
     0111_extension_publisher_keys.sql
     0112_extension_provider_connections.sql
     0113_whatsapp_extension_phone_routing.sql
+    0114_thread_last_active_at.sql
   scripts/
     audit-ui.mjs
     await-quota-then-matrix.sh
@@ -1418,6 +1419,7 @@ tests/
     script-run-hmac-gate.test.ts
     seed-general-project.test.ts
     send-to-thread-orchestration-hook.test.ts
+  thread-last-active-migration.test.ts
     session-budget-guard.test.ts
     shell-request.test.ts
     shell-role-gate.test.ts
