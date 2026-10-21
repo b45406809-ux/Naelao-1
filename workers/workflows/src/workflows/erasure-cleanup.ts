@@ -135,6 +135,7 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("DELETE FROM email_verification_tokens WHERE product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM product_end_users WHERE product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM notifications WHERE tenant_id = ?").bind(orgId),
+    db.prepare("DELETE FROM assistant_sessions WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM web_push_subscriptions WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM do_registry WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM space_type_tools WHERE tenant_id = ?").bind(orgId),

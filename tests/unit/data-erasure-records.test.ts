@@ -50,7 +50,7 @@ describe("data erasure D1 records", () => {
     const handledTenantScoped = new Set([
       "api_keys", "builder_api_key_index", "do_registry", "eval_results", "gdpr_erasure_outbox",
       "gdpr_requests", "idempotency_keys", "launchpad_orders", "marketplace_forks",
-      "marketplace_listings", "marketplace_reviews", "notifications", "org_members", "portal_domains",
+      "marketplace_listings", "marketplace_reviews", "notifications", "org_members", "portal_domains", "assistant_sessions",
       "reseller_accounts", "service_accounts", "space_provisioning_leases", "space_type_tools",
       "spaces", "spacetypes", "subscriptions", "usage_events", "users", "web_push_subscriptions",
     ]);
@@ -106,6 +106,24 @@ describe("data erasure D1 records", () => {
       .toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM space_credentials WHERE space_id = ?").get("space-a"))
       .toEqual({ count: 0 });
+  });
+
+  it("erases platform assistant sessions and cascading messages by tenant", async () => {
+    const db = createFakeD1(platformMigrations);
+    db.db.prepare(`INSERT INTO assistant_sessions (id, tenant_id, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`)
+      .run("session-a", "tenant-a", "user-a", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO assistant_sessions (id, tenant_id, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`)
+      .run("session-b", "tenant-b", "user-b", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO assistant_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run("message-a", "session-a", "user", "private tenant A text", "2026-01-01");
+    db.db.prepare(`INSERT INTO assistant_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run("message-b", "session-b", "user", "private tenant B text", "2026-01-01");
+
+    await eraseOrgOperationalRecords(db as never, "tenant-a");
+
+    expect(db.db.prepare("SELECT id FROM assistant_sessions ORDER BY id").all()).toEqual([{ id: "session-b" }]);
+    expect(db.db.prepare("SELECT id, content FROM assistant_messages ORDER BY id").all())
+      .toEqual([{ id: "message-b", content: "private tenant B text" }]);
   });
 
   it("clears credentials and login metadata while anonymizing only the target org", async () => {

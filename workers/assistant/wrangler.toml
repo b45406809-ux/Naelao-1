@@ -12,6 +12,7 @@ workers_dev = false
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
 
 [[vectorize]]
 binding = "PLATFORM_DOCS_INDEX"
@@ -31,6 +32,7 @@ vars = { ENVIRONMENT = "production", LLM_GATEWAY_URL = "https://llm.naelao.com" 
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
 
 
 [[env.staging.vectorize]]
@@ -42,6 +44,7 @@ index_name = "naelao-platform-docs"
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+migrations_dir = "../../infra/migrations"
 
 
 [[env.production.vectorize]]

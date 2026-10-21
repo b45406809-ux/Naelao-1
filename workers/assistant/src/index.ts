@@ -7,6 +7,7 @@ const MAX_CHAT_MESSAGE_BYTES = 16 * 1024;
 const MAX_HISTORY_ROW_CHARS = 4_000;
 const MAX_HISTORY_TOTAL_CHARS = 32_000;
 const MAX_KB_CONTEXT_CHARS = 32_000;
+const MAX_SESSION_MESSAGE_PAGE = 100;
 
 interface Env {
   ENVIRONMENT: string;
@@ -71,10 +72,34 @@ app.get("/v1/assistant/sessions/:id", async (c) => {
     "SELECT id, title, created_at FROM assistant_sessions WHERE id = ? AND tenant_id = ? AND user_id = ?"
   ).bind(c.req.param("id"), tenantId, userId).first<AssistantSession>();
   if (!session) return c.json({ error_code: "not_found", message: "Session not found" }, 404);
-  const { results: messages } = await c.env.PLATFORM_DB.prepare(
-    "SELECT role, content, created_at FROM assistant_messages WHERE session_id = ? ORDER BY created_at ASC"
-  ).bind(session.id).all();
-  return c.json({ data: { ...session, messages } });
+  const rawLimit = c.req.query("limit");
+  const limit = rawLimit === undefined ? MAX_SESSION_MESSAGE_PAGE : Number(rawLimit);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SESSION_MESSAGE_PAGE) {
+    return c.json({ error_code: "bad_request", message: `limit must be an integer from 1 to ${MAX_SESSION_MESSAGE_PAGE}` }, 400);
+  }
+  const beforeId = c.req.query("before_id");
+  if (beforeId !== undefined) {
+    if (!/^[A-Za-z0-9._:-]{1,160}$/.test(beforeId)) return c.json({ error_code: "bad_request", message: "Invalid message cursor" }, 400);
+    const cursor = await c.env.PLATFORM_DB.prepare(
+      "SELECT rowid FROM assistant_messages WHERE id = ? AND session_id = ?"
+    ).bind(beforeId, session.id).first<{ rowid: number }>();
+    if (!cursor) return c.json({ error_code: "invalid_cursor", message: "Message cursor is no longer available" }, 400);
+  }
+  const query = beforeId
+    ? `SELECT id, role, content, created_at FROM assistant_messages WHERE session_id = ?
+       AND rowid < (SELECT rowid FROM assistant_messages WHERE id = ? AND session_id = ?)
+       ORDER BY rowid DESC LIMIT ?`
+    : "SELECT id, role, content, created_at FROM assistant_messages WHERE session_id = ? ORDER BY rowid DESC LIMIT ?";
+  const bindings = beforeId ? [session.id, beforeId, session.id, limit + 1] : [session.id, limit + 1];
+  const { results: newestFirst } = await c.env.PLATFORM_DB.prepare(query).bind(...bindings).all();
+  const hasMore = newestFirst.length > limit;
+  const messages = newestFirst.slice(0, limit).reverse();
+  return c.json({ data: {
+    ...session,
+    messages,
+    has_more: hasMore,
+    ...(hasMore && messages[0]?.id ? { next_cursor: messages[0].id } : {}),
+  } });
 });
 
 // Send a message (creates session if session_id omitted)
@@ -115,7 +140,7 @@ app.post("/v1/assistant/chat", async (c) => {
 
   // Load conversation history (last 20 turns)
   const { results: history } = await c.env.PLATFORM_DB.prepare(
-    "SELECT role, substr(content, 1, 4000) AS content FROM assistant_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 40"
+    "SELECT role, substr(content, 1, 4000) AS content FROM assistant_messages WHERE session_id = ? ORDER BY rowid DESC LIMIT 40"
   ).bind(sessionId).all<{ role: string; content: string }>();
   const newestFirst: Array<{ role: "user" | "assistant"; content: string }> = [];
   let historyChars = 0;
@@ -163,13 +188,21 @@ app.post("/v1/assistant/chat", async (c) => {
 app.delete("/v1/assistant/sessions/:id", async (c) => {
   const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized", message: "Missing tenant or user" }, 401);
-  await c.env.PLATFORM_DB.prepare(
-    "DELETE FROM assistant_messages WHERE session_id = ?"
-  ).bind(c.req.param("id")).run();
-  const result = await c.env.PLATFORM_DB.prepare(
-    "DELETE FROM assistant_sessions WHERE id = ? AND tenant_id = ? AND user_id = ?"
-  ).bind(c.req.param("id"), tenantId, userId).run();
-  if (result.meta.changes === 0) return c.json({ error_code: "not_found", message: "Session not found" }, 404);
+  const sessionId = c.req.param("id");
+  // A guessed cross-user session ID must not delete messages before ownership is checked.
+  // D1 batches are transactional, and the message deletion repeats the ownership predicate as
+  // a guard even if the session row changes between statements.
+  const results = await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(
+      `DELETE FROM assistant_messages WHERE session_id IN (
+         SELECT id FROM assistant_sessions WHERE id = ? AND tenant_id = ? AND user_id = ?
+       )`
+    ).bind(sessionId, tenantId, userId),
+    c.env.PLATFORM_DB.prepare(
+      "DELETE FROM assistant_sessions WHERE id = ? AND tenant_id = ? AND user_id = ?"
+    ).bind(sessionId, tenantId, userId),
+  ]);
+  if (!results[1] || results[1].meta.changes === 0) return c.json({ error_code: "not_found", message: "Session not found" }, 404);
   return c.json({ deleted: true });
 });
 
