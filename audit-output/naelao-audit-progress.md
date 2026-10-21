@@ -1427,6 +1427,8 @@ The builder payout tests also sent unsigned tenant headers. The balance/list/req
 
 Validation: `builder-payout-requests.test.ts` passed all 13 tests, including multi-currency balances, reservation/release, tenant isolation, and one-time fulfillment.
 
+Committed and pushed as `03d41a2e`; refreshed the inventory: 1,976 tracked files, 1,770 source/config checklist rows, and 381 checked rows.
+
 ## Bound tool-output previews after serialization and enforce valid TTL stress fixtures (2026-10-21)
 
 The shared suite exposed a real context-budget gap: preview length was estimated from a fixed character multiplier, but the actual JSON envelope measured 1,882 tokens against a 1,500-token ceiling. Replaced the estimate-only preview with a bounded search that measures the serialized envelope using the same UTF-8 token estimator, including escaped/multibyte content. Added a CJK/emoji stress regression; the existing 500-line preview test now passes.
