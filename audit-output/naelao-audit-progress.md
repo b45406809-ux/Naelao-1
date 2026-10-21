@@ -1544,3 +1544,11 @@ A repository unused-variable scan still reports 52 diagnostics across 51 files a
 Inventory refresh pending this batch: one new checked test row was added; repository source file count will be refreshed after this commit.
 
 Inventory refreshed after CI and KB ingestion changes at `372f9e36`: 1,979 tracked files, 1,773 source/config checklist rows, 388 checked and 1,385 unchecked. The workflow implementation remains unchecked for its full durable retry/outage surface; its newly added boundary test file is checked.
+
+## Root CI matrix and unused-code follow-up (2026-10-21)
+
+Confirmed the new CI commands locally: repository Vitest 5,261/5,261, package/Worker workspace Vitest 1,618/1,618, native Node 27/27, conformance 4/4. Root typecheck configurations (62 total) and all 32 Worker deployment dry-runs had passed earlier in this audit. CI now runs these test surfaces directly; the prior package-filter command omitted tests outside `tests/`.
+
+Triaged unused-symbol findings rather than treating the raw scan as authoritative: the report includes JSX props used later in render and callback arguments required by doubles/contracts. Removed only confirmed dead values: the unused `current` serialization in request-context budgeting, unused dashboard currency state (products, orders, and revenue each render their own currency), an unused password-reset catch binding, and an unused auth-session value. Request-context tests passed 2/2; dashboard and shell TypeScript checks passed; changed-file unused-variable lint passed. The rest of the 52-file scan is not cleared and remains a separate audit queue.
+
+Biome now ignores generated `.next`, build-plan, phase-run, and local scratch outputs, reducing generated-file noise. The repository-wide formatting/lint baseline remains red; CI's recursive lint job still has no package lint scripts to run. Wiring a meaningful strict lint gate requires triaging the remaining 52 diagnostics and broader formatting baseline.

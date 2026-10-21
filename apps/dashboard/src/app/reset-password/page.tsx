@@ -30,7 +30,7 @@ function ResetPasswordInner() {
     try {
       await requestPasswordReset(email);
       setRequestSent(true);
-    } catch (err) {
+    } catch {
       // The endpoint never reveals whether the send actually succeeded (constant response by
       // design) — show the same confirmation regardless, matching that contract.
       setRequestSent(true);

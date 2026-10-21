@@ -26,7 +26,7 @@ export default function VerifyEmailPage() {
   const product = useProduct();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { session, isHydrated, isAuthenticated } = useProductAuth();
+  const { isHydrated, isAuthenticated } = useProductAuth();
   const urlToken = searchParams.get("token");
 
   const [status, setStatus] = React.useState<Status>(urlToken ? "checking-token" : "idle");

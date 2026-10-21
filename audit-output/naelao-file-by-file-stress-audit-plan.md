@@ -48,7 +48,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [x] `ai_studio_code (2).sh`
 - [x] `ai_studio_code.sh`
-- [ ] `biome.json`
+- [x] `biome.json`
 - [ ] `create_patch.js`
 - [ ] `package.json`
 - [ ] `pnpm-lock.yaml`
@@ -56,9 +56,9 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `repomix.shell.config.json`
 - [ ] `run-phase (1).mjs`
 - [ ] `run-phase.mjs`
-- [ ] `tsconfig.base.json`
+- [x] `tsconfig.base.json`
 - [ ] `turbo.json`
-- [ ] `vitest.workspace.ts`
+- [x] `vitest.workspace.ts`
 
 ### `.github/workflows`
 
@@ -1874,8 +1874,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/r2-workspace.ts`
 - [ ] `workers/agents/src/script-engine/reasoner-depth.test.ts`
 - [ ] `workers/agents/src/script-engine/reasoner.ts`
-- [ ] `workers/agents/src/script-engine/request-context-budget.test.ts`
-- [ ] `workers/agents/src/script-engine/request-context-budget.ts`
+- [x] `workers/agents/src/script-engine/request-context-budget.test.ts`
+- [x] `workers/agents/src/script-engine/request-context-budget.ts`
 - [ ] `workers/agents/src/script-engine/reserved-capabilities.ts`
 - [ ] `workers/agents/src/script-engine/runtime-context.test.ts`
 - [ ] `workers/agents/src/script-engine/script-find.ts`

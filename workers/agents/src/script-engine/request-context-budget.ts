@@ -21,7 +21,6 @@ export function boundReasonerRequestContext(system: string, user: string, toolSc
     if (size() <= limitChars) break;
     const value = payload[key];
     if (value === undefined) continue;
-    const current = JSON.stringify(value);
     const excess = size() - limitChars;
     if (typeof value === "string") {
       payload[key] = value.slice(0, Math.max(0, value.length - excess - 64)) + " [context trimmed]";

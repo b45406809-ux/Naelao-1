@@ -103,7 +103,6 @@ export default function CommercePage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [revenue, setRevenue] = useState<RevenueSummary | null>(null);
-  const [currency, setCurrency] = useState("USD");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -111,7 +110,7 @@ export default function CommercePage() {
     setLoading(true); setError(null);
     try {
       const [p, o, r] = await Promise.all([listProducts(spaceId), listOrders(spaceId), getRevenue(spaceId)]);
-      setProducts(p.data); setCurrency(p.currency);
+      setProducts(p.data);
       setOrders(o.data); setRevenue(r);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load commerce data");
