@@ -55,6 +55,24 @@ export interface ByokProviderStatus {
   keys: ByokKeyMetadata[];
 }
 
+export interface OpenRouterWorkerModelCard {
+  id: string;
+  model: string;
+  name: string;
+  description?: string;
+  contextLength?: number;
+  promptPriceUsdPerToken?: number;
+  completionPriceUsdPerToken?: number;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  supportedParameters?: string[];
+}
+
+export async function getOpenRouterWorkerModelCards(spaceId: string): Promise<OpenRouterWorkerModelCard[]> {
+  const result = await apiFetch<{ models?: OpenRouterWorkerModelCard[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok/models`);
+  return result.models ?? [];
+}
+
 export interface CreateSpaceInput {
   name: string;
   spacetype_id: string;
@@ -696,6 +714,13 @@ export interface BuilderProductConfig {
   // the PATCH route (workers/spaces/src/builder-routes.ts's ALLOWED_MODELS).
   modelConfig?: {
     model?: string;
+  };
+  workerModelPool?: {
+    modelIds: string[];
+    modelsByPlan?: Record<string, string[]>;
+    selectionMode?: "automatic" | "planner";
+    inputUsdPerMillion?: number;
+    outputUsdPerMillion?: number;
   };
   // Tier 2/3 follow-up: a proactive daily digest email (agent activity summary) — opt-in, off by
   // default.

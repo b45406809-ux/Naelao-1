@@ -11,6 +11,8 @@ export interface DelegationContract {
   filePaths?: string[];
   /** Host-selected subset of the worker agent's configured tools and learned skills. */
   workerCapabilities?: { enabledPrebuilts: string[]; selectedSkills: string[] };
+  /** Knowledge scopes the parent has already authorized; current KB service exposes Space scope. */
+  knowledgeScopes?: Array<"space">;
   maxTier: number; localOnly: boolean; localModelMachine?: string;
 }
 function resource(contract: DelegationContract): string {
@@ -19,7 +21,9 @@ function resource(contract: DelegationContract): string {
   }
   if (!Number.isInteger(contract.maxTier) || contract.maxTier < 1 || contract.maxTier > 6 || typeof contract.localOnly !== "boolean" || (contract.localModelMachine !== undefined && (typeof contract.localModelMachine !== "string" || !contract.localModelMachine))
     || ![2, 3].includes(contract.depth) || typeof contract.planner !== "boolean" || (contract.depth === 3 && contract.planner)
-    || !Number.isSafeInteger(contract.maxTokens) || contract.maxTokens < 1 || contract.maxTokens > 2000
+    // Keep worker spend bounded while allowing long-running sessions to use the standard
+    // sub-agent budget rather than the former 2k-token ceiling.
+    || !Number.isSafeInteger(contract.maxTokens) || contract.maxTokens < 1 || contract.maxTokens > 20_000
     || !Number.isSafeInteger(contract.maxSteps) || contract.maxSteps < 1 || contract.maxSteps > 100) throw new Error("delegation_budget_or_depth_invalid");
   if (contract.filePaths !== undefined) {
     if (!Array.isArray(contract.filePaths) || contract.filePaths.length > 128) throw new Error("delegation_file_scope_invalid");
@@ -36,9 +40,15 @@ function resource(contract: DelegationContract): string {
       && new Set(values).size === values.length;
     if (!selection || !validNames(selection.enabledPrebuilts) || !validNames(selection.selectedSkills)) throw new Error("delegation_worker_capabilities_invalid");
   }
+  if (contract.knowledgeScopes !== undefined && (!Array.isArray(contract.knowledgeScopes)
+    || contract.knowledgeScopes.length > 1 || contract.knowledgeScopes.some(scope => scope !== "space"))) {
+    throw new Error("delegation_knowledge_scope_invalid");
+  }
+  if (contract.knowledgeScopes?.length && !contract.workerCapabilities?.enabledPrebuilts.includes("knowledge-base"))
+    throw new Error("delegation_knowledge_scope_without_tool");
   // Fixed order includes every field used to grant child execution permissions.
   return JSON.stringify([contract.agentId, contract.rootRunId, contract.parentRunId, contract.parentDoId, contract.workerId,
-    contract.depth, contract.planner, contract.maxTokens, contract.maxSteps, contract.model, contract.role, contract.callerRole, contract.workspaceBranch ?? null, contract.maxTier, contract.localOnly, contract.localModelMachine ?? null, contract.filePaths === undefined ? null : [...contract.filePaths].sort(),
+    contract.depth, contract.planner, contract.maxTokens, contract.maxSteps, contract.model, contract.role, contract.callerRole, contract.workspaceBranch ?? null, contract.maxTier, contract.localOnly, contract.localModelMachine ?? null, contract.filePaths === undefined ? null : [...contract.filePaths].sort(), contract.knowledgeScopes === undefined ? null : [...contract.knowledgeScopes].sort(),
     contract.workerCapabilities === undefined ? null : [ [...contract.workerCapabilities.enabledPrebuilts].sort(), [...contract.workerCapabilities.selectedSkills].sort() ]]);
 }
 const context = (contract: DelegationContract) => ({ tenantId: contract.tenantId, spaceId: contract.spaceId,

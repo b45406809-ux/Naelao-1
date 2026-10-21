@@ -3,6 +3,7 @@ import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalTo
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import { normalizePreferredLanguage, validateScheduledQuietHours } from "@naelao/types";
 import { compileWorkflowPlan } from "@naelao/sdk/workflow";
+import type { SpaceModelPolicy } from "@naelao/agent-sdk";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
@@ -4202,22 +4203,45 @@ app.get("/internal/spaces/:spaceId/model-policy", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?"
-  ).bind(spaceId, tenantId).first<{ config_json: string | null }>();
+    "SELECT config_json, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ config_json: string | null; parent_space_id: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  let policy: { mode: "open" | "whitelist_only"; allowedModelIds: string[] } | null = null;
+  let policy: SpaceModelPolicy | null = null;
   try {
-    const config = JSON.parse(row.config_json || "{}") as {
+    const localConfig = JSON.parse(row.config_json || "{}") as {
       model_policy?: { mode?: string; allowedModelIds?: unknown };
       productConfig?: { modelPolicy?: { mode?: string; allowedModelIds?: unknown } };
     };
-    const candidate = config.model_policy ?? config.productConfig?.modelPolicy;
-    if (candidate?.mode === "open" || candidate?.mode === "whitelist_only") {
+    const productRow = row.parent_space_id
+      ? await c.env.PLATFORM_DB.prepare("SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?").bind(row.parent_space_id, tenantId).first<{ config_json: string | null }>()
+      : row;
+    const productConfig = JSON.parse(productRow?.config_json || "{}") as {
+      productConfig?: { modelPolicy?: { mode?: string; allowedModelIds?: unknown }; workerModelPool?: { modelIds?: unknown; modelsByPlan?: Record<string, unknown>; selectionMode?: unknown; inputUsdPerMillion?: unknown; outputUsdPerMillion?: unknown } };
+    };
+    const candidate = localConfig.model_policy ?? localConfig.productConfig?.modelPolicy ?? productConfig.productConfig?.modelPolicy;
+    const workerPool = productConfig.productConfig?.workerModelPool;
+    let planModels: unknown;
+    let planModelsApplied = false;
+    if (row.parent_space_id && workerPool?.modelsByPlan) {
+      planModelsApplied = true;
+      const subscription = await c.env.PLATFORM_DB.prepare("SELECT plan_id, status FROM business_subscriptions WHERE business_space_id = ?")
+        .bind(spaceId).first<{ plan_id: string; status: string }>();
+      if (subscription && (subscription.status === "active" || subscription.status === "past_due")) planModels = workerPool.modelsByPlan[subscription.plan_id];
+    }
+    const configuredModels = planModelsApplied ? (Array.isArray(planModels) ? planModels : []) : workerPool?.modelIds;
+    if (candidate?.mode === "open" || candidate?.mode === "whitelist_only" || workerPool) {
       policy = {
-        mode: candidate.mode,
-        allowedModelIds: Array.isArray(candidate.allowedModelIds)
+        mode: candidate?.mode === "whitelist_only" ? "whitelist_only" : "open",
+        allowedModelIds: candidate && Array.isArray(candidate.allowedModelIds)
           ? candidate.allowedModelIds.filter((id): id is string => typeof id === "string" && id.length > 0)
           : [],
+        ...(Array.isArray(configuredModels) ? { workerModelIds: configuredModels.filter((id): id is string => typeof id === "string" && /^openrouter\/[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(id)
+          && (candidate?.mode !== "whitelist_only" || (candidate && Array.isArray(candidate.allowedModelIds) && candidate.allowedModelIds.includes(id)))).slice(0, 100) } : {}),
+        workerSelectionMode: workerPool?.selectionMode === "planner" ? "planner" : "automatic",
+        ...(workerPool ? { workerModelPriceCeiling: {
+          ...(typeof workerPool.inputUsdPerMillion === "number" && Number.isFinite(workerPool.inputUsdPerMillion) ? { inputUsdPerMillion: workerPool.inputUsdPerMillion } : {}),
+          ...(typeof workerPool.outputUsdPerMillion === "number" && Number.isFinite(workerPool.outputUsdPerMillion) ? { outputUsdPerMillion: workerPool.outputUsdPerMillion } : {}),
+        } } : {}),
       };
     }
   } catch {

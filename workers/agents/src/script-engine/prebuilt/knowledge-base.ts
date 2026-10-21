@@ -38,6 +38,13 @@ function reqWorker(ctx: PrebuiltOpContext): Fetcher {
   return ctx.env.knowledgeWorker;
 }
 
+function requireWorkerKnowledgeScope(ctx: PrebuiltOpContext, write = false): void {
+  if (ctx.env.workerSessionId && !ctx.env.knowledgeScopes?.includes("space"))
+    throw new Error("knowledge_base_scope_not_granted_to_worker");
+  if (ctx.env.workerSessionId && write)
+    throw new Error("worker_knowledge_base_write_requires_parent_execution");
+}
+
 async function internalHeaders(ctx: PrebuiltOpContext, extra?: Record<string, string>): Promise<Record<string, string>> {
   return {
     "x-naelao-tenant-id": ctx.env.tenantId,
@@ -82,6 +89,7 @@ export const knowledgeBase: PrebuiltScript = {
       return { ...response, data, derived: true };
     },
     async "knowledge.search"(args, ctx) {
+      requireWorkerKnowledgeScope(ctx);
       const query = knowledgeQuery(args["query"]);
       const topK = typeof args["top_k"] === "number" ? (args["top_k"] as number) : 5;
       if (!Number.isSafeInteger(topK) || topK < 1 || topK > 50)
@@ -97,6 +105,7 @@ export const knowledgeBase: PrebuiltScript = {
     },
 
     async "knowledge.index"(args, ctx) {
+      requireWorkerKnowledgeScope(ctx, true);
       const title = typeof args["title"] === "string" ? args["title"].trim() : "";
       const content = args["content"];
       if (!title || title.length > 500) throw new Error("knowledge.index requires a title of 1..500 characters");
@@ -130,6 +139,7 @@ export const knowledgeBase: PrebuiltScript = {
     },
 
     async "knowledge.delete"(args, ctx) {
+      requireWorkerKnowledgeScope(ctx, true);
       const id = String(args["id"] ?? "");
       if (!id) throw new Error("knowledge.delete requires 'id'");
       const resp = await reqWorker(ctx).fetch(

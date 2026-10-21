@@ -1147,6 +1147,35 @@ export async function runScriptLoop(
         });
 
         if (decision.action === "ask") {
+          // A worker question is routed to its parent planner when System One can make that
+          // distinction confidently. The parent may answer by resuming this same session; any
+          // uncertainty or failed decision falls through to the existing human question flow.
+          if (env.workerSessionId && env.fastDecision && !env.airGappedOnly && !env.localModelMachine) {
+            try {
+              const route = await env.fastDecision.choice({
+                state: { task: env.taskId ?? env.workerSessionId, question: decision.question, options: decision.options ?? [] },
+                instructions: "Choose planner when this is an ordinary task clarification the parent planner can answer from the task context. Choose human for personal preference, missing real-world facts, connector setup, consent, approval, credentials, or consequential decisions. When uncertain choose human.",
+                criteria: {
+                  planner: "The parent planner can answer using existing task context without inventing facts or granting permission.",
+                  human: "Needs a human, approval, external setup, a personal preference, or is uncertain.",
+                },
+                policyCode: "worker_question_route_v1",
+              });
+              if (route.value === "planner" && (route.confidence ?? 0) >= 0.75) {
+                return finish({
+                  level,
+                  pending_worker_question: {
+                    question: decision.question,
+                    ...(decision.options?.length ? { options: decision.options.slice(0, 10) } : {}),
+                    steps_completed: [...priorSteps],
+                  },
+                  notes: [...notes, `${level} is waiting for its parent planner to clarify the task`],
+                });
+              }
+            } catch {
+              // Fail to the existing human-safe route when System One is unavailable.
+            }
+          }
           if (!env.hitlGateway?.requestQuestion) {
             return finish({
               level,

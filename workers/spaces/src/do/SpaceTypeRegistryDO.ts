@@ -118,6 +118,8 @@ export interface NaelaoSpaceTypeManifestV2 {
  *     (spec §05 default "one per user per Space") or a single shared one.
  */
 export interface SpaceTypeProductConfig {
+  /** Owner-managed OpenRouter worker catalog. Card metadata is refreshed at dispatch time. */
+  workerModelPool?: { modelIds: string[]; modelsByPlan?: Record<string, string[]>; selectionMode?: "automatic" | "planner"; inputUsdPerMillion?: number; outputUsdPerMillion?: number };
   /** Vertical certification policy, enforced again by the agents router at dispatch time. */
   modelPolicy?: { mode: "open" | "whitelist_only"; allowedModelIds: string[] };
   compliance?: { airGappedOnly?: boolean };

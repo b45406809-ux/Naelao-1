@@ -29,7 +29,7 @@ import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
 import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
-import { mintInternalToken, broadcastSpaceEvent, readBoundedRequestBytes, readBoundedResponseJson, readBoundedResponseText, readResponsePrefixText, RequestBodyTooLargeError } from "@naelao/http";
+import { mintInternalToken, verifyInternalToken, broadcastSpaceEvent, readBoundedRequestBytes, readBoundedResponseJson, readBoundedResponseText, readResponsePrefixText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { createNamedTunnelGateway } from "../tunnels/host.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
@@ -113,6 +113,16 @@ import {
 import { handleExecutiveInbound } from "../channels/executive-channel.js";
 import { claimFoundryChannelEvent, parseFoundryChannelCommand, releaseFoundryChannelEvent } from "../channels/foundry-command.js";
 import { persistCustomerConversation } from "../telemetry/customer-telemetry.js";
+
+function boundedCheckpointJson(value: unknown, maxChars = 64_000): string {
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized.length <= maxChars) return serialized;
+    return JSON.stringify({ truncated: true, originalChars: serialized.length, preview: serialized.slice(0, Math.floor(maxChars / 3)) });
+  } catch {
+    return JSON.stringify({ truncated: true, invalid: true });
+  }
+}
 import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
 import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
 import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed } from "../script-engine/worker-model-routing.js";
@@ -1506,6 +1516,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         action_name  TEXT NOT NULL,
         action_input_json TEXT,
         approval_policy_fingerprint TEXT,
+        delegation_json TEXT,
         steps_json   TEXT NOT NULL DEFAULT '[]',
         deliberation_round INTEGER NOT NULL DEFAULT 0,
         status       TEXT NOT NULL DEFAULT 'suspended',
@@ -1555,6 +1566,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN deliberation_round INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN action_input_json TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN approval_policy_fingerprint TEXT`); } catch { /* exists */ }
+    try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN delegation_json TEXT`); } catch { /* exists */ }
     try { this.ctx.storage.sql.exec(`ALTER TABLE interrupted_runs ADD COLUMN deliberation_round INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
 
     // Background fibers
@@ -1763,6 +1775,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         tokens_used   INTEGER NOT NULL DEFAULT 0,
         result        TEXT,
         error         TEXT,
+        workspace_branch TEXT,
+        configuration_json TEXT,
+        attempt       INTEGER NOT NULL DEFAULT 1,
+        checkpoint_json TEXT,
         created_at    INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
         updated_at    INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
@@ -1774,6 +1790,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // WHILE the parent's own spawning request is still in flight (DOs serve concurrent fetch()
     // calls), without needing a WebSocket/SSE channel.
     try { this.ctx.storage.sql.exec(`ALTER TABLE sub_agents ADD COLUMN progress_note TEXT`); } catch { /* exists */ }
+    // Durable worker-session fields let a parent resume the same worker identity and branch.
+    // Existing rows are kept intact and migrate in place.
+    for (const [column, ddl] of [
+      ["workspace_branch", "ALTER TABLE sub_agents ADD COLUMN workspace_branch TEXT"],
+      ["configuration_json", "ALTER TABLE sub_agents ADD COLUMN configuration_json TEXT"],
+      ["attempt", "ALTER TABLE sub_agents ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1"],
+      ["checkpoint_json", "ALTER TABLE sub_agents ADD COLUMN checkpoint_json TEXT"],
+    ] as const) {
+      try { this.ctx.storage.sql.exec(ddl); } catch { /* already migrated */ }
+    }
 
     this.initialized = true;
   }
@@ -1868,6 +1894,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // hibernation-safe) shape here.
       if (method === "POST" && url.pathname === "/script/resume") {
         return this.handleResumeRun(request);
+      }
+      if (method === "POST" && url.pathname === "/internal/sub-agents/session-update") {
+        return this.handleSubAgentSessionUpdate(request);
       }
 
       // GET /script/resume-status?approvalId= — the id handleResumeRun minted for its
@@ -3150,6 +3179,46 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       };
     }
 
+    const seedTaskWorkspace = async (branch: string): Promise<void> => {
+      if (!runtimeEnv) return;
+      const seedKey = `task-workspace-seed:${branch}`;
+      if (await this.ctx.storage.get(seedKey) === "complete") return;
+      const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
+      const targetPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: branch });
+      const target = await bucket.list({ prefix: targetPrefix, limit: 1 });
+      if (target.objects.length && await this.ctx.storage.get(seedKey) !== "started") {
+        // Preserve a branch created by an older runtime; it may already contain worker output.
+        await this.ctx.storage.put(seedKey, "complete");
+        return;
+      }
+      await this.ctx.storage.put(seedKey, "started");
+      let staleCursor: string | undefined;
+      do {
+        const stale = await bucket.list({ prefix: targetPrefix, ...(staleCursor ? { cursor: staleCursor } : {}), limit: 1000 });
+        for (const object of stale.objects) await bucket.delete(object.key);
+        staleCursor = stale.truncated ? stale.cursor : undefined;
+      } while (staleCursor);
+      const sourcePrefix = workspacePrefix(runtimeEnv);
+      let cursor: string | undefined;
+      let fileCount = 0, totalBytes = 0;
+      do {
+        const page = await bucket.list({ prefix: sourcePrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+        for (const object of page.objects) {
+          const path = object.key.slice(sourcePrefix.length);
+          if (!path || path.startsWith("branches/")) continue;
+          if (++fileCount > 10_000 || (totalBytes += object.size) > 512 * 1024 * 1024) throw new Error("task_workspace_snapshot_limit_exceeded");
+          const source = await bucket.get(object.key);
+          if (!source) continue;
+          await bucket.put(`${targetPrefix}${path}`, await source.arrayBuffer(), {
+            ...(source.httpMetadata ? { httpMetadata: source.httpMetadata } : {}),
+            ...(source.customMetadata ? { customMetadata: source.customMetadata } : {}),
+          });
+        }
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+      await this.ctx.storage.put(seedKey, "complete");
+    };
+
     const reserveTaskBranch = async (): Promise<string | undefined> => {
       if (!projectId) return undefined;
       if (runtimeEnv?.workspaceBranch) return runtimeEnv.workspaceBranch;
@@ -3161,7 +3230,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (active) return active;
       const reservation = (async () => {
         const previous = await this.ctx.storage.get<string>(key);
-        if (previous) return previous;
+        if (previous) { await seedTaskWorkspace(previous); return previous; }
         const branch = `task/${digest.slice(0, 48)}`;
         const repository = `http://artifact-worker/spaces/${spaceId}/projects/${projectId}/repository`;
         const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
@@ -3185,11 +3254,124 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const head = await this.env.ARTIFACT_WORKER!.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(branch)}`, { headers }));
           if (!head.ok) throw new Error("task_branch_replay_unavailable");
         }
+        await seedTaskWorkspace(branch);
         await this.ctx.storage.put(key, branch);
         return branch;
       })();
       this.activeTaskBranches.set(key, reservation);
       try { return await reservation; } finally { this.activeTaskBranches.delete(key); }
+    };
+
+    // A worker session owns a stable branch for its entire lifetime. Its R2 tree is forked from
+    // the root task branch once; the baseline is retained in this parent DO so later sessions
+    // can resume and merges can detect writes made concurrently by the planner or sibling workers.
+    const reserveWorkerBranch = async (subId: string, baseBranch: string | undefined): Promise<string | undefined> => {
+      if (!runtimeEnv) return undefined;
+      if (projectId && !this.env.ARTIFACT_WORKER) throw new Error("worker_branch_repository_required");
+      const branch = `workers/${subId.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 96)}`;
+      const baselineKey = `worker-branch-base:${subId}`;
+      if (await this.ctx.storage.get(baselineKey)) return branch;
+      const basePrefix = workspacePrefix({ ...runtimeEnv, ...(baseBranch ? { workspaceBranch: baseBranch } : {}) });
+      const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: branch });
+      const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
+      const baseline: Record<string, string> = {};
+      // A retry after a partial fork must not leave stale keys that were absent from the source
+      // snapshot; remove the incomplete destination before rebuilding its baseline.
+      let staleCursor: string | undefined;
+      do {
+        const stalePage = await bucket.list({ prefix: workerPrefix, ...(staleCursor ? { cursor: staleCursor } : {}), limit: 1000 });
+        for (const object of stalePage.objects) await bucket.delete(object.key);
+        staleCursor = stalePage.truncated ? stalePage.cursor : undefined;
+      } while (staleCursor);
+      let cursor: string | undefined;
+      let fileCount = 0, totalBytes = 0;
+      do {
+        const page = await bucket.list({ prefix: basePrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+        for (const object of page.objects) {
+          const path = object.key.slice(basePrefix.length);
+          if (!path || path.includes("../")) continue;
+          if (++fileCount > 10_000 || (totalBytes += object.size) > 512 * 1024 * 1024) throw new Error("worker_workspace_snapshot_limit_exceeded");
+          const source = await bucket.get(object.key);
+          if (!source) continue;
+          const bytes = await source.arrayBuffer();
+          const hash = source.customMetadata?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(b => b.toString(16).padStart(2, "0")).join("");
+          baseline[path] = hash;
+          await bucket.put(`${workerPrefix}${path}`, bytes, {
+            ...(source.httpMetadata ? { httpMetadata: source.httpMetadata } : {}),
+            ...(source.customMetadata ? { customMetadata: source.customMetadata } : {}),
+          });
+        }
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+      if (projectId && this.env.ARTIFACT_WORKER) {
+        const repository = `http://artifact-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/repository`;
+        const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+        const response = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/branch`, {
+          method: "POST", headers, body: JSON.stringify({ name: branch, from: baseBranch ?? "main" }),
+        }));
+        if (!response.ok && response.status !== 409) throw new Error(`worker_branch_reservation_failed:${response.status}`);
+        if (response.status === 409) {
+          const head = await this.env.ARTIFACT_WORKER.fetch(new Request(`${repository}/head?branch=${encodeURIComponent(branch)}`, { headers }));
+          if (!head.ok) throw new Error("worker_branch_replay_unavailable");
+        }
+      }
+      await this.ctx.storage.put(baselineKey, baseline);
+      await this.ctx.storage.put(`worker-branch-root:${subId}`, baseBranch ?? "");
+      await this.ctx.storage.put(`worker-branch-parent:${subId}`, runtimeEnv.workspaceBranch ?? "");
+      return branch;
+    };
+
+    // Three-way file merge. A worker may update the root task workspace only if the planner or
+    // another worker has not changed that path since the worker's fork. Conflicts are returned to
+    // the planner and the canonical workspace is never overwritten by a losing worker.
+    const mergeWorkerWorkspace = async (subId: string, workerBranch: string, baseBranch?: string): Promise<string[]> => {
+      if (!runtimeEnv) return [];
+      const baseline = await this.ctx.storage.get<Record<string, string>>(`worker-branch-base:${subId}`) ?? {};
+      const bucket = runtimeEnv.workspaceBucket ?? runtimeEnv.scriptsBucket;
+      const workerPrefix = workspacePrefix({ ...runtimeEnv, workspaceBranch: workerBranch });
+      const basePrefix = workspacePrefix({ ...runtimeEnv, ...(baseBranch ? { workspaceBranch: baseBranch } : {}) });
+      const changed = new Map<string, R2Object>();
+      let cursor: string | undefined;
+      do {
+        const page = await bucket.list({ prefix: workerPrefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+        for (const object of page.objects) changed.set(object.key.slice(workerPrefix.length), object);
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+      const conflicts: string[] = [];
+      for (const [path, workerObject] of changed) {
+        if (!path || path.includes("../")) continue;
+        const workerFile = await bucket.get(workerObject.key);
+        if (!workerFile) continue;
+        const workerBytes = await workerFile.arrayBuffer();
+        const workerHash = workerFile.customMetadata?.sha256 ?? [...new Uint8Array(await crypto.subtle.digest("SHA-256", workerBytes))].map(b => b.toString(16).padStart(2, "0")).join("");
+        const baseObject = await bucket.get(`${basePrefix}${path}`);
+        const baseBytes = baseObject && baseObject.customMetadata?.deleted !== "true" ? await baseObject.arrayBuffer() : null;
+        const baseHash = baseObject ? (baseObject.customMetadata?.sha256 ?? (baseObject.customMetadata?.deleted === "true" ? "deleted" : baseBytes
+          ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", baseBytes))].map(b => b.toString(16).padStart(2, "0")).join("") : undefined)) : undefined;
+        const originalHash = baseline[path];
+        if (workerHash === originalHash) continue;
+        if (baseHash !== originalHash && baseHash !== workerHash) { conflicts.push(path); continue; }
+        const merged = await bucket.put(`${basePrefix}${path}`, workerBytes, {
+          onlyIf: baseObject ? { etagMatches: baseObject.etag } : { etagDoesNotMatch: "*" },
+          ...(workerFile.httpMetadata ? { httpMetadata: workerFile.httpMetadata } : {}),
+          ...(workerFile.customMetadata ? { customMetadata: workerFile.customMetadata } : {}),
+        });
+        if (!merged) conflicts.push(path);
+      }
+      for (const path of Object.keys(baseline)) {
+        if (changed.has(path)) continue;
+        const baseObject = await bucket.get(`${basePrefix}${path}`);
+        const baseBytes = baseObject && baseObject.customMetadata?.deleted !== "true" ? await baseObject.arrayBuffer() : null;
+        const baseHash = baseObject ? (baseObject.customMetadata?.sha256 ?? (baseObject.customMetadata?.deleted === "true" ? "deleted" : baseBytes
+          ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", baseBytes))].map(b => b.toString(16).padStart(2, "0")).join("") : undefined)) : undefined;
+        if (baseHash !== baseline[path]) { conflicts.push(path); continue; }
+        const deleted = await bucket.put(`${basePrefix}${path}`, "", {
+          onlyIf: baseObject ? { etagMatches: baseObject.etag } : { etagDoesNotMatch: "*" },
+          customMetadata: { deleted: "true", sha256: "deleted" },
+        });
+        if (!deleted) conflicts.push(path);
+      }
+      return conflicts;
     };
 
     hooks.finalizeWorkspace = async () => {
@@ -3253,7 +3435,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const fanout = childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true);
         if (!rawTasks.length || rawTasks.length > fanout) throw new Error(`sub-agent fan-out must be within 1..${fanout}`);
         const branch = await reserveTaskBranch();
-        const tasks = rawTasks.map(task => ({ ...task, ...(branch ? { workspace_branch: branch } : {}) }));
+        const tasks = await Promise.all(rawTasks.map(async task => {
+          const id = typeof task["sub_agent_id"] === "string" ? task["sub_agent_id"] : crypto.randomUUID();
+          const old = this.ctx.storage.sql.exec(`SELECT workspace_branch FROM sub_agents WHERE id=?`, id).toArray() as Array<{ workspace_branch: string | null }>;
+          const priorBranch = old[0]?.workspace_branch;
+          // Migrate pre-isolation sessions on continuation: their current task-branch snapshot
+          // becomes the immutable base for the new stable per-session branch.
+          const workerBranch = priorBranch && priorBranch !== branch
+            ? priorBranch
+            : await reserveWorkerBranch(id, branch);
+          if (old.length && workerBranch && workerBranch !== priorBranch) {
+            this.ctx.storage.sql.exec(`UPDATE sub_agents SET workspace_branch=? WHERE id=?`, workerBranch, id);
+          }
+          return { ...task, sub_agent_id: id, ...(workerBranch ? { workspace_branch: workerBranch } : {}) };
+        }));
 
         // Account-level concurrency ceiling (spec §28 ConcurrencyDO) — one slot per SPAWN
         // TREE (this whole batched agent.spawn call), not per child; MAX_SUB_AGENTS_PER_SPAWN
@@ -3269,7 +3464,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
 
         try {
-          return await this.spawnSubAgentBatch(tasks, spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, projectId, agentDO, userId, currentModel, effort, undefined, runtimeEnv);
+          return await this.spawnSubAgentBatch(tasks, spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, projectId, agentDO, userId, currentModel, effort, runtimeEnv?.executionSignal, runtimeEnv,
+            async (id, workerBranch) => {
+              const rootBranch = await this.ctx.storage.get<string>(`worker-branch-root:${id}`);
+              const parentBranch = await this.ctx.storage.get<string>(`worker-branch-parent:${id}`);
+              const conflicts: string[] = [];
+              if (rootBranch !== undefined && rootBranch !== workerBranch) conflicts.push(...await mergeWorkerWorkspace(id, workerBranch, rootBranch || undefined));
+              if (parentBranch !== undefined && parentBranch !== workerBranch && parentBranch !== rootBranch) {
+                conflicts.push(...await mergeWorkerWorkspace(id, workerBranch, parentBranch || undefined));
+              }
+              return [...new Set(conflicts)];
+            });
         } finally {
           await this.releaseConcurrencySlot(concurrencyKey, parentRunId);
         }
@@ -3282,11 +3487,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (!response.ok) throw new Error("sub_agent_cancel_failed");
         await this.terminateSubAgentImpl(id);
       };
-      hooks.sendToSubAgent = async (_id, _task) => {
-        // Sub-agents in this build run to completion synchronously within agent.spawn — there
-        // is no still-running child to message. Fan out additional work via another
-        // agent.spawn({ tasks: [...] }) call instead.
-        return { ok: false, reason: "sub-agents run synchronously; spawn another batch instead of sending to a running one" };
+      hooks.sendToSubAgent = async (id, task) => {
+        // This is parent-to-worker continuation, never worker-to-worker messaging. Reuse the
+        // durable session id so the child DO, checkpoint, and workspace branch stay attached.
+        const continuation = typeof task === "string" ? { goal: task }
+          : task && typeof task === "object" && !Array.isArray(task) ? task as Record<string, unknown> : {};
+        return hooks.spawnSubAgent!({ tasks: [{ ...continuation, sub_agent_id: id, resume: true }] });
       };
       hooks.consultAgent = async (params) => {
         const result = await this.consultAgentImpl(params, tenantId, apiKey, agentDO);
@@ -3595,7 +3801,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     currentModel?: string,
     effort?: string,
     abortSignal?: AbortSignal,
-    runtimeEnv?: ScriptEngineEnv
+    runtimeEnv?: ScriptEngineEnv,
+    mergeWorkerWorkspace?: (subId: string, branch: string) => Promise<string[]>
   ): Promise<{ id: string }> {
     const fanout = childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true);
     if (!tasks.length || tasks.length > fanout) throw new Error(`sub-agent fan-out must be within 1..${fanout}`);
@@ -3610,17 +3817,52 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const spawned = await Promise.all(
       tasks.map(async (t) => {
         const subId = typeof t["sub_agent_id"] === "string" ? t["sub_agent_id"] : crypto.randomUUID();
-        const existing = await this.receiveFromSubAgentImpl(subId) as { status?: string; output?: unknown; error?: string };
-        if (existing.status) return { id: subId, ok: existing.status === "done", ...(existing.output !== undefined ? { output: existing.output } : {}), ...(existing.status !== "done" ? { error: existing.error ?? "worker_interrupted_needs_review" } : {}) };
-        const goal = String(t["goal"] ?? "");
-        const budgetTokens = t["budget_tokens"] ?? t["maxTokens"] ?? 1_800;
-        if (typeof budgetTokens !== "number" || !Number.isSafeInteger(budgetTokens) || budgetTokens < 1 || budgetTokens > 2_000) throw new Error("invalid_sub_agent_budget");
+        const existingRows = this.ctx.storage.sql.exec(`SELECT status, goal, workspace_branch, configuration_json, attempt, checkpoint_json, result, error, updated_at, budget_tokens, tokens_used FROM sub_agents WHERE id = ?`, subId).toArray() as Array<{
+          status: string; goal: string; workspace_branch: string | null; configuration_json: string | null; attempt: number; checkpoint_json: string | null; result: string | null; error: string | null; updated_at: number; budget_tokens: number; tokens_used: number;
+        }>;
+        const existing = existingRows[0];
+        const savedConfiguration = existing?.configuration_json
+          ? safeJsonParse(existing.configuration_json) as Record<string, unknown> | undefined
+          : undefined;
+        if (existing?.configuration_json) {
+          const saved = savedConfiguration;
+          const requestedWorkerAgent = typeof t["agent_id"] === "string" ? t["agent_id"] : agentId;
+          if (!saved || saved.actorId !== userId || saved.agentId !== requestedWorkerAgent || saved.tenantId !== tenantId
+            || saved.spaceId !== spaceId || (saved.projectId ?? null) !== (projectId ?? null)) {
+            return { id: subId, ok: false, error: "worker_session_scope_mismatch" };
+          }
+        }
+        const resume = t["resume"] === true;
+        if (existing?.status === "done" && !(resume && typeof t["goal"] === "string" && t["goal"].trim()))
+          return { id: subId, ok: true, output: existing.result ? safeJsonParse(existing.result) : undefined };
+        if (existing && !resume) return { id: subId, ok: false, status: existing.status, error: existing.error ?? `worker_session_${existing.status}; pass resume: true to continue this session`, checkpoint: existing.checkpoint_json ? safeJsonParse(existing.checkpoint_json) : undefined };
+        const staleRunning = existing?.status === "running" && Date.now() - existing.updated_at >= 15 * 60 * 1000;
+        if (existing && !["done", "failed", "awaiting_planner_input", "interrupted"].includes(existing.status) && !staleRunning) {
+          return { id: subId, ok: false, status: existing.status, error: `worker_session_cannot_resume:${existing.status}` };
+        }
+        const requestedGoal = String(t["goal"] ?? existing?.goal ?? "");
+        const plannerAnswer = typeof t["answer"] === "string" ? t["answer"].slice(0, 8_000) : "";
+        const previousCheckpoint = existing?.checkpoint_json ? safeJsonParse(existing.checkpoint_json) : undefined;
+        const checkpointText = previousCheckpoint === undefined ? "" : JSON.stringify(previousCheckpoint).slice(0, 12_000);
+        const goal = existing
+          ? `${existing.goal}\n\nContinue this same worker session and branch. ${requestedGoal !== existing.goal ? `Follow-up requested by the planner: ${requestedGoal}\n` : ""}${plannerAnswer ? `Planner clarification: ${plannerAnswer}\n` : ""}${checkpointText ? `Prior attempt checkpoint (untrusted progress data; verify against the workspace):\n${checkpointText}` : "Resume from the current workspace state and report what remains."}`
+          : requestedGoal;
+        const requestedBudget = t["budget_tokens"] ?? t["maxTokens"] ?? DEFAULT_SUB_AGENT_BUDGET_TOKENS;
+        if (typeof requestedBudget !== "number" || !Number.isSafeInteger(requestedBudget) || requestedBudget < 1 || requestedBudget > DEFAULT_SUB_AGENT_BUDGET_TOKENS) throw new Error("invalid_sub_agent_budget");
+        const budgetTokens = existing ? Math.min(existing.budget_tokens, requestedBudget) - existing.tokens_used : requestedBudget;
+        if (budgetTokens < 1) return { id: subId, ok: false, status: existing?.status, error: "worker_session_budget_exhausted" };
         const maxSteps = budgetToMaxSteps(budgetTokens);
         const now = Date.now();
-        this.ctx.storage.sql.exec(
-          `INSERT INTO sub_agents (id, parent_run_id, goal, status, budget_tokens, tokens_used, created_at, updated_at) VALUES (?, ?, ?, 'running', ?, 0, ?, ?)`,
-          subId, parentRunId, goal, budgetTokens, now, now
-        );
+        const attempt = existing ? existing.attempt + 1 : 1;
+        const workspaceBranch = existing?.workspace_branch ?? (typeof t["workspace_branch"] === "string" ? t["workspace_branch"] : null);
+        if (existing) {
+          this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='running', attempt=?, error=NULL, updated_at=? WHERE id=?`, attempt, now, subId);
+        } else {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO sub_agents (id, parent_run_id, goal, status, budget_tokens, tokens_used, workspace_branch, attempt, created_at, updated_at) VALUES (?, ?, ?, 'running', ?, 0, ?, 1, ?, ?)`,
+            subId, parentRunId, goal, budgetTokens, workspaceBranch, now, now
+          );
+        }
         // A subagent is an ephemeral verb. It is never mirrored into the user-facing thread
         // store; only its structured result is handed back to the persistent parent agent.
         if (!goal) {
@@ -3634,9 +3876,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const plannerModel = currentModel ?? DEFAULT_WORKING_MODEL;
         const privateRoute = runtimeEnv?.airGappedOnly === true || Boolean(runtimeEnv?.localModelMachine)
           || (byokProviderForModel(plannerModel) !== null && !plannerModel.startsWith("openrouter/"));
-        const modelResolution = t["planner"] === true
+        let modelResolution = t["planner"] === true
           ? resolveWorkerModel({ plannerModel, contextAffinity: "shared", effort: effortLevel, privateRoute: true })
-          : await selectWorkerModel({ plannerModel, contextAffinity, effort: effortLevel, privateRoute, goal }, runtimeEnv?.fastDecision);
+          : await selectWorkerModel({ plannerModel, contextAffinity, effort: effortLevel, privateRoute, goal,
+            ...(runtimeEnv?.workerModelPool ? { workerModelPool: runtimeEnv.workerModelPool } : {}),
+            ...(runtimeEnv?.workerModelCandidates ? { workerModelCandidates: runtimeEnv.workerModelCandidates } : {}),
+            ...(typeof t["worker_model"] === "string" ? { requestedWorkerModel: t["worker_model"] } : {}),
+          }, runtimeEnv?.fastDecision);
+        if (existing && typeof savedConfiguration?.model === "string") {
+          modelResolution = { model: savedConfiguration.model, downgraded: false, reason: "resumed_worker_session_policy" };
+        }
         let leafSlotKey: string | undefined;
         try {
           if (!userId || !runtimeEnv) throw new Error("delegation_authorized_parent_required");
@@ -3652,7 +3901,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const workerAgentId = typeof t["agent_id"] === "string" ? t["agent_id"] : agentId;
           let workerCapabilities: DelegationContract["workerCapabilities"];
           let workerCapabilityReceipt: { bundles: string[]; provider: string; fallback: string; tool_count: number; skill_count: number } | undefined;
-          if (!planner && workerAgentId === agentId && runtimeEnv.workerPrebuiltCapabilities?.length) {
+          if (savedConfiguration?.workerCapabilities && typeof savedConfiguration.workerCapabilities === "object") {
+            const savedCapabilities = savedConfiguration.workerCapabilities as NonNullable<DelegationContract["workerCapabilities"]>;
+            const currentlyConfigured = new Set((runtimeEnv.workerPrebuiltCapabilities ?? [])
+              .filter(name => !(UNIVERSAL_PLANNER_PREBUILTS as readonly string[]).includes(name)));
+            workerCapabilities = {
+              enabledPrebuilts: savedCapabilities.enabledPrebuilts.filter(name => currentlyConfigured.has(name)),
+              selectedSkills: savedCapabilities.selectedSkills,
+            };
+          } else if (!planner && workerAgentId === agentId && runtimeEnv.workerPrebuiltCapabilities?.length) {
             const workerPrebuilts = runtimeEnv.workerPrebuiltCapabilities.filter(name => !(UNIVERSAL_PLANNER_PREBUILTS as readonly string[]).includes(name));
             const skillLibrary = new SkillLibrary(runtimeEnv.scriptsBucket, spaceId);
             const skillNames = await skillLibrary.list().catch(() => [] as string[]);
@@ -3681,11 +3938,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             role: typeof t["role"] === "string" ? t["role"] : "worker", callerRole: runtimeEnv.callerRole ?? runtimeEnv.effectiveRole ?? "viewer",
             maxTier: runtimeEnv.maxTier ?? 6, localOnly: runtimeEnv.airGappedOnly === true,
             ...(workerCapabilities ? { workerCapabilities } : {}),
+            ...(workerCapabilities?.enabledPrebuilts.includes("knowledge-base") ? { knowledgeScopes: ["space"] as Array<"space"> } : {}),
             ...(runtimeEnv.localModelMachine ? { localModelMachine: runtimeEnv.localModelMachine } : {}),
-            ...(typeof t["workspace_branch"] === "string" ? { workspaceBranch: t["workspace_branch"] } : {}),
-            ...(t["file_paths"] !== undefined ? { filePaths: t["file_paths"] as string[] } : {}),
+            ...(workspaceBranch ? { workspaceBranch } : {}),
+            ...(existing && Array.isArray(savedConfiguration?.filePaths)
+              ? { filePaths: savedConfiguration.filePaths as string[] }
+              : t["file_paths"] !== undefined ? { filePaths: t["file_paths"] as string[] } : {}),
           };
           const delegationToken = await issueDelegationContract(contract, this.env.PLATFORM_SECRET);
+          this.ctx.storage.sql.exec(`UPDATE sub_agents SET workspace_branch=?, configuration_json=?, updated_at=? WHERE id=?`,
+            workspaceBranch, JSON.stringify({ model: contract.model, role: contract.role, maxTier: contract.maxTier,
+              actorId: userId, agentId: workerAgentId, tenantId, spaceId, projectId: projectId ?? null,
+              parentDoId: this.ctx.id.toString(),
+              filePaths: contract.filePaths ?? [], workerCapabilities: contract.workerCapabilities ?? null,
+              knowledgeScopes: contract.knowledgeScopes ?? [] }), Date.now(), subId);
           const route = `sub:${spaceId}:${subId}`;
           await this.ctx.storage.put(`sub-agent-route:${subId}`, route);
           const doId = agentDO.idFromName(route);
@@ -3704,7 +3970,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               spaceId,
               agentId: workerAgentId,
               tenantId,
-              runId: subId,
+              runId: attempt === 1 ? subId : `${subId}:attempt:${attempt}`,
               sessionId: `subagent-${subId}`,
               apiKey,
               // A normal child shares its parent's project workspace. Speculative race children
@@ -3724,10 +3990,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 delegation_depth: contract.depth, delegation_planner: contract.planner, root_run_id: contract.rootRunId, delegation_max_tier: contract.maxTier,
                 ...(contract.filePaths !== undefined ? { file_paths: contract.filePaths } : {}),
                 ...(contract.workerCapabilities !== undefined ? { worker_capabilities: contract.workerCapabilities } : {}),
+                ...(contract.knowledgeScopes !== undefined ? { knowledge_scopes: contract.knowledgeScopes } : {}),
                 parent_run_id: parentRunId,
                 sub_agent_id: subId,
                 max_steps: maxSteps,
                 max_tokens: budgetTokens,
+                // Worker sessions are durable background work. Their session and workspace
+                // branch persist independently, so they do not inherit the interactive deadline.
+                long_running: true,
                 // Lets the child report incremental progress back to THIS DO instance
                 // mid-run — see buildSubAgentProgressReporter / handleScriptRun's onProgress wiring.
                 parent_do_id: this.ctx.id.toString(),
@@ -3737,16 +4007,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           } finally {
             abortSignal?.removeEventListener("abort", cancelChild);
           }
-          const body = await readBoundedResponseJson<{ result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string } }>(resp, 2 * 1024 * 1024).catch(() => ({}) as Record<string, never>);
-          const tokensUsed = body.result?.tokens_used ?? 0;
+          const body = await readBoundedResponseJson<{ result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string }; pending_question?: unknown; pending_approval?: unknown; pending_worker_question?: unknown; trace?: Array<{ tokens?: number }>; notes?: string[] }>(resp, 2 * 1024 * 1024).catch(() => ({} as { result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string }; pending_question?: unknown; pending_approval?: unknown; pending_worker_question?: unknown; trace?: Array<{ tokens?: number }>; notes?: string[] }));
+          const tokensUsed = body.result?.tokens_used ?? body.trace?.reduce((total, step) => total + (Number.isSafeInteger(step.tokens) ? Number(step.tokens) : 0), 0) ?? 0;
           const ok = resp.ok && !!body.result?.ok;
-          const output = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
+          const awaitingPlanner = resp.ok && body.pending_worker_question !== undefined;
+          const awaitingHuman = resp.ok && (body.pending_question !== undefined || body.pending_approval !== undefined);
+          let output = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
+          if (ok && workspaceBranch) {
+            if (mergeWorkerWorkspace && workspaceBranch.startsWith("workers/")) {
+              const conflicts = await mergeWorkerWorkspace(subId, workspaceBranch);
+              if (conflicts.length) output = `${output ?? ""}\n\nWORKSPACE MERGE CONFLICTS (unapplied): ${conflicts.join(", ")}\nAsk the planner to reconcile these paths; no conflicting worker changes were applied.`;
+            }
+          }
           const modifiedFiles = output && typeof output === "object" && Array.isArray((output as Record<string, unknown>)["modifiedFiles"])
             ? ((output as Record<string, unknown>)["modifiedFiles"] as unknown[]).filter((path): path is string => typeof path === "string")
             : [];
           this.ctx.storage.sql.exec(
-            `UPDATE sub_agents SET status = ?, tokens_used = ?, result = ?, error = ?, updated_at = ? WHERE id = ?`,
-            ok ? "done" : "failed", tokensUsed, ok ? JSON.stringify(output) : null, ok ? null : (body.result?.error ?? `HTTP ${resp.status}`), Date.now(), subId
+            `UPDATE sub_agents SET status = ?, tokens_used = tokens_used + ?, result = ?, checkpoint_json = ?, error = ?, updated_at = ? WHERE id = ?`,
+            ok ? "done" : awaitingPlanner ? "awaiting_planner_input" : awaitingHuman ? "awaiting_human_input" : "failed", tokensUsed, ok ? JSON.stringify(output) : null,
+            boundedCheckpointJson(body.pending_worker_question ?? body.pending_question ?? body.result ?? { error: `HTTP ${resp.status}` }),
+            ok || awaitingPlanner || awaitingHuman ? null : (body.result?.error ?? `HTTP ${resp.status}`), Date.now(), subId
           );
           return {
             id: subId,
@@ -3755,6 +4035,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             ...(modelResolution.downgraded ? { effort_downgraded: true, effort_downgrade_reason: modelResolution.reason } : {}),
             ...(workerCapabilityReceipt ? { worker_capability_selection: workerCapabilityReceipt } : {}),
             modifiedFiles,
+            ...(awaitingPlanner ? { status: "awaiting_planner_input", question: body.pending_worker_question } : {}),
+            ...(awaitingHuman ? { status: "awaiting_human_input", pending_approval: body.pending_approval, pending_question: body.pending_question } : {}),
             ...(ok ? { output } : { error: body.result?.error ?? `HTTP ${resp.status}` }),
           };
         } catch (err) {
@@ -3769,9 +4051,45 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return { id: spawned.map((s) => s.id).join(","), results: spawned } as unknown as { id: string };
   }
 
+  private async handleSubAgentSessionUpdate(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    const body = await request.json<{ id?: string; parentDoId?: string; status?: string; output?: unknown; checkpoint?: unknown; error?: string; tokensUsed?: number }>().catch((): { id?: string; parentDoId?: string; status?: string; output?: unknown; checkpoint?: unknown; error?: string; tokensUsed?: number } => ({}));
+    const id = typeof body.id === "string" ? body.id : "";
+    const status = body.status;
+    if (!id || !["done", "failed", "awaiting_planner_input", "awaiting_human_input"].includes(status ?? ""))
+      return Response.json({ error: "invalid_worker_session_update" }, { status: 400 });
+    const rows = this.ctx.storage.sql.exec(`SELECT configuration_json FROM sub_agents WHERE id=?`, id).toArray() as Array<{ configuration_json: string | null }>;
+    const saved = rows[0]?.configuration_json ? safeJsonParse(rows[0].configuration_json) as Record<string, unknown> | undefined : undefined;
+    if (!saved || saved.tenantId !== tenantId || saved.parentDoId !== this.ctx.id.toString() || body.parentDoId !== this.ctx.id.toString())
+      return Response.json({ error: "worker_session_not_found" }, { status: 404 });
+    const output = status === "done" ? sanitizeSubAgentOutput(body.output) : undefined;
+    const checkpoint = boundedCheckpointJson(body.checkpoint ?? body.output ?? { error: body.error ?? null });
+    const tokens = Number.isSafeInteger(body.tokensUsed) && Number(body.tokensUsed) > 0 ? Math.min(Number(body.tokensUsed), 2_000_000) : 0;
+    this.ctx.storage.sql.exec(`UPDATE sub_agents SET status=?, result=?, checkpoint_json=?, error=?, tokens_used=tokens_used+?, updated_at=? WHERE id=?`,
+      status, output === undefined ? null : JSON.stringify(output), checkpoint, status === "failed" ? String(body.error ?? "worker_resume_failed").slice(0, 2000) : null, tokens, Date.now(), id);
+    return Response.json({ ok: true });
+  }
+
+  private async reportWorkerSessionUpdate(delegation: DelegationContract, update: {
+    status: "done" | "failed" | "awaiting_planner_input" | "awaiting_human_input";
+    output?: unknown; checkpoint?: unknown; error?: string; tokensUsed?: number;
+  }): Promise<void> {
+    if (!this.env.NAELAO_AGENT_DO) return;
+    const parentId = this.env.NAELAO_AGENT_DO.idFromString(delegation.parentDoId);
+    const parent = this.env.NAELAO_AGENT_DO.get(parentId);
+    await parent.fetch(new Request("http://agent-do/internal/sub-agents/session-update", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": delegation.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, delegation.tenantId) },
+      body: JSON.stringify({ id: delegation.workerId, parentDoId: delegation.parentDoId, ...update }),
+    }));
+  }
+
   private receiveFromSubAgentImpl(id: string): Promise<unknown> {
     const rows = this.ctx.storage.sql.exec(`SELECT * FROM sub_agents WHERE id = ?`, id).toArray() as Array<{
-      id: string; status: string; result: string | null; error: string | null; tokens_used: number; progress_note: string | null;
+      id: string; status: string; result: string | null; error: string | null; tokens_used: number; progress_note: string | null; checkpoint_json: string | null; workspace_branch: string | null; attempt: number;
     }>;
     const row = rows[0];
     if (!row) return Promise.resolve({ ok: false, error: "unknown sub-agent id" });
@@ -3782,6 +4100,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       error: row.error ?? undefined,
       tokens_used: row.tokens_used,
       progress_note: row.progress_note ?? undefined,
+      checkpoint: row.checkpoint_json ? safeJsonParse(row.checkpoint_json) : undefined,
+      workspace_branch: row.workspace_branch ?? undefined,
+      attempt: row.attempt,
     });
   }
 
@@ -4250,11 +4571,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    *  `run_state.status` is what makes a cancel land even if the request arrives at an instance
    *  that is not the one executing — this set is only the fast path. */
   private cancelledRuns = new Set<string>();
+  /** Execution cancellation is host-controlled; an HTTP client disconnect must not kill durable work. */
+  private executionControllers = new Map<string, AbortController>();
 
   /** Ask a run to stop. Cooperative: the loop finishes the action it is inside and stops at the
    *  next step boundary, so a half-completed side effect is never left ambiguous. */
   private requestCancel(runId: string): boolean {
     this.cancelledRuns.add(runId);
+    this.executionControllers.get(runId)?.abort(new Error("run_cancelled_by_user"));
     try {
       const updated = this.ctx.storage.sql
         .exec(`UPDATE run_state SET status = 'cancelling', updated_at = ? WHERE run_id = ? AND terminal_json IS NULL RETURNING run_id`, Date.now(), runId)
@@ -4426,7 +4750,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * really run. Newest first, bounded, since this is a panel and not an export.
    */
   private handleListSubAgents(parentRunId: string): Response {
-    const cols = `id, parent_run_id, goal, status, budget_tokens, tokens_used, progress_note, result, error, created_at, updated_at`;
+    const cols = `id, parent_run_id, goal, status, budget_tokens, tokens_used, progress_note, workspace_branch, attempt, result, error, created_at, updated_at`;
     const rows = parentRunId
       ? this.ctx.storage.sql
           .exec(`SELECT ${cols} FROM sub_agents WHERE parent_run_id = ? ORDER BY created_at ASC`, parentRunId)
@@ -4751,6 +5075,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(context["worker_capabilities"] && typeof context["worker_capabilities"] === "object"
           ? { workerCapabilities: context["worker_capabilities"] as NonNullable<DelegationContract["workerCapabilities"]> }
           : {}),
+        ...(Array.isArray(context["knowledge_scopes"]) ? { knowledgeScopes: context["knowledge_scopes"] as NonNullable<DelegationContract["knowledgeScopes"]> } : {}),
         ...(body.localMachineId ? { localModelMachine: body.localMachineId } : {}),
         ...(body.workspaceBranch ? { workspaceBranch: body.workspaceBranch } : {}),
         ...(Array.isArray(context["file_paths"]) ? { filePaths: context["file_paths"] as string[] } : {}),
@@ -4814,13 +5139,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!engineEnv) {
       return this.finishScriptFailure(runId, "script engine unavailable: SCRIPTS_R2 not bound", 503, "script_engine_unavailable");
     }
+    if (modelPolicy?.workerModelIds?.length) engineEnv.workerModelPool = {
+      modelIds: modelPolicy.workerModelIds.slice(0, 100),
+      selectionMode: modelPolicy.workerSelectionMode ?? "automatic",
+      ...(modelPolicy.workerModelPriceCeiling?.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: modelPolicy.workerModelPriceCeiling.inputUsdPerMillion } : {}),
+      ...(modelPolicy.workerModelPriceCeiling?.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: modelPolicy.workerModelPriceCeiling.outputUsdPerMillion } : {}),
+    };
     engineEnv.runId = runId;
+    const executionController = new AbortController();
+    this.executionControllers.set(runId, executionController);
+    if (this.isCancelRequested(runId)) executionController.abort(new Error("run_cancelled_by_user"));
     if (callerRole) engineEnv.callerRole = callerRole;
     if (delegation?.filePaths !== undefined) engineEnv.workspaceFileScope = delegation.filePaths;
+    if (delegation?.knowledgeScopes !== undefined) engineEnv.knowledgeScopes = delegation.knowledgeScopes;
+    if (isLeaf && delegation) engineEnv.workerSessionId = delegation.workerId;
     engineEnv.outputSessionId = sessionId;
     engineEnv.taskId = runId;
     engineEnv.humanInvokerId = userId ?? "system";
-    engineEnv.executionSignal = request.signal;
+    engineEnv.executionSignal = executionController.signal;
     const mutationGrant = request.headers.get("x-naelao-mutation-grant") ?? body.mutationGrant;
     if (mutationGrant) engineEnv.mutationGrant = mutationGrant;
     // §A1 connector default-vs-personal switch: read once per run, best-effort — a failure or an
@@ -4976,12 +5312,39 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // AFTER the env keys so it overrides; a business with none (or a default @cf/ model) gets the
     // platform key exactly as before — see resolveBusinessLlmOverride's own doc.
     const byokOverride = await this.resolveBusinessLlmOverride(spaceId, tenantId, body.model ?? DEFAULT_WORKING_MODEL);
+    const workerOpenRouterKey = byokOverride.openRouterApiKey ?? (engineEnv.workerModelPool
+      ? (await this.resolveBusinessLlmOverride(spaceId, tenantId, "openrouter/worker-pool" )).openRouterApiKey
+      : undefined);
+    if (engineEnv.workerModelPool && workerOpenRouterKey) {
+      try {
+        const catalog = await fetchOpenRouterCatalog(workerOpenRouterKey);
+        const configured = new Set(engineEnv.workerModelPool.modelIds);
+        engineEnv.workerModelCandidates = catalog.filter(candidate => configured.has(candidate.model)
+          && candidate.inputModalities?.includes("text") && candidate.outputModalities?.includes("text")
+          && candidate.supportedParameters?.includes("tools") && (candidate.contextLength ?? 0) >= 16_000
+          && candidate.promptPriceUsdPerToken !== undefined && candidate.completionPriceUsdPerToken !== undefined
+          && (engineEnv.workerModelPool?.inputUsdPerMillion === undefined || candidate.promptPriceUsdPerToken * 1_000_000 <= engineEnv.workerModelPool.inputUsdPerMillion)
+          && (engineEnv.workerModelPool?.outputUsdPerMillion === undefined || candidate.completionPriceUsdPerToken * 1_000_000 <= engineEnv.workerModelPool.outputUsdPerMillion));
+      } catch {
+        engineEnv.workerModelCandidates = [];
+      }
+    }
     let modelPricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string } | undefined;
     try {
       const resolvedPricing = await this.resolveDynamicModelPricing(body.model ?? DEFAULT_WORKING_MODEL, byokOverride.openRouterApiKey);
       modelPricing = resolvedPricing;
       if (resolvedPricing?.capabilityEvidence) body.openRouterCapabilityEvidence = resolvedPricing.capabilityEvidence;
       if (isLeaf && !isWorkerPriceAllowed(requestedModel, resolvedPricing)) return this.finishScriptFailure(runId, "The economy worker's live price exceeds its pinned price ceiling; model policy needs review", 503, "worker_model_price_ceiling");
+      if (isLeaf && requestedModel.startsWith("openrouter/")) {
+        const liveCard = engineEnv.workerModelCandidates?.find(candidate => candidate.model === requestedModel);
+        if (!liveCard) return this.finishScriptFailure(runId, "The worker model is no longer in the owner-configured, live-card-verified pool", 503, "worker_model_not_eligible");
+        const inputLimit = engineEnv.workerModelPool?.inputUsdPerMillion;
+        const outputLimit = engineEnv.workerModelPool?.outputUsdPerMillion;
+        if ((inputLimit !== undefined && (resolvedPricing?.inputUsdPerToken ?? Infinity) * 1_000_000 > inputLimit)
+          || (outputLimit !== undefined && (resolvedPricing?.outputUsdPerToken ?? Infinity) * 1_000_000 > outputLimit)) {
+          return this.finishScriptFailure(runId, "The worker model's current OpenRouter price exceeds the configured pool ceiling", 503, "worker_model_price_ceiling");
+        }
+      }
     } catch (error) {
       return this.finishScriptFailure(runId, error instanceof Error ? error.message : "model price evidence unavailable", 503, "model_price_unavailable");
     }
@@ -5139,6 +5502,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const maxStepsFromContext = body.context?.["max_steps"];
       const maxTokensFromContext = body.context?.["max_tokens"];
       const deadlineMsFromContext = body.context?.["deadline_ms"];
+      const longRunning = body.context?.["long_running"] === true;
       const onProgress = this.composeProgressReporters([
         // sessionId is what makes this run findable again from a tab that was never open for it.
         this.buildLiveProgressReporter(runId, sessionId),
@@ -5253,7 +5617,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         shouldCancel: () => this.isCancelRequested(runId),
         ...(this.env.PLATFORM_DB ? { shouldStopForTenant: () => this.tenantSpaceSuspended(tenantId, spaceId) } : {}),
         ...(continuation?.approvedActionEvidence ? { preApprovedActions: [continuation.approvedActionEvidence] } : {}),
-        ...(continuation?.ledgerKey ? { ledgerKey: continuation.ledgerKey } : {}),
+        ...(isLeaf ? { ledgerKey: delegation!.workerId } : continuation?.ledgerKey ? { ledgerKey: continuation.ledgerKey } : {}),
         ...(continuation?.resumeSteps?.length ? { resumeSteps: continuation.resumeSteps } : {}),
         ...(continuation?.humanAnswer ? { humanAnswer: continuation.humanAnswer } : {}),
         ...(deliberationRound !== undefined ? { deliberationRound } : {}),
@@ -5268,7 +5632,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // A person is waiting on the other end of this request, so the loop gets a wall clock. One
         // turn before it expires the model is told to wrap up, which turns "ran out of time" into a
         // real answer about what was done rather than a stalled request.
-        deadlineAt: Date.now() + (typeof deadlineMsFromContext === "number" ? deadlineMsFromContext : RUN_WALL_CLOCK_MS),
+        ...(typeof deadlineMsFromContext === "number"
+          ? { deadlineAt: Date.now() + deadlineMsFromContext }
+          : longRunning ? {} : { deadlineAt: Date.now() + RUN_WALL_CLOCK_MS }),
         ...(onProgress ? { onProgress } : {}),
       });
 
@@ -5283,6 +5649,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
           approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
+          ...(delegation ? { delegation } : {}),
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
           projectId: projectId ?? null,
@@ -5296,6 +5663,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
           approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
+          ...(delegation ? { delegation } : {}),
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
           projectId: projectId ?? null,
@@ -5318,6 +5686,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
           model: body.model, goal: body.goal, deliberationRound: result.deliberation_round,
           approvalPolicyFingerprint: currentApprovalPolicyFingerprint,
+          ...(delegation ? { delegation } : {}),
         });
         void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
           projectId: projectId ?? null,
@@ -5329,6 +5698,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           status: "awaiting_approval",
           final_answer: `I need your answer before I continue: ${result.pending_question.question}`,
           pending_question: result.pending_question,
+        });
+        return Response.json(result);
+      }
+
+      // Worker clarifications are returned to the parent as a structured checkpoint. They do
+      // not create a human approval request here; the planner can answer and dispatch a resume
+      // against the same worker session and workspace branch.
+      if (result.pending_worker_question) {
+        this.persistRunTrace(runId, tenantId, result.trace);
+        this.finishLiveRun(runId, {
+          status: "awaiting_planner_input",
+          pending_question: result.pending_worker_question,
         });
         return Response.json(result);
       }
@@ -5575,6 +5956,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { status: 500 }
       );
     } finally {
+      this.executionControllers.delete(runId);
       this.signalContainerLifecycle(spaceId, projectId, containerLifecycleTerminal);
       // Every normal exit above records a terminal state, which keeps the entry (briefly) rather
       // than dropping it. Anything that reaches here WITHOUT one left the run unresolved — there
@@ -6393,6 +6775,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
       model?: string | undefined; goal: string; deliberationRound?: number | undefined;
       approvalPolicyFingerprint: string;
+      delegation?: DelegationContract;
     }
   ): void {
     try {
@@ -6403,12 +6786,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         `INSERT OR REPLACE INTO suspended_runs
            (approval_id, run_id, space_id, tenant_id, agent_id, session_id, project_id, user_id,
             caller_role, model, goal, action_name, action_input_json, approval_policy_fingerprint,
-            steps_json, deliberation_round, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suspended', ?)`,
+            steps_json, deliberation_round, status, delegation_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suspended', ?, ?)`,
         approvalId, ctx.runId, ctx.spaceId, ctx.tenantId, ctx.agentId, ctx.sessionId,
         ctx.projectId ?? null, ctx.userId ?? null, ctx.callerRole ?? null, ctx.model ?? null,
         ctx.goal, actionName, stableStringify(params), ctx.approvalPolicyFingerprint,
         JSON.stringify(pending.steps_completed ?? []), ctx.deliberationRound ?? 0,
+        ctx.delegation ? JSON.stringify(ctx.delegation) : null,
         new Date().toISOString()
       );
     } catch {
@@ -6649,6 +7033,40 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     const humanAnswer = row["human_answer"] ?? undefined;
+    let resumeDelegation: DelegationContract | undefined;
+    try {
+      if (row["delegation_json"]) resumeDelegation = JSON.parse(row["delegation_json"]!) as DelegationContract;
+    } catch { return Response.json({ resumed: false, reason: "delegated worker checkpoint is invalid" }, { status: 409 }); }
+    let spentThisAttempt = 0;
+    if (resumeDelegation && row["run_id"]) {
+      const usage = this.ctx.storage.sql.exec(`SELECT COALESCE(SUM(tokens), 0) AS used FROM run_traces WHERE run_id=?`, row["run_id"])
+        .toArray()[0] as { used?: number } | undefined;
+      spentThisAttempt = Number(usage?.used ?? 0);
+      const remaining = resumeDelegation.maxTokens - spentThisAttempt;
+      if (remaining < 1) {
+        this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status='budget_exhausted' WHERE approval_id=?`, approvalId);
+        await this.reportWorkerSessionUpdate(resumeDelegation, {
+          status: "failed", checkpoint: { error: "worker_session_budget_exhausted" }, error: "worker_session_budget_exhausted",
+        }).catch(() => undefined);
+        return Response.json({ resumed: false, reason: "worker session token budget is exhausted" }, { status: 402 });
+      }
+      resumeDelegation = { ...resumeDelegation, maxTokens: remaining, maxSteps: budgetToMaxSteps(remaining) };
+    }
+    let resumeContext: Record<string, unknown> | undefined;
+    if (resumeDelegation) {
+      try {
+        const token = await issueDelegationContract(resumeDelegation, this.env.PLATFORM_SECRET);
+        resumeContext = {
+          delegation_token: token, delegation_depth: resumeDelegation.depth, delegation_planner: resumeDelegation.planner,
+          root_run_id: resumeDelegation.rootRunId, delegation_max_tier: resumeDelegation.maxTier,
+          parent_run_id: resumeDelegation.parentRunId, parent_do_id: resumeDelegation.parentDoId,
+          sub_agent_id: resumeDelegation.workerId, max_steps: resumeDelegation.maxSteps, max_tokens: resumeDelegation.maxTokens,
+          ...(resumeDelegation.filePaths !== undefined ? { file_paths: resumeDelegation.filePaths } : {}),
+          ...(resumeDelegation.workerCapabilities !== undefined ? { worker_capabilities: resumeDelegation.workerCapabilities } : {}),
+          ...(resumeDelegation.knowledgeScopes !== undefined ? { knowledge_scopes: resumeDelegation.knowledgeScopes } : {}),
+        };
+      } catch { return Response.json({ resumed: false, reason: "could not renew delegated worker scope" }, { status: 409 }); }
+    }
     const resumeBody = {
       goal: row["goal"] ?? "",
       spaceId: row["space_id"] ?? "",
@@ -6658,6 +7076,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(row["project_id"] ? { projectId: row["project_id"] } : {}),
       ...(row["user_id"] ? { userId: row["user_id"] } : {}),
       ...(row["model"] ? { model: row["model"] } : {}),
+      ...(resumeDelegation ? { functionalRole: resumeDelegation.role, airGappedOnly: resumeDelegation.localOnly,
+        ...(resumeDelegation.localModelMachine ? { localMachineId: resumeDelegation.localModelMachine } : {}) } : {}),
+      ...(resumeDelegation?.workspaceBranch ? { workspaceBranch: resumeDelegation.workspaceBranch } : {}),
+      ...(resumeContext ? { context: resumeContext } : {}),
       // A fresh run id: this is a second, separately-traceable pass, and reusing the suspended
       // one would overwrite the trace that shows why it paused in the first place. The ledger key
       // stays the ORIGINAL run's, which is what stops this pass re-executing the ungated work the
@@ -6695,6 +7117,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'resumed' WHERE approval_id = ?`, approvalId);
     const result = await readBoundedResponseJson<Record<string, unknown>>(resp, 2 * 1024 * 1024);
+    if (resumeDelegation) {
+      const loopResult = result as Record<string, unknown>;
+      const runResult = loopResult["result"] as Record<string, unknown> | undefined;
+      const status = loopResult["pending_worker_question"] !== undefined ? "awaiting_planner_input"
+        : loopResult["pending_approval"] !== undefined || loopResult["pending_question"] !== undefined ? "awaiting_human_input"
+        : runResult?.["ok"] === true ? "done" : "failed";
+      const traceUsage = Array.isArray(loopResult["trace"])
+        ? (loopResult["trace"] as Array<{ tokens?: number }>).reduce((sum, step) => sum + (Number.isSafeInteger(step.tokens) ? Number(step.tokens) : 0), 0)
+        : 0;
+      try {
+        await this.reportWorkerSessionUpdate(resumeDelegation, {
+          status, output: runResult?.["output"], checkpoint: loopResult,
+          ...(typeof runResult?.["error"] === "string" ? { error: runResult["error"] } : {}),
+          tokensUsed: typeof runResult?.["tokens_used"] === "number" ? runResult["tokens_used"] : traceUsage,
+        });
+      } catch { /* Parent can still inspect the child's durable run; callback is best-effort. */ }
+    }
     return Response.json({ resumed: true, run_id: resumeBody.runId, result });
   }
 

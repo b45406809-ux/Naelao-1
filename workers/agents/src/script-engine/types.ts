@@ -403,6 +403,12 @@ export interface LoopResult {
       error?: string;
     }>;
   };
+  /** A delegated worker is blocked on a clarification for its parent planner. */
+  pending_worker_question?: {
+    question: string;
+    options?: string[];
+    steps_completed: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+  };
   /**
    * Actions parked mid-run because they need a human, on a run that CARRIED ON around them and
    * finished. Distinct from `pending_approval`, which is the whole run stopping: here the agent
@@ -1093,6 +1099,24 @@ export interface ScriptEngineEnv {
   planWorkerCapabilities?: string[];
   /** The current agent's configured prebuilt set; leaf workers may only receive a signed subset. */
   workerPrebuiltCapabilities?: string[];
+  /** Owner-configured OpenRouter worker policy; model cards are refreshed for every run. */
+  workerModelPool?: {
+    modelIds: string[];
+    selectionMode: "automatic" | "planner";
+    inputUsdPerMillion?: number;
+    outputUsdPerMillion?: number;
+  };
+  workerModelCandidates?: Array<{
+    model: string;
+    name: string;
+    description?: string;
+    contextLength?: number;
+    promptPriceUsdPerToken?: number;
+    completionPriceUsdPerToken?: number;
+    inputModalities?: string[];
+    outputModalities?: string[];
+    supportedParameters?: string[];
+  }>;
   /** Host resolves advisory capability labels to the current authorized installation. */
   activatePlanRuntime?: (capability?: string) => Promise<void>;
   /** Best-effort exact prewarm for the next planned worker step; never authorizes execution. */
@@ -1134,6 +1158,8 @@ export interface ScriptEngineEnv {
   localModelMachine?: string;
   delegationDepth?: 1 | 2 | 3;
   delegationPlanner?: boolean;
+  /** Set only by the host after validating the signed worker delegation contract. */
+  workerSessionId?: string;
   rootRunId?: string;
   /** Unique attempt identity used as the holder for automatic multi-file workspace locks. */
   runId?: string;
@@ -1147,6 +1173,8 @@ export interface ScriptEngineEnv {
   workspaceBranch?: string;
   /** Host-verified exact deliverable paths for a delegated task. An empty list grants no files. */
   workspaceFileScope?: string[];
+  /** Host-verified knowledge base scopes for this worker session. */
+  knowledgeScopes?: Array<"space">;
   /** For minting the internal HMAC token any direct (non-router) service-binding call to
    *  another worker (spacesWorker, knowledgeWorker, ...) needs — see mintInternalToken,
    *  @naelao/http. Optional so environments that never make such a call (most script tests)

@@ -8,7 +8,10 @@ describe("host-signed worker identity", () => {
   it("accepts a bounded contract and prevents scope, depth, identity, budget and placement tampering", async () => {
     const token = await issueDelegationContract(contract, "test-host-secret");
     await verifyDelegationContract(contract, token, "test-host-secret");
-    for (const patch of [{ actorId: "other" }, { projectId: undefined }, { agentId: "other" }, { maxTokens: 2000 },
+    const longRun = { ...contract, maxTokens: 20_000 };
+    const longRunToken = await issueDelegationContract(longRun, "test-host-secret");
+    await verifyDelegationContract(longRun, longRunToken, "test-host-secret");
+    for (const patch of [{ actorId: "other" }, { projectId: undefined }, { agentId: "other" }, { maxTokens: 20_001 },
       { depth: 3, planner: false }, { parentDoId: "other" }, { maxTier: 6 }, { localOnly: false }, { localModelMachine: "other" }, { filePaths: ["src/other.ts"] },
       { workerCapabilities: { enabledPrebuilts: ["code-exec"], selectedSkills: [] } }]) {
       await expect(verifyDelegationContract({ ...contract, ...patch } as DelegationContract, token, "test-host-secret")).rejects.toThrow();
@@ -20,7 +23,7 @@ describe("host-signed worker identity", () => {
     expect(childFanout(1, true)).toBe(4); expect(childFanout(2, true)).toBe(3);
     expect(childFanout(2, false)).toBe(0); expect(childFanout(3, false)).toBe(0); expect(childFanout(3, true)).toBe(0);
     await expect(issueDelegationContract({ ...contract, depth: 3 }, "test-host-secret")).rejects.toThrow();
-    await expect(issueDelegationContract({ ...contract, maxTokens: 2001 }, "test-host-secret")).rejects.toThrow();
+    await expect(issueDelegationContract({ ...contract, maxTokens: 20_001 }, "test-host-secret")).rejects.toThrow();
     await expect(issueDelegationContract({ ...contract, filePaths: ["../secret"] }, "test-host-secret")).rejects.toThrow("workspace_path_traversal");
     await expect(issueDelegationContract({ ...contract, workerCapabilities: { enabledPrebuilts: ["../escape"], selectedSkills: [] } }, "test-host-secret")).rejects.toThrow("delegation_worker_capabilities_invalid");
   });

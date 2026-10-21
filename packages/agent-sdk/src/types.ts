@@ -321,6 +321,10 @@ export interface RuntimeProject {
 export interface SpaceModelPolicy {
   mode: "open" | "whitelist_only";
   allowedModelIds: string[];
+  /** Space owner configured OpenRouter worker pool; candidates still pass live-card checks. */
+  workerModelIds?: string[];
+  workerSelectionMode?: "automatic" | "planner";
+  workerModelPriceCeiling?: { inputUsdPerMillion?: number; outputUsdPerMillion?: number };
 }
 
 export interface SpaceCompliancePolicy {

@@ -3378,6 +3378,9 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           // it. The synchronous (`Prefer: respond-sync`) dispatch path a few lines above already
           // did this correctly (`runId: scriptRunId`) — only this async path was missing it.
           runId: body.taskId,
+          // The Workflow owns this background planner run. Keep the interactive time limit off;
+          // explicit token/spend, tenant, approval, and cancellation controls still apply.
+          context: { long_running: true },
         }),
       })
     );

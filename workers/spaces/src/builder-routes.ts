@@ -335,6 +335,28 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     // those tables, so this and the agents worker's own run-time model override can never drift.
     const model = body.product_config?.modelConfig?.model;
     const policy = body.product_config?.modelPolicy;
+    const workerPool = body.product_config?.workerModelPool;
+    if (workerPool) {
+      if (!Array.isArray(workerPool.modelIds) || workerPool.modelIds.length > 100
+        || workerPool.modelIds.some(id => typeof id !== "string" || !/^openrouter\/[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(id))) {
+        return c.json({ error_code: "bad_request", message: "workerModelPool.modelIds must contain at most 100 OpenRouter model IDs" }, 400);
+      }
+      if (workerPool.modelsByPlan !== undefined && (!workerPool.modelsByPlan || typeof workerPool.modelsByPlan !== "object" || Array.isArray(workerPool.modelsByPlan)
+        || Object.entries(workerPool.modelsByPlan).length > 50
+        || Object.entries(workerPool.modelsByPlan).some(([planId, ids]) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(planId)
+          || !Array.isArray(ids) || ids.length > 100 || ids.some(id => typeof id !== "string" || !workerPool.modelIds.includes(id))))) {
+        return c.json({ error_code: "bad_request", message: "workerModelPool.modelsByPlan must map product plan IDs to models from the worker pool" }, 400);
+      }
+      if (workerPool.selectionMode !== undefined && workerPool.selectionMode !== "automatic" && workerPool.selectionMode !== "planner") {
+        return c.json({ error_code: "bad_request", message: "workerModelPool.selectionMode must be automatic or planner" }, 400);
+      }
+      for (const key of ["inputUsdPerMillion", "outputUsdPerMillion"] as const) {
+        const value = workerPool[key];
+        if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1000)) {
+          return c.json({ error_code: "bad_request", message: `workerModelPool.${key} must be between 0 and 1000` }, 400);
+        }
+      }
+    }
     if (policy && (policy.mode !== "open" && policy.mode !== "whitelist_only")) {
       return c.json({ error_code: "bad_request", message: "modelPolicy.mode must be open or whitelist_only" }, 400);
     }

@@ -4,7 +4,7 @@ export const runtime = "edge";
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { updateBuilderProduct, getTemplates } from "@/lib/api";
+import { updateBuilderProduct, getTemplates, getOpenRouterWorkerModelCards, type OpenRouterWorkerModelCard } from "@/lib/api";
 import type { BuilderProductConfig, TemplateInfo } from "@/lib/api";
 import { useProduct } from "../productContext";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
@@ -49,6 +49,8 @@ export default function ProductConfigurationPage() {
   // Phase F (§A1.17): fetched from the real, coming_soon-aware GET /templates catalog instead of
   // a hardcoded duplicate of LAUNCHPAD_TEMPLATES — de-drifts this page from apps/shell's dialog.
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [workerCards, setWorkerCards] = useState<OpenRouterWorkerModelCard[]>([]);
+  const [workerModelSearch, setWorkerModelSearch] = useState("");
 
   useEffect(() => {
     if (product) {
@@ -60,6 +62,10 @@ export default function ProductConfigurationPage() {
   useEffect(() => {
     void getTemplates().then(setTemplates).catch(() => setTemplates([]));
   }, []);
+
+  useEffect(() => {
+    if (product) void getOpenRouterWorkerModelCards(product.id).then(setWorkerCards).catch(() => setWorkerCards([]));
+  }, [product]);
 
   async function save() {
     setSaving(true);
@@ -199,6 +205,59 @@ export default function ProductConfigurationPage() {
             );
           })}
         </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Worker model pool</h2>
+        <p className="text-xs text-gray-500 mb-4">Choose OpenRouter models workers may use. Cards and prices come from your active OpenRouter key. Eligibility is checked again when a worker starts; provider availability and your subscription limits can still change.</p>
+        <label className="block text-xs font-medium text-gray-600 mb-1">Selection</label>
+        <select value={form.workerModelPool?.selectionMode ?? "automatic"} onChange={e => setForm(f => ({ ...f, workerModelPool: { ...f.workerModelPool, modelIds: f.workerModelPool?.modelIds ?? [], selectionMode: e.target.value as "automatic" | "planner" } }))} className="mb-4 rounded border border-gray-300 px-2 py-1.5 text-sm">
+          <option value="automatic">System One selects from this pool</option>
+          <option value="planner">Planner chooses from this pool</option>
+        </select>
+        <div className="mb-4 grid gap-3 sm:grid-cols-2">
+          {(["inputUsdPerMillion", "outputUsdPerMillion"] as const).map(key => <label key={key} className="text-xs font-medium text-gray-600">Maximum {key.startsWith("input") ? "input" : "output"} price (USD / 1M tokens)
+            <input type="number" min="0" max="1000" step="0.001" value={form.workerModelPool?.[key] ?? ""} onChange={e => setForm(f => ({ ...f, workerModelPool: { ...f.workerModelPool, modelIds: f.workerModelPool?.modelIds ?? [], [key]: e.target.value === "" ? undefined : Number(e.target.value) } }))} className="mt-1 block w-full rounded border border-gray-300 px-2 py-1.5 text-sm" />
+          </label>)}
+        </div>
+        <input value={workerModelSearch} onChange={e => setWorkerModelSearch(e.target.value)} placeholder="Search OpenRouter model cards" className="mb-3 block w-full rounded border border-gray-300 px-3 py-2 text-sm" />
+        <div className="space-y-2 max-h-96 overflow-auto">
+          {workerCards.filter(card => card.inputModalities?.includes("text") && card.outputModalities?.includes("text") && card.supportedParameters?.includes("tools") && `${card.name} ${card.model}`.toLowerCase().includes(workerModelSearch.toLowerCase())).map(card => {
+            const ids = form.workerModelPool?.modelIds ?? [];
+            const selected = ids.includes(card.model);
+            return <label key={card.id} className="flex gap-3 rounded-lg border border-gray-200 p-3 text-sm">
+              <input type="checkbox" checked={selected} onChange={e => setForm(f => {
+                const current = f.workerModelPool?.modelIds ?? [];
+                const modelIds = e.target.checked ? [...new Set([...current, card.model])] : current.filter(id => id !== card.model);
+                const modelsByPlan = Object.fromEntries(Object.entries(f.workerModelPool?.modelsByPlan ?? {}).map(([planId, ids]) => [planId, ids.filter(id => id !== card.model)]));
+                return { ...f, workerModelPool: { ...f.workerModelPool, modelIds, modelsByPlan, selectionMode: f.workerModelPool?.selectionMode ?? "automatic" } };
+              })} className="mt-1 rounded border-gray-300 text-brand-600" />
+              <span className="min-w-0"><span className="block font-medium text-gray-800">{card.name}</span><span className="block truncate font-mono text-[11px] text-gray-500">{card.model}</span><span className="block text-xs text-gray-500">{card.contextLength?.toLocaleString() ?? "Unknown"} context · input ${((card.promptPriceUsdPerToken ?? 0) * 1_000_000).toFixed(3)}/M · output ${((card.completionPriceUsdPerToken ?? 0) * 1_000_000).toFixed(3)}/M</span></span>
+            </label>;
+          })}
+          {workerCards.length === 0 && <p className="text-sm text-gray-500">Connect an OpenRouter key in Space settings to load live model cards.</p>}
+        </div>
+        {(form.workerModelPool?.modelIds.length ?? 0) > 0 && <p className="mt-3 text-xs text-gray-500">Allowed worker models: {form.workerModelPool?.modelIds.length}. An empty pool uses the existing runtime default.</p>}
+        {(form.pricingConfig?.plans?.length ?? 0) > 0 && <div className="mt-5 space-y-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Subscription plan access</h3>
+          <p className="text-xs text-gray-500">For business spaces with an active subscription, workers only receive models enabled for that plan. A plan with no checked models uses the runtime default.</p>
+          {form.pricingConfig?.plans?.map(plan => <details key={plan.id} className="rounded border border-gray-200 p-3">
+            <summary className="cursor-pointer text-sm font-medium">{plan.name}</summary>
+            <div className="mt-2 grid gap-1 sm:grid-cols-2">
+              {workerCards.filter(card => form.workerModelPool?.modelIds.includes(card.model)).map(card => {
+                const allowed = form.workerModelPool?.modelsByPlan?.[plan.id] ?? [];
+                return <label key={card.model} className="flex items-center gap-2 text-xs text-gray-700">
+                  <input type="checkbox" checked={allowed.includes(card.model)} onChange={e => setForm(f => {
+                    const pool = f.workerModelPool ?? { modelIds: [], selectionMode: "automatic" as const };
+                    const existing = pool.modelsByPlan?.[plan.id] ?? [];
+                    const modelsByPlan = { ...(pool.modelsByPlan ?? {}), [plan.id]: e.target.checked ? [...new Set([...existing, card.model])] : existing.filter(id => id !== card.model) };
+                    return { ...f, workerModelPool: { ...pool, modelsByPlan } };
+                  })} className="rounded border-gray-300 text-brand-600" />{card.name}
+                </label>;
+              })}
+            </div>
+          </details>)}
+        </div>}
       </div>
 
       {form.membershipModel !== "team" && (
