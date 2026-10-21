@@ -1189,3 +1189,16 @@ Validation: Knowledge Worker suite passed 9 files / 42 tests; Knowledge Worker T
 This is a focused pass of the five document routes and their test module. `workers/knowledge/src/index.ts` remains unchecked overall; cancellation/partial-write behavior after destructive reindex begins, deletion partial failures, and other route groups need further review.
 
 During the same route pass, I replaced every remaining `c.req.json()` in the Knowledge Worker with the shared streaming request-byte reader and per-endpoint ceilings. Document JSON allows 6.5 MB to support the existing 1 MiB character contract with JSON escaping; smaller metadata, search, and URL operations have 16–64 KiB ceilings; semantic-cache writes allow 2 MiB. Oversized bodies now stop at the byte ceiling before JSON parsing, and malformed JSON remains a 400/fallback according to each route's existing contract. The lifecycle test verifies a declared oversized body is rejected before any DB or R2 write. Knowledge Worker suite passed 9 files / 43 tests after this extension.
+
+
+## Semantic response-cache tenant isolation and invalidation (2026-10-21)
+
+Traced all three `/internal/semantic-cache` routes, the direct Agents Worker callers, and the second cache lookup from ordinary `/kb/search`. The cache routes had valid HMAC authentication but trusted caller-supplied `spaceId` without confirming tenant ownership; Vectorize filters also used `space_id` alone. The regular search path used a shared RAG helper that had no tenant scope and did not know about cache generations, so it could bypass endpoint-side invalidation.
+
+All semantic-cache operations now verify the signed tenant owns the requested space. Store, lookup, and invalidation include tenant and space filters; stored vectors carry both fields. The shared RAG helper now requires tenant and space scope and includes the current generation in its filter. Cache responses with missing/invalid expiry or over 1 MiB text are not served. Invalidation rotates a tenant+space generation before cleanup, making every old cache entry unreachable even when more than 1,000 vectors exist; it removes one bounded cleanup batch and reports `cleanup_pending` when the batch ceiling is reached.
+
+Added route regressions for foreign-space lookup/store/invalidation, query/result bounds, tenant filters, expiry validation, oversized KV values, and the 1,000-vector invalidation ceiling; added RAG-helper tests for generation/tenant filters and result-size bounds.
+
+Validation: Knowledge Worker suite passed 10 files / 47 tests; RAG suite passed 4 files / 26 tests; both TypeScript checks and `git diff --check` passed.
+
+Checked the semantic-cache route test and shared RAG helper/test. Storage cleanup for old generations beyond the 1,000-vector best-effort delete batch is still incomplete: those vectors remain stored but are excluded from lookup by generation. They should be reclaimed by a later maintenance sweep or a paginated provider cleanup API.

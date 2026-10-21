@@ -58,15 +58,30 @@ describe("RAG stress boundaries", () => {
     const get = vi.fn().mockResolvedValue("cached answer");
     const bindings = { vectors: { query }, kv: { get } };
     await expect(
-      lookupSemanticCache(bindings, [1], "space")
+      lookupSemanticCache(bindings, [1], { tenantId: "tenant", spaceId: "space" })
     ).resolves.toBeNull();
     query.mockResolvedValue({
       matches: [{ id: "hit", score: 0.99, metadata: {} }],
     });
     await expect(
-      lookupSemanticCache(bindings, [1], "space")
+      lookupSemanticCache(bindings, [1], { tenantId: "tenant", spaceId: "space" })
     ).resolves.toBeNull();
     expect(get).not.toHaveBeenCalled();
+  });
+
+  it("scopes semantic cache lookups by tenant, space, generation, and cached text budget", async () => {
+    const query = vi.fn().mockResolvedValue({ matches: [{ id: "hit", score: 0.99, metadata: { expires_at: Date.now() + 60_000 } }] });
+    const get = vi.fn().mockResolvedValue("cached");
+    await expect(lookupSemanticCache({ vectors: { query }, kv: { get } }, [1], {
+      tenantId: "tenant-a", spaceId: "space-a", generation: "generation-2",
+    })).resolves.toMatchObject({ text: "cached" });
+    expect(query).toHaveBeenCalledWith([1], expect.objectContaining({ filter: {
+      tenant_id: { $eq: "tenant-a" }, space_id: { $eq: "space-a" }, generation: { $eq: "generation-2" },
+    } }));
+    get.mockResolvedValue("x".repeat(1_048_577));
+    await expect(lookupSemanticCache({ vectors: { query }, kv: { get } }, [1], {
+      tenantId: "tenant-a", spaceId: "space-a", generation: "generation-2",
+    })).resolves.toBeNull();
   });
 
   it("rejects invalid permissioned vector dimensions, roles, and pagination", async () => {

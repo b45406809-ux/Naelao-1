@@ -56,7 +56,7 @@ describe("Batch 05 phase 2", () => {
     });
     const get = vi.fn().mockResolvedValue("verified answer");
     await expect(
-      lookupSemanticCache({ vectors: { query }, kv: { get } }, [1], "space")
+      lookupSemanticCache({ vectors: { query }, kv: { get } }, [1], { tenantId: "tenant", spaceId: "space" })
     ).resolves.toMatchObject({ text: "verified answer" });
     query.mockResolvedValue({
       matches: [
@@ -68,7 +68,7 @@ describe("Batch 05 phase 2", () => {
       ],
     });
     await expect(
-      lookupSemanticCache({ vectors: { query }, kv: { get } }, [1], "space")
+      lookupSemanticCache({ vectors: { query }, kv: { get } }, [1], { tenantId: "tenant", spaceId: "space" })
     ).resolves.toBeNull();
   });
 

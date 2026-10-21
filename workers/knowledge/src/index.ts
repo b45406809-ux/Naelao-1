@@ -1202,11 +1202,13 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // Semantic answer cache is checked before any document or web retrieval. Its Vectorize filter
   // enforces space isolation in hardware and the helper applies the strict >.96 threshold.
   const queryEmbedding = await embedText(c.env.AI, query.trim());
-  const semanticHit = await lookupSemanticCache(
-    { vectors: c.env.SEMANTIC_CACHE_VECTORS, kv: c.env.SEMANTIC_CACHE_KV },
-    queryEmbedding.embedding,
-    spaceId,
-  ).catch(() => null);
+  const semanticHit = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId)
+    .then((cacheGeneration) => lookupSemanticCache(
+      { vectors: c.env.SEMANTIC_CACHE_VECTORS, kv: c.env.SEMANTIC_CACHE_KV },
+      queryEmbedding.embedding,
+      { tenantId, spaceId, generation: cacheGeneration },
+    ))
+    .catch(() => null);
   if (semanticHit) {
     return c.json({ answer: semanticHit.text, data: [], citations: [], cached: true,
       cache_id: semanticHit.id, similarity: semanticHit.score, retrieval_mode: "semantic-cache",
@@ -1311,6 +1313,15 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
 const SEMANTIC_CACHE_SIMILARITY_THRESHOLD = 0.96;
 const SEMANTIC_CACHE_TTL_SECS = 24 * 60 * 60;
 
+async function semanticCacheGenerationKey(tenantId: string, spaceId: string): Promise<string> {
+  return `sc-generation:${await sha256Hex(`${tenantId}:${spaceId}`)}`;
+}
+
+async function readSemanticCacheGeneration(kv: KVNamespace, tenantId: string, spaceId: string): Promise<string> {
+  const generation = await kv.get(await semanticCacheGenerationKey(tenantId, spaceId));
+  return generation && generation.length <= 128 ? generation : "0";
+}
+
 // A1.16.9 (layer-3 backstop): these routes had NO auth check at all — not even a truthy
 // header, just an open POST/DELETE anyone reaching this worker could call. Covers lookup,
 // store, and the DELETE invalidation route below (prefix wildcard).
@@ -1318,9 +1329,12 @@ app.use("/internal/semantic-cache/*", requireInternalHmac((c) => (c as unknown a
 
 app.post("/internal/semantic-cache/lookup", async (c) => {
   const body = await readBoundedJson<{ query: string; spaceId: string }>(c.req.raw, 16 * 1024);
-  if (!body.query || !body.spaceId) {
+  if (typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000
+    || typeof body.spaceId !== "string" || !body.spaceId || body.spaceId.length > 256) {
     return c.json({ error: "query and spaceId required" }, 400);
   }
+  const tenantId = requireTenant(c);
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, body.spaceId, tenantId))) throw notFound("Space");
   if (await knowledgeEgressDenied(c.env, body.spaceId)) return airGapResponse(c);
 
   // Fail open if Vectorize binding not available (optional binding)
@@ -1329,11 +1343,12 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
   }
 
   try {
+    const generation = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, body.spaceId);
     const embedding = await embedText(c.env.AI, body.query);
 
     const results = await c.env.SEMANTIC_CACHE_VECTORS.query(embedding.embedding, {
       topK: 1,
-      filter: { space_id: { $eq: body.spaceId } },
+      filter: { tenant_id: { $eq: tenantId }, space_id: { $eq: body.spaceId }, generation: { $eq: generation } },
       returnMetadata: "indexed",
     });
 
@@ -1344,10 +1359,10 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
 
     const cacheId = top.id;
     const metadata = top.metadata as Record<string, unknown> | undefined;
-    const expiresAt = metadata?.["expires_at"] as number | undefined;
+    const expiresAt = metadata?.["expires_at"];
 
     // Check if expired (Vectorize has no TTL — checked via metadata)
-    if (expiresAt && expiresAt < Date.now()) {
+    if (!Number.isSafeInteger(expiresAt) || Number(expiresAt) <= Date.now()) {
       // Async cleanup of stale vector — don't block response
       c.executionCtx.waitUntil(c.env.SEMANTIC_CACHE_VECTORS.deleteByIds([cacheId]));
       return c.json({ hit: false });
@@ -1355,6 +1370,10 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
 
     const cachedResponse = await c.env.SEMANTIC_CACHE_KV.get(`sc:${cacheId}`);
     if (!cachedResponse) {
+      return c.json({ hit: false });
+    }
+    if (cachedResponse.length > 1_048_576) {
+      c.executionCtx.waitUntil(c.env.SEMANTIC_CACHE_KV.delete(`sc:${cacheId}`));
       return c.json({ hit: false });
     }
 
@@ -1369,9 +1388,13 @@ app.post("/internal/semantic-cache/lookup", async (c) => {
 
 app.post("/internal/semantic-cache/store", async (c) => {
   const body = await readBoundedJson<{ query: string; spaceId: string; response: string }>(c.req.raw, 2 * 1024 * 1024);
-  if (!body.query || !body.spaceId || !body.response) {
+  if (typeof body.query !== "string" || !body.query.trim() || body.query.length > 1_000
+    || typeof body.spaceId !== "string" || !body.spaceId || body.spaceId.length > 256
+    || typeof body.response !== "string" || !body.response || body.response.length > 1_048_576) {
     return c.json({ error: "query, spaceId, and response required" }, 400);
   }
+  const tenantId = requireTenant(c);
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, body.spaceId, tenantId))) throw notFound("Space");
   if (await knowledgeEgressDenied(c.env, body.spaceId)) return airGapResponse(c);
 
   if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
@@ -1379,6 +1402,7 @@ app.post("/internal/semantic-cache/store", async (c) => {
   }
 
   try {
+    const generation = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, body.spaceId);
     const cacheId = crypto.randomUUID();
     const embedding = await embedText(c.env.AI, body.query);
     const expiresAt = Date.now() + SEMANTIC_CACHE_TTL_SECS * 1000;
@@ -1387,7 +1411,9 @@ app.post("/internal/semantic-cache/store", async (c) => {
       id: cacheId,
       values: embedding.embedding,
       metadata: {
+        tenant_id: tenantId,
         space_id: body.spaceId,
+        generation,
         expires_at: expiresAt,
       },
     }]);
@@ -1407,19 +1433,28 @@ app.post("/internal/semantic-cache/store", async (c) => {
 // Invalidate all semantic cache entries for a space (called on KB update)
 app.delete("/internal/semantic-cache", async (c) => {
   const spaceId = c.req.query("spaceId");
-  if (!spaceId) return c.json({ error: "spaceId required" }, 400);
+  if (!spaceId || spaceId.length > 256) return c.json({ error: "spaceId must contain 1..256 characters" }, 400);
+  const tenantId = requireTenant(c);
+  if (!(await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId))) throw notFound("Space");
   if (await knowledgeEgressDenied(c.env, spaceId)) return airGapResponse(c);
 
   if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
     return c.json({ invalidated: true, count: 0 });
   }
 
+  let generationRotated = false;
   try {
-    // Fetch all vectors for this space using a dummy query (get any embedding)
+    const previousGeneration = await readSemanticCacheGeneration(c.env.SEMANTIC_CACHE_KV, tenantId, spaceId);
+    // Rotate first so every old entry becomes unreachable immediately, including spaces with
+    // more than Vectorize's 1,000-result query ceiling. The bounded delete below is cleanup.
+    await c.env.SEMANTIC_CACHE_KV.put(await semanticCacheGenerationKey(tenantId, spaceId), crypto.randomUUID());
+    generationRotated = true;
+    // Clean up one bounded batch. Entries beyond the provider query ceiling remain unreachable
+    // because their generation no longer matches; cleanup can continue asynchronously later.
     const dummyEmbed = await embedText(c.env.AI, "cache invalidation");
     const toDelete = await c.env.SEMANTIC_CACHE_VECTORS.query(dummyEmbed.embedding, {
       topK: 1000,
-      filter: { space_id: { $eq: spaceId } },
+      filter: { tenant_id: { $eq: tenantId }, space_id: { $eq: spaceId }, generation: { $eq: previousGeneration } },
       returnMetadata: "none",
     });
 
@@ -1431,10 +1466,10 @@ app.delete("/internal/semantic-cache", async (c) => {
     }
 
     console.log(`[SemanticCache] Invalidated ${ids.length} entries for spaceId=${spaceId}`);
-    return c.json({ invalidated: true, count: ids.length });
+    return c.json({ invalidated: true, count: ids.length, cleanup_pending: ids.length === 1_000 });
   } catch (err) {
     console.warn(`[SemanticCache] Invalidation error: ${err}`);
-    return c.json({ invalidated: false, error: String(err) });
+    return c.json({ invalidated: generationRotated, cleanup_pending: generationRotated, error: String(err) });
   }
 });
 
