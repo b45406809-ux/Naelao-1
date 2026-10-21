@@ -177,11 +177,22 @@ export class WorkflowRunDO extends DurableObject<DurableWorkflowHostEnv> {
     } catch (error) {
       // A restart reply can be lost after the provider accepted it. Reconcile before
       // marking the run failed so a successfully restarted workflow is not duplicated.
+      let providerActive = false;
       try {
         const provider = await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).status();
-        if (["queued", "running", "waiting", "sleeping"].includes(provider.status)) return;
+        providerActive = ["queued", "running", "waiting", "sleeping"].includes(provider.status);
       } catch { /* retain the original restart error */ }
-      await this.journal.transition("failed", undefined, "workflow_retry_start_failed");
+      if (!providerActive) {
+        await this.journal.transition("failed", undefined, "workflow_retry_start_failed");
+        await this.cleanup();
+        throw error;
+      }
+    }
+    try { await this.authorize(record.identity.runId); }
+    catch (error) {
+      await (await this.env.AGENT_SCRIPT_WORKFLOW.get(record.identity.runId)).terminate().catch(() => undefined);
+      const current = await this.journal.read();
+      if (!isTerminalWorkflow(current.status)) await this.journal.transition("failed", undefined, "workflow_retry_authorization_revoked");
       await this.cleanup();
       throw error;
     }

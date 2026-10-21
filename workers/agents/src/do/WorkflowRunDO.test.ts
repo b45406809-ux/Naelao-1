@@ -157,6 +157,29 @@ describe("WorkflowRunDO persisted authorization", () => {
     expect((await h.instance.existing())?.status).toBe("failed");
   });
 
+  it("terminates a provider workflow if suspension races a retry restart", async () => {
+    const h = harness();
+    const identity = {
+      schema: 1, runId: "run-restart-race", tenantId: "tenant-a", spaceId: "space-a", actorId: "actor-a", agentId: "agent-a",
+      grantVersion: "pending", codeDigest: "a".repeat(64), codeKey: "workflow-code/tenant-a/space-a/code-restart-race",
+      startKey: "start-restart-race", expiresAt: Date.now() + 300_000, workflowClass: "ephemeral_task", capabilities: [],
+    } as DurableWorkflowIdentity;
+    identity.grantVersion = (await readWorkflowGrant(h.env as never, identity)).version;
+    await h.instance.initialize(identity, {
+      schema: 1, r2_key: "workflow-artifacts/tenant-a/space-a/run-restart-race/input.json", sha256: "b".repeat(64), bytes: 2,
+    }, { budgetCredits: 5 });
+    await h.instance.finish(identity.runId, "failed", "prior failure");
+    const terminate = vi.fn(async () => undefined);
+    const restart = vi.fn(async () => { h.suspendTenant(); });
+    h.env.AGENT_SCRIPT_WORKFLOW = { create: vi.fn(), get: vi.fn(() => ({ restart, terminate, async status() { return { status: "running" }; } })) };
+    h.env.BILLING_WORKER = { async fetch() { return Response.json({ ok: true }); } };
+
+    await expect(h.instance.retry("actor-a")).rejects.toThrow("workflow_tenant_suspended");
+    expect(restart).toHaveBeenCalledOnce();
+    expect(terminate).toHaveBeenCalledOnce();
+    expect((await h.instance.existing())?.status).toBe("failed");
+  });
+
   it("terminates a provider workflow if suspension races workflow creation", async () => {
     const h = harness();
     const identity = {
