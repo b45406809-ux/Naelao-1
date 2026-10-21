@@ -1843,3 +1843,9 @@ Validation: business-email route suite 26/26; Agents approval and scope suites 3
 The credential-refresh gate did not cover consent flows already in progress. A provider callback could use a still-valid single-use ticket after tenant suspension to exchange authorization, save credentials, or register an MCP server. Built-in OAuth, custom OAuth, hosted provider-connect and Slack extension OAuth now check both tenant and Space activity when issuing tickets and again before callback side effects. Callback tickets are consumed even when suspension blocks completion, preventing later replay.
 
 Validation: connector suites passed 50/50, including a regression proving a pre-suspension hosted-provider ticket makes no provider calls or MCP registrations after suspension. Full Agents suite passed 156 files / 714 tests; Agents TypeScript, security lint and `git diff --check` passed. The suspension audit remains open across remaining internal routes, queue/DO alarms, and already-running work.
+
+## Provider consent authorization boundary (2026-10-21)
+
+Review of connector OAuth start routes found that authenticated business members could request shared built-in OAuth or hosted provider consent, even though connecting an integration changes Space-wide provider/MCP state. Both routes now require owner/admin authority, resolving product-end-user membership through the Spaces Worker. A regression confirms an ordinary member is rejected before any Pipedream call or MCP registration.
+
+Validation: built-in OAuth, custom OAuth, Composio, and Pipedream suites passed 51/51; the full Agents suite passed 156 files / 714 tests; Agents TypeScript, focused security lint and `git diff --check` passed. The broader audit remains open.

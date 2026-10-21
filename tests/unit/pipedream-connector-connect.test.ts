@@ -131,6 +131,21 @@ async function startReq(env: AgentsEnv, platform = "notion", spaceId = "space-a"
 }
 
 describe("POST /connectors/:platform/provider-connect/start (Pipedream)", () => {
+  it("requires Space owner or admin authority before opening the provider consent flow", async () => {
+    const env = makeEnv({ SPACES_WORKER: { fetch: async () => Response.json({ role: "member" }) } as unknown as Fetcher });
+    mockPipedream({});
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const response = await app.fetch(new Request("https://agents.naelao.com/connectors/notion/provider-connect/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "user-1", "x-naelao-role": "product_end_user", "x-naelao-internal-token": token },
+      body: JSON.stringify({ space_id: "space-a", return_url: "https://shell.naelao.com/p/acme/spaces/space-a" }),
+    }), env as never);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "forbidden" });
+    expect(calls).toHaveLength(0);
+    expect(env.__mcpServers).toHaveLength(0);
+  });
+
   it("exchanges client credentials for an access token and returns Pipedream's Connect Link", async () => {
     const env = makeEnv();
     mockPipedream({});

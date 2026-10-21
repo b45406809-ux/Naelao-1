@@ -4962,6 +4962,7 @@ app.post("/connectors/:platform/oauth/start", async (c) => {
   const body = await c.req.json<StartBody>().catch(() => ({ space_id: "", return_url: "" } as StartBody));
   if (!body.space_id) throw badRequest("space_id is required");
   if (!body.return_url) throw badRequest("return_url is required");
+  if (!await requireEndUserBusinessMembership(c, body.space_id, "admin")) return c.json({ error_code: "forbidden", message: "Only a Space owner or admin may connect a provider" }, 403);
   if (!await isActiveTenantSpace(c.env, body.space_id, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
     return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
@@ -5200,6 +5201,7 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
   if (!isTrustedConnectorReturnUrl(body.return_url, c.env)) {
     return c.json({ error_code: "bad_request", message: "return_url must use an approved Naelao app origin" }, 400);
   }
+  if (!await requireEndUserBusinessMembership(c, body.space_id, "admin")) return c.json({ error_code: "forbidden", message: "Only a Space owner or admin may connect a provider" }, 403);
   if (!await isActiveTenantSpace(c.env, body.space_id, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
     return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
