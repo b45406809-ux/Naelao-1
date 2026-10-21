@@ -29,9 +29,12 @@ async function earn(env: ReturnType<typeof makeEnv>, tenantId: string, marginCen
   ).bind(crypto.randomUUID(), tenantId, marginCents, marginCents, currency).run();
 }
 
-function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Request {
+async function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Promise<Request> {
   const headers = new Headers();
-  if (opts.tenant) headers.set("x-naelao-tenant-id", opts.tenant);
+  if (opts.tenant) {
+    headers.set("x-naelao-tenant-id", opts.tenant);
+    headers.set("x-naelao-internal-token", await mintInternalToken(SECRET, opts.tenant));
+  }
   if (opts.body !== undefined) headers.set("content-type", "application/json");
   return new Request(`https://spaces.naelao.com${path}`, {
     method: opts.method ?? "GET", headers,
@@ -42,7 +45,7 @@ function req(path: string, opts: { method?: string; body?: unknown; tenant?: str
 describe("GET /builder/payouts/balance", () => {
   it("401s without builder auth", async () => {
     const env = makeEnv();
-    const res = await spacesWorker.fetch(req("/builder/payouts/balance"), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/payouts/balance"), env as never, execCtx);
     expect(res.status).toBe(401);
   });
 
@@ -50,14 +53,14 @@ describe("GET /builder/payouts/balance", () => {
     const env = makeEnv();
     await earn(env, "tenant-1", 5000);
     await earn(env, "tenant-1", 3000);
-    const res = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
     expect(await res.json()).toMatchObject({ balances: [{ cents: 8000, currency: "USD" }] });
   });
 
   it("is scoped per-tenant — another builder's earnings never leak in", async () => {
     const env = makeEnv();
     await earn(env, "tenant-1", 5000);
-    const res = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-2" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/payouts/balance", { tenant: "tenant-2" }), env as never, execCtx);
     expect(await res.json()).toMatchObject({ balances: [] });
   });
 
@@ -65,7 +68,7 @@ describe("GET /builder/payouts/balance", () => {
     const env = makeEnv();
     await earn(env, "tenant-1", 5000, "USD");
     await earn(env, "tenant-1", 3000, "EUR");
-    const res = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
     const body = await res.json() as { balances: Array<{ cents: number; currency: string }> };
     expect(body.balances).toHaveLength(2);
     expect(body.balances).toContainEqual({ cents: 5000, currency: "USD" });
@@ -76,7 +79,7 @@ describe("GET /builder/payouts/balance", () => {
 describe("POST /builder/payouts/request", () => {
   it("401s without builder auth", async () => {
     const env = makeEnv();
-    const res = await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST" }), env as never, execCtx);
     expect(res.status).toBe(401);
   });
 
@@ -84,27 +87,27 @@ describe("POST /builder/payouts/request", () => {
     const env = makeEnv();
     await earn(env, "tenant-1", 10_000);
 
-    const first = await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
+    const first = await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
     expect(first.status).toBe(201);
     expect(await first.json()).toMatchObject({ amount_cents: 10_000, status: "pending" });
 
-    const balance = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
+    const balance = await spacesWorker.fetch(await req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
     expect(await balance.json()).toMatchObject({ balances: [{ cents: 0, currency: "USD" }] });
   });
 
   it("rejects a request when there is nothing to withdraw", async () => {
     const env = makeEnv();
-    const res = await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
     expect(res.status).toBe(400);
   });
 
   it("new earnings after a pending request become newly available", async () => {
     const env = makeEnv();
     await earn(env, "tenant-1", 5000);
-    await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
+    await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
     await earn(env, "tenant-1", 2000);
 
-    const balance = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
+    const balance = await spacesWorker.fetch(await req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
     expect(await balance.json()).toMatchObject({ balances: [{ cents: 2000, currency: "USD" }] });
   });
 
@@ -113,16 +116,16 @@ describe("POST /builder/payouts/request", () => {
     await earn(env, "tenant-1", 5000, "USD");
     await earn(env, "tenant-1", 3000, "EUR");
 
-    const ambiguous = await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
+    const ambiguous = await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
     expect(ambiguous.status).toBe(400);
     expect(await ambiguous.json()).toMatchObject({ error_code: "currency_required" });
 
-    const eur = await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1", body: { currency: "EUR" } }), env as never, execCtx);
+    const eur = await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1", body: { currency: "EUR" } }), env as never, execCtx);
     expect(eur.status).toBe(201);
     expect(await eur.json()).toMatchObject({ amount_cents: 3000, currency: "EUR" });
 
     // The USD balance is untouched by the EUR request.
-    const balance = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
+    const balance = await spacesWorker.fetch(await req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
     const body = await balance.json() as { balances: Array<{ cents: number; currency: string }> };
     expect(body.balances).toContainEqual({ cents: 5000, currency: "USD" });
     expect(body.balances).toContainEqual({ cents: 0, currency: "EUR" });
@@ -133,9 +136,9 @@ describe("GET /builder/payouts", () => {
   it("lists a builder's own requests newest-first", async () => {
     const env = makeEnv();
     await earn(env, "tenant-1", 5000);
-    await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
+    await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
 
-    const res = await spacesWorker.fetch(req("/builder/payouts", { tenant: "tenant-1" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(await req("/builder/payouts", { tenant: "tenant-1" }), env as never, execCtx);
     const body = await res.json() as { data: Array<{ amount_cents: number; status: string }> };
     expect(body.data).toHaveLength(1);
     expect(body.data[0]).toMatchObject({ amount_cents: 5000, status: "pending" });
@@ -157,7 +160,7 @@ describe("POST /internal/payout-requests/:id/fulfill", () => {
   it("marks a pending request paid, and it can never be fulfilled twice", async () => {
     const env = makeEnv();
     await earn(env, "tenant-1", 5000);
-    const createRes = await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
+    const createRes = await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
     const { id } = await createRes.json() as { id: string };
 
     const token = await mintInternalToken(SECRET, "internal-ops");
@@ -171,7 +174,7 @@ describe("POST /internal/payout-requests/:id/fulfill", () => {
     );
     expect(fulfillRes.status).toBe(200);
 
-    const listRes = await spacesWorker.fetch(req("/builder/payouts", { tenant: "tenant-1" }), env as never, execCtx);
+    const listRes = await spacesWorker.fetch(await req("/builder/payouts", { tenant: "tenant-1" }), env as never, execCtx);
     const list = await listRes.json() as { data: Array<{ status: string }> };
     expect(list.data[0]!.status).toBe("paid");
 
@@ -190,7 +193,7 @@ describe("POST /internal/payout-requests/:id/fulfill", () => {
   it("a rejected request frees its amount back up for a new request", async () => {
     const env = makeEnv();
     await earn(env, "tenant-1", 5000);
-    const createRes = await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
+    const createRes = await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
     const { id } = await createRes.json() as { id: string };
 
     const token = await mintInternalToken(SECRET, "internal-ops");
@@ -203,7 +206,7 @@ describe("POST /internal/payout-requests/:id/fulfill", () => {
       env as never, execCtx
     );
 
-    const balance = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
+    const balance = await spacesWorker.fetch(await req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
     expect(await balance.json()).toMatchObject({ balances: [{ cents: 5000, currency: "USD" }] });
   });
 });

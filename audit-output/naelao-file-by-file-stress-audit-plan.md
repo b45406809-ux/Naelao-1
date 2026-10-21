@@ -1330,7 +1330,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/browser-worker-kitesurf.test.ts`
 - [ ] `tests/unit/builder-account-do.test.ts`
 - [x] `tests/unit/builder-dashboard-api.test.ts`
-- [ ] `tests/unit/builder-payout-requests.test.ts`
+- [x] `tests/unit/builder-payout-requests.test.ts`
 - [ ] `tests/unit/builder-revenue-share.test.ts`
 - [ ] `tests/unit/builder-tier-usage-gate.test.ts`
 - [ ] `tests/unit/builder-usage-quota-route.test.ts`
