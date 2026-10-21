@@ -1284,3 +1284,9 @@ The DO's global 8 MiB request cap bounded message writes, but allowed large JSON
 Added regressions for out-of-order timestamps across three cursor pages and an oversized body rejected before parsing. Validation: SpaceDO message-pagination suite passed 1 file / 4 tests; conversation search, compaction, and transcript-loader suites passed 3 files / 22 tests; Spaces and Agents TypeScript checks passed. Existing suites also exercise large transcript pages and byte trimming.
 
 Reviewed `conversation.ts`, the transcript loader, the session message route, and automatic compaction path. Search is capped at 10,000 messages / 16 MiB per call and exposes a cursor when incomplete; automatic compaction materializes at most 10,000 messages / 16 MiB and preserves recent context when it cannot scan the full transcript. These are explicit caps rather than complete whole-history guarantees. The full `SpaceDO.ts` and `NaelaoAgentDO.ts` files remain unchecked overall; authorization, migration behavior, tool routing, compaction recovery, and remaining endpoints still need file-by-file review.
+
+## Avoid transcript-wide scans on ordinary message pages (2026-10-21)
+
+A follow-up complexity check found every paginated message request also executed `COUNT(*)` plus `SUM(length(content))` over the full transcript, even though only the context-usage endpoint consumes those totals. Repeated page/search requests therefore reread every stored message body. The aggregate is now opt-in with `include_totals=1`; only context metering requests it. Added coverage that ordinary pages omit totals while explicit metering returns exact transcript-wide counts and character totals.
+
+Validation: Spaces pagination suite passed 1 file / 4 tests; Spaces and Agents TypeScript checks passed.

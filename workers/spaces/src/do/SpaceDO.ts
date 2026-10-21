@@ -4863,15 +4863,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
     }
 
-    // Return transcript-wide size metadata alongside the requested page. Context usage needs to
-    // account for every message, while chat clients intentionally fetch only the newest page.
-    // Computing this aggregate in SQLite avoids walking the transcript through hundreds of
-    // worker requests (and avoids transferring the full conversation just to count characters).
-    const transcriptSize = queryOne<{ message_count: number; total_content_chars: number }>(
-      this.ctx.storage.sql as never,
-      "SELECT COUNT(*) AS message_count, COALESCE(SUM(length(content)), 0) AS total_content_chars FROM messages WHERE session_id = ?",
-      sessionId
-    );
+    // Transcript-wide SUM(length(content)) reads every stored message body. Only context
+    // metering needs this aggregate; computing it for every chat/search page made repeated
+    // pagination perform a full-history scan per request.
+    const includeTotals = params.get("include_totals") === "1";
+    const transcriptSize = includeTotals
+      ? queryOne<{ message_count: number; total_content_chars: number }>(
+          this.ctx.storage.sql as never,
+          "SELECT COUNT(*) AS message_count, COALESCE(SUM(length(content)), 0) AS total_content_chars FROM messages WHERE session_id = ?",
+          sessionId
+        )
+      : undefined;
 
     // `rowid` is insertion order, so ID pagination and the default newest-page query use it
     // consistently. Mixing a rowid cursor with created_at ordering can skip or repeat messages
@@ -4946,8 +4948,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       data,
       count: data.length,
       cursor_applied: !beforeId || beforeRowid !== undefined,
-      total_count: transcriptSize?.message_count ?? data.length,
-      total_content_chars: transcriptSize?.total_content_chars ?? data.reduce((sum, message) => sum + message.content.length, 0),
+      ...(includeTotals ? {
+        total_count: transcriptSize?.message_count ?? data.length,
+        total_content_chars: transcriptSize?.total_content_chars ?? data.reduce((sum, message) => sum + message.content.length, 0),
+      } : {}),
       has_more: hasMore,
       next_before_id: hasMore ? data[0]?.id ?? null : null,
     });

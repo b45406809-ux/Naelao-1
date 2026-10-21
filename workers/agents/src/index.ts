@@ -2958,7 +2958,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
   let transcriptComplete = false;
   try {
     const resp = await c.env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages?limit=1`,
+      `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages?limit=1&include_totals=1`,
       { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }
     ));
     if (resp.ok) {
