@@ -7458,7 +7458,7 @@ app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
 
   try {
     const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
-    await stub.fetch(new Request("http://agent-do/channels/email/inbound", {
+    const response = await stub.fetch(new Request("http://agent-do/channels/email/inbound", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -7474,8 +7474,13 @@ app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
         apiKey: "",
       }),
     }));
+    if (!response.ok) {
+      console.error(`[agentmail] inbound forward failed space=${spaceId}: status=${response.status}`);
+      return c.json({ error_code: "inbound_dispatch_failed" }, 503);
+    }
   } catch (err) {
     console.error(`[agentmail] inbound forward failed space=${spaceId}:`, (err as Error).message);
+    return c.json({ error_code: "inbound_dispatch_failed" }, 503);
   }
   return c.json({ ok: true });
 });

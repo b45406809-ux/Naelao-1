@@ -1342,7 +1342,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/business-context.test.ts`
 - [x] `tests/unit/business-create.test.ts`
 - [ ] `tests/unit/business-diagnostics-prebuilt.test.ts`
-- [ ] `tests/unit/business-email-agentmail-routes.test.ts`
+- [x] `tests/unit/business-email-agentmail-routes.test.ts`
 - [x] `tests/unit/business-feature-kinds.test.ts`
 - [x] `tests/unit/business-membership-role.test.ts`
 - [ ] `tests/unit/business-onboarding-flow.test.ts`

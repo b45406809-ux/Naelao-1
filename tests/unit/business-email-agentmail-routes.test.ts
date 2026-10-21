@@ -387,3 +387,47 @@ describe("Cloudflare task reply email handler", () => {
     expect(payload.raw.text).toContain("Please help with my order.");
   });
 });
+
+describe("AgentMail inbound webhook delivery", () => {
+  async function signedHeaders(rawBody: string): Promise<Record<string, string>> {
+    const id = "evt-retry-test";
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const secretBytes = new TextEncoder().encode("webhook-secret");
+    const key = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${id}.${timestamp}.${rawBody}`));
+    const signature = btoa(String.fromCharCode(...new Uint8Array(digest)));
+    return { "svix-id": id, "svix-timestamp": timestamp, "svix-signature": `v1,${signature}` };
+  }
+
+  it("returns a retryable failure when the Durable Object rejects or fails the delivery", async () => {
+    const rawBody = JSON.stringify({ event_type: "message.received", message: {
+      from: "customer@example.test", text: "Please help", message_id: "mail-1",
+    } });
+    for (const failure of ["throw", "http"] as const) {
+      const env = makeEnv({
+        PLATFORM_DB: {
+          prepare: (query: string) => ({ bind: () => ({ first: async () => {
+            if (query.includes("SELECT tenant_id, status FROM spaces")) return { tenant_id: TENANT, status: "active" };
+            if (query.includes("SELECT name, config_json FROM spaces")) return { name: "test", config_json: "{}" };
+            return null;
+          } }) }),
+        } as never,
+        CREDENTIALS_WORKER: { fetch: async () => Response.json({ value: `whsec_${btoa("webhook-secret")}` }) } as never,
+        NAELAO_AGENT_DO: {
+          idFromName: () => "agent-do",
+          get: () => ({ fetch: async () => {
+            if (failure === "throw") throw new Error("Durable Object unavailable");
+            return new Response("failed", { status: 500 });
+          } }),
+        } as never,
+      });
+      const response = await app.request("https://agents.naelao.com/channels/email/agentmail-inbound/s1", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...await signedHeaders(rawBody) },
+        body: rawBody,
+      }, env as never);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ error_code: "inbound_dispatch_failed" });
+    }
+  });
+});
