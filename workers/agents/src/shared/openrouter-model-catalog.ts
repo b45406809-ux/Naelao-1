@@ -4,6 +4,10 @@ export interface OpenRouterModelCandidate {
   id: string;
   model: string;
   name: string;
+  /** Provider/OpenRouter model-card summary; informational only and never used as policy. */
+  description?: string;
+  /** Model-card publication timestamp when supplied by OpenRouter. */
+  createdAt?: number;
   contextLength?: number;
   promptPriceUsdPerToken?: number;
   completionPriceUsdPerToken?: number;
@@ -124,6 +128,10 @@ function parseCatalog(payload: unknown): OpenRouterModelCandidate[] {
       id: item.id,
       model: `openrouter/${item.id}`,
       name: typeof item.name === "string" && item.name.trim() ? item.name.trim().slice(0, 240) : item.id,
+      ...(typeof item.description === "string" && item.description.trim()
+        ? { description: item.description.trim().slice(0, 2_000) } : {}),
+      ...(Number.isSafeInteger(item.created) && Number(item.created) > 0
+        ? { createdAt: Number(item.created) } : {}),
       ...(Number.isSafeInteger(item.context_length) && Number(item.context_length) > 0 && Number(item.context_length) <= 10_000_000
         ? { contextLength: Number(item.context_length) } : {}),
     };

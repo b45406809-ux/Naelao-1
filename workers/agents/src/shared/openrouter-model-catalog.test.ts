@@ -14,14 +14,14 @@ describe("OpenRouter model catalog", () => {
       }
       expect(url).toBe("https://openrouter.ai/api/v1/models");
       return Response.json({ data: [
-        { id: "vendor/model-a", name: "Model A", context_length: 32768, pricing: { prompt: "0.000001", completion: "0.000002" }, architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] }, supported_parameters: ["tools", "temperature"] },
+        { id: "vendor/model-a", name: "Model A", description: "A provider card summary", created: 1792520000, context_length: 32768, pricing: { prompt: "0.000001", completion: "0.000002" }, architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] }, supported_parameters: ["tools", "temperature"] },
         { id: "vendor/model-a", name: "Duplicate" },
         { id: "bad id", name: "Invalid id" },
       ] });
     });
     const models = await fetchOpenRouterCatalog("user-key", { fetch: fetcher as typeof fetch, now: 1 });
     expect(models).toEqual([{
-      id: "vendor/model-a", model: "openrouter/vendor/model-a", name: "Model A", contextLength: 32768,
+      id: "vendor/model-a", model: "openrouter/vendor/model-a", name: "Model A", description: "A provider card summary", createdAt: 1792520000, contextLength: 32768,
       promptPriceUsdPerToken: 0.000001, completionPriceUsdPerToken: 0.000002,
       inputModalities: ["text", "image"], outputModalities: ["text"],
       supportedParameters: ["tools", "temperature"],
