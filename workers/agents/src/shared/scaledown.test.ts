@@ -77,6 +77,44 @@ describe("ScaleDown task-specific provider contracts", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("rejects sources above the byte limit before admission or provider egress", async () => {
+    const { processor, fetcher, authorize } = setup(completion("unused"));
+    await expect(
+      processor.summarize({ text: "x".repeat(2 * 1024 * 1024 + 1) })
+    ).rejects.toThrow("document_text_required_or_too_large");
+    expect(authorize).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("cancels non-success provider bodies without exposing their content", async () => {
+    const cancel = vi.fn();
+    const fetcher = vi.fn(async () => new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode("private provider error details")); },
+        cancel,
+      }),
+      { status: 503 },
+    ));
+    const { processor, recordUsage } = setup({}, { fetch: fetcher as typeof fetch });
+    await expect(processor.summarize({ text: "source" })).rejects.toThrow("scaledown_provider_503");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
+  it("cancels provider response streams that exceed the JSON byte limit", async () => {
+    const cancel = vi.fn();
+    const fetcher = vi.fn(async () => new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1)); },
+        cancel,
+      }),
+    ));
+    const { processor, recordUsage } = setup({}, { fetch: fetcher as typeof fetch });
+    await expect(processor.summarize({ text: "source" })).rejects.toThrow("scaledown_response_too_large");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
   it("rejects malformed runtime inputs and non-text summary instructions before provider egress", async () => {
     const { processor, fetcher, authorize } = setup(completion("unused"));
     await expect(processor.summarize(null as never)).rejects.toThrow(

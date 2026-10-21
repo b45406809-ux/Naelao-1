@@ -183,7 +183,12 @@ export function createScaleDownProcessor(
       headers,
       body: serialized,
     });
-    if (!response.ok) throw new Error(`scaledown_provider_${response.status}`); // never echo provider text/secrets
+    if (!response.ok) {
+      // Provider error bodies can be large or never finish. Do not retain the stream or copy its
+      // contents into logs/errors; only the status is safe to expose.
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`scaledown_provider_${response.status}`);
+    }
     const data = await boundedJson(response);
     const raw = native
       ? data
