@@ -1,3 +1,5 @@
+import { readBoundedResponseJson } from "@naelao/http";
+
 /**
  * Generic OAuth2 + PKCE helpers for "Connect with X" connector flows (starting with Whop's
  * "Sign in with Whop" — a real, self-serve OAuth app, no invite needed; a completely separate
@@ -89,6 +91,32 @@ interface TokenResponse {
   error_description?: string;
 }
 
+const MAX_OAUTH_TOKEN_RESPONSE_BYTES = 64 * 1024;
+const MAX_OAUTH_USERINFO_RESPONSE_BYTES = 16 * 1024;
+const OAUTH_REQUEST_TIMEOUT_MS = 15_000;
+
+async function parseTokenResponse(resp: Response, operation: "exchange" | "refresh"): Promise<TokenResponse & { access_token: string; refresh_token: string }> {
+  let json: TokenResponse;
+  try {
+    json = await readBoundedResponseJson(resp, MAX_OAUTH_TOKEN_RESPONSE_BYTES);
+  } catch {
+    if (resp.ok) throw new Error(`OAuth token ${operation} returned an invalid or oversized response`);
+    json = {};
+  }
+  if (!resp.ok) {
+    const detail = [json.error, json.error_description].filter((value): value is string => typeof value === "string").map((value) => value.slice(0, 200)).join(" ");
+    throw new Error(`OAuth token ${operation} failed: ${resp.status}${detail ? ` ${detail}` : ""}`);
+  }
+  const accessToken = json.access_token;
+  const refreshToken = json.refresh_token;
+  if (typeof accessToken !== "string" || accessToken.length === 0 || accessToken.length > 16_384 ||
+      typeof refreshToken !== "string" || refreshToken.length === 0 || refreshToken.length > 16_384 ||
+      (json.expires_in !== undefined && (!Number.isSafeInteger(json.expires_in) || json.expires_in <= 0 || json.expires_in > 31_536_000))) {
+    throw new Error(`OAuth token ${operation} returned invalid token fields`);
+  }
+  return { ...json, access_token: accessToken, refresh_token: refreshToken };
+}
+
 /** Exchanges an authorization code for tokens (server-to-server; holds the client secret). */
 export async function exchangeCodeForTokens(params: {
   tokenUrl: string;
@@ -110,11 +138,9 @@ export async function exchangeCodeForTokens(params: {
       code_verifier: params.codeVerifier,
       redirect_uri: params.redirectUri,
     }),
+    signal: AbortSignal.timeout(OAUTH_REQUEST_TIMEOUT_MS),
   });
-  const json = await resp.json<TokenResponse>().catch(() => ({}) as TokenResponse);
-  if (!resp.ok || !json.access_token || !json.refresh_token) {
-    throw new Error(`OAuth token exchange failed: ${resp.status} ${json.error ?? ""} ${json.error_description ?? ""}`.trim());
-  }
+  const json = await parseTokenResponse(resp, "exchange");
   return {
     access_token: json.access_token,
     refresh_token: json.refresh_token,
@@ -140,11 +166,9 @@ export async function refreshTokens(params: {
       client_secret: params.clientSecret,
       refresh_token: params.refreshToken,
     }),
+    signal: AbortSignal.timeout(OAUTH_REQUEST_TIMEOUT_MS),
   });
-  const json = await resp.json<TokenResponse>().catch(() => ({}) as TokenResponse);
-  if (!resp.ok || !json.access_token || !json.refresh_token) {
-    throw new Error(`OAuth token refresh failed: ${resp.status} ${json.error ?? ""} ${json.error_description ?? ""}`.trim());
-  }
+  const json = await parseTokenResponse(resp, "refresh");
   return {
     access_token: json.access_token,
     refresh_token: json.refresh_token,
@@ -161,10 +185,10 @@ interface UserinfoResponse {
  *  failed identity lookup must never block the underlying connection from completing. */
 export async function fetchOAuthIdentity(userinfoUrl: string, accessToken: string): Promise<string | null> {
   try {
-    const resp = await fetch(userinfoUrl, { headers: { authorization: `Bearer ${accessToken}` } });
+    const resp = await fetch(userinfoUrl, { redirect: "error", headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(OAUTH_REQUEST_TIMEOUT_MS) });
     if (!resp.ok) return null;
-    const json = await resp.json<UserinfoResponse>();
-    return json.sub ?? null;
+    const json = await readBoundedResponseJson<UserinfoResponse>(resp, MAX_OAUTH_USERINFO_RESPONSE_BYTES);
+    return typeof json.sub === "string" && json.sub.length <= 512 ? json.sub : null;
   } catch {
     return null;
   }

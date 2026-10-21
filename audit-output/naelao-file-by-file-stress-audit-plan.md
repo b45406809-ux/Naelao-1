@@ -1739,6 +1739,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/connectors/composio.ts`
 - [ ] `workers/agents/src/connectors/directory.ts`
 - [ ] `workers/agents/src/connectors/oauth-ticket.test.ts`
+- [x] `workers/agents/src/connectors/oauth.test.ts`
 - [ ] `workers/agents/src/connectors/oauth.ts`
 - [ ] `workers/agents/src/connectors/pipedream.ts`
 - [ ] `workers/agents/src/connectors/webhook-normalizer.ts`
