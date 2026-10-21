@@ -1,3 +1,5 @@
+import { readBoundedResponseJson } from "@naelao/http";
+
 /**
  * Lemon Squeezy product + variant provisioning (auto-create-on-publish).
  *
@@ -10,6 +12,8 @@
  */
 
 const LS_API = "https://api.lemonsqueezy.com/v1";
+const MAX_LS_PRODUCT_RESPONSE_BYTES = 64 * 1024;
+const LS_PRODUCT_REQUEST_TIMEOUT_MS = 15_000;
 
 export interface LsProductsConfig {
   apiKey: string;
@@ -35,12 +39,22 @@ async function lsPost(apiKey: string, path: string, body: unknown): Promise<LsAp
       "Content-Type": "application/vnd.api+json",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(LS_PRODUCT_REQUEST_TIMEOUT_MS),
   });
 
-  const json = await resp.json<LsApiResponse>();
+  let json: LsApiResponse;
+  try {
+    json = await readBoundedResponseJson(resp, MAX_LS_PRODUCT_RESPONSE_BYTES);
+  } catch {
+    throw new Error(`LS API ${path} returned an invalid or oversized response`);
+  }
   if (!resp.ok || json.errors?.length) {
     const detail = json.errors?.map((e) => e.detail ?? e.title).join("; ") ?? `HTTP ${resp.status}`;
     throw new Error(`LS API ${path} failed: ${detail}`);
+  }
+  const expectedType = path === "/products" ? "products" : path === "/variants" ? "variants" : "";
+  if (!expectedType || json.data?.type !== expectedType || typeof json.data.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(json.data.id)) {
+    throw new Error(`LS API ${path} returned an invalid resource`);
   }
   return json;
 }

@@ -2146,6 +2146,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/billing/src/index.ts`
 - [ ] `workers/billing/src/lemon-squeezy.ts`
 - [x] `workers/billing/src/llm-quota-reservations.test.ts`
+- [x] `workers/billing/src/ls-products.test.ts`
 - [ ] `workers/billing/src/ls-products.ts`
 - [ ] `workers/billing/src/marketplace-licenses.ts`
 - [ ] `workers/billing/src/partner-portal.ts`
