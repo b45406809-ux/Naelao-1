@@ -1,3 +1,5 @@
+import { readBoundedResponseJson } from "@naelao/http";
+
 /**
  * Cloudflare for SaaS — custom hostname provisioning (confirmed against CF API docs:
  * /api/resources/custom_hostnames/methods/create). When a builder attaches their own domain
@@ -88,7 +90,7 @@ export function normalizeCustomHostname(value: string): string {
 
 async function readResponse(resp: Response): Promise<CfCustomHostnameResponse> {
   if (!resp.ok) throw new Error(`Cloudflare for SaaS request failed (${resp.status})`);
-  return resp.json() as Promise<CfCustomHostnameResponse>;
+  return readBoundedResponseJson<CfCustomHostnameResponse>(resp, 64 * 1024);
 }
 
 /** Add a custom hostname (TXT DCV). Returns the hostname id + any validation records. */
@@ -123,6 +125,22 @@ export async function getCustomHostname(
     signal: AbortSignal.timeout(CF_REQUEST_TIMEOUT_MS),
   });
   return parse(await readResponse(resp));
+}
+
+/** Delete a hostname during tenant data erasure. Missing provider records are already erased. */
+export async function deleteCustomHostname(cfg: CfSaasConfig, hostnameId: string): Promise<void> {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(cfg.zoneId) || !/^[A-Za-z0-9_-]{1,128}$/.test(hostnameId)) {
+    throw new Error("Invalid Cloudflare custom hostname reference");
+  }
+  const resp = await fetch(`${CF_API}/zones/${cfg.zoneId}/custom_hostnames/${hostnameId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${cfg.apiToken}` },
+    signal: AbortSignal.timeout(CF_REQUEST_TIMEOUT_MS),
+  });
+  if (resp.status === 404) return;
+  if (!resp.ok) throw new Error(`Cloudflare for SaaS delete failed (${resp.status})`);
+  const body = await readBoundedResponseJson<{ success: boolean }>(resp, 64 * 1024);
+  if (body.success !== true) throw new Error("Cloudflare for SaaS rejected hostname deletion");
 }
 
 /** Resolve config from env; null when the deploy-time secrets are not present (dev path). */

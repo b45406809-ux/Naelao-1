@@ -170,6 +170,14 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
             } },
           ));
           if (!productUserErasure.ok) throw new Error(`Product-user erasure failed with status ${productUserErasure.status}`);
+          const businessServiceErasure = await this.env.SPACES_WORKER.fetch(new Request(
+            `https://spaces.internal/internal/tenant/${encodeURIComponent(params.orgId)}/spaces/${encodeURIComponent(space.id)}/business-services/erase`,
+            { method: "DELETE", headers: {
+              "x-naelao-tenant-id": params.orgId,
+              "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, params.orgId),
+            } },
+          ));
+          if (!businessServiceErasure.ok) throw new Error(`Business-service erasure failed with status ${businessServiceErasure.status}`);
           await eraseSpaceD1Records(this.env.PLATFORM_DB, space.id);
 
           console.log(`[DataErasure] Cleaned space=${space.id} for org=${params.orgId}`);

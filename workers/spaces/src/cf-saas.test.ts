@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cfSaasConfig, createCustomHostname, getCustomHostname, normalizeCustomHostname } from "./cf-saas.js";
+import { cfSaasConfig, createCustomHostname, deleteCustomHostname, getCustomHostname, normalizeCustomHostname } from "./cf-saas.js";
 
 const config = { apiToken: "token", zoneId: "zone_1" };
 
@@ -51,5 +51,25 @@ describe("Cloudflare for SaaS hostname boundary", () => {
     expect(cfSaasConfig({})).toBeNull();
     expect(cfSaasConfig({ CF_API_TOKEN: "token" })).toBeNull();
     expect(cfSaasConfig({ CF_API_TOKEN: "token", CF_SAAS_ZONE_ID: "zone" })).toEqual({ apiToken: "token", zoneId: "zone" });
+  });
+
+  it("deletes a custom hostname with a bounded response and treats provider 404 as idempotent", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ success: true }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await deleteCustomHostname(config, "cf-id");
+    await deleteCustomHostname(config, "already-gone");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "https://api.cloudflare.com/client/v4/zones/zone_1/custom_hostnames/cf-id",
+      expect.objectContaining({ method: "DELETE", signal: expect.any(AbortSignal) }));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed on provider rejection and invalid hostname IDs", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ success: false, errors: [{ code: 1, message: "Denied" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(deleteCustomHostname(config, "cf-id")).rejects.toThrow(/rejected/);
+    await expect(deleteCustomHostname(config, "../other")).rejects.toThrow(/Invalid/);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

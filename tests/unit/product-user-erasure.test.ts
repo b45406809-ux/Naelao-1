@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { eraseProductUsersForSpace } from "../../workers/spaces/src/product-user-erasure.js";
+import { eraseBusinessServiceProviders } from "../../workers/spaces/src/business-erasure.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 const migration = (name: string) => readFileSync(join(__dirname, `../../infra/migrations/${name}`), "utf8");
@@ -44,6 +45,37 @@ describe("ProductUserDO erasure discovery", () => {
       throw new Error("DO unavailable");
     })).rejects.toThrow("DO unavailable");
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM product_end_users WHERE product_space_id = ?").get("product-a"))
+      .toEqual({ count: 1 });
+  });
+});
+
+describe("business provider erasure", () => {
+  it("deletes custom hostnames before the tenant's business-service rows are removed", async () => {
+    const db = createFakeD1(migrations);
+    db.db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name) VALUES (?, ?, ?, ?)")
+      .run("space-a", "tenant-a", "type-a", "Store");
+    db.db.prepare("INSERT INTO business_services (id, space_id, tenant_id, kind, cf_hostname_id) VALUES (?, ?, ?, ?, ?)")
+      .run("service-a", "space-a", "tenant-a", "custom_domain", "cf-host-a");
+    const deleted: string[] = [];
+    const count = await eraseBusinessServiceProviders(db as never, "tenant-a", "space-a", async (id) => { deleted.push(id); });
+    expect(count).toBe(1);
+    expect(deleted).toEqual(["cf-host-a"]);
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM business_services WHERE id = ?").get("service-a"))
+      .toEqual({ count: 1 });
+  });
+
+  it("stops on a provider failure and rejects a cross-tenant space", async () => {
+    const db = createFakeD1(migrations);
+    db.db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name) VALUES (?, ?, ?, ?)")
+      .run("space-a", "tenant-a", "type-a", "Store");
+    db.db.prepare("INSERT INTO business_services (id, space_id, tenant_id, kind, cf_hostname_id) VALUES (?, ?, ?, ?, ?)")
+      .run("service-a", "space-a", "tenant-a", "custom_domain", "cf-host-a");
+    await expect(eraseBusinessServiceProviders(db as never, "tenant-b", "space-a", async () => undefined))
+      .rejects.toThrow(/outside the tenant/);
+    await expect(eraseBusinessServiceProviders(db as never, "tenant-a", "space-a", async () => {
+      throw new Error("Cloudflare unavailable");
+    })).rejects.toThrow("Cloudflare unavailable");
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM business_services WHERE id = ?").get("service-a"))
       .toEqual({ count: 1 });
   });
 });

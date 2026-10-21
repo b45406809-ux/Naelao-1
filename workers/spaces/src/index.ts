@@ -6,7 +6,7 @@ import { compileWorkflowPlan } from "@naelao/sdk/workflow";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
-import { cfSaasConfig, createCustomHostname, getCustomHostname, normalizeCustomHostname } from "./cf-saas.js";
+import { cfSaasConfig, createCustomHostname, deleteCustomHostname, getCustomHostname, normalizeCustomHostname } from "./cf-saas.js";
 import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
@@ -38,6 +38,7 @@ import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./proje
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
 import { reportExtensionArtifactWrite } from "./extension-storage-usage.js";
 import { eraseProductUsersForSpace } from "./product-user-erasure.js";
+import { eraseBusinessServiceProviders } from "./business-erasure.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -130,6 +131,22 @@ app.delete("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", asy
     if (!response.ok) throw new Error(`ProductUserDO erasure failed with status ${response.status}`);
   });
   return c.json({ erased: true, space_id: spaceId, users_erased: usersErased });
+});
+app.use("/internal/tenant/:tenantId/spaces/:spaceId/business-services/erase", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.delete("/internal/tenant/:tenantId/spaces/:spaceId/business-services/erase", async (c) => {
+  const tenantId = c.req.param("tenantId");
+  const spaceId = c.req.param("spaceId");
+  if (c.req.header("x-naelao-tenant-id") !== tenantId) return c.json({ error_code: "tenant_scope_mismatch" }, 403);
+  try {
+    const hostnamesDeleted = await eraseBusinessServiceProviders(c.env.PLATFORM_DB, tenantId, spaceId, async (hostnameId) => {
+      const config = cfSaasConfig(c.env);
+      if (!config) throw new Error("Cloudflare for SaaS credentials unavailable");
+      await deleteCustomHostname(config, hostnameId);
+    });
+    return c.json({ erased: true, space_id: spaceId, hostnames_deleted: hostnamesDeleted });
+  } catch {
+    return c.json({ error_code: "external_resource_cleanup_failed" }, 503);
+  }
 });
 registerGadgetMcpRoutes(app);
 registerExtensionGadgetRoutes(app);
