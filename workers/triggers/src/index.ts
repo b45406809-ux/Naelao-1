@@ -42,8 +42,14 @@ app.get("/v1/triggers", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const spaceId = new URL(c.req.url).searchParams.get("space_id");
   const query = spaceId
-    ? "SELECT id, name, space_id, trigger_type, cron_expr, event_type, enabled, last_run_at FROM triggers WHERE tenant_id = ? AND space_id = ? ORDER BY name"
-    : "SELECT id, name, space_id, trigger_type, cron_expr, event_type, enabled, last_run_at FROM triggers WHERE tenant_id = ? ORDER BY name";
+    ? `SELECT t.id, t.name, t.space_id, t.trigger_type, t.cron_expr, t.event_type, t.enabled, t.last_run_at
+       FROM triggers t JOIN spaces s ON s.id = t.space_id AND s.tenant_id = t.tenant_id AND s.status = 'active'
+       JOIN orgs o ON o.id = t.tenant_id AND o.status = 'active'
+       WHERE t.tenant_id = ? AND t.space_id = ? ORDER BY t.name`
+    : `SELECT t.id, t.name, t.space_id, t.trigger_type, t.cron_expr, t.event_type, t.enabled, t.last_run_at
+       FROM triggers t JOIN spaces s ON s.id = t.space_id AND s.tenant_id = t.tenant_id AND s.status = 'active'
+       JOIN orgs o ON o.id = t.tenant_id AND o.status = 'active'
+       WHERE t.tenant_id = ? ORDER BY t.name`;
   const stmt = spaceId
     ? c.env.PLATFORM_DB.prepare(query).bind(tenantId, spaceId)
     : c.env.PLATFORM_DB.prepare(query).bind(tenantId);
@@ -90,14 +96,20 @@ app.patch("/v1/triggers/:id", async (c) => {
   const body = await c.req.json<{ enabled?: boolean; message_template?: string }>();
   const now = new Date().toISOString();
   if (body.enabled !== undefined) {
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE triggers SET enabled = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+    const result = await c.env.PLATFORM_DB.prepare(
+      `UPDATE triggers SET enabled = ?, updated_at = ? WHERE id = ? AND tenant_id = ?
+       AND EXISTS (SELECT 1 FROM spaces s JOIN orgs o ON o.id = s.tenant_id
+         WHERE s.id = triggers.space_id AND s.tenant_id = triggers.tenant_id AND s.status = 'active' AND o.status = 'active')`
     ).bind(body.enabled ? 1 : 0, now, triggerId, tenantId).run();
+    if (result.meta.changes === 0) return c.json({ error_code: "not_found", message: "Trigger not found" }, 404);
   }
   if (body.message_template !== undefined) {
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE triggers SET message_template = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+    const result = await c.env.PLATFORM_DB.prepare(
+      `UPDATE triggers SET message_template = ?, updated_at = ? WHERE id = ? AND tenant_id = ?
+       AND EXISTS (SELECT 1 FROM spaces s JOIN orgs o ON o.id = s.tenant_id
+         WHERE s.id = triggers.space_id AND s.tenant_id = triggers.tenant_id AND s.status = 'active' AND o.status = 'active')`
     ).bind(body.message_template, now, triggerId, tenantId).run();
+    if (result.meta.changes === 0) return c.json({ error_code: "not_found", message: "Trigger not found" }, 404);
   }
   return c.json({ id: triggerId, updated_at: now });
 });
@@ -106,7 +118,9 @@ app.delete("/v1/triggers/:id", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const result = await c.env.PLATFORM_DB.prepare(
-    "DELETE FROM triggers WHERE id = ? AND tenant_id = ?"
+    `DELETE FROM triggers WHERE id = ? AND tenant_id = ?
+     AND EXISTS (SELECT 1 FROM spaces s JOIN orgs o ON o.id = s.tenant_id
+       WHERE s.id = triggers.space_id AND s.tenant_id = triggers.tenant_id AND s.status = 'active' AND o.status = 'active')`
   ).bind(c.req.param("id"), tenantId).run();
   if (result.meta.changes === 0) return c.json({ error_code: "not_found", message: "Trigger not found" }, 404);
   return c.json({ deleted: true });
@@ -119,7 +133,10 @@ export default {
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
     const { results: triggers } = await env.PLATFORM_DB.prepare(
-      "SELECT * FROM triggers WHERE enabled = 1 AND trigger_type = 'schedule'"
+      `SELECT t.* FROM triggers t
+       JOIN spaces s ON s.id = t.space_id AND s.tenant_id = t.tenant_id AND s.status = 'active'
+       JOIN orgs o ON o.id = t.tenant_id AND o.status = 'active'
+       WHERE t.enabled = 1 AND t.trigger_type = 'schedule'`
     ).all<TriggerRow>();
     const now = new Date().toISOString();
     ctx.waitUntil(Promise.all(triggers.map(async (trigger) => {
@@ -130,7 +147,7 @@ export default {
           // S0.2: mint a real internal HMAC token — the endpoint no longer accepts the static
           // x-naelao-internal header, since that trusted a caller-chosen tenantId with no proof.
           const internalToken = await mintInternalToken(env.PLATFORM_SECRET, trigger.tenant_id);
-          await env.AGENTS_WORKER.fetch(
+          const response = await env.AGENTS_WORKER.fetch(
             new Request("http://agents-worker/agents/naelao-agent/script/run", {
               method: "POST",
               headers: {
@@ -147,6 +164,7 @@ export default {
               }),
             })
           );
+          if (!response.ok) throw new Error(`Agent run failed with status ${response.status}`);
         } else {
           // Fallback: send to sessions queue for async processing
           await env.SESSIONS_QUEUE.send({
@@ -158,8 +176,8 @@ export default {
           });
         }
         await env.PLATFORM_DB.prepare(
-          "UPDATE triggers SET last_run_at = ? WHERE id = ?"
-        ).bind(now, trigger.id).run();
+          "UPDATE triggers SET last_run_at = ? WHERE id = ? AND tenant_id = ? AND space_id = ? AND enabled = 1"
+        ).bind(now, trigger.id, trigger.tenant_id, trigger.space_id).run();
       } catch (err) {
         console.error(`[triggers] Failed to fire trigger ${trigger.id}:`, err);
       }

@@ -1981,3 +1981,9 @@ Validation: focused channel suspension/claim tests passed 4/4; full Agents suite
 The shared `/internal/notify` route checked organization status but trusted any supplied `space_id`; stale internal callers could still send email, web push, or chat messages for a suspended Space or a Space outside the header tenant. The route now validates that the supplied Space belongs to the active tenant and is active before any outbound branch. Added a regression proving an inactive/mismatched Space is rejected before provider fetch.
 
 Validation: focused notification tests passed 11/11; full Notifications suite passed 5 files / 21 tests; Notifications TypeScript, targeted Biome security lint, and `git diff --check` passed. The audit continues across remaining service bindings and worker APIs.
+
+## Trigger API and scheduled dispatch status/retry gates (2026-10-21)
+
+Trigger listing exposed records for suspended Spaces, and update/delete could still mutate them. The minute scheduler selected every enabled schedule regardless of tenant/Space status, ignored non-2xx Agent responses, and advanced `last_run_at` even when dispatch failed. Listing and mutations now require an active tenant and Space; scheduled selection joins active tenant and Space rows; non-success Agent responses leave the trigger due for retry; and last-run updates bind trigger, tenant, Space, and enabled state. Added a scheduled-trigger regression proving the active-scope query and failed-dispatch retry behavior.
+
+Validation: trigger regression passed 1/1; Triggers TypeScript, Biome lint, and `git diff --check` passed. Refreshed repository tree and file-by-file plan: 2,037 tracked files / 1,831 code and configuration files; 462 checklist rows reviewed. The exhaustive audit remains open.
