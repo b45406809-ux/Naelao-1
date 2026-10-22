@@ -1750,6 +1750,14 @@ first real business on free-tier resources before opening the platform to other 
   an effect rather than during render. `auth-worker.test.ts` passed 32/32 and the complete dashboard
   Cloudflare Pages build passed. Actual browser history/referrer behavior remains unverified here.
 
+- [x] **Dashboard plan-tier display.** Overview and header components read `plan_tier` from JWT
+  claims, but auth signs no such claim; every account therefore displayed the fallback `free`, even
+  when the authenticated user had a paid subscription. Auth context now retains the tier returned
+  by login/register and refreshes mutable subscription state through the authenticated billing
+  endpoint after session hydration. The UI shows a checking state until that request resolves rather
+  than asserting a false tier. Router dispatch/auth tests passed, dashboard typecheck and the full
+  Pages build passed. A live subscription read and browser state synchronization were not exercised.
+
 - [x] **Source checklist classification now includes stylesheet and deployment source files.** The
   inventory generator previously omitted `.css` and related style/template languages, along with
   Dockerfile/Containerfile and Makefile-style inputs. It now includes those source/config formats

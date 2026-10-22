@@ -57,7 +57,7 @@ function activeProductIdFor(pathname: string | null): string | null {
 }
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isHydrated, claims, logout } = useAuth();
+  const { isAuthenticated, isHydrated, claims, planTier, logout } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   useTheme();
@@ -87,7 +87,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     );
   }
 
-  const planTier = (claims as { plan_tier?: string } | null)?.plan_tier ?? "free";
   const activeProductId = activeProductIdFor(pathname);
   const activeProduct = products.find((p) => p.id === activeProductId);
   const currentEntry = activeProduct
@@ -122,7 +121,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       />
       <div id="main">
         <TopBar left={<span style={{ fontSize: 13, color: "var(--text2)" }}>Org: {claims?.tid ?? "—"}</span>}>
-          <Badge color={planTier === "free" ? "blue" : "purple"}>{planTier} plan</Badge>
+          <Badge color={planTier === "free" ? "blue" : "purple"}>{planTier ?? "Checking…"}{planTier ? " plan" : ""}</Badge>
           <span style={{ fontSize: 13, color: "var(--text2)" }}>{claims?.email ?? ""}</span>
           <button type="button" onClick={logout} className="btn btn-secondary">
             Logout

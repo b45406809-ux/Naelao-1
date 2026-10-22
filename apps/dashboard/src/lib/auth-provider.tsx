@@ -2,7 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { NaelaoJwtClaims } from "@naelao/types";
-import { login as apiLogin, register as apiRegister } from "./api";
+import { getBillingSubscription, login as apiLogin, register as apiRegister } from "./api";
 import {
   storeToken,
   clearToken,
@@ -16,6 +16,7 @@ import {
 export interface AuthContextValue {
   token: string | null;
   claims: NaelaoJwtClaims | null;
+  planTier: string | null;
   login(email: string, password: string): Promise<void>;
   register(email: string, password: string, orgName?: string): Promise<void>;
   logout(): void;
@@ -32,6 +33,7 @@ export interface AuthContextValue {
 export const AuthContext = createContext<AuthContextValue>({
   token: null,
   claims: null,
+  planTier: null,
   login: async () => {},
   register: async () => {},
   logout: () => {},
@@ -42,6 +44,7 @@ export const AuthContext = createContext<AuthContextValue>({
 export function AuthProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const [token, setToken] = useState<string | null>(null);
   const [claims, setClaims] = useState<NaelaoJwtClaims | null>(null);
+  const [planTier, setPlanTier] = useState<string | null>(null);
   const [isHydrated, setIsHydrated] = useState(false);
 
   // Initialize from localStorage on mount
@@ -59,6 +62,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     }
     setIsHydrated(true);
   }, []);
+
+  // Plan tier is mutable subscription state, so re-read the server-authoritative value after
+  // hydration instead of inferring it from the JWT (which intentionally carries no plan claim).
+  useEffect(() => {
+    if (!token) {
+      setPlanTier(null);
+      return;
+    }
+    let active = true;
+    void getBillingSubscription()
+      .then((subscription) => {
+        if (active) setPlanTier(subscription.plan_tier);
+      })
+      .catch(() => {
+        // Keep the plan returned by login/register when a refresh request is temporarily offline.
+      });
+    return () => { active = false; };
+  }, [token]);
 
   // Auto-logout when token expires
   useEffect(() => {
@@ -83,6 +104,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     storeToken(res.token);
     setToken(res.token);
     setClaims(decoded);
+    setPlanTier(res.user.plan_tier);
   }, []);
 
   const register = useCallback(
@@ -93,6 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       storeToken(res.token);
       setToken(res.token);
       setClaims(decoded);
+      setPlanTier(res.user.plan_tier);
     },
     []
   );
@@ -101,6 +124,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     clearToken();
     setToken(null);
     setClaims(null);
+    setPlanTier(null);
     if (typeof window !== "undefined") {
       window.location.href = "/login";
     }
@@ -109,6 +133,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
   const value: AuthContextValue = {
     token,
     claims,
+    planTier,
     login,
     register,
     logout,

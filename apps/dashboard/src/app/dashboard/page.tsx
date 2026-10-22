@@ -41,7 +41,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default function DashboardPage() {
-  const { claims } = useAuth();
+  const { claims, planTier } = useAuth();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [spaceTypes, setSpaceTypes] = useState<SpaceType[]>([]);
   const [loading, setLoading] = useState(true);
@@ -62,7 +62,6 @@ export default function DashboardPage() {
     void load();
   }, []);
 
-  const planTier = (claims as { plan_tier?: string } | null)?.plan_tier ?? "free";
   const recentSpaces = spaces.slice(0, 5);
 
   return (
@@ -92,7 +91,7 @@ export default function DashboardPage() {
             <StatCard label="SpaceTypes" value={spaceTypes.length} />
             <StatCard
               label="Current Plan"
-              value={planTier.charAt(0).toUpperCase() + planTier.slice(1)}
+              value={planTier ? planTier.charAt(0).toUpperCase() + planTier.slice(1) : "Checking…"}
               sub="Upgrade anytime in Settings"
             />
           </div>
