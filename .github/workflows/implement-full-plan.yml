@@ -19,10 +19,6 @@ on:
         description: Maximum patch/continuation turns per phase
         required: true
         default: "8"
-      verify_command:
-        description: Command run before each phase commit
-        required: true
-        default: "pnpm typecheck && pnpm test"
 
 concurrency:
   group: implement-full-plan-${{ github.ref }}
@@ -37,15 +33,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-      AI_MODELS: ${{ inputs.models }}
-      MAX_TURNS_PER_PHASE: ${{ inputs.max_turns_per_phase }}
-      PHASE_VERIFY_COMMAND: ${{ inputs.verify_command }}
       BRANCH_NAME: ai/full-plan-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -57,6 +50,8 @@ jobs:
           cache: pnpm
 
       - name: Validate API key configuration
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
         run: test -n "$GEMINI_API_KEYS" || { echo "Repository secret GEMINI_API_KEYS is required" >&2; exit 1; }
 
       - name: Install dependencies
@@ -74,16 +69,20 @@ jobs:
           node repomix/verify-configs.mjs
 
       - name: Implement selected phases sequentially
-        run: >-
-          node run-phase.mjs
-          --start "${{ inputs.start_phase }}"
-          --end "${{ inputs.end_phase }}"
-          --models "${{ inputs.models }}"
-          --max-turns "${{ inputs.max_turns_per_phase }}"
-          --verify "${{ inputs.verify_command }}"
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          PHASE_START: ${{ inputs.start_phase }}
+          PHASE_END: ${{ inputs.end_phase }}
+          AI_MODELS: ${{ inputs.models }}
+          MAX_TURNS_PER_PHASE: ${{ inputs.max_turns_per_phase }}
+        run: node run-phase.mjs
 
       - name: Push accumulator branch
-        run: git push --set-upstream origin "$BRANCH_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
+          git push --set-upstream origin "$BRANCH_NAME"
 
       - name: Upload model responses and patches
         if: always()
@@ -98,21 +97,25 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
+          PHASE_START: ${{ inputs.start_phase }}
+          PHASE_END: ${{ inputs.end_phase }}
+          AI_MODELS: ${{ inputs.models }}
         run: |
+          body_file=$(mktemp)
+          trap 'rm -f "$body_file"' EXIT
+          printf '%s\n' \
+            "Automated sequential implementation using the self-contained Repomix phase prompts." \
+            "" \
+            "- Start phase: ${PHASE_START}" \
+            "- End phase: ${PHASE_END}" \
+            "- Models: ${AI_MODELS}" \
+            "- Verification before every phase commit: pnpm typecheck && pnpm test" \
+            "" \
+            "Each phase was regenerated from the preceding committed accumulator state. Review every" \
+            "commit, migration, deployment binding, security boundary, and release-ledger update before" \
+            "merging." > "$body_file"
           gh pr create \
             --base "${GITHUB_REF_NAME}" \
             --head "$BRANCH_NAME" \
-            --title "Implement plan phases ${{ inputs.start_phase }}-${{ inputs.end_phase }}" \
-            --body-file <(cat <<'EOF'
-          Automated sequential implementation using the self-contained Repomix phase prompts.
-
-          - Start phase: ${{ inputs.start_phase }}
-          - End phase: ${{ inputs.end_phase }}
-          - Models: ${{ inputs.models }}
-          - Verification before every phase commit: `${{ inputs.verify_command }}`
-
-          Each phase was regenerated from the preceding committed accumulator state. Review every
-          commit, migration, deployment binding, security boundary, and release-ledger update before
-          merging.
-          EOF
-          )
+            --title "Implement plan phases ${PHASE_START}-${PHASE_END}" \
+            --body-file "$body_file"

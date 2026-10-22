@@ -1,6 +1,55 @@
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 
+const PROVIDER_SECRET_NAMES = [
+  "GEMINI_API_KEYS",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEYS",
+  "GOOGLE_API_KEY",
+  "GROQ_API_KEYS",
+  "GROQ_API_KEY",
+  "OPENROUTER_API_KEY",
+];
+
+export function childEnvironmentWithoutProviderSecrets(environment = process.env) {
+  const childEnvironment = { ...environment };
+  for (const name of PROVIDER_SECRET_NAMES) delete childEnvironment[name];
+  return childEnvironment;
+}
+
+export async function readBoundedResponseText(response, maxBytes) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new Error("Response byte limit must be a positive safe integer");
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel("response body exceeds configured byte limit");
+        throw new Error("Provider response exceeded byte limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 function isWithin(root, target) {
   const relative = path.relative(root, target);
   return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);

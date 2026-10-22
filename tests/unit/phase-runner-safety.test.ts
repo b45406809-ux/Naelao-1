@@ -1,8 +1,15 @@
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseGeneratedPatchPaths, resolveRepoOutputPath } from "../../infra/scripts/phase-runner-safety.mjs";
+import {
+  childEnvironmentWithoutProviderSecrets,
+  parseGeneratedPatchPaths,
+  readBoundedResponseText,
+  resolveRepoOutputPath,
+} from "../../infra/scripts/phase-runner-safety.mjs";
 
 const tempDirs: string[] = [];
 
@@ -37,6 +44,84 @@ describe("phase runner generated paths", () => {
     tempDirs.push(outside);
     symlinkSync(outside, path.join(root, "escape"), "dir");
     expect(() => resolveRepoOutputPath("escape/new.ts", root)).toThrow(/symlink/);
+  });
+});
+
+describe("phase runner child process environment", () => {
+  it("removes provider secrets before package scripts or repository tools run", () => {
+    const source = {
+      GEMINI_API_KEYS: "gemini-secret",
+      GROQ_API_KEYS: "groq-secret",
+      OPENROUTER_API_KEY: "openrouter-secret",
+      PATH: "/usr/bin",
+    };
+
+    expect(childEnvironmentWithoutProviderSecrets(source)).toEqual({ PATH: "/usr/bin" });
+    expect(source.GEMINI_API_KEYS).toBe("gemini-secret");
+  });
+});
+
+describe("phase runner provider response limits", () => {
+  it("reads a complete response within the byte ceiling", async () => {
+    await expect(readBoundedResponseText(new Response("ok"), 2)).resolves.toBe("ok");
+  });
+
+  it("cancels a streamed response that exceeds the byte ceiling", async () => {
+    let cancelled = false;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(new Uint8Array(4));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      })
+    );
+
+    await expect(readBoundedResponseText(response, 3)).rejects.toThrow("exceeded byte limit");
+    expect(cancelled).toBe(true);
+  });
+});
+
+describe("phase runner startup", () => {
+  it("resolves its repository root before validating CLI arguments", () => {
+    const root = fileURLToPath(new URL("../../", import.meta.url));
+    const result = spawnSync(process.execPath, ["run-phase.mjs", "--start", "0", "--end", "1"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("--start and --end must select an inclusive range");
+    expect(result.stderr).not.toContain("realpathSync is not defined");
+  });
+
+  it("rejects unbounded retry counts and shell metacharacters in model names", () => {
+    const root = fileURLToPath(new URL("../../", import.meta.url));
+    const badTurns = spawnSync(process.execPath, ["run-phase.mjs"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5_000,
+      env: { ...process.env, PHASE_START: "1", PHASE_END: "1", MAX_TURNS_PER_PHASE: "1000000" },
+    });
+    expect(badTurns.stderr).toContain("--max-turns must be an integer between 1 and 16");
+
+    const badModel = spawnSync(process.execPath, ["run-phase.mjs"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5_000,
+      env: {
+        ...process.env,
+        PHASE_START: "1",
+        PHASE_END: "1",
+        MAX_TURNS_PER_PHASE: "2",
+        AI_MODELS: "gemini-flash;touch${IFS}/tmp/should-not-run",
+        GEMINI_API_KEYS: "test-only-placeholder",
+      },
+    });
+    expect(badModel.stderr).toContain("Model names may contain only letters");
   });
 });
 

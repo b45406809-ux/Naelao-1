@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { parseGeneratedPatchPaths } from "./infra/scripts/phase-runner-safety.mjs";
+import {
+  childEnvironmentWithoutProviderSecrets,
+  parseGeneratedPatchPaths,
+  readBoundedResponseText,
+} from "./infra/scripts/phase-runner-safety.mjs";
 
 const exec = promisify(execFile);
 const ROOT = realpathSync(fileURLToPath(new URL(".", import.meta.url)));
@@ -17,10 +22,6 @@ const end = Number(args.get("--end") ?? process.env.PHASE_END ?? 13);
 const maxTurns = Number(
   args.get("--max-turns") ?? process.env.MAX_TURNS_PER_PHASE ?? 8
 );
-const verifyCommand =
-  args.get("--verify") ??
-  process.env.PHASE_VERIFY_COMMAND ??
-  "pnpm typecheck && pnpm test";
 const dryRun = process.argv.includes("--dry-run");
 const changedPaths = new Set();
 const apiKeys = (
@@ -51,9 +52,15 @@ if (
     "--start and --end must select an inclusive range between 1 and 13"
   );
 }
+if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 16) {
+  throw new Error("--max-turns must be an integer between 1 and 16");
+}
 if (!dryRun && apiKeys.length === 0)
   throw new Error("Set GEMINI_API_KEYS (comma-separated) or GEMINI_API_KEY");
 if (models.length === 0) throw new Error("At least one AI model is required");
+if (models.some((model) => !/^[A-Za-z0-9._-]{1,100}$/.test(model))) {
+  throw new Error("Model names may contain only letters, numbers, dots, underscores, and hyphens");
+}
 
 const configs = (await readdir(new URL("repomix/", import.meta.url)))
   .filter((name) => /^batch-\d{2}-.+\.json$/.test(name))
@@ -61,7 +68,10 @@ const configs = (await readdir(new URL("repomix/", import.meta.url)))
 if (configs.length !== 13)
   throw new Error(`Expected 13 Repomix configs, found ${configs.length}`);
 if (!dryRun) {
-  const status = await exec("git", ["status", "--porcelain"], { cwd: ROOT });
+  const status = await exec("git", ["status", "--porcelain"], {
+    cwd: ROOT,
+    env: childEnvironmentWithoutProviderSecrets(),
+  });
   if (status.stdout.trim()) {
     throw new Error("Refusing to apply generated patches while the working tree is not clean");
   }
@@ -71,6 +81,7 @@ await mkdir(new URL(".phase-runs/", import.meta.url), { recursive: true });
 async function run(command, commandArgs, options = {}) {
   const result = await exec(command, commandArgs, {
     cwd: ROOT,
+    env: childEnvironmentWithoutProviderSecrets(),
     maxBuffer: 64 * 1024 * 1024,
     ...options,
   });
@@ -123,25 +134,28 @@ async function requestModel(prompt, phase, turn) {
   for (let attempt = 0; attempt < combinations.length * 3; attempt++) {
     const selected =
       combinations[(phase + turn + attempt) % combinations.length];
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(selected.model)}:generateContent?key=${encodeURIComponent(selected.key)}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(selected.model)}:generateContent`;
     try {
       const response = await fetch(url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": selected.key,
+        },
         body: JSON.stringify({
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0.1, maxOutputTokens: 65_536 },
         }),
       });
       if (!response.ok) {
-        const detail = (await response.text()).slice(0, 2_000);
+        const detail = await readBoundedResponseText(response, 64 * 1024);
         lastError = new Error(
-          `${selected.model} returned ${response.status}: ${detail}`
+          `${selected.model} returned ${response.status}: ${detail.slice(0, 2_000)}`
         );
         if (![408, 429, 500, 502, 503, 504].includes(response.status))
           throw lastError;
       } else {
-        const body = await response.json();
+        const body = JSON.parse(await readBoundedResponseText(response, 8 * 1024 * 1024));
         const text =
           body.candidates?.[0]?.content?.parts
             ?.map((part) => part.text ?? "")
@@ -168,7 +182,8 @@ async function applyPatch(patchPath) {
 }
 
 async function verify() {
-  await run("bash", ["-lc", verifyCommand]);
+  await run("pnpm", ["typecheck"]);
+  await run("pnpm", ["test"]);
 }
 
 for (let phase = start; phase <= end; phase++) {
@@ -218,10 +233,16 @@ for (let phase = start; phase <= end; phase++) {
   if (!changed)
     console.log(`Phase ${phase} reported complete with no repository changes.`);
   await verify();
-  const status = await exec("git", ["status", "--porcelain"], { cwd: ROOT });
+  const status = await exec("git", ["status", "--porcelain"], {
+    cwd: ROOT,
+    env: childEnvironmentWithoutProviderSecrets(),
+  });
   if (changedPaths.size > 0) {
     await run("git", ["add", "-A", "--", ...changedPaths]);
-    const staged = await exec("git", ["diff", "--cached", "--name-only"], { cwd: ROOT });
+    const staged = await exec("git", ["diff", "--cached", "--name-only"], {
+      cwd: ROOT,
+      env: childEnvironmentWithoutProviderSecrets(),
+    });
     if (!staged.stdout.trim()) continue;
     await run("git", [
       "commit",
