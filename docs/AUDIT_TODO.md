@@ -1768,6 +1768,14 @@ first real business on free-tier resources before opening the platform to other 
   dashboard typecheck, and Pages build pass. The rest of the API wrapper's route/response contracts
   is still open.
 
+- [x] **Destructive product confirmation dialog.** The typed-name delete dialog lacked alert-dialog
+  semantics, a programmatic field label, Escape handling, keyboard focus containment, and focus
+  restoration. It now exposes an accessible alert dialog, keeps focus within its controls, restores
+  focus to the opener, prevents backdrop/Escape dismissal while an action is busy, and announces the
+  busy state. A server-render regression checks the dialog naming and label association; the builder
+  deletion route tests passed, and dashboard TypeScript plus the Cloudflare Pages build passed. Real
+  browser keyboard and focus behavior remains part of the open UI browser audit.
+
 - [x] **Source checklist classification now includes stylesheet and deployment source files.** The
   inventory generator previously omitted `.css` and related style/template languages, along with
   Dockerfile/Containerfile and Makefile-style inputs. It now includes those source/config formats
