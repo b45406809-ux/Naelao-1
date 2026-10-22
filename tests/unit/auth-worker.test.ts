@@ -410,7 +410,8 @@ describe("password reset (launch-readiness audit follow-up: builders had no acco
     const envWithUrl = { ...makeEnv(), BUILDER_DASHBOARD_URL: "https://app.naelao.com" };
     await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), envWithUrl as never, execCtx);
     await authWorker.fetch(req("/request-password-reset", { email: "jane@acme.com" }), envWithUrl as never, execCtx);
-    expect(envWithUrl.__notifyCalls[0]!.body).toContain("https://app.naelao.com/reset-password?token=");
+    expect(envWithUrl.__notifyCalls[0]!.body).toContain("https://app.naelao.com/reset-password#token=");
+    expect(envWithUrl.__notifyCalls[0]!.body).not.toContain("reset-password?token=");
 
     const envNoUrl = makeEnv();
     await authWorker.fetch(req("/register", { email: "jane@acme.com", password: "hunter2222" }), envNoUrl as never, execCtx);

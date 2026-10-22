@@ -169,7 +169,7 @@ async function sha256Hex(input: string): Promise<string> {
 async function sendResetEmail(env: AuthEnv, tenantId: string, to: string, token: string): Promise<void> {
   if (!env.NOTIFICATIONS_WORKER) return;
   const link = env.BUILDER_DASHBOARD_URL
-    ? `\n\nOr click this link: ${env.BUILDER_DASHBOARD_URL}/reset-password?token=${token}`
+    ? `\n\nOr click this link: ${env.BUILDER_DASHBOARD_URL}/reset-password#token=${encodeURIComponent(token)}`
     : "";
   try {
     await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {

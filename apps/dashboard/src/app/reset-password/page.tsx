@@ -6,7 +6,7 @@
 // password?" link, with no token — shows a "request a reset email" form instead. Deliberately not
 // gated behind auth — a forgotten password means there's no session to gate behind.
 
-import { useState, FormEvent, Suspense } from "react";
+import { useEffect, useState, FormEvent, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { requestPasswordReset, resetPassword } from "@/lib/api";
@@ -14,7 +14,22 @@ import { requestPasswordReset, resetPassword } from "@/lib/api";
 function ResetPasswordInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const token = searchParams.get("token");
+  const queryToken = searchParams.get("token");
+  const [token, setToken] = useState<string | null>(() => queryToken);
+
+  // Reset tokens are single-use credentials. Remove them from the address bar/history once
+  // captured so subsequent same-origin navigation and telemetry cannot inherit the query string.
+  useEffect(() => {
+    if (queryToken) {
+      router.replace("/reset-password");
+      return;
+    }
+    const fragmentToken = new URLSearchParams(window.location.hash.slice(1)).get("token");
+    if (fragmentToken) setToken(fragmentToken);
+    if (window.location.hash) {
+      window.history.replaceState(window.history.state, "", window.location.pathname);
+    }
+  }, [queryToken, router]);
 
   const [email, setEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -80,8 +95,9 @@ function ResetPasswordInner() {
             ) : (
               <form onSubmit={handleReset} className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">New password</label>
+                  <label htmlFor="reset-new-password" className="block text-sm font-medium text-gray-700 mb-1">New password</label>
                   <input
+                    id="reset-new-password"
                     type="password"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
@@ -93,7 +109,7 @@ function ResetPasswordInner() {
                   />
                 </div>
                 {error && (
-                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
+                  <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
                 )}
                 <button
                   type="submit"
@@ -111,8 +127,9 @@ function ResetPasswordInner() {
           ) : (
             <form onSubmit={handleRequest} className="space-y-5">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Email address</label>
+                <label htmlFor="reset-email" className="block text-sm font-medium text-gray-700 mb-1">Email address</label>
                 <input
+                  id="reset-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}

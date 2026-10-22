@@ -1741,6 +1741,15 @@ first real business on free-tier resources before opening the platform to other 
   origin selection. The staging/production shell origin remains an external deployment setting and
   is listed above because the repository workflows do not currently provide it.
 
+- [x] **Password reset links and dashboard login form boundaries.** Newly issued reset credentials
+  were placed in a query string, exposing them to initial page-request logs and referrers. New email
+  links now carry the token in the URL fragment; the client captures and removes it before submitting
+  the token in the POST body. A global `no-referrer` metadata policy reduces accidental disclosure,
+  and older query links remain temporarily accepted and are removed after hydration. Login and reset
+  forms now associate labels with inputs, announce errors, and perform authenticated redirects from
+  an effect rather than during render. `auth-worker.test.ts` passed 32/32 and the complete dashboard
+  Cloudflare Pages build passed. Actual browser history/referrer behavior remains unverified here.
+
 - [x] **Source checklist classification now includes stylesheet and deployment source files.** The
   inventory generator previously omitted `.css` and related style/template languages, along with
   Dockerfile/Containerfile and Makefile-style inputs. It now includes those source/config formats

@@ -5,6 +5,7 @@ import { AuthProvider } from "@/lib/auth-provider";
 export const metadata: Metadata = {
   title: "Naelao Dashboard",
   description: "Naelao Builder Dashboard — create and manage AI-powered Spaces",
+  referrer: "no-referrer",
 };
 
 export default function RootLayout({

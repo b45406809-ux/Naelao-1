@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, FormEvent } from "react";
+import { useEffect, useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-provider";
 
@@ -16,9 +16,12 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Already authenticated — redirect
+  // Navigation is a side effect; doing this during render can trigger duplicate redirects.
+  useEffect(() => {
+    if (isAuthenticated) router.replace("/dashboard");
+  }, [isAuthenticated, router]);
+
   if (isAuthenticated) {
-    router.replace("/dashboard");
     return null;
   }
 
@@ -94,10 +97,11 @@ export default function LoginPage() {
             {tab === "signin" ? (
               <form onSubmit={handleSignIn} className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label htmlFor="login-email" className="block text-sm font-medium text-gray-700 mb-1">
                     Email address
                   </label>
                   <input
+                    id="login-email"
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -108,10 +112,11 @@ export default function LoginPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-1">
                     Password
                   </label>
                   <input
+                    id="login-password"
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -128,7 +133,7 @@ export default function LoginPage() {
                 </div>
 
                 {error && (
-                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
                     {error}
                   </p>
                 )}
@@ -144,10 +149,11 @@ export default function LoginPage() {
             ) : (
               <form onSubmit={handleRegister} className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label htmlFor="register-email" className="block text-sm font-medium text-gray-700 mb-1">
                     Email address
                   </label>
                   <input
+                    id="register-email"
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -158,10 +164,11 @@ export default function LoginPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label htmlFor="register-password" className="block text-sm font-medium text-gray-700 mb-1">
                     Password
                   </label>
                   <input
+                    id="register-password"
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -173,11 +180,12 @@ export default function LoginPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label htmlFor="register-org-name" className="block text-sm font-medium text-gray-700 mb-1">
                     Organization name{" "}
                     <span className="text-gray-400 font-normal">(optional)</span>
                   </label>
                   <input
+                    id="register-org-name"
                     type="text"
                     value={orgName}
                     onChange={(e) => setOrgName(e.target.value)}
@@ -187,7 +195,7 @@ export default function LoginPage() {
                 </div>
 
                 {error && (
-                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
                     {error}
                   </p>
                 )}
