@@ -2394,3 +2394,9 @@ Validation: Browser Worker suite passed 4 files / 9 tests; Browser Worker TypeSc
 The Gumroad shim had `src/index.test.ts` coverage for request size, invalid product IDs, redirect behavior, and timeout setup, but the worker package had no `test` script. Added the workspace Vitest dependency, config aliases, and package test task so Turbo can include the existing tests. The same source pass reviewed the worker route/auth wrapper, request/response byte caps, fixed provider origin, and Wrangler bindings; no live Gumroad request was made.
 
 Validation: focused Gumroad suite passed 1 file / 2 tests; TypeScript passed; Wrangler dry-run build passed. The last full Turbo suite predates this task; direct package validation covers the added task. Gumroad config and test rows are checked in the file plan.
+
+## Whop connector test discovery (2026-10-22)
+
+The Whop shim likewise had boundary tests but no package `test` script. Added Vitest workspace config/dependency and a test task. Reviewed the shim's REST paths, strict ID and write-payload checks, request/response limits, redirect handling, timeout, internal HMAC gate, and deployment bindings. The shim exposes two write tools, so its capability policy in MCP Hub and connector permission registry remains part of the broader review; no live Whop request was made.
+
+Validation: focused Whop suite passed 1 file / 2 tests; TypeScript and Wrangler dry-run build passed. The latest full Turbo run predates the Gumroad and Whop task additions; both packages were validated directly. Whop package/config/test rows are now checked in the file plan.
