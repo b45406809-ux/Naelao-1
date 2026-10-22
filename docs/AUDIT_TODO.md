@@ -1717,6 +1717,12 @@ first real business on free-tier resources before opening the platform to other 
 
 ## Audit continuation findings (2026-10-22)
 
+- [x] **Source checklist classification now includes stylesheet and deployment source files.** The
+  inventory generator previously omitted `.css` and related style/template languages, along with
+  Dockerfile/Containerfile and Makefile-style inputs. It now includes those source/config formats
+  and common compiled-language/config extensions. The refreshed checklist count is larger; newly
+  included files remain unchecked until individually reviewed.
+
 - [ ] **Outbound DNS rebinding remains an infrastructure gap.** Shared `checkSsrf()` resolves A/AAAA
   records through bounded DNS-over-HTTPS and blocks private results, and several consumers recheck
   at call time and on redirects. The subsequent Workers `fetch()` or browser socket connection does

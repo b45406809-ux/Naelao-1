@@ -5,8 +5,23 @@ import re, subprocess
 root = Path.cwd()
 paths = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
 paths = sorted(p for p in paths if p)
-extensions = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".kt", ".swift", ".sql", ".sh", ".yaml", ".yml", ".toml", ".json", ".jsonc"}
-source_paths = [p for p in paths if Path(p).suffix.lower() in extensions]
+extensions = {
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs",
+    ".java", ".kt", ".swift", ".sql", ".sh", ".yaml", ".yml", ".toml",
+    ".json", ".jsonc", ".css", ".scss", ".sass", ".less", ".html", ".xml",
+    ".xsl", ".vue", ".svelte", ".astro", ".graphql", ".gql", ".proto",
+    ".tf", ".hcl", ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp",
+    ".php", ".rb", ".pl", ".r", ".lua", ".dart", ".ex", ".exs", ".erl",
+    ".hrl", ".scala", ".clj", ".cljs", ".sol", ".ps1", ".bat", ".cmd",
+    ".ipynb",
+}
+special_config_names = {"Makefile", "GNUmakefile", "Justfile", ".env.example", ".env.sample", ".dev.vars.example"}
+source_paths = [
+    p for p in paths
+    if Path(p).suffix.lower() in extensions
+    or Path(p).name in special_config_names
+    or Path(p).name.startswith(("Dockerfile", "Containerfile"))
+]
 revision = subprocess.check_output(
     ["git", "rev-parse", "--short", "HEAD"], text=True
 ).strip()
@@ -17,6 +32,7 @@ lines = [
     "Naelao repository tree",
     f"Root: {root}",
     "Inventory source: git ls-files (tracked files only)",
+    "Source/config classification includes common code, style/template, infrastructure, and executable configuration formats; Markdown/docs are excluded.",
     f"Files: {len(paths)}",
     f"Files with source or executable-configuration extensions: {len(source_paths)}",
     f"Inventory revision: {inventory_date} audit refresh at {revision}",
