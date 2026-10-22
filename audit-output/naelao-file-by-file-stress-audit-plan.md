@@ -2218,14 +2218,15 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/auth`
 
-- [ ] `workers/auth/package.json`
-- [ ] `workers/auth/tsconfig.json`
+- [x] `workers/auth/package.json`
+- [x] `workers/auth/tsconfig.json`
+- [x] `workers/auth/vitest.config.ts`
 - [x] `workers/auth/wrangler.toml`
 
 ### `workers/auth/src`
 
-- [ ] `workers/auth/src/health.test.ts`
-- [ ] `workers/auth/src/index.ts`
+- [x] `workers/auth/src/health.test.ts`
+- [x] `workers/auth/src/index.ts`
 
 ### `workers/billing`
 

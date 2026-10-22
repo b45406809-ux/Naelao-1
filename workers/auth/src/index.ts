@@ -238,7 +238,11 @@ app.post("/login", async (c) => {
 
   // Keep unknown, inactive, and wrong-password paths at the same expensive verification and
   // response shape so login cannot be used to enumerate account status by text or timing.
-  const passwordMatch = await verifyPassword(body.password, user?.password_hash ?? DUMMY_PASSWORD_HASH);
+  // Inactive and unknown accounts both take the same dummy-hash path. Stored hashes can have
+  // different iteration counts (including legacy or damaged rows), so verifying an inactive
+  // account's hash would otherwise make status observable through request timing.
+  const passwordHash = user?.status === "active" ? user.password_hash : DUMMY_PASSWORD_HASH;
+  const passwordMatch = await verifyPassword(body.password, passwordHash);
   if (!user || user.status !== "active" || !passwordMatch) throw unauthorized("Invalid email or password");
 
   // Update last_login_at
@@ -458,9 +462,12 @@ app.post("/revoke", async (c) => {
     if (err instanceof AuthError) throw unauthorized(err.message);
     throw err;
   }
-  await c.env.PLATFORM_DB.prepare(
-    `UPDATE users SET token_version = token_version + 1 WHERE id = ?1`
-  ).bind(claims.sub).run();
+  // Only the current token epoch may revoke sessions. Otherwise a stolen/revoked JWT
+  // could repeatedly increment the epoch and invalidate every later login.
+  const revoked = await c.env.PLATFORM_DB.prepare(
+    `UPDATE users SET token_version = token_version + 1 WHERE id = ?1 AND token_version = ?2`
+  ).bind(claims.sub, claims.tv ?? 0).run();
+  if (revoked.meta.changes === 0) throw unauthorized("JWT has been revoked");
   return c.json({ revoked: true, request_id: c.get("requestId") });
 });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import authWorker from "../../workers/auth/src/index.js";
@@ -175,9 +175,15 @@ describe("POST /login — builder sign-in", () => {
     const env = makeEnv();
     await authWorker.fetch(req("/register", { email: "inactive@acme.com", password: "hunter2222" }), env as never, execCtx);
     await env.__db.prepare("UPDATE users SET status = 'suspended' WHERE email = ?").bind("inactive@acme.com").run();
+    await env.__db.prepare("UPDATE users SET password_hash = ? WHERE email = ?")
+      .bind(JSON.stringify({ hash: "0".repeat(64), salt: "0".repeat(64), iterations: 1 }), "inactive@acme.com").run();
 
+    const deriveBits = vi.spyOn(crypto.subtle, "deriveBits");
     const inactive = await authWorker.fetch(req("/login", { email: "inactive@acme.com", password: "wrong-password" }), env as never, execCtx);
+    expect(deriveBits.mock.calls[0]?.[0]).toMatchObject({ iterations: 100_000 });
     const unknown = await authWorker.fetch(req("/login", { email: "unknown@acme.com", password: "wrong-password" }), env as never, execCtx);
+    expect(deriveBits.mock.calls[1]?.[0]).toMatchObject({ iterations: 100_000 });
+    deriveBits.mockRestore();
     expect(inactive.status).toBe(401);
     const inactiveError = await inactive.json() as { error_code: string; message: string };
     const unknownError = await unknown.json() as { error_code: string; message: string };
@@ -427,5 +433,9 @@ describe("token revocation verification", () => {
     expect((await authWorker.fetch(authRequest("/verify"), env as never, execCtx)).status).toBe(200);
     expect((await authWorker.fetch(authRequest("/revoke"), env as never, execCtx)).status).toBe(200);
     expect((await authWorker.fetch(authRequest("/verify"), env as never, execCtx)).status).toBe(401);
+    expect((await authWorker.fetch(authRequest("/revoke"), env as never, execCtx)).status).toBe(401);
+    const version = await env.__db.prepare("SELECT token_version FROM users WHERE email = ?1")
+      .bind("jane@acme.com").first<{ token_version: number }>();
+    expect(version?.token_version).toBe(1);
   });
 });
