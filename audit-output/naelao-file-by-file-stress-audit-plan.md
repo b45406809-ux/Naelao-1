@@ -93,7 +93,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `run-phase (1).mjs`
 - [x] `run-phase.mjs`
 - [x] `tsconfig.base.json`
-- [ ] `turbo.json`
+- [x] `turbo.json`
 - [x] `vitest.workspace.ts`
 
 ### `.github/workflows`
