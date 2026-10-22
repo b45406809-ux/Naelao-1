@@ -2424,3 +2424,9 @@ Reviewed the MCP Hub manifest, TypeScript config, routes, connector scope policy
 Stress regressions cover 1 MiB+ direct and alias calls, oversized Composio and management mutations, invalid JSON and wrong input shape, and no provider dispatch for rejected requests. Existing upstream-size, redirect, air-gap, tenant-space, Composio, and connector-scope tests passed.
 
 Validation: MCP Hub suite passed 5 files / 22 tests; TypeScript passed; Wrangler dry-run build passed. No live D1, Composio, Pipedream, Cloudflare deployment, or external-provider test was performed. DNS rebinding remains an infrastructure gap because the Worker fetch path cannot pin the address validated by DoH; a controlled egress proxy is still required for that guarantee.
+
+## Notifications egress and credential bounds (2026-10-22)
+
+Reviewed the Notifications worker routes, queue consumer, provider calls, Web Push helper, deployment configuration, and tests. Found an unbounded credential-worker JSON parse; it now uses the shared 16 KiB response reader and rejects missing/non-string credentials. APNs device tokens now require exactly 64 hex characters, APNs host configuration is restricted to Apple's production/sandbox endpoints (defaulting to production), and provider sends refuse redirects so bearer/API credentials cannot cross a redirect boundary. Added stress tests for over-limit vault responses, APNs path injection, and unapproved APNs hosts.
+
+Validation: Notifications suite passed 7 files / 30 tests; TypeScript passed; Wrangler dry-run build passed. No live D1, APNs, Resend, chat-provider, Web Push, Cloudflare deployment, or external-provider test was performed. Webhook and provider DNS rebinding remains unresolved because Workers fetch cannot pin the validated address; a controlled egress proxy is still required.

@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2042` tracked files; `1834` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `7a53609b`.
+Inventory basis: `2043` tracked files; `1835` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `d93d1817`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
@@ -2377,16 +2377,17 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/notifications`
 
-- [ ] `workers/notifications/package.json`
-- [ ] `workers/notifications/tsconfig.json`
-- [ ] `workers/notifications/vitest.config.ts`
+- [x] `workers/notifications/package.json`
+- [x] `workers/notifications/tsconfig.json`
+- [x] `workers/notifications/vitest.config.ts`
 - [x] `workers/notifications/wrangler.toml`
 
 ### `workers/notifications/src`
 
-- [ ] `workers/notifications/src/air-gap.test.ts`
-- [ ] `workers/notifications/src/index.ts`
-- [ ] `workers/notifications/src/interactive.test.ts`
+- [x] `workers/notifications/src/air-gap.test.ts`
+- [x] `workers/notifications/src/apns-boundaries.test.ts`
+- [x] `workers/notifications/src/index.ts`
+- [x] `workers/notifications/src/interactive.test.ts`
 - [x] `workers/notifications/src/queue-config.test.ts`
 - [x] `workers/notifications/src/queue-idempotency.test.ts`
 - [x] `workers/notifications/src/web-push.test.ts`
