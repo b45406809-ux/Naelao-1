@@ -3,6 +3,10 @@ import type { OggOpusDecoder as OggOpusDecoderClass } from "ogg-opus-decoder";
 export const MAX_DECODED_AUDIO_SECONDS = 180;
 const SAMPLE_RATE = 16_000;
 const MAX_DECODED_SAMPLES = SAMPLE_RATE * MAX_DECODED_AUDIO_SECONDS;
+// Ogg Opus granule positions use a 48 kHz clock, independent of the decoder output rate.
+// Allow one second for pre-skip/end-trim metadata while still rejecting decompression bombs
+// before the decoder allocates PCM for the complete stream.
+const MAX_OGG_GRANULE = BigInt((MAX_DECODED_AUDIO_SECONDS + 1) * 48_000);
 
 interface DecodedChunk {
   channelData: Float32Array[];
@@ -52,6 +56,36 @@ function toWav(chunks: Int16Array[], sampleCount: number): Uint8Array {
   return bytes;
 }
 
+function rejectExcessiveOggDuration(input: Uint8Array): void {
+  let offset = 0;
+  const streamGranules = new Map<number, bigint>();
+  while (offset < input.byteLength) {
+    if (input.byteLength - offset < 27 || input[offset] !== 0x4f || input[offset + 1] !== 0x67 ||
+        input[offset + 2] !== 0x67 || input[offset + 3] !== 0x53 || input[offset + 4] !== 0) {
+      throw new Error("audio_ogg_container_invalid");
+    }
+    const view = new DataView(input.buffer, input.byteOffset + offset, input.byteLength - offset);
+    const granule = view.getBigUint64(6, true);
+    const streamSerial = view.getUint32(14, true);
+    const segmentCount = input[offset + 26] ?? 0;
+    const segmentTableEnd = offset + 27 + segmentCount;
+    if (segmentTableEnd > input.byteLength) throw new Error("audio_ogg_container_invalid");
+    let payloadBytes = 0;
+    for (let index = offset + 27; index < segmentTableEnd; index++) payloadBytes += input[index] ?? 0;
+    const pageEnd = segmentTableEnd + payloadBytes;
+    if (pageEnd > input.byteLength) throw new Error("audio_ogg_container_invalid");
+    // 0xffffffffffffffff means that a header/metadata page has no completed packet yet.
+    if (granule !== 0xffff_ffff_ffff_ffffn) {
+      if (granule > MAX_OGG_GRANULE) throw new Error("audio_duration_exceeds_limit");
+      if (granule > (streamGranules.get(streamSerial) ?? 0n)) streamGranules.set(streamSerial, granule);
+    }
+    offset = pageEnd;
+  }
+  if (streamGranules.size === 0) throw new Error("audio_opus_decode_empty");
+  const totalGranules = [...streamGranules.values()].reduce((total, granule) => total + granule, 0n);
+  if (totalGranules > MAX_OGG_GRANULE) throw new Error("audio_duration_exceeds_limit");
+}
+
 /** Decode Ogg/Opus in bounded chunks and normalize it to 16kHz mono PCM WAV. */
 export async function decodeOggOpusToWav(
   input: Uint8Array,
@@ -60,6 +94,7 @@ export async function decodeOggOpusToWav(
   if (input.byteLength < 4 || input[0] !== 0x4f || input[1] !== 0x67 || input[2] !== 0x67 || input[3] !== 0x53) {
     throw new Error("audio_ogg_container_invalid");
   }
+  rejectExcessiveOggDuration(input);
   // Do not load this package while the router module starts. Its top-level exports include a
   // browser/Node Web Worker subclass; workerd has no global Worker and would otherwise crash
   // before any route can serve. Import only after an Ogg request reaches this path.

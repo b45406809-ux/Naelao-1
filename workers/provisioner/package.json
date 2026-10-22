@@ -5,7 +5,7 @@
   "main": "./src/index.ts",
   "scripts": {
     "build": "wrangler deploy --dry-run",
-    "test": "vitest run --config vitest.config.ts --passWithNoTests",
+    "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy --env production"

@@ -25,4 +25,37 @@ describe("RateLimitDO request body limit", () => {
         .toArray()
     ).toHaveLength(0);
   });
+
+  it.each([
+    ["malformed JSON", "{"],
+    ["non-object JSON", "[]"],
+    ["null JSON", "null"],
+    ["string JSON", JSON.stringify("user")],
+    ["empty bucket key", JSON.stringify({ key: "", limit: 10 })],
+    ["oversized bucket key", JSON.stringify({ key: "x".repeat(513), limit: 10 })],
+    ["zero limit", JSON.stringify({ key: "user", limit: 0 })],
+    ["negative limit", JSON.stringify({ key: "user", limit: -1 })],
+    ["non-finite limit", JSON.stringify({ key: "user", limit: "Infinity" })],
+    ["excessive limit", JSON.stringify({ key: "user", limit: 10_001 })],
+  ])("rejects %s without mutating the bucket table", async (_name, body) => {
+    const storage = createDOStorage();
+    const object = new RateLimitDO({ storage } as never, {} as never);
+    const response = await object.fetch(new Request("http://rate-limit/check", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toHaveProperty("error");
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM buckets").toArray()[0]?.count).toBe(0);
+  });
+
+  it("rejects an invalid reset key instead of silently accepting it", async () => {
+    const storage = createDOStorage();
+    const object = new RateLimitDO({ storage } as never, {} as never);
+    const response = await object.fetch(new Request("http://rate-limit/reset", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    }));
+    expect(response.status).toBe(400);
+  });
 });

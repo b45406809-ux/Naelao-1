@@ -473,12 +473,12 @@ app.all("/v1/webhooks/whop-platform-plan", proxyBillingWebhook);
 // (idFromName(bucketKey), keyed on the edge-set cf-connecting-ip since there's no claims.sub
 // yet) but fails CLOSED here — an attacker able to make the rate limiter itself unavailable
 // must not get an unthrottled credential-guessing or free-credit oracle out of it.
-async function checkPreAuthRateLimit(
+export async function checkPreAuthRateLimit(
   c: { env: Env; req: { header: (name: string) => string | undefined } },
   routeKey: string,
   limit: number
 ): Promise<{ allowed: boolean; retryAfterMs: number }> {
-  if (!c.env.RATE_LIMIT_DO) return { allowed: true, retryAfterMs: 0 };
+  if (!c.env.RATE_LIMIT_DO) return { allowed: false, retryAfterMs: 30_000 };
   const ip = c.req.header("cf-connecting-ip");
   // If the edge-set IP header is absent (e.g. misconfigured routing), fall back to a random
   // per-request UUID so the request always passes through without creating a shared "unknown"

@@ -7,7 +7,7 @@
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy --env production",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --config vitest.config.ts --passWithNoTests"
+    "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@naelao/auth": "workspace:*",

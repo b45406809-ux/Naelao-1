@@ -66,9 +66,17 @@ export class RateLimitDO extends DurableObject {
     const url = new URL(request.url);
 
     if (request.method === "POST" && url.pathname === "/check") {
-      const body = await request.json<{ key: string; limit: number }>();
-      if (!body.key || !body.limit) {
-        return Response.json({ error: "key and limit required" }, { status: 400 });
+      let body: { key?: unknown; limit?: unknown };
+      try {
+        const parsed: unknown = await request.json();
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+          return Response.json({ error: "invalid_request_body" }, { status: 400 });
+        body = parsed as { key?: unknown; limit?: unknown };
+      }
+      catch { return Response.json({ error: "invalid_request_body" }, { status: 400 }); }
+      if (typeof body.key !== "string" || body.key.length < 1 || body.key.length > 512 ||
+          typeof body.limit !== "number" || !Number.isFinite(body.limit) || body.limit <= 0 || body.limit > 10_000) {
+        return Response.json({ error: "key and a positive finite limit are required" }, { status: 400 });
       }
 
       // Push the idle-cleanup alarm back on every call — it only actually fires once this
@@ -127,10 +135,17 @@ export class RateLimitDO extends DurableObject {
     }
 
     if (request.method === "POST" && url.pathname === "/reset") {
-      const body = await request.json<{ key: string }>();
-      if (body.key) {
-        this.ctx.storage.sql.exec(`DELETE FROM buckets WHERE key = ?`, body.key);
+      let body: { key?: unknown };
+      try {
+        const parsed: unknown = await request.json();
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+          return Response.json({ error: "invalid_request_body" }, { status: 400 });
+        body = parsed as { key?: unknown };
       }
+      catch { return Response.json({ error: "invalid_request_body" }, { status: 400 }); }
+      if (typeof body.key !== "string" || body.key.length < 1 || body.key.length > 512)
+        return Response.json({ error: "key is required" }, { status: 400 });
+      this.ctx.storage.sql.exec(`DELETE FROM buckets WHERE key = ?`, body.key);
       return new Response(null, { status: 204 });
     }
 

@@ -2431,34 +2431,35 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/router`
 
-- [ ] `workers/router/package.json`
+- [x] `workers/router/package.json`
 - [x] `workers/router/tsconfig.json`
-- [ ] `workers/router/vitest.config.ts`
+- [x] `workers/router/vitest.config.ts`
 - [x] `workers/router/wrangler.toml`
 
 ### `workers/router/src`
 
-- [ ] `workers/router/src/RateLimitDO-boundaries.test.ts`
-- [ ] `workers/router/src/RateLimitDO.ts`
-- [ ] `workers/router/src/customer-voice-routing.test.ts`
+- [x] `workers/router/src/RateLimitDO-boundaries.test.ts`
+- [x] `workers/router/src/RateLimitDO.ts`
+- [x] `workers/router/src/customer-voice-routing.test.ts`
 - [x] `workers/router/src/extension-product-paths.test.ts`
-- [ ] `workers/router/src/extension-provider-routing.test.ts`
-- [ ] `workers/router/src/health.test.ts`
+- [x] `workers/router/src/extension-provider-routing.test.ts`
+- [x] `workers/router/src/health.test.ts`
 - [x] `workers/router/src/index.ts`
 - [x] `workers/router/src/portal-domain-routing.test.ts`
-- [ ] `workers/router/src/preferred-language.test.ts`
-- [ ] `workers/router/src/preferred-language.ts`
+- [x] `workers/router/src/preauth-rate-limit.test.ts`
+- [x] `workers/router/src/preferred-language.test.ts`
+- [x] `workers/router/src/preferred-language.ts`
 - [x] `workers/router/src/tenant-status.test.ts`
 - [x] `workers/router/src/tenant-status.ts`
 
 ### `workers/router/src/routes`
 
-- [ ] `workers/router/src/routes/bounded-ingress.test.ts`
-- [ ] `workers/router/src/routes/bounded-request-body.ts`
-- [ ] `workers/router/src/routes/ogg-opus.test.ts`
-- [ ] `workers/router/src/routes/ogg-opus.ts`
-- [ ] `workers/router/src/routes/transcribe.test.ts`
-- [ ] `workers/router/src/routes/transcribe.ts`
+- [x] `workers/router/src/routes/bounded-ingress.test.ts`
+- [x] `workers/router/src/routes/bounded-request-body.ts`
+- [x] `workers/router/src/routes/ogg-opus.test.ts`
+- [x] `workers/router/src/routes/ogg-opus.ts`
+- [x] `workers/router/src/routes/transcribe.test.ts`
+- [x] `workers/router/src/routes/transcribe.ts`
 
 ### `workers/security-gateway`
 

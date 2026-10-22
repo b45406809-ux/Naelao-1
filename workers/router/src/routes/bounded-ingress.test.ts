@@ -17,6 +17,10 @@ describe("bounded public ingress", () => {
       {
         JWT_SECRET: "test-secret",
         PLATFORM_SECRET: "test-secret",
+        RATE_LIMIT_DO: {
+          idFromName: () => ({}),
+          get: () => ({ fetch: async () => Response.json({ allowed: true, retry_after_ms: 0 }) }),
+        },
         SPACES_WORKER: { fetch },
       } as never
     );

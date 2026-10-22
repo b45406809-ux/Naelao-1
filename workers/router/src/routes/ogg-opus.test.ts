@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { decodeOggOpusToWav } from "./ogg-opus";
 import { transcribeAudio } from "./transcribe";
 
@@ -20,6 +20,42 @@ describe("Ogg/Opus normalization", () => {
 
   it("rejects an invalid container before allocating the decoder", async () => {
     await expect(decodeOggOpusToWav(new Uint8Array([1, 2, 3, 4]))).rejects.toThrow("audio_ogg_container_invalid");
+  });
+
+  it("rejects a duration bomb from Ogg granule metadata before decoder allocation", async () => {
+    const page = new Uint8Array(27);
+    page.set([0x4f, 0x67, 0x67, 0x53, 0]);
+    new DataView(page.buffer).setBigUint64(6, BigInt(182 * 48_000), true);
+    const createDecoder = vi.fn(() => ({ ready: Promise.resolve(), decodeFile: vi.fn(), free: vi.fn() }));
+
+    await expect(decodeOggOpusToWav(page, createDecoder)).rejects.toThrow("audio_duration_exceeds_limit");
+    expect(createDecoder).not.toHaveBeenCalled();
+  });
+
+  it("rejects truncated Ogg page segments before decoder allocation", async () => {
+    const page = new Uint8Array(28);
+    page.set([0x4f, 0x67, 0x67, 0x53, 0]);
+    page[26] = 1;
+    page[27] = 255;
+    const createDecoder = vi.fn(() => ({ ready: Promise.resolve(), decodeFile: vi.fn(), free: vi.fn() }));
+
+    await expect(decodeOggOpusToWav(page, createDecoder)).rejects.toThrow("audio_ogg_container_invalid");
+    expect(createDecoder).not.toHaveBeenCalled();
+  });
+
+  it("bounds total duration across chained Ogg logical streams", async () => {
+    const first = new Uint8Array(27);
+    const second = new Uint8Array(27);
+    for (const page of [first, second]) page.set([0x4f, 0x67, 0x67, 0x53, 0]);
+    new DataView(first.buffer).setUint32(14, 1, true);
+    new DataView(second.buffer).setUint32(14, 2, true);
+    new DataView(first.buffer).setBigUint64(6, BigInt(150 * 48_000), true);
+    new DataView(second.buffer).setBigUint64(6, BigInt(150 * 48_000), true);
+    const createDecoder = vi.fn(() => ({ ready: Promise.resolve(), decodeFile: vi.fn(), free: vi.fn() }));
+
+    await expect(decodeOggOpusToWav(new Uint8Array([...first, ...second]), createDecoder))
+      .rejects.toThrow("audio_duration_exceeds_limit");
+    expect(createDecoder).not.toHaveBeenCalled();
   });
 
   it("normalizes multipart Ogg audio before dispatching it to Whisper", async () => {
