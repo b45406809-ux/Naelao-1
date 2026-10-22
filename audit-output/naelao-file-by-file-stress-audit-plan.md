@@ -1,13 +1,13 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2037` tracked files; `1829` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `638823ed`.
+Inventory basis: `2038` tracked files; `1830` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `a717dbab`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
 
-- The source/config checklist records **532 scoped reviews / 1,297 open files** out of 1,829. Unchecked rows remain unaudited.
-- Full root tests passed after the latest build-tool overrides: 55 workspace tasks, 368 root test files, and 3,811 root tests; the newly wired Browser Worker suite adds 2 files / 3 tests. Recursive workspace TypeScript passed 74/74 tasks after excluding Node-only test fixtures from the runtime Worker tsconfigs; Browser Worker TypeScript and its Wrangler dry-run build also passed.
+- The source/config checklist records **533 scoped reviews / 1,297 open files** out of 1,830. Unchecked rows remain unaudited.
+- Full root tests passed after the latest build-tool overrides: 55 workspace tasks, 368 root test files, and 3,811 root tests. Browser Worker tests now run in Turbo; after the screenshot cleanup-intent regression was added, its 3 test files / 6 tests passed, along with Browser Worker TypeScript and Wrangler dry-run build. Recursive workspace TypeScript passed 74/74 tasks after excluding Node-only test fixtures from the runtime Worker tsconfigs.
 - Latest production dependency audit: 49 advisory records (4 critical, 11 high, 29 moderate, 5 low). All critical/high production findings trace to `next@14.2.18`; Pages adapter migration remains open.
 - Latest full dependency audit: 74 records (4 critical, 19 high, 42 moderate, 9 low). Remaining high build-tool findings include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`.
 - DNS rebinding remains unresolved because the Workers fetch path cannot pin the address that passed validation. No live Cloudflare deployment or external-provider test has been performed.
@@ -2266,6 +2266,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/browser/src/BrowserSessionDO-boundaries.test.ts`
 - [x] `workers/browser/src/BrowserSessionDO.test.ts`
 - [ ] `workers/browser/src/BrowserSessionDO.ts`
+- [x] `workers/browser/src/browser-session-state.test.ts`
 - [x] `workers/browser/src/browser-session-state.ts`
 - [x] `workers/browser/src/index.ts`
 

@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2037
-Files with source or executable-configuration extensions: 1829
-Inventory revision: 2026-10-22 audit refresh at 638823ed
+Files: 2038
+Files with source or executable-configuration extensions: 1830
+Inventory revision: 2026-10-22 audit refresh at a717dbab
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1998,6 +1998,7 @@ workers/
   browser/
     package.json
     src/
+      browser-session-state.test.ts
       browser-session-state.ts
       BrowserSessionDO-boundaries.test.ts
       BrowserSessionDO.test.ts

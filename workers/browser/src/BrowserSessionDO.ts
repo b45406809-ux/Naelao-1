@@ -5,7 +5,8 @@ import { mintInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } 
 import { checkSsrf } from "@naelao/security";
 import { assertBrowserAction, assertBrowserUrl, browserEngineFor, validateBrowserScope,
   type BrowserObservation, type BrowserRuntimeScope, type BrowserScopedAction } from "@naelao/agent-sdk";
-import { BrowserActionJournal, sameBrowserOwner, type BrowserSessionRecord } from "./browser-session-state.js";
+import { BrowserActionJournal, discardScreenshotWithCleanupIntent, sameBrowserOwner,
+  uploadScreenshotWithCleanupIntent, type BrowserSessionRecord } from "./browser-session-state.js";
 
 export interface BrowserEnv {
   ENVIRONMENT: string; PLATFORM_SECRET: string; BROWSER?: Fetcher;
@@ -132,6 +133,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     await this.ctx.storage.setAlarm(Math.min(body.scope.expiresAt, Date.now() + IDLE_MS));
     let browser: Browser | undefined;
     let completed = false;
+    let pendingScreenshotPath: string | undefined;
     const changingEngine = record.engine !== engine;
     try {
       if (record.providerSessionId && record.engine === "chromium") {
@@ -233,9 +235,11 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
         if (bytes.byteLength > 4 * 1024 * 1024) throw new Error("browser_screenshot_limit");
         const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
         const path = ".perception/" + [body.scope.tenantId, body.scope.spaceId, body.scope.runId, body.scope.sessionId, revision + ".png"].map(encodeURIComponent).join("/");
-        await this.env.BROWSER_ARTIFACTS.put(path, bytes, { httpMetadata: { contentType: "image/png" } });
+        pendingScreenshotPath = path;
+        await uploadScreenshotWithCleanupIntent(this.ctx.storage, record, path,
+          () => this.env.BROWSER_ARTIFACTS!.put(path, bytes, { httpMetadata: { contentType: "image/png" } }),
+          () => this.env.BROWSER_ARTIFACTS!.delete(path));
         observation.screenshot = { path, mimeType: "image/png", bytes: bytes.byteLength, sha256: hash };
-        record.screenshots.push(path);
       }
       if (record.observation) {
         await this.ctx.storage.delete(record.observation.elements.map(element => "element:" + record.observation!.revision + ":" + element.handle));
@@ -243,12 +247,17 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
       record = { ...record, engine, observation, url: observation.url, cookies: engine === "kitesurf" ? await page.cookies() : [],
         ...(engine === "chromium" ? { providerSessionId: browser.sessionId() } : {}), lastUsedAt: Date.now() };
       await this.storeOpen(record);
+      pendingScreenshotPath = undefined;
       await this.ctx.storage.setAlarm(Math.min(record.scope.expiresAt, Date.now() + IDLE_MS));
       if (claimed) await journal.finish(body.action!.actionId, observation);
       await client.detach();
       completed = true;
       return observation;
     } catch (error) {
+      if (pendingScreenshotPath && this.env.BROWSER_ARTIFACTS) {
+        await discardScreenshotWithCleanupIntent(this.ctx.storage, pendingScreenshotPath,
+          () => this.env.BROWSER_ARTIFACTS!.delete(pendingScreenshotPath!)).catch(() => undefined);
+      }
       if (claimed) await journal.finish(body.action!.actionId);
       throw error;
     } finally {

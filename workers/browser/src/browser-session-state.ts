@@ -13,6 +13,52 @@ export interface BrowserStateStorage {
   put<T>(key: string, value: T): Promise<void>;
   transaction<T>(callback: (storage: Pick<BrowserStateStorage, "get" | "put">) => Promise<T>): Promise<T>;
 }
+const SESSION_RECORD = "browser-session";
+
+/** Persist the R2 cleanup intent before uploading so a DO restart cannot orphan an image. */
+export async function uploadScreenshotWithCleanupIntent(
+  storage: BrowserStateStorage,
+  record: BrowserSessionRecord,
+  path: string,
+  upload: () => Promise<unknown>,
+  remove: () => Promise<void>,
+): Promise<void> {
+  await storage.transaction(async transaction => {
+    const current = await transaction.get<BrowserSessionRecord>(SESSION_RECORD);
+    if (!current || current.status !== "open" || !sameBrowserOwner(current.scope, record.scope)) {
+      throw new Error("browser_session_closed");
+    }
+    const screenshots = [...current.screenshots, path];
+    await transaction.put(SESSION_RECORD, { ...current, screenshots });
+    record.screenshots = screenshots;
+  });
+  try {
+    await upload();
+  } catch (error) {
+    // Keep the original upload failure. If R2 cleanup also fails, the durable path
+    // remains in the session record for its alarm to retry.
+    await discardScreenshotWithCleanupIntent(storage, path, remove).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Delete a pending image, then remove its cleanup intent only when deletion succeeded. */
+export async function discardScreenshotWithCleanupIntent(
+  storage: BrowserStateStorage,
+  path: string,
+  remove: () => Promise<void>,
+): Promise<void> {
+  await remove();
+  await storage.transaction(async transaction => {
+    const current = await transaction.get<BrowserSessionRecord>(SESSION_RECORD);
+    if (!current || current.status !== "open" || !current.screenshots.includes(path)) return;
+    await transaction.put(SESSION_RECORD, {
+      ...current,
+      screenshots: current.screenshots.filter(item => item !== path),
+    });
+  });
+}
+
 export function sameBrowserOwner(a: BrowserRuntimeScope, b: BrowserRuntimeScope): boolean {
   return ["tenantId", "spaceId", "projectId", "actorId", "agentId", "runId", "sessionId"].every(key => a[key as keyof BrowserRuntimeScope] === b[key as keyof BrowserRuntimeScope]);
 }
