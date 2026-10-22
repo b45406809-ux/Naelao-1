@@ -116,6 +116,43 @@ describe("POST /billing/portal — Lemon Squeezy customer portal", () => {
     );
     expect(res.status).toBe(404);
   });
+
+  it("bounds the provider response and refuses redirects while using a deadline", async () => {
+    const originalFetch = globalThis.fetch;
+    let captured: RequestInit | undefined;
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      captured = init;
+      return Response.json({ data: { attributes: { urls: { customer_portal: "https://store.lemonsqueezy.com/billing" } } } });
+    }) as typeof fetch;
+    const env = makeEnv({
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ ls_customer_id: "customer-1", whop_customer_id: null }) }) }) },
+      LEMON_SQUEEZY_API_KEY: "test-key",
+    });
+    try {
+      const res = await billingWorker.fetch(
+        new Request("https://billing.naelao.com/billing/portal", { method: "POST", headers: { "x-naelao-tenant-id": ORG_ID, "content-type": "application/json" }, body: "{}" }),
+        env as never,
+        execCtx
+      );
+      expect(res.status).toBe(200);
+      expect(captured?.redirect).toBe("error");
+      expect(captured?.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    globalThis.fetch = (async () => new Response("x".repeat(1024 * 1024 + 1), { headers: { "content-type": "application/json" } })) as typeof fetch;
+    try {
+      const res = await billingWorker.fetch(
+        new Request("https://billing.naelao.com/billing/portal", { method: "POST", headers: { "x-naelao-tenant-id": ORG_ID, "content-type": "application/json" }, body: "{}" }),
+        env as never,
+        execCtx
+      );
+      expect(res.status).toBe(500);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 // ── Webhook: platform_plan events against a real fake-D1 with the REAL migrations ────────────

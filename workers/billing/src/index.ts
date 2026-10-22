@@ -6,6 +6,7 @@ import {
   requestId,
   readBoundedRequestText,
   readBoundedRequestBytes,
+  readBoundedResponseJson,
   RequestBodyTooLargeError,
   mintInternalToken,
   requireInternalHmac,
@@ -335,6 +336,8 @@ app.post("/billing/portal", async (c) => {
 
   // LS exposes a signed customer-portal URL on the customer object itself.
   const resp = await fetch(`https://api.lemonsqueezy.com/v1/customers/${encodeURIComponent(customerId)}`, {
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
     headers: {
       Authorization: `Bearer ${c.env.LEMON_SQUEEZY_API_KEY}`,
       Accept: "application/vnd.api+json",
@@ -343,7 +346,7 @@ app.post("/billing/portal", async (c) => {
   if (!resp.ok) {
     throw internalError(`Lemon Squeezy customer lookup failed (${resp.status})`);
   }
-  const data = await resp.json<{ data?: { attributes?: { urls?: { customer_portal?: string } } } }>();
+  const data = await readBoundedResponseJson<{ data?: { attributes?: { urls?: { customer_portal?: string } } } }>(resp, 1024 * 1024);
   const portalUrl = data.data?.attributes?.urls?.customer_portal;
   if (!portalUrl) {
     throw internalError("Lemon Squeezy returned no customer portal URL");
