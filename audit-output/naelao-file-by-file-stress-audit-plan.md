@@ -1,12 +1,12 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2051` tracked files; `1843` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `84bf1f32`.
+Inventory basis: `2051` tracked files; `1843` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `cf154098`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
 
-- The source/config checklist records **550 scoped reviews / 1,284 open files** out of 1,834. Unchecked rows remain unaudited.
+- The refreshed source/config checklist records **610 scoped reviews / 1,233 open files** out of 1,843. The prior header undercounted both the inventory and reviewed rows; the generator preserved the checked file rows. Unchecked rows remain unaudited.
 - The latest full Turbo run passed 57 tasks, 368 root test files, and 3,842 root tests, including Gumroad and Whop test tasks. It ran after the latest Billing webhook identity, stale-subscription, missing-space, and reseller-refund attribution fixes. Earlier Marketplace response-privacy and request-size changes passed the migration-backed route suite (3 tests), TypeScript, and Wrangler dry run. Knowledge (64 tests) and Browser Worker (4 files / 9 tests) also passed focused suites with Worker typechecks/builds. Recursive workspace TypeScript previously passed 74/74 tasks after excluding Node-only test fixtures from runtime Worker tsconfigs.
 - Latest production dependency audit: 49 advisory records (4 critical, 11 high, 29 moderate, 5 low). All critical/high production findings trace to `next@14.2.18`; Pages adapter migration remains open.
 - Latest full dependency audit: 74 records (4 critical, 19 high, 42 moderate, 9 low). Remaining high build-tool findings include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`.

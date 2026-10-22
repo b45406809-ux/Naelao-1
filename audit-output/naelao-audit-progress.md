@@ -2559,7 +2559,7 @@ Second, delayed payment failures could mark a newer plan delinquent. Platform pl
 
 Validation at that stage: full Turbo test run passed 57/57 tasks; the root shared suite passed 368 files / 3,841 tests. Billing Worker passed 21 files / 188 tests, Billing Core passed 16 files / 56 tests, and both package typechecks passed. Router's 12 files / 67 tests and typecheck passed earlier in this continuation. `git diff --check` passed. No Cloudflare deployment, provider API/webhook, external load, or real distributed concurrency test was performed.
 
-Remaining related risks: provider event ordering is not proven and the processed webhook table has no cleanup/retention strategy; platform/business refund policy remains open; personal monthly/yearly plan entitlement still has no expiry/revocation lifecycle; surcharge checkout URL expiry is unverified. DNS rebinding remains an infrastructure gap. Repository checklist remains 550 scoped reviews / 1,284 open files out of 1,834; the whole audit is not complete.
+Remaining related risks: provider event ordering is not proven and the processed webhook table has no cleanup/retention strategy; platform/business refund policy remains open; personal monthly/yearly plan entitlement still has no expiry/revocation lifecycle; surcharge checkout URL expiry is unverified. DNS rebinding remains an infrastructure gap. The refreshed file checklist records 610 scoped reviews / 1,233 open files out of 1,843; the whole audit is not complete.
 
 The next pass traced refund attribution through `reseller_ledger` and found that the unique
 `provider_event_id` stored the same order resource ID for the positive sale and negative refund.
