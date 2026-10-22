@@ -122,6 +122,15 @@ async function resolveBuilderFeeBps(env: BillingEnv, spaceId: string): Promise<n
   }
 }
 
+/** Internal HMAC authenticates a tenant header, but it does not bind arbitrary body space IDs.
+ * Require the requested space to belong to that signed tenant before creating any checkout. */
+async function spaceBelongsToTenant(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
+  if (!spaceId || !tenantId) return false;
+  const row = await db.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(spaceId).first<{ tenant_id: string }>();
+  return row?.tenant_id === tenantId;
+}
+
 // G-A11: Validate required secrets at startup. Vendor cutover: the STRIPE_* requirement is gone
 // (Lemon Squeezy is the only provider, and its own vars are optional-with-honest-degradation like
 // every other LS caller in this file); PLATFORM_SECRET is what every HMAC-gated route and direct
@@ -882,6 +891,9 @@ app.post("/internal/commerce/checkout", async (c) => {
   if (!body.space_id || !body.product_id) {
     return c.json({ error_code: "bad_request", message: "space_id and product_id are required" }, 400);
   }
+  if (!await spaceBelongsToTenant(c.env.PLATFORM_DB, body.space_id, c.req.header("x-naelao-tenant-id") ?? "")) {
+    return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  }
 
   const product = await c.env.PLATFORM_DB.prepare(
     "SELECT id, name, price_cents, currency, kind, ls_variant_id, status FROM launchpad_products WHERE id = ? AND space_id = ?"
@@ -979,7 +991,7 @@ app.post("/internal/seats/checkout", async (c) => {
   if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
   const seatSpaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(body.space_id).first<{ tenant_id: string }>();
-  if (!seatSpaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (!seatSpaceRow || seatSpaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   const cfgResp = await c.env.SPACES_WORKER.fetch(
     new Request(`http://spaces-worker/internal/member-billing?space_id=${encodeURIComponent(body.space_id)}`, {
       headers: {
@@ -1076,7 +1088,7 @@ app.post("/internal/business-subscriptions/checkout", async (c) => {
 
   const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
 
   const catalogResp = await c.env.SPACES_WORKER.fetch(
     new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
@@ -1164,7 +1176,7 @@ app.post("/internal/credit-packs/checkout", async (c) => {
 
   const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
 
   const catalogResp = await c.env.SPACES_WORKER.fetch(
     new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
@@ -1257,7 +1269,7 @@ app.post("/internal/personal-plan/checkout", async (c) => {
 
   const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
 
   const catalogResp = await c.env.SPACES_WORKER.fetch(
     new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
@@ -1351,7 +1363,7 @@ app.post("/internal/wallet-topups/checkout", async (c) => {
 
   const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
 
   const catalogResp = await c.env.SPACES_WORKER.fetch(
     new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
@@ -1419,7 +1431,7 @@ app.post("/internal/revenue-cut-surcharge/checkout", async (c) => {
 
   const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   const internalHeaders = {
     "x-naelao-tenant-id": spaceRow.tenant_id,
     "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),

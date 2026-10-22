@@ -59,6 +59,23 @@ describe("POST /internal/business-subscriptions/checkout", () => {
     expect(res.status).toBe(403);
   });
 
+  it("rejects a signed caller whose tenant does not own the requested space", async () => {
+    let spacesCalls = 0;
+    const crossTenantDb = {
+      prepare() {
+        const stmt = { bind() { return stmt; }, async first() { return { tenant_id: "tenant-2" }; } };
+        return stmt;
+      },
+    };
+    const req = await withToken(internalReq("/internal/business-subscriptions/checkout", { business_space_id: "biz-1", plan_id: "pro" }), "tenant-1");
+    const res = await billingWorker.fetch(req, makeEnv({
+      PLATFORM_DB: crossTenantDb,
+      SPACES_WORKER: { fetch: async () => { spacesCalls++; return Response.json({ plans: [] }); } },
+    }) as never, execCtx);
+    expect(res.status).toBe(404);
+    expect(spacesCalls).toBe(0);
+  });
+
   it("returns the dev checkout placeholder when the plan has no lsVariantId / no LS creds", async () => {
     const spacesWorker = {
       fetch: async () =>
