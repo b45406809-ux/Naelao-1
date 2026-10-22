@@ -26,4 +26,11 @@ describe("template marketplace settlement policy", () => {
   it("pays fixed licenses entirely to the developer", () => {
     expect(calculateFixedLicenseCommission(49_900)).toBe(49_900);
   });
+
+  it("rejects unsafe monetary integers and commission inputs at numeric extremes", () => {
+    expect(() => tierForPlanPrice(Number.MAX_SAFE_INTEGER + 1)).toThrow("grossCents");
+    expect(() => calculateFixedLicenseCommission(Number.MAX_SAFE_INTEGER + 1)).toThrow("Invalid fixed-license gross");
+    expect(() => calculateDeveloperCommission(Number.MAX_SAFE_INTEGER + 1, "MARKETPLACE_ORGANIC", "pro", 13)).toThrow("grossCents");
+    expect(() => calculateDeveloperCommission(100, "MARKETPLACE_ORGANIC", "pro", Number.MAX_SAFE_INTEGER + 1)).toThrow("cycle");
+  });
 });

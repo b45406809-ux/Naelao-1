@@ -60,4 +60,23 @@ describe("Stripe payout provider response boundaries", () => {
     expect(writes.some((write) => write.sql.includes("status = 'paid'"))).toBe(false);
     expect(writes.some((write) => write.values.includes("response_too_large"))).toBe(true);
   });
+
+  it("refuses redirects on both authenticated Stripe requests and applies deadlines", async () => {
+    const { db } = databaseStub();
+    const requests: RequestInit[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      requests.push(init);
+      return requests.length === 1
+        ? Response.json({ capabilities: { transfers: "active" } })
+        : Response.json({ id: "tr_1", amount: 1250, currency: "usd", destination: "acct_123" });
+    }));
+
+    expect(await reconcileDeveloperPayouts({ PLATFORM_DB: db, STRIPE_CONNECT_SECRET_KEY: "stripe-secret" }, Date.now(), false))
+      .toMatchObject({ paid: 1, deferred: 0 });
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.redirect).toBe("error");
+      expect(request.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
 });

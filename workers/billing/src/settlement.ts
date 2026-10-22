@@ -13,7 +13,7 @@ export interface SettlementResult {
 }
 
 export function tierForPlanPrice(priceCents: number): SettlementTier {
-  if (!Number.isInteger(priceCents) || priceCents <= 0)
+  if (!Number.isSafeInteger(priceCents) || priceCents <= 0)
     throw new Error("grossCents must be a positive integer");
   if (priceCents <= 2_500) return "entry";
   if (priceCents <= 10_000) return "growth";
@@ -33,7 +33,8 @@ export function calculateDeveloperCommission(
   cycle: number,
   pioneer = false
 ): number {
-  if (!Number.isInteger(cycle) || cycle < 1) throw new Error("cycle must be a positive integer");
+  if (!Number.isSafeInteger(grossCents) || grossCents < 0) throw new Error("grossCents must be a non-negative safe integer");
+  if (!Number.isSafeInteger(cycle) || cycle < 1) throw new Error("cycle must be a positive integer");
   // Later source correction supersedes perpetual/tier-reset proposals: pioneer FDEs get
   // 40% for months 1–6; the standard cohort gets 25%; everyone decays to 20%, then 5%.
   // Attribution channel remains recorded for provenance and referral validation.
@@ -46,7 +47,7 @@ export function calculateDeveloperCommission(
 /** A fixed license is paid to its developer once; later compute revenue is never shared. */
 export function calculateFixedLicenseCommission(grossCents: number): number {
   if (
-    !Number.isInteger(grossCents) ||
+    !Number.isSafeInteger(grossCents) ||
     grossCents < 4_900 ||
     grossCents > 49_900
   )

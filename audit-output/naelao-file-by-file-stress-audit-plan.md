@@ -1454,7 +1454,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `tests/unit/db-migrations.test.ts`
 - [ ] `tests/unit/deposit-personal-credits.test.ts`
 - [ ] `tests/unit/desk-drop.test.ts`
-- [ ] `tests/unit/developer-payout-reconciliation.test.ts`
+- [x] `tests/unit/developer-payout-reconciliation.test.ts`
 - [ ] `tests/unit/durable-approvals.test.ts`
 - [ ] `tests/unit/durable-run-stream.test.ts`
 - [ ] `tests/unit/end-user-credit-debit.test.ts`
@@ -2247,12 +2247,12 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/billing/src/marketplace-licenses.ts`
 - [ ] `workers/billing/src/partner-portal.ts`
 - [x] `workers/billing/src/payout-reconciliation.test.ts`
-- [ ] `workers/billing/src/payout-reconciliation.ts`
-- [ ] `workers/billing/src/quota.ts`
+- [x] `workers/billing/src/payout-reconciliation.ts`
+- [x] `workers/billing/src/quota.ts`
 - [x] `workers/billing/src/request-body-boundaries.test.ts`
-- [ ] `workers/billing/src/settlement.test.ts`
-- [ ] `workers/billing/src/settlement.ts`
-- [ ] `workers/billing/src/wallet-checkout.ts`
+- [x] `workers/billing/src/settlement.test.ts`
+- [x] `workers/billing/src/settlement.ts`
+- [x] `workers/billing/src/wallet-checkout.ts`
 - [ ] `workers/billing/src/whop-oauth-billing.ts`
 - [ ] `workers/billing/src/whop-wallet.ts`
 
