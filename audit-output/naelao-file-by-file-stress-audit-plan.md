@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2035` tracked files; `1827` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `91271f0e`.
+Inventory basis: `2036` tracked files; `1828` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `7aa81c8e`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -549,7 +549,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `apps/shell/src/components/InlinePullRequestCard.tsx`
 - [ ] `apps/shell/src/components/InlineQuestionCard.tsx`
 - [ ] `apps/shell/src/components/InterruptedRunCard.tsx`
-- [ ] `apps/shell/src/components/Markdown.tsx`
+- [x] `apps/shell/src/components/Markdown.test.tsx`
+- [x] `apps/shell/src/components/Markdown.tsx`
 - [ ] `apps/shell/src/components/MessageActions.tsx`
 - [ ] `apps/shell/src/components/ModelSelector.tsx`
 - [ ] `apps/shell/src/components/OwnerVoiceCall.tsx`

@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2035
-Files with source or executable-configuration extensions: 1827
-Inventory revision: 2026-10-22 audit refresh at 91271f0e
+Files: 2036
+Files with source or executable-configuration extensions: 1828
+Inventory revision: 2026-10-22 audit refresh at 7aa81c8e
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -373,6 +373,7 @@ apps/
         InlinePullRequestCard.tsx
         InlineQuestionCard.tsx
         InterruptedRunCard.tsx
+        Markdown.test.tsx
         Markdown.tsx
         MessageActions.tsx
         ModelSelector.tsx

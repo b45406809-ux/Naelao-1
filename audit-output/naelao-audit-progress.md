@@ -2347,3 +2347,11 @@ Validation: `workspace-file-viewer.test.ts` passed 7/7. Browser-native PDF/image
 A further review of `/spaces/:spaceId/assistant/files/*` found that it called `readBytesWithHash` (which enforces the inline byte limit and verifies the published SHA-256 metadata), discarded the returned bytes, then called R2 `get()` a second time and returned that new object's body. A concurrent replacement could therefore make the delivered content differ from the integrity-checked snapshot. The route now base64-encodes or decodes the already-verified `current.bytes` and never performs the second read. Updated stale comments to document Office downloads rather than browser parsing.
 
 Validation: `space-assistant-surface.test.ts` passed 35/35, including a simulated between-read object replacement proving one R2 body read and snapshot consistency; Agents TypeScript passed. The full Agents index remains unchecked because it contains many unrelated routes. No live R2 consistency/fault-injection was performed.
+
+## Shell Markdown renderer boundary (2026-10-22)
+
+Reviewed the Markdown surface used by chat, activity, and workspace previews. `react-markdown` remains configured without raw-HTML parsing, and outbound links use `noopener noreferrer`. The special workflow-receipt fast path previously trusted `JSON.parse` output after checking only `kind` and `lines`, then rendered other fields directly as React children and a navigation URL. Malformed objects could crash the preview and a protocol-relative or non-HTTPS log URL could navigate away from the trusted origin. Receipt parsing now enforces a 64 KiB payload bound and validates all rendered fields; log links allow HTTPS or same-origin absolute paths only. Added regressions for raw HTML, JavaScript URLs, malformed receipt values, protocol-relative log links, and valid receipts.
+
+Validation: Shell suite passed 4 files / 14 tests; shell TypeScript passed. Browser navigation behavior and live malicious-content browser tests were not run. The Markdown component and new tests have scoped review checkmarks; the source checklist will be refreshed with this addition.
+
+The generated checklist now records 520 reviewed source files and 1,308 open source files (1,828 source/config files total). The Markdown pass closed the two scoped rows for its component and test; the wider shell/app audit remains open.

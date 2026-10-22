@@ -8,17 +8,37 @@ import type { WorkflowReceiptCard as WorkflowReceipt } from "@naelao/agent-sdk";
 
 function WorkflowReceiptCard({ card }: { card: WorkflowReceipt }): React.ReactElement {
   const status = card.status === "succeeded" ? "🟢 Succeeded" : card.status === "failed" ? "🔴 Failed" : "🟡 Cancelled";
+  const logUrl = safeReceiptUrl(card.logUrl);
   return <details className="workflow-receipt-card">
     <summary>⏰ Workflow Completed: {card.workflowName} | Status: {status} | Duration: {card.durationMs}ms | <span>Inspect Full Logs</span></summary>
-    <div><p>{card.summary}</p><a href={card.logUrl} target="_blank" rel="noopener noreferrer">Open full logs</a><code>{card.runId}</code></div>
+    <div><p>{card.summary}</p>{logUrl ? <a href={logUrl} target="_blank" rel="noopener noreferrer">Open full logs</a> : <span>Full log link unavailable</span>}<code>{card.runId}</code></div>
   </details>;
 }
 
-function parseReceipt(text: string): WorkflowReceipt | null {
-  if (!text.startsWith("{\"kind\":\"workflow_receipt\"")) return null;
+function safeReceiptUrl(value: string): string | null {
+  if (value.startsWith("/") && !value.startsWith("//") && !value.includes("\\")) return value;
   try {
-    const value = JSON.parse(text) as WorkflowReceipt;
-    return value.kind === "workflow_receipt" && Array.isArray(value.lines) ? value : null;
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseReceipt(text: string): WorkflowReceipt | null {
+  if (text.length > 64_000 || !text.startsWith("{\"kind\":\"workflow_receipt\"")) return null;
+  try {
+    const value = JSON.parse(text) as Partial<WorkflowReceipt>;
+    const validStatus = value.status === "succeeded" || value.status === "failed" || value.status === "cancelled";
+    const validLines = Array.isArray(value.lines) && value.lines.length === 2
+      && value.lines.every((line) => typeof line === "string" && line.length <= 500);
+    return value.kind === "workflow_receipt"
+      && typeof value.runId === "string" && value.runId.length > 0 && value.runId.length <= 200
+      && typeof value.workflowName === "string" && value.workflowName.length > 0 && value.workflowName.length <= 200
+      && validStatus && typeof value.durationMs === "number" && Number.isFinite(value.durationMs) && value.durationMs >= 0
+      && typeof value.logUrl === "string" && value.logUrl.length <= 2048
+      && typeof value.summary === "string" && value.summary.length <= 4000
+      && value.collapsed === true && validLines ? value as WorkflowReceipt : null;
   } catch { return null; }
 }
 
