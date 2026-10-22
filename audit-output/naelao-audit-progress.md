@@ -1549,6 +1549,10 @@ Completed the pending three-way reference check for `create_patch.js`: repositor
 
 The post-deletion inventory refresh records 2,035 tracked files / 1,827 source or executable-configuration files at code commit `fe85a1e8`. The checklist preserves 515 reviewed rows and now has 1,312 open rows; newly tracked source/config entries were not marked complete.
 
+### Retire unreachable legacy phase runner (2026-10-22)
+
+Completed the reference check for `run-phase (1).mjs`: no package script, workflow, code import, or runtime registry invokes it, and `@google/genai` is absent from every workspace manifest and the lockfile, so the standalone runner cannot execute in this checkout. The active workflow calls the maintained `run-phase.mjs`, which now has bounded inputs, safe child environments, tested patch paths, and the focused 17-case safety suite. Removed the unlaunchable duplicate. No production application imports either standalone runner. The tracked tree/checklist are regenerated immediately after this deletion; no legacy execution test was possible because its dependency was not installed or declared.
+
 The repository-wide audit remains incomplete. This scoped runner review does not validate the AI provider network behavior, Repomix parser behavior on hostile repository names, GitHub CLI/provider outages, or the remaining root configuration and script files.
 
 Inventory refreshed after the runner audit commit `21b52474`: 1,978 tracked files, 1,772 source/config checklist rows, 385 checked and 1,387 unchecked. The two newly added safety helper/test rows are checked; both runner files remain unchecked for their broader provider, CLI, and deployment behavior.
