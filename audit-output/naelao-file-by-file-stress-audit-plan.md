@@ -2246,6 +2246,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/billing/src/ls-products.ts`
 - [x] `workers/billing/src/marketplace-licenses.ts`
 - [ ] `workers/billing/src/partner-portal.ts`
+- [x] `workers/billing/src/partner-portal.test.ts`
 - [x] `workers/billing/src/payout-reconciliation.test.ts`
 - [x] `workers/billing/src/payout-reconciliation.ts`
 - [x] `workers/billing/src/quota.ts`

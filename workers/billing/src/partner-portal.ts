@@ -39,8 +39,11 @@ export async function resolveDeveloperAttribution(
     return { developerId: profile.user_id, channel: "DEVELOPER_REFERRAL" };
   }
   if (!input.developer_user_id) throw new Error("developer_user_id_required");
+  const profile = await db.prepare("SELECT user_id FROM developer_partner_profiles WHERE user_id = ? AND status = 'active'")
+    .bind(input.developer_user_id).first<{ user_id: string }>();
+  if (!profile) throw new Error("developer_profile_required");
   return {
-    developerId: input.developer_user_id,
+    developerId: profile.user_id,
     channel: "MARKETPLACE_ORGANIC",
   };
 }
@@ -55,11 +58,23 @@ export function registerPartnerPortalRoutes(
         { error_code: "unauthorized", message: "Missing tenant" },
         401
       );
-    const input = await c.req.json<TemplateSubscriptionInput>();
+    const parsed = await c.req.json<unknown>().catch(() => null);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return c.json({ error_code: "bad_request" }, 400);
+    const input = parsed as Partial<TemplateSubscriptionInput>;
+    const text = (value: unknown, max: number) => typeof value === "string" && value.length > 0 && value.length <= max;
+    if (!text(input.space_id, 128) || !text(input.template_id, 128) ||
+        !Number.isSafeInteger(input.plan_price_cents) || input.plan_price_cents! <= 0 ||
+        !Number.isSafeInteger(input.requested_price_cents) || input.requested_price_cents! <= 0 ||
+        (input.developer_user_id !== undefined && !text(input.developer_user_id, 128)) ||
+        (input.ref !== undefined && !text(input.ref, 64)) ||
+        (input.extensions !== undefined && (!Array.isArray(input.extensions) || input.extensions.length > 64 || input.extensions.some(extension => !extension || !Number.isSafeInteger(extension.wholesaleFeeCents) || extension.wholesaleFeeCents < 0 || (extension.id !== undefined && !text(extension.id, 128)))))) {
+      return c.json({ error_code: "bad_request" }, 400);
+    }
+    const validInput = input as TemplateSubscriptionInput;
     const owned = await c.env.PLATFORM_DB.prepare(
       "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
     )
-      .bind(input.space_id, tenantId)
+      .bind(validInput.space_id, tenantId)
       .first();
     if (!owned)
       return c.json(
@@ -69,9 +84,9 @@ export function registerPartnerPortalRoutes(
     let floor: PriceFloorResult;
     try {
       floor = validatePriceFloor({
-        planPriceCents: input.plan_price_cents,
-        extensions: input.extensions ?? [],
-        requestedPriceCents: input.requested_price_cents,
+        planPriceCents: validInput.plan_price_cents,
+        extensions: validInput.extensions ?? [],
+        requestedPriceCents: validInput.requested_price_cents,
       });
     } catch (error) {
       if (error instanceof PriceBelowWholesaleFloorError)
@@ -88,7 +103,7 @@ export function registerPartnerPortalRoutes(
     }
     let attribution: Awaited<ReturnType<typeof resolveDeveloperAttribution>>;
     try {
-      attribution = await resolveDeveloperAttribution(c.env.PLATFORM_DB, input);
+      attribution = await resolveDeveloperAttribution(c.env.PLATFORM_DB, validInput);
     } catch (error) {
       return c.json(
         {
@@ -107,14 +122,14 @@ export function registerPartnerPortalRoutes(
     let checkoutUrl: string;
     try {
       product = await createLsProductVariant({ apiKey: c.env.LEMON_SQUEEZY_API_KEY, storeId: c.env.LEMON_SQUEEZY_STORE_ID }, {
-        name: `Naelao template ${input.template_id}`.slice(0, 100),
+        name: `Naelao template ${validInput.template_id}`.slice(0, 100),
         description: "Monthly Naelao template subscription",
-        price_cents: input.requested_price_cents,
+        price_cents: validInput.requested_price_cents,
         kind: "subscription",
       });
       const provider = new LemonSqueezyProvider({ LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY, LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID });
       const checkout = await provider.createCheckout({
-        spaceId: input.space_id,
+        spaceId: validInput.space_id,
         variantOrPriceId: product.lsVariantId,
         metadata: { kind: "template_subscription", template_subscription_id: id },
       });
@@ -130,13 +145,13 @@ export function registerPartnerPortalRoutes(
     )
       .bind(
         id,
-        input.space_id,
-        input.template_id,
+        validInput.space_id,
+        validInput.template_id,
         attribution.developerId,
         attribution.channel,
-        input.plan_price_cents,
-        input.requested_price_cents,
-        floor.floorCents - input.plan_price_cents,
+        validInput.plan_price_cents,
+        validInput.requested_price_cents,
+        floor.floorCents - validInput.plan_price_cents,
         pioneerEligible ? 1 : 0,
         product.lsProductId,
         product.lsVariantId,
@@ -224,7 +239,9 @@ export function registerPartnerPortalRoutes(
   app.put("/billing/partner/auto-payout", async c => {
     const userId = c.req.header("x-naelao-user-id") ?? "";
     if (!userId) return c.json({ error_code: "unauthorized" }, 401);
-    const { enabled } = await c.req.json<{ enabled: boolean }>();
+    const body = await c.req.json<unknown>().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error_code: "bad_request" }, 400);
+    const enabled = (body as { enabled?: unknown }).enabled;
     if (typeof enabled !== "boolean") return c.json({ error_code: "bad_request" }, 400);
     const result = await c.env.PLATFORM_DB.prepare("UPDATE developer_partner_profiles SET auto_payout_enabled = ? WHERE user_id = ? AND status = 'active' RETURNING user_id").bind(enabled ? 1 : 0, userId).first();
     return result ? c.json({ enabled }) : c.json({ error_code: "partner_profile_required" }, 404);
