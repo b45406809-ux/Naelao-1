@@ -2406,3 +2406,13 @@ Validation: focused Whop suite passed 1 file / 2 tests; TypeScript and Wrangler 
 Reviewed the Knowledge worker manifest, runtime type configuration, Vitest config, and the Foundry sharing regression tests. The internal document-sharing routes verify tenant/space ownership, require indexed space-wide documents, return sanitized KB chunk text under a 250 KiB cap, and do not include content in the reference-resolution route. The tests exercise direct-access denial and suspended-space denials. The larger Knowledge `index.ts` remains unchecked; retrieval, ingestion, external publication, and lifecycle routes still need file-by-file review.
 
 Validation: Knowledge suite passed 10 files / 64 tests, TypeScript passed, and Wrangler dry-run build passed with its D1/KV/Vectorize/R2/service/AI bindings. No live D1, Vectorize, R2, AI, AutoRAG, or external-provider exercise was performed.
+
+## Marketplace mutation and review boundaries (2026-10-22)
+
+The Marketplace worker trusted identity headers on write routes without verifying the router's internal HMAC. Public catalog reads must remain unauthenticated, but submissions, approvals, reviews, forks, and license checkout are router-authenticated mutations. Added HMAC enforcement to non-read methods while leaving public GETs accessible. Regression tests prove unsigned forged `platform_admin` headers cannot submit or approve, ordinary members cannot approve, and unsigned public listing reads still work.
+
+The same route review found that review comments had no independent size/type bound and review reads did not require the listing to remain published. Comments now have a 5,000-byte cap and invalid types are rejected; review reads return 404 after a listing is unpublished. Tests cover over-limit comments and review hiding after rejection.
+
+The public serializer also spread most of a `SELECT *` row, exposing `tenant_id` and `developer_user_id`; review results exposed the authenticated reviewer ID as `author_name`. Listing responses now use an explicit public-field allowlist, reviews use a generic `Member` label, and mutation JSON is bounded to 256 KiB before parsing. Regression coverage verifies those IDs stay out of list/detail/review responses and oversized submissions receive 413.
+
+Validation: the full Turbo suite passed 57 tasks (368 root test files / 3,811 root tests) after HMAC, review-size, and unpublished-review changes. After the public serializer and request-size changes, the migration-backed Marketplace route suite passed 3/3; Marketplace TypeScript and Wrangler dry-run build passed. No live D1 or billing-worker integration was exercised. Marketplace manifest, tsconfig, and entrypoint are checked in the inventory.

@@ -1,5 +1,5 @@
 import { validateMarketplacePricing, type MarketplacePricingModel } from "@naelao/billing-core";
-import { errorResponse, mintInternalToken, parseBoundedInteger, requestId } from "@naelao/http";
+import { errorResponse, mintInternalToken, parseBoundedInteger, requestId, requireInternalHmac, readBoundedRequestText, RequestBodyTooLargeError } from "@naelao/http";
 import { verifyArtifactCertificate, type ConformanceCertificate } from "@naelao/security";
 import { Hono } from "hono";
 
@@ -17,17 +17,49 @@ interface Listing {
   pricing_model: MarketplacePricingModel; price_cents: number; plan_gated_features_json: string;
   conformance_artifact_json: string | null; conformance_certificate_json: string | null;
   status: string; install_count: number; avg_rating: number; rating_count: number;
-  published_at: string | null; created_at: string;
+  published_at: string | null; created_at: string; updated_at: string;
 }
 function identity(c: { req: { header(name: string): string | undefined } }) {
   return { tenantId: c.req.header("x-naelao-tenant-id") ?? "", userId: c.req.header("x-naelao-user-id") ?? "", role: c.req.header("x-naelao-role") ?? "member" };
+}
+type JsonBodyResult<T> = { ok: true; body: T } | { ok: false; status: 400 | 413 };
+async function readJsonBody<T>(request: Request, maximumBytes = 256 * 1024): Promise<JsonBodyResult<T>> {
+  let text: string;
+  try { text = await readBoundedRequestText(request, maximumBytes); }
+  catch (error) { return { ok: false, status: error instanceof RequestBodyTooLargeError ? 413 : 400 }; }
+  try { return { ok: true, body: JSON.parse(text) as T }; }
+  catch { return { ok: false, status: 400 }; }
+}
+function bodyError(c: { json: (body: unknown, status: 400 | 413) => Response }, status: 400 | 413) {
+  return c.json({ error_code: status === 413 ? "payload_too_large" : "bad_request" }, status);
 }
 function parse(raw: string | null, fallback: unknown = null): unknown {
   try { return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
 }
 function publicListing(row: Listing) {
-  const { conformance_artifact_json: _artifact, conformance_certificate_json: _certificate, tags_json, preview_config_json, plan_gated_features_json, ...listing } = row;
-  return { ...listing, tags: parse(tags_json, []), preview_config: parse(preview_config_json), planGatedFeatures: parse(plan_gated_features_json, []) };
+  // Explicit allowlist: `SELECT *` may acquire internal columns as migrations evolve.
+  return {
+    id: row.id,
+    space_type_id: row.space_type_id,
+    author_name: row.author_name,
+    name: row.name,
+    description: row.description,
+    long_description: row.long_description,
+    category: row.category,
+    pricing: row.pricing,
+    pricing_model: row.pricing_model,
+    price_cents: row.price_cents,
+    status: row.status,
+    install_count: row.install_count,
+    avg_rating: row.avg_rating,
+    rating_count: row.rating_count,
+    published_at: row.published_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    tags: parse(row.tags_json, []),
+    preview_config: parse(row.preview_config_json),
+    planGatedFeatures: parse(row.plan_gated_features_json, []),
+  };
 }
 async function certified(env: Env, id: string, artifact: unknown, receipt: unknown) {
   return !!artifact && typeof artifact === "object" && (artifact as Record<string, unknown>).id === id &&
@@ -43,6 +75,13 @@ function positive(raw: string | undefined, fallback: number, max: number) {
 export const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { if (!c.env.PLATFORM_SECRET) throw new Error("Missing PLATFORM_SECRET"); await next(); });
+const requireSignedMutation = requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET);
+app.use("*", async (c, next) => {
+  // Public catalog reads need no identity. All state changes must arrive through the
+  // authenticated router, which replaces client identity headers and signs the tenant.
+  if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
+  return requireSignedMutation(c, next);
+});
 
 // D1 is authoritative. Search remains useful without an embedding provider; no fabricated vectors.
 app.get("/v1/marketplace", async (c) => {
@@ -72,12 +111,15 @@ app.get("/v1/marketplace/:id", async (c) => {
 app.post("/v1/marketplace", async (c) => {
   const { tenantId } = identity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
-  const body = await c.req.json<{
+  const parsed = await readJsonBody<{
     space_type_id: string; author_name?: string; name: string; description: string; long_description?: string;
     category: string; tags?: string[]; preview_config?: Record<string, unknown>;
     pricing_model?: MarketplacePricingModel; price_cents?: number; planGatedFeatures?: string[];
     conformance_artifact?: Record<string, unknown>; conformance_certificate?: ConformanceCertificate;
-  }>();
+  }>(c.req.raw);
+  if (!parsed.ok) return bodyError(c, parsed.status);
+  const body = parsed.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error_code: "bad_request" }, 400);
   if (!body.space_type_id || !body.name || !body.description || !body.category) return c.json({ error_code: "bad_request" }, 400);
   if (!await certified(c.env, body.space_type_id, body.conformance_artifact, body.conformance_certificate) || body.conformance_certificate?.issuerTenantId !== tenantId) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
   const pricing = { pricing_model: body.pricing_model ?? "freemium_tiered", price_cents: body.price_cents ?? 0, planGatedFeatures: body.planGatedFeatures ?? [] };
@@ -96,7 +138,10 @@ app.post("/v1/marketplace", async (c) => {
 });
 app.patch("/v1/marketplace/:id/review", async (c) => {
   if (identity(c).role !== "platform_admin") return c.json({ error_code: "forbidden" }, 403);
-  const body = await c.req.json<{ action: "approve" | "reject"; rejection_reason?: string }>();
+  const parsed = await readJsonBody<{ action: "approve" | "reject"; rejection_reason?: string }>(c.req.raw);
+  if (!parsed.ok) return bodyError(c, parsed.status);
+  const body = parsed.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error_code: "bad_request" }, 400);
   if (body.action !== "approve" && body.action !== "reject") return c.json({ error_code: "bad_request" }, 400);
   const row = await c.env.PLATFORM_DB.prepare("SELECT * FROM marketplace_listings WHERE id = ?").bind(c.req.param("id")).first<Listing>();
   if (!row) return c.json({ error_code: "not_found" }, 404);
@@ -113,22 +158,31 @@ app.patch("/v1/marketplace/:id/review", async (c) => {
 app.post("/v1/marketplace/:id/reviews", async (c) => {
   const { tenantId, userId } = identity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized" }, 401);
-  const body = await c.req.json<{ rating: number; body?: string; comment?: string }>();
+  const parsed = await readJsonBody<{ rating: number; body?: string; comment?: string }>(c.req.raw);
+  if (!parsed.ok) return bodyError(c, parsed.status);
+  const body = parsed.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error_code: "bad_request" }, 400);
   if (!Number.isInteger(body.rating) || body.rating < 1 || body.rating > 5) return c.json({ error_code: "bad_request" }, 400);
+  const reviewText: unknown = body.body ?? body.comment ?? null;
+  if (reviewText !== null && typeof reviewText !== "string") return c.json({ error_code: "bad_request" }, 400);
+  if (typeof reviewText === "string" && new TextEncoder().encode(reviewText).byteLength > 5_000) return c.json({ error_code: "review_size_limit" }, 413);
   const listing = await c.env.PLATFORM_DB.prepare("SELECT id FROM marketplace_listings WHERE id = ? AND status = 'published'").bind(c.req.param("id")).first();
   if (!listing) return c.json({ error_code: "not_found" }, 404);
   const id = crypto.randomUUID(); const now = new Date().toISOString();
   await c.env.PLATFORM_DB.batch([
     c.env.PLATFORM_DB.prepare(`INSERT INTO marketplace_reviews (id, listing_id, tenant_id, reviewer_name, rating, body, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (listing_id, tenant_id) DO UPDATE SET rating = excluded.rating, body = excluded.body, updated_at = excluded.updated_at`)
-      .bind(id, c.req.param("id"), tenantId, userId, body.rating, body.body ?? body.comment ?? null, now, now),
+      .bind(id, c.req.param("id"), tenantId, userId, body.rating, reviewText, now, now),
     c.env.PLATFORM_DB.prepare(`UPDATE marketplace_listings SET avg_rating = (SELECT AVG(rating) FROM marketplace_reviews WHERE listing_id = ?),
       rating_count = (SELECT COUNT(*) FROM marketplace_reviews WHERE listing_id = ?), updated_at = ? WHERE id = ?`).bind(c.req.param("id"), c.req.param("id"), now, c.req.param("id")),
   ]);
   return c.json({ id, rating: body.rating, created_at: now }, 201);
 });
 app.get("/v1/marketplace/:id/reviews", async (c) => {
-  const rows = await c.env.PLATFORM_DB.prepare("SELECT id, reviewer_name AS author_name, rating, body, created_at FROM marketplace_reviews WHERE listing_id = ? ORDER BY created_at DESC LIMIT ?")
+  const listing = await c.env.PLATFORM_DB.prepare("SELECT 1 FROM marketplace_listings WHERE id = ? AND status = 'published'")
+    .bind(c.req.param("id")).first();
+  if (!listing) return c.json({ error_code: "not_found" }, 404);
+  const rows = await c.env.PLATFORM_DB.prepare("SELECT id, 'Member' AS author_name, rating, body, created_at FROM marketplace_reviews WHERE listing_id = ? ORDER BY created_at DESC LIMIT ?")
     .bind(c.req.param("id"), positive(c.req.query("limit"), 20, 100)).all();
   return c.json({ data: rows.results });
 });

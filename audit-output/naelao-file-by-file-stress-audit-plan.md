@@ -1,13 +1,13 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2042` tracked files; `1834` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `6108f071`.
+Inventory basis: `2042` tracked files; `1834` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `7f8badba`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
 
-- The source/config checklist records **547 scoped reviews / 1,287 open files** out of 1,834. Unchecked rows remain unaudited.
-- Full root tests passed after the latest build-tool overrides: 55 workspace tasks, 368 root test files, and 3,811 root tests. Browser Worker tests now run in Turbo; after the screenshot cleanup-intent regression, its 3 files / 6 tests passed; after bounded observation traversal, its 4 files / 9 tests passed. Browser Worker TypeScript and Wrangler dry-run build passed after both changes. Recursive workspace TypeScript passed 74/74 tasks after excluding Node-only test fixtures from the runtime Worker tsconfigs.
+- The source/config checklist records **550 scoped reviews / 1,284 open files** out of 1,834. Unchecked rows remain unaudited.
+- The latest full Turbo run passed 57 tasks, 368 root test files, and 3,811 root tests, including Gumroad and Whop test tasks. It ran after Marketplace HMAC, review-size, and unpublished-review fixes. Subsequent Marketplace response-privacy and request-size changes passed the migration-backed route suite (3 tests), TypeScript, and Wrangler dry run. Knowledge (64 tests) and Browser Worker (4 files / 9 tests) also passed focused suites with Worker typechecks/builds. Recursive workspace TypeScript previously passed 74/74 tasks after excluding Node-only test fixtures from runtime Worker tsconfigs.
 - Latest production dependency audit: 49 advisory records (4 critical, 11 high, 29 moderate, 5 low). All critical/high production findings trace to `next@14.2.18`; Pages adapter migration remains open.
 - Latest full dependency audit: 74 records (4 critical, 19 high, 42 moderate, 9 low). Remaining high build-tool findings include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`.
 - DNS rebinding remains unresolved because the Workers fetch path cannot pin the address that passed validation. No live Cloudflare deployment or external-provider test has been performed.
@@ -2349,13 +2349,13 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/marketplace`
 
-- [ ] `workers/marketplace/package.json`
-- [ ] `workers/marketplace/tsconfig.json`
+- [x] `workers/marketplace/package.json`
+- [x] `workers/marketplace/tsconfig.json`
 - [x] `workers/marketplace/wrangler.toml`
 
 ### `workers/marketplace/src`
 
-- [ ] `workers/marketplace/src/index.ts`
+- [x] `workers/marketplace/src/index.ts`
 
 ### `workers/mcp-hub`
 
