@@ -2570,3 +2570,38 @@ Worker passed 21 files / 189 tests, the focused migration-backed wallet/refund f
 Billing TypeScript passed, and the final Billing Wrangler dry run bundled at 415.56 KiB (85.23 KiB gzip).
 The final full Turbo rerun passed 57/57 tasks and 368 files / 3,842 root tests. The broader Billing
 review and repository audit remain open.
+
+The next pass closed the indefinite-expiry path for new personal-plan purchases. Monthly/yearly
+catalog interval now travels in Whop and Lemon Squeezy checkout metadata. ProductUserDO migration 5
+records each paid period with provider event identity, amount, subscription identity, calendar start
+and expiry, and refund/expiry status. Renewals extend from the latest paid-through timestamp;
+duplicates are idempotent; cancellation and failed payment keep prepaid access through expiry; full
+refunds revoke only the matching purchase when an explicit refund amount is supplied, partial refunds
+retain it; and stale expiry events cannot remove a later period. Existing tier-only grants remain readable until the user makes a new paid
+purchase, which clears the indefinite legacy fallback rather than silently cutting off current
+users.
+
+Stress validation passed for ProductUserDO month-end/expiry/renewal/refund scenarios, including 64
+concurrent duplicate deliveries. After adding checkout-to-ledger route assertions, all five focused
+personal-plan, Spaces catalog, and Lemon Squeezy parser suites passed 67 tests. Spaces/Billing typechecks
+passed. The targeted workspace Vitest launcher initially attempted a dependency reinstall and was
+blocked by minimum-release-age checks on three packages published on 2026-10-22; the existing lockfile
+was installed frozen through pnpm directly without changing the lockfile, then the scoped suites ran.
+Whop refund and explicit expiry event shapes remain unverified, the actual Lemon Squeezy partial
+refund amount field/units need provider confirmation, legacy grants need reconciliation, and
+entitlement-row retention is not implemented. The full repository audit is still open.
+
+The post-change whole-workspace validation then passed: `turbo run test --concurrency=8` completed
+57/57 tasks, with 368/368 root test files and 3,845/3,845 root tests passing. The Spaces suite passed
+69 files / 276 tests, Billing 21 files / 189 tests, and Billing Core 16 files / 58 tests; all 57
+workspace typecheck tasks passed. A preceding full run exposed a 5-second timeout on the 6 MiB
+multipart-resume test only under workspace contention; it passed in isolation, so its timeout is now
+15 seconds. The first full test invocation had omitted the configured Python executable from PATH,
+which caused four SQLite-backed vault-plan failures; rerunning with the normal PATH passed those
+tests and the entire suite.
+
+The DNS rebinding gap is now an explicit open audit item: bounded DoH validation and per-hop or
+call-time checks do not pin the address used by Workers `fetch()` or the browser connection. We must
+select and validate a production-supported pinned egress transport before calling this closed. The
+audit checklist still has 1,233 unchecked source/config rows; no live deployment or external provider
+tests were performed.

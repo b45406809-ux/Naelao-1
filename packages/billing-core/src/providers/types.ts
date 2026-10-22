@@ -39,6 +39,9 @@ export interface NormalizedBillingEvent {
   variantOrPriceId: string;
   /** Always an integer, always cents. */
   amountCents: number;
+  /** Explicit refunded amount in cents when the provider supplies one. Never infer a refund amount
+   * from the original order total: partial refunds must not revoke a full paid entitlement. */
+  refundAmountCents?: number;
   currency: string;
   metadata: Record<string, string>;
   /** Raw provider subscription status (e.g. LS's "active"/"cancelled"/"past_due"/"paused"/

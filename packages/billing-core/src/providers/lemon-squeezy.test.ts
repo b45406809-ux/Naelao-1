@@ -28,6 +28,14 @@ describe("Lemon Squeezy payment event identities", () => {
     }));
     expect(event.providerEventId).toBe("subscription-resource:subscription_payment_recovered:2026-10-12T12:00:00Z");
   });
+
+  it("keeps explicit partial-refund amount separate from the original order total", () => {
+    const event = provider.parseWebhookEvent(JSON.stringify({
+      meta: { event_name: "order_refunded", custom_data: { kind: "personal_plan" } },
+      data: { id: "order-42", attributes: { total: 5000, refunded_amount: 1200, currency: "USD", custom_data: { kind: "personal_plan" } } },
+    }));
+    expect(event).toMatchObject({ type: "refund.issued", providerEventId: "order-42", amountCents: 5000, refundAmountCents: 1200 });
+  });
 });
 
 describe("Lemon Squeezy provider response boundaries", () => {

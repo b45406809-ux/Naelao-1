@@ -180,7 +180,7 @@ describe("POST /webhooks/whop-platform-plan", () => {
         id: "payment-1",
         plan_id: "plan-plus-monthly",
         amount: 500,
-        metadata: { kind: "personal_plan", plan_id: "plus-monthly", tier: "plus", end_user_id: "user-1", product_space_id: "product-1" },
+        metadata: { kind: "personal_plan", plan_id: "plus-monthly", tier: "plus", interval: "month", end_user_id: "user-1", product_space_id: "product-1" },
       },
     }), "whop_secret");
     const res = await billingWorker.fetch(req, makeEnv({
@@ -196,6 +196,10 @@ describe("POST /webhooks/whop-platform-plan", () => {
     expect((await res.json()) as { handled: boolean }).toMatchObject({ handled: true });
     expect(grantCalls).toHaveLength(1);
     expect(new URL(grantCalls[0]!.url).pathname).toBe("/internal/personal-plan/grant");
+    await expect(grantCalls[0]!.clone().json()).resolves.toMatchObject({
+      action: "purchase", tier: "plus", interval: "month", provider: "whop",
+      provider_event_id: "evt_personal", amount_cents: 500,
+    });
   });
 
   it("does not treat an unknown signed Whop event as a successful payment", async () => {

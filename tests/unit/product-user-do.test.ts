@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ProductUserDO } from "../../workers/spaces/src/do/ProductUserDO.js";
 import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
@@ -231,6 +231,61 @@ describe("ProductUserDO — /plan-tier (Phase 4, money: the end user's own perso
     expect(res.status).toBe(400);
     const got = await (await call(doInstance, "/plan-tier")).json() as { plan_tier: string };
     expect(got.plan_tier).toBe("free"); // untouched
+  });
+
+  it("expires a monthly purchase at the calendar boundary and makes duplicate webhook grants idempotent", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-31T12:00:00.000Z"));
+    try {
+      const doInstance = makeDO();
+      const grant = { plan_tier: "plus", interval: "month", provider: "lemon_squeezy", provider_event_id: "order-1", subscription_id: "sub-1", amount_cents: 500 };
+      const first = await (await call(doInstance, "/plan-tier/purchase", jsonPost(grant))).json() as { expires_at: string };
+      expect(first.expires_at).toBe("2026-02-28T12:00:00.000Z");
+      const repeated = await (await call(doInstance, "/plan-tier/purchase", jsonPost(grant))).json() as { expires_at: string; deduplicated: boolean };
+      expect(repeated).toMatchObject({ expires_at: first.expires_at, deduplicated: true });
+      expect((await (await call(doInstance, "/plan-tier")).json() as { plan_tier: string }).plan_tier).toBe("plus");
+      vi.setSystemTime(new Date("2026-02-28T12:00:00.001Z"));
+      expect((await (await call(doInstance, "/plan-tier")).json() as { plan_tier: string }).plan_tier).toBe("free");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("extends renewals, preserves later periods when an old refund/expiry arrives, and revokes the matching purchase", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      const doInstance = makeDO();
+      await call(doInstance, "/plan-tier/purchase", jsonPost({ plan_tier: "plus", interval: "month", provider: "whop", provider_event_id: "payment-1", subscription_id: "sub-1", amount_cents: 500 }));
+      const renewal = await (await call(doInstance, "/plan-tier/purchase", jsonPost({ plan_tier: "plus", interval: "month", provider: "whop", provider_event_id: "payment-2", subscription_id: "sub-1", amount_cents: 500 }))).json() as { expires_at: string };
+      expect(renewal.expires_at).toBe("2026-03-01T00:00:00.000Z");
+      const partial = await (await call(doInstance, "/plan-tier/refund", jsonPost({ provider_event_id: "payment-1", amount_cents: 100 }))).json() as { partial: boolean };
+      expect(partial.partial).toBe(true);
+      await call(doInstance, "/plan-tier/refund", jsonPost({ provider_event_id: "payment-1", amount_cents: 500 }));
+      await call(doInstance, "/plan-tier/expire", jsonPost({ subscription_id: "sub-1", expires_before: "2026-02-01T00:00:00.000Z" }));
+      expect((await (await call(doInstance, "/plan-tier")).json() as { plan_tier: string }).plan_tier).toBe("plus");
+      const refunded = await (await call(doInstance, "/plan-tier/refund", jsonPost({ provider_event_id: "payment-2", amount_cents: 500 }))).json() as { revoked: boolean };
+      expect(refunded.revoked).toBe(true);
+      expect((await (await call(doInstance, "/plan-tier")).json() as { plan_tier: string }).plan_tier).toBe("free");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("survives a burst of duplicate webhook delivery without stacking extra paid periods", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T08:00:00.000Z"));
+    try {
+      const doInstance = makeDO();
+      const purchase = { plan_tier: "plus", interval: "year", provider: "lemon_squeezy", provider_event_id: "burst-order", amount_cents: 5000 };
+      const responses = await Promise.all(Array.from({ length: 64 }, () => call(doInstance, "/plan-tier/purchase", jsonPost(purchase))));
+      expect(responses.every((response) => response.status === 200)).toBe(true);
+      const results = await Promise.all(responses.map((response) => response.json() as Promise<{ expires_at: string }>));
+      expect(new Set(results.map((result) => result.expires_at)).size).toBe(1);
+      expect(results[0]!.expires_at).toBe("2027-06-15T08:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

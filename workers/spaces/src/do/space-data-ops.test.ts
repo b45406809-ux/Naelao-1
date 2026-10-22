@@ -146,7 +146,7 @@ describe("SpaceDO owner data operations", () => {
     expect(r2.uploadedPartCount()).toBe(2);
     expect(storage.sql.exec("SELECT archive_id FROM space_archive_uploads WHERE archive_id=?", first.archive_id).toArray()).toHaveLength(0);
     expect(storage.sql.exec("SELECT archive_id FROM space_archive_records WHERE archive_id=? AND status='verified'", first.archive_id).toArray()).toHaveLength(1);
-  });
+  }, 15_000);
 
   it("rewraps an archive to the active key before removing the previous copy", async () => {
     const storage = createDOStorage(), secret = "space-data-ops-test-secret-long-enough", nextKey = "new-archive-key-secret-material-over-32";

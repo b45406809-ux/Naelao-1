@@ -753,7 +753,6 @@ export async function grantPersonalPlanPurchase(
   event: NormalizedBillingEvent,
   env: LemonSqueezyEnv
 ): Promise<boolean> {
-  if (event.type !== "payment.success") return false;
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
   // Deliberately NOT gated on event.spaceId: a Whop-originated personal-plan purchase is created
   // against Naelao's own seller account (no per-space checkout), so it carries its scope entirely
@@ -762,12 +761,36 @@ export async function grantPersonalPlanPurchase(
   if (custom["kind"] !== "personal_plan") return false;
   const endUserId = requiredMetadataString(custom, "end_user_id", "personal plan");
   const productSpaceId = requiredMetadataString(custom, "product_space_id", "personal plan");
-  const tier = requiredMetadataString(custom, "tier", "personal plan");
+  if (event.type === "payment.failed" || event.type === "subscription.cancelled" || event.type === "subscription.paused" || event.type === "subscription.updated" || event.type === "subscription.created" || event.type === "subscription.resumed") {
+    // Access is prepaid through expires_at. Failed renewals/cancellation do not revoke a paid
+    // period early; a later successful payment extends it.
+    return true;
+  }
+  if (event.type !== "payment.success" && event.type !== "refund.issued" && event.type !== "subscription.expired") return false;
+  const tier = event.type === "payment.success" ? requiredMetadataString(custom, "tier", "personal plan") : "plus";
   if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for personal-plan grants");
 
   const product = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(productSpaceId).first<{ tenant_id: string }>();
   if (!product) throw new Error("personal plan webhook references a missing product space");
+
+  const route = event.type === "payment.success" ? "purchase" : event.type === "refund.issued" ? "refund" : "expire";
+  const interval = event.type === "payment.success" ? requiredMetadataString(custom, "interval", "personal plan") : undefined;
+  if (event.type === "payment.success" && interval !== "month" && interval !== "year") {
+    throw new Error("personal plan webhook contains an unsupported interval");
+  }
+  if ((event.type === "payment.success" || event.type === "refund.issued") && !event.providerEventId) {
+    throw new Error(`personal plan ${event.type} webhook is missing provider event id`);
+  }
+  if (event.type === "refund.issued" && (!Number.isSafeInteger(event.refundAmountCents) || (event.refundAmountCents ?? 0) <= 0)) {
+    // The normalized order total is not the refunded amount and LS supports partial refunds.
+    // Preserve access through its paid period if the provider omits an explicit refund amount.
+    console.warn(`[billing/${event.provider}] Personal-plan refund has no explicit refunded amount; entitlement unchanged`);
+    return true;
+  }
+  if (event.type === "subscription.expired" && !event.subscriptionId) {
+    throw new Error("personal plan expiry webhook is missing subscription id");
+  }
 
   try {
     const resp = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/personal-plan/grant", {
@@ -777,12 +800,27 @@ export async function grantPersonalPlanPurchase(
         "x-naelao-tenant-id": product.tenant_id,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, product.tenant_id),
       },
-      body: JSON.stringify({ product_space_id: productSpaceId, end_user_id: endUserId, tier }),
+      body: JSON.stringify({
+        product_space_id: productSpaceId,
+        end_user_id: endUserId,
+        ...(route === "purchase" ? {
+          tier,
+          interval,
+          provider: event.provider,
+          provider_event_id: event.providerEventId,
+          amount_cents: event.amountCents,
+          ...(event.subscriptionId ? { subscription_id: event.subscriptionId } : {}),
+        } : route === "refund" ? { provider_event_id: event.providerEventId, amount_cents: event.refundAmountCents } : {
+          subscription_id: event.subscriptionId,
+          ...(event.currentPeriodEnd ? { expires_before: event.currentPeriodEnd } : {}),
+        }),
+        action: route,
+      }),
     }));
     if (!resp.ok) {
       throw new Error(`personal plan grant ${resp.status} for end_user=${endUserId}: ${await responseDetail(resp)}`);
     }
-    console.log(`[billing/ls] Set personal plan tier=${tier} for end_user=${endUserId} product=${productSpaceId}`);
+    console.log(`[billing/${event.provider}] Personal plan ${route} for end_user=${endUserId} product=${productSpaceId}`);
     return true;
   } catch (err) {
     console.error("[billing/ls] Personal plan grant error:", (err as Error).message);

@@ -5976,19 +5976,33 @@ app.post("/spaces/:spaceId/personal-plan/checkout", async (c) => {
 // needn't match) — it sets ProductUserDO.plan_tier instead of crediting a balance.
 app.use("/internal/personal-plan/grant", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/internal/personal-plan/grant", async (c) => {
-  const body = await c.req.json<{ product_space_id: string; end_user_id: string; tier: string }>();
-  if (!body.product_space_id || !body.end_user_id || !isPersonalPlanTier(body.tier)) {
-    return c.json({ error_code: "bad_request", message: "product_space_id, end_user_id, and a valid tier are required" }, 400);
+  const body = await c.req.json<{
+    product_space_id: string; end_user_id: string; action?: string; tier?: string; interval?: string;
+    provider?: string; provider_event_id?: string; subscription_id?: string; expires_before?: string; amount_cents?: number;
+  }>();
+  const action = body.action ?? "legacy_set";
+  if (!body.product_space_id || !body.end_user_id ||
+      (action === "legacy_set" && !isPersonalPlanTier(body.tier)) ||
+      (action === "purchase" && (!isPersonalPlanTier(body.tier) || (body.interval !== "month" && body.interval !== "year") || !body.provider || !body.provider_event_id || !Number.isSafeInteger(body.amount_cents) || body.amount_cents! <= 0)) ||
+      (action === "refund" && (!body.provider_event_id || !Number.isSafeInteger(body.amount_cents) || body.amount_cents! <= 0)) || (action === "expire" && (!body.subscription_id || (body.expires_before !== undefined && !Number.isFinite(Date.parse(body.expires_before))))) ||
+      !["legacy_set", "purchase", "refund", "expire"].includes(action)) {
+    return c.json({ error_code: "bad_request", message: "invalid personal-plan lifecycle request" }, 400);
   }
   const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
     .bind(body.product_space_id).first<{ tenant_id: string }>();
   if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
   const stub = await productUserDoStub(c.env, body.product_space_id, body.end_user_id, product.tenant_id);
-  const setRes = await stub.fetch(new Request("http://produser/plan-tier/set", {
+  const path = action === "purchase" ? "/plan-tier/purchase" : action === "refund" ? "/plan-tier/refund" : action === "expire" ? "/plan-tier/expire" : "/plan-tier/set";
+  const setRes = await stub.fetch(new Request(`http://produser${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ plan_tier: body.tier }),
+    body: JSON.stringify(action === "purchase" ? {
+      plan_tier: body.tier, interval: body.interval, provider: body.provider,
+      provider_event_id: body.provider_event_id, amount_cents: body.amount_cents, ...(body.subscription_id ? { subscription_id: body.subscription_id } : {}),
+    } : action === "refund" ? { provider_event_id: body.provider_event_id, amount_cents: body.amount_cents } : action === "expire" ? {
+      subscription_id: body.subscription_id, ...(body.expires_before ? { expires_before: body.expires_before } : {}),
+    } : { plan_tier: body.tier }),
   }));
   return new Response(setRes.body, { status: setRes.status, headers: { "content-type": "application/json" } });
 });

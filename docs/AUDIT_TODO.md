@@ -1717,6 +1717,16 @@ first real business on free-tier resources before opening the platform to other 
 
 ## Audit continuation findings (2026-10-22)
 
+- [ ] **Outbound DNS rebinding remains an infrastructure gap.** Shared `checkSsrf()` resolves A/AAAA
+  records through bounded DNS-over-HTTPS and blocks private results, and several consumers recheck
+  at call time and on redirects. The subsequent Workers `fetch()` or browser socket connection does
+  a separate DNS resolution, so an attacker-controlled hostname can change from public to private
+  between validation and connection. Rechecks reduce the window but do not pin the address. Identify
+  a production-supported pinned egress transport/proxy and migrate every outbound consumer (MCP,
+  knowledge fetch, browser, callbacks, webhook, compensation, and connector paths); test DNS changes
+  between validation and connection, redirect chains, and proxy failure. Do not claim this closed
+  until the connection uses the validated address or a trusted proxy enforces the same policy.
+
 - [x] **Billing webhook metadata and provider-event routing pass.** Recognized paid checkout
   metadata is now validated rather than silently treated as an unrelated event; malformed
   platform-plan/credit-pack/refund data returns a retryable failure and releases the webhook
@@ -1729,14 +1739,25 @@ first real business on free-tier resources before opening the platform to other 
   delivery is unavailable. Whop's platform-plan parser now rejects unmapped event names instead
   of interpreting them as successful payments. Validation: Billing worker suite 21 files /
   183 tests; Billing Core 16 files / 56 tests; both package typechecks pass.
-- [ ] **Personal-plan entitlement lifecycle is incomplete.** Catalog plans carry monthly/yearly
-  intervals, but `ProductUserDO.plan_state` stores only `plan_tier`; successful payments set the
-  tier without an expiry or purchase/subscription record. Subscription cancellation/expiry,
-  failed renewal, and refund events have no corresponding revoke/expiry path for personal plans
-  on either provider. A time-limited plan can therefore grant indefinite access. Implement an
-  entitlement record keyed to provider subscription/purchase identity, define overlap/refund
-  policy for multiple purchases, and test renewal, cancellation, expiry, refund, out-of-order,
-  duplicate, and retry events before treating this offering as end-to-end complete.
+- [x] **Personal-plan finite period grants and Lemon Squeezy lifecycle (implemented; scoped tests pass).**
+  ProductUserDO now stores each paid period by provider purchase event, validates amount/interval,
+  expires month/year grants at calendar boundaries, extends from the latest unexpired paid period,
+  ignores failed renewals/cancellation until paid-through expiry, scopes full refunds to the matching
+  purchase, preserves later purchases, and ignores stale expiry events past their event period.
+  Checkout carries the catalog interval. Legacy direct grants remain active until replaced by a new
+  paid purchase so this migration does not silently revoke existing users. Validation: ProductUserDO
+  lifecycle stress tests cover Jan-31 month-end, expiration, renewal, duplicate delivery burst (64
+  concurrent repeats), partial/full refund behavior, and stale expiry; Billing/Spaces typechecks pass.
+- [ ] **Personal-plan provider lifecycle remains partially open.** Whop's normalized platform-plan
+  parser currently recognizes payment success/failure, membership-valid, and membership-invalid, but
+  has no verified refund event or explicit subscription-expired mapping. Confirm Whop's signed event
+  payloads and stable purchase identifiers, then implement those transitions and test provider event
+  ordering/retries. Full refunds revoke a purchase only when the provider supplies an explicit
+  refund amount at least equal to the paid amount; otherwise access remains through its paid period.
+  Lemon Squeezy's actual signed payload field and units for partial refunds still need live/provider
+  documentation confirmation. Legacy `plan_tier` grants have no expiry/source record and are
+  grandfathered; define migration/reconciliation policy. Add bounded retention for old entitlement
+  rows after the provider refund window. No live provider webhook test has been run.
 - [ ] **Platform and business subscription refund policy remains undefined.** Platform-plan
   refunds are now acknowledged without changing access because the webhook lacks an agreed rule
   for partial refunds versus full refunds; business-subscription refunds similarly do not

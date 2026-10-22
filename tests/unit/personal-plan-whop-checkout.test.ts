@@ -88,7 +88,7 @@ describe("POST /internal/personal-plan/checkout — Whop first", () => {
     expect(whopCall).toBeDefined();
     expect((whopCall!.body as { plan_id: string }).plan_id).toBe("plan_whop_plus");
     expect((whopCall!.body as { metadata: Record<string, string> }).metadata).toMatchObject({
-      kind: "personal_plan", plan_id: "plus-monthly", tier: "plus", end_user_id: "user-a", product_space_id: "prod-1",
+      kind: "personal_plan", plan_id: "plus-monthly", tier: "plus", interval: "month", end_user_id: "user-a", product_space_id: "prod-1",
     });
     // And never touched Lemon Squeezy.
     expect(calls.some((c) => c.url.includes("lemonsqueezy"))).toBe(false);

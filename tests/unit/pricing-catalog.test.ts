@@ -401,6 +401,28 @@ describe("GET /spaces/:spaceId/personal-plan + POST /internal/personal-plan/gran
     expect(body.limits).toEqual({ maxBusinessesOwned: 25, canInviteOthers: true });
   });
 
+  it("routes a verified paid-period grant into the entitlement ledger", async () => {
+    const env = makeEnv();
+    await seedProductWithPersonalPlans(env);
+    const token = await mintInternalToken(PLATFORM_SECRET, "root-tenant");
+    const grant = await spacesWorker.fetch(req("/internal/personal-plan/grant", {
+      method: "POST",
+      headers: { "x-naelao-tenant-id": "root-tenant", "x-naelao-internal-token": token },
+      body: JSON.stringify({
+        action: "purchase", product_space_id: "prod-root", end_user_id: "alice", tier: "plus",
+        interval: "month", provider: "lemon_squeezy", provider_event_id: "order-period-1", amount_cents: 500,
+      }),
+    }), env as never, execCtx);
+    expect(grant.status).toBe(200);
+    expect(await grant.json()).toMatchObject({ plan_tier: "plus", deduplicated: false });
+
+    const read = await spacesWorker.fetch(
+      req("/spaces/biz-alice/personal-plan", { headers: await endUserHeaders("alice-tenant", "alice") }),
+      env as never, execCtx
+    );
+    expect(await read.json()).toMatchObject({ plan_tier: "plus", limits: { canInviteOthers: true } });
+  });
+
   it("rejects a nonsense tier at the grant route", async () => {
     const env = makeEnv();
     await seedProductWithPersonalPlans(env);

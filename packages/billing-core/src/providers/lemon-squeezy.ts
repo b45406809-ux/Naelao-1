@@ -111,6 +111,8 @@ export class LemonSqueezyProvider implements BillingProvider {
     const isOrder = eventName.startsWith("order_");
     const isSubscriptionPayment = eventName.startsWith("subscription_payment_");
     const amountCents = parseInt(String(attrs["total"] ?? attrs["total_usd"] ?? "0"), 10) || 0;
+    const refundAmountRaw = attrs["refund_amount"] ?? attrs["refunded_amount"] ?? attrs["total_refunded"];
+    const refundAmountCents = refundAmountRaw !== undefined ? parseInt(String(refundAmountRaw), 10) : NaN;
 
     const providerStatus = !isOrder && attrs["status"] ? String(attrs["status"]) : null;
     const currentPeriodEnd = !isOrder && (attrs["renews_at"] ?? attrs["ends_at"]) ? String(attrs["renews_at"] ?? attrs["ends_at"]) : null;
@@ -136,6 +138,7 @@ export class LemonSqueezyProvider implements BillingProvider {
         : event.data?.id ?? null,
       variantOrPriceId: String(attrs["variant_id"] ?? attrs["first_order_item"] ?? ""),
       amountCents,
+      ...(Number.isSafeInteger(refundAmountCents) && refundAmountCents > 0 ? { refundAmountCents } : {}),
       currency: String(attrs["currency"] ?? "USD"),
       metadata: event.meta?.custom_data ?? attrs.custom_data ?? {},
       ...(providerStatus ? { providerStatus } : {}),

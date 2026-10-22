@@ -163,7 +163,40 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    // Personal-plan billing needs an auditable, idempotent record per paid period. Keeping only
+    // plan_tier made catalog month/year intervals permanent and made refunds unable to target one
+    // purchase without revoking a later renewal.
+    version: 5,
+    description: "track personal-plan paid periods and provider lifecycle",
+    up: `
+      CREATE TABLE personal_plan_entitlements (
+        provider_event_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        subscription_id TEXT,
+        plan_tier TEXT NOT NULL CHECK (plan_tier IN ('free','plus')),
+        amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+        starts_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active','refunded','expired')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_personal_plan_live ON personal_plan_entitlements(status, expires_at);
+      CREATE INDEX idx_personal_plan_subscription ON personal_plan_entitlements(subscription_id, status);
+    `,
+  },
 ];
+
+function addCalendarInterval(from: Date, interval: "month" | "year"): Date {
+  const result = new Date(from);
+  const day = result.getUTCDate();
+  result.setUTCDate(1);
+  if (interval === "month") result.setUTCMonth(result.getUTCMonth() + 1);
+  else result.setUTCFullYear(result.getUTCFullYear() + 1);
+  const finalDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0)).getUTCDate();
+  result.setUTCDate(Math.min(day, finalDay));
+  return result;
+}
 
 export class ProductUserDO extends DurableObject {
   private initialized = false;
@@ -328,10 +361,110 @@ export class ProductUserDO extends DurableObject {
     // caller, and it's the wrapping workers/spaces/src/index.ts route that gates who can reach
     // it). Defaults to 'free' when the singleton row hasn't been written yet (a brand-new DO).
     if (method === "GET" && url.pathname === "/plan-tier") {
+      const now = new Date().toISOString();
+      const entitlement = this.ctx.storage.sql
+        .exec(
+          `SELECT plan_tier, expires_at FROM personal_plan_entitlements
+           WHERE status = 'active' AND expires_at > ? ORDER BY expires_at DESC LIMIT 1`,
+          now
+        )
+        .toArray() as unknown as { plan_tier: string; expires_at: string }[];
+      if (entitlement[0]) {
+        return Response.json({ plan_tier: entitlement[0].plan_tier, expires_at: entitlement[0].expires_at });
+      }
+      const hasPaidHistory = this.ctx.storage.sql
+        .exec("SELECT 1 AS found FROM personal_plan_entitlements LIMIT 1")
+        .toArray().length > 0;
       const row = this.ctx.storage.sql
         .exec("SELECT plan_tier FROM plan_state WHERE id = 1")
         .toArray() as unknown as { plan_tier: string }[];
-      return Response.json({ plan_tier: row[0]?.plan_tier ?? "free" });
+      // Legacy direct grants predate expiry records and remain in effect until a paid entitlement
+      // is first recorded. After that point, the entitlement ledger is authoritative.
+      return Response.json({ plan_tier: hasPaidHistory ? "free" : row[0]?.plan_tier ?? "free" });
+    }
+
+    // POST /plan-tier/purchase — webhook-driven, idempotent paid period grant. A renewal extends
+    // from the latest unexpired entitlement; a late renewal starts at now. Multiple purchases
+    // therefore overlap safely and refunding one cannot revoke a later paid period.
+    if (method === "POST" && url.pathname === "/plan-tier/purchase") {
+      const body = await request.json<{
+        plan_tier: string;
+        interval: string;
+        provider: string;
+        provider_event_id: string;
+        amount_cents: number;
+        subscription_id?: string;
+      }>().catch(() => null);
+      if (!body || (body.plan_tier !== "plus" && body.plan_tier !== "free") ||
+          (body.interval !== "month" && body.interval !== "year") ||
+          !["lemon_squeezy", "whop"].includes(body.provider) ||
+          !validOptionalText(body.provider_event_id, 200) || !body.provider_event_id ||
+          !validOptionalText(body.subscription_id, 200) || !Number.isSafeInteger(body.amount_cents) || body.amount_cents <= 0) {
+        return Response.json({ error: "invalid personal-plan purchase" }, { status: 400 });
+      }
+      const existing = this.ctx.storage.sql
+        .exec("SELECT plan_tier, expires_at FROM personal_plan_entitlements WHERE provider_event_id = ?", body.provider_event_id)
+        .toArray() as unknown as { plan_tier: string; expires_at: string }[];
+      if (existing[0]) {
+        return Response.json({ plan_tier: existing[0].plan_tier, expires_at: existing[0].expires_at, deduplicated: true });
+      }
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const prior = this.ctx.storage.sql
+        .exec("SELECT MAX(expires_at) AS expires_at FROM personal_plan_entitlements WHERE status = 'active' AND expires_at > ?", nowIso)
+        .toArray() as unknown as { expires_at: string | null }[];
+      const priorExpiry = prior[0]?.expires_at ? new Date(prior[0].expires_at) : null;
+      const startsAt = priorExpiry && priorExpiry > now ? priorExpiry : now;
+      const expiresAt = addCalendarInterval(startsAt, body.interval as "month" | "year").toISOString();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO personal_plan_entitlements
+          (provider_event_id, provider, subscription_id, plan_tier, amount_cents, starts_at, expires_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
+        body.provider_event_id, body.provider, body.subscription_id ?? null, body.plan_tier, body.amount_cents, startsAt.toISOString(), expiresAt
+      );
+      // A prior manually set tier must not become an indefinite fallback after this paid period ends.
+      this.ctx.storage.sql.exec(
+        `INSERT INTO plan_state (id, plan_tier, updated_at) VALUES (1, 'free', datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET plan_tier = 'free', updated_at = datetime('now')`
+      );
+      return Response.json({ plan_tier: body.plan_tier, expires_at: expiresAt, deduplicated: false });
+    }
+
+    // Refunds and provider expiry target only matching records. Cancellation and failed renewal
+    // deliberately preserve paid access through expires_at; the provider's period end remains the
+    // access boundary. A duplicate/unknown event is a successful no-op.
+    if (method === "POST" && url.pathname === "/plan-tier/refund") {
+      const body = await request.json<{ provider_event_id: string; amount_cents: number }>().catch(() => null);
+      if (!body || !validOptionalText(body.provider_event_id, 200) || !body.provider_event_id || !Number.isSafeInteger(body.amount_cents) || body.amount_cents <= 0) {
+        return Response.json({ error: "provider_event_id and positive amount_cents are required" }, { status: 400 });
+      }
+      const purchase = this.ctx.storage.sql.exec(
+        "SELECT amount_cents FROM personal_plan_entitlements WHERE provider_event_id = ? AND status = 'active'",
+        body.provider_event_id
+      ).toArray() as unknown as { amount_cents: number }[];
+      if (!purchase[0]) return Response.json({ revoked: false });
+      // A partial refund does not remove the full paid entitlement. Full/over refunds are scoped
+      // to this one purchase; later renewals remain valid.
+      if (body.amount_cents < purchase[0].amount_cents) return Response.json({ revoked: false, partial: true });
+      const result = this.ctx.storage.sql.exec(
+        "UPDATE personal_plan_entitlements SET status = 'refunded' WHERE provider_event_id = ? AND status = 'active'",
+        body.provider_event_id
+      );
+      return Response.json({ revoked: result.rowsWritten > 0 });
+    }
+
+    if (method === "POST" && url.pathname === "/plan-tier/expire") {
+      const body = await request.json<{ subscription_id: string; expires_before?: string }>().catch(() => null);
+      if (!body || !validOptionalText(body.subscription_id, 200) || !body.subscription_id ||
+          !validOptionalText(body.expires_before, 40) || (body.expires_before && !Number.isFinite(Date.parse(body.expires_before)))) {
+        return Response.json({ error: "subscription_id and a valid optional expires_before are required" }, { status: 400 });
+      }
+      const result = this.ctx.storage.sql.exec(
+        `UPDATE personal_plan_entitlements SET status = 'expired'
+         WHERE subscription_id = ? AND status = 'active' AND expires_at <= ?`,
+        body.subscription_id, body.expires_before ?? new Date().toISOString()
+      );
+      return Response.json({ expired: result.rowsWritten });
     }
 
     // POST /plan-tier/set — internal-only settor. The ONLY caller that should ever reach this is
