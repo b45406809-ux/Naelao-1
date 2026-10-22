@@ -2262,6 +2262,10 @@ Reviewed `turbo.json` task dependencies against every workspace package script a
 
 Compared `pnpm-workspace.yaml` globs with actual package manifests and the pnpm lockfile importer set using the pinned pnpm 9.12.0. All 58 projects (root, apps, packages, workers, and tests) are discovered exactly once and have a lock importer; the declared patched dependency file exists. No workspace omission or orphan importer was found. The package/version/resolution integrity of the lockfile remains a separate unchecked review. This closes the `pnpm-workspace.yaml` row; the tracked source/config checklist now records 514 reviewed and 1,311 open.
 
+## Repomix shell config input inventory (2026-10-22)
+
+The manually used `repomix.shell.config.json` included nonexistent root `tsconfig.json` and repeated `tsconfig.base.json`. Removed the stale entry and duplicate. JSON boundary checks confirm 21 unique include patterns resolve, output stays repository-relative, clipboard copying stays disabled, and `.env*` / `.dev.vars*` patterns remain excluded with Repomix's security scan enabled. No Repomix generation was run because the executable is not a project dependency; the generated payload and actual scanner behavior remain unverified. This closes the config row and brings the checklist to 515 reviewed, 1,310 open.
+
 ## Credentials egress request shape bounds (2026-10-21)
 
 Continued the Credentials outbound route audit. The Worker already capped inbound JSON at 1 MiB, but the privileged egress route assumed a JSON object, accepted arbitrary header maps, serialized provider bodies without a separate bound, and could attempt GET/HEAD requests with bodies. It now rejects malformed/non-object requests, requires bounded URL/credential fields, limits headers to 64 entries / 16 KiB, limits serialized upstream bodies to 512 KiB, rejects bodies on GET/HEAD, and validates the relevant optional field types before policy lookup, credential resolution, or fetch. The DNS check/fetch race remains open because Workers fetch does not expose a validated-address pinning mechanism in this path.
