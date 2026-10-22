@@ -123,6 +123,36 @@ describe("phase runner startup", () => {
     });
     expect(badModel.stderr).toContain("Model names may contain only letters");
   });
+
+  it("caps key and model rotations before any provider request", () => {
+    const root = fileURLToPath(new URL("../../", import.meta.url));
+    const tooManyKeys = spawnSync(process.execPath, ["run-phase.mjs"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5_000,
+      env: {
+        ...process.env,
+        PHASE_START: "1",
+        PHASE_END: "1",
+        GEMINI_API_KEYS: Array.from({ length: 9 }, (_, index) => `key-${index}`).join(","),
+      },
+    });
+    expect(tooManyKeys.stderr).toContain("At most 8 Gemini API keys");
+
+    const tooManyModels = spawnSync(process.execPath, ["run-phase.mjs"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5_000,
+      env: {
+        ...process.env,
+        PHASE_START: "1",
+        PHASE_END: "1",
+        GEMINI_API_KEYS: "test-only-placeholder",
+        AI_MODELS: Array.from({ length: 9 }, (_, index) => `gemini-${index}`).join(","),
+      },
+    });
+    expect(tooManyModels.stderr).toContain("At most 8 Gemini models");
+  });
 });
 
 describe("phase runner patch paths", () => {

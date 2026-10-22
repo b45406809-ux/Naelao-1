@@ -24,22 +24,22 @@ const maxTurns = Number(
 );
 const dryRun = process.argv.includes("--dry-run");
 const changedPaths = new Set();
-const apiKeys = (
+const apiKeys = [...new Set((
   process.env.GEMINI_API_KEYS ??
   process.env.GEMINI_API_KEY ??
   ""
 )
   .split(",")
   .map((value) => value.trim())
-  .filter(Boolean);
-const models = (
+  .filter(Boolean))];
+const models = [...new Set((
   args.get("--models") ??
   process.env.AI_MODELS ??
   "gemini-2.5-flash,gemini-2.5-flash-lite"
 )
   .split(",")
   .map((value) => value.trim())
-  .filter(Boolean);
+  .filter(Boolean))];
 
 if (
   !Number.isInteger(start) ||
@@ -58,6 +58,8 @@ if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 16) {
 if (!dryRun && apiKeys.length === 0)
   throw new Error("Set GEMINI_API_KEYS (comma-separated) or GEMINI_API_KEY");
 if (models.length === 0) throw new Error("At least one AI model is required");
+if (apiKeys.length > 8) throw new Error("At most 8 Gemini API keys may be configured");
+if (models.length > 8) throw new Error("At most 8 Gemini models may be configured");
 if (models.some((model) => !/^[A-Za-z0-9._-]{1,100}$/.test(model))) {
   throw new Error("Model names may contain only letters, numbers, dots, underscores, and hyphens");
 }
@@ -131,7 +133,8 @@ async function requestModel(prompt, phase, turn) {
     models.map((model) => ({ key, model }))
   );
   let lastError;
-  for (let attempt = 0; attempt < combinations.length * 3; attempt++) {
+  const maxAttempts = Math.min(combinations.length * 2, 32);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const selected =
       combinations[(phase + turn + attempt) % combinations.length];
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(selected.model)}:generateContent`;
@@ -142,6 +145,7 @@ async function requestModel(prompt, phase, turn) {
           "content-type": "application/json",
           "x-goog-api-key": selected.key,
         },
+        signal: AbortSignal.timeout(60_000),
         body: JSON.stringify({
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0.1, maxOutputTokens: 65_536 },
@@ -167,7 +171,7 @@ async function requestModel(prompt, phase, turn) {
       lastError = error;
     }
     await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(2 ** attempt * 1_000, 30_000))
+      setTimeout(resolve, Math.min(2 ** Math.min(attempt, 4) * 250, 4_000))
     );
   }
   throw lastError ?? new Error("All model/key rotations failed");
