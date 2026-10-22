@@ -2,9 +2,9 @@ Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
 Source/config classification includes common code, style/template, infrastructure, and executable configuration formats; Markdown/docs are excluded.
-Files: 2059
-Files with source or executable-configuration extensions: 1873
-Inventory revision: 2026-10-22 audit refresh at c2943597
+Files: 2060
+Files with source or executable-configuration extensions: 1874
+Inventory revision: 2026-10-22 audit refresh at d5b6fd94
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1031,6 +1031,7 @@ packages/
       qr.ts
       styles.css
       tokens.css
+      tokens.test.js
       useTheme.test.ts
       useTheme.ts
     tsconfig.json
