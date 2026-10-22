@@ -35,6 +35,70 @@ describe("MCP server response boundaries", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it.each([
+    ["direct", "https://mcp/v1/spaces/s/mcp-servers/server/tools/call"],
+    ["alias", "https://mcp/v1/spaces/s/connector-aliases/mail/tools/call"],
+  ])("rejects oversized %s tool-call requests before parsing or egress", async (_name, url) => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const tenantToken = await mintInternalToken("secret", "tenant");
+    const response = await worker.fetch!(new Request(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": tenantToken,
+      },
+      body: `{"tool_name":"search","input":{"payload":"${"x".repeat(1024 * 1024)}"}}`,
+    }), env(), {} as ExecutionContext);
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error_code: "request_body_too_large" });
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Composio connect", "POST", "https://mcp/connectors/composio/connect"],
+    ["Composio execute", "POST", "https://mcp/connectors/composio/execute"],
+    ["MCP registration", "POST", "https://mcp/v1/spaces/s/mcp-servers"],
+    ["MCP update", "PATCH", "https://mcp/v1/spaces/s/mcp-servers/server"],
+    ["alias registration", "POST", "https://mcp/v1/spaces/s/connector-aliases"],
+  ])("bounds %s mutation JSON before processing", async (_name, method, url) => {
+    const tenantToken = await mintInternalToken("secret", "tenant");
+    const spaceScoped = url.includes("/connectors/composio/");
+    const overLimitBytes = url.endsWith("/execute") ? 1024 * 1024 + 1 : 65 * 1024;
+    const response = await worker.fetch!(new Request(url, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": "tenant",
+        "x-naelao-internal-token": tenantToken,
+        ...(spaceScoped ? { "x-naelao-space-id": "s" } : {}),
+      },
+      body: `{"padding":"${"x".repeat(overLimitBytes)}"}`,
+    }), env(), {} as ExecutionContext);
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ error_code: "request_body_too_large" });
+  });
+
+  it("rejects malformed and structurally invalid tool-call JSON without provider access", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const tenantToken = await mintInternalToken("secret", "tenant");
+    for (const body of ["{", JSON.stringify({ tool_name: "search", input: [] })]) {
+      const response = await worker.fetch!(new Request("https://mcp/v1/spaces/s/mcp-servers/server/tools/call", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": "tenant",
+          "x-naelao-internal-token": tenantToken,
+        },
+        body,
+      }), env(), {} as ExecutionContext);
+      expect(response.status).toBe(400);
+    }
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ["GET", "https://mcp/v1/spaces/s/mcp-servers/server/tools"],
     ["POST", "https://mcp/v1/spaces/s/mcp-servers/server/tools/call"],
   ])("rejects oversized %s upstream JSON", async (method, url) => {

@@ -1,6 +1,6 @@
 // G-I17: MCP Tool Server Registry — registers MCP servers per Space and proxies tool calls
 import { Hono } from "hono";
-import { errorResponse, requestId, requireInternalHmac, mintInternalToken, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
+import { errorResponse, requestId, requireInternalHmac, mintInternalToken, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { checkSsrf, isSpaceNetworkEgressDenied, scanAndScrubEgress } from "@naelao/security";
 import { missingToolScopes } from "./connector-policy";
 import type { ConnectorScope } from "./connector-policy";
@@ -134,6 +134,29 @@ async function generateCredentialToken(platformSecret: string, tenantId: string,
 
 type ConnectorProvider = "direct" | "composio" | "pipedream";
 const MAX_PROVIDER_JSON_BYTES = 4 * 1024 * 1024;
+const MAX_TOOL_CALL_REQUEST_BYTES = 1024 * 1024;
+
+async function parseBoundedJson<T>(request: Request, maximumBytes: number): Promise<
+  | { ok: true; value: T }
+  | { ok: false; status: 400 | 413; errorCode: "invalid_request" | "request_body_too_large" }
+> {
+  let text: string;
+  try {
+    text = await readBoundedRequestText(request, maximumBytes);
+  } catch (error) {
+    return error instanceof RequestBodyTooLargeError
+      ? { ok: false, status: 413, errorCode: "request_body_too_large" }
+      : { ok: false, status: 400, errorCode: "invalid_request" };
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return { ok: false, status: 400, errorCode: "invalid_request" };
+    return { ok: true, value: parsed as T };
+  } catch {
+    return { ok: false, status: 400, errorCode: "invalid_request" };
+  }
+}
 
 export interface McpServer {
   id: string;
@@ -265,7 +288,9 @@ app.post("/connectors/composio/connect", async (c) => {
     return c.json({ error_code: "space_not_found", message: "Active space not found for tenant" }, 404);
   }
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
-  const body = await c.req.json<{ auth_config_id?: string; user_id?: string; callback_url?: string }>();
+  const parsedBody = await parseBoundedJson<{ auth_config_id?: string; user_id?: string; callback_url?: string }>(c.req.raw, 64 * 1024);
+  if (!parsedBody.ok) return c.json({ error_code: parsedBody.errorCode }, parsedBody.status);
+  const body = parsedBody.value;
   if (!body.auth_config_id || !body.user_id || !body.callback_url) return c.json({ error_code: "bad_request", message: "auth_config_id, user_id, and callback_url are required" }, 400);
   try {
     return c.json(await createHostedOAuthLink(c.env, { authConfigId: body.auth_config_id, userId: body.user_id, callbackUrl: body.callback_url }));
@@ -283,7 +308,9 @@ app.post("/connectors/composio/execute", async (c) => {
     return c.json({ error_code: "space_not_found", message: "Active space not found for tenant" }, 404);
   }
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
-  const body = await c.req.json<{ connection_id?: string; action?: string; arguments?: Record<string, unknown> }>();
+  const parsedBody = await parseBoundedJson<{ connection_id?: string; action?: string; arguments?: Record<string, unknown> }>(c.req.raw, MAX_TOOL_CALL_REQUEST_BYTES);
+  if (!parsedBody.ok) return c.json({ error_code: parsedBody.errorCode }, parsedBody.status);
+  const body = parsedBody.value;
   if (!body.connection_id || !body.action) return c.json({ error_code: "bad_request", message: "connection_id and action are required" }, 400);
   if (isReservedToolName(body.action)) return c.json({ error_code: "reserved_capability", message: "Money-in actions are reserved to Naelao commerce" }, 403);
   const dlp = scanAndScrubEgress(body.arguments ?? {});
@@ -506,14 +533,16 @@ app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const spaceId = c.req.param("spaceId");
 
-  const body = await c.req.json<{
+  const parsedBody = await parseBoundedJson<{
     name: string;
     url?: string;
     auth_type?: "bearer" | "api_key" | "none";
     auth_secret_name?: string;
     connector_provider?: ConnectorProvider;
     provider_connection_id?: string;
-  }>();
+  }>(c.req.raw, 64 * 1024);
+  if (!parsedBody.ok) return c.json({ error_code: parsedBody.errorCode }, parsedBody.status);
+  const body = parsedBody.value;
 
   const connectorProvider: ConnectorProvider = body.connector_provider ?? "direct";
   if (!["direct", "composio", "pipedream"].includes(connectorProvider)) {
@@ -590,7 +619,9 @@ app.patch("/v1/spaces/:spaceId/mcp-servers/:serverId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const serverId = c.req.param("serverId");
 
-  const body = await c.req.json<{ enabled?: boolean }>();
+  const parsedBody = await parseBoundedJson<{ enabled?: boolean }>(c.req.raw, 16 * 1024);
+  if (!parsedBody.ok) return c.json({ error_code: parsedBody.errorCode }, parsedBody.status);
+  const body = parsedBody.value;
   if (typeof body.enabled !== "boolean") {
     return c.json({ error_code: "bad_request", message: "enabled (boolean) is required" }, 400);
   }
@@ -748,7 +779,9 @@ app.post("/v1/spaces/:spaceId/connector-aliases", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const spaceId = c.req.param("spaceId");
-  const body = await c.req.json<{ alias: string; scope: ConnectorScope; project_id?: string; user_id?: string; server_id: string; granted_scopes?: string[] }>();
+  const parsedBody = await parseBoundedJson<{ alias: string; scope: ConnectorScope; project_id?: string; user_id?: string; server_id: string; granted_scopes?: string[] }>(c.req.raw, 64 * 1024);
+  if (!parsedBody.ok) return c.json({ error_code: parsedBody.errorCode }, parsedBody.status);
+  const body = parsedBody.value;
   if (!/^[a-z][a-z0-9_]{1,63}$/.test(body.alias ?? "") || !["space_shared", "project_bound", "user_personal"].includes(body.scope)) {
     return c.json({ error_code: "bad_request", message: "Invalid alias or scope" }, 400);
   }
@@ -804,6 +837,20 @@ app.delete("/v1/spaces/:spaceId/connector-aliases/:aliasId", async (c) => {
 app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  let rawBody: string;
+  let callBody: { tool_name?: string };
+  try {
+    rawBody = await readBoundedRequestText(c.req.raw, MAX_TOOL_CALL_REQUEST_BYTES);
+  } catch (error) {
+    return c.json({ error_code: error instanceof RequestBodyTooLargeError ? "request_body_too_large" : "invalid_request" }, error instanceof RequestBodyTooLargeError ? 413 : 400);
+  }
+  try {
+    const parsed: unknown = JSON.parse(rawBody);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid body");
+    callBody = parsed as { tool_name?: string };
+  } catch {
+    return c.json({ error_code: "invalid_request" }, 400);
+  }
   const spaceId = c.req.param("spaceId");
   const projectId = c.req.header("x-naelao-project-id") ?? "";
   const userId = c.req.header("x-naelao-user-id") ?? "";
@@ -821,7 +868,6 @@ app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) =>
   ).bind(tenantId, spaceId, c.req.param("alias"), userId, projectId, storedRequiredScope, storedRequiredScope)
     .first<{ id: string; server_id: string; scope: string; granted_scopes_json: string }>();
   if (!row) return c.json({ error_code: "not_found", message: "Connector alias not found in the requested scope" }, 404);
-  const callBody: { tool_name?: string } = await c.req.raw.clone().json<{ tool_name?: string }>().catch(() => ({}));
   let grantedScopes: string[] = [];
   try {
     const parsed = JSON.parse(row.granted_scopes_json) as unknown;
@@ -850,7 +896,7 @@ app.post("/v1/spaces/:spaceId/connector-aliases/:alias/tools/call", async (c) =>
   headers.set("x-naelao-connector-scope", row.scope === "user" ? "personal" : row.scope === "project" ? "project" : "business");
   return app.fetch(new Request(
     `https://mcp-hub.internal/v1/spaces/${encodeURIComponent(spaceId)}/mcp-servers/${encodeURIComponent(row.server_id)}/tools/call`,
-    { method: "POST", headers, body: await readBoundedRequestText(c.req.raw, 1024 * 1024) }
+    { method: "POST", headers, body: rawBody }
   ), c.env, c.executionCtx);
 });
 
@@ -875,7 +921,19 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
     return c.json({ error_code: "not_found", message: "MCP server not found or disabled" }, 404);
   }
 
-  const body = await c.req.json<{ tool_name: string; input: Record<string, unknown> }>();
+  let body: { tool_name: string; input: Record<string, unknown> };
+  try {
+    const parsed: unknown = JSON.parse(await readBoundedRequestText(c.req.raw, MAX_TOOL_CALL_REQUEST_BYTES));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid body");
+    const candidate = parsed as { tool_name?: unknown; input?: unknown };
+    if (typeof candidate.tool_name !== "string" || !candidate.tool_name.trim()
+      || !candidate.input || typeof candidate.input !== "object" || Array.isArray(candidate.input)) {
+      return c.json({ error_code: "bad_request", message: "tool_name and object input are required" }, 400);
+    }
+    body = { tool_name: candidate.tool_name, input: candidate.input as Record<string, unknown> };
+  } catch (error) {
+    return c.json({ error_code: error instanceof RequestBodyTooLargeError ? "request_body_too_large" : "invalid_request" }, error instanceof RequestBodyTooLargeError ? 413 : 400);
+  }
   if (!body.tool_name) {
     return c.json({ error_code: "bad_request", message: "tool_name is required" }, 400);
   }

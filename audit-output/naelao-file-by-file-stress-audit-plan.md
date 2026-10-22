@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2042` tracked files; `1834` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `0f0354b5`.
+Inventory basis: `2042` tracked files; `1834` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `7a53609b`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
@@ -2359,19 +2359,19 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/mcp-hub`
 
-- [ ] `workers/mcp-hub/package.json`
-- [ ] `workers/mcp-hub/tsconfig.json`
+- [x] `workers/mcp-hub/package.json`
+- [x] `workers/mcp-hub/tsconfig.json`
 - [x] `workers/mcp-hub/wrangler.toml`
 
 ### `workers/mcp-hub/src`
 
-- [ ] `workers/mcp-hub/src/air-gap.test.ts`
+- [x] `workers/mcp-hub/src/air-gap.test.ts`
 - [x] `workers/mcp-hub/src/composio.test.ts`
-- [ ] `workers/mcp-hub/src/composio.ts`
-- [ ] `workers/mcp-hub/src/connector-policy.test.ts`
-- [ ] `workers/mcp-hub/src/connector-policy.ts`
-- [ ] `workers/mcp-hub/src/index.ts`
-- [ ] `workers/mcp-hub/src/pipedream.ts`
+- [x] `workers/mcp-hub/src/composio.ts`
+- [x] `workers/mcp-hub/src/connector-policy.test.ts`
+- [x] `workers/mcp-hub/src/connector-policy.ts`
+- [x] `workers/mcp-hub/src/index.ts`
+- [x] `workers/mcp-hub/src/pipedream.ts`
 - [x] `workers/mcp-hub/src/tenant-space-boundary.test.ts`
 - [x] `workers/mcp-hub/src/upstream-response-boundaries.test.ts`
 
