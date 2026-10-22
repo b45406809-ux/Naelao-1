@@ -88,7 +88,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `create_patch.js`
 - [x] `package.json`
 - [ ] `pnpm-lock.yaml`
-- [ ] `pnpm-workspace.yaml`
+- [x] `pnpm-workspace.yaml`
 - [ ] `repomix.shell.config.json`
 - [ ] `run-phase (1).mjs`
 - [x] `run-phase.mjs`
