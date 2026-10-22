@@ -1,5 +1,5 @@
 // G-N01: Notifications worker — email + in-app notification consumer
-import { badRequest, errorResponse, requestId, requireInternalHmac, readBoundedRequestText, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
+import { badRequest, errorResponse, requestId, requireInternalHmac, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { Hono } from "hono";
 import { checkSsrf, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { decryptSubscription, deliverWebPush, encryptSubscription, hashEndpoint, validatePushSubscription, type BrowserPushSubscription } from "./web-push.js";
@@ -123,8 +123,8 @@ async function resolveChannelCredential(
       }
     ));
     if (!resp.ok) return null;
-    const { value } = await resp.json<{ value?: string }>();
-    return value ?? null;
+    const { value } = await readBoundedResponseJson<{ value?: unknown }>(resp, 16 * 1024);
+    return typeof value === "string" && value.length > 0 ? value : null;
   } catch {
     return null;
   }
@@ -199,6 +199,7 @@ async function sendChatMessage(
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chat_id: to, text: message, ...(opts.messageThreadId ? { message_thread_id: opts.messageThreadId } : {}), ...(actions.length ? { reply_markup: { inline_keyboard: [actions.map(action => ({ text: action.label, callback_data: action.id }))] } } : {}) }),
+        redirect: "error",
         signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
       if (resp.status === 401 && opts.installationId && opts.providerConnectionId) {
@@ -209,6 +210,7 @@ async function sendChatMessage(
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${cred}` },
         body: JSON.stringify({ channel: to, text: message, ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}) }),
+        redirect: "error",
         signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
       // Slack answers 200 with ok:false for real failures (bad token, not in channel), so the
@@ -225,6 +227,7 @@ async function sendChatMessage(
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bot ${cred}` },
         body: JSON.stringify({ content: message }),
+        redirect: "error",
         signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
     } else if (viaTwilio) {
@@ -243,6 +246,7 @@ async function sendChatMessage(
           To: `whatsapp:+${to.replace(/^\+/, "")}`,
           Body: message,
         }),
+        redirect: "error",
         signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
     } else if (channel === "whatsapp") {
@@ -269,6 +273,7 @@ async function sendChatMessage(
         body: JSON.stringify(actions.length ? { messaging_product: "whatsapp", to, type: "interactive", interactive: {
           type: "button", body: { text: message.slice(0, 1024) }, action: { buttons: actions.map(action => ({ type: "reply", reply: { id: action.id, title: action.label } })) },
         } } : { messaging_product: "whatsapp", to, type: "text", text: { body: message } }),
+        redirect: "error",
         signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),
       });
       if ((resp.status === 401 || resp.status === 403) && opts.installationId && opts.providerConnectionId) {
@@ -385,12 +390,17 @@ async function sendApnsPush(
   title: string,
   body: string
 ): Promise<void> {
+  if (!/^[A-Fa-f0-9]{64}$/.test(deviceToken)) throw new Error("APNs device token is invalid");
+  const host = env.APNS_HOST ?? "api.push.apple.com";
+  if (host !== "api.push.apple.com" && host !== "api.sandbox.push.apple.com") {
+    throw new Error("APNs host is not an approved Apple endpoint");
+  }
   const jwt = await generateApnsJwt(env);
   const payload = JSON.stringify({
     aps: { alert: { title, body }, sound: "default" },
   });
 
-  const url = `https://${env.APNS_HOST}/3/device/${deviceToken}`;
+  const url = `https://${host}/3/device/${deviceToken}`;
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -399,6 +409,7 @@ async function sendApnsPush(
       "content-type": "application/json",
     },
     body: payload,
+    redirect: "error",
     signal: AbortSignal.timeout(8_000),
   });
 
@@ -530,6 +541,7 @@ async function sendEmailNow(
       subject,
       html,
     }),
+    redirect: "error",
     signal: AbortSignal.timeout(15_000),
   });
 

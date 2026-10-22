@@ -100,6 +100,7 @@ describe("interactive mobile approval delivery", () => {
     expect(payload.from).toBe("team@example.org");
     expect(payload.reply_to).toBe("reply-a1@example.test");
     expect((outbound.mock.calls[0] as unknown as [string, RequestInit])[1].signal).toBeInstanceOf(AbortSignal);
+    expect((outbound.mock.calls[0] as unknown as [string, RequestInit])[1].redirect).toBe("error");
   });
 
   for (const channel of ["telegram", "whatsapp"]) it(`sends provider-format review buttons for ${channel}`, async () => {
@@ -135,6 +136,26 @@ describe("interactive mobile approval delivery", () => {
     expect(body).not.toContain("telegram-secret-token");
   });
 
+  it("fails closed on oversized vault credential responses before channel egress", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const credentials = { async fetch() {
+      return new Response(`{"value":"provider-token","padding":"${"x".repeat(20 * 1024)}"}`);
+    } };
+    const response = await worker.fetch!(new Request("https://notifications/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant" },
+      body: JSON.stringify({ channel: "telegram", space_id: "space", to: "recipient", message: "hello" }),
+    }), {
+      ...env(), TELEGRAM_BOT_TOKEN: undefined, PLATFORM_SECRET: "platform-secret",
+      CREDENTIALS_WORKER: credentials as unknown as Fetcher,
+    }, {} as ExecutionContext);
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ delivered: false });
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
   for (const channel of ["slack", "telegram"]) {
     it(`rejects oversized ${channel} response JSON and sets an upstream deadline`, async () => {
       const outbound = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(
@@ -161,6 +182,7 @@ describe("interactive mobile approval delivery", () => {
         expect(String(outbound.mock.calls[0]?.[0])).toContain("botprovider-token");
       }
       expect(outbound.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+      expect(outbound.mock.calls[0]?.[1]?.redirect).toBe("error");
     });
   }
 
