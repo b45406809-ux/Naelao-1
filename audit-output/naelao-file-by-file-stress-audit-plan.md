@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2043` tracked files; `1835` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `d93d1817`.
+Inventory basis: `2045` tracked files; `1837` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `3c2ba619`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
@@ -2408,12 +2408,13 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [x] `workers/provisioner/package.json`
 - [x] `workers/provisioner/tsconfig.json`
-- [ ] `workers/provisioner/vitest.config.ts`
+- [x] `workers/provisioner/vitest.config.ts`
 - [x] `workers/provisioner/wrangler.toml`
 
 ### `workers/provisioner/src`
 
-- [ ] `workers/provisioner/src/index.ts`
+- [x] `workers/provisioner/src/custom-provisioner-egress.test.ts`
+- [x] `workers/provisioner/src/index.ts`
 - [x] `workers/provisioner/src/manifest-contract.test.ts`
 - [x] `workers/provisioner/src/manifest-contract.ts`
 - [x] `workers/provisioner/src/message-contract.test.ts`
@@ -2425,7 +2426,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/provisioner/src/queue-config.test.ts`
 - [x] `workers/provisioner/src/queue-message-handler.test.ts`
 - [x] `workers/provisioner/src/queue-message-handler.ts`
-- [ ] `workers/provisioner/src/tenant-suspension.test.ts`
+- [x] `workers/provisioner/src/rollback-cleanup.test.ts`
+- [x] `workers/provisioner/src/tenant-suspension.test.ts`
 
 ### `workers/router`
 
