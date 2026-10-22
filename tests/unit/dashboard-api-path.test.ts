@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getSpace, updateProduct } from "../../apps/dashboard/src/lib/api";
+import { apiFetch, getSpace, updateProduct } from "../../apps/dashboard/src/lib/api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -36,5 +36,33 @@ describe("dashboard API path identifiers", () => {
 
     const requested = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(requested.pathname).toBe("/spaces/space%2Fa/products/product%20b");
+  });
+
+  it("does not add JSON Content-Type to bodyless requests", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiFetch("/spaces");
+
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(new Headers(init.headers).has("Content-Type")).toBe(false);
+  });
+
+  it("keeps Headers instances and sets JSON Content-Type for a JSON body", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const headers = new Headers({ "X-Request-Trace": "trace-1" });
+
+    await apiFetch("/spaces", { method: "POST", headers, body: "{}" });
+
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(new Headers(init.headers).get("X-Request-Trace")).toBe("trace-1");
+    expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
   });
 });

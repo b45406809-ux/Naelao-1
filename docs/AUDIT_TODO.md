@@ -1758,6 +1758,16 @@ first real business on free-tier resources before opening the platform to other 
   than asserting a false tier. Router dispatch/auth tests passed, dashboard typecheck and the full
   Pages build passed. A live subscription read and browser state synchronization were not exercised.
 
+- [x] **Dashboard API client transport and dead SpaceType methods.** `apiFetch` added
+  `Content-Type: application/json` to every request and cast `RequestInit.headers` to a plain object,
+  dropping caller-supplied `Headers` instances. It now preserves standard `HeadersInit` values and
+  adds JSON content type only for string request bodies; authenticated requests still preflight due
+  `Authorization`. Confirmed the removed SpaceType create/get/update wrappers had no callers and
+  pointed at unimplemented routes; only the live registry-list endpoint remains. Corrected the stale
+  comment claiming the implemented builder API-key routes were not live. Transport regression tests,
+  dashboard typecheck, and Pages build pass. The rest of the API wrapper's route/response contracts
+  is still open.
+
 - [x] **Source checklist classification now includes stylesheet and deployment source files.** The
   inventory generator previously omitted `.css` and related style/template languages, along with
   Dockerfile/Containerfile and Makefile-style inputs. It now includes those source/config formats

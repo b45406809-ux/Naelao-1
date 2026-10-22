@@ -16,23 +16,6 @@ export interface SpaceType {
   created_at: string;
 }
 
-export interface CreateSpaceTypeInput {
-  name: string;
-  description: string;
-  system_prompt_template: string;
-  model_config: {
-    model: string;
-    max_tokens: number;
-    temperature: number;
-  };
-  kb_config: {
-    max_documents: number;
-    chunk_size: number;
-    top_k: number;
-  };
-  tools: Array<{ name: string; description: string }>;
-}
-
 export interface Space {
   id: string;
   name: string;
@@ -153,13 +136,15 @@ export async function apiFetch<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const token = getToken();
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options.headers as Record<string, string> | undefined),
-  };
+  const headers = new Headers(options.headers);
+// Avoid adding an unnecessary JSON Content-Type to bodyless calls. Authenticated requests still
+// preflight because of Authorization; this can keep unauthenticated public reads simple.
+  if (typeof options.body === "string" && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
 
   if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+    headers.set("Authorization", `Bearer ${token}`);
   }
 
   const res = await fetch(`${API_URL}${path}`, {
@@ -244,29 +229,6 @@ export async function listSpaceTypes(): Promise<SpaceType[]> {
   const res = await apiFetch<{ data: SpaceType[] } | { types: SpaceType[] } | SpaceType[]>("/builder/space-types");
   if (Array.isArray(res)) return res;
   return (res as { data?: SpaceType[]; types?: SpaceType[] }).data ?? (res as { types?: SpaceType[] }).types ?? [];
-}
-
-export async function createSpaceType(
-  data: CreateSpaceTypeInput
-): Promise<SpaceType> {
-  return apiFetch<SpaceType>("/spacetypes", {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-}
-
-export async function getSpaceType(id: string): Promise<SpaceType> {
-  return apiFetch<SpaceType>(`/spacetypes/${pathSegment(id)}`);
-}
-
-export async function updateSpaceType(
-  id: string,
-  data: Partial<CreateSpaceTypeInput>
-): Promise<SpaceType> {
-  return apiFetch<SpaceType>(`/spacetypes/${pathSegment(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify(data),
-  });
 }
 
 // ── Spaces ───────────────────────────────────────────────────────────────────
@@ -355,7 +317,7 @@ export async function deleteKbDoc(
   });
 }
 
-// ── API Keys (Three-Tier Platform Model, Phase 3 — /builder/api-keys* not live until then) ──
+// ── Builder API keys (/builder/api-keys* is implemented by workers/spaces builder routes) ──
 
 export async function listApiKeys(): Promise<ApiKey[]> {
   const res = await apiFetch<{ data: ApiKey[] } | ApiKey[]>("/builder/api-keys");
