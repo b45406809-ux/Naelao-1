@@ -2388,3 +2388,9 @@ Validation: Browser Worker suite passed 3 files / 6 tests, TypeScript passed, Wr
 The BrowserSessionDO capped returned frame IDs and actionable elements, but its frame-tree traversal still visited every sibling at each level and recursively descended, while accessibility-node processing scanned the whole provider response if few nodes were actionable. Added iterative frame traversal with a 16-frame output / 64-node visit cap, plus a global 8,192 accessibility-node budget and 2,048 nodes per frame. Added synthetic 50,000-sibling, 10,000-depth, and million-node proxy stress cases proving the loops stop at configured bounds.
 
 Validation: Browser Worker suite passed 4 files / 9 tests; Browser Worker TypeScript and Wrangler dry-run build passed. Tests exercise pure traversal helpers; they do not instantiate a live Chromium page or validate provider-side response allocation. `BrowserSessionDO.ts` remains open for lifecycle review; the bounded helper and tests are checked in the file plan.
+
+## Gumroad connector test discovery (2026-10-22)
+
+The Gumroad shim had `src/index.test.ts` coverage for request size, invalid product IDs, redirect behavior, and timeout setup, but the worker package had no `test` script. Added the workspace Vitest dependency, config aliases, and package test task so Turbo can include the existing tests. The same source pass reviewed the worker route/auth wrapper, request/response byte caps, fixed provider origin, and Wrangler bindings; no live Gumroad request was made.
+
+Validation: focused Gumroad suite passed 1 file / 2 tests; TypeScript passed; Wrangler dry-run build passed. The last full Turbo suite predates this task; direct package validation covers the added task. Gumroad config and test rows are checked in the file plan.
