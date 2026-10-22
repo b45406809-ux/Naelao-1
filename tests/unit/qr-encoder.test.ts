@@ -241,6 +241,18 @@ describe("qrSvg", () => {
     expect(svg).toContain(`viewBox="0 0 ${grid.length + 8} ${grid.length + 8}"`);
   });
 
+  it.each([0, 3, 4.5, Number.NaN, Number.POSITIVE_INFINITY, 33])(
+    "rejects invalid quiet-zone sizes (%s)",
+    (quietZone) => {
+      expect(() => qrSvg("https://example.com", { quietZone })).toThrow(RangeError);
+    },
+  );
+
+  it("accepts the exact supported quiet-zone bounds", () => {
+    expect(qrSvg("https://example.com", { quietZone: 4 })).toContain('viewBox="0 0 ');
+    expect(qrSvg("https://example.com", { quietZone: 32 })).toContain('viewBox="0 0 ');
+  });
+
   it("is a single self-contained element with no external reference", () => {
     const svg = qrSvg("https://example.com");
     expect(svg.startsWith("<svg")).toBe(true);

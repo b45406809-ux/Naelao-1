@@ -493,6 +493,9 @@ export function encodeQr(text: string): boolean[][] {
 export function qrSvg(text: string, opts: { quietZone?: number; title?: string } = {}): string {
   const grid = encodeQr(text);
   const quiet = opts.quietZone ?? 4; // the spec's minimum; below this many scanners fail
+  if (!Number.isInteger(quiet) || quiet < 4 || quiet > 32) {
+    throw new RangeError("quietZone must be an integer between 4 and 32");
+  }
   const size = grid.length + quiet * 2;
 
   let path = "";

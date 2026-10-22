@@ -68,6 +68,8 @@
 .nav-group.open .nav-group-items{display:block}
 
 .sidebar-section{padding:14px 10px 4px;font-size:10.5px;font-weight:500;color:var(--text3);letter-spacing:0.07em;text-transform:uppercase;display:flex;align-items:center;justify-content:space-between}
+.sidebar-section-toggle{appearance:none;background:none;border:0;padding:0;color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit;display:flex;align-items:center;gap:5px;cursor:pointer}
+.sidebar-section-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
 .section-add{background:none;border:none;cursor:pointer;color:var(--text3);padding:2px;border-radius:4px;display:flex;transition:color var(--transition)}
 .section-add:hover{color:var(--text)}
 .section-add svg{width:13px;height:13px;stroke:currentColor}

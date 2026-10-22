@@ -1801,9 +1801,17 @@ first real business on free-tier resources before opening the platform to other 
   also has no retention/cleanup path and needs bounded retention without reopening old deliveries.
 
 - [ ] **Workspace dependency ranges and peer compatibility need a full pass.** `packages/types`
-  previously declared wildcard `*` development dependencies; that package now uses the repository's
-  bounded TypeScript and Workers Types ranges. Other workspace packages still declare wildcard
+  and `packages/ui` previously declared wildcard TypeScript development dependencies; both now use
+  the repository's bounded TypeScript range, and `packages/types` also uses the bounded Workers Types
+  range. Other workspace packages still declare wildcard
   TypeScript or `@cloudflare/workers-types` versions and should be normalized with lockfile review.
   A lockfile-only install also reported that the current Wrangler 4.149.0 peer range expects
   `@cloudflare/workers-types` v5 while the workspace resolves v4.20260623.1. Typechecking currently
   passes, but confirm the supported version pairing and CI install behavior before closing this.
+
+- [ ] **UI component behavior still needs browser-level stress coverage.** Shared controls had
+  keyboard-only activation gaps, unnamed switches, unannounced toast updates, and a modal without
+  dialog semantics or Escape/focus management; the scoped components now address these and have
+  server-render and keyboard-helper tests. The modal focus cycle/restore behavior has not been
+  exercised in a DOM/browser runtime, and CSS/theme, responsive overflow, contrast, nested modal,
+  and screen-reader behavior remain open across the UI package and shell app.

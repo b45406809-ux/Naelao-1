@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { IconName } from "./icons";
 import { ICON_REGISTRY } from "./icons";
+import { activateOnKeyboard } from "../keyboard";
 
 export interface NavItemProps {
   icon?: IconName;
@@ -21,9 +22,8 @@ export function NavItem({ icon, label, active, badge, indent, onClick, trailing 
       onClick={onClick}
       role="button"
       tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") onClick?.();
-      }}
+      aria-current={active ? "page" : undefined}
+      onKeyDown={(event) => activateOnKeyboard(event, () => onClick?.())}
     >
       {Icon && <Icon />}
       <span className="sidebar-text">{label}</span>
@@ -50,6 +50,7 @@ export function HistoryItem({ icon, label, meta, muted, onClick }: HistoryItemPr
       onClick={onClick}
       role="button"
       tabIndex={0}
+      onKeyDown={(event) => activateOnKeyboard(event, () => onClick?.())}
     >
       {Icon && <Icon />}
       <span className="sidebar-text">{label}</span>

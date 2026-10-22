@@ -2,6 +2,7 @@ import * as React from "react";
 import { Avatar } from "./Avatar";
 import { CheckIcon, ChevronDownIcon, PlusIcon, SettingsIcon, HierarchyIcon, AccountIcon, SpacesIcon } from "./icons";
 import { useTheme } from "../useTheme";
+import { activateOnKeyboard } from "../keyboard";
 
 export interface SpaceSwitcherEntry {
   id: string;
@@ -76,6 +77,8 @@ export function SpaceSwitcher({
               onClick={() => onSwitch(entry.id)}
               role="button"
               tabIndex={0}
+              aria-pressed={entry.id === current.id}
+              onKeyDown={(event) => activateOnKeyboard(event, () => onSwitch(entry.id))}
             >
               <div className="space-dot" style={{ background: entry.color ?? "var(--accent)" }}>
                 {entry.name.slice(0, 2).toUpperCase()}
@@ -91,7 +94,7 @@ export function SpaceSwitcher({
               )}
             </div>
             {entry.subspaces?.map((sub) => (
-              <div key={sub.id} className="subspace-indent" onClick={() => onSwitch(sub.id)} role="button" tabIndex={0}>
+              <div key={sub.id} className="subspace-indent" onClick={() => onSwitch(sub.id)} role="button" tabIndex={0} onKeyDown={(event) => activateOnKeyboard(event, () => onSwitch(sub.id))}>
                 <SpacesIcon />
                 {sub.name}
                 {sub.kind ? ` · ${sub.kind}` : ""}
@@ -101,33 +104,33 @@ export function SpaceSwitcher({
         ))}
         <div className="switcher-divider" />
         {canCreate && onCreate && (
-          <div className="switcher-action" onClick={onCreate} role="button" tabIndex={0}>
+          <div className="switcher-action" onClick={onCreate} role="button" tabIndex={0} onKeyDown={(event) => activateOnKeyboard(event, onCreate)}>
             <PlusIcon />
             Create New Space
           </div>
         )}
         {onSettings && (
-          <div className="switcher-action" onClick={onSettings} role="button" tabIndex={0}>
+          <div className="switcher-action" onClick={onSettings} role="button" tabIndex={0} onKeyDown={(event) => activateOnKeyboard(event, onSettings)}>
             <SettingsIcon />
             Space Settings
           </div>
         )}
         {onHierarchy && (
-          <div className="switcher-action" onClick={onHierarchy} role="button" tabIndex={0}>
+          <div className="switcher-action" onClick={onHierarchy} role="button" tabIndex={0} onKeyDown={(event) => activateOnKeyboard(event, onHierarchy)}>
             <HierarchyIcon />
             View Hierarchy
           </div>
         )}
         <div className="switcher-divider" />
         {onAccount && (
-          <div className="switcher-action" onClick={onAccount} role="button" tabIndex={0}>
+          <div className="switcher-action" onClick={onAccount} role="button" tabIndex={0} onKeyDown={(event) => activateOnKeyboard(event, onAccount)}>
             <AccountIcon />
             Account
           </div>
         )}
       </div>
 
-      <div className="space-row" onClick={onToggle} role="button" tabIndex={0}>
+      <div className="space-row" onClick={onToggle} role="button" tabIndex={0} aria-expanded={open} onKeyDown={(event) => activateOnKeyboard(event, onToggle)}>
         <Avatar name={current.name} />
         <div className="space-info">
           <div className="space-name">{current.name}</div>

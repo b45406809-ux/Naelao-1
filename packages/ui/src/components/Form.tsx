@@ -28,8 +28,8 @@ FormSelect.displayName = "FormSelect";
 export interface ToggleProps {
   on: boolean;
   onChange: (next: boolean) => void;
+  label: string;
   disabled?: boolean | undefined;
-  label?: string | undefined;
 }
 
 export function Toggle({ on, onChange, disabled, label }: ToggleProps) {

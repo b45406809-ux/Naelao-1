@@ -49,7 +49,7 @@ export function AttachmentOcrSettings({ spaceId, session, canManage }: {
           </div>
         </div>
         {canManage ? (
-          <Toggle on={enabled} onChange={(value) => void change(value)} disabled={busy || !loaded || !session} />
+          <Toggle label="Enable hosted OCR for image attachments" on={enabled} onChange={(value) => void change(value)} disabled={busy || !loaded || !session} />
         ) : (
           <span style={{ fontSize: 12, color: "var(--text2)" }}>{loaded ? enabled ? "Enabled" : "Off" : "Loading…"}</span>
         )}

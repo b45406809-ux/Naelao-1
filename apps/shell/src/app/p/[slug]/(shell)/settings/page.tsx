@@ -788,7 +788,7 @@ function AiTab({
             </div>
           </div>
           {canManage ? (
-            <Toggle on={policy?.approval_mode === "yolo"} onChange={toggleAutonomy} disabled={savingPolicy || !policy} />
+            <Toggle label="Autonomy mode" on={policy?.approval_mode === "yolo"} onChange={toggleAutonomy} disabled={savingPolicy || !policy} />
           ) : (
             <Badge color={policy?.approval_mode === "yolo" ? "green" : "blue"}>{policy?.approval_mode ?? "…"}</Badge>
           )}

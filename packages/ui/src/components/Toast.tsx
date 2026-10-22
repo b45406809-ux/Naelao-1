@@ -20,7 +20,7 @@ export function useToast() {
 
 export function Toast({ toast }: { toast: ToastState | null }) {
   return (
-    <div className={["toast", toast ? "show" : ""].filter(Boolean).join(" ")}>
+    <div role="status" aria-live="polite" aria-atomic="true" className={["toast", toast ? "show" : ""].filter(Boolean).join(" ")}>
       {toast?.message ?? ""}
     </div>
   );

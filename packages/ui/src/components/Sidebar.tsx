@@ -213,19 +213,15 @@ export function Sidebar({
 
       {threads && (
         <>
-          <div
-            className="sidebar-section sidebar-text"
-            style={{ cursor: "pointer" }}
-            onClick={() => setThreadsOpen((v) => !v)}
-          >
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <div className="sidebar-section sidebar-text">
+            <button className="sidebar-section-toggle" type="button" aria-expanded={threadsOpen} onClick={() => setThreadsOpen((v) => !v)}>
               <ChevronRightIcon
                 width={10}
                 height={10}
                 style={{ transition: "transform 0.2s", transform: threadsOpen ? "rotate(90deg)" : "none" }}
               />
               Sessions
-            </span>
+            </button>
             {onNewThread && (
               <button
                 className="section-add"
@@ -255,19 +251,15 @@ export function Sidebar({
 
       {projectThreads && (
         <>
-          <div
-            className="sidebar-section sidebar-text"
-            style={{ cursor: "pointer" }}
-            onClick={() => setProjectThreadsOpen((v) => !v)}
-          >
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <div className="sidebar-section sidebar-text">
+            <button className="sidebar-section-toggle" type="button" aria-expanded={projectThreadsOpen} onClick={() => setProjectThreadsOpen((v) => !v)}>
               <ChevronRightIcon
                 width={10}
                 height={10}
                 style={{ transition: "transform 0.2s", transform: projectThreadsOpen ? "rotate(90deg)" : "none" }}
               />
               Project threads
-            </span>
+            </button>
           </div>
           {projectThreadsOpen && (
             <div className="sidebar-history-list">
