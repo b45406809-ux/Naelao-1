@@ -16,7 +16,8 @@
   --border2: #d4d1c8;
   --text: #1a1917;
   --text2: #6b6860;
-  --text3: #9e9b94;
+  /* Keep small secondary labels readable against both the page and surface backgrounds. */
+  --text3: #706d66;
   --accent: #5b52f0;
   --accent2: #7b73f5;
   --accent-dim: rgba(91, 82, 240, 0.1);
@@ -45,7 +46,7 @@
   --border2: #333130;
   --text: #f0ede6;
   --text2: #8a8780;
-  --text3: #504e4a;
+  --text3: #8a8780;
   --accent: #7b73f5;
   --accent2: #9b95f8;
   --accent-dim: rgba(123, 115, 245, 0.12);
@@ -73,7 +74,7 @@
     --border2: #333130;
     --text: #f0ede6;
     --text2: #8a8780;
-    --text3: #504e4a;
+    --text3: #8a8780;
     --accent: #7b73f5;
     --accent2: #9b95f8;
     --accent-dim: rgba(123, 115, 245, 0.12);
@@ -83,6 +84,9 @@
     --ai-bubble: #1e1d1b;
     --ai-text: #f0ede6;
     --input-bg: #1e1d1b;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4), 0 8px 32px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.5), 0 16px 48px rgba(0, 0, 0, 0.4);
     --sidebar-rgb: 19, 18, 16;
     --surface-rgb: 25, 24, 23;
   }

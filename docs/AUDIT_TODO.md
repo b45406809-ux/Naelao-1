@@ -1818,6 +1818,11 @@ first real business on free-tier resources before opening the platform to other 
 - [ ] **UI component behavior still needs browser-level stress coverage.** Shared controls had
   keyboard-only activation gaps, unnamed switches, unannounced toast updates, and a modal without
   dialog semantics or Escape/focus management; the scoped components now address these and have
-  server-render and keyboard-helper tests. The modal focus cycle/restore behavior has not been
-  exercised in a DOM/browser runtime, and CSS/theme, responsive overflow, contrast, nested modal,
-  and screen-reader behavior remain open across the UI package and shell app.
+  server-render and keyboard-helper tests. Shared UI styles now provide a keyboard focus indicator,
+  reduced-motion overrides, and dynamic viewport sizing for mobile app/dialog layouts. Theme muted
+  text is tested at 4.5:1 contrast against page and surface backgrounds for explicit light, explicit
+  dark, and system-dark fallback tokens. The modal focus cycle/restore behavior has not been
+  exercised in a DOM/browser runtime; responsive overflow, nested modal interaction, full component
+  contrast, and screen-reader behavior remain open across the UI package and shell app. A headless
+  Chromium check could not complete in the current environment, so these changes still need browser
+  layout and assistive-technology validation.
