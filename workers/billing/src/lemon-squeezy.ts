@@ -272,9 +272,9 @@ async function recordProductOrder(
  * identity is never named in checkout metadata (unlike grantWalletTopupPurchase, an explicit
  * buyer-initiated top-up of a project the buyer chose) — it's the space's own auto-provisioned
  * kind='wallet' project, resolved the same way NaelaoAgentDO's wallet gate resolves it.
- * Best-effort: a missing wallet (a space provisioned before P0-4 shipped) or a transient outage
- * logs and returns false rather than throwing — never fails the webhook's 200 response over a
- * billing-side hiccup, matching every other grant/settle function in this file.
+ * A missing wallet (a space provisioned before P0-4 shipped) is a permanent no-op. Missing service
+ * binding, transient lookup errors, and failed credits throw so the webhook can retry instead of
+ * acknowledging a paid order without settling its proceeds.
  */
 async function settleOrderToWallet(
   spaceId: string,
@@ -284,8 +284,8 @@ async function settleOrderToWallet(
   reason: "sale_settlement" | "refund_clawback",
   env: LemonSqueezyEnv
 ): Promise<boolean> {
-  // Benign no-ops (nothing to settle / not configured) — return false, never a retriable failure.
-  if (cents <= 0 || !env.SPACES_WORKER) return false;
+  if (cents <= 0) return false;
+  if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for wallet settlement");
   const headers = {
     "content-type": "application/json",
     "x-naelao-tenant-id": tenantId,
@@ -386,7 +386,11 @@ async function recordNonOrderRefundClawback(
   if (event.type !== "refund.issued" || !event.providerEventId || !event.spaceId) return;
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
   const kind = typeof custom["kind"] === "string" ? custom["kind"] : null;
-  if (!kind || !env.SPACES_WORKER) return;
+  if (!kind) return;
+  if (["wallet_topup", "credit_pack", "revenue_cut_surcharge"].includes(kind) && !env.SPACES_WORKER) {
+    throw new Error(`Spaces worker is not bound for ${kind} refund clawback`);
+  }
+  if (!env.SPACES_WORKER) return;
 
   const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(event.spaceId).first<{ tenant_id: string }>();
@@ -630,7 +634,7 @@ async function grantCreditPackPurchase(
   const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
   const credits = custom["credits"] ? parseInt(String(custom["credits"]), 10) : 0;
   if (!endUserId || !productSpaceId || !credits) return false;
-  if (!env.SPACES_WORKER) return false;
+  if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for credit-pack grants");
 
   const product = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(productSpaceId).first<{ tenant_id: string }>();
@@ -693,7 +697,7 @@ export async function grantPersonalPlanPurchase(
   const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
   const tier = custom["tier"] ? String(custom["tier"]) : null;
   if (!endUserId || !productSpaceId || !tier) return false;
-  if (!env.SPACES_WORKER) return false;
+  if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for personal-plan grants");
 
   const product = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(productSpaceId).first<{ tenant_id: string }>();
@@ -739,7 +743,7 @@ async function grantWalletTopupPurchase(
   const projectId = custom["project_id"] ? String(custom["project_id"]) : null;
   const cents = custom["cents"] ? parseInt(String(custom["cents"]), 10) : 0;
   if (!projectId || !cents) return false;
-  if (!env.SPACES_WORKER) return false;
+  if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for wallet top-up grants");
 
   const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(event.spaceId).first<{ tenant_id: string }>();
@@ -788,7 +792,8 @@ async function recordRevenueCutSurchargePayment(
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
   if (custom["kind"] !== "revenue_cut_surcharge" || !event.spaceId) return false;
   const periods = custom["periods"] ? String(custom["periods"]).split(",").filter(Boolean) : [];
-  if (periods.length === 0 || !env.SPACES_WORKER) return false;
+  if (periods.length === 0) return false;
+  if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for revenue-cut settlement");
   // F-27: the per-period delta actually charged (parallel to periods) — added to billed_cents so a
   // later correction bills only the new delta. Absent (a checkout minted before this fix) → the
   // SpaceDO handler falls back to marking the period fully billed.
@@ -811,14 +816,13 @@ async function recordRevenueCutSurchargePayment(
       body: JSON.stringify({ periods, ...(charges ? { charges } : {}) }),
     }));
     if (!resp.ok) {
-      console.error(`[billing/ls] revenue-cut mark-billed failed for space=${event.spaceId}: ${await responseDetail(resp)}`);
-      return false;
+      throw new Error(`revenue-cut mark-billed ${resp.status} for space=${event.spaceId}: ${await responseDetail(resp)}`);
     }
     console.log(`[billing/ls] Marked revenue-cut periods billed for space=${event.spaceId}: ${periods.join(",")}`);
     return true;
   } catch (err) {
     console.error("[billing/ls] revenue-cut mark-billed error:", (err as Error).message);
-    return false;
+    throw err;
   }
 }
 
