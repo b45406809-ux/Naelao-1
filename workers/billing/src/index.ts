@@ -136,12 +136,14 @@ app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 registerMarketplaceLicenseRoutes(app);
 registerPartnerPortalRoutes(app);
 
+app.use("/billing/business-wallet/settle", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.post("/billing/business-wallet/settle", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);
   return settleSpaceWallet(c.env, tenantId, await c.req.json());
 });
 
+app.use("/billing/business-wallet/withdraw", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.post("/billing/business-wallet/withdraw", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId) return c.json({ error_code: "unauthorized" }, 401);

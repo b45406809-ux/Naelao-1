@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2046` tracked files; `1838` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `ee6b86df`.
+Inventory basis: `2047` tracked files; `1839` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `96c095e9`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
@@ -2230,9 +2230,9 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `workers/billing`
 
-- [ ] `workers/billing/package.json`
+- [x] `workers/billing/package.json`
 - [x] `workers/billing/tsconfig.json`
-- [ ] `workers/billing/vitest.config.ts`
+- [x] `workers/billing/vitest.config.ts`
 - [x] `workers/billing/wrangler.toml`
 
 ### `workers/billing/src`
@@ -2247,7 +2247,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/billing/src/payout-reconciliation.test.ts`
 - [ ] `workers/billing/src/payout-reconciliation.ts`
 - [ ] `workers/billing/src/quota.ts`
-- [ ] `workers/billing/src/request-body-boundaries.test.ts`
+- [x] `workers/billing/src/request-body-boundaries.test.ts`
 - [ ] `workers/billing/src/settlement.test.ts`
 - [ ] `workers/billing/src/settlement.ts`
 - [ ] `workers/billing/src/wallet-checkout.ts`
