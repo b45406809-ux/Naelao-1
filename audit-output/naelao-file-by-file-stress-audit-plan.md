@@ -1,12 +1,12 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2051` tracked files; `1843` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `cf154098`.
+Inventory basis: `2053` tracked files; `1845` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `c0271948`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
 
-- The refreshed source/config checklist records **610 scoped reviews / 1,233 open files** out of 1,843. The prior header undercounted both the inventory and reviewed rows; the generator preserved the checked file rows. Unchecked rows remain unaudited.
+- The refreshed source/config checklist records **616 scoped reviews / 1,229 open files** out of 1,845. Unchecked rows remain unaudited.
 - The latest full Turbo run passed 57 tasks, 368 root test files, and 3,846 root tests, including Gumroad and Whop test tasks. It ran after the latest Billing webhook identity, stale-subscription, missing-space, and reseller-refund attribution fixes. Earlier Marketplace response-privacy and request-size changes passed the migration-backed route suite (3 tests), TypeScript, and Wrangler dry run. Knowledge (64 tests) and Browser Worker (4 files / 9 tests) also passed focused suites with Worker typechecks/builds. Recursive workspace TypeScript previously passed 74/74 tasks after excluding Node-only test fixtures from runtime Worker tsconfigs.
 - Latest production dependency audit: 49 advisory records (4 critical, 11 high, 29 moderate, 5 low). All critical/high production findings trace to `next@14.2.18`; Pages adapter migration remains open.
 - Latest full dependency audit: 74 records (4 critical, 19 high, 42 moderate, 9 low). Remaining high build-tool findings include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`.
@@ -1161,6 +1161,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/knowledge-permissions.ts`
 - [x] `packages/security/src/marketplace-conformance.test.ts`
 - [x] `packages/security/src/marketplace-conformance.ts`
+- [x] `packages/security/src/pinned-fetch.test.ts` — scoped review: bounded HTTP framing/body limits, DNS-answer validation, peer-address check, cancellation, and concurrent fragmented-response stress; does not validate Cloudflare runtime behavior or caller integration.
+- [x] `packages/security/src/pinned-fetch.ts` — scoped review: injected socket connector, safe-address selection, TLS hostname verification, bounded HTTP/1.1 subset, no redirect following; not connected to production callers.
 - [x] `packages/security/src/rate-limit-do.ts`
 - [x] `packages/security/src/rate-limit-policy.test.ts`
 - [x] `packages/security/src/rate-limit-policy.ts`
@@ -1171,8 +1173,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/ssrf-guard.ts`
 - [x] `packages/security/src/ssrf-stress.test.ts`
 - [x] `packages/security/src/ssrf.ts`
-- [x] `packages/security/src/pinned-fetch.test.ts` — scoped review: bounded HTTP framing/body limits, DNS-answer validation, peer-address check, cancellation and concurrent fragmented-response stress; does not validate Cloudflare runtime behavior or caller integration.
-- [x] `packages/security/src/pinned-fetch.ts` — scoped review: injected socket connector, safe-address selection, TLS hostname verification, bounded HTTP/1.1 subset, no redirect following; not connected to production callers.
 - [x] `packages/security/src/waf-stress.test.ts`
 - [x] `packages/security/src/waf.ts`
 - [x] `packages/security/src/write-guard-stress.test.ts`
