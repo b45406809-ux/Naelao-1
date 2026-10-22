@@ -75,7 +75,7 @@ export async function settleMarketplaceLicenseEvent(event: NormalizedBillingEven
   if (event.type !== "payment.success" || event.metadata?.kind !== "marketplace_license") return false;
   const listingId = event.metadata.listing_id;
   const tenantId = event.metadata.buyer_tenant_id;
-  if (!listingId || !tenantId || tenantId !== event.spaceId || !event.providerEventId || !Number.isSafeInteger(event.amountCents) || event.amountCents <= 0) {
+  if (!listingId || !tenantId || tenantId !== event.spaceId || !event.providerEventId || !Number.isSafeInteger(event.amountCents) || event.amountCents <= 0 || event.currency?.toUpperCase() !== "USD") {
     throw new Error("marketplace license payment metadata is invalid");
   }
   const listing = await env.PLATFORM_DB.prepare(`SELECT id, tenant_id, developer_user_id, space_type_id, pricing_model, price_cents,
@@ -106,7 +106,7 @@ export async function settleMarketplaceLicenseEvent(event: NormalizedBillingEven
   const purchaseId = crypto.randomUUID();
   await env.PLATFORM_DB.batch([
     env.PLATFORM_DB.prepare(`INSERT INTO marketplace_license_purchases (id, provider_event_id, tenant_id, listing_id, buyer_space_id, amount_cents)
-      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(provider_event_id) DO NOTHING`)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`)
       .bind(purchaseId, event.providerEventId, tenantId, listing.id, tenantId, event.amountCents),
     env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO marketplace_forks (id, tenant_id, listing_id, blueprint_id, artifact_json, certificate_json)
       SELECT ?, ?, id, space_type_id, conformance_artifact_json, conformance_certificate_json FROM marketplace_listings
@@ -118,6 +118,17 @@ export async function settleMarketplaceLicenseEvent(event: NormalizedBillingEven
   ]);
   const purchase = await env.PLATFORM_DB.prepare("SELECT id FROM marketplace_license_purchases WHERE provider_event_id = ? AND tenant_id = ? AND listing_id = ?")
     .bind(event.providerEventId, tenantId, listing.id).first();
-  if (!purchase) throw new Error("marketplace license purchase could not be recorded");
+  if (!purchase) {
+    // Another distinct payment may have won the tenant/listing unique constraint after the
+    // initial read. Treat that race like an overpayment, rather than failing the webhook forever.
+    const existing = await env.PLATFORM_DB.prepare("SELECT id, provider_event_id FROM marketplace_license_purchases WHERE tenant_id = ? AND listing_id = ?")
+      .bind(tenantId, listing.id).first<{ id: string; provider_event_id: string }>();
+    if (!existing) throw new Error("marketplace license purchase could not be recorded");
+    if (existing.provider_event_id === event.providerEventId) return true;
+    await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO marketplace_license_overpayments
+      (provider_event_id, purchase_id, tenant_id, listing_id, amount_cents) VALUES (?, ?, ?, ?, ?)`)
+      .bind(event.providerEventId, existing.id, tenantId, listing.id, event.amountCents).run();
+    return true;
+  }
   return true;
 }

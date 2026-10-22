@@ -1513,7 +1513,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/long-running-agent-runs.test.ts`
 - [ ] `tests/unit/loop-multi-step-observation.test.ts`
 - [ ] `tests/unit/marketplace-conformance-routes.test.ts`
-- [ ] `tests/unit/marketplace-license-settlement.test.ts`
+- [x] `tests/unit/marketplace-license-settlement.test.ts`
 - [ ] `tests/unit/mcp-connector-hmac.test.ts`
 - [ ] `tests/unit/mcp-hub-connector-scope.test.ts`
 - [ ] `tests/unit/mcp-hub-hmac.test.ts`
@@ -2244,7 +2244,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/billing/src/llm-quota-reservations.test.ts`
 - [x] `workers/billing/src/ls-products.test.ts`
 - [ ] `workers/billing/src/ls-products.ts`
-- [ ] `workers/billing/src/marketplace-licenses.ts`
+- [x] `workers/billing/src/marketplace-licenses.ts`
 - [ ] `workers/billing/src/partner-portal.ts`
 - [x] `workers/billing/src/payout-reconciliation.test.ts`
 - [x] `workers/billing/src/payout-reconciliation.ts`

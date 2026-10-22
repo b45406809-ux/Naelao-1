@@ -19,13 +19,18 @@ describe("paid marketplace license settlement", () => {
     const env = { PLATFORM_DB: db as unknown as D1Database, PLATFORM_SECRET: secret };
     const event = { type: "payment.success", provider: "lemon_squeezy", spaceId: "buyer", customerId: "customer", subscriptionId: null,
       providerEventId: "ls-order-1", variantOrPriceId: "variant", amountCents: 4900, currency: "USD", metadata: { kind: "marketplace_license", listing_id: "listing", buyer_tenant_id: "buyer" } } as const;
+    await expect(settleMarketplaceLicenseEvent({ ...event, providerEventId: "ls-order-eur", currency: "EUR" }, env)).rejects.toThrow("metadata is invalid");
+    expect(db.db.prepare("SELECT COUNT(*) AS n FROM marketplace_license_purchases").get()).toMatchObject({ n: 0 });
     await expect(settleMarketplaceLicenseEvent(event, env)).resolves.toBe(true);
     await expect(settleMarketplaceLicenseEvent(event, env)).resolves.toBe(true);
-    await expect(settleMarketplaceLicenseEvent({ ...event, providerEventId: "ls-order-duplicate" }, env)).resolves.toBe(true);
+    await expect(Promise.all([
+      settleMarketplaceLicenseEvent({ ...event, providerEventId: "ls-order-duplicate-1" }, env),
+      settleMarketplaceLicenseEvent({ ...event, providerEventId: "ls-order-duplicate-2" }, env),
+    ])).resolves.toEqual([true, true]);
     expect(db.db.prepare("SELECT COUNT(*) AS n FROM marketplace_license_purchases").get()).toMatchObject({ n: 1 });
     expect(db.db.prepare("SELECT COUNT(*) AS n FROM marketplace_forks WHERE tenant_id='buyer'").get()).toMatchObject({ n: 1 });
     expect(db.db.prepare("SELECT amount_cents FROM developer_license_earnings").get()).toMatchObject({ amount_cents: 4900 });
-    expect(db.db.prepare("SELECT provider_event_id, status FROM marketplace_license_overpayments").get()).toMatchObject({ provider_event_id: "ls-order-duplicate", status: "refund_required" });
+    expect(db.db.prepare("SELECT COUNT(*) AS n FROM marketplace_license_overpayments WHERE status='refund_required'").get()).toMatchObject({ n: 2 });
     const payout = await reserveDeveloperPayout(env.PLATFORM_DB, "developer");
     expect(payout?.amount_cents).toBe(4900);
     db.db.close();
