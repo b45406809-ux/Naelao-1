@@ -119,6 +119,24 @@ describe("Lemon Squeezy webhook — storefront sale settles to the seller's own 
     expect(await verifyInternalToken(creditCall!.headers["x-naelao-internal-token"], "tenant1", PLATFORM_SECRET)).toBe(true);
   });
 
+  it("falls back to a safe fee when provider metadata and configuration exceed 100 percent", async () => {
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
+    const { fetcher, calls } = makeSpacesWorker();
+    const env = { ...makeEnv(fakeDb as unknown as D1Database, fetcher), LAUNCHPAD_FEE_BPS: "10001" };
+    const body = JSON.parse(makeOrderPaidBody("space1", "ord_bad_fee", "prod_a", 1999));
+    body.meta.custom_data.fee_bps = "999999";
+    body.data.attributes.custom_data.fee_bps = "999999";
+
+    const response = await post(JSON.stringify(body), env);
+    expect(response.status).toBe(200);
+    const creditCall = calls.find((c) => /\/wallet\/credit$/.test(c.url));
+    expect(creditCall?.body).toMatchObject({ cents: 1899 });
+    const order = await fakeDb.prepare("SELECT gross_cents, fee_cents, net_cents FROM launchpad_orders WHERE provider_event_id = 'ord_bad_fee'")
+      .first<{ gross_cents: number; fee_cents: number; net_cents: number }>();
+    expect(order).toEqual({ gross_cents: 1999, fee_cents: 100, net_cents: 1899 });
+  });
+
   it("never double-settles the same order on a replayed webhook delivery", async () => {
     const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();

@@ -19,6 +19,7 @@
 import { LemonSqueezyProvider, computeResellerAttribution, isLedgerEvent, billingPeriod } from "@naelao/billing-core";
 import type { NormalizedBillingEvent, BillingRelationship } from "@naelao/billing-core";
 import { mintInternalToken, readBoundedRequestText, readBoundedResponseText } from "@naelao/http";
+import { normalizeFeeBps } from "./fee-policy.js";
 import { invalidateQuotaCache } from "./quota.js";
 import { settleTemplateSubscriptionPayment } from "./settlement.js";
 import { settleMarketplaceLicenseEvent } from "./marketplace-licenses.js";
@@ -142,8 +143,8 @@ async function recordSeatActivation(
   if (!space) return null;
 
   const gross = event.amountCents ?? 0;
-  const feeBps = custom["fee_bps"] ? parseInt(String(custom["fee_bps"]), 10) : parseInt(env.LAUNCHPAD_FEE_BPS ?? "500", 10);
-  const fee = Math.round((gross * feeBps) / 10_000);
+  const feeBps = normalizeFeeBps(custom["fee_bps"], env.LAUNCHPAD_FEE_BPS);
+  const fee = Math.min(Math.max(0, gross), Math.round((Math.max(0, gross) * feeBps) / 10_000));
   // ARCH-REVENUE-6: builder's slice on a child business's seat sale (same as product sales).
   const builderShare = await resolveBuilderShare(event, gross, fee, env);
   const builderFee = builderShare?.builderFeeCents ?? 0;
@@ -217,8 +218,8 @@ async function recordProductOrder(
   if (!space) return null;
 
   const gross = event.amountCents ?? 0;
-  const feeBps = custom["fee_bps"] ? parseInt(String(custom["fee_bps"]), 10) : parseInt(env.LAUNCHPAD_FEE_BPS ?? "500", 10);
-  const fee = Math.round((gross * feeBps) / 10_000);
+  const feeBps = normalizeFeeBps(custom["fee_bps"], env.LAUNCHPAD_FEE_BPS);
+  const fee = Math.min(Math.max(0, gross), Math.round((Math.max(0, gross) * feeBps) / 10_000));
   // ARCH-REVENUE-6: a second deduction — the builder's configured slice of this child business's
   // sale. Zero for a top-level builder's direct sale (no parent reseller). The business wallet
   // receives gross - naelao_fee - builder_fee.

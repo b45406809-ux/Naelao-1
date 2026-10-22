@@ -26,6 +26,7 @@ import { normalizePlanTier, PLANS, BILLING_CORE_RATE_CARD_VERSION } from "@naela
 import { registerPartnerPortalRoutes } from "./partner-portal.js";
 import { reconcileDeveloperPayouts } from "./payout-reconciliation.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
+import { normalizeFeeBps } from "./fee-policy.js";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
 export interface BillingEnv {
@@ -879,7 +880,7 @@ app.post("/internal/commerce/checkout", async (c) => {
     return c.json({ error_code: "not_purchasable", message: "Product is not published" }, 409);
   }
 
-  const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+  const feeBps = normalizeFeeBps(c.env.LAUNCHPAD_FEE_BPS);
   // ARCH-REVENUE-6: stamp the builder's revenue-share bps AT CHECKOUT (resolved from the builder's
   // reseller product's config via the spaces worker) so a later config change can't re-price this
   // order. Zero for a top-level space with no parent builder.
@@ -977,7 +978,7 @@ app.post("/internal/seats/checkout", async (c) => {
   if (!cfgResp.ok) return c.json({ error_code: "not_configured", message: "Member billing is not enabled for this space" }, 409);
   const cfg = await cfgResp.json<{ seatPriceCents: number; currency: string; lsVariantId?: string }>();
 
-  const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+  const feeBps = normalizeFeeBps(c.env.LAUNCHPAD_FEE_BPS);
   const builderFeeBps = await resolveBuilderFeeBps(c.env, body.space_id); // ARCH-REVENUE-6
 
   if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !cfg.lsVariantId) {
@@ -1077,7 +1078,7 @@ app.post("/internal/business-subscriptions/checkout", async (c) => {
   const plan = catalog.plans.find((p) => p.id === body.plan_id);
   if (!plan) return c.json({ error_code: "not_found", message: "Plan not found" }, 404);
 
-  const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+  const feeBps = normalizeFeeBps(c.env.LAUNCHPAD_FEE_BPS);
 
   // Try the business's own connected Whop account first (AUDIT_TODO.md AI-7 pivot) — settles
   // 100% into that business's own Whop balance; Naelao's cut is NOT auto-split here (no
@@ -1165,7 +1166,7 @@ app.post("/internal/credit-packs/checkout", async (c) => {
   const pack = catalog.credit_packs.find((p) => p.id === body.pack_id);
   if (!pack) return c.json({ error_code: "not_found", message: "Credit pack not found" }, 404);
 
-  const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+  const feeBps = normalizeFeeBps(c.env.LAUNCHPAD_FEE_BPS);
 
   // Try the business's own connected Whop account first — same rationale as
   // business-subscriptions/checkout above. A credit pack is a one-time purchase (billingModel
