@@ -38,6 +38,6 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "../../tests/unit/external-revenue-tracking.test.ts"],
   },
 });

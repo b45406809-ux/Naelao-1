@@ -22,6 +22,7 @@ function makeEnv(opts: {
 } = {}) {
   const { cut = { enabled: true, cutBps: 500, lsVariantId: "variant-surcharge" }, snapshots = [], hasLsCreds = false } = opts;
   const calls: Call[] = [];
+  const claimedPeriods = new Set<string>();
   const db = {
     prepare(sql: string) {
       const stmt = {
@@ -38,6 +39,19 @@ function makeEnv(opts: {
     async fetch(reqInput: Request | string, init?: RequestInit) {
       const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
       calls.push({ url: req.url, method: req.method, body: null });
+      if (req.url.includes("/release-pending")) {
+        const body = await req.clone().json() as { periods?: string[] };
+        for (const period of body.periods ?? []) claimedPeriods.delete(period);
+        return Response.json({ released: true });
+      }
+      if (req.url.includes("/mark-pending")) {
+        const body = await req.clone().json() as { periods?: string[] };
+        if ((body.periods ?? []).some((period) => claimedPeriods.has(period))) {
+          return Response.json({ error_code: "revenue_period_already_reserved" }, { status: 409 });
+        }
+        for (const period of body.periods ?? []) claimedPeriods.add(period);
+        return Response.json({ claimed: true });
+      }
       if (req.url.includes("/internal/pricing-catalog")) {
         return Response.json({ product_space_id: "product-root", external_revenue_cut: cut });
       }
@@ -132,6 +146,48 @@ describe("POST /internal/revenue-cut-surcharge/checkout", () => {
     });
     const res = await post(env, { business_space_id: "space-1" });
     expect(res.status).toBe(404); // the only billable period is pending → nothing to bill
+  });
+
+  it("claims revenue periods before provider calls and allows only one concurrent checkout", async () => {
+    const { env, calls } = makeEnv({
+      snapshots: [{ period: "2026-06", revenue_cents: 100_000, billed: false }],
+      hasLsCreds: true,
+    });
+    const originalFetch = globalThis.fetch;
+    let providerCalls = 0;
+    globalThis.fetch = (async () => {
+      providerCalls++;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return Response.json({ data: { attributes: { url: "https://checkout.lemonsqueezy.com/x" } } });
+    }) as typeof fetch;
+    try {
+      const responses = await Promise.all([post(env, { business_space_id: "space-1" }), post(env, { business_space_id: "space-1" })]);
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+      expect(providerCalls).toBe(1);
+      const claimAt = calls.findIndex((call) => call.url.includes("/mark-pending"));
+      const readAt = calls.findIndex((call) => call.url.includes("/revenue-tracking") && !call.url.includes("/mark-pending"));
+      expect(claimAt).toBeGreaterThan(readAt);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("releases a deterministic provider rejection but retains claims after an uncertain 5xx", async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      for (const status of [422, 503]) {
+        const { env, calls } = makeEnv({
+          snapshots: [{ period: "2026-06", revenue_cents: 100_000, billed: false }],
+          hasLsCreds: true,
+        });
+        globalThis.fetch = (async () => new Response("provider error", { status })) as typeof fetch;
+        const response = await post(env, { business_space_id: "space-1" });
+        expect(response.status).toBe(502);
+        expect(calls.some((call) => call.url.includes("/release-pending"))).toBe(status === 422);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("404s when revenue-cut billing is not enabled for this product", async () => {

@@ -1465,7 +1465,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/eval-trace-checks.test.ts`
 - [ ] `tests/unit/eval-worker-agent-mode.test.ts`
 - [ ] `tests/unit/execution-ceiling.test.ts`
-- [ ] `tests/unit/external-revenue-tracking.test.ts`
+- [x] `tests/unit/external-revenue-tracking.test.ts`
 - [ ] `tests/unit/fail-closed-lock-and-rules.test.ts`
 - [x] `tests/unit/failure-classification.test.ts`
 - [ ] `tests/unit/feature-kinds-route.test.ts`
@@ -1595,7 +1595,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `tests/unit/reseller-suspension.test.ts`
 - [ ] `tests/unit/reserved-capabilities.test.ts`
 - [ ] `tests/unit/resume-run-continuation.test.ts`
-- [ ] `tests/unit/revenue-cut-surcharge.test.ts`
+- [x] `tests/unit/revenue-cut-surcharge.test.ts`
 - [ ] `tests/unit/revenue-reporting-lapse-gate.test.ts`
 - [ ] `tests/unit/revenue-tracker-prebuilt.test.ts`
 - [ ] `tests/unit/router-agent-key-gate.test.ts`
@@ -2481,7 +2481,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `workers/spaces/package.json`
 - [ ] `workers/spaces/tsconfig.json`
-- [ ] `workers/spaces/vitest.config.ts`
+- [x] `workers/spaces/vitest.config.ts`
 - [x] `workers/spaces/wrangler.toml`
 
 ### `workers/spaces/src`

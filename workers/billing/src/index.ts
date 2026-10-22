@@ -1468,18 +1468,25 @@ app.post("/internal/revenue-cut-surcharge/checkout", async (c) => {
   const periods = billable.map((s) => s.period);
   const charges = billable.map((s) => s.delta);
 
-  // F-31: reserve these periods so a concurrent/retry checkout skips them. Best-effort — a failure
-  // here doesn't block the checkout (the delta guard still prevents true double-charge on payment).
-  const markPending = async () => {
+  // F-31: claim periods atomically BEFORE creating a payable checkout. A concurrent request
+  // receives 409 instead of minting a second checkout for the same revenue.
+  const checkoutId = crypto.randomUUID();
+  const claimResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(body.business_space_id)}/revenue-tracking/mark-pending`, {
+    method: "POST", headers: { "content-type": "application/json", ...internalHeaders },
+    body: JSON.stringify({ periods, checkout_id: checkoutId }),
+  }));
+  if (claimResp.status === 409) return c.json({ error_code: "revenue_period_already_reserved" }, 409);
+  if (!claimResp.ok) return c.json({ error_code: "revenue_period_claim_failed" }, 503);
+  const releasePending = async () => {
     try {
-      await c.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/spaces/${body.business_space_id}/revenue-tracking/mark-pending`, {
-        method: "POST", headers: { "content-type": "application/json", ...internalHeaders }, body: JSON.stringify({ periods }),
+      await c.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(body.business_space_id)}/revenue-tracking/release-pending`, {
+        method: "POST", headers: { "content-type": "application/json", ...internalHeaders },
+        body: JSON.stringify({ periods, checkout_id: checkoutId }),
       }));
-    } catch { /* best-effort */ }
+    } catch { /* the exact checkout claim expires after 24 hours */ }
   };
 
   if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !cut.lsVariantId) {
-    await markPending();
     return c.json({
       checkout_url: `https://checkout.naelao.com/dev/revenue-cut-surcharge/${body.business_space_id}`,
       surcharge_cents: surchargeCents,
@@ -1493,22 +1500,29 @@ app.post("/internal/revenue-cut-surcharge/checkout", async (c) => {
     LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
     LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
   });
-  const { url } = await provider.createCheckout({
-    spaceId: body.business_space_id,
-    variantOrPriceId: cut.lsVariantId,
-    customPriceCents: surchargeCents,
-    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-    metadata: {
-      kind: "revenue_cut_surcharge",
-      periods: periods.join(","),
-      // F-27: the exact delta charged per period (parallel to `periods`), so mark-billed can add
-      // it to billed_cents and a refund can reverse exactly it.
-      period_charges: charges.join(","),
-      product_space_id: catalog.product_space_id,
-    },
-  });
-  await markPending();
-  return c.json({ checkout_url: url, surcharge_cents: surchargeCents, periods });
+  try {
+    const { url } = await provider.createCheckout({
+      spaceId: body.business_space_id,
+      variantOrPriceId: cut.lsVariantId,
+      customPriceCents: surchargeCents,
+      ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+      metadata: {
+        kind: "revenue_cut_surcharge",
+        periods: periods.join(","),
+        // F-27: exact period deltas let payment/refund handlers adjust billed_cents precisely.
+        period_charges: charges.join(","),
+        product_space_id: catalog.product_space_id,
+      },
+    });
+    return c.json({ checkout_url: url, surcharge_cents: surchargeCents, periods });
+  } catch (error) {
+    // Release only when the provider explicitly rejected the request (4xx). A timeout, 5xx, or
+    // malformed response may happen after the provider created a checkout; retaining the claim
+    // avoids a second live payment URL during that uncertain outcome.
+    if (/failed: 4\d\d\b/.test((error as Error).message)) await releasePending();
+    console.error("[billing/revenue-cut-surcharge] checkout creation failed:", (error as Error).message);
+    return c.json({ error_code: "checkout_creation_failed" }, 502);
+  }
 });
 
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────

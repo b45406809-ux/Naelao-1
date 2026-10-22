@@ -160,7 +160,7 @@ describe("F-27/F-31: billed_cents delta accounting + pending guard (SpaceDO)", (
   async function read(env: ReturnType<typeof makeEnv>, period: string) {
     const h = await headers("t1");
     const res = await spacesWorker.fetch(req(`/spaces/s1/revenue-tracking?period=${period}`, h), env as never, execCtx);
-    return res.json() as Promise<{ revenue_cents: number; billed: boolean; billed_cents: number; pending_checkout_at: string | null }>;
+    return res.json() as Promise<{ revenue_cents: number; billed: boolean; billed_cents: number; pending_checkout_at: string | null; pending_checkout_id: string | null }>;
   }
 
   it("F-27: mark-billed with charges ACCUMULATES billed_cents; a correction does NOT reset it", async () => {
@@ -193,15 +193,29 @@ describe("F-27/F-31: billed_cents delta accounting + pending guard (SpaceDO)", (
     expect(row.billed).toBe(false);
   });
 
-  it("F-31: mark-pending stamps pending_checkout_at; mark-billed clears it", async () => {
+  it("F-31: checkout-scoped pending claims serialize competing checkouts and clear on payment", async () => {
     const env = makeEnv();
     await track(env, "2026-06", 100_000);
     const h = await headers("t1");
-    await spacesWorker.fetch(req("/spaces/s1/revenue-tracking/mark-pending", h, { method: "POST", body: JSON.stringify({ periods: ["2026-06"] }) }), env as never, execCtx);
+    const claim = (checkout_id: string, path = "mark-pending") => spacesWorker.fetch(req(`/spaces/s1/revenue-tracking/${path}`, h, {
+      method: "POST", body: JSON.stringify({ periods: ["2026-06"], checkout_id }),
+    }), env as never, execCtx);
+    expect((await claim("checkout-a")).status).toBe(200);
+    expect((await claim("checkout-a")).status).toBe(200); // same ID retry is idempotent
+    expect((await claim("checkout-b")).status).toBe(409); // concurrent checkout cannot claim
     let row = await read(env, "2026-06");
     expect(row.pending_checkout_at).toBeTruthy();
+    expect(row.pending_checkout_id).toBe("checkout-a");
+    await claim("checkout-b", "release-pending"); // another checkout cannot release the owner claim
+    row = await read(env, "2026-06");
+    expect(row.pending_checkout_id).toBe("checkout-a");
+    await claim("checkout-a", "release-pending");
+    row = await read(env, "2026-06");
+    expect(row.pending_checkout_id).toBeNull();
+    expect((await claim("checkout-b")).status).toBe(200);
     await markBilled(env, ["2026-06"], [5000]);
     row = await read(env, "2026-06");
     expect(row.pending_checkout_at).toBeNull();
+    expect(row.pending_checkout_id).toBeNull();
   });
 });

@@ -2159,6 +2159,11 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE extension_releases ADD COLUMN publisher_revoked_at TEXT;
       CREATE INDEX idx_extension_releases_publisher_key ON extension_releases(publisher_key_id,publisher_revoked_at);`,
   },
+  {
+    version: 93,
+    description: "scope external revenue surcharge checkout claims to checkout ids",
+    up: `ALTER TABLE external_revenue_snapshots ADD COLUMN pending_checkout_id TEXT;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3378,6 +3383,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         url.pathname === "/revenue-tracking/mark-pending"
       ) {
         return this.markRevenuePending(request);
+      }
+      if (
+        method === "POST" &&
+        url.pathname === "/revenue-tracking/release-pending"
+      ) {
+        return this.releaseRevenuePending(request);
       }
       // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
       const projFactsMatch = url.pathname.match(
@@ -8904,10 +8915,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         billed: number;
         billed_cents: number;
         pending_checkout_at: string | null;
+        pending_checkout_id: string | null;
         tracked_at: string;
       }>(
         this.ctx.storage.sql as never,
-        "SELECT revenue_cents, billed, billed_cents, pending_checkout_at, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
+        "SELECT revenue_cents, billed, billed_cents, pending_checkout_at, pending_checkout_id, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
         spaceId,
         period,
         provider
@@ -8921,6 +8933,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           billed: false,
           billed_cents: 0,
           pending_checkout_at: null,
+          pending_checkout_id: null,
           tracked_at: null,
         });
       return Response.json({
@@ -8931,6 +8944,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         billed: row.billed === 1,
         billed_cents: row.billed_cents,
         pending_checkout_at: row.pending_checkout_at,
+        pending_checkout_id: row.pending_checkout_id,
         tracked_at: row.tracked_at,
       });
     }
@@ -8941,10 +8955,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       billed: number;
       billed_cents: number;
       pending_checkout_at: string | null;
+      pending_checkout_id: string | null;
       tracked_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT period, revenue_cents, billed, billed_cents, pending_checkout_at, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND provider = ? ORDER BY period DESC LIMIT 24",
+      "SELECT period, revenue_cents, billed, billed_cents, pending_checkout_at, pending_checkout_id, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND provider = ? ORDER BY period DESC LIMIT 24",
       spaceId,
       provider
     );
@@ -8957,6 +8972,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         billed: r.billed === 1,
         billed_cents: r.billed_cents,
         pending_checkout_at: r.pending_checkout_at,
+        pending_checkout_id: r.pending_checkout_id,
         tracked_at: r.tracked_at,
       })),
       last_tracked_at: rows[0]?.tracked_at ?? null,
@@ -9002,7 +9018,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (charge !== null) {
         execute(
           this.ctx.storage.sql as never,
-          "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = billed_cents + ?, pending_checkout_at = NULL WHERE space_id = ? AND period = ? AND provider = ?",
+          "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = billed_cents + ?, pending_checkout_at = NULL, pending_checkout_id = NULL WHERE space_id = ? AND period = ? AND provider = ?",
           charge,
           spaceId,
           period,
@@ -9011,7 +9027,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       } else {
         execute(
           this.ctx.storage.sql as never,
-          "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = revenue_cents, pending_checkout_at = NULL WHERE space_id = ? AND period = ? AND provider = ?",
+          "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = revenue_cents, pending_checkout_at = NULL, pending_checkout_id = NULL WHERE space_id = ? AND period = ? AND provider = ?",
           spaceId,
           period,
           provider
@@ -9062,7 +9078,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (charge !== null) {
         execute(
           this.ctx.storage.sql as never,
-          "UPDATE external_revenue_snapshots SET billed_cents = MAX(0, billed_cents - ?) WHERE space_id = ? AND period = ? AND provider = ?",
+        "UPDATE external_revenue_snapshots SET billed_cents = MAX(0, billed_cents - ?), pending_checkout_at = NULL, pending_checkout_id = NULL WHERE space_id = ? AND period = ? AND provider = ?",
           charge,
           spaceId,
           period,
@@ -9071,7 +9087,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       } else {
         execute(
           this.ctx.storage.sql as never,
-          "UPDATE external_revenue_snapshots SET billed_cents = 0 WHERE space_id = ? AND period = ? AND provider = ?",
+        "UPDATE external_revenue_snapshots SET billed_cents = 0, pending_checkout_at = NULL, pending_checkout_id = NULL WHERE space_id = ? AND period = ? AND provider = ?",
           spaceId,
           period,
           provider
@@ -9092,42 +9108,75 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
   }
 
-  // F-31: mark periods as having an in-flight surcharge checkout (skipped for ~24h so two checkouts
-  // minted before either is paid don't both bill the same periods). The billing worker calls this
-  // right after minting a checkout URL. Cleared on pay (mark-billed) or refund. A stale pending
-  // (>24h) is treated as abandoned and re-billable by the checkout's own filter.
+  // F-31: atomically claim periods before minting a surcharge checkout. The checkout id makes
+  // retries idempotent and lets a failed provider call release only its own claim. Stale claims
+  // (>24h) are reclaimable after abandoned checkouts.
   private async markRevenuePending(request: Request): Promise<Response> {
     const body = await request
-      .json<{ space_id?: string; periods?: string[]; provider?: string }>()
+      .json<{ space_id?: string; periods?: string[]; provider?: string; checkout_id?: string }>()
       .catch(() => ({}) as Record<string, never>);
     const spaceId = body.space_id ?? "";
     const provider = body.provider ?? "whop";
-    const periods = Array.isArray(body.periods)
-      ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p))
-      : [];
-    if (!spaceId || periods.length === 0) {
+    const periods = Array.isArray(body.periods) ? body.periods : [];
+    const checkoutId = body.checkout_id ?? "";
+    if (!spaceId || spaceId.length > 128 || !/^[a-z][a-z0-9_-]{0,31}$/.test(provider) ||
+        !checkoutId || checkoutId.length > 128 || periods.length < 1 || periods.length > 24 ||
+        periods.some((p) => typeof p !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(p)) ||
+        new Set(periods).size !== periods.length) {
       return Response.json(
         {
           error_code: "bad_request",
-          message: "space_id and at least one valid period are required",
+          message: "space_id, checkout_id, and up to 24 unique valid periods are required",
         },
         { status: 400 }
       );
     }
-    for (const period of periods) {
-      execute(
-        this.ctx.storage.sql as never,
-        "UPDATE external_revenue_snapshots SET pending_checkout_at = datetime('now') WHERE space_id = ? AND period = ? AND provider = ?",
-        spaceId,
-        period,
-        provider
+    const sql = this.ctx.storage.sql as never;
+    const claim = this.ctx.storage.transactionSync(() => {
+      const rows = periods.map((period) => queryOne<{ pending_checkout_id: string | null; pending_checkout_at: string | null }>(
+        sql,
+        "SELECT pending_checkout_id, pending_checkout_at FROM external_revenue_snapshots WHERE space_id=? AND period=? AND provider=?",
+        spaceId, period, provider,
+      ));
+      if (rows.some((row) => !row || (row.pending_checkout_id !== checkoutId && row.pending_checkout_at !== null &&
+          row.pending_checkout_at > new Date(Date.now() - 24 * 60 * 60_000).toISOString().slice(0, 19).replace("T", " ")))) {
+        return false;
+      }
+      for (const period of periods) execute(sql,
+        "UPDATE external_revenue_snapshots SET pending_checkout_at=datetime('now'), pending_checkout_id=? WHERE space_id=? AND period=? AND provider=?",
+        checkoutId, spaceId, period, provider,
       );
+      return true;
+    });
+    if (!claim) {
+      return Response.json({ error_code: "revenue_period_already_reserved" }, { status: 409 });
     }
     return Response.json({
       space_id: spaceId,
       provider,
+      checkout_id: checkoutId,
+      claimed: true,
       pending_periods: periods,
     });
+  }
+
+  private async releaseRevenuePending(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; periods?: string[]; provider?: string; checkout_id?: string }>()
+      .catch(() => ({}) as Record<string, never>);
+    const spaceId = body.space_id ?? "", provider = body.provider ?? "whop", checkoutId = body.checkout_id ?? "";
+    const periods = Array.isArray(body.periods) ? body.periods : [];
+    if (!spaceId || spaceId.length > 128 || !checkoutId || checkoutId.length > 128 ||
+        !/^[a-z][a-z0-9_-]{0,31}$/.test(provider) || periods.length < 1 || periods.length > 24 ||
+        periods.some((p) => typeof p !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(p)) || new Set(periods).size !== periods.length) {
+      return Response.json({ error_code: "bad_request" }, { status: 400 });
+    }
+    this.ctx.storage.transactionSync(() => {
+      for (const period of periods) execute(this.ctx.storage.sql as never,
+        "UPDATE external_revenue_snapshots SET pending_checkout_at=NULL, pending_checkout_id=NULL WHERE space_id=? AND period=? AND provider=? AND pending_checkout_id=?",
+        spaceId, period, provider, checkoutId,
+      );
+    });
+    return Response.json({ released: true, checkout_id: checkoutId });
   }
 
   private getWalletBalance(projectId: string): Response {
