@@ -2400,3 +2400,9 @@ Validation: focused Gumroad suite passed 1 file / 2 tests; TypeScript passed; Wr
 The Whop shim likewise had boundary tests but no package `test` script. Added Vitest workspace config/dependency and a test task. Reviewed the shim's REST paths, strict ID and write-payload checks, request/response limits, redirect handling, timeout, internal HMAC gate, and deployment bindings. The shim exposes two write tools, so its capability policy in MCP Hub and connector permission registry remains part of the broader review; no live Whop request was made.
 
 Validation: focused Whop suite passed 1 file / 2 tests; TypeScript and Wrangler dry-run build passed. The latest full Turbo run predates the Gumroad and Whop task additions; both packages were validated directly. Whop package/config/test rows are now checked in the file plan.
+
+## Knowledge worker scoped validation (2026-10-22)
+
+Reviewed the Knowledge worker manifest, runtime type configuration, Vitest config, and the Foundry sharing regression tests. The internal document-sharing routes verify tenant/space ownership, require indexed space-wide documents, return sanitized KB chunk text under a 250 KiB cap, and do not include content in the reference-resolution route. The tests exercise direct-access denial and suspended-space denials. The larger Knowledge `index.ts` remains unchecked; retrieval, ingestion, external publication, and lifecycle routes still need file-by-file review.
+
+Validation: Knowledge suite passed 10 files / 64 tests, TypeScript passed, and Wrangler dry-run build passed with its D1/KV/Vectorize/R2/service/AI bindings. No live D1, Vectorize, R2, AI, AutoRAG, or external-provider exercise was performed.
