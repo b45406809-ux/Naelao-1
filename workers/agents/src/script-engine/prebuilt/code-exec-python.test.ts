@@ -69,8 +69,8 @@ describe("bounded lightweight Python execution", () => {
     const fetch = vi.fn(() => new Promise<Response>(() => {}));
     const loader = { get: () => ({ getEntrypoint: () => ({ fetch }) }) } as unknown as WorkerLoaderBinding;
     const ctx = context({ loader, pythonEnabled: true, maxConcurrentPerTenant: 1, isolateTimeoutMs: 5000 });
-    await expect(codeExec.operations["code.execute_python"]({ code: "result = 42", timeout: 0.01 }, ctx)).rejects.toThrow("code_cancelled_or_timed_out");
-    await expect(codeExec.operations["code.execute_python"]({ code: "result = 42", timeout: 0.01 }, ctx)).rejects.toThrow("code_cancelled_or_timed_out");
+    await expect(codeExec.operations["code.execute_python"]({ code: "result = 42", timeout: 0.1 }, ctx)).rejects.toThrow("code_cancelled_or_timed_out");
+    await expect(codeExec.operations["code.execute_python"]({ code: "result = 42", timeout: 0.1 }, ctx)).rejects.toThrow("code_cancelled_or_timed_out");
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 

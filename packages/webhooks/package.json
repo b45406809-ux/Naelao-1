@@ -23,6 +23,6 @@
   "devDependencies": {
     "@cloudflare/workers-types": "*",
     "typescript": "*",
-    "vitest": "^2.1.8"
+    "vitest": "4.1.0"
   }
 }

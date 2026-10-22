@@ -1,9 +1,9 @@
 Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
-Files: 2034
-Files with source or executable-configuration extensions: 1826
-Inventory revision: 2026-10-22 audit refresh at 65ad6b0c
+Files: 2035
+Files with source or executable-configuration extensions: 1827
+Inventory revision: 2026-10-22 audit refresh at c2008122
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -363,6 +363,7 @@ apps/
         DeskDropLogin.tsx
         DiscoverMarketRadar.tsx
         DomainGlossaryPanel.tsx
+        FileViewer.test.tsx
         FileViewer.tsx
         HtmlPreviewFrame.test.ts
         HtmlPreviewFrame.tsx
@@ -414,9 +415,8 @@ apps/
         roles.ts
         terminal-output.ts
         user-facing-errors.ts
-      types/
-        mammoth-browser.d.ts
     tsconfig.json
+    vitest.config.ts
   widget/
     package.json
     src/

@@ -12,7 +12,8 @@ const ctx = { waitUntil() {}, passThroughOnException() {} } as unknown as Execut
 
 function database() {
   const db = createFakeD1([
-    `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL, parent_space_id TEXT, name TEXT, spacetype_id TEXT, config_json TEXT);`,
+    readFileSync(join(__dirname, "../../infra/migrations/0002_orgs.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0041_scheduled_jobs.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0042_scheduled_jobs_failures.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0043_scheduled_jobs_agent_goal.sql"), "utf8"),
@@ -20,6 +21,7 @@ function database() {
     readFileSync(join(__dirname, "../../infra/migrations/0108_project_steward_decisions.sql"), "utf8"),
     readFileSync(join(__dirname, "../../infra/migrations/0112_extension_provider_connections.sql"), "utf8"),
   ]);
+  db.db.exec(`INSERT INTO orgs (id, name, owner_id, status) VALUES ('${TENANT}', 'Test tenant', 'owner-1', 'active')`);
   db.db.exec(`INSERT INTO spaces (id,tenant_id,status,name,spacetype_id) VALUES ('${SPACE}','${TENANT}','active','Test Space','launchpad')`);
   db.db.exec(`INSERT INTO scheduled_jobs (id,space_id,tenant_id,project_id,name,cron_expression,script_name,consecutive_failures) VALUES
     ('visible-job','${SPACE}','${TENANT}','project-visible','Review','0 * * * *','review',2),

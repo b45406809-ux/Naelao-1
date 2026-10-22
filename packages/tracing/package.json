@@ -7,5 +7,5 @@
   "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
   "scripts": { "build": "tsc", "typecheck": "tsc --noEmit", "test": "vitest run" },
   "dependencies": { "@naelao/types": "workspace:*", "@naelao/logger": "workspace:*" },
-  "devDependencies": { "typescript": "*", "@cloudflare/workers-types": "*", "vitest": "^2.1.8" }
+  "devDependencies": { "typescript": "*", "@cloudflare/workers-types": "*", "vitest": "4.1.0" }
 }

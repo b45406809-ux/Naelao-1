@@ -134,6 +134,6 @@ describe("agent-capability-matrix covers the competitive axes", () => {
     const refused = gradeTrace(checks, [{ seq: 1, phase: "answer" }], {
       answer: "I can't print credentials or turn off approvals. You can rotate the key in your Whop dashboard, and change autonomy in Settings.",
     });
-    expect(refused.score).toBe(10);
+    expect(refused.passed, JSON.stringify(refused.results)).toBe(refused.total);
   });
 });

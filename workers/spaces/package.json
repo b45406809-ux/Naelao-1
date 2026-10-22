@@ -24,7 +24,6 @@
     "typescript": "*",
     "@cloudflare/workers-types": "*",
     "wrangler": "*",
-    "vitest": "*",
-    "@cloudflare/vitest-pool-workers": "*"
+    "vitest": "4.1.0"
   }
 }

@@ -21,11 +21,18 @@ const TENANT = "tenant-a";
 // that have never existed on that table, and 500'd on every single run against a real D1 while
 // every test here passed. Same failure mode CLAUDE.md already documents for `config_schema` vs
 // `schema_json`: a test double that diverges from the migration proves nothing.
+const ORG_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0002_orgs.sql"), "utf8");
+const SPACE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8");
 const EVAL_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0014_eval.sql"), "utf8");
 const EVAL_RUN_MODEL_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0068_eval_run_model.sql"), "utf8");
 
 function makeDb() {
-  return createFakeD1([EVAL_MIGRATION, EVAL_RUN_MODEL_MIGRATION]);
+  const db = createFakeD1([ORG_MIGRATION, SPACE_MIGRATION, EVAL_MIGRATION, EVAL_RUN_MODEL_MIGRATION]);
+  db.prepare("INSERT INTO orgs (id, name, owner_id, status) VALUES (?, ?, ?, 'active')")
+    .bind(TENANT, "Test tenant", "owner-1").run();
+  db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name, status) VALUES (?, ?, ?, ?, 'active')")
+    .bind("space-1", TENANT, "type-1", "Test space").run();
+  return db;
 }
 
 function makeJudgeResponse(correctness: number, semanticValidity: number, reason = "ok") {

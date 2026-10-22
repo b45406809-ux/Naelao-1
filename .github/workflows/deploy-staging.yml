@@ -215,7 +215,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build dashboard
-        run: pnpm --filter @naelao/dashboard build
+        run: pnpm --filter @naelao/dashboard exec next-on-pages
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.API_URL_STAGING }}
 
@@ -247,7 +247,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build portal
-        run: pnpm --filter @naelao/portal build
+        run: pnpm --filter @naelao/portal exec next-on-pages
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.API_URL_STAGING }}
 
@@ -279,7 +279,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build marketplace
-        run: pnpm --filter @naelao/marketplace-web build
+        run: pnpm --filter @naelao/marketplace-web exec next-on-pages
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.API_URL_STAGING }}
           NEXT_PUBLIC_DASHBOARD_URL: ${{ vars.DASHBOARD_URL_STAGING }}

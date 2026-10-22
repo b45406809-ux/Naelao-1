@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { executeGoalDag, type GoalDagHost, type GoalDagJournal } from "./goal-dag.js";
 import { validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
+import { MAX_SUB_AGENT_BUDGET_TOKENS } from "./sub-agent-output.js";
 const task = (id: string, dependencies: string[] = []): GoalTask => ({ id, dependencies, title: id, subtask_spec: `do ${id}`, assigned_role: "schema-validator", file_paths: [`src/${id}.ts`], budget_tokens: 1800 });
 function fixture(initial?: GoalDagJournal) {
   let saved = initial;
@@ -59,6 +60,6 @@ describe("durable goal DAG", () => {
     expect(() => validateGoalDag([task("a")])).not.toThrow();
     expect(() => validateGoalDag([task("a", ["b"]), task("b", ["a"])])).toThrow("cycle");
     expect(() => validateGoalDag([task("a", ["missing"])])).toThrow("dependency");
-    for (const budget_tokens of [NaN, Infinity, 1.5, 2001, 0]) expect(() => validateGoalDag([{ ...task("a"), budget_tokens }])).toThrow("budget");
+    for (const budget_tokens of [NaN, Infinity, 1.5, MAX_SUB_AGENT_BUDGET_TOKENS + 1, 0]) expect(() => validateGoalDag([{ ...task("a"), budget_tokens }])).toThrow("budget");
   });
 });

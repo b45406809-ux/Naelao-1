@@ -85,7 +85,7 @@ function makeEnv(opts: {
           if (opts.doStatus && opts.doStatus >= 400) {
             return new Response(opts.doBody ?? "boom", { status: opts.doStatus });
           }
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+          return new Response(JSON.stringify({ result: { ok: true, output: { done: true } } }), { status: 200 });
         },
       }),
     },

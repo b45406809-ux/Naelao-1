@@ -6,6 +6,9 @@ import type { Env as ProvisionerEnv } from "../../workers/provisioner/src/index.
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
 import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 import { mintInternalToken } from "@naelao/http";
+import { createFakeD1 } from "../stubs/d1-sqlite.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   BUSINESS_FEATURE_KIND_REGISTRY, getBusinessFeatureKind, isKnownProjectKind,
   roleMeetsMinimum, creatableFeatureKindsForRole,
@@ -17,9 +20,14 @@ import {
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 const PLATFORM_SECRET = "test-platform-secret";
+const ORG_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0002_orgs.sql"), "utf8");
+const SPACES_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8");
 
 function makeEnv() {
-  return { PLATFORM_SECRET, ENVIRONMENT: "test", SPACE_DO: makeStatefulDoNamespace(SpaceDO) };
+  const db = createFakeD1([ORG_MIGRATION, SPACES_MIGRATION]);
+  db.db.exec("INSERT INTO orgs (id, name, owner_id, status) VALUES ('tenant-1', 'Test tenant', 'owner-1', 'active')");
+  db.db.exec("INSERT INTO spaces (id, tenant_id, spacetype_id, name, status) VALUES ('space-1', 'tenant-1', 'type-1', 'Test space', 'active')");
+  return { PLATFORM_SECRET, ENVIRONMENT: "test", PLATFORM_DB: db, SPACE_DO: makeStatefulDoNamespace(SpaceDO) };
 }
 async function headers(tenantId: string): Promise<Record<string, string>> {
   return { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(PLATFORM_SECRET, tenantId) };

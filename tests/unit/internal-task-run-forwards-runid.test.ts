@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 /**
  * Root cause of the Stop button being a complete no-op on the default async dispatch path.
@@ -23,6 +26,12 @@ const SECRET = "test-platform-secret";
 const TENANT = "tenant-1";
 
 function makeEnv(): { env: AgentsEnv; capturedBody: () => Record<string, unknown> | undefined } {
+  const db = createFakeD1([
+    readFileSync(join(__dirname, "../../infra/migrations/0002_orgs.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8"),
+  ]);
+  db.prepare("INSERT INTO orgs (id, name, owner_id, status) VALUES (?, ?, ?, 'active')").bind(TENANT, "Tenant", "owner").run();
+  db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name, status) VALUES (?, ?, ?, ?, 'active')").bind("space-1", TENANT, "type-1", "Space").run();
   let captured: Record<string, unknown> | undefined;
   const agentDoStub = {
     async fetch(input: Request) {
@@ -32,6 +41,7 @@ function makeEnv(): { env: AgentsEnv; capturedBody: () => Record<string, unknown
   };
   const env = {
     PLATFORM_SECRET: SECRET,
+    PLATFORM_DB: db,
     NAELAO_AGENT_DO: { idFromName: (n: string) => ({ toString: () => n }), get: () => agentDoStub },
   } as unknown as AgentsEnv;
   return { env, capturedBody: () => captured };

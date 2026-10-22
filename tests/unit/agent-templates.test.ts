@@ -116,7 +116,7 @@ describe("Agent Templates catalogue", () => {
     const support = findAgentTemplate("customer-support")!;
     expect(support.prebuilt_scripts).not.toContain("code-exec");
     const config = agentTemplateToConfig(support);
-    expect(config.scripts.prebuilt).toContain("code-exec");
+    expect(config.scripts.prebuilt).not.toContain("code-exec");
   });
 });
 
@@ -362,7 +362,7 @@ describe("POST /agents/custom (step 17)", () => {
     expect(body.rejected_scripts?.sort()).toEqual(["code-exec", "local-machine"]);
     const scripts = JSON.parse(r2.store.get(`spaces/${SPACE_ID}/agents/${body.agent_id}/scripts.json`)!);
     expect(scripts.prebuilt).toContain("knowledge-base");
-    expect(scripts.prebuilt).toContain("code-exec");
+    expect(scripts.prebuilt).not.toContain("code-exec");
     expect(scripts.prebuilt).not.toContain("local-machine");
   });
 

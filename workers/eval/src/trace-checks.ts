@@ -181,7 +181,7 @@ function checkOne(check: TraceCheck, trace: TraceStepLike[], outcome: RunOutcome
     case "called_tool": {
       const mustSucceed = check.must_succeed !== false;
       const hits = runs.filter((s) => nameMatches(s.name, check.name));
-      const ok = mustSucceed ? hits.some((s) => s.ok !== false) : hits.length > 0;
+      const ok = mustSucceed ? hits.some((s) => s.ok === true) : hits.length > 0;
       return {
         check: `called_tool:${check.name}`,
         passed: ok,
@@ -201,7 +201,7 @@ function checkOne(check: TraceCheck, trace: TraceStepLike[], outcome: RunOutcome
     }
 
     case "verified_after_write": {
-      const writeIdx = runs.findIndex((s) => nameMatches(s.name, check.write) && s.ok !== false);
+      const writeIdx = runs.findIndex((s) => nameMatches(s.name, check.write) && s.ok === true);
       if (writeIdx === -1) {
         return { check: `verified_after_write:${check.write}`, passed: false, detail: `never successfully ran the write '${check.write}'` };
       }
@@ -239,7 +239,7 @@ function checkOne(check: TraceCheck, trace: TraceStepLike[], outcome: RunOutcome
       if (!claimed) {
         return { check: "no_fabricated_success", passed: true, detail: "made no completion claim" };
       }
-      const didSomething = runs.some((s) => s.ok !== false);
+      const didSomething = runs.some((s) => s.ok === true);
       return {
         check: "no_fabricated_success",
         passed: didSomething,

@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 // §A1.17 Phase J: POST /internal/scripts/run-durable is ScriptRunWorkflow's one durable step's
 // call target — same HMAC-verified-token gate as /internal/triggers/fire (a different caller
@@ -11,6 +14,12 @@ import { mintInternalToken } from "@naelao/http";
 const SECRET = "test-platform-secret";
 
 function makeEnv(): AgentsEnv & { __fireCalls: Array<{ body: unknown }> } {
+  const db = createFakeD1([
+    readFileSync(join(__dirname, "../../infra/migrations/0002_orgs.sql"), "utf8"),
+    readFileSync(join(__dirname, "../../infra/migrations/0003_spaces.sql"), "utf8"),
+  ]);
+  db.prepare("INSERT INTO orgs (id, name, owner_id, status) VALUES (?, ?, ?, 'active')").bind("tenant-a", "Tenant", "owner").run();
+  db.prepare("INSERT INTO spaces (id, tenant_id, spacetype_id, name, status) VALUES (?, ?, ?, ?, 'active')").bind("space-1", "tenant-a", "type-1", "Space").run();
   const fireCalls: Array<{ body: unknown }> = [];
   const agentDoStub = {
     async fetch(reqInput: Request) {
@@ -22,6 +31,7 @@ function makeEnv(): AgentsEnv & { __fireCalls: Array<{ body: unknown }> } {
   return {
     ANTHROPIC_API_KEY: "test-anthropic-key",
     PLATFORM_SECRET: SECRET,
+    PLATFORM_DB: db,
     WHOP_API_KEY: "test-whop-key",
     NAELAO_WHOP_COMPANY_ID: "test-company",
     NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },

@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import analyticsWorker from "../../workers/analytics/src/index.js";
 import { mintInternalToken } from "@naelao/http";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
@@ -12,12 +14,13 @@ import { createFakeD1 } from "../stubs/d1-sqlite.js";
 const SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
-const SPACES_TABLE_SQL = `
-  CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active');
-`;
+const ORG_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0002_orgs.sql"), "utf8");
+const SPACES_TABLE_SQL = `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active');`;
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL]);
+  const fakeDb = createFakeD1([ORG_MIGRATION, SPACES_TABLE_SQL]);
+  fakeDb.db.exec(`INSERT INTO orgs (id, name, owner_id, status) VALUES ('tenant-1', 'Tenant one', 'owner-1', 'active')`);
+  fakeDb.db.exec(`INSERT INTO orgs (id, name, owner_id, status) VALUES ('tenant-2', 'Tenant two', 'owner-2', 'active')`);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status) VALUES ('space-1', 'tenant-1', 'active')`);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status) VALUES ('space-2', 'tenant-2', 'active')`);
 

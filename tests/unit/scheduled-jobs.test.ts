@@ -658,7 +658,7 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
           bind(...a: unknown[]) { args = a; return stmt; },
           async first() {
             if (/INSERT INTO scheduled_job_dispatches/.test(sql)) return { claim_token: "claim-test" };
-            if (/FROM scheduled_jobs WHERE id = \? AND enabled = 1/.test(sql)) return opts.jobRow ?? null;
+            if (/FROM scheduled_jobs WHERE id = \? AND space_id = \? AND tenant_id = \? AND enabled = 1/.test(sql)) return opts.jobRow ?? null;
             if (/FROM spaces s WHERE s.id =/.test(sql)) return { id: "space-1" };
             if (/SELECT name, config_json FROM spaces/.test(sql)) return { name: "Test Space", config_json: "{}" };
             return null;
@@ -685,7 +685,7 @@ describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
         const url = typeof reqInput === "string" ? reqInput : reqInput.url;
         const body = init?.body ? JSON.parse(init.body as string) : await (reqInput as Request).json().catch(() => null);
         fireCalls.push({ url, body });
-        return new Response(status === 200 ? JSON.stringify({ result: "ok" }) : "boom", { status });
+        return new Response(status === 200 ? JSON.stringify({ result: { ok: true, output: { done: true } } }) : "boom", { status });
       },
     };
     const agentDoNamespace = { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub };
