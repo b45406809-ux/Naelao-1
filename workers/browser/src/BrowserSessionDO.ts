@@ -7,6 +7,7 @@ import { assertBrowserAction, assertBrowserUrl, browserEngineFor, validateBrowse
   type BrowserObservation, type BrowserRuntimeScope, type BrowserScopedAction } from "@naelao/agent-sdk";
 import { BrowserActionJournal, discardScreenshotWithCleanupIntent, sameBrowserOwner,
   uploadScreenshotWithCleanupIntent, type BrowserSessionRecord } from "./browser-session-state.js";
+import { boundedValues, collectBoundedFrameIds } from "./browser-observation-bounds.js";
 
 export interface BrowserEnv {
   ENVIRONMENT: string; PLATFORM_SECRET: string; BROWSER?: Fetcher;
@@ -209,16 +210,18 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
         elements: [], untrusted: true, capturedAt: Date.now(), expiresAt: Math.min(body.scope.expiresAt, Date.now() + 30_000),
         features: { interactive: engine === "chromium", pixelAccurate: engine === "chromium", persistentLogin: engine === "chromium" } };
       const tree = await client.send("Page.getFrameTree");
-      const frames: string[] = [];
-      const collectFrames = (frame: typeof tree.frameTree): void => { if (frames.length >= 16) return; frames.push(frame.frame.id); frame.childFrames?.forEach(collectFrames); };
-      collectFrames(tree.frameTree);
+      const frames = collectBoundedFrameIds(tree.frameTree);
       const elements = [] as BrowserObservation["elements"][number][];
+      let visitedAccessibilityNodes = 0;
       for (const frameId of frames) {
         let nodes: AXNode[];
         try { nodes = (await client.send("Accessibility.getFullAXTree", { frameId })).nodes as AXNode[]; }
         catch { continue; } // Unsupported cross-process frames are never represented as actionable.
-        for (const node of nodes) {
-          if (elements.length >= 80 || !node.backendDOMNodeId) continue;
+        const nodeBudget = Math.min(2048, 8192 - visitedAccessibilityNodes);
+        for (const node of boundedValues(nodes, nodeBudget)) {
+          visitedAccessibilityNodes++;
+          if (elements.length >= 80) break;
+          if (!node.backendDOMNodeId) continue;
           const role = String(node.role?.value ?? ""), name = String(node.name?.value ?? "").slice(0, 256);
           const kinds: Array<"click" | "type" | "select"> = role === "textbox" || role === "searchbox" ? ["type"] : role === "combobox" ? ["select"] : ["button", "link", "checkbox", "radio", "menuitem"].includes(role) ? ["click"] : [];
           if (!kinds.length) continue;
@@ -226,6 +229,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
           elements.push({ handle, role, name, frameId, enabled: !node.properties?.some(item => item.name === "disabled" && item.value?.value === true), permittedActions: kinds.filter(kind => body.scope.authorizedActions.includes(kind)) });
           await this.ctx.storage.put("element:" + revision + ":" + handle, { backendNodeId: node.backendDOMNodeId, frameId, role, name } satisfies ElementReference);
         }
+        if (elements.length >= 80 || visitedAccessibilityNodes >= 8192) break;
       }
       observation.elements = elements;
       if (body.visual) {
