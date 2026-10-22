@@ -2,9 +2,9 @@ Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
 Source/config classification includes common code, style/template, infrastructure, and executable configuration formats; Markdown/docs are excluded.
-Files: 2062
-Files with source or executable-configuration extensions: 1876
-Inventory revision: 2026-10-22 audit refresh at c6aacb45
+Files: 2063
+Files with source or executable-configuration extensions: 1877
+Inventory revision: 2026-10-22 audit refresh at d73daf52
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -1253,6 +1253,7 @@ tests/
     daily-digest.test.ts
     dashboard-api-path.test.ts
     dashboard-auth.test.ts
+    dashboard-product-url.test.ts
     data-erasure-records.test.ts
     db-migrations.test.ts
     deposit-personal-credits.test.ts
