@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2035` tracked files; `1827` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `fe85a1e8`.
+Inventory basis: `2034` tracked files; `1826` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `65ad6b0c`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -89,7 +89,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `pnpm-lock.yaml`
 - [x] `pnpm-workspace.yaml`
 - [x] `repomix.shell.config.json`
-- [ ] `run-phase (1).mjs`
 - [x] `run-phase.mjs`
 - [x] `tsconfig.base.json`
 - [x] `turbo.json`
