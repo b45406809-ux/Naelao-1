@@ -93,6 +93,7 @@ export const commerce: PrebuiltScript = {
     "commerce.create_product": "name is required. description, price_cents (a whole number of cents, e.g. 2000 for $20), and kind are optional. Creates a DRAFT — it is not for sale until commerce.update_product sets status to 'published'.",
     "commerce.update_product": "product_id is required — the id commerce.create_product or commerce.list_products returned, never guessed. status is the field that actually publishes it (e.g. status: 'published').",
     "commerce.checkout": "product_id is required — from commerce.list_products. customer_email is optional.",
+    "commerce.seat_checkout": "user_id is optional when the current run has a signed-in user; otherwise pass the Naelao user id whose seat should be activated. customer_email is optional.",
     "commerce.get_order": "order_id is required — from commerce.list_orders. There is no way to look up an order by anything else.",
   },
   operations: {
@@ -105,7 +106,7 @@ export const commerce: PrebuiltScript = {
     // Money-in (seats): a join link for member/seat billing — fee applies, same as products.
     "commerce.seat_checkout": (a, c) =>
       billing(c, "/internal/seats/checkout", {
-        ...(a["user_id"] ? { user_id: a["user_id"] } : {}),
+        ...(typeof a["user_id"] === "string" && a["user_id"] ? { user_id: a["user_id"] } : c.env.userId ? { user_id: c.env.userId } : {}),
         ...(a["customer_email"] ? { customer_email: a["customer_email"] } : {}),
       }),
     "commerce.list_products": (_a, c) => spaces(c, `/spaces/${c.env.spaceId}/products`),

@@ -177,10 +177,13 @@ async function recordSeatActivation(
   }
 
   // Activate the member in SpaceDO (idempotent — addMember upserts).
-  const userId = custom["user_id"] ? String(custom["user_id"]) : (event.customerId ?? "");
-  if (env.SPACES_WORKER && userId) {
+  // A Lemon Squeezy customer id is provider-scoped and must never be treated as a Naelao user id.
+  // Older checkout links without a Naelao identity remain recorded, but they cannot auto-enroll.
+  const userId = custom["user_id"] ? String(custom["user_id"]) : "";
+  if (userId) {
+    if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for paid seat activation");
     try {
-      await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/members`, {
+      const activation = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/members`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -189,8 +192,10 @@ async function recordSeatActivation(
         },
         body: JSON.stringify({ space_id: event.spaceId, user_id: userId, role: "member" }),
       }));
+      if (!activation.ok) throw new Error(`member activation ${activation.status}: ${await responseDetail(activation)}`);
     } catch (err) {
       console.error("[billing/ls] Seat member activation failed:", (err as Error).message);
+      throw err;
     }
   }
   console.log(`[billing/ls] Seat activated space=${event.spaceId} user=${userId} gross=${gross}c fee=${fee}c`);

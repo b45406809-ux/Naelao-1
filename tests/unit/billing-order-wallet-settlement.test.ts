@@ -87,6 +87,7 @@ function makeSpacesWorker(opts: { walletProjectId?: string | null; debitOk?: boo
           ? Response.json({ balance_cents: 0 }, { status: 201 })
           : Response.json({ error_code: "insufficient_balance", balance_cents: 0 }, { status: 402 });
       }
+      if (/\/members$/.test(req.url)) return Response.json({ ok: true }, { status: 201 });
       return new Response("not found", { status: 404 });
     },
   };
@@ -276,6 +277,33 @@ describe("Lemon Squeezy webhook — a seat sale settles to the seller's own wall
     // And the order row records it too.
     const order = await fakeDb.prepare("SELECT net_cents, fee_cents FROM launchpad_orders WHERE provider_event_id = 'seat_ord_1'").first<{ net_cents: number; fee_cents: number }>();
     expect(order).toMatchObject({ net_cents: 855, fee_cents: 45 });
+  });
+
+  it("retries the webhook when paid seat activation fails transiently", async () => {
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    await fakeDb.prepare("INSERT INTO spaces (id, tenant_id) VALUES ('space-1', 'tenant-1')").run();
+    let activationCalls = 0;
+    const worker = {
+      async fetch(reqInput: Request | string, init?: RequestInit) {
+        const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        if (/\/wallet-project$/.test(req.url)) return Response.json({ project_id: "wallet-proj-1" });
+        if (/\/wallet\/credit$/.test(req.url)) return Response.json({ balance_cents: 855 }, { status: 201 });
+        if (/\/members$/.test(req.url)) {
+          activationCalls++;
+          return activationCalls === 1 ? new Response("temporary failure", { status: 503 }) : Response.json({ ok: true }, { status: 201 });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    };
+    const env = makeEnv(fakeDb as unknown as D1Database, worker as unknown as ReturnType<typeof makeSpacesWorker>["fetcher"]);
+    const body = JSON.stringify({
+      meta: { event_name: "order_created", custom_data: { spaceId: "space-1", kind: "seat", user_id: "buyer-1" } },
+      data: { id: "seat-retry-1", attributes: { total: 900, currency: "USD", customer_id: "cust-1", custom_data: { spaceId: "space-1", kind: "seat", user_id: "buyer-1" } } },
+    });
+    expect((await post(body, env)).status).toBe(500);
+    expect((await post(body, env)).status).toBe(200);
+    expect(activationCalls).toBe(2);
+    expect((await fakeDb.prepare("SELECT COUNT(*) AS n FROM launchpad_orders WHERE provider_event_id='seat-retry-1'").first() as { n: number }).n).toBe(1);
   });
 });
 

@@ -90,7 +90,7 @@ describe("billing worker — /internal/seats/checkout requires a verified intern
       new Request("https://billing.naelao.com/internal/seats/checkout", {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-internal": "commerce-script" },
-        body: JSON.stringify({ space_id: "space-1" }),
+        body: JSON.stringify({ space_id: "space-1", user_id: "user-1" }),
       }),
       makeEnv() as never,
       execCtx
@@ -121,13 +121,27 @@ describe("billing worker — /internal/seats/checkout requires a verified intern
           "x-naelao-tenant-id": "tenant-1",
           "x-naelao-internal-token": token,
         },
-        body: JSON.stringify({ space_id: "space-1" }),
+        body: JSON.stringify({ space_id: "space-1", user_id: "user-1" }),
       }),
       makeEnv() as never,
       execCtx
     );
     // No matching space in this minimal DB stub -> 404, not the auth gate's 403.
     expect(res.status).not.toBe(403);
+  });
+
+  it("requires a Naelao user id before creating a paid seat checkout", async () => {
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await billingWorker.fetch(
+      new Request("https://billing.naelao.com/internal/seats/checkout", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+        body: JSON.stringify({ space_id: "space-1" }),
+      }),
+      makeEnv() as never,
+      execCtx
+    );
+    expect(res.status).toBe(400);
   });
 });
 

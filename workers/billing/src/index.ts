@@ -985,7 +985,10 @@ app.post("/internal/commerce/checkout", async (c) => {
 app.use("/internal/seats/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.post("/internal/seats/checkout", async (c) => {
   const body = await c.req.json<{ space_id: string; user_id?: string; customer_email?: string }>();
-  if (!body.space_id) return c.json({ error_code: "bad_request", message: "space_id is required" }, 400);
+  if (typeof body.space_id !== "string" || !body.space_id || body.space_id.length > 128 ||
+      typeof body.user_id !== "string" || !body.user_id || body.user_id.length > 128) {
+    return c.json({ error_code: "bad_request", message: "space_id and a Naelao user_id are required for seat activation" }, 400);
+  }
 
   // Resolve the space's seat pricing from its effective productConfig (via spaces worker).
   if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
