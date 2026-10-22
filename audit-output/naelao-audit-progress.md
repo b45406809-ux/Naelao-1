@@ -2366,3 +2366,13 @@ Final dependency override validation: full root `pnpm test` passed all 54 worksp
 
 
 The typecheck correction does not exclude tests from Vitest: all 3,809 full-suite tests passed, and worker source remains checked under Cloudflare Workers types. No deployment dry run was included in this typecheck result.
+
+## Browser screenshot R2 integrity (2026-10-22)
+
+Audited `BrowserSessionDO.see`: capture stored the screenshot's SHA-256 and byte count in the Durable Object observation, but reads only checked R2 metadata size and streamed the body. Added read-time length and digest verification and now returns the exact checked buffer, preventing substituted/corrupt R2 bytes from being presented as the recorded browser observation. Existing screenshot size and session ownership checks remain in force.
+
+Validation: browser-worker scoped integration test file passed 7/7, including matching-byte retrieval and replacement-hash rejection; Browser Worker TypeScript passed. Full root `pnpm test` passed 368 files and 3,811 tests across 54 workspace tasks. The BrowserSessionDO source file remains unchecked because its other lifecycle, request-interception, action, cancellation, and persistence paths have not all been reviewed.
+
+## Browser worker test discovery gap (2026-10-22)
+
+The browser worker had security/lifecycle tests under `workers/browser/src`, but no package `test` script, so the standard Turbo test task did not execute them. Added a Vitest config with workspace source aliases and a package test script/dependency so they become part of `pnpm test`. After workspace execution recovered, the focused worker suite passed both test files (3 tests). The subsequent full Turbo run passed all 55 tasks, including this worker test task; the root test package reported 368 files / 3,811 tests. Browser TypeScript passed, and `wrangler deploy --dry-run` bundled the worker with its DO, R2, service, and Browser bindings. No live deployment or external Browser provider test was performed. The browser worker package/config/tests, state helper, and worker entrypoint are checked in the file checklist; `BrowserSessionDO.ts` remains open for broader lifecycle/security review.

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mintInternalToken, verifyInternalToken } from "@naelao/http";
 import browserWorker from "../../workers/browser/src/index.js";
 import { BrowserSessionDO } from "../../workers/browser/src/BrowserSessionDO.js";
+import type { BrowserSessionRecord } from "../../workers/browser/src/browser-session-state.js";
 
 const { launchMock } = vi.hoisted(() => ({ launchMock: vi.fn() }));
 vi.mock("@cloudflare/puppeteer", () => ({
@@ -160,5 +161,52 @@ describe("BrowserSessionDO — tier 4 Kitesurf provider selection", () => {
     expect(await response.json()).toMatchObject({ engine_used: "kitesurf", result: { engine: "kitesurf", text: "page text" } });
     expect(launchMock).toHaveBeenCalledTimes(1);
     expect(launchMock).toHaveBeenCalledWith(expect.anything(), { browser: "kitesurf" });
+  });
+});
+
+describe("BrowserSessionDO — screenshot integrity boundary", () => {
+  async function requestScreenshot(storedBytes: Uint8Array, responseBytes: Uint8Array) {
+    const screenshotScope = { ...scope, maxTier: 5 as const };
+    const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", storedBytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const path = "spaces/tenant-1/space-1/run-1/session-1/shot.png";
+    const record: BrowserSessionRecord = {
+      scope: screenshotScope, status: "open", engine: "chromium", url: "https://example.com", actions: 0,
+      screenshots: [path], lastUsedAt: Date.now(),
+      observation: {
+        schema: 1, sessionId: screenshotScope.sessionId, revision: "revision-1", engine: "chromium", url: "https://example.com",
+        title: "Example", text: "", elements: [], untrusted: true, capturedAt: Date.now(), expiresAt: screenshotScope.expiresAt,
+        features: { interactive: true, pixelAccurate: true, persistentLogin: true },
+        screenshot: { path, mimeType: "image/png", bytes: storedBytes.byteLength, sha256 },
+      },
+    };
+    const values = new Map<string, unknown>([["browser-session", record]]);
+    const storage = {
+      async get<T>(key: string) { return values.get(key) as T | undefined; },
+      async put<T>(key: string, value: T) { values.set(key, value); },
+      async delete(keys: string | string[]) { for (const key of Array.isArray(keys) ? keys : [keys]) values.delete(key); },
+      async transaction<T>(callback: (target: typeof storage) => Promise<T>) { return callback(storage); },
+      async setAlarm() {}, async deleteAlarm() {},
+    };
+    const artifacts = { async get() { return { size: responseBytes.byteLength, async arrayBuffer() { return responseBytes.slice().buffer; } }; } };
+    const spacesWorker = { async fetch() { return Response.json({ data: [{ user_id: scope.actorId, role: "owner" }] }); } };
+    const instance = new BrowserSessionDO({ storage } as never, {
+      ENVIRONMENT: "test", PLATFORM_SECRET, SPACES_WORKER: spacesWorker, BROWSER_ARTIFACTS: artifacts,
+    } as never);
+    return instance.fetch(new Request("http://browser/see", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: screenshotScope }),
+    }));
+  }
+
+  it("serves the bounded screenshot bytes whose SHA-256 is in the observation", async () => {
+    const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+    const response = await requestScreenshot(bytes, bytes);
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("rejects an R2 screenshot replacement that no longer matches the observation hash", async () => {
+    const response = await requestScreenshot(Uint8Array.from([1, 2, 3]), Uint8Array.from([4, 5, 6]));
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error_code: "browser_screenshot_integrity_failed" });
   });
 });

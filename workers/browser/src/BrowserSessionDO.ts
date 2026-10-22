@@ -274,8 +274,12 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     if (body.path && body.path !== "latest" && body.path !== screenshot.path) throw new Error("browser_screenshot_not_authorized");
     const object = await this.env.BROWSER_ARTIFACTS.get(screenshot.path);
     if (!object || object.size > 4 * 1024 * 1024) throw new Error("browser_screenshot_not_found");
-    // Binary vision is intentionally separate from browse text/observations.
-    return new Response(object.body, { headers: { "content-type": "image/png", "cache-control": "no-store", "x-browser-engine": record.engine } });
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    if (bytes.byteLength !== screenshot.bytes || digest !== screenshot.sha256) throw new Error("browser_screenshot_integrity_failed");
+    // Binary vision is intentionally separate from browse text/observations. Return the exact
+    // bounded bytes whose length and digest were checked, rather than streaming a second read.
+    return new Response(bytes, { headers: { "content-type": "image/png", "cache-control": "no-store", "x-browser-engine": record.engine } });
   }
 
   private async closeSession(record: BrowserSessionRecord): Promise<void> {
