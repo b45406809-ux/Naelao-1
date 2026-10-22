@@ -1,5 +1,6 @@
 // API client for Naelao router worker
 // G-BE01: Auth endpoints, G-BE10: SpaceType CRUD, G-BE20: Space CRUD, G-BE30: KB management
+import { getStoredToken } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
 
@@ -69,7 +70,7 @@ export interface OpenRouterWorkerModelCard {
 }
 
 export async function getOpenRouterWorkerModelCards(spaceId: string): Promise<OpenRouterWorkerModelCard[]> {
-  const result = await apiFetch<{ models?: OpenRouterWorkerModelCard[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok/models`);
+  const result = await apiFetch<{ models?: OpenRouterWorkerModelCard[] }>(`/v1/spaces/${pathSegment(spaceId)}/llm-byok/models`);
   return result.models ?? [];
 }
 
@@ -116,8 +117,14 @@ export interface ApiKey {
 // ── Token helpers ────────────────────────────────────────────────────────────
 
 export function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("naelao_token");
+  return getStoredToken();
+}
+
+function pathSegment(value: string): string {
+  if (!value || value === "." || value === "..") {
+    throw new Error("Invalid API path identifier");
+  }
+  return encodeURIComponent(value);
 }
 
 export function getApiBase(): string {
@@ -249,14 +256,14 @@ export async function createSpaceType(
 }
 
 export async function getSpaceType(id: string): Promise<SpaceType> {
-  return apiFetch<SpaceType>(`/spacetypes/${id}`);
+  return apiFetch<SpaceType>(`/spacetypes/${pathSegment(id)}`);
 }
 
 export async function updateSpaceType(
   id: string,
   data: Partial<CreateSpaceTypeInput>
 ): Promise<SpaceType> {
-  return apiFetch<SpaceType>(`/spacetypes/${id}`, {
+  return apiFetch<SpaceType>(`/spacetypes/${pathSegment(id)}`, {
     method: "PATCH",
     body: JSON.stringify(data),
   });
@@ -278,32 +285,32 @@ export async function createSpace(data: CreateSpaceInput): Promise<Space> {
 }
 
 export async function getSpace(id: string): Promise<Space> {
-  return apiFetch<Space>(`/spaces/${id}`);
+  return apiFetch<Space>(`/spaces/${pathSegment(id)}`);
 }
 
 // ── Space model provider keys ───────────────────────────────────────────────
 
 export async function getByokStatus(spaceId: string): Promise<ByokProviderStatus[]> {
-  const res = await apiFetch<{ providers: ByokProviderStatus[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok`);
+  const res = await apiFetch<{ providers: ByokProviderStatus[] }>(`/v1/spaces/${pathSegment(spaceId)}/llm-byok`);
   return res.providers;
 }
 
 export async function addByokKey(spaceId: string, provider: string, key: string, label?: string): Promise<ByokKeyMetadata> {
-  return apiFetch<ByokKeyMetadata>(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok`, {
+  return apiFetch<ByokKeyMetadata>(`/v1/spaces/${pathSegment(spaceId)}/llm-byok`, {
     method: "PUT",
     body: JSON.stringify({ provider, key, ...(label?.trim() ? { label: label.trim() } : {}) }),
   });
 }
 
 export async function selectByokKey(spaceId: string, provider: string, keyId: string): Promise<void> {
-  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok/select`, {
+  await apiFetch(`/v1/spaces/${pathSegment(spaceId)}/llm-byok/select`, {
     method: "POST",
     body: JSON.stringify({ provider, key_id: keyId }),
   });
 }
 
 export async function removeByokKey(spaceId: string, provider: string, keyId: string): Promise<void> {
-  await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/llm-byok/remove`, {
+  await apiFetch(`/v1/spaces/${pathSegment(spaceId)}/llm-byok/remove`, {
     method: "POST",
     body: JSON.stringify({ provider, key_id: keyId }),
   });
@@ -313,7 +320,7 @@ export async function updateSpace(
   id: string,
   data: Partial<{ name: string; status: string; configOverrides: Record<string, unknown> }>
 ): Promise<Space> {
-  return apiFetch<Space>(`/spaces/${id}`, {
+  return apiFetch<Space>(`/spaces/${pathSegment(id)}`, {
     method: "PATCH",
     body: JSON.stringify(data),
   });
@@ -323,7 +330,7 @@ export async function updateSpace(
 
 export async function listKbDocs(spaceId: string): Promise<KbDocument[]> {
   const res = await apiFetch<{ data: KbDocument[] } | KbDocument[]>(
-    `/spaces/${spaceId}/kb`
+    `/spaces/${pathSegment(spaceId)}/kb`
   );
   if (Array.isArray(res)) return res;
   return (res as { data: KbDocument[] }).data ?? [];
@@ -333,7 +340,7 @@ export async function uploadKbDoc(
   spaceId: string,
   data: { title: string; content: string; content_type: string }
 ): Promise<KbDocument> {
-  return apiFetch<KbDocument>(`/spaces/${spaceId}/kb`, {
+  return apiFetch<KbDocument>(`/spaces/${pathSegment(spaceId)}/kb`, {
     method: "POST",
     body: JSON.stringify(data),
   });
@@ -343,7 +350,7 @@ export async function deleteKbDoc(
   spaceId: string,
   docId: string
 ): Promise<void> {
-  return apiFetch<void>(`/spaces/${spaceId}/kb/${docId}`, {
+  return apiFetch<void>(`/spaces/${pathSegment(spaceId)}/kb/${pathSegment(docId)}`, {
     method: "DELETE",
   });
 }
@@ -370,7 +377,7 @@ export async function createApiKey(
 }
 
 export async function revokeApiKey(id: string): Promise<void> {
-  return apiFetch<void>(`/builder/api-keys/${id}`, { method: "DELETE" });
+  return apiFetch<void>(`/builder/api-keys/${pathSegment(id)}`, { method: "DELETE" });
 }
 
 // ── Reseller / client portfolio ──────────────────────────────────────────────
@@ -417,14 +424,14 @@ export interface ResellerClientDetail {
 }
 
 export async function getResellerClient(childTenantId: string): Promise<ResellerClientDetail> {
-  return apiFetch<ResellerClientDetail>(`/reseller/clients/${encodeURIComponent(childTenantId)}`);
+  return apiFetch<ResellerClientDetail>(`/reseller/clients/${pathSegment(childTenantId)}`);
 }
 
 export async function setResellerClientStatus(
   childTenantId: string,
   status: "active" | "suspended"
 ): Promise<{ child_tenant_id: string; status: string }> {
-  return apiFetch(`/reseller/clients/${encodeURIComponent(childTenantId)}/status`, {
+  return apiFetch(`/reseller/clients/${pathSegment(childTenantId)}/status`, {
     method: "POST",
     body: JSON.stringify({ status }),
   });
@@ -433,7 +440,7 @@ export async function setResellerClientStatus(
 export async function promoteResellerClient(
   childTenantId: string
 ): Promise<{ promoted: boolean; child_tenant_id: string }> {
-  return apiFetch(`/reseller/clients/${encodeURIComponent(childTenantId)}/promote`, {
+  return apiFetch(`/reseller/clients/${pathSegment(childTenantId)}/promote`, {
     method: "POST",
     body: JSON.stringify({ acknowledge_irreversible: true }),
   });
@@ -455,7 +462,7 @@ export interface SubSpace {
 }
 
 export async function listSubSpaces(spaceId: string): Promise<SubSpace[]> {
-  const res = await apiFetch<{ data: SubSpace[] }>(`/spaces/${spaceId}/sub-spaces`);
+  const res = await apiFetch<{ data: SubSpace[] }>(`/spaces/${pathSegment(spaceId)}/sub-spaces`);
   return res.data ?? [];
 }
 
@@ -463,7 +470,7 @@ export async function createSubSpace(
   spaceId: string,
   data: { name: string; parent_id?: string }
 ): Promise<SubSpace> {
-  return apiFetch<SubSpace>(`/spaces/${spaceId}/sub-spaces`, {
+  return apiFetch<SubSpace>(`/spaces/${pathSegment(spaceId)}/sub-spaces`, {
     method: "POST",
     body: JSON.stringify(data),
   });
@@ -506,14 +513,14 @@ export interface RevenueSummary {
 }
 
 export async function listProducts(spaceId: string): Promise<{ data: Product[]; currency: string }> {
-  return apiFetch<{ data: Product[]; currency: string }>(`/spaces/${spaceId}/products`);
+  return apiFetch<{ data: Product[]; currency: string }>(`/spaces/${pathSegment(spaceId)}/products`);
 }
 
 export async function createProduct(
   spaceId: string,
   data: { name: string; description?: string; price_cents?: number; kind?: "one_time" | "subscription" }
 ): Promise<Product> {
-  return apiFetch<Product>(`/spaces/${spaceId}/products`, { method: "POST", body: JSON.stringify(data) });
+  return apiFetch<Product>(`/spaces/${pathSegment(spaceId)}/products`, { method: "POST", body: JSON.stringify(data) });
 }
 
 export async function updateProduct(
@@ -521,19 +528,19 @@ export async function updateProduct(
   productId: string,
   data: Partial<{ name: string; description: string; price_cents: number; status: "draft" | "published" | "archived" }>
 ): Promise<{ id: string }> {
-  return apiFetch(`/spaces/${spaceId}/products/${productId}`, { method: "PATCH", body: JSON.stringify(data) });
+  return apiFetch(`/spaces/${pathSegment(spaceId)}/products/${pathSegment(productId)}`, { method: "PATCH", body: JSON.stringify(data) });
 }
 
 export async function deleteProduct(spaceId: string, productId: string): Promise<void> {
-  return apiFetch<void>(`/spaces/${spaceId}/products/${productId}`, { method: "DELETE" });
+  return apiFetch<void>(`/spaces/${pathSegment(spaceId)}/products/${pathSegment(productId)}`, { method: "DELETE" });
 }
 
 export async function listOrders(spaceId: string): Promise<{ data: Order[] }> {
-  return apiFetch<{ data: Order[] }>(`/spaces/${spaceId}/orders`);
+  return apiFetch<{ data: Order[] }>(`/spaces/${pathSegment(spaceId)}/orders`);
 }
 
 export async function getRevenue(spaceId: string): Promise<RevenueSummary> {
-  return apiFetch<RevenueSummary>(`/spaces/${spaceId}/revenue`);
+  return apiFetch<RevenueSummary>(`/spaces/${pathSegment(spaceId)}/revenue`);
 }
 
 // ── Billing ──────────────────────────────────────────────────────────────────
@@ -597,7 +604,7 @@ export async function connectPlatform(
   spaceId: string,
   apiKey: string
 ): Promise<{ connected: boolean; platform: string; server_id: string }> {
-  return apiFetch(`/connectors/${encodeURIComponent(platform)}/connect`, {
+  return apiFetch(`/connectors/${pathSegment(platform)}/connect`, {
     method: "POST",
     body: JSON.stringify({ space_id: spaceId, api_key: apiKey }),
   });
@@ -757,7 +764,7 @@ export async function listBuilderProducts(): Promise<BuilderProductSummary[]> {
 }
 
 export async function getBuilderProduct(id: string): Promise<BuilderProductDetail> {
-  return apiFetch<BuilderProductDetail>(`/builder/products/${encodeURIComponent(id)}`);
+  return apiFetch<BuilderProductDetail>(`/builder/products/${pathSegment(id)}`);
 }
 
 // F-WALLET-6: the builder-facing wallet aggregate across a product + all its child businesses.
@@ -774,7 +781,7 @@ export interface BuilderProductWallet {
 }
 
 export async function getBuilderProductWallet(id: string): Promise<BuilderProductWallet> {
-  return apiFetch<BuilderProductWallet>(`/builder/products/${encodeURIComponent(id)}/wallet`);
+  return apiFetch<BuilderProductWallet>(`/builder/products/${pathSegment(id)}/wallet`);
 }
 
 export async function createBuilderProduct(input: CreateBuilderProductInput): Promise<BuilderProductSummary> {
@@ -788,7 +795,7 @@ export async function updateBuilderProduct(
   id: string,
   input: { name?: string; status?: string; product_config?: BuilderProductConfig; legal?: BuilderProductConfig["legal"] }
 ): Promise<{ ok: true }> {
-  return apiFetch(`/builder/products/${encodeURIComponent(id)}`, {
+  return apiFetch(`/builder/products/${pathSegment(id)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
@@ -801,7 +808,7 @@ export async function updateBuilderProductPricing(
   id: string,
   input: { plans?: PricingPlan[]; creditPacks?: CreditPack[] }
 ): Promise<{ pricing_config: BuilderProductConfig["pricingConfig"] }> {
-  return apiFetch(`/builder/products/${encodeURIComponent(id)}/pricing`, {
+  return apiFetch(`/builder/products/${pathSegment(id)}/pricing`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
@@ -813,14 +820,14 @@ export async function updateBuilderProductReseller(
   id: string,
   input: { billing_relationship?: "reseller" | "referral" | "platform"; wholesale_cents?: number | null; referral_share_pct?: number }
 ): Promise<{ billing_relationship: string; reseller_rates: { wholesale_cents: number | null; referral_share_pct: number } }> {
-  return apiFetch(`/builder/products/${encodeURIComponent(id)}/reseller`, {
+  return apiFetch(`/builder/products/${pathSegment(id)}/reseller`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
 }
 
 export async function deleteBuilderProduct(id: string): Promise<void> {
-  return apiFetch<void>(`/builder/products/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return apiFetch<void>(`/builder/products/${pathSegment(id)}`, { method: "DELETE" });
 }
 
 export interface BuilderProductDomain {
@@ -832,14 +839,14 @@ export interface BuilderProductDomain {
 }
 
 export async function configureBuilderProductDomain(id: string, customDomain: string): Promise<BuilderProductDomain> {
-  return apiFetch<BuilderProductDomain>(`/builder/products/${encodeURIComponent(id)}/domain`, {
+  return apiFetch<BuilderProductDomain>(`/builder/products/${pathSegment(id)}/domain`, {
     method: "POST",
     body: JSON.stringify({ custom_domain: customDomain }),
   });
 }
 
 export async function getBuilderProductDomain(id: string): Promise<BuilderProductDomain> {
-  return apiFetch<BuilderProductDomain>(`/builder/products/${encodeURIComponent(id)}/domain`);
+  return apiFetch<BuilderProductDomain>(`/builder/products/${pathSegment(id)}/domain`);
 }
 
 // §A1.17 Phase G: the Space Assistant's approval policy — `spaceId` here is the product root
@@ -852,11 +859,11 @@ export interface AssistantPolicy {
 }
 
 export async function getAssistantPolicy(spaceId: string): Promise<AssistantPolicy> {
-  return apiFetch<AssistantPolicy>(`/spaces/${encodeURIComponent(spaceId)}/assistant-policy`);
+  return apiFetch<AssistantPolicy>(`/spaces/${pathSegment(spaceId)}/assistant-policy`);
 }
 
 export async function updateAssistantPolicy(spaceId: string, input: Partial<AssistantPolicy>): Promise<AssistantPolicy> {
-  return apiFetch<AssistantPolicy>(`/spaces/${encodeURIComponent(spaceId)}/assistant-policy`, {
+  return apiFetch<AssistantPolicy>(`/spaces/${pathSegment(spaceId)}/assistant-policy`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
@@ -885,7 +892,7 @@ export async function getAgentActivity(spaceId: string, opts: { projectId?: stri
   if (opts.projectId) params.set("project_id", opts.projectId);
   if (opts.limit) params.set("limit", String(opts.limit));
   const qs = params.toString();
-  return apiFetch(`/spaces/${encodeURIComponent(spaceId)}/agent-activity${qs ? `?${qs}` : ""}`);
+  return apiFetch(`/spaces/${pathSegment(spaceId)}/agent-activity${qs ? `?${qs}` : ""}`);
 }
 
 // §A1.17 Phase S: local-machine-as-container grants + the connect-token flow. These routes
@@ -906,7 +913,7 @@ export interface LocalGrant {
 }
 
 export async function listLocalGrants(spaceId: string): Promise<LocalGrant[]> {
-  const res = await apiFetch<{ data: LocalGrant[] }>(`/spaces/${encodeURIComponent(spaceId)}/local-grants`);
+  const res = await apiFetch<{ data: LocalGrant[] }>(`/spaces/${pathSegment(spaceId)}/local-grants`);
   return res.data ?? [];
 }
 
@@ -914,14 +921,14 @@ export async function createLocalGrant(
   spaceId: string,
   input: { grant_type: "read" | "write" | "readwrite" | "exec"; directory?: string; commands?: string[]; project_id?: string }
 ): Promise<LocalGrant> {
-  return apiFetch<LocalGrant>(`/spaces/${encodeURIComponent(spaceId)}/local-grants`, {
+  return apiFetch<LocalGrant>(`/spaces/${pathSegment(spaceId)}/local-grants`, {
     method: "POST",
     body: JSON.stringify(input),
   });
 }
 
 export async function deleteLocalGrant(spaceId: string, grantId: string): Promise<void> {
-  await apiFetch<void>(`/spaces/${encodeURIComponent(spaceId)}/local-grants/${encodeURIComponent(grantId)}`, {
+  await apiFetch<void>(`/spaces/${pathSegment(spaceId)}/local-grants/${pathSegment(grantId)}`, {
     method: "DELETE",
   });
 }
@@ -935,7 +942,7 @@ export interface LocalTunnelConnectInfo {
 }
 
 export async function mintLocalTunnelConnectToken(spaceId: string): Promise<LocalTunnelConnectInfo> {
-  return apiFetch<LocalTunnelConnectInfo>(`/spaces/${encodeURIComponent(spaceId)}/local-tunnel/connect-token`, {
+  return apiFetch<LocalTunnelConnectInfo>(`/spaces/${pathSegment(spaceId)}/local-tunnel/connect-token`, {
     method: "POST",
   });
 }
@@ -970,7 +977,7 @@ export interface BuilderProductAnalytics {
 }
 
 export async function getBuilderProductAnalytics(id: string): Promise<BuilderProductAnalytics> {
-  return apiFetch<BuilderProductAnalytics>(`/builder/products/${encodeURIComponent(id)}/analytics`);
+  return apiFetch<BuilderProductAnalytics>(`/builder/products/${pathSegment(id)}/analytics`);
 }
 
 export interface BuilderProductRevenue {
@@ -983,7 +990,7 @@ export interface BuilderProductRevenue {
 }
 
 export async function getBuilderProductRevenue(id: string): Promise<BuilderProductRevenue> {
-  return apiFetch<BuilderProductRevenue>(`/builder/products/${encodeURIComponent(id)}/analytics/revenue`);
+  return apiFetch<BuilderProductRevenue>(`/builder/products/${pathSegment(id)}/analytics/revenue`);
 }
 
 export interface BuilderProductEndUser {
@@ -996,20 +1003,20 @@ export interface BuilderProductEndUser {
 }
 
 export async function listBuilderProductUsers(id: string): Promise<BuilderProductEndUser[]> {
-  const res = await apiFetch<{ data: BuilderProductEndUser[] }>(`/builder/products/${encodeURIComponent(id)}/users`);
+  const res = await apiFetch<{ data: BuilderProductEndUser[] }>(`/builder/products/${pathSegment(id)}/users`);
   return res.data ?? [];
 }
 
 export async function suspendBuilderProductUser(id: string, userId: string): Promise<void> {
-  await apiFetch(`/builder/products/${encodeURIComponent(id)}/users/${encodeURIComponent(userId)}/suspend`, { method: "POST" });
+  await apiFetch(`/builder/products/${pathSegment(id)}/users/${pathSegment(userId)}/suspend`, { method: "POST" });
 }
 
 export async function removeBuilderProductUser(id: string, userId: string): Promise<void> {
-  await apiFetch<void>(`/builder/products/${encodeURIComponent(id)}/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+  await apiFetch<void>(`/builder/products/${pathSegment(id)}/users/${pathSegment(userId)}`, { method: "DELETE" });
 }
 
 export async function putBuilderProductFeatureFlags(id: string, flags: Record<string, boolean>): Promise<{ feature_flags: Record<string, boolean> }> {
-  return apiFetch(`/builder/products/${encodeURIComponent(id)}/feature-flags`, {
+  return apiFetch(`/builder/products/${pathSegment(id)}/feature-flags`, {
     method: "PUT",
     body: JSON.stringify({ flags }),
   });

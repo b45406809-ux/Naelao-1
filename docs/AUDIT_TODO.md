@@ -1191,7 +1191,7 @@ the expected incremental-build path, not a fallback state to design around.
 
 - [ ] CF Pages environment variables:
   - **Dashboard** `NEXT_PUBLIC_API_URL=https://your-domain.com/v1` (includes `/v1` prefix; dashboard's `api.ts` omits it from paths).
-  - **Shell** `NEXT_PUBLIC_API_URL=https://your-domain.com` (omits `/v1`; shell's `api.ts` includes it in paths). Different values for same var name; copy-paste between projects breaks one. Consider fixing in code later.
+  - **Shell** `NEXT_PUBLIC_API_URL=https://your-domain.com` (omits `/v1`; shell's `api.ts` includes it in paths). Different values for same var name; copy-paste between projects breaks one. Dashboard and shell also fall back to `http://localhost:8787` when unset; verify all deployed build variables are nonempty and project-specific, or make builds fail when these values are missing.
 
 - [ ] Replace every `REPLACE_WITH_*_ID` placeholder in wrangler.tomls (D1/KV ids).
 - [ ] `PRODUCT_SUBDOMAIN_APEX` matches the real production apex (e.g., `naelao.com` → `*.naelao.com` subdomains).
@@ -1716,6 +1716,21 @@ first real business on free-tier resources before opening the platform to other 
   session's plan file / CLAUDE.md item 61 / appendix §A1.33.
 
 ## Audit continuation findings (2026-10-22)
+
+- [x] **Dashboard token parsing and storage failure handling.** The browser decoded arbitrary JSON as
+  `NaelaoJwtClaims`, accepted non-finite or missing expiration values, and used `localStorage`
+  without handling access denial. A malformed token could leave the dashboard in an authenticated
+  UI state, while blocked storage could leave hydration stuck or throw during API requests. Claim
+  structure and expiry are now checked for UI state, and storage reads/writes/removal fail safely.
+  Login and registration reject malformed/expired responses before saving them. Server-side JWT
+  verification remains authoritative; decoding in the browser is not signature verification.
+
+- [x] **Dashboard API path segment construction.** Several route helpers interpolated space,
+  product, document, and API-key IDs directly into URL paths; encoded separators or dot segments
+  could target a different endpoint after URL parsing. All dynamic path identifiers now pass a
+  shared segment encoder that rejects empty and exact dot segments; regression tests cover encoded
+  separators, dot-segment rejection, and write routes. The 77-call API wrapper still needs a full
+  route/response/error contract review, and backend authorization remains the security boundary.
 
 - [x] **Source checklist classification now includes stylesheet and deployment source files.** The
   inventory generator previously omitted `.css` and related style/template languages, along with

@@ -79,6 +79,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
   const login = useCallback(async (email: string, password: string) => {
     const res = await apiLogin(email, password);
     const decoded = decodeTokenClaims(res.token);
+    if (!decoded || isTokenExpired(decoded)) throw new Error("Authentication service returned an invalid token");
     storeToken(res.token);
     setToken(res.token);
     setClaims(decoded);
@@ -88,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     async (email: string, password: string, orgName?: string) => {
       const res = await apiRegister(email, password, orgName);
       const decoded = decodeTokenClaims(res.token);
+      if (!decoded || isTokenExpired(decoded)) throw new Error("Authentication service returned an invalid token");
       storeToken(res.token);
       setToken(res.token);
       setClaims(decoded);

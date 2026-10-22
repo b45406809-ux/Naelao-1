@@ -2661,3 +2661,9 @@ Validation: the UI package suite passed 7 files / 46 tests, including all three 
 The inventory refreshed at code commit `d5b6fd94` records 2,060 tracked files and 1,874 source/config files; the scoped checklist now records 646 reviews with 1,228 files still open. The full audit remains open.
 
 Reviewed `apps/dashboard/next.config.mjs`: the only framework setting enables React strict mode; Cloudflare's `setupDevPlatform()` runs only when `NODE_ENV` is development. Staging and production deployment workflows invoke `next-on-pages` separately. `node --check` and the dashboard TypeScript check passed. No dashboard route behavior was included in this config-only scope; the app routes, auth client, and package/deployment setup remain open.
+
+## 2026-10-22 — dashboard auth and API path boundaries
+
+Dashboard JWT display decoding previously cast arbitrary JSON to claims, accepted malformed/missing expiration data as unexpired, and allowed blocked `localStorage` operations to throw during hydration and requests. The auth helpers now validate the claim shape and finite expiration, treat non-finite expiration as expired, and tolerate storage denial. Login and registration reject malformed or expired token responses before updating UI state. Client-side decoding remains display state only; the router's signature verification is authoritative.
+
+The API wrapper also interpolated dynamic IDs into several route paths without encoding. Added one segment encoder and applied it across dynamic path identifiers; empty IDs and exact `.` / `..` path segments reject before fetch. Regression coverage verifies encoded slash/space behavior and that dot segments produce no request. Validation: dashboard auth and path suites passed 13/13, dashboard TypeScript passed, and `git diff --check` passed. The broad 77-call API wrapper, backend route/permission pairing, deployed API URL variables, and React/browser auth hydration behavior remain open.
