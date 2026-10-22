@@ -1776,6 +1776,16 @@ first real business on free-tier resources before opening the platform to other 
   deletion route tests passed, and dashboard TypeScript plus the Cloudflare Pages build passed. Real
   browser keyboard and focus behavior remains part of the open UI browser audit.
 
+- [x] **Dashboard API-key creation lifecycle.** The UI truncated fractional expiry values (for example,
+  `1.5` became one day), allowed repeated create clicks to mint multiple keys even though the raw
+  secret is returned once, and swallowed load/create/revoke/clipboard errors. Expiry input now accepts
+  only a blank value or an integer from 1 through the backend's 3,650-day limit; create and revoke
+  actions serialize, the previous secret must be dismissed before another can be created, and errors
+  are shown with clipboard fallback guidance. The UI now validates the backend's 80-character name
+  bound and labels its inputs. API-key expiry unit cases and the builder API suite passed 41/41,
+  dashboard typecheck and the Cloudflare Pages build passed. Clipboard permission behavior remains a
+  browser-only check.
+
 - [x] **Source checklist classification now includes stylesheet and deployment source files.** The
   inventory generator previously omitted `.css` and related style/template languages, along with
   Dockerfile/Containerfile and Makefile-style inputs. It now includes those source/config formats
