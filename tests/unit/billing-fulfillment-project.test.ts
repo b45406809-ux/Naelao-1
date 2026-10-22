@@ -232,6 +232,74 @@ describe("handleLemonSqueezyWebhook — scopes the wake to the Orders project wh
   });
 });
 
+describe("handleLemonSqueezyWebhook — accounting survives an inactive space", () => {
+  it("records a paid order before skipping the inactive space's agent", async () => {
+    const writes: string[] = [];
+    const db = {
+      prepare(sql: string) {
+        const stmt = {
+          bind() { return stmt; },
+          async first() {
+            if (sql.includes("FROM spaces WHERE id = ? AND status = 'active'")) return null;
+            if (/FROM spaces WHERE id = \?/.test(sql)) return { tenant_id: "tenant-1" };
+            return null;
+          },
+          async run() { writes.push(sql); return { meta: { changes: 1 } }; },
+        };
+        return stmt;
+      },
+    };
+    const agentsFetch = vi.fn(async () => new Response("{}"));
+    const env: LemonSqueezyEnv = {
+      LEMON_SQUEEZY_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      PLATFORM_SECRET,
+      PLATFORM_DB: db as unknown as D1Database,
+      AGENTS_WORKER: { fetch: agentsFetch } as unknown as Fetcher,
+    };
+    const raw = JSON.stringify({
+      meta: { event_name: "order_created", custom_data: { spaceId: "space-inactive", product_id: "product-1" } },
+      data: { id: "order-inactive", attributes: { total: 5000, currency: "USD", customer_id: "customer-1", custom_data: { spaceId: "space-inactive", product_id: "product-1" } } },
+    });
+    const response = await handleLemonSqueezyWebhook(new Request("https://billing.naelao.com/webhooks/lemon-squeezy", {
+      method: "POST", headers: { "X-Signature": await signBody(raw) }, body: raw,
+    }), env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ agent_skipped: true, space_id: "space-inactive" });
+    expect(writes.some((sql) => sql.includes("INSERT OR IGNORE INTO launchpad_orders"))).toBe(true);
+    expect(agentsFetch).not.toHaveBeenCalled();
+  });
+
+  it("releases the event claim and returns retryable failure when agent delivery is rejected", async () => {
+    const writes: string[] = [];
+    const db = {
+      prepare(sql: string) {
+        const stmt = {
+          bind() { return stmt; },
+          async first() {
+            if (/FROM spaces WHERE id = \?/.test(sql)) return { tenant_id: "tenant-1" };
+            return null;
+          },
+          async run() { writes.push(sql); return { meta: { changes: 1 } }; },
+        };
+        return stmt;
+      },
+    };
+    const raw = makeSubscriptionUpdatedBody("space-1");
+    const response = await handleLemonSqueezyWebhook(new Request("https://billing.naelao.com/webhooks/lemon-squeezy", {
+      method: "POST", headers: { "X-Signature": await signBody(raw) }, body: raw,
+    }), {
+      LEMON_SQUEEZY_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      PLATFORM_SECRET,
+      PLATFORM_DB: db as unknown as D1Database,
+      AGENTS_WORKER: { fetch: async () => new Response("temporarily unavailable", { status: 503 }) } as unknown as Fetcher,
+      SPACES_WORKER: { fetch: async () => Response.json({ data: [], count: 0 }) } as unknown as Fetcher,
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: "agent_delivery_failed" });
+    expect(writes.some((sql) => sql.includes("DELETE FROM processed_webhook_events"))).toBe(true);
+  });
+});
+
 describe("isFulfillmentAgentBound", () => {
   function makeEnv(projects: Array<{ default_agent_id?: string | null; status?: string }> | null): LemonSqueezyEnv {
     return {

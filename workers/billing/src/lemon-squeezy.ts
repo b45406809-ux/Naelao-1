@@ -1006,7 +1006,7 @@ export async function wakeAgent(
 
   if (!resp.ok) {
     const body = await responseDetail(resp);
-    console.error(`[billing/ls] Failed to wake agent ${agentId} for space ${spaceId}: ${body}`);
+    throw new Error(`Agent wake failed (${resp.status}): ${body}`);
   } else {
     console.log(`[billing/ls] Woke agent ${agentId} for space ${spaceId}${projectId ? ` project=${projectId}` : ""} — event=${event.type}`);
   }
@@ -1253,12 +1253,6 @@ export async function handleLemonSqueezyWebhook(
     return Response.json({ ok: true, duplicate: true });
   }
 
-  const agent = await resolveDefaultAgent(event.spaceId, env.PLATFORM_DB);
-  if (!agent) {
-    console.warn(`[billing/ls] No active space found for spaceId=${event.spaceId}`);
-    return Response.json({ ok: true, skipped: true });
-  }
-
   // Every money side-effect below is idempotent (INSERT OR IGNORE / ON CONFLICT / a settlement or
   // grant keyed by an idempotency_key). So a transient failure in ANY of them must NOT be silently
   // swallowed with a 200 (which would permanently lose the money — Lemon Squeezy never retries a
@@ -1308,6 +1302,22 @@ export async function handleLemonSqueezyWebhook(
     return Response.json({ error: "processing_failed", failed: failures }, { status: 500 });
   }
 
+  // Space suspension/deactivation disables agent execution, but must not discard payment,
+  // refund, subscription, or wallet accounting. Resolve the active agent only after those durable
+  // money effects have completed.
+  let agent: Awaited<ReturnType<typeof resolveDefaultAgent>>;
+  try {
+    agent = await resolveDefaultAgent(event.spaceId, env.PLATFORM_DB);
+  } catch (err) {
+    console.error(`[billing/ls] active-space lookup failed for event=${eventId}:`, (err as Error).message);
+    await unmarkEventProcessed("lemon_squeezy", eventId, env.PLATFORM_DB);
+    return Response.json({ error: "space_lookup_failed" }, { status: 503 });
+  }
+  if (!agent) {
+    console.warn(`[billing/ls] No active space agent for spaceId=${event.spaceId}; accounting processed`);
+    return Response.json({ ok: true, event_type: event.type, space_id: event.spaceId, order_id: orderId, agent_skipped: true });
+  }
+
   // 6. Wake an agent asynchronously (ctx.waitUntil equivalent: fire-and-forget). Pass the order
   //    id so the fulfilment agent can look it up and deliver the product, and scope the run to
   //    the space's "Orders" project when the template seeded one (best-effort — falls back to a
@@ -1332,7 +1342,15 @@ export async function handleLemonSqueezyWebhook(
   // specialist trigger for. Only one agent is ever woken per event — never both.
   const fulfillmentBound = event.type === "payment.success" && (await isFulfillmentAgentBound(event.spaceId, agent.tenantId, env));
   const targetAgentId = fulfillmentBound ? (await resolveFulfillmentConfig(event.spaceId, agent.tenantId, env)).agentId : agent.agentId;
-  await wakeAgent(event.spaceId, targetAgentId, agent.tenantId, event, env.AGENTS_WORKER, env.PLATFORM_SECRET, orderId, projectId);
+  try {
+    await wakeAgent(event.spaceId, targetAgentId, agent.tenantId, event, env.AGENTS_WORKER, env.PLATFORM_SECRET, orderId, projectId);
+  } catch (err) {
+    // The provider event is only acknowledged after the agent accepted it. Accounting handlers
+    // above are idempotent, so releasing the event claim lets a webhook retry recover delivery.
+    console.error(`[billing/ls] agent wake failed for event=${eventId}:`, (err as Error).message);
+    await unmarkEventProcessed("lemon_squeezy", eventId, env.PLATFORM_DB);
+    return Response.json({ error: "agent_delivery_failed" }, { status: 503 });
+  }
 
   return Response.json({ ok: true, event_type: event.type, space_id: event.spaceId, order_id: orderId });
 }
