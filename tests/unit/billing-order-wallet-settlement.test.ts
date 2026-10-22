@@ -198,6 +198,32 @@ describe("Lemon Squeezy webhook — refund claws back the settled amount (P0-5)"
     expect(calls.filter((c) => /\/wallet\/debit$/.test(c.url))).toHaveLength(1);
   });
 
+  it("keeps an order retryable when wallet clawback fails transiently", async () => {
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
+    let debitCalls = 0;
+    const worker = {
+      async fetch(reqInput: Request | string, init?: RequestInit) {
+        const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        if (/\/wallet-project$/.test(req.url)) return Response.json({ project_id: "wallet-proj-1" });
+        if (/\/wallet\/credit$/.test(req.url)) return Response.json({ balance_cents: 1899 }, { status: 201 });
+        if (/\/wallet\/debit$/.test(req.url)) {
+          debitCalls++;
+          return debitCalls === 1 ? new Response("temporary failure", { status: 503 }) : Response.json({ balance_cents: 0 }, { status: 201 });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    };
+    const env = makeEnv(fakeDb as unknown as D1Database, worker as unknown as ReturnType<typeof makeSpacesWorker>["fetcher"]);
+    await post(makeOrderPaidBody("space1", "ord_refund_retry", "prod_a"), env);
+    const refund = makeOrderRefundedBody("space1", "ord_refund_retry", "prod_a");
+    expect((await post(refund, env)).status).toBe(500);
+    expect((await fakeDb.prepare("SELECT status FROM launchpad_orders WHERE provider_event_id=?").bind("ord_refund_retry").first<{ status: string }>())?.status).toBe("paid");
+    expect((await post(refund, env)).status).toBe(200);
+    expect(debitCalls).toBe(2);
+    expect((await fakeDb.prepare("SELECT status FROM launchpad_orders WHERE provider_event_id=?").bind("ord_refund_retry").first<{ status: string }>())?.status).toBe("refunded");
+  });
+
   it("never touches the wallet for a refund on an order this platform never recorded", async () => {
     const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();

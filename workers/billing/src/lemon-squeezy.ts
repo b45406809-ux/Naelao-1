@@ -337,12 +337,9 @@ async function recordOrderRefund(
     "SELECT space_id, tenant_id, net_cents, builder_fee_cents, status FROM launchpad_orders WHERE provider_event_id = ?"
   ).bind(event.providerEventId).first<{ space_id: string; tenant_id: string; net_cents: number; builder_fee_cents: number; status: string }>();
   if (!order || order.status === "refunded") return; // unknown order, or already clawed back (idempotent)
-
-  const updateResult = await env.PLATFORM_DB.prepare(
-    "UPDATE launchpad_orders SET status = 'refunded' WHERE provider_event_id = ? AND status != 'refunded'"
-  ).bind(event.providerEventId).run();
-  if (updateResult.meta.changes === 0) return; // lost a race with a concurrent delivery — already handled
-
+  // Do retryable/idempotent side effects before the durable refunded state. If the wallet or
+  // reseller ledger is unavailable, the webhook releases its event claim; leaving the order paid
+  // lets that retry finish the missing clawback instead of incorrectly short-circuiting here.
   await settleOrderToWallet(order.space_id, order.tenant_id, order.net_cents, `refund:${event.providerEventId}`, "refund_clawback", env);
 
   // ARCH-REVENUE-6: claw back the builder's share too — a refund reverses BOTH deductions, not
@@ -360,6 +357,9 @@ async function recordOrderRefund(
       );
     }
   }
+  await env.PLATFORM_DB.prepare(
+    "UPDATE launchpad_orders SET status = 'refunded' WHERE provider_event_id = ? AND status != 'refunded'"
+  ).bind(event.providerEventId).run();
 }
 
 /**
@@ -401,7 +401,13 @@ async function recordNonOrderRefundClawback(
       `http://spaces-worker/spaces/${event.spaceId}/projects/${projectId}/wallet/debit`,
       { method: "POST", headers, body: JSON.stringify({ cents, reason: "refund_clawback", idempotency_key: idempotencyKey }) }
     ));
-    if (!resp.ok) console.warn(`[billing/ls] wallet_topup refund clawback failed space=${event.spaceId} project=${projectId}: ${await responseDetail(resp)}`);
+    if (!resp.ok) {
+      const detail = await responseDetail(resp);
+      // The wallet cannot go negative; a depleted balance is the documented refund shortfall.
+      // Other errors are transient or indicate a broken clawback and must trigger provider retry.
+      if (resp.status === 402) console.warn(`[billing/ls] wallet_topup refund shortfall space=${event.spaceId} project=${projectId}: ${detail}`);
+      else throw new Error(`wallet_topup refund clawback ${resp.status}: ${detail}`);
+    }
     return;
   }
 
@@ -414,7 +420,7 @@ async function recordNonOrderRefundClawback(
       method: "POST", headers,
       body: JSON.stringify({ product_space_id: productSpaceId, end_user_id: endUserId, credits, idempotency_key: idempotencyKey }),
     }));
-    if (!resp.ok) console.warn(`[billing/ls] credit_pack refund clawback failed end_user=${endUserId}: ${await responseDetail(resp)}`);
+    if (!resp.ok) throw new Error(`credit_pack refund clawback ${resp.status} for end_user=${endUserId}: ${await responseDetail(resp)}`);
     return;
   }
 
@@ -429,7 +435,7 @@ async function recordNonOrderRefundClawback(
     const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/revenue-tracking/unmark-billed`, {
       method: "POST", headers, body: JSON.stringify({ periods, ...(charges ? { charges } : {}) }),
     }));
-    if (!resp.ok) console.warn(`[billing/ls] surcharge refund unmark failed space=${event.spaceId}: ${await responseDetail(resp)}`);
+    if (!resp.ok) throw new Error(`surcharge refund unmark ${resp.status} for space=${event.spaceId}: ${await responseDetail(resp)}`);
     return;
   }
 }

@@ -65,6 +65,32 @@ describe("F-29: refund clawback routes by original checkout kind", () => {
     expect(debit!.body).toMatchObject({ cents: 5000, reason: "refund_clawback", idempotency_key: "refund:ord_1" });
   });
 
+  it("returns a retryable failure when a non-order wallet clawback gets a transient error", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    let debitCalls = 0;
+    const spacesWorker = {
+      async fetch(reqInput: Request | string, init?: RequestInit) {
+        const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        if (req.url.includes("/wallet/debit")) {
+          debitCalls++;
+          return debitCalls === 1 ? new Response("temporary failure", { status: 503 }) : Response.json({ balance_cents: 0 }, { status: 201 });
+        }
+        return Response.json({ project_id: "wallet-proj" });
+      },
+    };
+    const env = {
+      PLATFORM_SECRET: SECRET, PLATFORM_DB: fakeDb, LEMON_SQUEEZY_WEBHOOK_SECRET: "whsec_test",
+      AGENTS_WORKER: { fetch: async () => new Response("{}") }, SPACES_WORKER: spacesWorker,
+    };
+    const req = await signedWebhook(refundBody({ spaceId: "space-1", kind: "wallet_topup", project_id: "wallet-proj", cents: 5000 }), "whsec_test");
+    const first = await handleLemonSqueezyWebhook(req, env as never);
+    expect(first.status).toBe(500);
+    const retry = await signedWebhook(refundBody({ spaceId: "space-1", kind: "wallet_topup", project_id: "wallet-proj", cents: 5000 }), "whsec_test");
+    expect((await handleLemonSqueezyWebhook(retry, env as never)).status).toBe(200);
+    expect(debitCalls).toBe(2);
+  });
+
   it("claws back credits on a refunded credit_pack", async () => {
     const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
     const fakeDb = await loadDb();
