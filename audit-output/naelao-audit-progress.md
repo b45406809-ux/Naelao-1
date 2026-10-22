@@ -2341,3 +2341,9 @@ Validation: Shell FileViewer/shell tests passed 3 files / 10 tests; shell TypeSc
 Reviewed the real workspace file read route and its R2 response tests. The route checks the R2 metadata size before reading the body, then verifies the actual byte count matches metadata and remains within the 2 MiB limit; PDF and raster-image reads are base64-labelled, while Office files are downloadable without archive parsing. Updated stale comments that still described Office preview parsers. Added route tests proving exact PDF bytes/content type are preserved and an oversized object never has its bytes read. Existing traversal, missing-file, listing, and unavailable-bucket cases remain covered.
 
 Validation: `workspace-file-viewer.test.ts` passed 7/7. Browser-native PDF/image rendering remains untested in a real browser. The checklist records this scoped route/test review and now contains 518 reviewed / 1,309 open files.
+
+## Space Assistant R2 file snapshot consistency (2026-10-22)
+
+A further review of `/spaces/:spaceId/assistant/files/*` found that it called `readBytesWithHash` (which enforces the inline byte limit and verifies the published SHA-256 metadata), discarded the returned bytes, then called R2 `get()` a second time and returned that new object's body. A concurrent replacement could therefore make the delivered content differ from the integrity-checked snapshot. The route now base64-encodes or decodes the already-verified `current.bytes` and never performs the second read. Updated stale comments to document Office downloads rather than browser parsing.
+
+Validation: `space-assistant-surface.test.ts` passed 35/35, including a simulated between-read object replacement proving one R2 body read and snapshot consistency; Agents TypeScript passed. The full Agents index remains unchecked because it contains many unrelated routes. No live R2 consistency/fault-injection was performed.

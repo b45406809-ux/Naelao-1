@@ -8437,8 +8437,8 @@ app.get("/spaces/:spaceId/assistant/files", async (c) => {
 // equivalent (workers/spaces/src/index.ts, /projects/:projectId/workspace/files/*) byte for byte:
 // server-side ..-traversal collapse, a 2MB inline-view cap, too_large beyond it, 404 for missing.
 const ASSISTANT_FILE_MAX_BYTES = 2 * 1024 * 1024;
-// Step 4: same viewable-binary set as the project-scoped route (workers/spaces/src/index.ts) — a
-// PDF/image/Office file is returned base64 so the shell's viewer can render it, not just text.
+// Same binary response types as the project-scoped route. PDF/image types are previewed natively;
+// Office archives are returned as bytes for download without parsing untrusted ZIP/XML content.
 const ASSISTANT_VIEWABLE_BINARY: Record<string, string> = {
   pdf: "application/pdf",
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
@@ -8446,8 +8446,7 @@ const ASSISTANT_VIEWABLE_BINARY: Record<string, string> = {
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 };
-function assistantArrayBufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
+function assistantBytesToBase64(bytes: Uint8Array): string {
   let bin = "";
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
@@ -8475,17 +8474,16 @@ app.get("/spaces/:spaceId/assistant/files/*", async (c) => {
     }
     throw error;
   }
-  const obj = current ? await c.env.SCRIPTS_R2.get(prefix + relative) : null;
-  if (!obj) return c.json({ error_code: "not_found", message: "File not found" }, 404);
-  if (obj.size > ASSISTANT_FILE_MAX_BYTES) {
-    return c.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
+  if (!current) return c.json({ error_code: "not_found", message: "File not found" }, 404);
+  if (current.bytes.byteLength > ASSISTANT_FILE_MAX_BYTES) {
+    return c.json({ path: relative, size: current.bytes.byteLength, too_large: true, message: "File exceeds the 2MB inline view limit" });
   }
   const contentType = ASSISTANT_VIEWABLE_BINARY[(relative.split(".").pop() ?? "").toLowerCase()];
   if (contentType) {
-    const b64 = assistantArrayBufferToBase64(await obj.arrayBuffer());
-    return c.json({ path: relative, size: obj.size, encoding: "base64", content_type: contentType, content: b64 });
+    const b64 = assistantBytesToBase64(current.bytes);
+    return c.json({ path: relative, size: current.bytes.byteLength, encoding: "base64", content_type: contentType, content: b64 });
   }
-  return c.json({ path: relative, size: obj.size, content: await obj.text() });
+  return c.json({ path: relative, size: current.bytes.byteLength, content: new TextDecoder().decode(current.bytes) });
 });
 
 // GET /spaces/:spaceId/assistant/artifacts[/*] — Phase 5: agent-authored deliverables (a

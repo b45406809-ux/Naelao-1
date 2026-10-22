@@ -155,6 +155,26 @@ describe("GET /spaces/:spaceId/assistant/files/* — per-file content read", () 
     expect(body).toMatchObject({ path: "notes.txt", content: "hello from R2" });
   });
 
+  it("serializes the bounded, integrity-checked R2 snapshot without fetching the object again", async () => {
+    const env = makeEnv({ spacesOk: true, withR2: true });
+    let gets = 0;
+    const first = new TextEncoder().encode("checked snapshot");
+    const replacement = new TextEncoder().encode("replacement body from a later R2 revision");
+    env.SCRIPTS_R2 = {
+      head: async (key) => ({ key, size: first.byteLength, etag: "v1", customMetadata: {} }),
+      get: async () => {
+        gets++;
+        const bytes = gets === 1 ? first : replacement;
+        return { size: bytes.byteLength, async arrayBuffer() { return bytes.slice().buffer; }, async text() { return new TextDecoder().decode(bytes); } };
+      },
+      list: async () => ({ objects: [], truncated: false }),
+    } as unknown as R2Bucket;
+    const res = await app.fetch(await req("/spaces/space1/assistant/files/notes.txt", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ path: "notes.txt", content: "checked snapshot" });
+    expect(gets).toBe(1);
+  });
+
   it("404s for a file that doesn't exist", async () => {
     const env = makeEnv({ spacesOk: true, withR2: true });
     const res = await app.fetch(await req("/spaces/space1/assistant/files/nope.txt", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
