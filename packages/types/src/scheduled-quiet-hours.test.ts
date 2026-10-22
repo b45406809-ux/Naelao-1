@@ -15,4 +15,23 @@ describe("scheduled routine quiet hours", () => {
     expect(isWithinScheduledQuietHours(quiet, Date.parse("2026-01-15T12:00:00Z"))).toBe(false); // 07:00 local
     expect(isWithinScheduledQuietHours({ start: "09:00", end: "17:00", timeZone: "UTC" }, Date.parse("2026-01-15T12:00:00Z"))).toBe(true);
   });
+
+  it("uses inclusive start and exclusive end boundaries", () => {
+    const quiet = { start: "09:00", end: "17:00", timeZone: "UTC" };
+    expect(isWithinScheduledQuietHours(quiet, Date.parse("2026-01-15T09:00:00Z"))).toBe(true);
+    expect(isWithinScheduledQuietHours(quiet, Date.parse("2026-01-15T16:59:00Z"))).toBe(true);
+    expect(isWithinScheduledQuietHours(quiet, Date.parse("2026-01-15T17:00:00Z"))).toBe(false);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 8.64e15 + 1])(
+    "fails closed for invalid clock values (%s)",
+    (now) => {
+      expect(isWithinScheduledQuietHours({ start: "09:00", end: "17:00", timeZone: "UTC" }, now)).toBe(false);
+    },
+  );
+
+  it("returns false rather than throwing for an invalid quiet window", () => {
+    expect(isWithinScheduledQuietHours({ start: "bad", end: "17:00", timeZone: "UTC" }, Date.now())).toBe(false);
+    expect(isWithinScheduledQuietHours({ start: "09:00", end: "17:00", timeZone: "Not/AZone" }, Date.now())).toBe(false);
+  });
 });

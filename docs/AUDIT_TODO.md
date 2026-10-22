@@ -1724,8 +1724,13 @@ first real business on free-tier resources before opening the platform to other 
   between validation and connection. Rechecks reduce the window but do not pin the address. Identify
   a production-supported pinned egress transport/proxy and migrate every outbound consumer (MCP,
   knowledge fetch, browser, callbacks, webhook, compensation, and connector paths); test DNS changes
-  between validation and connection, redirect chains, and proxy failure. Do not claim this closed
-  until the connection uses the validated address or a trusted proxy enforces the same policy.
+  between validation and connection, redirect chains, and proxy failure. An experimental
+  `packages/security/src/pinned-fetch.ts` transport is unit-tested but no Worker calls it; it only
+  supports a bounded HTTP/1.1 subset on ports 80 and 443 and has no Cloudflare `connect()` adapter
+  or deployed-runtime proof. Review protocol compatibility and streamed request cancellation before
+  adopting it. Browser Chromium needs a proxy or network-level control because its sockets do not use
+  Worker `fetch()`. Do not claim this closed until the connection uses the validated address or a
+  trusted proxy enforces the same policy.
 
 - [x] **Billing webhook metadata and provider-event routing pass.** Recognized paid checkout
   metadata is now validated rather than silently treated as an unrelated event; malformed
@@ -1794,3 +1799,11 @@ first real business on free-tier resources before opening the platform to other 
   Whop ordering/version fields, then persist a monotonic provider revision or prove the current
   identity checks cover replacement, renewal, cancellation, and recovery. The billing event table
   also has no retention/cleanup path and needs bounded retention without reopening old deliveries.
+
+- [ ] **Workspace dependency ranges and peer compatibility need a full pass.** `packages/types`
+  previously declared wildcard `*` development dependencies; that package now uses the repository's
+  bounded TypeScript and Workers Types ranges. Other workspace packages still declare wildcard
+  TypeScript or `@cloudflare/workers-types` versions and should be normalized with lockfile review.
+  A lockfile-only install also reported that the current Wrangler 4.149.0 peer range expects
+  `@cloudflare/workers-types` v5 while the workspace resolves v4.20260623.1. Typechecking currently
+  passes, but confirm the supported version pairing and CI install behavior before closing this.

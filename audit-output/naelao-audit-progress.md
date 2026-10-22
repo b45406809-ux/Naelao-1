@@ -2605,3 +2605,31 @@ call-time checks do not pin the address used by Workers `fetch()` or the browser
 select and validate a production-supported pinned egress transport before calling this closed. The
 audit checklist still has 1,233 unchecked source/config rows; no live deployment or external provider
 tests were performed.
+
+## 2026-10-22 — pinned egress transport prototype stress pass
+
+Added a socket-injected, bounded HTTP/1.1 fetch helper to `@naelao/security`. It resolves A/AAAA
+answers, rejects any private answer, dials a literal validated IP, checks the reported peer address
+when available, verifies TLS against the URL hostname, refuses redirects, and caps request/response
+bodies and headers. It rejects ambiguous/unsupported transfer framing and non-identity content
+encoding. The helper currently supports ports 80 and 443 only and has no Cloudflare socket adapter;
+no production Worker calls it, so DNS rebinding remains unresolved. The browser worker uses
+Chromium-owned sockets and will need an egress proxy or network policy.
+
+Stress validation: the security package passed 22 files / 124 tests, including 128 concurrent
+fragmented responses, byte-by-byte HTTP/chunk framing, oversized streamed request and response
+bodies, mixed public/private DNS answers, peer mismatch, malformed framing, encoded responses,
+redirect refusal, and pre-aborted requests. Security package TypeScript passed; the migration-backed
+MCP SSRF integration suite passed 11/11. No Cloudflare socket runtime, real DNS service, outbound
+provider, or deployment was exercised. The repository audit checklist remains 1,233 open source/config
+rows; this is a scoped helper review, not completion of the outbound security finding or full audit.
+
+Follow-up workspace regression validation after the helper export passed `turbo run test --concurrency=8`: 57/57 tasks, 368/368 root test files, and 3,846/3,846 root tests. The full workspace TypeScript check passed 74/74 tasks. These runs validate repository compatibility with the unused helper export; they do not establish production socket or egress behavior.
+
+## 2026-10-22 — shared types and quiet-hours edge review
+
+Reviewed the `@naelao/types` manifest, TypeScript config, shared exports, and quiet-hours tests/callers in Spaces, Agents, and the dashboard. `isWithinScheduledQuietHours()` passed arbitrary `now` directly into `Intl.DateTimeFormat.formatToParts()`, so NaN, infinity, or an out-of-range timestamp could throw during scheduled-job filtering. It now returns false for non-finite and invalid Date values. Added inclusive-start/exclusive-end, invalid-window, invalid-timezone, and invalid-clock regressions. The type package had wildcard TypeScript and Workers Types development dependencies; these now use the bounded repository ranges and the lockfile importer was updated without changing resolved package versions. Focused tests passed 8/8 and package TypeScript passed.
+
+Dependency review found that other packages still have wildcard TypeScript/Workers Types ranges, and lockfile-only resolution reports Wrangler 4.149.0 expects Workers Types v5 while the repository resolves v4.20260623.1. This needs a workspace-wide compatibility pass; recorded open in `docs/AUDIT_TODO.md`. Package-local scoped review is complete, while the broader export usage and compatibility review remains open.
+
+Final validation after the quiet-hours guard and package-range changes passed again: workspace Turbo tests completed 57/57 tasks and 3,846/3,846 root tests (368 test files); the complete workspace TypeScript run passed 74/74 tasks. `git diff --check` is clean. No Workers deployment, pinned-socket runtime test, DNS fault-injection against a live resolver, or external-provider test was performed. The exhaustive checklist and production egress gap remain open.

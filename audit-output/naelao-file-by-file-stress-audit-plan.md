@@ -7,10 +7,11 @@ Status: only files with checked boxes have a completed scoped review recorded in
 ## Audit state (2026-10-22)
 
 - The refreshed source/config checklist records **610 scoped reviews / 1,233 open files** out of 1,843. The prior header undercounted both the inventory and reviewed rows; the generator preserved the checked file rows. Unchecked rows remain unaudited.
-- The latest full Turbo run passed 57 tasks, 368 root test files, and 3,842 root tests, including Gumroad and Whop test tasks. It ran after the latest Billing webhook identity, stale-subscription, missing-space, and reseller-refund attribution fixes. Earlier Marketplace response-privacy and request-size changes passed the migration-backed route suite (3 tests), TypeScript, and Wrangler dry run. Knowledge (64 tests) and Browser Worker (4 files / 9 tests) also passed focused suites with Worker typechecks/builds. Recursive workspace TypeScript previously passed 74/74 tasks after excluding Node-only test fixtures from runtime Worker tsconfigs.
+- The latest full Turbo run passed 57 tasks, 368 root test files, and 3,846 root tests, including Gumroad and Whop test tasks. It ran after the latest Billing webhook identity, stale-subscription, missing-space, and reseller-refund attribution fixes. Earlier Marketplace response-privacy and request-size changes passed the migration-backed route suite (3 tests), TypeScript, and Wrangler dry run. Knowledge (64 tests) and Browser Worker (4 files / 9 tests) also passed focused suites with Worker typechecks/builds. Recursive workspace TypeScript previously passed 74/74 tasks after excluding Node-only test fixtures from runtime Worker tsconfigs.
 - Latest production dependency audit: 49 advisory records (4 critical, 11 high, 29 moderate, 5 low). All critical/high production findings trace to `next@14.2.18`; Pages adapter migration remains open.
 - Latest full dependency audit: 74 records (4 critical, 19 high, 42 moderate, 9 low). Remaining high build-tool findings include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`.
 - DNS rebinding remains unresolved because the Workers fetch path cannot pin the address that passed validation. No live Cloudflare deployment or external-provider test has been performed.
+- The experimental `packages/security/src/pinned-fetch.ts` helper has a bounded HTTP/1.1 socket implementation and unit stress coverage, but no Worker caller uses it yet. This is not a DNS rebinding mitigation in production; caller migration, a Cloudflare socket adapter, runtime compatibility, and all other egress surfaces remain open.
 
 ## Review contract
 
@@ -1170,6 +1171,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `packages/security/src/ssrf-guard.ts`
 - [x] `packages/security/src/ssrf-stress.test.ts`
 - [x] `packages/security/src/ssrf.ts`
+- [x] `packages/security/src/pinned-fetch.test.ts` — scoped review: bounded HTTP framing/body limits, DNS-answer validation, peer-address check, cancellation and concurrent fragmented-response stress; does not validate Cloudflare runtime behavior or caller integration.
+- [x] `packages/security/src/pinned-fetch.ts` — scoped review: injected socket connector, safe-address selection, TLS hostname verification, bounded HTTP/1.1 subset, no redirect following; not connected to production callers.
 - [x] `packages/security/src/waf-stress.test.ts`
 - [x] `packages/security/src/waf.ts`
 - [x] `packages/security/src/write-guard-stress.test.ts`
@@ -1210,13 +1213,13 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `packages/types`
 
-- [ ] `packages/types/package.json`
-- [ ] `packages/types/tsconfig.json`
+- [x] `packages/types/package.json`
+- [x] `packages/types/tsconfig.json`
 
 ### `packages/types/src`
 
-- [ ] `packages/types/src/index.ts`
-- [ ] `packages/types/src/scheduled-quiet-hours.test.ts`
+- [x] `packages/types/src/index.ts`
+- [x] `packages/types/src/scheduled-quiet-hours.test.ts`
 
 ### `packages/ui`
 

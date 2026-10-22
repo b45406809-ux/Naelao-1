@@ -24,6 +24,7 @@ export {
 export { checkSsrf, resolveHostnameIps } from "./ssrf-guard.js";
 export type { SsrfCheckResult } from "./ssrf-guard.js";
 export { isPrivateNetworkAddress } from "./ssrf.js";
+export { fetchPinned, type PinnedSocket, type SocketConnector } from "./pinned-fetch.js";
 export {
   checkRequestBodyByteLimit,
   type RequestBodyLimitResult,

@@ -42,11 +42,14 @@ export function validateScheduledQuietHours(input: ScheduledQuietHours): string 
 
 /** True when a scheduled job's local-time quiet window contains this instant. */
 export function isWithinScheduledQuietHours(input: ScheduledQuietHours, now: number): boolean {
+  if (typeof now !== "number" || !Number.isFinite(now)) return false;
+  const instant = new Date(now);
+  if (!Number.isFinite(instant.getTime())) return false;
   const start = input.start || "", end = input.end || "";
   if (!start || !end || validateScheduledQuietHours(input)) return false;
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: input.timeZone || "UTC", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).formatToParts(now);
+  }).formatToParts(instant);
   const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
   const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
   const local = hour * 60 + minute;
