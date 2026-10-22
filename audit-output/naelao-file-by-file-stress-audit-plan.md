@@ -298,7 +298,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `apps/dashboard/src/lib/api.ts`
 - [x] `apps/dashboard/src/lib/auth-provider.tsx`
 - [x] `apps/dashboard/src/lib/auth.ts`
-- [ ] `apps/dashboard/src/lib/product-url.ts`
+- [x] `apps/dashboard/src/lib/product-url.ts`
 - [ ] `apps/dashboard/src/lib/temples.ts`
 
 ### `apps/launchpad/src`

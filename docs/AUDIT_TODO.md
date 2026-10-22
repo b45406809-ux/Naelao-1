@@ -1192,6 +1192,7 @@ the expected incremental-build path, not a fallback state to design around.
 - [ ] CF Pages environment variables:
   - **Dashboard** `NEXT_PUBLIC_API_URL=https://your-domain.com/v1` (includes `/v1` prefix; dashboard's `api.ts` omits it from paths).
   - **Shell** `NEXT_PUBLIC_API_URL=https://your-domain.com` (omits `/v1`; shell's `api.ts` includes it in paths). Different values for same var name; copy-paste between projects breaks one. Dashboard and shell also fall back to `http://localhost:8787` when unset; verify all deployed build variables are nonempty and project-specific, or make builds fail when these values are missing.
+  - **Dashboard product links** `NEXT_PUBLIC_SHELL_URL` is read by the URL helper but is not wired in the checked-in staging/production workflows. Without it, both deployments use the production shell Pages origin; confirm each environment's intended shell host and pass its HTTPS origin to the dashboard build.
 
 - [ ] Replace every `REPLACE_WITH_*_ID` placeholder in wrangler.tomls (D1/KV ids).
 - [ ] `PRODUCT_SUBDOMAIN_APEX` matches the real production apex (e.g., `naelao.com` → `*.naelao.com` subdomains).
@@ -1731,6 +1732,14 @@ first real business on free-tier resources before opening the platform to other 
   shared segment encoder that rejects empty and exact dot segments; regression tests cover encoded
   separators, dot-segment rejection, and write routes. The 77-call API wrapper still needs a full
   route/response/error contract review, and backend authorization remains the security boundary.
+
+- [x] **Dashboard product URL safety.** The product link helper trusted a deployment URL string and
+  appended a database slug as raw path text. It now accepts only an HTTP(S) origin (HTTP is allowed
+  only in development), rejects credentials/path/query/fragment components, validates slugs against
+  the server's product-slug rule, and uses encoded path segments. Local development defaults to the
+  shell's configured port 3100. Tests cover invalid schemes, credentials, slugs, and development
+  origin selection. The staging/production shell origin remains an external deployment setting and
+  is listed above because the repository workflows do not currently provide it.
 
 - [x] **Source checklist classification now includes stylesheet and deployment source files.** The
   inventory generator previously omitted `.css` and related style/template languages, along with
