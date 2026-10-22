@@ -17,6 +17,7 @@
 
 import { Hono } from "hono";
 import { errorResponse, requestId, mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
+import { checkSsrf } from "@naelao/security";
 import {
   LAUNCHPAD_CORE_AGENTS,
   agentsForTemplates,
@@ -48,6 +49,23 @@ import { claimProvisionLease, ProvisionLeaseBusyError, releaseProvisionLease } f
 
 async function responseErrorDetail(response: Response): Promise<string> {
   return (await readBoundedResponseText(response, 8 * 1024).catch(() => "")).slice(0, 500);
+}
+
+/** The optional third-party lifecycle hook is the only manifest-supplied outbound URL. */
+export async function callCustomProvisioner(
+  url: string,
+  payload: Record<string, unknown>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Response> {
+  const destination = await checkSsrf(url, { fetchImpl });
+  if (destination.blocked) throw new Error(`Custom provisioner URL blocked: ${destination.reason ?? "SSRF validation failed"}`);
+  return fetchImpl(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+    redirect: "error",
+    signal: AbortSignal.timeout(30_000),
+  });
 }
 
 export interface Env {
@@ -536,15 +554,12 @@ async function mergeOnboarding(
   tenantId: string,
   onboarding: OnboardingState
 ): Promise<void> {
-  const row = await env.PLATFORM_DB.prepare(
-    "SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?"
-  ).bind(spaceId, tenantId).first<{ config_json: string | null }>();
-  let cfg: Record<string, unknown> = {};
-  try { cfg = JSON.parse(row?.config_json ?? "{}") as Record<string, unknown>; } catch { /* keep {} */ }
-  cfg["onboarding"] = onboarding;
-  await env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
-  ).bind(JSON.stringify(cfg), new Date().toISOString(), spaceId, tenantId).run();
+  const updated = await env.PLATFORM_DB.prepare(
+    `UPDATE spaces SET config_json = json_set(COALESCE(config_json, '{}'), '$.onboarding', json(?)), updated_at = ?
+     WHERE id = ? AND tenant_id = ?
+       AND (config_json IS NULL OR (json_valid(config_json) AND json_type(config_json) = 'object'))`
+  ).bind(JSON.stringify(onboarding), new Date().toISOString(), spaceId, tenantId).run();
+  if (updated.meta.changes === 0) throw new Error("onboarding_state_merge_failed");
 }
 
 // Step 5c: register the creator as space_members owner. Previously nothing in the platform
@@ -811,12 +826,9 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     // Step 7: Custom lifecycle.provisionerWorker (no-op for Launchpad; reserved for future types)
     // Naelao-authored SpaceTypes don't declare provisionerWorkers (they are fully managed here).
     if (manifest.lifecycle.provisionerWorker) {
-      const workerResp = await env.SPACES_WORKER.fetch(
-        new Request(manifest.lifecycle.provisionerWorker, {
-          method: "POST",
-          body: JSON.stringify({ action: "provision", spaceId, spaceTypeId, tenantId }),
-        })
-      );
+      const workerResp = await callCustomProvisioner(manifest.lifecycle.provisionerWorker, {
+        action: "provision", spaceId, spaceTypeId, tenantId,
+      });
       if (!workerResp.ok) {
         throw new Error(`Custom provisioner worker failed: ${await responseErrorDetail(workerResp)}`);
       }
@@ -1053,8 +1065,13 @@ export async function rollbackSpace(
   const now = new Date().toISOString();
   console.warn(`[provisioner] Rolling back space ${spaceId} — provisioned steps: ${provisioned.join(", ")}`);
 
-  try {
-    // Delete R2 prefix objects initialized in step 4
+  const cleanup = async (label: string, action: () => Promise<void>) => {
+    try { await action(); }
+    catch (error) { console.error(`[provisioner] Rollback ${label} failed for ${spaceId}:`, error); }
+  };
+
+  // Keep failures isolated: one unavailable store must not prevent cleanup in the others.
+  await cleanup("R2 cleanup", async () => {
     if (has("r2_prefixes")) {
       let cursor: string | undefined;
       const prefix = `spaces/${spaceId}/`;
@@ -1066,22 +1083,17 @@ export async function rollbackSpace(
         cursor = list.truncated ? list.cursor : undefined;
       } while (cursor);
     }
-    // Remove portal slug (step 6)
-    if (has("external_portal") && env.PORTAL_KV) {
-      await env.PORTAL_KV.delete(`portal-space:${spaceId}`);
-    }
-    // Remove any scheduled_jobs installAgentTrigger wrote (step 8, PLATFORM_DB — not under the
-    // R2 prefix the block above already wipes) so a retried provisionSpace doesn't accumulate
-    // duplicate cron rows for the same agent. Unconditional: harmless no-op when step 8 never
-    // ran or installed none.
+  });
+  await cleanup("portal cleanup", async () => {
+    if (has("external_portal") && env.PORTAL_KV) await env.PORTAL_KV.delete(`portal-space:${spaceId}`);
+  });
+  await cleanup("scheduled-job cleanup", async () => {
     await env.PLATFORM_DB.prepare("DELETE FROM scheduled_jobs WHERE space_id = ?").bind(spaceId).run();
+  });
 
-    // WS-8.6 (audit plan): agent_definitions and the owner space_members row live in SpaceDO, not
-    // PLATFORM_DB — a failed provision that got as far as step 8 (agents) or step 5c (owner
-    // member) previously left these as orphans referencing a space stuck in 'error' status
-    // forever, with no GC. Both SpaceDO stores expose the CRUD the provisioner's own forward path
-    // already uses (installLaunchpadAgents / seedOwnerMember), so rollback reuses the same
-    // internal-HMAC-gated routes rather than reaching into SpaceDO storage directly.
+  // WS-8.6: clean SpaceDO-owned rows independently so a failed agent-list call cannot skip
+  // owner removal, and a failed individual delete cannot skip later agent definitions.
+  await cleanup("agent-definition cleanup", async () => {
     if (has("agents")) {
       const listResp = await env.SPACES_WORKER.fetch(
         new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions`, {
@@ -1092,22 +1104,28 @@ export async function rollbackSpace(
         })
       );
       if (listResp.ok) {
-        const { data } = await listResp.json<{ data: Array<{ id: string }> }>();
-        for (const row of data) {
-          await env.SPACES_WORKER.fetch(
-            new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions/${row.id}`, {
-              method: "DELETE",
-              headers: {
-                "x-naelao-tenant-id": tenantId,
-                "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
-              },
-            })
-          );
+        const { data } = await readBoundedResponseJson<{ data?: Array<{ id?: string }> }>(listResp, 1024 * 1024);
+        for (const row of data ?? []) {
+          if (!row.id || row.id.length > 256) continue;
+          const agentId = row.id;
+          await cleanup(`agent ${agentId} cleanup`, async () => {
+            await env.SPACES_WORKER.fetch(
+              new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions/${encodeURIComponent(agentId)}`, {
+                method: "DELETE",
+                headers: {
+                  "x-naelao-tenant-id": tenantId,
+                  "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+                },
+              })
+            );
+          });
         }
       } else {
         console.warn(`[provisioner] rollback: agent-definitions list failed for ${spaceId}: ${await responseErrorDetail(listResp)}`);
       }
     }
+  });
+  await cleanup("owner-member cleanup", async () => {
     if (has("owner_member") && userId) {
       const memberResp = await env.SPACES_WORKER.fetch(
         new Request(
@@ -1125,9 +1143,7 @@ export async function rollbackSpace(
         console.warn(`[provisioner] rollback: owner member removal failed for ${spaceId}: ${await responseErrorDetail(memberResp)}`);
       }
     }
-  } catch (rollbackErr) {
-    console.error("[provisioner] Rollback error:", rollbackErr);
-  }
+  });
 
   // Always flip DB to 'error' so the UI can show a failure state. The `spaces` row itself and its
   // `config_json.onboarding` are deliberately KEPT (not deleted) — the row is what lets the
@@ -1135,10 +1151,10 @@ export async function rollbackSpace(
   // the only record that an attempt was made. The SpaceDO root-space registry row is left for the
   // same reason (no existing endpoint removes it, and doing so touches sub-space hierarchy state
   // this pass hasn't audited) — documented as a deferred follow-up, not silently dropped.
-  await env.PLATFORM_DB.prepare(
+  await cleanup("status update", async () => env.PLATFORM_DB.prepare(
     "UPDATE spaces SET status = 'error', updated_at = ? WHERE id = ? AND tenant_id = ? AND status IN ('provisioning', 'error')"
-  ).bind(now, spaceId, tenantId).run().catch(() => {});
-  await env.SPACES_KV.delete(`space:${tenantId}:${spaceId}`);
+  ).bind(now, spaceId, tenantId).run().then(() => undefined));
+  await cleanup("space cache removal", async () => { await env.SPACES_KV.delete(`space:${tenantId}:${spaceId}`); });
 }
 
 // ── Deprovisioner ────────────────────────────────────────────────────────────
