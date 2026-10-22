@@ -12,6 +12,6 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts", "../../tests/unit/workflow-budget-settlement-v2.test.ts", "../../tests/unit/platform-plan-billing.test.ts", "../../tests/unit/marketplace-license-settlement.test.ts"],
+    include: ["src/**/*.test.ts", "../../tests/unit/workflow-budget-settlement-v2.test.ts", "../../tests/unit/platform-plan-billing.test.ts", "../../tests/unit/marketplace-license-settlement.test.ts", "../../tests/unit/whop-wallet.test.ts"],
   },
 });

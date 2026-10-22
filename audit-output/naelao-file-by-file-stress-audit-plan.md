@@ -1673,7 +1673,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/whop-oauth-checkout.test.ts`
 - [x] `tests/unit/whop-oauth-connect.test.ts`
 - [ ] `tests/unit/whop-platform-plan-billing.test.ts`
-- [ ] `tests/unit/whop-wallet.test.ts`
+- [x] `tests/unit/whop-wallet.test.ts`
 - [x] `tests/unit/worker-deployment-coverage.test.ts`
 - [ ] `tests/unit/workflow-budget-settlement-v2.test.ts`
 - [ ] `tests/unit/workflow-tier-routing.test.ts`
@@ -2255,7 +2255,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/billing/src/settlement.ts`
 - [x] `workers/billing/src/wallet-checkout.ts`
 - [ ] `workers/billing/src/whop-oauth-billing.ts`
-- [ ] `workers/billing/src/whop-wallet.ts`
+- [x] `workers/billing/src/whop-wallet.ts`
 
 ### `workers/browser`
 

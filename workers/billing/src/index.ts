@@ -130,6 +130,13 @@ function validateEnv(env: BillingEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
 }
 
+/** Billing-profile mutations and portal links are organization-admin operations. The router
+ * strips caller-supplied identity headers and forwards role from the verified JWT. Keep this
+ * check at the billing service boundary as well, since service bindings can bypass the router. */
+function isOrgBillingAdmin(role: string | undefined): boolean {
+  return role === "owner" || role === "admin";
+}
+
 // ── App setup ─────────────────────────────────────────────────────────────────
 
 const app = new Hono<{ Bindings: BillingEnv }>();
@@ -224,6 +231,9 @@ app.post("/billing/checkout", async (c) => {
       { error_code: "unauthorized", message: "Missing tenant" },
       401
     );
+  if (!isOrgBillingAdmin(c.req.header("x-naelao-role"))) {
+    return c.json({ error_code: "forbidden", message: "Only organization owners and admins can change billing plans" }, 403);
+  }
 
   const body = await c.req.json<{
     plan: "growth" | "business";
@@ -315,6 +325,9 @@ app.post("/billing/portal", async (c) => {
       { error_code: "unauthorized", message: "Missing tenant" },
       401
     );
+  if (!isOrgBillingAdmin(c.req.header("x-naelao-role"))) {
+    return c.json({ error_code: "forbidden", message: "Only organization owners and admins can manage billing" }, 403);
+  }
 
   const sub = await c.env.PLATFORM_DB.prepare(
     "SELECT ls_customer_id, whop_customer_id FROM subscriptions WHERE org_id = ?"

@@ -80,6 +80,7 @@ export async function provisionSubMerchant(
 ): Promise<void> {
   const existing = await getSubMerchant(env.PLATFORM_DB, params.spaceId);
   if (existing && existing.status !== "error") return;
+  const rowId = existing?.id ?? crypto.randomUUID();
 
   if (!env.WHOP_PLATFORM_API_KEY) {
     if (existing) {
@@ -89,11 +90,23 @@ export async function provisionSubMerchant(
     } else {
       await env.PLATFORM_DB.prepare(
         `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status)
-         VALUES (?, ?, ?, '', ?, 'error')`
-      ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, params.ownerEmail).run();
+         VALUES (?, ?, ?, '', ?, 'error') ON CONFLICT(space_id) DO NOTHING`
+      ).bind(rowId, params.tenantId, params.spaceId, params.ownerEmail).run();
     }
     return;
   }
+
+  // Claim the existing error row, or insert a pending row, before contacting Whop. Without
+  // this conditional claim two concurrent business-create retries can create two companies and
+  // race the unique space index, orphaning one provider account.
+  const claim = existing
+    ? await env.PLATFORM_DB.prepare(`UPDATE whop_sub_merchants SET status = 'pending', updated_at = datetime('now')
+        WHERE id = ? AND (status = 'error' OR (status = 'pending' AND updated_at < datetime('now', '-2 minutes')))`)
+        .bind(rowId).run()
+    : await env.PLATFORM_DB.prepare(`INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status)
+        VALUES (?, ?, ?, '', ?, 'pending') ON CONFLICT(space_id) DO NOTHING`)
+        .bind(rowId, params.tenantId, params.spaceId, params.ownerEmail).run();
+  if (claim.meta.changes !== 1) return;
 
   try {
     const sub = await createSubMerchant(env.WHOP_PLATFORM_API_KEY, {
@@ -102,31 +115,17 @@ export async function provisionSubMerchant(
       ownerEmail: params.ownerEmail,
       businessName: params.businessName,
     });
-    if (existing) {
-      await env.PLATFORM_DB.prepare(
-        `UPDATE whop_sub_merchants SET company_id = ?, status = ?, onboarding_url = ?, updated_at = datetime('now') WHERE id = ?`
-      ).bind(sub.company_id, sub.status, sub.onboarding_url ?? null, existing.id).run();
-    } else {
-      await env.PLATFORM_DB.prepare(
-        `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status, onboarding_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, sub.company_id, params.ownerEmail, sub.status, sub.onboarding_url ?? null).run();
-    }
+    await env.PLATFORM_DB.prepare(
+      `UPDATE whop_sub_merchants SET company_id = ?, owner_email = ?, status = ?, onboarding_url = ?, updated_at = datetime('now') WHERE id = ? AND status = 'pending'`
+    ).bind(sub.company_id, params.ownerEmail, sub.status, sub.onboarding_url ?? null, rowId).run();
     if (sub.status === "awaiting_kyc") {
       await notifyOwnerOnboardingRequired(env, { tenantId: params.tenantId, spaceId: params.spaceId, ownerEmail: params.ownerEmail, onboardingUrl: sub.onboarding_url ?? null });
     }
   } catch (err) {
     console.error(`[billing/whop-wallet] sub-merchant provisioning failed for space ${params.spaceId}:`, (err as Error).message);
-    if (existing) {
-      await env.PLATFORM_DB.prepare(
-        `UPDATE whop_sub_merchants SET status = 'error', updated_at = datetime('now') WHERE id = ?`
-      ).bind(existing.id).run();
-    } else {
-      await env.PLATFORM_DB.prepare(
-        `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status)
-         VALUES (?, ?, ?, '', ?, 'error')`
-      ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, params.ownerEmail).run();
-    }
+    await env.PLATFORM_DB.prepare(
+      `UPDATE whop_sub_merchants SET status = 'error', updated_at = datetime('now') WHERE id = ? AND status = 'pending'`
+    ).bind(rowId).run();
   }
 }
 
@@ -377,7 +376,9 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
     if (!body.type || !["bank", "crypto", "venmo", "cashapp"].includes(body.type)) {
       return c.json({ error_code: "bad_request", message: "type must be one of bank, crypto, venmo, cashapp" }, 400);
     }
-    if (!body.label || !body.details) {
+    if (typeof body.label !== "string" || body.label.trim().length < 1 || body.label.length > 120 ||
+        !body.details || typeof body.details !== "object" || Array.isArray(body.details) ||
+        new TextEncoder().encode(JSON.stringify(body.details)).byteLength > 16 * 1024) {
       return c.json({ error_code: "bad_request", message: "label and details are required" }, 400);
     }
     if (!c.env.CREDENTIALS_WORKER) {
@@ -409,17 +410,22 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
     const body = await c.req
       .json<{ space_id?: string; destination_id?: string; amount_cents?: number; note?: string; requested_by?: string }>()
       .catch(() => ({}) as Record<string, never>);
-    const g = await guard(c, body.space_id ?? "");
+    const g = await guard(c, body.space_id ?? "", { requirePrivileged: true });
     if (!g.ok) return c.json(g.error, g.status);
-    if (!body.destination_id || !body.amount_cents || body.amount_cents <= 0) {
-      return c.json({ error_code: "bad_request", message: "destination_id and a positive amount_cents are required" }, 400);
+    if (typeof body.destination_id !== "string" || body.destination_id.length < 1 || body.destination_id.length > 128 ||
+        !Number.isSafeInteger(body.amount_cents) || body.amount_cents! <= 0 ||
+        (body.note !== undefined && (typeof body.note !== "string" || body.note.length > 500)) ||
+        (body.requested_by !== undefined && (typeof body.requested_by !== "string" || body.requested_by.length > 128))) {
+      return c.json({ error_code: "bad_request", message: "A destination, a positive whole-cent amount, and bounded optional fields are required" }, 400);
     }
     const spaceId = body.space_id!;
+    const amountCents = body.amount_cents!;
 
     const destination = await c.env.PLATFORM_DB.prepare(
-      "SELECT id, status, label, type FROM payout_destinations WHERE id = ? AND space_id = ?"
-    ).bind(body.destination_id, spaceId).first<{ id: string; status: string; label: string; type: string }>();
+      "SELECT id, status, label, type, whop_destination_id FROM payout_destinations WHERE id = ? AND space_id = ?"
+    ).bind(body.destination_id, spaceId).first<{ id: string; status: string; label: string; type: string; whop_destination_id: string | null }>();
     if (!destination) return c.json({ error_code: "not_found", message: "Payout destination not found" }, 404);
+    if (!destination.whop_destination_id) return c.json({ error_code: "payout_destination_not_connected", message: "This payout destination has not been registered with Whop yet" }, 409);
 
     const wallet = await getSubMerchant(c.env.PLATFORM_DB, spaceId);
     if (!wallet || wallet.status !== "active") {
@@ -429,7 +435,7 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
       return c.json({ error_code: "wallet_not_active", message }, 409);
     }
     const synced = await syncBalance(c.env, wallet);
-    if (synced.balance_cents < body.amount_cents) {
+    if (synced.balance_cents < amountCents) {
       return c.json({ error_code: "insufficient_balance", message: "Payout amount exceeds the current wallet balance" }, 409);
     }
 
@@ -441,27 +447,27 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
     if (previouslyVerified) {
       try {
         const withdrawal = await createWithdrawal(c.env.WHOP_PLATFORM_API_KEY ?? "", wallet.company_id, {
-          destinationId: destination.id,
-          amountCents: body.amount_cents,
+          destinationId: destination.whop_destination_id,
+          amountCents,
         });
         await c.env.PLATFORM_DB.prepare(
           `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, note, status, requested_by, whop_withdrawal_id, updated_at)
            VALUES (?, ?, ?, ?, ?, 'executed', ?, ?, datetime('now'))`
-        ).bind(requestId, spaceId, destination.id, body.amount_cents, body.note ?? null, body.requested_by ?? null, withdrawal.withdrawal_id).run();
+        ).bind(requestId, spaceId, destination.id, amountCents, body.note ?? null, body.requested_by ?? null, withdrawal.withdrawal_id).run();
         await c.env.PLATFORM_DB.prepare(
           `INSERT INTO wallet_transactions (id, space_id, type, amount_cents, currency, description, external_ref)
            VALUES (?, ?, 'payout', ?, ?, ?, ?)`
-        ).bind(crypto.randomUUID(), spaceId, -body.amount_cents, synced.currency, `Payout to ${destination.label}`, withdrawal.withdrawal_id).run();
+        ).bind(crypto.randomUUID(), spaceId, -amountCents, synced.currency, `Payout to ${destination.label}`, withdrawal.withdrawal_id).run();
         await fireWalletEvent(c.env, {
           tenantId: g.tenantId, spaceId, type: "business_wallet.payout_completed",
-          payload: { amount_cents: body.amount_cents, withdrawal_id: withdrawal.withdrawal_id },
+          payload: { amount_cents: amountCents, withdrawal_id: withdrawal.withdrawal_id },
         });
         return c.json({ payout: { id: requestId, status: "executed", withdrawal_id: withdrawal.withdrawal_id } }, 201);
       } catch (err) {
         await c.env.PLATFORM_DB.prepare(
       `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, note, status, requested_by)
            VALUES (?, ?, ?, ?, ?, 'failed', ?)`
-        ).bind(requestId, spaceId, destination.id, body.amount_cents, body.note ?? null, body.requested_by ?? null).run();
+        ).bind(requestId, spaceId, destination.id, amountCents, body.note ?? null, body.requested_by ?? null).run();
         return c.json({ error_code: "payout_failed", message: (err as Error).message }, 502);
       }
     }
@@ -473,7 +479,7 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
     await c.env.PLATFORM_DB.prepare(
       `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, note, status, approval_token_hash, requested_by, expires_at)
        VALUES (?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?)`
-    ).bind(requestId, spaceId, destination.id, body.amount_cents, body.note ?? null, approvalTokenHash, body.requested_by ?? null, expiresAt).run();
+    ).bind(requestId, spaceId, destination.id, amountCents, body.note ?? null, approvalTokenHash, body.requested_by ?? null, expiresAt).run();
 
     // Honest reporting: if the approval email can't be sent (deployment has no
     // PUBLIC_WEBHOOK_BASE_URL configured yet), the request still exists but nothing will ever
@@ -487,7 +493,7 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
         spaceId,
         ownerEmail: wallet.owner_email,
         approveUrl,
-        amountCents: body.amount_cents,
+        amountCents,
         currency: synced.currency,
         destinationLabel: destination.label,
         destinationType: destination.type,
@@ -496,7 +502,7 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
     }
     await fireWalletEvent(c.env, {
       tenantId: g.tenantId, spaceId, type: "business_wallet.payout_requested",
-      payload: { amount_cents: body.amount_cents, destination_id: destination.id },
+      payload: { amount_cents: amountCents, destination_id: destination.id },
     });
 
     return c.json({ payout: { id: requestId, status: "pending_approval", email_sent: emailSent } }, 201);
@@ -522,6 +528,7 @@ interface PayoutApprovalLookup {
   status: string;
   approval_token_hash: string | null;
   expires_at: string | null;
+  whop_destination_id: string | null;
 }
 
 /** Validates the token/status/expiry for an approval link WITHOUT mutating anything. Shared by
@@ -534,7 +541,8 @@ async function checkPayoutApproval(
   if (!token) return { ok: false, response: new Response("Missing approval token", { status: 400 }) };
   const tokenHash = await sha256Hex(token);
   const request = await env.PLATFORM_DB.prepare(
-    "SELECT id, space_id, destination_id, amount_cents, status, approval_token_hash, expires_at FROM whop_payout_requests WHERE id = ?"
+    `SELECT r.id, r.space_id, r.destination_id, r.amount_cents, r.status, r.approval_token_hash, r.expires_at, d.whop_destination_id
+     FROM whop_payout_requests r JOIN payout_destinations d ON d.id = r.destination_id WHERE r.id = ?`
   ).bind(requestId).first<PayoutApprovalLookup>();
   if (!request || request.status !== "pending_approval" || !request.approval_token_hash) {
     return { ok: false, response: new Response("This payout request is no longer pending approval.", { status: 410 }) };
@@ -608,6 +616,12 @@ export async function confirmPayoutApproval(env: BillingEnv, requestId: string, 
     return new Response("This payout request is no longer pending approval.", { status: 410 });
   }
 
+  if (!request.whop_destination_id) {
+    await env.PLATFORM_DB.prepare("UPDATE whop_payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?")
+      .bind(request.id).run();
+    return new Response("Payout destination is not registered with Whop.", { status: 409 });
+  }
+
   const wallet = await getSubMerchant(env.PLATFORM_DB, request.space_id);
   if (!wallet || !wallet.company_id) {
     await env.PLATFORM_DB.prepare("UPDATE whop_payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(request.id).run();
@@ -616,7 +630,7 @@ export async function confirmPayoutApproval(env: BillingEnv, requestId: string, 
 
   try {
     const withdrawal = await createWithdrawal(env.WHOP_PLATFORM_API_KEY ?? "", wallet.company_id, {
-      destinationId: request.destination_id,
+      destinationId: request.whop_destination_id,
       amountCents: request.amount_cents,
     });
     await env.PLATFORM_DB.batch([

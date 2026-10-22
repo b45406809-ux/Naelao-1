@@ -28,13 +28,14 @@ function makeEnv(overrides: Record<string, unknown> = {}): Record<string, unknow
   return { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, PLATFORM_DB: db, ...overrides };
 }
 
-function checkoutReq(body: unknown): Request {
+function checkoutReq(body: unknown, role = "owner"): Request {
   return new Request("https://billing.naelao.com/billing/checkout", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-naelao-tenant-id": ORG_ID,
       "x-naelao-user-id": "user-1",
+      "x-naelao-role": role,
     },
     body: JSON.stringify(body),
   });
@@ -69,6 +70,15 @@ describe("POST /billing/checkout — Lemon Squeezy platform plans (Stripe remove
       execCtx
     );
     expect(res.status).toBe(200);
+  });
+
+  it("rejects a regular org member before looking up or creating a checkout", async () => {
+    const res = await billingWorker.fetch(
+      checkoutReq({ plan: "growth", success_url: "https://x.example/done" }, "member"),
+      makeEnv({ WHOP_API_KEY: "must-not-be-used", WHOP_GROWTH_PLAN_ID: "plan-1" }) as never,
+      execCtx
+    );
+    expect(res.status).toBe(403);
   });
 
   it("creates a real LS checkout tagged kind=platform_plan with org_id + plan when configured", async () => {
@@ -108,7 +118,7 @@ describe("POST /billing/portal — Lemon Squeezy customer portal", () => {
     const res = await billingWorker.fetch(
       new Request("https://billing.naelao.com/billing/portal", {
         method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": ORG_ID },
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": ORG_ID, "x-naelao-role": "owner" },
         body: "{}",
       }),
       makeEnv() as never,
@@ -130,7 +140,7 @@ describe("POST /billing/portal — Lemon Squeezy customer portal", () => {
     });
     try {
       const res = await billingWorker.fetch(
-        new Request("https://billing.naelao.com/billing/portal", { method: "POST", headers: { "x-naelao-tenant-id": ORG_ID, "content-type": "application/json" }, body: "{}" }),
+        new Request("https://billing.naelao.com/billing/portal", { method: "POST", headers: { "x-naelao-tenant-id": ORG_ID, "x-naelao-role": "owner", "content-type": "application/json" }, body: "{}" }),
         env as never,
         execCtx
       );
@@ -144,7 +154,7 @@ describe("POST /billing/portal — Lemon Squeezy customer portal", () => {
     globalThis.fetch = (async () => new Response("x".repeat(1024 * 1024 + 1), { headers: { "content-type": "application/json" } })) as typeof fetch;
     try {
       const res = await billingWorker.fetch(
-        new Request("https://billing.naelao.com/billing/portal", { method: "POST", headers: { "x-naelao-tenant-id": ORG_ID, "content-type": "application/json" }, body: "{}" }),
+        new Request("https://billing.naelao.com/billing/portal", { method: "POST", headers: { "x-naelao-tenant-id": ORG_ID, "x-naelao-role": "owner", "content-type": "application/json" }, body: "{}" }),
         env as never,
         execCtx
       );

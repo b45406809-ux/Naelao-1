@@ -132,6 +132,20 @@ describe("provisionSubMerchant", () => {
     expect(results?.length).toBe(1);
   });
 
+  it("serializes concurrent creation retries before making the provider call", async () => {
+    const db = makeDb();
+    const { calls, restore } = mockWhopFetch([
+      { match: /\/v5\/platforms\/sub_merchants$/, method: "POST", respond: () => Response.json({ id: "co_once", status: "active" }) },
+    ]);
+    restoreFetch = restore;
+    const env = makeEnv(db);
+    const params = { tenantId: "tenant-a", spaceId: "space-a", ownerEmail: "a@example.com", businessName: "Biz A" };
+    await Promise.all([provisionSubMerchant(env, params), provisionSubMerchant(env, params)]);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+    const row = await getSubMerchant(db as unknown as D1Database, "space-a");
+    expect(row).toMatchObject({ company_id: "co_once", status: "active" });
+  });
+
   it("records status='error' honestly (never fabricates a company id) when the platform key is unset", async () => {
     const db = makeDb();
     const env = makeEnv(db, { WHOP_PLATFORM_API_KEY: undefined });
@@ -247,8 +261,8 @@ describe("KYC/onboarding gate blocks payouts, not revenue", () => {
        VALUES ('sm-a', 'tenant-a', 'space-a', 'co_a', 'a@example.com', 'awaiting_kyc', 'https://whop.com/onboard/xyz', 5000)`
     ).run();
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending', 'whop-dest-1')`
     ).run();
     const env = makeEnv(db);
 
@@ -313,8 +327,8 @@ describe("cross-business wallet isolation", () => {
        VALUES ('sm-b', 'tenant-b', 'space-b', 'co_b', 'b@example.com', 'active', 5000)`
     ).run();
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-b', 'space-b', 'bank', 'B bank', 'cred-b', 'verified')`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-b', 'space-b', 'bank', 'B bank', 'cred-b', 'verified', 'whop-dest-1')`
     ).run();
     const env = makeEnv(db);
 
@@ -394,8 +408,8 @@ describe("payout approval gating (safety invariant #5)", () => {
     const db = makeDb();
     await seedActiveWallet(db);
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending', 'whop-dest-1')`
     ).run();
     const { calls, restore } = mockWhopFetch([
       { match: /\/withdrawals$/, method: "POST", respond: () => Response.json({ id: "wd_1", status: "processing" }) },
@@ -421,6 +435,50 @@ describe("payout approval gating (safety invariant #5)", () => {
     expect(row?.status).toBe("pending"); // unchanged — only approval flips it to verified
   });
 
+  it("refuses a local-only destination instead of sending its Naelao UUID to Whop", async () => {
+    const db = makeDb();
+    await seedActiveWallet(db);
+    await db.prepare(`INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+      VALUES ('dest-local', 'space-a', 'bank', 'New account', 'cred', 'pending', NULL)`).run();
+    const { calls, restore } = mockWhopFetch([]);
+    restoreFetch = restore;
+    const response = await billingWorker.fetch(
+      await walletReq("/billing/whop-wallet/payouts", { method: "POST", body: { space_id: "space-a", destination_id: "dest-local", amount_cents: 100 } }),
+      makeEnv(db) as never, execCtx
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error_code: "payout_destination_not_connected" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("requires an owner or admin for payout requests", async () => {
+    const db = makeDb();
+    const env = makeEnv(db);
+    const res = await billingWorker.fetch(
+      await walletReq("/billing/whop-wallet/payouts", {
+        method: "POST", role: "member",
+        body: { space_id: "space-a", destination_id: "dest-1", amount_cents: 1000 },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects fractional and unsafe payout cents before wallet or provider work", async () => {
+    const db = makeDb();
+    const env = makeEnv(db);
+    const fractional = await billingWorker.fetch(
+      await walletReq("/billing/whop-wallet/payouts", { method: "POST", body: { space_id: "space-a", destination_id: "dest-1", amount_cents: 1.5 } }),
+      env as never, execCtx
+    );
+    const unsafe = await billingWorker.fetch(
+      await walletReq("/billing/whop-wallet/payouts", { method: "POST", body: { space_id: "space-a", destination_id: "dest-1", amount_cents: Number.MAX_SAFE_INTEGER + 1 } }),
+      env as never, execCtx
+    );
+    expect(fractional.status).toBe(400);
+    expect(unsafe.status).toBe(400);
+  });
+
   async function seedPendingApprovalRequest(db: ReturnType<typeof makeDb>, opts: { expiresAt?: string | null } = {}) {
     const tokenHash = await (async () => {
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("plaintext-token"));
@@ -437,8 +495,8 @@ describe("payout approval gating (safety invariant #5)", () => {
     const db = makeDb();
     await seedActiveWallet(db);
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending', 'whop-dest-1')`
     ).run();
     const { calls, restore } = mockWhopFetch([
       { match: /\/withdrawals$/, method: "POST", respond: () => Response.json({ id: "wd_1", status: "processing" }) },
@@ -462,8 +520,8 @@ describe("payout approval gating (safety invariant #5)", () => {
     const db = makeDb();
     await seedActiveWallet(db);
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending', 'whop-dest-1')`
     ).run();
     const { calls, restore } = mockWhopFetch([
       { match: /\/withdrawals$/, method: "POST", respond: () => Response.json({ id: "wd_1", status: "processing" }) },
@@ -481,6 +539,7 @@ describe("payout approval gating (safety invariant #5)", () => {
     const okResp = await confirmPayoutApproval(env, "req-1", "plaintext-token");
     expect(okResp.status).toBe(200);
     expect(calls.some((c) => /\/withdrawals$/.test(c.url))).toBe(true);
+    expect(JSON.parse(calls.find((call) => /\/withdrawals$/.test(call.url))!.body!).destination_id).toBe("whop-dest-1");
     // Exactly one withdrawal call — never a double-execute.
     expect(calls.filter((c) => /\/withdrawals$/.test(c.url)).length).toBe(1);
 
@@ -501,8 +560,8 @@ describe("payout approval gating (safety invariant #5)", () => {
     const db = makeDb();
     await seedActiveWallet(db);
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending', 'whop-dest-1')`
     ).run();
     const { calls, restore } = mockWhopFetch([
       { match: /\/withdrawals$/, method: "POST", respond: () => Response.json({ id: "wd_1", status: "processing" }) },
@@ -522,8 +581,8 @@ describe("payout approval gating (safety invariant #5)", () => {
     const db = makeDb();
     await seedActiveWallet(db);
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending', 'whop-dest-1')`
     ).run();
     const env = makeEnv(db);
 
@@ -546,8 +605,8 @@ describe("payout approval gating (safety invariant #5)", () => {
     const db = makeDb();
     await seedActiveWallet(db);
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'verified')`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'verified', 'whop-dest-1')`
     ).run();
     const { calls, restore } = mockWhopFetch([
       { match: /\/withdrawals$/, method: "POST", respond: () => Response.json({ id: "wd_2", status: "processing" }) },
@@ -567,14 +626,16 @@ describe("payout approval gating (safety invariant #5)", () => {
     expect(j.payout.status).toBe("executed");
     expect(j.payout.withdrawal_id).toBe("wd_2");
     expect(calls.some((c) => /\/withdrawals$/.test(c.url))).toBe(true);
+    const withdrawal = calls.find((call) => /\/withdrawals$/.test(call.url));
+    expect(JSON.parse(withdrawal!.body!).destination_id).toBe("whop-dest-1");
   });
 
   it("rejects a payout that exceeds the current balance (no partial payout)", async () => {
     const db = makeDb();
     await seedActiveWallet(db, 1000);
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'verified')`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'verified', 'whop-dest-1')`
     ).run();
     const { calls, restore } = mockWhopFetch([
       { match: /sub_merchants\/co_a$/, method: "GET", respond: () => Response.json({ id: "co_a", balance_cents: 1000, currency: "usd", status: "active", payouts_enabled: true }) },
@@ -604,8 +665,8 @@ describe("withdrawal.completed / withdrawal.failed webhook reconciliation", () =
        VALUES ('sm-a', 'tenant-a', 'space-a', 'co_a', 'a@example.com', 'active', 8000, 'USD')`
     ).run();
     await db.prepare(
-      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
-       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', ?)`
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status, whop_destination_id)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', ?, 'whop-dest-1')`
     ).bind(opts.destStatus ?? "verified").run();
     await db.prepare(
       `INSERT INTO whop_payout_requests (id, space_id, destination_id, amount_cents, status, whop_withdrawal_id)

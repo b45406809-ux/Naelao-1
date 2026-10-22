@@ -2485,3 +2485,19 @@ Validation: marketplace license migration-backed test passed; Billing TypeScript
 Partner Portal request stress review found uncaught malformed/non-object JSON and unbounded extension arrays on template subscription creation, plus malformed auto-payout JSON returned a server error. Added object/field validation, 64-extension ceiling, safe integer price checks, and 400 responses. Organic attribution now requires an active developer profile. Added request-shape and profile-eligibility tests; the test is included in the Billing package suite. A remaining ownership issue stays open: the route accepts a valid developer profile ID but does not yet prove that profile authored `template_id` (the repository has no existing caller or unambiguous template-to-listing contract to preserve). This route source remains unchecked until that attribution binding is resolved.
 
 Validation: Billing suite passed 10 files / 42 tests; TypeScript passed. This partial route review does not close the Partner Portal feature audit.
+
+
+## Whop wallet payout safety pass (2026-10-22)
+
+Reviewed `workers/billing/src/whop-wallet.ts`, its D1-backed test fixtures, router auth behavior, and provider request construction. Found that any authenticated Space member could request a payout through the router-minted internal HMAC path; payout initiation now requires owner/admin. Amounts and optional request fields now have safe-integer and size/type validation. Concurrent initial provisioning and retry requests now claim a D1 pending row before contacting Whop, preventing duplicate company creation under normal request overlap. Payout requests now send only the provider-issued `whop_destination_id`; a local Naelao UUID is never sent as a Whop destination.
+
+The full billing worker suite passed 73/73 tests, TypeScript passed, and `git diff --check` passed. New regressions cover role denial, fractional/unsafe cents, concurrent provisioning, local-only destinations, and the provider destination identifier.
+
+**Product/integration blocker:** Naelao currently has no verified route or provider workflow that creates/registers a payout destination with Whop and persists `whop_destination_id`. Network documentation lookup was unavailable and no live provider request was made. Payout requests now fail closed with `payout_destination_not_connected` until this integration exists. This feature is therefore not end-to-end complete.
+
+
+### Billing plan/portal authorization boundary follow-up
+
+The next pass through `workers/billing/src/index.ts` found that `/billing/checkout` and `/billing/portal` relied on router authentication without enforcing owner/admin at the Billing worker boundary. Both now require a verified forwarded owner/admin role before reading billing state, creating checkout sessions, or returning provider portal links. The router removes caller-provided role headers and supplies the role from verified JWT claims. A member regression proves plan checkout is rejected before provider configuration is used. The Billing worker suite passes 74/74 tests, typecheck passes, Wrangler dry-run succeeds (406.78 KiB upload / 83.67 KiB gzip), and `git diff --check` passes.
+
+The audit of `workers/billing/src/index.ts` is still in progress. Internal routes, remaining checkout routes, webhook handling, role coverage, request bounds, provider failure semantics, and their caller graph remain to be reviewed.
