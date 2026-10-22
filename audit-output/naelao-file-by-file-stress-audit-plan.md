@@ -1,12 +1,12 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2060` tracked files; `1874` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `d5b6fd94`.
+Inventory basis: `2062` tracked files; `1876` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `c6aacb45`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
 
-- The refreshed source/config checklist records **647 scoped reviews / 1,227 open files** out of 1,874. Newly included style, template, and container/build files remain unaudited unless individually checked.
+- The refreshed source/config checklist records **651 scoped reviews / 1,225 open files** out of 1,876. Newly included style, template, and container/build files remain unaudited unless individually checked.
 - The latest full Turbo run before the current style-token slice passed 58 tasks, 368 root test files, and 3,853 root tests; the UI package added 6 test files / 43 tests. Workspace TypeScript passed 74/74 tasks. The current style-token slice separately passed the UI suite (7 files / 46 tests) and UI/Shell typechecks. Earlier Marketplace response-privacy and request-size changes passed the migration-backed route suite (3 tests), TypeScript, and Wrangler dry run. Knowledge (64 tests) and Browser Worker (4 files / 9 tests) also passed focused suites with Worker typechecks/builds.
 - Latest production dependency audit: 49 advisory records (4 critical, 11 high, 29 moderate, 5 low). All critical/high production findings trace to `next@14.2.18`; Pages adapter migration remains open.
 - Latest full dependency audit: 74 records (4 critical, 19 high, 42 moderate, 9 low). Remaining high build-tool findings include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`.
@@ -1492,6 +1492,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/cross-project-handoff.test.ts`
 - [ ] `tests/unit/customer-bot-rules-business-membership.test.ts`
 - [ ] `tests/unit/daily-digest.test.ts`
+- [x] `tests/unit/dashboard-api-path.test.ts`
+- [x] `tests/unit/dashboard-auth.test.ts`
 - [x] `tests/unit/data-erasure-records.test.ts`
 - [x] `tests/unit/db-migrations.test.ts`
 - [ ] `tests/unit/deposit-personal-credits.test.ts`
