@@ -4,6 +4,14 @@ Inventory root: `/workspace/Naelao-1`
 Inventory basis: `2036` tracked files; `1828` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `7aa81c8e`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
+## Audit state (2026-10-22)
+
+- The source/config checklist records **524 scoped reviews / 1,304 open files** out of 1,828. Unchecked rows remain unaudited.
+- Full root tests passed after the latest build-tool overrides: 54 workspace tasks, 368 test files, and 3,809 tests. Recursive workspace TypeScript passed 74/74 tasks after excluding Node-only test fixtures from the runtime Worker tsconfigs.
+- Latest production dependency audit: 49 advisory records (4 critical, 11 high, 29 moderate, 5 low). All critical/high production findings trace to `next@14.2.18`; Pages adapter migration remains open.
+- Latest full dependency audit: 74 records (4 critical, 19 high, 42 moderate, 9 low). Remaining high build-tool findings include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`.
+- DNS rebinding remains unresolved because the Workers fetch path cannot pin the address that passed validation. No live Cloudflare deployment or external-provider test has been performed.
+
 ## Review contract
 
 Use the companion [platform surface inventory](naelao-platform-surface-inventory.md) for the discovered worker manifests, Durable Object declarations, literal API route registrations, and container bindings; confirm these against deployment configuration and indirect dispatch during phase 2.
@@ -45,7 +53,7 @@ Review each checklist file with its callers, callees, owning worker, route regis
 - **Next.js vulnerabilities and unsupported Cloudflare adapter (open):** after parser, transitive-package, and test-runner remediation, the latest production registry audit reports 4 critical and 11 high advisories across 49 advisory records (29 moderate, 5 low). `next@14.2.18` is shared by dashboard, portal, marketplace-web, and shell; findings include image-optimization RCE, Middleware authorization bypass, Windows-hosted RCE, and RSC/Server Actions DoS/SSRF. No project `middleware` or `next/image` use was found, but dynamic Next edge routes are present, so do not treat the image optimizer as unreachable without a deployed-route probe. The four apps depend on deprecated `@cloudflare/next-on-pages@1.13.16`, whose declared peer range ends at Next 15.5.2, while patched critical fixes require Next 15.5.24 / 15.5.28. Cloudflare's package directs users to OpenNext; migration requires moving these Next runtimes from Pages Functions to Workers and verifying custom-domain/staging routing, so it is not a safe version-only bump. Keep open pending a tested adapter/runtime migration and complete patched-version audit.
 - **Frontend Pages build wiring (fixed locally, deployment unverified):** staging/production workflows invoked plain `next build` but uploaded `.vercel/output/static`. Updated all three Pages frontend build steps to call the documented `next-on-pages` CLI directly. Under pinned pnpm 9.12.0, local builds generate `_worker.js/index.js` and expected edge routes for dashboard (22), portal (3), and marketplace (2); the dashboard artifact contains the staging API origin. No Cloudflare Pages deploy or public route check was performed. The shell has a separate production promotion path and its workflow still needs review.
 - **Office parser risk (fixed by removing inline archive parsing):** removed `xlsx@0.18.5`, `mammoth`, and both dynamic browser parsers from `apps/shell`; XLSX and DOCX binaries now use the existing download path instead of parsing untrusted ZIP/XML in the user's browser. Added SSR boundary tests for spreadsheet download, Word archive download, and `too_large` behavior. The 2 MiB server inline-file bound remains relevant for PDF/image previews; malicious PDF/image browser handling and file-serving authorization remain open.
-- **Transitive production dependency patch set (partially fixed):** pinned patched `browserslist@4.28.7`, `nanoid@3.3.18`, `postcss@8.5.18`, and `source-map-js@1.2.2` through root pnpm overrides. This removed nine advisories (high count 20→13) from the production lock audit; rerun after subsequent dependency changes. Vite advisories remain and need development-server reachability/OS review.
+- **Transitive dependency patch set (partially fixed):** pinned patched `browserslist@4.28.7`, `nanoid@3.3.18`, `postcss@8.5.18`, `source-map-js@1.2.2`, `js-yaml@4.3.2`, `sharp@0.35.5`, and `ws@8.21.0` through root pnpm overrides. Latest production audit reports 49 records and no longer includes the removed Office parsers; latest full audit reports 74 records. Remaining build-tool highs include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`; some require adapter/toolchain migration or major-version compatibility work. Keep these open pending verified replacements and a clean audit.
 - **Audit scope:** the checked file list records scoped reviews only. Remaining files, workflow lifecycle coverage, deployment/provider checks, and the full surface inventory are still open.
 - **SpaceType resource quota enforcement:** the old manifest accepted `maxDOsPerInstance`, `maxR2WritesPerDay`, `maxContainerHoursPerDay`, `maxLLMTokensPerDay`, `maxCronJobsPerInstance`, and `maxWorkflowsPerInstance`, but repository-wide source search found no runtime enforcement. These fields and the Provisioner `workflowTemplates`/`cronJobs` placeholders are removed from the active manifest contract so operators do not mistake declarations for protections. Actual per-tenant limits still need explicit, metered enforcement tied to platform resource usage and billing; do not restore these manifest claims until that path exists.
 - **Space deprovision lifecycle:** `space_deprovision` is accepted by the queue contract, but no source producer sends it. The handler currently removes the script R2 prefix and portal/space KV entries but does not enumerate SpaceDO or D1 data. The public space/product delete paths are soft deletes, so do not wire destructive cleanup until retention and restore semantics are established. Audit the caller and all storage owners before enabling purge; separately add an idempotent durable cleanup workflow if true deletion is required.
@@ -91,7 +99,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `ai_studio_code.sh`
 - [x] `biome.json`
 - [x] `package.json`
-- [ ] `pnpm-lock.yaml`
+- [x] `pnpm-lock.yaml`
 - [x] `pnpm-workspace.yaml`
 - [x] `repomix.shell.config.json`
 - [x] `run-phase.mjs`
@@ -2222,7 +2230,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/billing`
 
 - [ ] `workers/billing/package.json`
-- [ ] `workers/billing/tsconfig.json`
+- [x] `workers/billing/tsconfig.json`
 - [ ] `workers/billing/vitest.config.ts`
 - [x] `workers/billing/wrangler.toml`
 
@@ -2415,7 +2423,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/router`
 
 - [ ] `workers/router/package.json`
-- [ ] `workers/router/tsconfig.json`
+- [x] `workers/router/tsconfig.json`
 - [ ] `workers/router/vitest.config.ts`
 - [x] `workers/router/wrangler.toml`
 
@@ -2586,7 +2594,7 @@ Check each file only after its behavior and runtime relationships are traced and
 ### `workers/sweeper`
 
 - [x] `workers/sweeper/package.json`
-- [ ] `workers/sweeper/tsconfig.json`
+- [x] `workers/sweeper/tsconfig.json`
 - [x] `workers/sweeper/vitest.config.ts`
 - [x] `workers/sweeper/wrangler.toml`
 
