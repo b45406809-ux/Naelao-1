@@ -2190,8 +2190,8 @@ export async function listAssistantFiles(spaceId: string, session: SessionCreden
   return res.data;
 }
 
-/** A read workspace file: text inline (`content`), or a viewable binary (`encoding:"base64"` +
- *  `content_type`), or `too_large`. Step 4 added the binary case for PDF/image/Office viewing. */
+/** A read workspace file: text inline (`content`), or a bounded binary (`encoding:"base64"` +
+ *  `content_type`) that the UI can preview or offer as a download, or `too_large`. */
 export interface WorkspaceFileContent {
   path: string;
   size?: number;

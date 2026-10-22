@@ -2335,3 +2335,9 @@ Final verification after failure fixes: the full root `pnpm test` run passed all
 Reviewed the remaining `FileViewer` paths after removing Office archive parsers. Workspace file reads are capped at 2 MiB by the Spaces Worker, and PDF/image previews use browser-native rendering; however, CSV parsing eagerly materialized every row even though the table renders only 500, and it accepted unbounded columns. A maximum-size CSV with many tiny cells could create disproportionate arrays and React work. Parsing is now capped to the header plus 500 rows and 100 columns, matching what the preview can show. Added stress regressions for a 10,000-row CSV and a 2,000-column CSV.
 
 Validation: Shell FileViewer/shell tests passed 3 files / 10 tests; shell TypeScript and `git diff --check` passed. PDF viewer native plugin behavior and real-browser image/PDF resource exhaustion were not exercised, so those browser-specific cases remain an explicit follow-up. FileViewer source and tests now have scoped review checkmarks; checklist: 517 reviewed / 1,310 open.
+
+## Spaces R2 workspace file-read boundary (2026-10-22)
+
+Reviewed the real workspace file read route and its R2 response tests. The route checks the R2 metadata size before reading the body, then verifies the actual byte count matches metadata and remains within the 2 MiB limit; PDF and raster-image reads are base64-labelled, while Office files are downloadable without archive parsing. Updated stale comments that still described Office preview parsers. Added route tests proving exact PDF bytes/content type are preserved and an oversized object never has its bytes read. Existing traversal, missing-file, listing, and unavailable-bucket cases remain covered.
+
+Validation: `workspace-file-viewer.test.ts` passed 7/7. Browser-native PDF/image rendering remains untested in a real browser. The checklist records this scoped route/test review and now contains 518 reviewed / 1,309 open files.

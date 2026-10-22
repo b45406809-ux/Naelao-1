@@ -2206,9 +2206,9 @@ function workspaceKeyPrefix(spaceId: string, projectId: string): string {
   return `spaces/${spaceId}/projects/${projectId}/workspace/`;
 }
 
-// Step 4: file types the shell's viewer can render from raw bytes (PDF native, images natively,
-// Office docs via a lazy client-side parser). For these the read route returns base64 instead of
-// obj.text() — the same "return the real bytes, honestly" convention as the download route.
+// File types the shell's viewer renders natively (PDF and raster images). Office archives remain
+// downloadable without parsing their untrusted ZIP/XML contents in the browser. Binary reads are
+// returned as base64 instead of obj.text() so bytes are preserved exactly.
 const VIEWABLE_BINARY_TYPES: Record<string, string> = {
   pdf: "application/pdf",
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",

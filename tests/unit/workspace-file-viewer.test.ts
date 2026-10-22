@@ -63,6 +63,44 @@ describe("F-39: workspace file viewer", () => {
     expect(body.content).toBe("<h1>Hi</h1>");
   });
 
+  it("returns PDF bytes as bounded base64 and labels the native preview type", async () => {
+    const pdfBytes = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]);
+    const env = makeEnv({});
+    env.SCRIPTS_R2 = {
+      ...makeR2({}),
+      async get() {
+        return { size: pdfBytes.byteLength, async arrayBuffer() { return pdfBytes.slice().buffer; } };
+      },
+    } as never;
+    const res = await get(env, "/spaces/s1/projects/p1/workspace/files/report.pdf", await h());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      path: "report.pdf",
+      size: pdfBytes.byteLength,
+      encoding: "base64",
+      content_type: "application/pdf",
+      content: "JVBERi0xLjc=",
+    });
+  });
+
+  it("does not read R2 bytes when object metadata exceeds the 2 MiB inline limit", async () => {
+    let arrayBufferCalls = 0;
+    const env = makeEnv({});
+    env.SCRIPTS_R2 = {
+      ...makeR2({}),
+      async get() {
+        return {
+          size: 2 * 1024 * 1024 + 1,
+          async arrayBuffer() { arrayBufferCalls++; return new ArrayBuffer(0); },
+        };
+      },
+    } as never;
+    const res = await get(env, "/spaces/s1/projects/p1/workspace/files/large.pdf", await h());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ too_large: true, size: 2 * 1024 * 1024 + 1 });
+    expect(arrayBufferCalls).toBe(0);
+  });
+
   it("404s a missing file", async () => {
     const env = makeEnv({ [`${PREFIX}a.txt`]: "x" });
     const res = await get(env, "/spaces/s1/projects/p1/workspace/files/missing.txt", await h());
