@@ -24,14 +24,14 @@ concurrency:
   group: implement-full-plan-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   implement:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.package.outputs.changed }}
     env:
       BRANCH_NAME: ai/full-plan-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -77,12 +77,18 @@ jobs:
           MAX_TURNS_PER_PHASE: ${{ inputs.max_turns_per_phase }}
         run: node run-phase.mjs
 
-      - name: Push accumulator branch
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Package accumulator branch
+        id: package
         run: |
-          gh auth setup-git
-          git push --set-upstream origin "$BRANCH_NAME"
+          if git diff --quiet "$GITHUB_SHA" "$BRANCH_NAME"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            status=$?
+            if [ "$status" -ne 1 ]; then exit "$status"; fi
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          git bundle create .phase-runs/accumulator.bundle "$BRANCH_NAME" "^$GITHUB_SHA"
 
       - name: Upload model responses and patches
         if: always()
@@ -92,6 +98,44 @@ jobs:
           path: .phase-runs/
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Upload accumulator bundle
+        if: success() && steps.package.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: phase-accumulator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .phase-runs/accumulator.bundle
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: implement
+    if: needs.implement.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BRANCH_NAME: ai/full-plan-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: phase-accumulator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .phase-runs
+
+      - name: Verify and push accumulator branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git bundle verify .phase-runs/accumulator.bundle
+          git fetch --no-tags .phase-runs/accumulator.bundle "refs/heads/$BRANCH_NAME"
+          gh auth setup-git
+          git push --set-upstream origin "FETCH_HEAD:refs/heads/$BRANCH_NAME"
 
       - name: Open pull request
         if: success()

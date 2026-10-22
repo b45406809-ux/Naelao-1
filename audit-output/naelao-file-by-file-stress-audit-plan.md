@@ -86,7 +86,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `ai_studio_code.sh`
 - [x] `biome.json`
 - [ ] `create_patch.js`
-- [ ] `package.json`
+- [x] `package.json`
 - [ ] `pnpm-lock.yaml`
 - [ ] `pnpm-workspace.yaml`
 - [ ] `repomix.shell.config.json`
@@ -104,7 +104,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `.github/workflows/deploy-prod.yml`
 - [x] `.github/workflows/deploy-staging.yml`
 - [ ] `.github/workflows/generate-repomix-batch.yml`
-- [ ] `.github/workflows/implement-full-plan.yml`
+- [x] `.github/workflows/implement-full-plan.yml`
 - [ ] `.github/workflows/manual-cmd.yml`
 - [x] `.github/workflows/pr-checks.yml`
 
