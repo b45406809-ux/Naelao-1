@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2031` tracked files; `1825` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` refreshed for the builder reset-token retention migration.
+Inventory basis: `2035` tracked files; `1827` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `fe85a1e8`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Review contract
@@ -85,7 +85,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `ai_studio_code (2).sh`
 - [x] `ai_studio_code.sh`
 - [x] `biome.json`
-- [ ] `create_patch.js`
 - [x] `package.json`
 - [ ] `pnpm-lock.yaml`
 - [x] `pnpm-workspace.yaml`
@@ -95,6 +94,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `tsconfig.base.json`
 - [x] `turbo.json`
 - [x] `vitest.workspace.ts`
+- [ ] `work-root-vitest.json`
 
 ### `.github/workflows`
 
@@ -1703,6 +1703,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `work`
 
+- [ ] `work/builder-vitest.config.ts`
+- [ ] `work/current-workspace-vitest.json`
 - [ ] `work/refresh_naelao_inventory.py`
 
 ### `workers/admin`
@@ -1742,9 +1744,9 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [x] `workers/agents/src/agent-approval-routes.test.ts`
 - [x] `workers/agents/src/agent-run-session-scope.test.ts`
-- [x] `workers/agents/src/agent-ticks-queue-config.test.ts`
 - [ ] `workers/agents/src/agent-templates.test.ts`
 - [ ] `workers/agents/src/agent-templates.ts`
+- [x] `workers/agents/src/agent-ticks-queue-config.test.ts`
 - [ ] `workers/agents/src/batch09-foundations.test.ts`
 - [ ] `workers/agents/src/batch10-workflows.test.ts`
 - [ ] `workers/agents/src/batch11-phase2.test.ts`
@@ -2398,11 +2400,11 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/provisioner/src/manifest-contract.ts`
 - [x] `workers/provisioner/src/message-contract.test.ts`
 - [x] `workers/provisioner/src/message-contract.ts`
+- [x] `workers/provisioner/src/provisioning-lease.ts`
 - [x] `workers/provisioner/src/provisioning-required-routes.test.ts`
 - [x] `workers/provisioner/src/provisioning-state.test.ts`
 - [x] `workers/provisioner/src/provisioning-state.ts`
 - [x] `workers/provisioner/src/queue-config.test.ts`
-- [x] `workers/provisioner/src/provisioning-lease.ts`
 - [x] `workers/provisioner/src/queue-message-handler.test.ts`
 - [x] `workers/provisioner/src/queue-message-handler.ts`
 - [ ] `workers/provisioner/src/tenant-suspension.test.ts`

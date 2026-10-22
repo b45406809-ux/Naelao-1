@@ -1547,6 +1547,8 @@ Validation: added `tests/unit/phase-runner-safety.test.ts`; all 11 cases pass, c
 
 Completed the pending three-way reference check for `create_patch.js`: repository-wide search found no code import, package script, workflow, or generated runtime lookup; its only product-adjacent use was writing the fixed `repomix/patches/batch-01.patch`, which the separate `ai_studio_code.sh` generator already writes. Remaining references were only the stale tree/checklist/progress records. Removed the redundant 72 KiB generator. The patch artifact and its manual apply workflow remain; no external package API or deployed binding referenced the deleted file. The tracked repository tree and checklist are refreshed in the following audit update. No test suite imports or executes this utility.
 
+The post-deletion inventory refresh records 2,035 tracked files / 1,827 source or executable-configuration files at code commit `fe85a1e8`. The checklist preserves 515 reviewed rows and now has 1,312 open rows; newly tracked source/config entries were not marked complete.
+
 The repository-wide audit remains incomplete. This scoped runner review does not validate the AI provider network behavior, Repomix parser behavior on hostile repository names, GitHub CLI/provider outages, or the remaining root configuration and script files.
 
 Inventory refreshed after the runner audit commit `21b52474`: 1,978 tracked files, 1,772 source/config checklist rows, 385 checked and 1,387 unchecked. The two newly added safety helper/test rows are checked; both runner files remain unchecked for their broader provider, CLI, and deployment behavior.
