@@ -9,6 +9,9 @@ import { Markdown } from "@/components/Markdown";
 import { HtmlPreviewFrame } from "@/components/HtmlPreviewFrame";
 import type { WorkspaceFileContent } from "@/lib/api";
 
+const MAX_CSV_PREVIEW_ROWS = 501; // header plus the 500 rows TableView renders
+const MAX_CSV_PREVIEW_COLUMNS = 100;
+
 function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -33,12 +36,21 @@ function parseCsv(text: string): string[][] {
         if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false;
       } else field += c;
     } else if (c === '"') inQuotes = true;
-    else if (c === ",") { row.push(field); field = ""; }
-    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (c === ",") { if (row.length < MAX_CSV_PREVIEW_COLUMNS) row.push(field); field = ""; }
+    else if (c === "\n") {
+      if (row.length < MAX_CSV_PREVIEW_COLUMNS) row.push(field);
+      rows.push(row);
+      if (rows.length >= MAX_CSV_PREVIEW_ROWS) break;
+      row = [];
+      field = "";
+    }
     else if (c === "\r") { /* skip */ }
     else field += c;
   }
-  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  if (rows.length < MAX_CSV_PREVIEW_ROWS && (field.length > 0 || row.length > 0)) {
+    if (row.length < MAX_CSV_PREVIEW_COLUMNS) row.push(field);
+    rows.push(row);
+  }
   return rows;
 }
 

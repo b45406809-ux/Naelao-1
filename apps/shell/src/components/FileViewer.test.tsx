@@ -51,4 +51,27 @@ describe("FileViewer spreadsheet boundaries", () => {
     expect(html).not.toContain("data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     expect(html).not.toContain("download=");
   });
+
+  it("parses only the header and the 500 CSV rows the preview can show", () => {
+    const file: WorkspaceFileContent = {
+      path: "reports/large.csv",
+      content: `name\n${Array.from({ length: 10_000 }, (_, i) => `row-${i}`).join("\n")}`,
+    };
+    const html = renderToStaticMarkup(<FileViewer file={file} />);
+
+    expect(html.match(/<tr/g)).toHaveLength(501); // one header + at most 500 body rows
+    expect(html).toContain("row-499");
+    expect(html).not.toContain("row-500");
+  });
+
+  it("keeps pathological wide CSV rows within the 100-column preview limit", () => {
+    const file: WorkspaceFileContent = {
+      path: "reports/wide.csv",
+      content: Array.from({ length: 2_000 }, (_, i) => `column-${i}`).join(","),
+    };
+    const html = renderToStaticMarkup(<FileViewer file={file} />);
+
+    expect(html.match(/<th(?=[ >])/g)).toHaveLength(100);
+    expect(html).not.toContain("column-100");
+  });
 });
