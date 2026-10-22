@@ -2540,3 +2540,33 @@ A second defect silently swallowed failed `/members` service responses. Seat act
 A further dependency-failure review found money handlers that treated an unbound Spaces service as a benign no-op: sale/seat wallet settlement, credit-pack grants, personal-plan grants, wallet top-ups, surcharge settlement, and non-order refund clawbacks. These now fail the webhook and release its idempotency claim so a corrected deployment or retry can finish. A deliberately missing wallet project remains a permanent no-op, and wallet clawback 402 remains an explicit shortfall. Revenue-surcharge `mark-billed` failures now throw as well; previously a 503 was logged and acknowledged, leaving paid periods billable a second time. A regression verifies that a 503 while marking surcharge periods billed returns 500 and releases the event claim.
 
 The Billing worker suite now passes 166 tests across 20 files; Billing typecheck and `git diff --check` pass. This does not resolve the 24-hour old-checkout expiry uncertainty recorded above.
+
+## Billing webhook metadata, plan-state, and binding stress pass (2026-10-22)
+
+Continuing the webhook path review found that recognized paid checkout kinds with missing metadata were returning `false` and being acknowledged as complete. Required identifiers, positive integer grant values, and surcharge period/charge arrays now validate; a malformed recognized event raises a retryable error and releases its idempotency claim. Missing event IDs on refunds and missing space IDs on space-bound paid/refund events fail closed. Internal Spaces request path identifiers in the reviewed webhook routes are encoded as individual path segments.
+
+Plan-state stress cases found that `payment.failed` could map to `active`, and that refunds could re-enter the same plan upsert and restore paid access. Failed first payments now create no paid tier; failed renewals mark only an existing paid subscription `past_due`; platform-plan refunds no longer rewrite entitlements. Refund policy for platform/business plans is still undefined, and personal plans remain materially incomplete: monthly/yearly catalog intervals are granted into a tier-only ProductUserDO state with no expiry, subscription cancellation, or refund revoke. These are explicit open audit items in `docs/AUDIT_TODO.md`.
+
+Both webhook endpoints also had an unrelated Agents-binding shortcut that returned 200 before processing money events. Platform-plan and Whop personal-plan events now run without Agents. Lemon Squeezy accounting runs before agent dispatch; an active-space event whose agent wake cannot be delivered returns retryable 503 and releases the idempotency claim. The Whop parser no longer interprets unrecognized signed events as successful payments. Enabling the Whop platform-plan suite exposed that its four owner-only route tests were stale and missing the forwarded owner role; updated them to match the current auth contract and registered the file in the Billing Vitest project, which had omitted it entirely.
+
+Validation: Billing Worker suite passed 21 files / 183 tests; Billing Core passed 16 files / 56 tests; both package TypeScript checks passed; `git diff --check` passed. Tests use SQLite and service-binding stubs. No live Cloudflare deployment, Lemon Squeezy/Whop request, provider delivery retry, checkout expiry, or real DO concurrency was exercised. DNS rebinding remains unresolved. The inventory is still 2,051 tracked files / 1,843 source and executable-config extensions; checklist state remains 550 scoped reviews / 1,284 open rows out of 1,834, and the remaining file-by-file audit is not complete.
+
+## Billing event identity and stale-state stress pass (2026-10-22)
+
+The audit found two more webhook correctness defects. First, resource IDs are reused across distinct payloads, and the processed-event key previously used the resource ID plus normalized event type; repeated `subscription.updated` payloads could therefore be suppressed. Claims now use a SHA-256 fingerprint of the signed request body, while the provider resource/payment ID remains available for ledger joins and grant/clawback idempotency. A regression processes two changed `subscription.updated` payloads for one subscription and confirms an exact retry stays deduplicated.
+
+Second, delayed payment failures could mark a newer plan delinquent. Platform plan updates now match the currently stored LS/Whop subscription ID and plan; business updates match the business, product, plan, and LS subscription ID. Whop's platform-plan parser had also used `plan_id` as a subscription ID; it now uses `membership_id` for payment events and the membership resource ID for membership lifecycle events. A paid seat/product event with a missing space row no longer gets silently acknowledged; it returns a retryable failure and releases the body claim.
+
+Validation at that stage: full Turbo test run passed 57/57 tasks; the root shared suite passed 368 files / 3,841 tests. Billing Worker passed 21 files / 188 tests, Billing Core passed 16 files / 56 tests, and both package typechecks passed. Router's 12 files / 67 tests and typecheck passed earlier in this continuation. `git diff --check` passed. No Cloudflare deployment, provider API/webhook, external load, or real distributed concurrency test was performed.
+
+Remaining related risks: provider event ordering is not proven and the processed webhook table has no cleanup/retention strategy; platform/business refund policy remains open; personal monthly/yearly plan entitlement still has no expiry/revocation lifecycle; surcharge checkout URL expiry is unverified. DNS rebinding remains an infrastructure gap. Repository checklist remains 550 scoped reviews / 1,284 open files out of 1,834; the whole audit is not complete.
+
+The next pass traced refund attribution through `reseller_ledger` and found that the unique
+`provider_event_id` stored the same order resource ID for the positive sale and negative refund.
+The refund's negative calculation was silently discarded by `INSERT OR IGNORE`, leaving the
+reseller margin overstated. Ledger event IDs now include the normalized event type; migration-backed
+coverage records both sale and refund rows and verifies their referral margins net to zero. Billing
+Worker passed 21 files / 189 tests, the focused migration-backed wallet/refund file passed 14/14,
+Billing TypeScript passed, and the final Billing Wrangler dry run bundled at 415.56 KiB (85.23 KiB gzip).
+The final full Turbo rerun passed 57/57 tasks and 368 files / 3,842 root tests. The broader Billing
+review and repository audit remain open.

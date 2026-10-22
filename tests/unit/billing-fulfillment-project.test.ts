@@ -233,6 +233,36 @@ describe("handleLemonSqueezyWebhook — scopes the wake to the Orders project wh
 });
 
 describe("handleLemonSqueezyWebhook — accounting survives an inactive space", () => {
+  it("does not acknowledge an active paid order as complete when the Agents binding is missing", async () => {
+    const writes: string[] = [];
+    const db = {
+      prepare(sql: string) {
+        const stmt = {
+          bind() { return stmt; },
+          async first() {
+            if (/FROM spaces WHERE id = \?/.test(sql)) return { tenant_id: "tenant-1" };
+            if (/FROM tenant_hierarchy/.test(sql)) return null;
+            return null;
+          },
+          async run() { writes.push(sql); return { meta: { changes: 1 } }; },
+        };
+        return stmt;
+      },
+    };
+    const raw = makeOrderPaidBody("space-1");
+    const response = await handleLemonSqueezyWebhook(new Request("https://billing.naelao.com/webhooks/lemon-squeezy", {
+      method: "POST", headers: { "X-Signature": await signBody(raw) }, body: raw,
+    }), {
+      LEMON_SQUEEZY_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      PLATFORM_SECRET,
+      PLATFORM_DB: db as unknown as D1Database,
+      SPACES_WORKER: { fetch: async () => Response.json({ project_id: null }) } as unknown as Fetcher,
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: "agent_delivery_unavailable" });
+    expect(writes.some((sql) => sql.includes("DELETE FROM processed_webhook_events"))).toBe(true);
+  });
+
   it("records a paid order before skipping the inactive space's agent", async () => {
     const writes: string[] = [];
     const db = {

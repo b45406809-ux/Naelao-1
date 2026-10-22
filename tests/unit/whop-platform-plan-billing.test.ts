@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import billingWorker from "../../workers/billing/src/index.js";
-import { verifyWhopPlatformPlanWebhook } from "../../packages/billing-core/src/providers/whop-platform-plan.js";
+import { parseWhopPlatformPlanEvent, verifyWhopPlatformPlanWebhook } from "../../packages/billing-core/src/providers/whop-platform-plan.js";
 import { mintInternalToken } from "@naelao/http";
 
 // Whop as a second PLATFORM billing provider, tried before Lemon Squeezy (AUDIT_TODO.md AI-7 —
@@ -58,7 +58,7 @@ describe("POST /billing/checkout — Whop tried first, LS fallback", () => {
     mockOutboundFetch({ "/checkout_configurations": { checkout_url: "https://whop.com/checkout/platform-growth" } });
     const req = new Request("https://billing.naelao.com/billing/checkout", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": "org-1", "x-naelao-user-id": "user-1" },
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "org-1", "x-naelao-user-id": "user-1", "x-naelao-role": "owner" },
       body: JSON.stringify({ plan: "growth", success_url: "https://dashboard.naelao.com/thanks" }),
     });
     const res = await billingWorker.fetch(
@@ -79,7 +79,7 @@ describe("POST /billing/checkout — Whop tried first, LS fallback", () => {
   it("falls back to the LS dev placeholder when Whop isn't configured", async () => {
     const req = new Request("https://billing.naelao.com/billing/checkout", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": "org-1", "x-naelao-user-id": "user-1" },
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "org-1", "x-naelao-user-id": "user-1", "x-naelao-role": "owner" },
       body: JSON.stringify({ plan: "business", success_url: "https://dashboard.naelao.com/thanks" }),
     });
     const res = await billingWorker.fetch(req, makeEnv() as never, execCtx);
@@ -93,7 +93,7 @@ describe("POST /billing/checkout — Whop tried first, LS fallback", () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: "boom" }), { status: 500 })) as typeof fetch;
     const req = new Request("https://billing.naelao.com/billing/checkout", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": "org-1", "x-naelao-user-id": "user-1" },
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "org-1", "x-naelao-user-id": "user-1", "x-naelao-role": "owner" },
       body: JSON.stringify({ plan: "growth", success_url: "https://dashboard.naelao.com/thanks" }),
     });
     const res = await billingWorker.fetch(
@@ -111,7 +111,7 @@ describe("POST /billing/portal — branches to Whop's fixed orders page", () => 
   it("returns the fixed Whop orders URL when the org's subscription row has a whop_customer_id and no ls_customer_id", async () => {
     const req = new Request("https://billing.naelao.com/billing/portal", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": "org-1" },
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": "org-1", "x-naelao-role": "owner" },
     });
     const res = await billingWorker.fetch(
       req,
@@ -171,11 +171,57 @@ describe("POST /webhooks/whop-platform-plan", () => {
     expect(orgUpdateArgs).toEqual(["growth", "org-1"]);
   });
 
-  it("returns ok:true, skipped:true when AGENTS_WORKER isn't bound (never errors Whop into a retry storm)", async () => {
-    const req = await signedReq(JSON.stringify({ event: "membership.went_valid", data: {} }), "whop_secret");
-    const res = await billingWorker.fetch(req, makeEnv({ WHOP_PLATFORM_PLAN_WEBHOOK_SECRET: "whop_secret" }) as never, execCtx);
+  it("fulfills a personal-plan payment without requiring the unrelated Agents worker", async () => {
+    const grantCalls: Request[] = [];
+    const req = await signedReq(JSON.stringify({
+      id: "evt_personal",
+      event: "payment.succeeded",
+      data: {
+        id: "payment-1",
+        plan_id: "plan-plus-monthly",
+        amount: 500,
+        metadata: { kind: "personal_plan", plan_id: "plus-monthly", tier: "plus", end_user_id: "user-1", product_space_id: "product-1" },
+      },
+    }), "whop_secret");
+    const res = await billingWorker.fetch(req, makeEnv({
+      WHOP_PLATFORM_PLAN_WEBHOOK_SECRET: "whop_secret",
+      SPACES_WORKER: {
+        async fetch(input: Request) {
+          grantCalls.push(input);
+          return Response.json({ plan_tier: "plus" });
+        },
+      },
+    }) as never, execCtx);
     expect(res.status).toBe(200);
-    expect((await res.json()) as { skipped: boolean }).toMatchObject({ skipped: true });
+    expect((await res.json()) as { handled: boolean }).toMatchObject({ handled: true });
+    expect(grantCalls).toHaveLength(1);
+    expect(new URL(grantCalls[0]!.url).pathname).toBe("/internal/personal-plan/grant");
+  });
+
+  it("does not treat an unknown signed Whop event as a successful payment", async () => {
+    const updates: string[] = [];
+    const db = {
+      prepare(sql: string) {
+        const stmt = {
+          bind() { return stmt; },
+          async first() { return null; },
+          async run() { updates.push(sql); return { meta: { changes: 1 } }; },
+        };
+        return stmt;
+      },
+    };
+    const req = await signedReq(JSON.stringify({
+      id: "evt_unknown",
+      event: "membership.updated",
+      data: { id: "mem-1", metadata: { kind: "platform_plan", org_id: "org-1", plan: "growth" } },
+    }), "whop_secret");
+    const res = await billingWorker.fetch(req, makeEnv({
+      PLATFORM_DB: db,
+      WHOP_PLATFORM_PLAN_WEBHOOK_SECRET: "whop_secret",
+    }) as never, execCtx);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ skipped: true, reason: "unparseable body" });
+    expect(updates).toHaveLength(0);
   });
 });
 
@@ -187,5 +233,30 @@ describe("verifyWhopPlatformPlanWebhook", () => {
 
   it("rejects when the header is missing", async () => {
     expect(await verifyWhopPlatformPlanWebhook("{}", new Headers(), "secret")).toBe(false);
+  });
+});
+
+describe("parseWhopPlatformPlanEvent subscription identity", () => {
+  it("uses membership_id for payment events and never confuses plan_id with a subscription", () => {
+    const event = parseWhopPlatformPlanEvent(JSON.stringify({
+      id: "payment-1",
+      event: "payment.failed",
+      data: {
+        id: "payment-1",
+        plan_id: "plan-growth",
+        membership_id: "membership-current",
+        metadata: { kind: "platform_plan", org_id: "org-1", plan: "growth" },
+      },
+    }));
+    expect(event.subscriptionId).toBe("membership-current");
+    expect(event.variantOrPriceId).toBe("plan-growth");
+  });
+
+  it("uses the membership resource ID for membership lifecycle events", () => {
+    const event = parseWhopPlatformPlanEvent(JSON.stringify({
+      event: "membership.went_valid",
+      data: { id: "membership-1", plan_id: "plan-growth", metadata: { kind: "platform_plan", org_id: "org-1", plan: "growth" } },
+    }));
+    expect(event.subscriptionId).toBe("membership-1");
   });
 });

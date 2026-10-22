@@ -151,6 +151,29 @@ describe("Lemon Squeezy webhook — storefront sale settles to the seller's own 
     expect(calls.filter((c) => /\/wallet\/credit$/.test(c.url))).toHaveLength(1);
   });
 
+  it("records a negative reseller attribution for the refund of the same order resource", async () => {
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
+    await fakeDb.prepare("INSERT INTO tenant_hierarchy (child_tenant_id, parent_tenant_id, reseller_product_space_id, child_space_id, status) VALUES (?, ?, ?, ?, 'active')")
+      .bind("tenant1", "parent1", "reseller-product", "space1").run();
+    await fakeDb.prepare("INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct, status) VALUES (?, ?, 'referral', NULL, ?, 'active')")
+      .bind("parent1", "reseller-product", 20).run();
+
+    const { fetcher } = makeSpacesWorker();
+    const env = makeEnv(fakeDb as unknown as D1Database, fetcher);
+    await post(makeOrderPaidBody("space1", "ord_reseller_refund", "prod_a", 5000), env);
+    await post(makeOrderRefundedBody("space1", "ord_reseller_refund", "prod_a", 5000), env);
+
+    const { results } = await fakeDb.prepare(
+      "SELECT event_type, retail_cents, margin_cents, provider_event_id FROM reseller_ledger WHERE child_space_id = ? ORDER BY event_type"
+    ).bind("space1").all<{ event_type: string; retail_cents: number; margin_cents: number; provider_event_id: string }>();
+    expect(results).toHaveLength(2);
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_type: "payment.success", retail_cents: 5000, margin_cents: 1000, provider_event_id: "payment.success:ord_reseller_refund" }),
+      expect.objectContaining({ event_type: "refund.issued", retail_cents: -5000, margin_cents: -1000, provider_event_id: "refund.issued:ord_reseller_refund" }),
+    ]));
+  });
+
   it("degrades honestly (never blocks order recording) when the space has no wallet project", async () => {
     const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
@@ -162,6 +185,19 @@ describe("Lemon Squeezy webhook — storefront sale settles to the seller's own 
 
     const { results } = await fakeDb.prepare("SELECT * FROM launchpad_orders WHERE space_id = ?").bind("space1").all();
     expect(results).toHaveLength(1); // order still recorded even though settlement had nowhere to go
+  });
+
+  it("keeps a paid product event retryable when its referenced space is missing", async () => {
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const { fetcher } = makeSpacesWorker();
+    const env = makeEnv(fakeDb as unknown as D1Database, fetcher);
+    const response = await post(makeOrderPaidBody("space-does-not-exist", "ord_missing_space", "prod_a"), env);
+
+    expect(response.status).toBe(500);
+    const order = await fakeDb.prepare("SELECT * FROM launchpad_orders WHERE provider_event_id = ?").bind("ord_missing_space").first();
+    expect(order).toBeNull();
+    const claim = await fakeDb.prepare("SELECT * FROM processed_webhook_events WHERE provider = ? AND event_id LIKE 'body:%'").bind("lemon_squeezy").first();
+    expect(claim).toBeNull();
   });
 });
 
@@ -339,7 +375,7 @@ describe("Lemon Squeezy webhook — transient settlement failure retries instead
     // 1st delivery: credit fails transiently → 500, and the event is released for retry.
     const first = await post(raw, env);
     expect(first.status).toBe(500);
-    const marker = await fakeDb.prepare("SELECT COUNT(*) AS n FROM processed_webhook_events WHERE event_id = 'ord_flaky'").first<{ n: number }>();
+    const marker = await fakeDb.prepare("SELECT COUNT(*) AS n FROM processed_webhook_events WHERE provider = 'lemon_squeezy'").first<{ n: number }>();
     expect(marker?.n).toBe(0); // reservation released → LS retry won't be deduped away
 
     // 2nd delivery (the LS retry): credit succeeds → 200, and settlement happened exactly once.

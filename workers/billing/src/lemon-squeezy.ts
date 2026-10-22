@@ -29,6 +29,44 @@ async function responseDetail(response: Response): Promise<string> {
   catch { return "response_body_unavailable"; }
 }
 
+function requiredMetadataString(metadata: Record<string, unknown>, key: string, context: string): string {
+  const value = metadata[key];
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > 256) {
+    throw new Error(`${context} webhook is missing valid ${key} metadata`);
+  }
+  return value.trim();
+}
+
+function requiredPositiveMetadataInteger(metadata: Record<string, unknown>, key: string, context: string): number {
+  const value = metadata[key];
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
+    throw new Error(`${context} webhook is missing valid ${key} metadata`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${context} webhook ${key} exceeds the safe integer range`);
+  return parsed;
+}
+
+function requiredEventSpaceId(event: NormalizedBillingEvent, context: string): string {
+  if (!event.spaceId || event.spaceId.length > 256) throw new Error(`${context} webhook is missing a valid space id`);
+  return event.spaceId;
+}
+
+function requiredRevenuePeriods(metadata: Record<string, unknown>, context: string): { periods: string[]; charges?: number[] } {
+  const rawPeriods = requiredMetadataString(metadata, "periods", context);
+  const periods = rawPeriods.split(",");
+  if (periods.length > 120 || periods.some((period) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) || new Set(periods).size !== periods.length) {
+    throw new Error(`${context} webhook has invalid revenue periods`);
+  }
+  if (metadata["period_charges"] === undefined) return { periods };
+  const rawCharges = requiredMetadataString(metadata, "period_charges", context);
+  const charges = rawCharges.split(",");
+  if (charges.length !== periods.length || charges.some((charge) => !/^(0|[1-9]\d*)$/.test(charge) || !Number.isSafeInteger(Number(charge)))) {
+    throw new Error(`${context} webhook has invalid period charges`);
+  }
+  return { periods, charges: charges.map(Number) };
+}
+
 /**
  * ARCH-REVENUE-6: the maximum builder revenue share, in basis points. A builder configures their
  * slice of a child business's sales (productConfig.commerce.builderFeeBps); this ceiling stops a
@@ -113,7 +151,7 @@ export interface LemonSqueezyEnv {
   LEMON_SQUEEZY_API_KEY?: string;
   LEMON_SQUEEZY_STORE_ID?: string;
   LAUNCHPAD_FEE_BPS?: string;
-  AGENTS_WORKER: Fetcher;
+  AGENTS_WORKER?: Fetcher;
   SPACES_WORKER?: Fetcher;
   PLATFORM_DB: D1Database;
   /** For minting the internal HMAC token the direct (non-router) SPACES_WORKER call below needs. */
@@ -140,7 +178,7 @@ async function recordSeatActivation(
   const space = await env.PLATFORM_DB.prepare(
     "SELECT tenant_id FROM spaces WHERE id = ?"
   ).bind(event.spaceId).first<{ tenant_id: string }>();
-  if (!space) return null;
+  if (!space) throw new Error("paid seat webhook references a missing space");
 
   const gross = event.amountCents ?? 0;
   const feeBps = normalizeFeeBps(custom["fee_bps"], env.LAUNCHPAD_FEE_BPS);
@@ -183,7 +221,7 @@ async function recordSeatActivation(
   if (userId) {
     if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for paid seat activation");
     try {
-      const activation = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/members`, {
+      const activation = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(event.spaceId)}/members`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -220,7 +258,7 @@ async function recordProductOrder(
   const space = await env.PLATFORM_DB.prepare(
     "SELECT tenant_id FROM spaces WHERE id = ?"
   ).bind(event.spaceId).first<{ tenant_id: string }>();
-  if (!space) return null;
+  if (!space) throw new Error("paid product order webhook references a missing space");
 
   const gross = event.amountCents ?? 0;
   const feeBps = normalizeFeeBps(custom["fee_bps"], env.LAUNCHPAD_FEE_BPS);
@@ -294,14 +332,14 @@ async function settleOrderToWallet(
   // A network/parse error reaching the wallet-project lookup is TRANSIENT — let it throw so the
   // webhook returns non-200 and Lemon Squeezy retries (see handleLemonSqueezyWebhook), rather than
   // silently dropping a business's earned revenue. Idempotency_key makes the eventual retry safe.
-  const wpRes = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/wallet-project`, { headers }));
+  const wpRes = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/wallet-project`, { headers }));
   if (!wpRes.ok) throw new Error(`wallet-project lookup ${wpRes.status} for space=${spaceId}`);
   const { project_id } = await wpRes.json<{ project_id: string | null }>();
   if (!project_id) return false; // no wallet ever provisioned for this space — nothing to settle to (permanent, not retriable)
 
   const op = reason === "sale_settlement" ? "credit" : "debit";
   const resp = await env.SPACES_WORKER.fetch(new Request(
-    `http://spaces-worker/spaces/${spaceId}/projects/${project_id}/wallet/${op}`,
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(project_id)}/wallet/${op}`,
     { method: "POST", headers, body: JSON.stringify({ cents, reason, idempotency_key: idempotencyKey }) }
   ));
   if (!resp.ok) {
@@ -383,18 +421,21 @@ async function recordNonOrderRefundClawback(
   event: NormalizedBillingEvent,
   env: LemonSqueezyEnv
 ): Promise<void> {
-  if (event.type !== "refund.issued" || !event.providerEventId || !event.spaceId) return;
+  if (event.type !== "refund.issued") return;
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
   const kind = typeof custom["kind"] === "string" ? custom["kind"] : null;
   if (!kind) return;
+  if (!["wallet_topup", "credit_pack", "revenue_cut_surcharge"].includes(kind)) return;
+  if (!event.providerEventId) throw new Error(`${kind} refund webhook is missing provider event id`);
+  const spaceId = requiredEventSpaceId(event, kind);
   if (["wallet_topup", "credit_pack", "revenue_cut_surcharge"].includes(kind) && !env.SPACES_WORKER) {
     throw new Error(`Spaces worker is not bound for ${kind} refund clawback`);
   }
-  if (!env.SPACES_WORKER) return;
+  if (!env.SPACES_WORKER) throw new Error(`Spaces worker is not bound for ${kind} refund clawback`);
 
   const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(event.spaceId).first<{ tenant_id: string }>();
-  if (!space) return;
+    .bind(spaceId).first<{ tenant_id: string }>();
+  if (!space) throw new Error(`${kind} refund webhook references a missing space`);
   const headers = {
     "content-type": "application/json",
     "x-naelao-tenant-id": space.tenant_id,
@@ -403,11 +444,10 @@ async function recordNonOrderRefundClawback(
   const idempotencyKey = `refund:${event.providerEventId}`;
 
   if (kind === "wallet_topup") {
-    const projectId = custom["project_id"] ? String(custom["project_id"]) : null;
-    const cents = custom["cents"] ? parseInt(String(custom["cents"]), 10) : 0;
-    if (!projectId || cents <= 0) return;
+    const projectId = requiredMetadataString(custom, "project_id", kind);
+    const cents = requiredPositiveMetadataInteger(custom, "cents", kind);
     const resp = await env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/spaces/${event.spaceId}/projects/${projectId}/wallet/debit`,
+      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/wallet/debit`,
       { method: "POST", headers, body: JSON.stringify({ cents, reason: "refund_clawback", idempotency_key: idempotencyKey }) }
     ));
     if (!resp.ok) {
@@ -421,10 +461,9 @@ async function recordNonOrderRefundClawback(
   }
 
   if (kind === "credit_pack") {
-    const endUserId = custom["end_user_id"] ? String(custom["end_user_id"]) : null;
-    const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
-    const credits = custom["credits"] ? parseInt(String(custom["credits"]), 10) : 0;
-    if (!endUserId || !productSpaceId || credits <= 0) return;
+    const endUserId = requiredMetadataString(custom, "end_user_id", kind);
+    const productSpaceId = requiredMetadataString(custom, "product_space_id", kind);
+    const credits = requiredPositiveMetadataInteger(custom, "credits", kind);
     const resp = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/credit-packs/clawback", {
       method: "POST", headers,
       body: JSON.stringify({ product_space_id: productSpaceId, end_user_id: endUserId, credits, idempotency_key: idempotencyKey }),
@@ -434,17 +473,13 @@ async function recordNonOrderRefundClawback(
   }
 
   if (kind === "revenue_cut_surcharge") {
-    const periods = custom["periods"] ? String(custom["periods"]).split(",").filter(Boolean) : [];
-    if (periods.length === 0) return;
+    const { periods, charges } = requiredRevenuePeriods(custom, kind);
     // F-27: reverse exactly the delta that was charged per period (LS preserves the order's
     // custom_data on the refund event), so a refund re-opens only that much for re-billing.
-    const charges = custom["period_charges"]
-      ? String(custom["period_charges"]).split(",").map((n) => parseInt(n, 10)).filter((n) => Number.isFinite(n))
-      : undefined;
-    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/revenue-tracking/unmark-billed`, {
+    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/revenue-tracking/unmark-billed`, {
       method: "POST", headers, body: JSON.stringify({ periods, ...(charges ? { charges } : {}) }),
     }));
-    if (!resp.ok) throw new Error(`surcharge refund unmark ${resp.status} for space=${event.spaceId}: ${await responseDetail(resp)}`);
+    if (!resp.ok) throw new Error(`surcharge refund unmark ${resp.status} for space=${spaceId}: ${await responseDetail(resp)}`);
     return;
   }
 }
@@ -454,6 +489,7 @@ async function recordNonOrderRefundClawback(
  *  counts as active access, unpaid is a stronger past_due (the builder's UI doesn't currently
  *  need to distinguish them; add a value if that changes). */
 function mapSubscriptionStatus(event: NormalizedBillingEvent): string {
+  if (event.type === "payment.failed") return "past_due";
   switch (event.type) {
     case "subscription.cancelled": return "cancelled";
     case "subscription.paused": return "paused";
@@ -498,9 +534,27 @@ export async function recordPlatformPlanSubscription(
 ): Promise<boolean> {
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
   if (custom["kind"] !== "platform_plan") return false;
-  const orgId = custom["org_id"] ? String(custom["org_id"]) : null;
-  const plan = custom["plan"] ? String(custom["plan"]) : null;
-  if (!orgId || (plan !== "growth" && plan !== "business")) return false;
+  const orgId = requiredMetadataString(custom, "org_id", "platform plan");
+  const plan = requiredMetadataString(custom, "plan", "platform plan");
+  if (plan !== "growth" && plan !== "business") throw new Error("platform plan webhook contains an unsupported plan");
+
+  // A failed renewal may mark an existing subscription delinquent, but it must never create a
+  // paid org tier by itself. Refund events are acknowledged without changing entitlement state;
+  // the subscription lifecycle event is the source of truth for access removal.
+  if (event.type === "payment.failed") {
+    // Payment notifications can arrive after a user has replaced their subscription. Only let a
+    // failure for the subscription currently recorded on the org update its state; a failure for
+    // an older subscription (or an initial payment with no row yet) must not downgrade new access.
+    if (!event.subscriptionId) return true;
+    const subscriptionColumn = event.provider === "whop" ? "whop_subscription_id" : "ls_subscription_id";
+    await env.PLATFORM_DB.prepare(
+      `UPDATE subscriptions SET status = 'past_due', updated_at = datetime('now')
+       WHERE org_id = ? AND plan_tier = ? AND ${subscriptionColumn} = ?`
+    ).bind(orgId, plan, event.subscriptionId).run();
+    return true;
+  }
+  if (event.type === "refund.issued") return true;
+  if (event.type !== "payment.success" && !event.type.startsWith("subscription.")) return true;
 
   const status = mapSubscriptionStatus(event);
   // Access policy: cancelled keeps the paid tier until LS sends subscription.expired at period
@@ -553,10 +607,23 @@ async function recordBusinessSubscription(
   env: LemonSqueezyEnv
 ): Promise<boolean> {
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
-  if (custom["kind"] !== "business_subscription" || !event.spaceId) return false;
-  const planId = custom["plan_id"] ? String(custom["plan_id"]) : null;
-  const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
-  if (!planId || !productSpaceId) return false;
+  if (custom["kind"] !== "business_subscription") return false;
+  const businessSpaceId = requiredEventSpaceId(event, "business subscription");
+  const planId = requiredMetadataString(custom, "plan_id", "business subscription");
+  const productSpaceId = requiredMetadataString(custom, "product_space_id", "business subscription");
+  if (event.type === "refund.issued") return true;
+  if (event.type !== "payment.success" && event.type !== "payment.failed" && !event.type.startsWith("subscription.")) return true;
+
+  if (event.type === "payment.failed") {
+    // Do not let a late failed charge from a replaced subscription downgrade the business's
+    // current plan, or downgrade a different plan that happens to belong to the same business.
+    if (!event.subscriptionId) return true;
+    await env.PLATFORM_DB.prepare(
+      `UPDATE business_subscriptions SET status = 'past_due', updated_at = ?
+       WHERE business_space_id = ? AND product_space_id = ? AND plan_id = ? AND ls_subscription_id = ?`
+    ).bind(new Date().toISOString(), businessSpaceId, productSpaceId, planId, event.subscriptionId).run();
+    return true;
+  }
 
   const status = mapSubscriptionStatus(event);
   await env.PLATFORM_DB.prepare(
@@ -572,11 +639,11 @@ async function recordBusinessSubscription(
        current_period_end = excluded.current_period_end,
        updated_at = excluded.updated_at`
   ).bind(
-    crypto.randomUUID(), event.spaceId, productSpaceId, planId, status,
+    crypto.randomUUID(), businessSpaceId, productSpaceId, planId, status,
     event.subscriptionId ?? null, event.customerId ?? null, event.currentPeriodEnd ?? null,
     new Date().toISOString()
   ).run();
-  console.log(`[billing/ls] Business subscription ${status}: business=${event.spaceId} plan=${planId}`);
+  console.log(`[billing/ls] Business subscription ${status}: business=${businessSpaceId} plan=${planId}`);
   return true;
 }
 
@@ -629,16 +696,16 @@ async function grantCreditPackPurchase(
 ): Promise<boolean> {
   if (event.type !== "payment.success") return false;
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
-  if (custom["kind"] !== "credit_pack" || !event.spaceId) return false;
-  const endUserId = custom["end_user_id"] ? String(custom["end_user_id"]) : null;
-  const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
-  const credits = custom["credits"] ? parseInt(String(custom["credits"]), 10) : 0;
-  if (!endUserId || !productSpaceId || !credits) return false;
+  if (custom["kind"] !== "credit_pack") return false;
+  requiredEventSpaceId(event, "credit pack");
+  const endUserId = requiredMetadataString(custom, "end_user_id", "credit pack");
+  const productSpaceId = requiredMetadataString(custom, "product_space_id", "credit pack");
+  const credits = requiredPositiveMetadataInteger(custom, "credits", "credit pack");
   if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for credit-pack grants");
 
   const product = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(productSpaceId).first<{ tenant_id: string }>();
-  if (!product) return false;
+  if (!product) throw new Error("credit pack webhook references a missing product space");
 
   // F-30: prefer the LS order id (providerEventId) — stable across webhook retries but UNIQUE per
   // real purchase. The old synthetic fallback was identical for every purchase of the same pack by
@@ -693,15 +760,14 @@ export async function grantPersonalPlanPurchase(
   // in metadata. The three fields actually needed are validated immediately below, which is the
   // real requirement — spaceId was never used for anything here beyond this guard.
   if (custom["kind"] !== "personal_plan") return false;
-  const endUserId = custom["end_user_id"] ? String(custom["end_user_id"]) : null;
-  const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
-  const tier = custom["tier"] ? String(custom["tier"]) : null;
-  if (!endUserId || !productSpaceId || !tier) return false;
+  const endUserId = requiredMetadataString(custom, "end_user_id", "personal plan");
+  const productSpaceId = requiredMetadataString(custom, "product_space_id", "personal plan");
+  const tier = requiredMetadataString(custom, "tier", "personal plan");
   if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for personal-plan grants");
 
   const product = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(productSpaceId).first<{ tenant_id: string }>();
-  if (!product) return false;
+  if (!product) throw new Error("personal plan webhook references a missing product space");
 
   try {
     const resp = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/personal-plan/grant", {
@@ -739,15 +805,15 @@ async function grantWalletTopupPurchase(
 ): Promise<boolean> {
   if (event.type !== "payment.success") return false;
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
-  if (custom["kind"] !== "wallet_topup" || !event.spaceId) return false;
-  const projectId = custom["project_id"] ? String(custom["project_id"]) : null;
-  const cents = custom["cents"] ? parseInt(String(custom["cents"]), 10) : 0;
-  if (!projectId || !cents) return false;
+  if (custom["kind"] !== "wallet_topup") return false;
+  const spaceId = requiredEventSpaceId(event, "wallet top-up");
+  const projectId = requiredMetadataString(custom, "project_id", "wallet top-up");
+  const cents = requiredPositiveMetadataInteger(custom, "cents", "wallet top-up");
   if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for wallet top-up grants");
 
   const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(event.spaceId).first<{ tenant_id: string }>();
-  if (!space) return false;
+    .bind(spaceId).first<{ tenant_id: string }>();
+  if (!space) throw new Error("wallet top-up webhook references a missing business space");
 
   // F-30: same fix as credit packs — key on the LS order id so two legitimate top-ups of the same
   // amount to the same project don't collide on wallet_ledger's idempotency index and drop the second.
@@ -760,14 +826,14 @@ async function grantWalletTopupPurchase(
         "x-naelao-tenant-id": space.tenant_id,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, space.tenant_id),
       },
-      body: JSON.stringify({ business_space_id: event.spaceId, project_id: projectId, cents, idempotency_key: idempotencyKey }),
+      body: JSON.stringify({ business_space_id: spaceId, project_id: projectId, cents, idempotency_key: idempotencyKey }),
     }));
     if (!resp.ok) {
       // Transient — throw so the webhook retries (idempotency-keyed → safe) rather than silently
       // dropping the business's own topped-up capital.
-      throw new Error(`wallet top-up grant ${resp.status} for space=${event.spaceId} project=${projectId}: ${await responseDetail(resp)}`);
+      throw new Error(`wallet top-up grant ${resp.status} for space=${spaceId} project=${projectId}: ${await responseDetail(resp)}`);
     }
-    console.log(`[billing/ls] Granted ${cents} wallet cents to space=${event.spaceId} project=${projectId}`);
+    console.log(`[billing/ls] Granted ${cents} wallet cents to space=${spaceId} project=${projectId}`);
     return true;
   } catch (err) {
     console.error("[billing/ls] Wallet top-up grant error:", (err as Error).message);
@@ -790,23 +856,19 @@ async function recordRevenueCutSurchargePayment(
 ): Promise<boolean> {
   if (event.type !== "payment.success") return false;
   const custom = (event.metadata ?? {}) as Record<string, unknown>;
-  if (custom["kind"] !== "revenue_cut_surcharge" || !event.spaceId) return false;
-  const periods = custom["periods"] ? String(custom["periods"]).split(",").filter(Boolean) : [];
-  if (periods.length === 0) return false;
+  if (custom["kind"] !== "revenue_cut_surcharge") return false;
+  const spaceId = requiredEventSpaceId(event, "revenue-cut surcharge");
+  const { periods, charges } = requiredRevenuePeriods(custom, "revenue-cut surcharge");
   if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for revenue-cut settlement");
   // F-27: the per-period delta actually charged (parallel to periods) — added to billed_cents so a
   // later correction bills only the new delta. Absent (a checkout minted before this fix) → the
   // SpaceDO handler falls back to marking the period fully billed.
-  const charges = custom["period_charges"]
-    ? String(custom["period_charges"]).split(",").map((n) => parseInt(n, 10)).filter((n) => Number.isFinite(n))
-    : undefined;
-
   const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(event.spaceId).first<{ tenant_id: string }>();
-  if (!space) return false;
+    .bind(spaceId).first<{ tenant_id: string }>();
+  if (!space) throw new Error("revenue-cut surcharge webhook references a missing space");
 
   try {
-    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/revenue-tracking/mark-billed`, {
+    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/revenue-tracking/mark-billed`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -816,9 +878,9 @@ async function recordRevenueCutSurchargePayment(
       body: JSON.stringify({ periods, ...(charges ? { charges } : {}) }),
     }));
     if (!resp.ok) {
-      throw new Error(`revenue-cut mark-billed ${resp.status} for space=${event.spaceId}: ${await responseDetail(resp)}`);
+      throw new Error(`revenue-cut mark-billed ${resp.status} for space=${spaceId}: ${await responseDetail(resp)}`);
     }
-    console.log(`[billing/ls] Marked revenue-cut periods billed for space=${event.spaceId}: ${periods.join(",")}`);
+    console.log(`[billing/ls] Marked revenue-cut periods billed for space=${spaceId}: ${periods.join(",")}`);
     return true;
   } catch (err) {
     console.error("[billing/ls] revenue-cut mark-billed error:", (err as Error).message);
@@ -884,7 +946,7 @@ async function resolveFulfillmentConfig(
       "SELECT spacetype_id FROM spaces WHERE id = ?"
     ).bind(spaceId).first<{ spacetype_id?: string }>();
     if (!spaceRow?.spacetype_id) return fallback;
-    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/space-types/${spaceRow.spacetype_id}`, {
+    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/space-types/${encodeURIComponent(spaceRow.spacetype_id)}`, {
       headers: {
         "x-naelao-tenant-id": tenantId,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
@@ -925,7 +987,7 @@ async function fetchSpaceProjects(
 ): Promise<SpaceProject[] | undefined> {
   if (!env.SPACES_WORKER) return undefined;
   try {
-    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
+    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects`, {
       headers: {
         "x-naelao-tenant-id": tenantId,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
@@ -1039,8 +1101,10 @@ export async function sha256Hex(text: string): Promise<string> {
  * non-2xx response or timeout, which previously re-ran the ENTIRE handler on every retry; only
  * launchpad_orders had its own (separately keyed) idempotency, so a plain retry of e.g. a
  * subscription.updated event re-woke the agent every time. INSERT OR IGNORE on the
- * (provider, event_id) primary key: returns true (process it) only the first time; false on
- * every subsequent delivery of the same event.
+ * (provider, event_id) primary key: `event_id` is a signed-body fingerprint at webhook ingress,
+ * not Lemon Squeezy's resource ID, because a resource can emit many distinct lifecycle events.
+ * Exact re-deliveries map to the same fingerprint; changed payloads for the same resource remain
+ * processable while money effects retain their separate resource/payment idempotency keys.
  */
 export async function markEventProcessedOnce(
   provider: string,
@@ -1133,10 +1197,10 @@ async function recordResellerAttribution(
   });
   if (!attribution) return;
 
-  // S0.3: INSERT OR IGNORE on the provider_event_id unique index — idempotent upsert. In normal
-  // operation the top-level processed_webhook_events gate (markEventProcessedOnce) already
-  // prevents this from being reached twice for the same event, but this is a real constraint
-  // in its own right (belt-and-suspenders), not just relying on the caller's discipline.
+  // The same order resource ID is used on both payment and refund events. Qualify the ledger
+  // idempotency key by normalized event type so a refund can create its negative adjustment while
+  // duplicate deliveries of either lifecycle event remain no-ops at this unique index.
+  const ledgerEventId = event.providerEventId ? `${event.type}:${event.providerEventId}` : null;
   await db.prepare(
     `INSERT OR IGNORE INTO reseller_ledger
        (id, parent_tenant_id, child_tenant_id, child_space_id, event_type,
@@ -1153,7 +1217,7 @@ async function recordResellerAttribution(
     attribution.marginCents,
     attribution.currency,
     billingPeriod(),
-    event.providerEventId ?? null
+    ledgerEventId
   ).run();
   console.log(`[billing/ls] Reseller ledger: parent=${hierarchy.parent_tenant_id} margin=${attribution.marginCents}c (${attribution.relationship})`);
 }
@@ -1195,8 +1259,31 @@ export async function handleLemonSqueezyWebhook(
   // space-dispatch machinery — with their own exactly-once gate and retry-release, mirroring
   // the main path's semantics below.
   const topCustom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (event.type === "refund.issued" && !event.providerEventId) {
+    return Response.json({ error: "missing_provider_event_id" }, { status: 500 });
+  }
+  const spaceBoundKind = topCustom["kind"];
+  const requiresSpace =
+    (spaceBoundKind === "business_subscription" &&
+      (event.type === "payment.success" || event.type === "payment.failed" || event.type.startsWith("subscription."))) ||
+    ((spaceBoundKind === "seat" || (typeof topCustom["product_id"] === "string" && topCustom["product_id"].trim().length > 0)) &&
+      event.type === "payment.success") ||
+    (["credit_pack", "wallet_topup", "revenue_cut_surcharge"].includes(String(spaceBoundKind)) &&
+      (event.type === "payment.success" || event.type === "refund.issued"));
+  if (requiresSpace && (!event.spaceId || event.spaceId.length > 256)) {
+    return Response.json({ error: "missing_space_id" }, { status: 500 });
+  }
+
+  if (topCustom["kind"] === "template_subscription" &&
+      (typeof topCustom["template_subscription_id"] !== "string" || !topCustom["template_subscription_id"].trim()) &&
+      !event.subscriptionId) {
+    return Response.json({ error: "missing_template_subscription_id" }, { status: 500 });
+  }
   if (topCustom["kind"] === "platform_plan") {
-    const planEventId = event.providerEventId ?? `hash:${await sha256Hex(rawBody)}`;
+    // data.id identifies the subscription resource, not a webhook delivery. Creation, renewal,
+    // cancellation, and expiry can all share it. Hash the signed body for delivery dedupe while
+    // retaining providerEventId separately for subscription matching and money-ledger joins.
+    const planEventId = `body:${await sha256Hex(rawBody)}`;
     const firstDelivery = await markEventProcessedOnce("lemon_squeezy", planEventId, event.type, env.PLATFORM_DB);
     if (!firstDelivery) {
       console.log(`[billing/ls] Duplicate delivery of platform-plan event=${planEventId} — no-op`);
@@ -1215,7 +1302,7 @@ export async function handleLemonSqueezyWebhook(
   // Marketplace license purchases are platform-native one-time sales, not a business's
   // userland order. Grant the tenant fork and developer earning before the generic space flow.
   if (topCustom["kind"] === "marketplace_license") {
-    const licenseEventId = event.providerEventId ?? `hash:${await sha256Hex(rawBody)}`;
+    const licenseEventId = `body:${await sha256Hex(rawBody)}`;
     const firstDelivery = await markEventProcessedOnce("lemon_squeezy", licenseEventId, event.type, env.PLATFORM_DB);
     if (!firstDelivery) return Response.json({ ok: true, duplicate: true, kind: "marketplace_license" });
     try {
@@ -1236,7 +1323,7 @@ export async function handleLemonSqueezyWebhook(
     ? String(topCustom["template_subscription_id"] ?? "")
     : mappedTemplateSubscription?.id;
   if (templateSubscriptionId) {
-    const templateEventId = event.providerEventId ?? `hash:${await sha256Hex(rawBody)}`;
+    const templateEventId = `body:${await sha256Hex(rawBody)}`;
     const firstDelivery = await markEventProcessedOnce("lemon_squeezy", templateEventId, event.type, env.PLATFORM_DB);
     if (!firstDelivery) return Response.json({ ok: true, duplicate: true, kind: "template_subscription" });
     try {
@@ -1259,9 +1346,11 @@ export async function handleLemonSqueezyWebhook(
   // 3b. S0.3: top-level exactly-once gate — checked BEFORE any side effect below. A retry of an
   // event already processed (any event type, not just payment.success) is a silent no-op 200,
   // never re-running reseller attribution, order recording, or waking the agent a second time.
-  // Falls back to a rawBody hash only in the pathological case where the provider sent no event
-  // id at all (never happens for real Lemon Squeezy traffic — data.id is always present).
-  const eventId = event.providerEventId ?? `hash:${await sha256Hex(rawBody)}`;
+  // Lemon Squeezy's data.id is commonly a long-lived order/subscription resource ID, not a
+  // delivery ID. A later refund/cancellation uses the same resource ID as the original payment.
+  // Hash the complete signed body for delivery dedupe; resource IDs stay on NormalizedBillingEvent
+  // for the idempotency keys and ledger lookups that intentionally join lifecycle events.
+  const eventId = `body:${await sha256Hex(rawBody)}`;
   const isFirstDelivery = await markEventProcessedOnce("lemon_squeezy", eventId, event.type, env.PLATFORM_DB);
   if (!isFirstDelivery) {
     console.log(`[billing/ls] Duplicate delivery of event=${eventId} type=${event.type} — no-op`);
@@ -1337,6 +1426,11 @@ export async function handleLemonSqueezyWebhook(
   //    id so the fulfilment agent can look it up and deliver the product, and scope the run to
   //    the space's "Orders" project when the template seeded one (best-effort — falls back to a
   //    space-wide run when there isn't one).
+  if (!env.AGENTS_WORKER) {
+    console.error(`[billing/ls] Agents worker is not bound for event=${eventId}; releasing for retry`);
+    await unmarkEventProcessed("lemon_squeezy", eventId, env.PLATFORM_DB);
+    return Response.json({ error: "agent_delivery_unavailable" }, { status: 503 });
+  }
   const projectId = await resolveFulfillmentProjectId(event.spaceId, agent.tenantId, env);
 
   // F: routing decision (spec §11 / appendix A1.16.x) — LaunchpadAgentDefinition.trigger for

@@ -285,6 +285,44 @@ describe("Lemon Squeezy webhook — business subscription state", () => {
     );
     expect(inserts).toHaveLength(0);
   });
+
+  it("does not create an active business subscription from an initial failed payment", async () => {
+    const inserts: unknown[] = [];
+    const updates: Array<{ sql: string; args: unknown[] }> = [];
+    const db = {
+      prepare(sql: string) {
+        let bound: unknown[] = [];
+        return {
+          bind(...values: unknown[]) { bound = values; return this; },
+          async first() {
+            if (/FROM spaces WHERE id = \?/.test(sql)) return { tenant_id: "tenant-1" };
+            return null;
+          },
+          async run() {
+            if (/INSERT INTO business_subscriptions/.test(sql)) inserts.push(sql);
+            if (/UPDATE business_subscriptions SET status = 'past_due'/.test(sql)) updates.push({ sql, args: bound });
+            return { meta: { changes: 1 } };
+          },
+        };
+      },
+    };
+    const req = await signedWebhookReq(
+      lsSubscriptionPayload("subscription_payment_failed", {
+        spaceId: "biz-1", kind: "business_subscription", plan_id: "pro", product_space_id: "prod-root",
+      }),
+      "whsec_real"
+    );
+    const res = await billingWorker.fetch(
+      req,
+      makeEnv({ PLATFORM_DB: db, AGENTS_WORKER: { fetch: async () => new Response("{}") }, LEMON_SQUEEZY_WEBHOOK_SECRET: "whsec_real" }) as never,
+      execCtx
+    );
+    expect(res.status).toBe(200);
+    expect(inserts).toHaveLength(0);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.sql).toContain("ls_subscription_id = ?");
+    expect(updates[0]?.args).toEqual([expect.any(String), "biz-1", "prod-root", "pro", "sub_123"]);
+  });
 });
 
 describe("Lemon Squeezy webhook — credit pack grant", () => {
@@ -353,5 +391,34 @@ describe("Lemon Squeezy webhook — credit pack grant", () => {
       execCtx
     );
     expect(grantCalled).toBe(false);
+  });
+
+  it("returns retryable failure and releases the event claim when a paid credit pack is missing grant metadata", async () => {
+    const writes: string[] = [];
+    const db = {
+      prepare(sql: string) {
+        const stmt = {
+          bind() { return stmt; },
+          async first() {
+            if (/FROM spaces WHERE id = \?/.test(sql)) return { tenant_id: "tenant-1" };
+            return null;
+          },
+          async run() { writes.push(sql); return { meta: { changes: 1 } }; },
+        };
+        return stmt;
+      },
+    };
+    const req = await signedWebhookReq(
+      lsOrderPayload("order_created", { spaceId: "biz-1", kind: "credit_pack", credits: "500" }),
+      "whsec_real"
+    );
+    const res = await billingWorker.fetch(req, makeEnv({
+      PLATFORM_DB: db,
+      SPACES_WORKER: { fetch: async () => new Response("unexpected") },
+      AGENTS_WORKER: { fetch: async () => new Response("{}") },
+      LEMON_SQUEEZY_WEBHOOK_SECRET: "whsec_real",
+    }) as never, execCtx);
+    expect(res.status).toBe(500);
+    expect(writes.some((sql) => sql.includes("DELETE FROM processed_webhook_events"))).toBe(true);
   });
 });

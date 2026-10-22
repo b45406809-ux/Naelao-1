@@ -57,7 +57,7 @@ describe("F-29: refund clawback routes by original checkout kind", () => {
       PLATFORM_SECRET: SECRET, PLATFORM_DB: fakeDb, LEMON_SQUEEZY_WEBHOOK_SECRET: "whsec_test",
       AGENTS_WORKER: { fetch: async () => new Response("{}") }, SPACES_WORKER: spacesWorker,
     };
-    const req = await signedWebhook(refundBody({ spaceId: "space-1", kind: "wallet_topup", project_id: "wallet-proj", cents: 5000 }), "whsec_test");
+    const req = await signedWebhook(refundBody({ spaceId: "space-1", kind: "wallet_topup", project_id: "wallet-proj", cents: "5000" }), "whsec_test");
     const res = await handleLemonSqueezyWebhook(req, env as never);
     expect(res.status).toBe(200);
     const debit = calls.find((c) => c.url.includes("/wallet/debit"));
@@ -83,10 +83,10 @@ describe("F-29: refund clawback routes by original checkout kind", () => {
       PLATFORM_SECRET: SECRET, PLATFORM_DB: fakeDb, LEMON_SQUEEZY_WEBHOOK_SECRET: "whsec_test",
       AGENTS_WORKER: { fetch: async () => new Response("{}") }, SPACES_WORKER: spacesWorker,
     };
-    const req = await signedWebhook(refundBody({ spaceId: "space-1", kind: "wallet_topup", project_id: "wallet-proj", cents: 5000 }), "whsec_test");
+    const req = await signedWebhook(refundBody({ spaceId: "space-1", kind: "wallet_topup", project_id: "wallet-proj", cents: "5000" }), "whsec_test");
     const first = await handleLemonSqueezyWebhook(req, env as never);
     expect(first.status).toBe(500);
-    const retry = await signedWebhook(refundBody({ spaceId: "space-1", kind: "wallet_topup", project_id: "wallet-proj", cents: 5000 }), "whsec_test");
+    const retry = await signedWebhook(refundBody({ spaceId: "space-1", kind: "wallet_topup", project_id: "wallet-proj", cents: "5000" }), "whsec_test");
     expect((await handleLemonSqueezyWebhook(retry, env as never)).status).toBe(200);
     expect(debitCalls).toBe(2);
   });
@@ -107,7 +107,7 @@ describe("F-29: refund clawback routes by original checkout kind", () => {
       PLATFORM_SECRET: SECRET, PLATFORM_DB: fakeDb, LEMON_SQUEEZY_WEBHOOK_SECRET: "whsec_test",
       AGENTS_WORKER: { fetch: async () => new Response("{}") }, SPACES_WORKER: spacesWorker,
     };
-    const req = await signedWebhook(refundBody({ spaceId: "space-1", kind: "credit_pack", product_space_id: "space-1", end_user_id: "alice", credits: 1000 }), "whsec_test");
+    const req = await signedWebhook(refundBody({ spaceId: "space-1", kind: "credit_pack", product_space_id: "space-1", end_user_id: "alice", credits: "1000" }), "whsec_test");
     const res = await handleLemonSqueezyWebhook(req, env as never);
     expect(res.status).toBe(200);
     const clawback = calls.find((c) => c.url.includes("/internal/credit-packs/clawback"));

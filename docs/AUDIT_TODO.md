@@ -1714,3 +1714,62 @@ first real business on free-tier resources before opening the platform to other 
   scanning — ahead of any future skill marketplace). Build order is a strict chain HX1→HX2→
   HX3→HX4 (each phase's input is the prior phase's output); HX5 is independent. Full plan: the
   session's plan file / CLAUDE.md item 61 / appendix §A1.33.
+
+## Audit continuation findings (2026-10-22)
+
+- [x] **Billing webhook metadata and provider-event routing pass.** Recognized paid checkout
+  metadata is now validated rather than silently treated as an unrelated event; malformed
+  platform-plan/credit-pack/refund data returns a retryable failure and releases the webhook
+  idempotency claim. Checkout path IDs are encoded as individual URL path segments. Failed
+  initial plan payments no longer activate a paid tier, failed renewals only mark an existing
+  paid plan `past_due`, and platform-plan refund events no longer rewrite the entitlement as
+  active. The Lemon Squeezy webhook no longer returns 200 before doing accounting when Agents
+  is unbound; platform-plan and personal-plan events are processed without that unrelated
+  binding, while generic active-space fulfillment returns 503 and releases the claim if wake
+  delivery is unavailable. Whop's platform-plan parser now rejects unmapped event names instead
+  of interpreting them as successful payments. Validation: Billing worker suite 21 files /
+  183 tests; Billing Core 16 files / 56 tests; both package typechecks pass.
+- [ ] **Personal-plan entitlement lifecycle is incomplete.** Catalog plans carry monthly/yearly
+  intervals, but `ProductUserDO.plan_state` stores only `plan_tier`; successful payments set the
+  tier without an expiry or purchase/subscription record. Subscription cancellation/expiry,
+  failed renewal, and refund events have no corresponding revoke/expiry path for personal plans
+  on either provider. A time-limited plan can therefore grant indefinite access. Implement an
+  entitlement record keyed to provider subscription/purchase identity, define overlap/refund
+  policy for multiple purchases, and test renewal, cancellation, expiry, refund, out-of-order,
+  duplicate, and retry events before treating this offering as end-to-end complete.
+- [ ] **Platform and business subscription refund policy remains undefined.** Platform-plan
+  refunds are now acknowledged without changing access because the webhook lacks an agreed rule
+  for partial refunds versus full refunds; business-subscription refunds similarly do not
+  deactivate the subscription. Define policy using provider refund amount and subscription
+  period state, then implement and test it without allowing a refund event to reactivate access.
+- [ ] **Billing checkout expiry/reconciliation remains unverified.** Existing 24-hour surcharge
+  claims expire, but provider checkout URL expiry has not been confirmed; add provider-side
+  reconciliation or prove old checkout links cannot still be paid after a new claim is issued.
+  No live Cloudflare deployment or provider event/request test was run in this pass.
+
+- [x] **Webhook transition identity and stale subscription updates (fixed in the continuing audit).**
+  Lemon Squeezy's resource ID is reused for multiple events; deduplication keyed only by that ID
+  and the normalized event type suppressed changed payloads such as repeated `subscription.updated`
+  events. Webhook delivery claims now use the signed-body fingerprint, while provider IDs remain
+  dedicated to ledger joins and downstream idempotency. A delayed failed payment could also mark a
+  replacement subscription delinquent; platform updates now match the recorded provider
+  subscription and plan, business updates also match product and plan, and Whop payment parsing
+  uses `membership_id` rather than `plan_id` as the subscription ID.
+- [x] **Missing-space paid product fulfillment (fixed in the continuing audit).** A paid seat or
+  product order referencing an absent space used to be acknowledged without recording the order.
+  These events now fail retryably and release their body-fingerprint claim. The configured full
+  Turbo suite passed 57/57 tasks and 368/368 root files (3,842 tests) after these fixes; Billing
+  passed 21 files / 189 tests, Billing Core 16 files / 56 tests, and both typechecks passed.
+- [x] **Reseller refund attribution collided with the original sale (fixed in the continuing
+  audit).** `reseller_ledger.provider_event_id` is unique, while Lemon Squeezy refunds reuse the
+  original order resource ID. The prior refund calculation was negative, but `INSERT OR IGNORE`
+  discarded it against the original positive ledger row. The ledger idempotency key now includes
+  normalized event type, and a migration-backed sale/refund test verifies the positive and negative
+  entries both persist and net to zero.
+- [ ] **Provider event ordering and replay retention need production evidence.** Body fingerprints
+  distinguish changed payloads but do not impose causal ordering. A late `subscription.created` or
+  stale status event may still race a newer lifecycle transition unless provider timestamps and
+  current-subscription identity are sufficient for every checkout path. Verify Lemon Squeezy and
+  Whop ordering/version fields, then persist a monotonic provider revision or prove the current
+  identity checks cover replacement, renewal, cancellation, and recovery. The billing event table
+  also has no retention/cleanup path and needs bounded retention without reopening old deliveries.

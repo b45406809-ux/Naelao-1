@@ -236,6 +236,16 @@ describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dis
     expect(org).toMatchObject({ plan_tier: "growth" });
   });
 
+  it("records platform billing events without an Agents binding", async () => {
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb) as Record<string, unknown>;
+    delete env["AGENTS_WORKER"];
+    const res = await billingWorker.fetch(await signedWebhook(planEventBody("subscription_created"), "whsec_test"), env as never, execCtx);
+    expect(res.status).toBe(200);
+    const org = await fakeDb.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(ORG_ID).first();
+    expect(org).toMatchObject({ plan_tier: "growth" });
+  });
+
   it("subscription_expired drops the org back to free in both tables", async () => {
     const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
     const fakeDb = await loadDb();
@@ -276,7 +286,7 @@ describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dis
     expect(sub).toMatchObject({ plan_tier: "growth", status: "cancelled" });
   });
 
-  it("ignores events without a valid org_id/plan (never dispatched to space machinery)", async () => {
+  it("releases malformed platform-plan events for visible retry instead of acknowledging paid metadata", async () => {
     const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
     const fakeDb = await loadDb();
     const custom = { kind: "platform_plan", plan: "enterprise-typo", spaceId: "x" }; // no org_id, bad plan
@@ -285,9 +295,95 @@ describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dis
       data: { id: "sub_bad", attributes: { status: "active", customer_id: "c", custom_data: custom } },
     });
     const res = await handleLemonSqueezyWebhook(await signedWebhook(body, "whsec_test"), await webhookEnv(fakeDb) as never);
-    // Still 200 (acked, exactly-once recorded) — but nothing written.
+    expect(res.status).toBe(500);
+    const sub = await fakeDb.prepare("SELECT * FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toBeNull();
+    const processed = await fakeDb.prepare("SELECT COUNT(*) AS count FROM processed_webhook_events WHERE provider = 'lemon_squeezy'").first() as { count: number };
+    expect(processed.count).toBe(0);
+  });
+
+  it("does not grant a platform tier for an initial failed payment", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const res = await handleLemonSqueezyWebhook(
+      await signedWebhook(planEventBody("subscription_payment_failed", { subId: "sub_failed" }), "whsec_test"),
+      await webhookEnv(fakeDb) as never
+    );
     expect(res.status).toBe(200);
     const sub = await fakeDb.prepare("SELECT * FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
     expect(sub).toBeNull();
+    const org = await fakeDb.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(ORG_ID).first();
+    expect(org).toMatchObject({ plan_tier: "free" });
+  });
+
+  it("marks a failed renewal past_due without removing an existing paid tier", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb);
+    await handleLemonSqueezyWebhook(
+      await signedWebhook(planEventBody("subscription_created", { subId: "sub_paid" }), "whsec_test"),
+      env as never
+    );
+    const res = await handleLemonSqueezyWebhook(
+      await signedWebhook(planEventBody("subscription_payment_failed", { subId: "sub_paid" }), "whsec_test"),
+      env as never
+    );
+    expect(res.status).toBe(200);
+    const sub = await fakeDb.prepare("SELECT plan_tier, status FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toMatchObject({ plan_tier: "growth", status: "past_due" });
+  });
+
+  it("ignores a failed payment from a replaced platform subscription", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb);
+    await handleLemonSqueezyWebhook(
+      await signedWebhook(planEventBody("subscription_created", { subId: "sub_old" }), "whsec_test"),
+      env as never
+    );
+    await handleLemonSqueezyWebhook(
+      await signedWebhook(planEventBody("subscription_created", { subId: "sub_current" }), "whsec_test"),
+      env as never
+    );
+    const res = await handleLemonSqueezyWebhook(
+      await signedWebhook(planEventBody("subscription_payment_failed", { subId: "sub_old" }), "whsec_test"),
+      env as never
+    );
+    expect(res.status).toBe(200);
+    const sub = await fakeDb.prepare("SELECT plan_tier, status, ls_subscription_id FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toMatchObject({ plan_tier: "growth", status: "active", ls_subscription_id: "sub_current" });
+  });
+
+  it("processes later subscription.updated events for the same resource id", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb);
+    const subscriptionUpdate = (status: string) => JSON.stringify({
+      meta: { event_name: "subscription_updated", custom_data: { kind: "platform_plan", org_id: ORG_ID, plan: "growth" } },
+      data: { id: "sub_stable", attributes: { status, customer_id: "cust_9", custom_data: { kind: "platform_plan", org_id: ORG_ID, plan: "growth" } } },
+    });
+    await handleLemonSqueezyWebhook(await signedWebhook(subscriptionUpdate("past_due"), "whsec_test"), env as never);
+    const second = await handleLemonSqueezyWebhook(await signedWebhook(subscriptionUpdate("active"), "whsec_test"), env as never);
+    expect(second.status).toBe(200);
+    const sub = await fakeDb.prepare("SELECT plan_tier, status, ls_subscription_id FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toMatchObject({ plan_tier: "growth", status: "active", ls_subscription_id: "sub_stable" });
+  });
+
+  it("does not reactivate a platform plan when the payment is refunded", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb);
+    await handleLemonSqueezyWebhook(
+      await signedWebhook(planEventBody("subscription_created", { subId: "sub_refund" }), "whsec_test"),
+      env as never
+    );
+    const refundBody = JSON.stringify({
+      meta: { event_name: "order_refunded", custom_data: { kind: "platform_plan", org_id: ORG_ID, plan: "growth" } },
+      data: { id: "sub_refund", attributes: { total: 1000, currency: "USD", custom_data: { kind: "platform_plan", org_id: ORG_ID, plan: "growth" } } },
+    });
+    const res = await handleLemonSqueezyWebhook(await signedWebhook(refundBody, "whsec_test"), env as never);
+    expect(res.status).toBe(200);
+    const sub = await fakeDb.prepare("SELECT plan_tier, status FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toMatchObject({ plan_tier: "growth", status: "active" });
   });
 });

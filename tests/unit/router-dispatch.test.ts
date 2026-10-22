@@ -33,6 +33,11 @@ function namedFetcher(name: string): Fetcher {
   } as unknown as Fetcher;
 }
 
+const allowRateLimitNamespace = {
+  idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+  get: () => ({ fetch: async () => Response.json({ allowed: true, remaining: 4, retry_after_ms: 0 }) }) as unknown as DurableObjectStub,
+} as unknown as DurableObjectNamespace;
+
 function makeEnv(tenantStatus = "active", resellerStatus = "active") {
   return {
     ENVIRONMENT: "test",
@@ -44,6 +49,7 @@ function makeEnv(tenantStatus = "active", resellerStatus = "active") {
     AGENTS_WORKER: namedFetcher("AGENTS"),
     CREDENTIALS_WORKER: namedFetcher("CREDENTIALS"),
     BILLING_WORKER: namedFetcher("BILLING"),
+    RATE_LIMIT_DO: allowRateLimitNamespace,
   };
 }
 
@@ -126,6 +132,7 @@ describe("router — /spaces dispatch order (F15)", () => {
 
   it("POST /v1/spaces/s1/sessions → SPACES_WORKER (session CRUD lives on SpaceDO)", async () => {
     const res = await authedFetch("POST", "/v1/spaces/s1/sessions", makeEnv());
+    expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ worker: "SPACES" });
   });
 
@@ -209,6 +216,7 @@ describe("router — /spaces dispatch order (F15)", () => {
       makeEnv() as never,
       execCtx
     );
+    expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ worker: "SPACES" });
   });
 

@@ -132,6 +132,7 @@ export async function verifyWhopPlatformPlanWebhook(
 const STATUS_MAP: Record<string, NormalizedBillingEvent["type"]> = {
   "membership.went_valid": "subscription.created",
   "payment.succeeded": "payment.success",
+  "payment.failed": "payment.failed",
 };
 
 /**
@@ -170,15 +171,22 @@ export function parseWhopPlatformPlanEvent(rawBody: string): NormalizedBillingEv
     // expiry signal, matching the same grace-period posture the LS path already documents).
     type = "subscription.cancelled";
   } else {
-    type = STATUS_MAP[eventName] ?? "payment.success";
+    const mappedType = STATUS_MAP[eventName];
+    if (!mappedType) throw new Error(`Unmapped Whop platform-plan event: ${eventName}`);
+    type = mappedType;
   }
+
+  // Whop payment events identify the recurring entitlement through membership_id; data.id is the
+  // individual payment. For membership lifecycle events data.id itself is the membership ID.
+  // plan_id is the catalog item and must never be used as a subscription identity.
+  const subscriptionId = data.membership_id ?? (eventName.startsWith("membership.") ? data.id : undefined);
 
   return {
     type,
     provider: "whop",
     spaceId: String(data.metadata?.["org_id"] ?? ""),
     customerId: String(data.membership_id ?? data.id ?? ""),
-    subscriptionId: data.plan_id ? String(data.plan_id) : null,
+    subscriptionId: subscriptionId ? String(subscriptionId) : null,
     providerEventId: event.id ?? null,
     variantOrPriceId: String(data.plan_id ?? ""),
     amountCents: Math.round(Number(data.final_amount ?? data.amount ?? 0)) || 0,

@@ -1544,16 +1544,12 @@ app.post("/internal/revenue-cut-surcharge/checkout", async (c) => {
 // Primary billing provider (spec Appendix H). Unauthenticated — LS calls this directly.
 // On payment/subscription events, wakes the Space Assistant agent via NaelaoAgentDO.
 app.post("/webhooks/lemon-squeezy", async (c) => {
-  if (!c.env.AGENTS_WORKER) {
-    // No agents worker bound (local dev without full stack) — still return 200
-    return c.json({ ok: true, skipped: true, reason: "AGENTS_WORKER not bound" });
-  }
   return handleLemonSqueezyWebhook(c.req.raw, {
     ...(c.env.LEMON_SQUEEZY_WEBHOOK_SECRET ? { LEMON_SQUEEZY_WEBHOOK_SECRET: c.env.LEMON_SQUEEZY_WEBHOOK_SECRET } : {}),
     ...(c.env.LEMON_SQUEEZY_API_KEY ? { LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY } : {}),
     ...(c.env.LEMON_SQUEEZY_STORE_ID ? { LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID } : {}),
     ...(c.env.LAUNCHPAD_FEE_BPS ? { LAUNCHPAD_FEE_BPS: c.env.LAUNCHPAD_FEE_BPS } : {}),
-    AGENTS_WORKER: c.env.AGENTS_WORKER,
+    ...(c.env.AGENTS_WORKER ? { AGENTS_WORKER: c.env.AGENTS_WORKER } : {}),
     ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
     PLATFORM_DB: c.env.PLATFORM_DB,
     PLATFORM_SECRET: c.env.PLATFORM_SECRET,
@@ -1576,11 +1572,6 @@ app.post("/webhooks/whop", async (c) => handleWhopWebhook(c.req.raw, c.env));
 // sub-merchant events). Unauthenticated route; the Whop-Signature HMAC (verified against
 // WHOP_PLATFORM_PLAN_WEBHOOK_SECRET) is the auth, same posture as every other webhook here.
 app.post("/webhooks/whop-platform-plan", async (c) => {
-  if (!c.env.AGENTS_WORKER) {
-    // Matches /webhooks/lemon-squeezy's own precedent — no agents worker bound (local dev
-    // without full stack) still returns 200 rather than erroring Whop into a retry storm.
-    return c.json({ ok: true, skipped: true, reason: "AGENTS_WORKER not bound" });
-  }
   let rawBody: string;
   try { rawBody = await readBoundedRequestText(c.req.raw, 1024 * 1024); }
   catch { return c.json({ error_code: "payload_too_large" }, 413); }
@@ -1603,7 +1594,7 @@ app.post("/webhooks/whop-platform-plan", async (c) => {
     const handledPersonal = await grantPersonalPlanPurchase(event, {
       PLATFORM_DB: c.env.PLATFORM_DB,
       PLATFORM_SECRET: c.env.PLATFORM_SECRET,
-      AGENTS_WORKER: c.env.AGENTS_WORKER,
+      ...(c.env.AGENTS_WORKER ? { AGENTS_WORKER: c.env.AGENTS_WORKER } : {}),
       ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
     } as Parameters<typeof grantPersonalPlanPurchase>[1]);
     return c.json({ ok: true, handled: handledPersonal });
@@ -1612,7 +1603,7 @@ app.post("/webhooks/whop-platform-plan", async (c) => {
   const handled = await recordPlatformPlanSubscription(event, {
     PLATFORM_DB: c.env.PLATFORM_DB,
     PLATFORM_SECRET: c.env.PLATFORM_SECRET,
-    AGENTS_WORKER: c.env.AGENTS_WORKER,
+    ...(c.env.AGENTS_WORKER ? { AGENTS_WORKER: c.env.AGENTS_WORKER } : {}),
     ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
     QUOTA_CACHE: c.env.QUOTA_CACHE,
   });

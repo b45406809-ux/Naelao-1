@@ -90,7 +90,7 @@ describe("router — pre-auth rate limiting on unauthenticated end-user routes",
     expect(idFromNameCalls).toEqual(["preauth:end-user-login:203.0.113.9", "preauth:end-user-signup:203.0.113.9"]);
   });
 
-  it("allows the request through when the limiter is not wired (RATE_LIMIT_DO absent)", async () => {
+  it("fails closed when the pre-auth limiter is not wired (RATE_LIMIT_DO absent)", async () => {
     const res = await routerWorker.fetch(
       new Request("https://router.naelao.com/v1/spaces/prod-1/end-users/login", {
         method: "POST", headers: { "content-type": "application/json" },
@@ -98,9 +98,8 @@ describe("router — pre-auth rate limiting on unauthenticated end-user routes",
       }),
       makeEnv() as never, execCtx
     );
-    // No RATE_LIMIT_DO → proxied straight through to SPACES_WORKER (the stub above).
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ worker: "SPACES" });
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ error_code: "rate_limited" });
   });
 
   it("also rate limits by-slug and shell/manifest reads", async () => {

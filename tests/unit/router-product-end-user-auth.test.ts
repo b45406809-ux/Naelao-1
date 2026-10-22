@@ -31,6 +31,11 @@ function namedFetcher(
   } as unknown as Fetcher;
 }
 
+const allowRateLimitNamespace = {
+  idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+  get: () => ({ fetch: async () => Response.json({ allowed: true, remaining: 4, retry_after_ms: 0 }) }) as unknown as DurableObjectStub,
+} as unknown as DurableObjectNamespace;
+
 function makeEnv(
   spacesHandler?: (req: Request) => Promise<Response> | Response
 ) {
@@ -43,6 +48,7 @@ function makeEnv(
     KNOWLEDGE_WORKER: namedFetcher("KNOWLEDGE"),
     AGENTS_WORKER: namedFetcher("AGENTS"),
     CREDENTIALS_WORKER: namedFetcher("CREDENTIALS"),
+    RATE_LIMIT_DO: allowRateLimitNamespace,
   };
 }
 
