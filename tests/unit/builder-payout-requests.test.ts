@@ -95,6 +95,34 @@ describe("POST /builder/payouts/request", () => {
     expect(await balance.json()).toMatchObject({ balances: [{ cents: 0, currency: "USD" }] });
   });
 
+  it("atomically reserves a balance when payout requests race", async () => {
+    const env = makeEnv();
+    await earn(env, "tenant-1", 10_000);
+
+    const [first, second] = await Promise.all([
+      spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx),
+      spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx),
+    ]);
+    expect([first.status, second.status].filter(status => status === 201)).toHaveLength(1);
+    expect([400, 409]).toContain(first.status === 201 ? second.status : first.status);
+
+    const pending = await env.PLATFORM_DB.prepare(
+      "SELECT COALESCE(SUM(amount_cents), 0) AS cents FROM payout_requests WHERE tenant_id = ? AND status != 'rejected'"
+    ).bind("tenant-1").first<{ cents: number }>();
+    expect(pending?.cents).toBe(10_000);
+  });
+
+  it("rejects malformed currency codes before reserving any funds", async () => {
+    const env = makeEnv();
+    await earn(env, "tenant-1", 10_000);
+    const res = await spacesWorker.fetch(
+      await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1", body: { currency: "usd!" } }),
+      env as never, execCtx,
+    );
+    expect(res.status).toBe(400);
+    expect((await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM payout_requests").first<{ count: number }>())?.count).toBe(0);
+  });
+
   it("rejects a request when there is nothing to withdraw", async () => {
     const env = makeEnv();
     const res = await spacesWorker.fetch(await req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);

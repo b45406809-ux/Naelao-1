@@ -433,6 +433,15 @@ Sources (web search, 2026-07-13): [Polsia — AI That Runs Your Company While Yo
   - Recommendation: When calculating builder payouts (the amount they can withdraw), sum only rows where `kind='product_sale'` or `kind='business_subscription'` (explicitly exclude `kind='credit_pack'` if Option C, or include it if Option A). Add test coverage verifying a builder's withdrawable balance is exactly (sum(launchpad_orders.net_cents) + sum(subscription_orders.net_cents)) where order.product_id = builder_product.
   - Current state: `builder-routes.ts:695` returns `{total: reseller_ledger sum, currency}` — should be `{by_source: {product_sales: X, subscriptions: Y, ...}, total: X+Y}` for transparency.
 
+- [x] **Builder payout requests now reserve balances atomically (2026-10-23).** The prior route read
+  an available balance and inserted a payout request in separate operations. Two concurrent
+  requests could both reserve the same earnings. The route now uses one conditional
+  `INSERT ... SELECT ... RETURNING` against the current ledger and outstanding payout requests;
+  the database re-evaluates the balance at write time. Added simultaneous-request and malformed
+  currency regressions to `tests/unit/builder-payout-requests.test.ts` and included that file in
+  the Spaces Vitest config. Focused test: 15/15 passed; Spaces TypeScript check passed. The
+  separate open ARCH-REVENUE-5 source-attribution/reporting issue remains open.
+
 - [~] **F-WALLET: Business wallet system.** ✅ F-WALLET-6 (dashboard Wallet tab) + F-WALLET-7
   (shell Wallet section) BUILT, backed by new GET /spaces/:spaceId/wallet (consolidated per-business
   view: available balance + recent transactions + lifetime gross/naelao-cut/builder-cut/net summary,

@@ -1143,6 +1143,9 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     // A builder earning in multiple currencies must say which one they're drawing down — there's
     // no meaningful single "the" balance to default to across currencies.
     const body = await c.req.json<{ currency?: string }>().catch(() => ({}) as { currency?: string });
+    if (body.currency !== undefined && (typeof body.currency !== "string" || !/^[A-Z]{3}$/.test(body.currency))) {
+      return c.json({ error_code: "bad_request", message: "currency must be a three-letter uppercase currency code" }, 400);
+    }
     const balances = await computeAvailableBalances(env, auth.tenantId);
     const target = body.currency
       ? balances.find((b) => b.currency === body.currency)
@@ -1161,11 +1164,30 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
     const id = crypto.randomUUID();
     const requestedBy = c.req.header("x-naelao-user-id") ?? null;
-    await env.PLATFORM_DB.prepare(
-      "INSERT INTO payout_requests (id, tenant_id, requested_by, amount_cents, currency, status) VALUES (?, ?, ?, ?, ?, 'pending')"
-    ).bind(id, auth.tenantId, requestedBy, target.cents, target.currency).run();
+    // Reserve the currently available amount in one atomic INSERT ... SELECT. A read-then-insert
+    // sequence allows two concurrent requests to observe the same balance and both reserve it.
+    // D1 serializes writes, so this predicate is re-evaluated against the latest committed ledger
+    // and payout rows when each insert executes.
+    const reservation = await env.PLATFORM_DB.prepare(
+      `INSERT INTO payout_requests (id, tenant_id, requested_by, amount_cents, currency, status)
+       SELECT ?, ?, ?, earned.cents - COALESCE(reserved.cents, 0), earned.currency, 'pending'
+       FROM (
+         SELECT currency, SUM(margin_cents) AS cents FROM reseller_ledger
+         WHERE parent_tenant_id = ? AND currency = ? GROUP BY currency
+       ) AS earned
+       LEFT JOIN (
+         SELECT currency, SUM(amount_cents) AS cents FROM payout_requests
+         WHERE tenant_id = ? AND status != 'rejected' GROUP BY currency
+       ) AS reserved ON reserved.currency = earned.currency
+       WHERE earned.cents - COALESCE(reserved.cents, 0) > 0
+       RETURNING id, amount_cents, currency, status`
+    ).bind(id, auth.tenantId, requestedBy, auth.tenantId, target.currency, auth.tenantId)
+      .first<{ id: string; amount_cents: number; currency: string; status: string }>();
+    if (!reservation) {
+      return c.json({ error_code: "balance_changed", message: "Available balance changed before the payout could be reserved. Refresh and try again." }, 409);
+    }
 
-    return c.json({ id, tenant_id: auth.tenantId, amount_cents: target.cents, currency: target.currency, status: "pending" }, 201);
+    return c.json({ id: reservation.id, tenant_id: auth.tenantId, amount_cents: reservation.amount_cents, currency: reservation.currency, status: reservation.status }, 201);
   });
 
   app.get("/builder/payouts", async (c) => {

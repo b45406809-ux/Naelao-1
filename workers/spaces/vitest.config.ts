@@ -43,6 +43,7 @@ export default defineConfig({
       "../../tests/unit/external-revenue-tracking.test.ts",
       "../../tests/unit/business-create.test.ts",
       "../../tests/unit/create-space-record.test.ts",
+      "../../tests/unit/builder-payout-requests.test.ts",
     ],
   },
 });
