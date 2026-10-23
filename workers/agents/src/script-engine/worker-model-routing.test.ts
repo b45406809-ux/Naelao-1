@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_WORKING_MODEL, OPENROUTER_WORKING_MODEL } from "@naelao/billing-core";
-import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed } from "./worker-model-routing.js";
+import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog } from "./worker-model-routing.js";
 
 describe("automatic worker model routing", () => {
+  it("never calls the external model catalog for private or local runs", () => {
+    expect(mayDiscoverWorkerModelCatalog({ privateRoute: true, hasPool: true, hasCredential: true })).toBe(false);
+    expect(mayDiscoverWorkerModelCatalog({ privateRoute: false, hasPool: false, hasCredential: true })).toBe(false);
+    expect(mayDiscoverWorkerModelCatalog({ privateRoute: false, hasPool: true, hasCredential: false })).toBe(false);
+    expect(mayDiscoverWorkerModelCatalog({ privateRoute: false, hasPool: true, hasCredential: true })).toBe(true);
+  });
   it("rejects missing or increased live prices for the pinned economy worker", () => {
     expect(isWorkerPriceAllowed(OPENROUTER_WORKING_MODEL, undefined)).toBe(false);
     expect(isWorkerPriceAllowed(OPENROUTER_WORKING_MODEL, { inputUsdPerToken: 0.05 / 1_000_000, outputUsdPerToken: 0.6 / 1_000_000 })).toBe(true);

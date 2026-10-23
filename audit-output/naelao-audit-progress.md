@@ -2772,6 +2772,10 @@ Added `0126_space_provisioning_outbox.sql`; `createSpaceRecord` now batches the 
 
 Verification: Spaces suite 69 files / 276 tests; root create-space tests 40 / 40; Spaces TypeScript check; `git diff --check`. A follow-up extended the same transaction/outbox to `createBusinessForEndUser`: space, hierarchy, membership, and queue intent now share one D1 batch. Added both root regressions to the Spaces package's normal Vitest include list; they pass 54/54. Non-singleton create calls still need a caller idempotency key/status reconciliation; no live D1 migration or Cloudflare Queue test was run.
 
+## 2026-10-23 — air-gapped agent model discovery
+
+Expanded the compliance audit from containers into agent orchestration and model selection. `NaelaoAgentDO` fetched the OpenRouter catalog for a configured worker pool before sub-agent routing, even when the run was air-gapped or bound to a local model machine. Although later selection preserved the private model route, this metadata fetch still made an external request. Gated catalog discovery on the route being non-private and added focused routing regressions. Agents routing suite passed 8/8 and Agents typecheck passed. This closes the specific catalog lookup path only; DNS-pinned outbound transport and live egress proof remain open.
+
 ## 2026-10-23 — billing lifecycle event ordering
 
 Expanded the audit to `workers/billing` and `packages/billing-core`, tracing signed Lemon Squeezy event parsing through platform-plan entitlements, business-subscription persistence, webhook deduplication, migrations, and the real-SQLite test harness. Found that platform and business subscription upserts accepted any subscription ID and status, so a late expiry for an old subscription could overwrite the current subscription; platform expiry could also set `orgs.plan_tier = 'free'`. Existing tests incorrectly treated expiry for a different ID as expected behavior.

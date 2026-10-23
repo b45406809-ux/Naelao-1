@@ -17,6 +17,16 @@ export interface WorkerModelResolution {
   reason?: string;
 }
 
+/** Catalog discovery is an outbound OpenRouter request. Private/local runs must not make it,
+ * even though model selection would later reject every remote candidate. */
+export function mayDiscoverWorkerModelCatalog(input: {
+  privateRoute: boolean;
+  hasPool: boolean;
+  hasCredential: boolean;
+}): boolean {
+  return !input.privateRoute && input.hasPool && input.hasCredential;
+}
+
 /** A changed provider price cannot silently turn the pinned economy worker into a costly one.
  * User-selected planners remain governed by their own explicit model choice and live budget. */
 export function isWorkerPriceAllowed(model: string, pricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined): boolean {

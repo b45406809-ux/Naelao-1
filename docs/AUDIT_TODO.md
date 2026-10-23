@@ -1980,6 +1980,13 @@ first real business on free-tier resources before opening the platform to other 
   tests; Agents typecheck and Wrangler dry-run passed. No live Cloudflare policy revocation or network
   packet test has been run; broader egress policy and deployment acceptance remain open.
 
+- [x] **Private runs no longer make worker-model catalog requests.** The worker pool loaded an
+  OpenRouter catalog even when the run was air-gapped or bound to a local model machine; later model
+  selection would preserve the private route, but the metadata request itself still crossed the
+  boundary. Catalog discovery is now explicitly gated off for air-gapped/local runs. Regression
+  tests cover private-route suppression and normal configured discovery. The Agents focused routing
+  tests and typecheck passed. This does not replace the separate unresolved DNS-pinned egress work.
+
 ## Audit continuation — 2026-10-23
 
 - [x] Refresh the Launchpad dashboard API test assumptions to match the team-only, single-root product design; add a concurrent first-launch regression proving the singleton remains unique.

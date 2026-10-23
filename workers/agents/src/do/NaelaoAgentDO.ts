@@ -130,7 +130,7 @@ function boundedCheckpointJson(value: unknown, maxChars = 64_000): string {
 }
 import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
 import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
-import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed } from "../script-engine/worker-model-routing.js";
+import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog } from "../script-engine/worker-model-routing.js";
 import { DurableDaemon } from "../script-engine/daemons/durable-daemon.js";
 import { validateModelForSpacePolicy } from "../model-policy.js";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
@@ -5374,7 +5374,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const workerOpenRouterKey = byokOverride.openRouterApiKey ?? (engineEnv.workerModelPool
       ? (await this.resolveBusinessLlmOverride(spaceId, tenantId, "openrouter/worker-pool" )).openRouterApiKey
       : undefined);
-    if (engineEnv.workerModelPool && workerOpenRouterKey) {
+    if (engineEnv.workerModelPool && workerOpenRouterKey && mayDiscoverWorkerModelCatalog({
+      privateRoute: engineEnv.airGappedOnly === true || Boolean(engineEnv.localModelMachine),
+      hasPool: true,
+      hasCredential: true,
+    })) {
       try {
         const catalog = await fetchOpenRouterCatalog(workerOpenRouterKey);
         const configured = new Set(engineEnv.workerModelPool.modelIds);
