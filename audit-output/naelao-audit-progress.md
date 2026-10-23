@@ -2789,3 +2789,9 @@ Verification: billing worker suite 21 files / 192 tests; billing-core suite 16 f
 Continued the billing and payout audit into the builder withdrawal path. The request handler read the available reseller ledger balance and inserted a payout request in separate D1 operations. Concurrent requests could therefore both reserve the same earnings. Replaced the insert with a conditional `INSERT ... SELECT ... RETURNING` that calculates remaining earnings and inserts the reservation as one database write. Added currency input validation and SQLite-backed simultaneous-request and malformed-currency regressions.
 
 Verification: focused builder payout suite passed 15/15; Spaces TypeScript check and `git diff --check` passed. This fixes reservation concurrency only. ARCH-REVENUE-5's historical source attribution/reporting and manual payout fulfillment remain open; no live D1/Cloudflare request race test was run. Repository-wide audit remains open.
+
+## 2026-10-23 — builder pricing write boundary
+
+Followed the product-config audit into the dedicated pricing endpoint, which provisions Lemon Squeezy variants. It parsed unchecked typed JSON and could call the billing worker with invalid prices before persisting. Added a 64 KiB read limit, client errors for malformed JSON, object/field allowlists, duplicate-ID checks, valid intervals, positive safe-integer prices and credits, nullable nonnegative safe-integer plan limits, bounded variant IDs, and revenue-cut basis-point bounds. Rejection happens before external provisioning or config writes. The general `PATCH /builder/products/:id` body reader is also explicitly bounded to 64 KiB.
+
+Verification: pricing catalog suite passed 23/23; Spaces TypeScript check and `git diff --check` passed. Product config validation for remaining write paths and fields remains open. No live Lemon Squeezy or Cloudflare test was run; repository-wide audit remains open.

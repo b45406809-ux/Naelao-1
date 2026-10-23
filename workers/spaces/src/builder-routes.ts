@@ -69,6 +69,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function validatePricingPatch(value: unknown): string | null {
+  if (!isRecord(value)) return "pricing configuration must be an object";
+  const allowed = new Set(["plans", "creditPacks", "walletTopups", "externalRevenueCut"]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) return "pricing configuration contains an unsupported field";
+  const validId = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id);
+  const validName = (name: unknown): name is string => typeof name === "string" && name.trim().length > 0 && name.length <= 120;
+  const validMoney = (money: unknown): money is number => Number.isSafeInteger(money) && (money as number) > 0;
+  const validOptionalVariant = (id: unknown): boolean => id === undefined || (typeof id === "string" && id.length > 0 && id.length <= 256);
+
+  for (const key of ["plans", "creditPacks", "walletTopups"] as const) {
+    const items = value[key];
+    if (items === undefined) continue;
+    if (!Array.isArray(items) || items.length > 100) return `${key} must be an array with at most 100 entries`;
+    const ids = new Set<string>();
+    for (const item of items) {
+      if (!isRecord(item) || !validId(item.id) || !validName(item.name) || !validMoney(item.priceCents) || !validOptionalVariant(item.lsVariantId)) {
+        return `${key} entries require a valid id, name, positive safe-integer price, and optional bounded variant ID`;
+      }
+      const allowedItemKeys = key === "plans"
+        ? new Set(["id", "name", "priceCents", "interval", "creditAllowance", "limits", "lsVariantId"])
+        : key === "creditPacks"
+          ? new Set(["id", "name", "credits", "priceCents", "lsVariantId"])
+          : new Set(["id", "name", "priceCents", "lsVariantId"]);
+      if (Object.keys(item).some((field) => !allowedItemKeys.has(field))) return `${key} entries contain an unsupported field`;
+      if (ids.has(item.id)) return `${key} entry IDs must be unique`;
+      ids.add(item.id);
+      if (key === "plans") {
+        const limits = item.limits;
+        const validLimits = limits === undefined || (isRecord(limits)
+          && Object.keys(limits).every((field) => field === "maxThreadsPerUser" || field === "maxCreditsPerMonth")
+          && ["maxThreadsPerUser", "maxCreditsPerMonth"].every((limit) => {
+            const n = limits[limit];
+            return n === undefined || n === null || (typeof n === "number" && Number.isSafeInteger(n) && n >= 0);
+          }));
+        if ((item.interval !== "month" && item.interval !== "year")
+          || (item.creditAllowance !== undefined && !validMoney(item.creditAllowance))
+          || !validLimits) return "plans entries contain invalid interval, allowance, or limits";
+      } else if (key === "creditPacks" && !validMoney(item.credits)) {
+        return "creditPacks entries require a positive safe-integer credit amount";
+      }
+    }
+  }
+  if (value.externalRevenueCut !== undefined) {
+    const cut = value.externalRevenueCut;
+    if (!isRecord(cut) || typeof cut.enabled !== "boolean"
+      || !Number.isInteger(cut.cutBps) || (cut.cutBps as number) < 0 || (cut.cutBps as number) > 10_000
+      || !validOptionalVariant(cut.lsVariantId)
+      || Object.keys(cut).some((field) => !["enabled", "cutBps", "lsVariantId"].includes(field))) {
+      return "externalRevenueCut requires a boolean enabled flag and cutBps from 0 to 10000";
+    }
+  }
+  return null;
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -372,8 +426,10 @@ export function registerBuilderRoutes(app: Hono<any>): void {
 
     let bodyValue: unknown;
     try {
-      bodyValue = await c.req.json<unknown>();
-    } catch {
+      const bytes = await readBoundedRequestBytes(c.req.raw, 64 * 1024);
+      bodyValue = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_too_large" }, 413);
       return c.json({ error_code: "invalid_request_body" }, 400);
     }
     if (!isRecord(bodyValue)) return c.json({ error_code: "invalid_request_body" }, 400);
@@ -510,12 +566,22 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
-    const body = await c.req.json<{
+    let bodyValue: unknown;
+    try {
+      const bytes = await readBoundedRequestBytes(c.req.raw, 64 * 1024);
+      bodyValue = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_too_large" }, 413);
+      return c.json({ error_code: "invalid_request_body" }, 400);
+    }
+    const validationError = validatePricingPatch(bodyValue);
+    if (validationError) return c.json({ error_code: "bad_request", message: validationError }, 400);
+    const body = bodyValue as {
       plans?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"];
       creditPacks?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"];
       walletTopups?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["walletTopups"];
       externalRevenueCut?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["externalRevenueCut"];
-    }>();
+    };
 
     const tenantId = auth.tenantId;
     const productId = product.id;

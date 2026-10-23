@@ -215,6 +215,71 @@ describe("PATCH /builder/products/:id/pricing", () => {
     expect(billing.calls[0]!.body).toMatchObject({ price_cents: 900, kind: "subscription" });
   });
 
+  it("rejects malformed, unsafe, or duplicate pricing data before external variant provisioning", async () => {
+    for (const body of [
+      { plans: "not-an-array" },
+      { plans: [{ id: "pro", name: "Pro", priceCents: -1, interval: "month" }] },
+      { plans: [{ id: "pro", name: "Pro", priceCents: 1200.5, interval: "month" }] },
+      { plans: [{ id: "pro", name: "Pro", priceCents: 1200, interval: "month", limits: { maxThreadsPerUser: -1 } }] },
+      { plans: [{ id: "pro", name: "Pro", priceCents: 1200, interval: "month", unexpected: "persist me" }] },
+      { plans: [
+        { id: "pro", name: "Pro", priceCents: 1200, interval: "month" },
+        { id: "pro", name: "Duplicate", priceCents: 1400, interval: "year" },
+      ] },
+      { creditPacks: [{ id: "pack", name: "Pack", credits: 0, priceCents: 100 }] },
+      { walletTopups: [{ id: "wallet", name: "Wallet", priceCents: Number.MAX_SAFE_INTEGER + 1 }] },
+      { externalRevenueCut: { enabled: true, cutBps: 10_001 } },
+      { unexpected: true },
+    ]) {
+      const env = makeEnv();
+      await env.PLATFORM_DB.prepare(
+        "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, config_json) VALUES ('prod-1', 'tenant-1', 'active', 'Product', 'launchpad', '{}')"
+      ).run();
+      const billing = makeBillingWorker("must-not-be-called");
+      const res = await spacesWorker.fetch(
+        req("/builder/products/prod-1/pricing", {
+          method: "PATCH", headers: await builderHeaders("tenant-1"), body: JSON.stringify(body),
+        }),
+        { ...env, BILLING_WORKER: billing } as never,
+        execCtx
+      );
+      expect(res.status).toBe(400);
+      expect(billing.calls).toHaveLength(0);
+      const saved = await env.PLATFORM_DB.prepare("SELECT config_json FROM spaces WHERE id = 'prod-1'").first<{ config_json: string }>();
+      expect(saved?.config_json).toBe("{}");
+    }
+  });
+
+  it("returns a client error for malformed JSON instead of failing after route dispatch", async () => {
+    const env = makeEnv();
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, config_json) VALUES ('prod-1', 'tenant-1', 'active', 'Product', 'launchpad', '{}')"
+    ).run();
+    const res = await spacesWorker.fetch(
+      req("/builder/products/prod-1/pricing", { method: "PATCH", headers: await builderHeaders("tenant-1"), body: "{" }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("bounds pricing request bodies before parsing or calling billing", async () => {
+    const env = makeEnv();
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, config_json) VALUES ('prod-1', 'tenant-1', 'active', 'Product', 'launchpad', '{}')"
+    ).run();
+    const billing = makeBillingWorker("must-not-be-called");
+    const res = await spacesWorker.fetch(
+      req("/builder/products/prod-1/pricing", {
+        method: "PATCH", headers: await builderHeaders("tenant-1"),
+        body: JSON.stringify({ plans: [{ id: "pro", name: "x".repeat(70_000), priceCents: 500, interval: "month" }] }),
+      }),
+      { ...env, BILLING_WORKER: billing } as never,
+      execCtx,
+    );
+    expect(res.status).toBe(413);
+    expect(billing.calls).toHaveLength(0);
+  });
+
   it("provisions credit packs as one_time variants", async () => {
     const env = makeEnv();
     await env.PLATFORM_DB.prepare(

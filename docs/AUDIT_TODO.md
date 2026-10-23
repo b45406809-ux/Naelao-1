@@ -1967,6 +1967,15 @@ first real business on free-tier resources before opening the platform to other 
   Add malformed-object, invalid-enum, negative/fractional/unsafe-value, and 64 KiB boundary tests before
   considering client-side wizard validation sufficient.
 
+- [x] **Pricing catalog writes now validate before provider side effects (2026-10-23).** The dedicated
+  `PATCH /builder/products/:id/pricing` accepted typed JSON without runtime checks, then could call
+  the billing worker to provision variants from invalid prices or fail with a server error for
+  malformed shapes. It now reads a 64 KiB-bounded body, rejects malformed JSON, unknown fields,
+  duplicate IDs, invalid intervals, non-positive/fractional/unsafe amounts, invalid limits, and
+  out-of-range revenue-cut basis points before provisioning. Regression cases prove rejected
+  payloads do not call billing or mutate config. Pricing suite: 23/23 passed; Spaces typecheck and
+  `git diff --check` passed. The broader product-config write validation item remains open.
+
 - [ ] **Product creation still needs caller-level idempotency and reconciliation.** The browser locks
   duplicate clicks while its request is in flight, and Launchpad creation can reconcile an existing
   singleton root. The D1-to-Queue gap is now closed for shared product/space creation: the provisioning

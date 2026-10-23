@@ -44,6 +44,7 @@ export default defineConfig({
       "../../tests/unit/business-create.test.ts",
       "../../tests/unit/create-space-record.test.ts",
       "../../tests/unit/builder-payout-requests.test.ts",
+      "../../tests/unit/pricing-catalog.test.ts",
     ],
   },
 });
