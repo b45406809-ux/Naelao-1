@@ -17,16 +17,19 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
     let containerRunning = false;
     let tenantActive = true;
+    let airGapped = options.airGapped ?? false;
     let announceReservation: (() => void) | undefined;
     let releaseReservation: (() => void) | undefined;
+    let announceExecution: (() => void) | undefined;
     const reservationStarted = new Promise<void>(resolve => { announceReservation = resolve; });
     const reservationGate = new Promise<Response>(resolve => { releaseReservation = () => resolve(Response.json({ ok: true })); });
+    const executionStarted = new Promise<void>(resolve => { announceExecution = resolve; });
     const billingCalls: string[] = [];
 
     const mockContainer = {
@@ -42,7 +45,10 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       getTcpPort: vi.fn(() => ({
         fetch: async (req) => {
           const url = new URL(req.url);
-          if (url.pathname === "/exec" && options.hangExecution) return new Promise<Response>(() => undefined);
+          if (url.pathname === "/exec" && options.hangExecution) {
+            announceExecution?.();
+            return new Promise<Response>(() => undefined);
+          }
           if (url.pathname === "/workspace/list") return Response.json({ files: [] });
           if (url.pathname.endsWith("/display/capture")) {
             return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
@@ -92,7 +98,18 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
         return Response.json({ ok: true });
       } },
       ANALYTICS: { writeDataPoint: (point) => { analyticsPoints.push(point); } },
-      ...(options.platformDb ? { PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => tenantActive ? { id: "space" } : null }) }) } } : {}),
+      ...(options.platformDb ? { PLATFORM_DB: {
+        prepare: (query: string) => ({
+          bind: () => ({
+            first: async () => {
+              if (!tenantActive) return null;
+              return query.includes("config_json")
+                ? { config_json: airGapped ? JSON.stringify({ compliance: { airGappedOnly: true } }) : "{}" }
+                : { id: "space" };
+            },
+          }),
+        }),
+      } } : {}),
     } as never);
     const sandbox = { alarm: () => realSandbox.alarm(), fetch: async (request: Request) => {
       const headers = new Headers(request.headers);
@@ -103,7 +120,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       return realSandbox.fetch(new Request(request, { headers }));
     } };
     const initialPrewarm = options.hangReservation ? undefined : await sandbox.fetch(new Request("https://sandbox/prewarm", { method: "POST", body: "{}" }));
-    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; } };
+    return { sandbox, storage, getAlarmTime: () => alarmTime, mockContainer, initialPrewarm, analyticsPoints, billingCalls, reservationStarted, executionStarted, releaseReservation: () => releaseReservation?.(), setTenantActive: (active: boolean) => { tenantActive = active; }, setAirGapped: (enabled: boolean) => { airGapped = enabled; } };
   }
 
   it("rejects container operations for a suspended tenant before reserving or starting execution", async () => {
@@ -285,7 +302,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
   it("does not extend base-container idle time from an active-task hint", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
-    const { sandbox, getAlarmTime, mockContainer } = await createTestSandbox();
+    const { sandbox, getAlarmTime, mockContainer } = await createTestSandbox({ platformDb: true });
     await sandbox.fetch(new Request("https://sandbox/exec", {
       method: "POST",
       headers: { "content-type": "application/json", "x-avos-task-active": "1" },
@@ -299,6 +316,49 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     await sandbox.alarm();
     expect(mockContainer.destroy).toHaveBeenCalledOnce();
     vi.useRealTimers();
+  });
+
+  it("does not grant trusted-host network interception to an air-gapped Space", async () => {
+    const { sandbox, mockContainer } = await createTestSandbox({ platformDb: true, airGapped: true });
+    const response = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(200);
+    expect(mockContainer.start).toHaveBeenCalledWith({ enableInternet: false });
+    expect(mockContainer.interceptOutboundHttps).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the Space network policy store is unavailable", async () => {
+    const { sandbox, mockContainer } = await createTestSandbox();
+    const response = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(200);
+    expect(mockContainer.start).toHaveBeenCalledWith({ enableInternet: false });
+    expect(mockContainer.interceptOutboundHttps).not.toHaveBeenCalled();
+  });
+
+  it("revokes warm-container package egress when the Space becomes air-gapped", async () => {
+    const { sandbox, mockContainer, setAirGapped } = await createTestSandbox({ platformDb: true });
+    const first = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(first.status).toBe(200);
+    expect(mockContainer.interceptOutboundHttps).toHaveBeenCalledTimes(9);
+
+    setAirGapped(true);
+    const second = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(second.status).toBe(200);
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
+    expect(mockContainer.start).toHaveBeenCalledTimes(2);
+    expect(mockContainer.interceptOutboundHttps).toHaveBeenCalledTimes(9);
+  });
+
+  it("hard-stops an active container when an air-gap is enabled mid-run", async () => {
+    const { sandbox, mockContainer, setAirGapped, executionStarted } = await createTestSandbox({ platformDb: true, hangExecution: true });
+    const execution = sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    await executionStarted;
+    expect(mockContainer.interceptOutboundHttps).toHaveBeenCalledTimes(9);
+
+    setAirGapped(true);
+    await sandbox.alarm();
+    const response = await execution;
+    expect(response.status).toBe(409);
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
   });
 
   it("returns to the 60s window when a task completes", async () => {

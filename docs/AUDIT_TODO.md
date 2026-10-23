@@ -1956,3 +1956,14 @@ first real business on free-tier resources before opening the platform to other 
   while its request is in flight, but a lost success response can leave the caller unsure whether D1
   committed and whether a provisioning queue message was accepted. Add a caller idempotency key and a
   reconciliation path that cannot create a duplicate product or orphan a provision event under retry.
+
+- [x] **Tool container package egress now follows the Space air-gap policy.** Cold starts previously
+  installed exact-host HTTPS interceptions for npm/Python/Git package sources regardless of the
+  Space's `airGappedOnly` setting. ToolSandboxDO now resolves the policy from PLATFORM_DB for every
+  execution; missing/unavailable policy state disables the intercepts. It recycles warm containers
+  when the resolved profile changes and polls the policy during bounded active container work so an
+  air-gap change hard-stops the running container. General container internet remains disabled.
+  Regression tests cover air-gapped cold start, unavailable policy storage, warm-profile revocation,
+  and mid-run revocation. Agents suite passed 165 files / 749 tests; Security passed 22 files / 124
+  tests; Agents typecheck and Wrangler dry-run passed. No live Cloudflare policy revocation or network
+  packet test has been run; broader egress policy and deployment acceptance remain open.

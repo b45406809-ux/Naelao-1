@@ -67,7 +67,7 @@ Status: **IMPLEMENTED for current project runtime; grammar/marketplace boundary 
 Primary read: **lines 694–749** (USER 694–696; AI MODEL 697–749).
 Bounded primary windows: 694–749.
 Later amendment/dependency pairs: 750–841 (task 08); 2174–2355 (task 16); 4269–4441 (task 27); 4795–4982 (task 30)
-Status: **IMPLEMENTED — local policy/tests verified; live Container egress unrun**. Used Cloudflare's native exact-host HTTPS interceptions while keeping general container internet disabled; no caching/scanning registry. Added scoped approval for package additions and dependency manifest edits. Evidence, docs/types checked, verification limits, and shell-indirection coverage are in the progress file. Task 09 is current.
+Status: **IMPLEMENTED — package-host interception now follows the authoritative Space air-gap policy; local stress tests/typecheck/dry-run pass; live Container egress remains unrun**. Exact-host HTTPS interception is installed only for non-air-gapped Spaces. Missing policy state denies interception; changed profiles recycle warm containers; periodic alarms hard-stop an active bounded execution after an air-gap change. Scoped approval for package additions and dependency manifest edits remains. Evidence and verification limits are in the progress file. Task 09 is current.
 
 ## Task 08
 

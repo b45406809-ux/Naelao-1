@@ -45,6 +45,7 @@ import { validateContainerScope, type ContainerInvocationScope } from "../script
 import type { InstallationScope } from "@naelao/agent-sdk";
 import type { Env } from "../env.js";
 import { TRUSTED_PACKAGE_HOSTS } from "../script-engine/package-egress.js";
+import { isSpaceNetworkEgressDenied } from "@naelao/security";
 
 // The container runtime surface exposed on DurableObjectState (cast to stay
 // version-agnostic across @cloudflare/workers-types).
@@ -105,6 +106,7 @@ interface WorkspaceRecord { content: string; hash: string }
 interface ContainerMeter { tenantId: string; spaceId: string; reservationId: string; startedAt: number; expiresAt: number; allocatedAt?: number; endedAt?: number }
 interface ContainerRuntimeMetrics { sidecar: boolean; coldStarts: number; startupMs: number; warmHits: number; warmIdleMs: number; executions: number; executionMs: number }
 interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "committed" | "indeterminate"; response?: { status: number; body: string } }
+type ContainerEgressProfile = "disabled" | "trusted-package-hosts";
 
 interface StoredShellState {
   cwd: string;
@@ -239,6 +241,14 @@ export class ToolSandboxDO extends DurableObject {
     }
   }
 
+  /** Package-host interception is still network egress. Resolve it from authoritative Space
+   * policy on every scoped execution; a missing/unavailable policy store must never enable it. */
+  private async packageEgressProfile(scope: ContainerInvocationScope): Promise<ContainerEgressProfile> {
+    const db = (this.env as SandboxBindings).PLATFORM_DB;
+    if (!db || await isSpaceNetworkEgressDenied(db, scope.spaceId)) return "disabled";
+    return "trusted-package-hosts";
+  }
+
   private async output(request: Request): Promise<Response> {
     let scope: ContainerInvocationScope;
     try { scope = await this.authenticatedScope(request); } catch { return Response.json({ error: "container_scope_denied" }, { status: 403 }); }
@@ -368,6 +378,14 @@ export class ToolSandboxDO extends DurableObject {
     headers.set("x-naelao-execution-id", scope.executionId); headers.set("x-naelao-timeout-ms", String(Math.max(1, remaining - 1000)));
     try {
       if (request.signal.aborted || await this.ctx.storage.get("cancelled:" + scope.executionId)) throw new Error("container_cancelled");
+      const requestedEgressProfile = await this.packageEgressProfile(scope);
+      const previousEgressProfile = await this.ctx.storage.get<ContainerEgressProfile>("container_egress_profile");
+      if (this.container?.running && previousEgressProfile !== requestedEgressProfile) {
+        // Network interception is configured for a container's lifetime. Recreate it when
+        // policy changes so a warm container cannot retain package egress after an air-gap.
+        await this.stopContainer();
+        await this.ctx.storage.delete("container_egress_profile");
+      }
       await this.ensureMeter(scope);
       metered = true;
       if (sidecarWasWarm) {
@@ -376,6 +394,10 @@ export class ToolSandboxDO extends DurableObject {
       }
       await this.updateRuntimeMetrics({ executions: 1 }, Boolean(scope.installationId));
       if (controller.signal.aborted) throw new Error("container_cancelled_or_deadline");
+      // Recheck policy while a bounded container step is active. If an owner enables the
+      // Space air-gap mid-run, alarm() hard-stops the container instead of waiting for the
+      // next user/tool invocation. Container steps already have a strict deadline.
+      await this.ctx.storage.setAlarm(Math.min(Date.now() + 1000, scope.deadline));
       const response = await Promise.race([
         this.handleRequest(new Request(request, { headers, signal: controller.signal })),
         new Promise<Response>((_, reject) => controller.signal.addEventListener("abort", () => reject(new Error("container_cancelled_or_deadline")), { once: true })),
@@ -593,7 +615,24 @@ export class ToolSandboxDO extends DurableObject {
       this.activeExecution?.controller.abort();
       await this.stopContainer(); return;
     }
-    if (this.activeExecution) { await this.ctx.storage.setAlarm(Date.now() + 1000); return; }
+    if (this.activeExecution) {
+      const profile = await this.packageEgressProfile(this.activeExecution.scope);
+      const configuredProfile = await this.ctx.storage.get<ContainerEgressProfile>("container_egress_profile");
+      if (profile !== configuredProfile) {
+        this.activeExecution.controller.abort();
+        const container = this.container;
+        if (container?.running) {
+          if (!container.destroy) throw new Error("container_hard_stop_unsupported");
+          await container.destroy();
+        }
+        await this.ctx.storage.delete("sidecar_warm_expires_at");
+        await this.ctx.storage.put("container_status", "hibernated");
+        await this.ctx.storage.setAlarm(Date.now() + 1000);
+        return;
+      }
+      await this.ctx.storage.setAlarm(Math.min(Date.now() + 1000, this.activeExecution.scope.deadline));
+      return;
+    }
     const sidecarExpiresAt = await this.ctx.storage.get<number>("sidecar_warm_expires_at");
     if (sidecarExpiresAt !== undefined && sidecarExpiresAt <= Date.now()) {
       await this.stopContainer();
@@ -815,18 +854,22 @@ export class ToolSandboxDO extends DurableObject {
       if (!container.destroy) return Response.json({ ok: false, error: "container_hard_stop_unsupported" }, { status: 503 });
       const meter = (await this.ctx.storage.get<ContainerMeter>("container_meter"))!;
       await this.ctx.storage.put("container_meter", { ...meter, allocatedAt: Date.now() });
-      // Container internet stays disabled. Native HTTPS interceptions forward only the
-      // exact package hosts; redirects to any other host cannot escape the boundary.
-      if (!container.interceptOutboundHttps) return Response.json({ ok: false, error: "package_egress_interception_unavailable" }, { status: 503 });
-      const exports = (this.ctx as unknown as { exports?: { PackageEgress?: (options: { props: Record<string, never> }) => ContainerPort } }).exports;
-      const packageEgress = exports?.PackageEgress?.({ props: {} });
-      if (!packageEgress) return Response.json({ ok: false, error: "package_egress_binding_unavailable" }, { status: 503 });
-      for (const host of TRUSTED_PACKAGE_HOSTS) await container.interceptOutboundHttps(host, packageEgress);
       const startScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
+      const egressProfile = startScope ? await this.packageEgressProfile(startScope) : "disabled";
+      if (egressProfile === "trusted-package-hosts") {
+        // General internet remains disabled. Only a non-air-gapped Space receives the
+        // deployment's exact package-host interceptions.
+        if (!container.interceptOutboundHttps) return Response.json({ ok: false, error: "package_egress_interception_unavailable" }, { status: 503 });
+        const exports = (this.ctx as unknown as { exports?: { PackageEgress?: (options: { props: Record<string, never> }) => ContainerPort } }).exports;
+        const packageEgress = exports?.PackageEgress?.({ props: {} });
+        if (!packageEgress) return Response.json({ ok: false, error: "package_egress_binding_unavailable" }, { status: 503 });
+        for (const host of TRUSTED_PACKAGE_HOSTS) await container.interceptOutboundHttps(host, packageEgress);
+      }
       // Marketplace sidecars are immutable deployment-approved digests implementing the same
       // harness protocol. Select only the authenticated installation's pin; never accept an
       // image from the execution body or model-generated command.
       container.start({ enableInternet: false, ...(startScope?.dynamicImage && startScope.image ? { image: startScope.image } : {}) });
+      await this.ctx.storage.put("container_egress_profile", egressProfile);
       const token = await this.ctx.storage.get<string>("container_control_token") ?? Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, "0")).join("");
       await this.ctx.storage.put("container_control_token", token);
       const readyDeadline = Math.min(Date.now() + 20000, Number(JSON.parse(request.headers.get("x-naelao-container-scope") ?? "{}").deadline) || Date.now() + 20000);
