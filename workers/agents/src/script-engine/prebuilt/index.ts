@@ -78,6 +78,8 @@ export type PrebuiltOp = (
 export interface PrebuiltScript {
   name: string;
   description: string;
+  /** Optional detailed operating instructions supplied by a prebuilt skill. */
+  manual_markdown?: string;
   domain: ScriptDomain;
   requires_tier: ExecutionTier;
   /** Operation name → handler. Operation names are what the agent passes to script.run. */

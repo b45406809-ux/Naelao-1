@@ -77,7 +77,7 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
   const exec = async (args = {}, sidecar = false, bodyScope = { spaceId: "space", projectId: "project" }, installationScope?: "SPACE_SHARED" | "PROJECT_SHARED") => {
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
       executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000,
-      ...(sidecar ? { image, dynamicImage: true, installationId: "media-one", ...(installationScope ? { installationScope } : {}) } : {}) };
+      ...(sidecar ? { image, dynamicImage: false, installationId: "media-one", ...(installationScope ? { installationScope } : {}) } : {}) };
     return sandbox.fetch(new Request("http://sandbox/exec", { method: "POST", headers: { "content-type": "application/json",
       "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") },
       body: JSON.stringify({ ...bodyScope, args }) }));
@@ -103,7 +103,7 @@ describe("specialized project workspaces", () => {
     expect((await general.exec()).ok).toBe(true);
     const binary = Buffer.from([0, 255, 1, 128]).toString("base64");
     expect((await specialized.exec({ write: { "clip.bin": binary } }, true)).ok).toBe(true);
-    expect(specialized.transport.start).toHaveBeenCalledWith({ enableInternet: false, image });
+    expect(specialized.transport.start).toHaveBeenCalledWith({ enableInternet: false });
     expect(specialized.transport.destroy).not.toHaveBeenCalled();
     const read = await general.exec();
     expect(await read.json()).toMatchObject({ result: { files: { "clip.bin": binary } } });

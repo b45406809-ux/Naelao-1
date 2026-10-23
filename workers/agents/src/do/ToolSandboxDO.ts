@@ -52,12 +52,14 @@ import { isSpaceNetworkEgressDenied } from "@naelao/security";
 interface ContainerPort {
   fetch(request: Request): Promise<Response>;
 }
-interface ContainerRuntime {
+export interface ContainerRuntime {
   readonly running: boolean;
-  start(opts?: { enableInternet?: boolean; image?: string }): void;
+  readonly images?: Readonly<Record<string, string>>;
+  start(opts?: { enableInternet?: boolean; image?: string; instance?: import("../script-engine/dynamic-containers.js").DynamicProfile; containerSnapshot?: { id: string }; labels?: Record<string, string> }): void;
+  snapshotContainer?(options?: { name?: string }): Promise<{ id: string; size: number }>;
   interceptOutboundHttps?(host: string, binding: ContainerPort): Promise<void>;
   getTcpPort(port: number): ContainerPort;
-  inspect?(): Promise<{ image: string } | null>;
+  inspect?(): Promise<{ image: string; labels?: Record<string, string> } | null>;
   destroy?(): Promise<void>;
   stop?(signal?: string): Promise<void> | void;
 }
@@ -103,7 +105,7 @@ const WORKSPACE_ROUTES = [
 ];
 
 interface WorkspaceRecord { content: string; hash: string }
-interface ContainerMeter { tenantId: string; spaceId: string; reservationId: string; startedAt: number; expiresAt: number; allocatedAt?: number; endedAt?: number }
+interface ContainerMeter { creditsPerHour?: number; tenantId: string; spaceId: string; reservationId: string; startedAt: number; expiresAt: number; allocatedAt?: number; endedAt?: number }
 interface ContainerRuntimeMetrics { sidecar: boolean; coldStarts: number; startupMs: number; warmHits: number; warmIdleMs: number; executions: number; executionMs: number }
 interface ExecutionRecord { scope: ContainerInvocationScope; payloadHash: string; status: "prepared" | "committed" | "indeterminate"; response?: { status: number; body: string } }
 type ContainerEgressProfile = "disabled" | "trusted-package-hosts";
@@ -198,10 +200,12 @@ export class ToolSandboxDO extends DurableObject {
     return execution;
   }
 
-  private get container(): ContainerRuntime | undefined {
+  protected get container(): ContainerRuntime | undefined {
     const raw = (this.ctx as unknown as { container?: ContainerRuntime }).container;
     if (!raw) return undefined;
     return { get running() { return raw.running; }, start: options => raw.start(options),
+      ...(raw.images ? { images: raw.images } : {}),
+      ...(raw.snapshotContainer ? { snapshotContainer: options => raw.snapshotContainer!(options) } : {}),
       ...(raw.interceptOutboundHttps ? { interceptOutboundHttps: (host: string, binding: ContainerPort) => raw.interceptOutboundHttps!(host, binding) } : {}),
       ...(raw.inspect ? { inspect: () => raw.inspect!() } : {}), ...(raw.destroy ? { destroy: () => raw.destroy!() } : {}),
       ...(raw.stop ? { stop: (signal?: string) => raw.stop!(signal) } : {}),
@@ -211,6 +215,20 @@ export class ToolSandboxDO extends DurableObject {
         return raw.getTcpPort(port).fetch(new Request(request, { headers }));
       } }),
     };
+  }
+
+  protected async prepareAllocation(_scope: ContainerInvocationScope): Promise<void> {}
+  protected async reserveCapacity(_scope: ContainerInvocationScope, _holder: string, _expiresAt: number): Promise<void> {}
+  protected async releaseCapacity(): Promise<void> {}
+  protected async beforeIdleStop(_container: ContainerRuntime): Promise<void> {}
+  protected async discardCheckpoint(): Promise<void> {}
+  protected allocationCreditsPerHour(): number | undefined { return undefined; }
+  protected async startContainer(container: ContainerRuntime, scope: ContainerInvocationScope | null): Promise<void> {
+    if (scope?.dynamicImage) throw new Error("container_dynamic_policy_required");
+    container.start({ enableInternet: false });
+  }
+  protected async verifyContainer(container: ContainerRuntime, scope: ContainerInvocationScope | null): Promise<void> {
+    if (scope?.image && (await container.inspect?.())?.image !== scope.image) throw new Error("container_deployed_image_digest_mismatch");
   }
 
   private async authenticatedScope(request: Request): Promise<ContainerInvocationScope> {
@@ -270,7 +288,8 @@ export class ToolSandboxDO extends DurableObject {
       return;
     }
     const now = Date.now();
-    const meter: ContainerMeter = { tenantId: scope.tenantId, spaceId: scope.spaceId, reservationId: "container:" + crypto.randomUUID(), startedAt: now, expiresAt: now + 360000 };
+    const creditsPerHour = this.allocationCreditsPerHour();
+    const meter: ContainerMeter = { ...(creditsPerHour === undefined ? {} : { creditsPerHour }), tenantId: scope.tenantId, spaceId: scope.spaceId, reservationId: "container:" + crypto.randomUUID(), startedAt: now, expiresAt: now + 360000 };
     // Persist the reservation intent before contacting billing so retries use the same key.
     let pending = await this.ctx.storage.get<ContainerMeter>("container_reservation_pending") ?? meter;
     if (pending.expiresAt <= now) {
@@ -279,9 +298,16 @@ export class ToolSandboxDO extends DurableObject {
     }
     await this.ctx.storage.put("container_reservation_pending", pending);
     await this.ctx.storage.setAlarm(pending.expiresAt);
+    if (pending.creditsPerHour !== meter.creditsPerHour) throw new Error("container_pending_profile_changed_retry_after_expiry");
+    await this.reserveCapacity(scope, pending.reservationId, pending.expiresAt);
     await reserveWorkflowBudget(this.env as Env, pending.tenantId, pending.spaceId, pending.reservationId,
-      "container:" + scope.spaceId + ":" + (scope.projectId ?? "assistant"), infraTimeToCredits("container", 360000), pending.expiresAt,
+      "container:" + scope.spaceId + ":" + (scope.projectId ?? "assistant"), pending.creditsPerHour === undefined ? infraTimeToCredits("container", 360000) : Math.ceil(pending.creditsPerHour / 10), pending.expiresAt,
       { ...(scope.projectId ? { projectId: scope.projectId } : {}), ...(scope.installationId ? { installationId: scope.installationId } : {}), runtimeTier: 5 });
+    if (pending.expiresAt <= Date.now() + scope.timeoutMs) {
+      await finalizeWorkflowBudget(this.env as Env, pending.tenantId, pending.reservationId, "release");
+      await this.ctx.storage.delete("container_reservation_pending");
+      throw new Error("container_capacity_reservation_expired_retry");
+    }
     if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) {
       await finalizeWorkflowBudget(this.env as Env, pending.tenantId, pending.reservationId, "release");
       await this.ctx.storage.delete("container_reservation_pending");
@@ -293,11 +319,11 @@ export class ToolSandboxDO extends DurableObject {
 
   private async settleMeter(): Promise<void> {
     const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
-    if (!meter) return;
+    if (!meter) { await this.releaseCapacity(); return; }
     meter.endedAt ??= Date.now();
     await this.ctx.storage.put("container_meter", meter);
     const allocatedMs = meter.allocatedAt === undefined ? 0 : Math.max(0, meter.endedAt - meter.allocatedAt);
-    const credits = infraTimeToCredits("container", allocatedMs);
+    const credits = meter.creditsPerHour === undefined ? infraTimeToCredits("container", allocatedMs) : Math.ceil(meter.creditsPerHour * allocatedMs / 3600000);
     await finalizeWorkflowBudget(this.env as Env, meter.tenantId, meter.reservationId, "settle", credits);
     await this.ctx.storage.put("last_container_gas", { ...meter, credits });
     const metrics = await this.ctx.storage.get<ContainerRuntimeMetrics>("container_runtime_metrics");
@@ -313,6 +339,7 @@ export class ToolSandboxDO extends DurableObject {
     await this.ctx.storage.delete("container_runtime_metrics");
     await this.ctx.storage.delete("sidecar_last_active_at");
     await this.ctx.storage.delete("container_meter");
+    await this.releaseCapacity();
   }
 
   private async updateRuntimeMetrics(update: Partial<Record<keyof Omit<ContainerRuntimeMetrics, "sidecar">, number>>, sidecar?: boolean): Promise<void> {
@@ -323,9 +350,11 @@ export class ToolSandboxDO extends DurableObject {
     await this.ctx.storage.put("container_runtime_metrics", current);
   }
 
-  private async stopContainer(): Promise<void> {
+  protected async stopContainer(preserveSnapshot = false): Promise<void> {
+    if (!preserveSnapshot) await this.discardCheckpoint();
     const container = this.container;
     if (container?.running) {
+      if (preserveSnapshot) await this.beforeIdleStop(container);
       if (!container.destroy) throw new Error("container_hard_stop_unsupported");
       await container.destroy();
     }
@@ -352,7 +381,10 @@ export class ToolSandboxDO extends DurableObject {
   private async executeScoped(request: Request): Promise<Response> {
     let scope: ContainerInvocationScope;
     try { scope = await this.authenticatedScope(request); } catch (error) { return Response.json({ ok: false, error: String(error) }, { status: 403 }); }
-    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
+    if (!await this.tenantSpaceIsActive(scope.tenantId, scope.spaceId)) {
+      await this.discardCheckpoint();
+      return Response.json({ ok: false, error: "tenant_suspended" }, { status: 403 });
+    }
     const body = await request.clone().text();
     const payloadHash = await hashWorkspaceContent(new URL(request.url).pathname + body);
     const key = "execution:" + scope.executionId;
@@ -378,6 +410,7 @@ export class ToolSandboxDO extends DurableObject {
     headers.set("x-naelao-execution-id", scope.executionId); headers.set("x-naelao-timeout-ms", String(Math.max(1, remaining - 1000)));
     try {
       if (request.signal.aborted || await this.ctx.storage.get("cancelled:" + scope.executionId)) throw new Error("container_cancelled");
+      await this.prepareAllocation(scope);
       const requestedEgressProfile = await this.packageEgressProfile(scope);
       const previousEgressProfile = await this.ctx.storage.get<ContainerEgressProfile>("container_egress_profile");
       if (this.container?.running && previousEgressProfile !== requestedEgressProfile) {
@@ -595,6 +628,7 @@ export class ToolSandboxDO extends DurableObject {
     const ownerSpaceId = executionScope?.spaceId ?? meter?.spaceId ?? pending?.spaceId;
     if (ownerTenantId && ownerSpaceId && !await this.tenantSpaceIsActive(ownerTenantId, ownerSpaceId)) {
       this.activeExecution?.controller.abort();
+      await this.discardCheckpoint();
       // Do not snapshot or publish dirty workspace state after suspension.
       const container = this.container;
       if (container?.running) {
@@ -615,11 +649,14 @@ export class ToolSandboxDO extends DurableObject {
       this.activeExecution?.controller.abort();
       await this.stopContainer(); return;
     }
-    if (this.activeExecution) {
-      const profile = await this.packageEgressProfile(this.activeExecution.scope);
+    const active = this.activeExecution;
+    if (active) {
+      const profile = await this.packageEgressProfile(active.scope);
       const configuredProfile = await this.ctx.storage.get<ContainerEgressProfile>("container_egress_profile");
+      if (this.activeExecution !== active) { await this.ctx.storage.setAlarm(Date.now() + 1000); return; }
       if (profile !== configuredProfile) {
-        this.activeExecution.controller.abort();
+        active.controller.abort();
+        await this.discardCheckpoint();
         const container = this.container;
         if (container?.running) {
           if (!container.destroy) throw new Error("container_hard_stop_unsupported");
@@ -630,12 +667,21 @@ export class ToolSandboxDO extends DurableObject {
         await this.ctx.storage.setAlarm(Date.now() + 1000);
         return;
       }
-      await this.ctx.storage.setAlarm(Math.min(Date.now() + 1000, this.activeExecution.scope.deadline));
+      await this.ctx.storage.setAlarm(Math.min(Date.now() + 1000, active.scope.deadline));
       return;
     }
+    // Idle publication/checkpoint/destruction must not race a newly arriving execution.
+    // Active-run alarms above remain outside the queue so they can interrupt hung work.
+    const idle = this.executionQueue.then(() => this.idleAlarm());
+    this.executionQueue = idle.then(() => undefined, () => undefined);
+    await idle;
+  }
+
+  private async idleAlarm(): Promise<void> {
+    const meter = await this.ctx.storage.get<ContainerMeter>("container_meter");
     const sidecarExpiresAt = await this.ctx.storage.get<number>("sidecar_warm_expires_at");
     if (sidecarExpiresAt !== undefined && sidecarExpiresAt <= Date.now()) {
-      await this.stopContainer();
+      await this.stopContainer(true);
       return;
     }
     const lastUsed =
@@ -654,8 +700,7 @@ export class ToolSandboxDO extends DurableObject {
           const snapshot: { files?: Record<string, string> } = await port.fetch(new Request("http://sandbox/workspace/read", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).then((r) => r.json<{ files?: Record<string, string> }>()).catch(() => ({}));
           if (snapshot.files) await this.ctx.storage.put("workspace_snapshot", snapshot.files);
         }
-        await port.fetch(new Request("http://sandbox/shutdown", { method: "POST" })).catch(() => undefined);
-        await this.stopContainer();
+        await this.stopContainer(true);
       }
       else await this.settleMeter();
       await this.ctx.storage.put("container_status", "hibernated");
@@ -868,8 +913,8 @@ export class ToolSandboxDO extends DurableObject {
       // Marketplace sidecars are immutable deployment-approved digests implementing the same
       // harness protocol. Select only the authenticated installation's pin; never accept an
       // image from the execution body or model-generated command.
-      container.start({ enableInternet: false, ...(startScope?.dynamicImage && startScope.image ? { image: startScope.image } : {}) });
       await this.ctx.storage.put("container_egress_profile", egressProfile);
+      await this.startContainer(container, startScope);
       const token = await this.ctx.storage.get<string>("container_control_token") ?? Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, "0")).join("");
       await this.ctx.storage.put("container_control_token", token);
       const readyDeadline = Math.min(Date.now() + 20000, Number(JSON.parse(request.headers.get("x-naelao-container-scope") ?? "{}").deadline) || Date.now() + 20000);
@@ -888,9 +933,8 @@ export class ToolSandboxDO extends DurableObject {
 
     if (request.signal.aborted) throw new Error("container_cancelled");
     const requestedScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
+    await this.verifyContainer(container, requestedScope);
     if (requestedScope?.image) {
-      const actual = await container.inspect?.();
-      if (!actual?.image || actual.image !== requestedScope.image) throw new Error("container_deployed_image_digest_mismatch");
       const installedOwner = JSON.stringify([requestedScope.installationId, requestedScope.runId, requestedScope.image]);
       const previousOwner = await this.ctx.storage.get<string>("sidecar_owner");
       if (previousOwner && previousOwner !== installedOwner) throw new Error("container_sidecar_scope_mismatch");

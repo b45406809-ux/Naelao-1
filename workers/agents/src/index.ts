@@ -1,3 +1,5 @@
+import { DynamicSandboxDO } from "./do/DynamicSandboxDO.js";
+export { DynamicSandboxDO };
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
 // Fulfills G-D01 through G-D25: Agent worker routes with DO forwarding
 //
@@ -33,7 +35,7 @@ export { PackageEgress } from "./script-engine/package-egress.js";
 import { LAUNCHPAD_TEMPLATES, LAUNCHPAD_CORE_AGENTS, getLaunchpadTemplate } from "./launchpad/spacetype.js";
 import { resolveBusinessContext, parseSpaceConfigForContext, loadBusinessContext, type BusinessContext } from "./launchpad/business-context.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
-import { deployedContainerCatalogue } from "./script-engine/container-catalogue.js";
+import { deployedContainerCatalogue, deployedDynamicImages } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
 import { isWithinScheduledQuietHours } from "@naelao/types";
 import { claimScheduledJobDispatch, releaseScheduledJobDispatch } from "./scheduled-job-dispatch.js";
@@ -306,6 +308,11 @@ export interface AgentsEnv extends Cloudflare.Env {
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
   TASK_DO: DurableObjectNamespace<TaskDO>;
   TOOL_SANDBOX: DurableObjectNamespace<ToolSandboxDO>;
+  DYNAMIC_SANDBOX?: DurableObjectNamespace<DynamicSandboxDO>;
+  DYNAMIC_CONTAINERS_ENABLED?: string;
+  DYNAMIC_CONTAINER_BASE_PROFILE?: string;
+  DYNAMIC_CONTAINER_MAX_INSTANCES?: string;
+  DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED?: string;
   DOCUMENT_SANDBOX?: DurableObjectNamespace<ToolSandboxDO>;
   MEDIA_SANDBOX?: DurableObjectNamespace<ToolSandboxDO>;
   CONTAINER_IMAGE_REGISTRY?: string;
@@ -443,7 +450,7 @@ interface SpaceRow {
 function validateEnv(env: AgentsEnv): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
   applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
-    "NAELAO_AGENT_DO", "OWNER_VOICE_AGENT", "CUSTOMER_VOICE_AGENT", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO",
+    "NAELAO_AGENT_DO", "OWNER_VOICE_AGENT", "CUSTOMER_VOICE_AGENT", "HITL_APPROVAL_DO", "TASK_DO", "TOOL_SANDBOX", "DYNAMIC_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "WORKFLOW_RUN_DO",
   ]);
 }
 
@@ -9353,7 +9360,8 @@ app.get("/catalog/dev", (c) => {
 app.get("/container-images", async (c) => {
   try {
     return c.json({ images: deployedContainerCatalogue(c.env.CONTAINER_IMAGE_REGISTRY,
-      [c.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", c.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : "", c.env.TOOL_SANDBOX ? "TOOL_SANDBOX" : ""]) });
+      [c.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", c.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : "", c.env.DYNAMIC_CONTAINERS_ENABLED === "true" && c.env.DYNAMIC_SANDBOX ? "TOOL_SANDBOX" : ""],
+      await deployedDynamicImages(c.env.DYNAMIC_SANDBOX, c.env.PLATFORM_SECRET)) });
   } catch {
     return c.json({ error_code: "container_registry_invalid", message: "Runtime deployment configuration is invalid" }, 503);
   }
@@ -10256,7 +10264,7 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
     `SELECT tenant_id, space_id, agent_id FROM agent_email_addresses
      WHERE address_hash = ? AND status = 'active' LIMIT 1`
   ).bind(addressHash).first<{ tenant_id: string; space_id: string; agent_id: string }>();
-  const route = replyRoute ?? projectMailboxRoute ?? (mailboxRoute ? { ...mailboxRoute, task_id: null, project_id: null } : null);
+  const route = replyRoute ?? (projectMailboxRoute ? { ...projectMailboxRoute, task_id: null } : null) ?? (mailboxRoute ? { ...mailboxRoute, task_id: null, project_id: null } : null);
   const isMailboxRoute = Boolean(projectMailboxRoute || mailboxRoute);
   if (!route) {
     message.setReject("Unknown or expired Naelao reply address");

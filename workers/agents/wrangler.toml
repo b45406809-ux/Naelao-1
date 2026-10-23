@@ -1,6 +1,6 @@
 name = "naelao-agents"
 main = "src/index.ts"
-compatibility_date = "2026-09-10"
+compatibility_date = "2026-09-29"
 compatibility_flags = ["nodejs_compat"]
 
 # Optional Cloudflare Email Service outbound path. The code uses it only when
@@ -33,6 +33,10 @@ class_name = "TaskDO"
 [[durable_objects.bindings]]
 name = "TOOL_SANDBOX"
 class_name = "ToolSandboxDO"
+
+[[durable_objects.bindings]]
+name = "DYNAMIC_SANDBOX"
+class_name = "DynamicSandboxDO"
 
 [[durable_objects.bindings]]
 name = "DOCUMENT_SANDBOX"
@@ -119,6 +123,10 @@ new_sqlite_classes = ["OwnerVoiceAgent"]
 tag = "v13-customer-voice-agent"
 new_sqlite_classes = ["CustomerVoiceAgent"]
 
+[[migrations]]
+tag = "v14-dynamic-sandbox"
+new_sqlite_classes = ["DynamicSandboxDO"]
+
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
 # code (Node, and Python for scripts that need it), and it sleeps when idle.
@@ -128,9 +136,16 @@ image = "./Dockerfile.toolsandbox"
 max_instances = 5
 instance_type = "basic"
 
-# Default scheduling is deliberate: dynamic durable_object image mode retains root caps.
-# After building/publishing, configure CONTAINER_IMAGE_REGISTRY with real deployed digests.
-# An empty registry disables sidecar execution. Never put guessed hashes in that variable.
+# Legacy static applications remain available while dynamic execution is staged.
+# Dynamic images are versioned with the Worker. The legacy apps remain for rollback.
+[[containers]]
+class_name = "DynamicSandboxDO"
+scheduling_policy = "durable_object"
+[containers.images.base]
+dockerfile = "./Dockerfile.toolsandbox"
+# BEGIN GENERATED DYNAMIC IMAGES default
+# END GENERATED DYNAMIC IMAGES default
+
 [[containers]]
 class_name = "DocumentSandboxDO"
 image = "./Dockerfile.documents"
@@ -325,6 +340,10 @@ migrations_dir = "../../infra/migrations"
 # PIPEDREAM_ENVIRONMENT and an explicit PIPEDREAM_SUPPORTED_APPS comma-list as plain vars
 # only after verifying those app slugs are enabled in the project; unset disables overrides.
 [vars]
+DYNAMIC_CONTAINERS_ENABLED = "false"
+DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1"
+DYNAMIC_CONTAINER_MAX_INSTANCES = "5"
+DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false"
 DYNAMIC_PYTHON_ENABLED = "true"
 ENVIRONMENT = "development"
 # Set to a domain onboarded for Cloudflare Email Service sending. Empty disables the native
@@ -380,7 +399,7 @@ binding = "AI"
 # staging silently falls back to the direct Anthropic API (resolveAnthropicUrl treats a missing
 # accountId the same as "placeholder") — the CF AI Gateway wiring in shared/ai-client.ts would
 # never actually activate.
-vars = { ENVIRONMENT = "staging", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
+vars = { DYNAMIC_CONTAINERS_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "staging", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env staging`
 
 [[env.staging.send_email]]
@@ -412,7 +431,7 @@ service = "naelao-browser"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { ENVIRONMENT = "production", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
+vars = { DYNAMIC_CONTAINERS_ENABLED = "false", DYNAMIC_CONTAINER_BASE_PROFILE = "standard-1", DYNAMIC_CONTAINER_MAX_INSTANCES = "5", DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED = "false", ENVIRONMENT = "production", DYNAMIC_PYTHON_ENABLED = "true", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway", EMAIL_SENDING_DOMAIN = "", EMAIL_INGRESS_DOMAIN = "" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env production`
 
 [[env.production.send_email]]
@@ -473,6 +492,10 @@ class_name = "TaskDO"
 name = "TOOL_SANDBOX"
 class_name = "ToolSandboxDO"
 
+[[env.staging.durable_objects.bindings]]
+name = "DYNAMIC_SANDBOX"
+class_name = "DynamicSandboxDO"
+
 
 [[env.staging.durable_objects.bindings]]
 name = "DOCUMENT_SANDBOX"
@@ -515,9 +538,16 @@ image = "./Dockerfile.toolsandbox"
 max_instances = 5
 instance_type = "basic"
 
-# Default scheduling is deliberate: dynamic durable_object image mode retains root caps.
-# After building/publishing, configure CONTAINER_IMAGE_REGISTRY with real deployed digests.
-# An empty registry disables sidecar execution. Never put guessed hashes in that variable.
+# Legacy static applications remain available while dynamic execution is staged.
+
+# Dynamic images are versioned with the Worker. The legacy apps remain for rollback.
+[[env.staging.containers]]
+class_name = "DynamicSandboxDO"
+scheduling_policy = "durable_object"
+[env.staging.containers.images.base]
+dockerfile = "./Dockerfile.toolsandbox"
+# BEGIN GENERATED DYNAMIC IMAGES env.staging.
+# END GENERATED DYNAMIC IMAGES env.staging.
 
 [[env.staging.containers]]
 class_name = "DocumentSandboxDO"
@@ -736,6 +766,10 @@ class_name = "TaskDO"
 name = "TOOL_SANDBOX"
 class_name = "ToolSandboxDO"
 
+[[env.production.durable_objects.bindings]]
+name = "DYNAMIC_SANDBOX"
+class_name = "DynamicSandboxDO"
+
 
 [[env.production.durable_objects.bindings]]
 name = "DOCUMENT_SANDBOX"
@@ -778,9 +812,16 @@ image = "./Dockerfile.toolsandbox"
 max_instances = 5
 instance_type = "basic"
 
-# Default scheduling is deliberate: dynamic durable_object image mode retains root caps.
-# After building/publishing, configure CONTAINER_IMAGE_REGISTRY with real deployed digests.
-# An empty registry disables sidecar execution. Never put guessed hashes in that variable.
+# Legacy static applications remain available while dynamic execution is staged.
+
+# Dynamic images are versioned with the Worker. The legacy apps remain for rollback.
+[[env.production.containers]]
+class_name = "DynamicSandboxDO"
+scheduling_policy = "durable_object"
+[env.production.containers.images.base]
+dockerfile = "./Dockerfile.toolsandbox"
+# BEGIN GENERATED DYNAMIC IMAGES env.production.
+# END GENERATED DYNAMIC IMAGES env.production.
 
 [[env.production.containers]]
 class_name = "DocumentSandboxDO"

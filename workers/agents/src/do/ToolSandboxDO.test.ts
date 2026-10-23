@@ -115,7 +115,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
       const headers = new Headers(request.headers);
       headers.set("x-naelao-internal-token", await mintInternalToken("test-secret", "tenant"));
       headers.set("x-naelao-container-scope", JSON.stringify({ tenantId: "tenant", spaceId: "space", actorId: options.actorId ?? "owner", agentId: "worker", runId: options.runId ?? "run",
-        ...(options.sidecar ? { projectId: "project", installationId: "install-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: true } : {}),
+        ...(options.sidecar ? { projectId: "project", installationId: "install-a", installationScope: "PROJECT_SHARED", image: "registry.example/tool@sha256:" + "a".repeat(64), dynamicImage: false } : {}),
         executionId: crypto.randomUUID(), timeoutMs: options.timeoutMs ?? 55000, deadline: Date.now() + (options.timeoutMs ?? 55000) }));
       return realSandbox.fetch(new Request(request, { headers }));
     } };
@@ -383,7 +383,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     vi.useRealTimers();
   });
 
-  it("keeps an exact marketplace sidecar warm only for the bounded reuse lease", async () => {
+  it("keeps an exact installed specialist sandbox warm only for the bounded reuse lease", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000_000);
     const { sandbox, storage, getAlarmTime, mockContainer, initialPrewarm, analyticsPoints } = await createTestSandbox({ sidecar: true, runId: "worker-run" });
@@ -413,7 +413,7 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     vi.useRealTimers();
   });
 
-  it("destroys a marketplace sidecar after failed or indeterminate execution", async () => {
+  it("destroys a installed specialist sandbox after failed or indeterminate execution", async () => {
     const { sandbox, storage, mockContainer, analyticsPoints } = await createTestSandbox({ sidecar: true, timeoutMs: 1000, hangExecution: true, runId: "worker-failure" });
     const result = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
     expect(result.status).toBe(409);

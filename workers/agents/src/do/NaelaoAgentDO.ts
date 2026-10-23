@@ -1,3 +1,4 @@
+import { dynamicSandboxNamespace } from "../script-engine/dynamic-containers.js";
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.js";
@@ -81,7 +82,7 @@ import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code
 import { SkillLibrary } from "../script-engine/skill-library.js";
 import { bindCodeRpc, type CodeRpcBinding } from "../script-engine/code-rpc-broker.js";
 import { resolveContainerBinary, resolveContainerCapabilities, parseApprovedContainerImages, approvedContainer, type InstalledContainer } from "../script-engine/container-policy.js";
-import { deployedContainerCatalogue } from "../script-engine/container-catalogue.js";
+import { deployedContainerCatalogue, deployedDynamicImages } from "../script-engine/container-catalogue.js";
 import { createVaultProxy } from "../script-engine/vault-proxy.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore, roleRankFor } from "../script-engine/project-memory-client.js";
@@ -1129,6 +1130,8 @@ export interface AgentDOEnv {
   BROWSER_WORKER?: Fetcher;
   /** ToolSandboxDO namespace — Tier 5 (CF Container, full Linux). */
   TOOL_SANDBOX?: DurableObjectNamespace;
+  DYNAMIC_SANDBOX?: DurableObjectNamespace;
+  DYNAMIC_CONTAINERS_ENABLED?: string;
   DOCUMENT_SANDBOX?: DurableObjectNamespace;
   MEDIA_SANDBOX?: DurableObjectNamespace;
   /** Operator-approved image digests and fixed deployment resource envelopes. */
@@ -1168,7 +1171,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // approvals, sandboxes, risk guards, and concurrency locks cannot escape an
     // EU namespace from inside a running agent.
     applyDurableObjectJurisdiction(env as unknown as Record<string, unknown>, env.DATA_JURISDICTION, [
-      "HITL_APPROVAL_DO", "TOOL_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "NAELAO_AGENT_DO", "CONCURRENCY_DO", "WORKFLOW_RUN_DO",
+      "HITL_APPROVAL_DO", "TOOL_SANDBOX", "DYNAMIC_SANDBOX", "LOCAL_TUNNEL", "RISK_GUARD", "NAELAO_AGENT_DO", "CONCURRENCY_DO", "WORKFLOW_RUN_DO",
     ]);
   }
   /** Layer 1: wake-local working context. Never shared across structural thread keys. */
@@ -2661,7 +2664,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
     env.containerRuntimeInventory = async () => ({ installed: await installedContainers(),
       catalogue: deployedContainerCatalogue(this.env.CONTAINER_IMAGE_REGISTRY,
-        [this.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", this.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : "", this.env.TOOL_SANDBOX ? "TOOL_SANDBOX" : ""]) });
+        [this.env.DOCUMENT_SANDBOX ? "DOCUMENT_SANDBOX" : "", this.env.MEDIA_SANDBOX ? "MEDIA_SANDBOX" : "", this.env.DYNAMIC_CONTAINERS_ENABLED === "true" && this.env.DYNAMIC_SANDBOX ? "TOOL_SANDBOX" : ""],
+        await deployedDynamicImages(this.env.DYNAMIC_SANDBOX, this.env.PLATFORM_SECRET)) });
     env.codeRunner = buildCodeRunner({
       airGappedOnly,
       authorizeContainer: nativeGrantActive,
@@ -2670,9 +2674,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const installation = (await installedContainers()).find(item => item.installationId === params.installationId && item.contract.image === params.containerImage && (!item.projectId || item.projectId === projectId) && (!item.userId || item.userId === userId));
         if (!installation) throw new Error("container_active_installation_required");
         const approved = approvedContainer(installation, parseApprovedContainerImages(this.env.CONTAINER_IMAGE_REGISTRY));
-        const namespace = approved.binding === "TOOL_SANDBOX" ? this.env.TOOL_SANDBOX : this.env[approved.binding];
+        const namespace = approved.schedulingPolicy === "durable_object" ? (this.env.DYNAMIC_CONTAINERS_ENABLED === "true" ? this.env.DYNAMIC_SANDBOX : undefined) : this.env[approved.binding];
         if (!namespace) throw new Error("container_binding_unavailable");
-        return { installation, namespace, dynamicImage: approved.binding === "TOOL_SANDBOX" };
+        return { installation, namespace, dynamicImage: approved.schedulingPolicy === "durable_object" };
       },
       pythonEnabled: this.env.DYNAMIC_PYTHON_ENABLED === "true",
       ...(loopbacks?.CodeRpcBroker ? { createRpcBinding: async (options, deadline) => bindCodeRpc(loopbacks.CodeRpcBroker!, options, deadline) } : {}),
@@ -2693,7 +2697,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(!airGappedOnly && this.env.MCP_HUB ? { mcpHubWorker: this.env.MCP_HUB } : {}),
       ...(!airGappedOnly && this.env.CREDENTIALS_WORKER ? { credentialsWorker: this.env.CREDENTIALS_WORKER } : {}),
       ...(this.env.PLATFORM_SECRET ? { platformSecret: this.env.PLATFORM_SECRET } : {}),
-      ...(this.env.TOOL_SANDBOX ? { toolSandbox: this.env.TOOL_SANDBOX } : {}),
+      ...(dynamicSandboxNamespace(this.env) ? { toolSandbox: dynamicSandboxNamespace(this.env)! } : {}),
       ...(this.env.LOCAL_TUNNEL ? { localTunnel: this.env.LOCAL_TUNNEL } : {}),
       localMachine: async params => {
         const started = Date.now();
@@ -2713,8 +2717,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // §A1.17 Phase R: the container half of the explicit multi-workspace model — same
     // per-project addressing as code-runner.ts's runContainer (a project's threads share one
     // container, so workspace.copy and code.execute_* operate on the SAME /workspace).
-    if (this.env.TOOL_SANDBOX) {
-      const toolSandbox = this.env.TOOL_SANDBOX;
+    if (dynamicSandboxNamespace(this.env)) {
+      const toolSandbox = dynamicSandboxNamespace(this.env)!;
       const sandboxStub = () => toolSandbox.get(toolSandbox.idFromName(`sandbox:${spaceId}:${projectId ?? "_assistant"}`));
       const warmWorkspace = async () => {
         if (!env.runId || !userId || !env.codeRunner) throw new Error("container_authorized_actor_run_required");
@@ -3110,8 +3114,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   /** Release the extended Tier-6 warm window when work completes or pauses for a person. */
   private signalContainerLifecycle(spaceId: string, projectId: string | undefined, status: "blocked" | "completed"): void {
-    if (!this.env.TOOL_SANDBOX) return;
-    const namespace = this.env.TOOL_SANDBOX;
+    const namespace = dynamicSandboxNamespace(this.env);
+    if (!namespace) return;
     const stub = namespace.get(namespace.idFromName(`sandbox:${spaceId}:${projectId ?? "_assistant"}`));
     this.ctx.waitUntil(
       stub.fetch(new Request("http://sandbox/lifecycle", {
@@ -3558,7 +3562,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Model race orchestration is a planner-visible capability. The planner requests one
     // prebuilt operation; this host owns repository branches, child dispatch, sandbox identity,
     // and billing holds so the model never receives those service bindings directly.
-    if (this.env.ARTIFACT_WORKER && this.env.NAELAO_AGENT_DO && this.env.TOOL_SANDBOX) {
+    if (this.env.ARTIFACT_WORKER && this.env.NAELAO_AGENT_DO && dynamicSandboxNamespace(this.env)) {
       const agentDO = this.env.NAELAO_AGENT_DO;
       hooks.modelRace = async (params) => {
         const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([parentRunId, params]))))].map(b => b.toString(16).padStart(2, "0")).join("");

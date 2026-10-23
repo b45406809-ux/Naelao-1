@@ -2,17 +2,17 @@
 
 Agents expose `runtime list` and `runtime find <binary>` through the existing Bash-shaped virtual CLI. Discovery reads the current actor's active extension installations and the deployment-approved runtime catalogue. It does not allocate a container or install anything. A missing binary returns approved candidates and a human-approval requirement; an ambiguous binary requires a qualified `extension/container/binary` command.
 
-The catalogue includes preconfigured profiles such as FFmpeg and LibreOffice, and can also contain FDE-authored runtime cards. A custom card is listed in `CONTAINER_IMAGE_REGISTRY` with `binding: "TOOL_SANDBOX"`, an immutable `image@sha256:…` digest, and a marketplace `id`, `name`, `description`, `category`, and `exportedBinaries`. It is shown only when the ToolSandbox binding exists. The image must implement the Naelao sandbox harness protocol; it runs through the same isolated ToolSandbox with Internet disabled, bounded package-host interception, and a maximum 60-second execution. The image and resources are pinned by deployment configuration; a caller manifest cannot register or replace a runnable image. New digests get new extension IDs, and removed pins stop resolving as executable installations.
+The catalogue includes preconfigured profiles such as FFmpeg and LibreOffice, and can also contain FDE-authored runtime cards. A custom card is listed in `CONTAINER_IMAGE_REGISTRY` with `binding: "TOOL_SANDBOX"`, an immutable Cloudflare-managed `image@sha256:…` digest and `schedulingPolicy: "durable_object"`, and a marketplace `id`, `name`, `description`, `category`, and `exportedBinaries`. It is shown only when dynamic execution is enabled and its digest exists in the deployed DynamicSandboxDO image map. The image must implement the Naelao sandbox harness protocol; it runs through the same isolated ToolSandbox with Internet disabled, bounded package-host interception, and a maximum 60-second execution. The image and resources are pinned by deployment configuration; a caller manifest cannot register or replace a runnable image. New digests get new extension IDs, and removed pins stop resolving as executable installations.
 
 Example deployment registry entry (use an actual reviewed digest; this example is documentation only):
 
 ```json
 {
-  "image": "registry.example/fde/pdf-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "image": "registry.cloudflare.com/0123456789abcdef0123456789abcdef/fde/pdf-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "binding": "TOOL_SANDBOX",
   "memoryMb": 4096,
   "cpuCores": 0.5,
-  "schedulingPolicy": "default",
+  "schedulingPolicy": "durable_object",
   "networkPolicy": "none",
   "marketplace": {
     "id": "pdf-tools",
@@ -33,3 +33,7 @@ Execution continues through the existing scoped container path. Each extension i
 ## Verification boundary
 
 Local tests cover pin and binding ambiguity, runtime proposals without installation/allocation, actor-scoped installed command discovery, invalid binary names, immutable manifests, invalid scope before writes, idempotent install, and installation lookup after `SpaceDO` recreation. They do not validate a live Cloudflare deployment or image availability. The [Cloudflare Durable Object Container API reference](https://developers.cloudflare.com/containers/api/durable-object-container/) states that `container.inspect()` returns the running image reference; live binding/digest configuration still needs to be set and verified in the target deployment.
+
+## Dynamic execution rollout
+
+See [Dynamic Cloudflare execution](dynamic-containers-rollout.md) for resource selection, subscription limits, atomic registry/image-map preparation, optional filesystem snapshots, migration and the live staging checklist. Existing default-policy specialist images remain supported during migration. Runtime custom images require Cloudflare-managed digests and a versioned deployment image map.

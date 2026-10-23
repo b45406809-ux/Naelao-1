@@ -20,10 +20,11 @@ describe("runtime discovery and deployment approval", () => {
   });
 
   it("exposes custom FDE marketplace cards only as deployment-pinned TOOL_SANDBOX images", () => {
-    const custom = { image: `registry.example/fde/pdf@sha256:${"c".repeat(64)}`, binding: "TOOL_SANDBOX",
-      memoryMb: 4096, cpuCores: 0.5, schedulingPolicy: "default", networkPolicy: "none",
+    const custom = { image: `registry.cloudflare.com/${"1".repeat(32)}/fde/pdf@sha256:${"c".repeat(64)}`, binding: "TOOL_SANDBOX",
+      memoryMb: 4096, cpuCores: 0.5, schedulingPolicy: "durable_object", networkPolicy: "none",
       marketplace: { id: "pdf-processor", name: "PDF Processor", description: "Bounded PDF utility tools.", category: "compute", exportedBinaries: ["pdf-inspect"] } };
-    const catalogue = deployedContainerCatalogue(JSON.stringify([custom]), ["TOOL_SANDBOX"]);
+    const catalogue = deployedContainerCatalogue(JSON.stringify([custom]), ["TOOL_SANDBOX"], [custom.image]);
+    expect(deployedContainerCatalogue(JSON.stringify([custom]), ["TOOL_SANDBOX"]).find(item => item.id === "pdf-processor")).toBeUndefined();
     expect(catalogue.find(item => item.id === "pdf-processor")).toMatchObject({ available: true,
       image: custom.image, exported_binaries: ["pdf-inspect"], install_manifest: { containers: [{ resources: { timeoutSeconds: 60 }, networkPolicy: "none" }] } });
     expect(deployedContainerCatalogue(JSON.stringify([custom]), []).find(item => item.id === "pdf-processor")).toBeUndefined();

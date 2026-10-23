@@ -1,3 +1,4 @@
+import { mintInternalToken } from "@naelao/http";
 /**
  * Container Marketplace catalogue (spec §33b "Container System", gap G-1; §A1.17 Phase L).
  * Naelao-authored DATA, same "Whop first, everything else coming_soon" precedent as
@@ -130,7 +131,7 @@ export function findContainerImage(imageId: string): ContainerImageManifest | un
 /** Deployment authority, not an optimistic catalogue flag, determines runtime availability.
  * Multiple pins for one fixed binding are ambiguous and must not advertise an install.
  */
-export function deployedContainerCatalogue(registryJson: string | undefined, bound: readonly string[]): ContainerImageManifest[] {
+export function deployedContainerCatalogue(registryJson: string | undefined, bound: readonly string[], dynamicImages: readonly string[] = []): ContainerImageManifest[] {
   const registry = parseApprovedContainerImages(registryJson);
   const profiles = [
     { id: "ffmpeg", binding: "MEDIA_SANDBOX", binaries: ["ffmpeg", "ffprobe"], name: "FFmpeg", category: "media" as const },
@@ -143,7 +144,7 @@ export function deployedContainerCatalogue(registryJson: string | undefined, bou
     const entry: ContainerImageManifest = existing ?? { id: profile.id, name: profile.name, description: "Bounded document conversion in an approved specialized runtime.", category: profile.category,
       exposed_ops: [], persisted_paths: [], network_policy: "none", billing_tier: "free", available: false };
     if (!existing) images.push(entry);
-    if (pins.length !== 1) continue;
+    if (pins.length !== 1 || pins[0]!.schedulingPolicy === "durable_object" && !dynamicImages.includes(pins[0]!.image)) continue;
     const pin = pins[0]!;
     entry.available = true;
     entry.image = pin.image;
@@ -162,7 +163,7 @@ export function deployedContainerCatalogue(registryJson: string | undefined, bou
   // planner text never acts as deployment authority.
   for (const pin of registry.filter(entry => entry.binding === "TOOL_SANDBOX" && entry.marketplace)) {
     const card = pin.marketplace!;
-    if (!bound.includes("TOOL_SANDBOX") || images.some(entry => entry.id === card.id)) continue;
+    if (pin.schedulingPolicy !== "durable_object" || !dynamicImages.includes(pin.image) || !bound.includes("TOOL_SANDBOX") || images.some(entry => entry.id === card.id)) continue;
     images.push({
       id: card.id, name: card.name, description: card.description, category: card.category,
       exposed_ops: [], persisted_paths: [], network_policy: "none", billing_tier: "pro", available: true,
@@ -178,3 +179,18 @@ export function deployedContainerCatalogue(registryJson: string | undefined, bou
 }
 
 export { resolveContainerBinary, approvedContainer, parseApprovedContainerImages, sidecarKey } from "./container-policy.js";
+
+/** Query deployment authority without allocating a container. Fail closed during rollouts. */
+export async function deployedDynamicImages(namespace: { idFromName(name: string): DurableObjectId; get(id: DurableObjectId): { fetch(request: Request): Promise<Response> } } | undefined, secret: string | undefined): Promise<string[]> {
+  if (!namespace || !secret) return [];
+  try {
+    const stub = namespace.get(namespace.idFromName("deployment-images"));
+    const response = await stub.fetch(new Request("http://sandbox/_internal/images", { headers: {
+      "x-naelao-internal-token": await mintInternalToken(secret, "naelao-container-catalogue"),
+    }, signal: AbortSignal.timeout(5000) }));
+    if (!response.ok) return [];
+    const body = await response.json() as { enabled?: boolean; images?: unknown };
+    return body.enabled === true && Array.isArray(body.images) && body.images.length <= 100
+      && body.images.every(image => typeof image === "string") ? body.images : [];
+  } catch { return []; }
+}

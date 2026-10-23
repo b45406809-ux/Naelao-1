@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
+      "@naelao/entitlements": fileURLToPath(new URL("../../packages/entitlements/src/index.ts", import.meta.url)),
       "@naelao/billing-core": fileURLToPath(
         new URL("../../packages/billing-core/src/index.ts", import.meta.url)
       ),

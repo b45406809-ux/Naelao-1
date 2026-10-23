@@ -1,3 +1,4 @@
+import { CLOUDFLARE_IMAGE_PIN, DYNAMIC_PROFILES, selectDynamicProfile } from "./dynamic-containers.js";
 import { parseExtensionPrimitive, type ContainerContract, type InstallationScope } from "@naelao/agent-sdk";
 
 export interface ContainerInvocationScope {
@@ -12,8 +13,8 @@ export interface InstalledContainer {
 export interface ApprovedContainerImage {
   image: string; binding: "DOCUMENT_SANDBOX" | "MEDIA_SANDBOX" | "TOOL_SANDBOX";
   memoryMb: number; cpuCores: number;
-  /** Fixed default-policy deployment, not runtime arbitrary-image selection. */
-  schedulingPolicy: "default"; networkPolicy: "none";
+  /** Static specialist deployments or versioned dynamic image selection. */
+  schedulingPolicy: "default" | "durable_object"; networkPolicy: "none";
   /** Optional owner-reviewed marketplace card. TOOL_SANDBOX images must implement the
    *  Naelao sandbox harness protocol and are still pinned to this immutable digest. */
   marketplace?: { id: string; name: string; description: string; category: "media" | "compute" | "browser"; exportedBinaries: string[] };
@@ -36,13 +37,18 @@ export function validateContainerScope(scope: ContainerInvocationScope, now = Da
 export function parseApprovedContainerImages(json: string | undefined): ApprovedContainerImage[] {
   if (!json) return [];
   const value: unknown = JSON.parse(json);
-  if (!Array.isArray(value) || value.length > 16) throw new Error("container_registry_invalid");
+  if (!Array.isArray(value) || value.length > 99) throw new Error("container_registry_invalid");
   const pins = new Set<string>(), ids = new Set(["postgres-16", "redis-7", "chrome-headless", "ffmpeg", "blender-cli", "pytorch-gpu", "r-statistical", "libreoffice"]);
   return value.map(item => {
     if (!item || typeof item !== "object" || !/^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/.test(item.image)
-      || !["DOCUMENT_SANDBOX", "MEDIA_SANDBOX", "TOOL_SANDBOX"].includes(item.binding) || item.schedulingPolicy !== "default" || item.networkPolicy !== "none"
-      || item.memoryMb !== 4096 || item.cpuCores !== 0.5 || pins.has(item.image))
+      || !["DOCUMENT_SANDBOX", "MEDIA_SANDBOX", "TOOL_SANDBOX"].includes(item.binding)
+      || !["default", "durable_object"].includes(item.schedulingPolicy)
+      || (item.binding === "TOOL_SANDBOX" && item.schedulingPolicy !== "durable_object") || item.networkPolicy !== "none"
+      || !Number.isFinite(item.cpuCores) || !Number.isSafeInteger(item.memoryMb) || pins.has(item.image))
       throw new Error("container_registry_invalid");
+    const size = DYNAMIC_PROFILES[selectDynamicProfile(item.cpuCores, item.memoryMb)];
+    if (item.schedulingPolicy === "durable_object" && !CLOUDFLARE_IMAGE_PIN.test(item.image)) throw new Error("container_cloudflare_registry_required");
+    if (item.schedulingPolicy === "default" && (item.memoryMb !== 4096 || item.cpuCores !== .5)) throw new Error("container_fixed_resource_mismatch");
     if (item.marketplace !== undefined) {
       const card = item.marketplace;
       if (item.binding !== "TOOL_SANDBOX" || !card || typeof card !== "object"
@@ -56,7 +62,7 @@ export function parseApprovedContainerImages(json: string | undefined): Approved
         throw new Error("container_marketplace_entry_invalid");
       ids.add(card.id);
     }
-    pins.add(item.image); return item as ApprovedContainerImage;
+    pins.add(item.image); return { ...item, ...(item.schedulingPolicy === "durable_object" ? { memoryMb: size.memoryMb, cpuCores: size.cpuCores } : {}) } as ApprovedContainerImage;
   });
 }
 /** Resolve actual active installations visible to this actor; never infer a grant from a CLI name. */
@@ -112,6 +118,7 @@ export function resolveContainerCapabilities(
 export function approvedContainer(item: InstalledContainer, registry: readonly ApprovedContainerImage[]): ApprovedContainerImage {
   const approved = registry.find(entry => entry.image === item.contract.image);
   if (!approved) throw new Error("container_image_not_approved");
+  if (approved.binding === "TOOL_SANDBOX" && approved.schedulingPolicy !== "durable_object") throw new Error("container_scheduling_policy_mismatch");
   if (item.contract.resources.memoryMb > approved.memoryMb || item.contract.resources.cpuCores > approved.cpuCores) throw new Error("container_resources_exceed_binding");
   if ((item.contract.networkPolicy ?? "none") !== approved.networkPolicy) throw new Error("container_network_proxy_unavailable");
   // These images expose exactly these writable directories. More restrictive mounts need a
