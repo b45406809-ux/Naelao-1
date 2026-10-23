@@ -46,25 +46,13 @@ export default function ProductOverviewPage() {
         <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Details</h2>
         <dl className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <dt className="text-gray-500">SpaceType</dt>
-            <dd className="text-gray-900 font-medium mt-0.5">{product.spacetype_id}</dd>
+            <dt className="text-gray-500">Product</dt>
+            <dd className="text-gray-900 font-medium mt-0.5">Launchpad</dd>
           </div>
           <div>
             <dt className="text-gray-500">Created</dt>
             <dd className="text-gray-900 font-medium mt-0.5">
               {new Date(product.created_at).toLocaleDateString()}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-gray-500">Sign-in provider</dt>
-            <dd className="text-gray-900 font-medium mt-0.5">
-              {product.product_config.authProvider?.provider ?? "naelao-native"}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-gray-500">Pricing model</dt>
-            <dd className="text-gray-900 font-medium mt-0.5 capitalize">
-              {product.product_config.pricingConfig?.model ?? "free"}
             </dd>
           </div>
         </dl>
@@ -79,13 +67,8 @@ export default function ProductOverviewPage() {
         </Link>
       </div>
 
-      {/* WS-5.3: a product IS a space (same row, same id — builder-routes.ts's GET
-         /builder/products/:id reads straight from the `spaces` table) — these per-space admin
-         tools (KB, commerce, connectors, credentials, eval, onboarding, sessions, webhooks) are
-         real and still only live under the legacy /dashboard/spaces/:id/* routes; folded in here
-         instead of duplicated, so a builder never needs the separate spaces list to reach them. */}
       <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Advanced Space Tools</h2>
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Operations</h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
           {[
             { label: "Knowledge Base", segment: "kb" },
@@ -93,7 +76,6 @@ export default function ProductOverviewPage() {
             { label: "Connectors", segment: "connectors" },
             { label: "Credentials", segment: "credentials" },
             { label: "Evaluations", segment: "eval" },
-            { label: "Onboarding", segment: "onboarding" },
             { label: "Sessions", segment: "sessions" },
             { label: "Webhooks", segment: "webhooks" },
           ].map((tool) => (

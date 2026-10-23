@@ -1,232 +1,49 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { createBuilderProduct, configureBuilderProductDomain } from "@/lib/api";
-import type { CreateBuilderProductInput } from "@/lib/api";
-import { hasDerivableProductAddress, INITIAL_WIZARD_STATE, parseWizardInteger, SLUG_PATTERN } from "./wizardTypes";
-import type { WizardState } from "./wizardTypes";
-import IdentityStep from "./steps/IdentityStep";
-import SpaceTypeStep from "./steps/SpaceTypeStep";
-import AuthConfigStep from "./steps/AuthConfigStep";
-import PricingStep from "./steps/PricingStep";
-import DomainStep from "./steps/DomainStep";
-import ReviewStep from "./steps/ReviewStep";
+import { createBuilderProduct } from "@/lib/api";
 
-const STEPS = ["Identity", "Starting Point", "Sign-in", "Pricing", "Domain", "Review & Launch"] as const;
-
-function validateStep(step: number, state: WizardState): string | null {
-  if (step === 0) {
-    if (!state.name.trim()) return "Product name is required.";
-    if (state.name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(state.name)) {
-      return "Product name must contain 1–100 printable characters.";
-    }
-    if (!state.productSlug && !hasDerivableProductAddress(state.name)) {
-      return "Choose a product address; this name cannot create one automatically.";
-    }
-    if (state.productSlug && !SLUG_PATTERN.test(state.productSlug)) {
-      return "Platform subdomain must be 2-40 lowercase letters, numbers, or hyphens.";
-    }
-  }
-  if (step === 1 && !state.spacetypeId) return "Choose a starting point to continue.";
-  if (step === 3) {
-    const fields: Array<[string, string]> = state.pricingModel === "credits"
-      ? [[state.creditsIncludedPerMonth, "Credits included per month"], [state.overageCreditsPriceCents, "Overage price"]]
-      : state.pricingModel === "subscription"
-        ? [[state.trialDays, "Trial days"]]
-        : state.pricingModel === "seats"
-          ? [[state.pricePerSeatCents, "Price per seat"], [state.includedSeats, "Seats included"]]
-          : [];
-    for (const [value, label] of fields) {
-      if (parseWizardInteger(value) === null) return `${label} must be a nonnegative whole number.`;
-    }
-  }
-  return null;
-}
-
-function toNumberOrUndefined(v: string): number | undefined {
-  const parsed = parseWizardInteger(v);
-  return typeof parsed === "number" ? parsed : undefined;
-}
-
-export default function NewProductWizardPage() {
+export default function InitializeLaunchpadPage() {
   const router = useRouter();
-  const [step, setStep] = useState(0);
-  const [state, setState] = useState<WizardState>(INITIAL_WIZARD_STATE);
   const [error, setError] = useState<string | null>(null);
-  const [launching, setLaunching] = useState(false);
-  const launchingRef = useRef(false);
-  const stepContentRef = useRef<HTMLDivElement>(null);
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (step === 0) return;
-    const heading = stepContentRef.current?.querySelector<HTMLElement>("h2");
-    if (heading) {
-      heading.tabIndex = -1;
-      heading.focus();
-    }
-  }, [step]);
-
-  function update(patch: Partial<WizardState>) {
-    setState((prev) => ({ ...prev, ...patch }));
-  }
-
-  function goNext() {
-    const validationError = validateStep(step, state);
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-    setError(null);
-    setStep((s) => Math.min(s + 1, STEPS.length - 1));
-  }
-
-  function goBack() {
-    setError(null);
-    setStep((s) => Math.max(s - 1, 0));
-  }
-
-  async function launch() {
-    if (launchingRef.current) return;
-    launchingRef.current = true;
-    let productCreated = false;
-    setLaunching(true);
+  async function initialize() {
+    if (busy) return;
+    setBusy(true);
     setError(null);
     try {
-      const creditsIncludedPerMonth = toNumberOrUndefined(state.creditsIncludedPerMonth);
-      const overageCreditsPriceCents = toNumberOrUndefined(state.overageCreditsPriceCents);
-      const pricePerSeatCents = toNumberOrUndefined(state.pricePerSeatCents);
-      const includedSeats = toNumberOrUndefined(state.includedSeats);
-      const trialDays = toNumberOrUndefined(state.trialDays);
-
-      const input: CreateBuilderProductInput = {
-        name: state.name.trim(),
-        spacetype_id: state.spacetypeId,
-        ...(state.templateId ? { template_id: state.templateId } : {}),
-        ...(state.productSlug ? { product_slug: state.productSlug } : {}),
-        product_config: {
-          authProvider: {
-            provider: state.authProvider,
-            requireAdminApproval: state.requireAdminApproval,
-            ...(state.allowedEmailDomains
-              ? { allowedEmailDomains: state.allowedEmailDomains.split(",").map((d) => d.trim()).filter(Boolean) }
-              : {}),
-          },
-          pricingConfig: {
-            model: state.pricingModel,
-            ...(state.pricingModel === "credits" && creditsIncludedPerMonth !== undefined ? { creditsIncludedPerMonth } : {}),
-            ...(state.pricingModel === "credits" && overageCreditsPriceCents !== undefined ? { overageCreditsPriceCents } : {}),
-            ...(state.pricingModel === "seats" && pricePerSeatCents !== undefined ? { pricePerSeatCents } : {}),
-            ...(state.pricingModel === "seats" && includedSeats !== undefined ? { includedSeats } : {}),
-            ...(state.pricingModel === "subscription" && trialDays !== undefined ? { trialDays } : {}),
-          },
-        },
-      };
-
-      const created = await createBuilderProduct(input);
-      productCreated = true;
-
-      if (state.customDomain.trim()) {
-        try {
-          await configureBuilderProductDomain(created.id, state.customDomain.trim());
-        } catch {
-          // Product creation already committed. Send the builder to domain settings with a
-          // clear retry notice; swallowing this failure used to make the launch look complete.
-          router.push(`/dashboard/products/${encodeURIComponent(created.id)}/domain#setup-retry`);
-          return;
-        }
-      }
-
-      // Tier 2/3 follow-up: a fully-built first-run onboarding wizard
-      // (/dashboard/spaces/[spaceId]/onboarding — credential prompts, preference prompts, the
-      // projects the assistant will bootstrap) already existed but was completely orphaned —
-      // nothing after product creation ever linked to it, so a new builder landed on the flat
-      // products list with zero guidance. A product IS a deployed Space (CLAUDE.md #30), so
-      // created.id is exactly the spaceId that page expects. The page itself already degrades
-      // gracefully ("This space has no guided setup") for a template with no bootstrap prompts,
-      // so redirecting here unconditionally is safe regardless of which template was chosen.
-      router.push(`/dashboard/spaces/${created.id}/onboarding`);
+      const product = await createBuilderProduct({ name: "Launchpad", spacetype_id: "launchpad" });
+      router.replace(`/dashboard/products/${encodeURIComponent(product.id)}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to launch product");
-    } finally {
-      // Keep the lock if D1 committed and navigation is underway. A failed response after that
-      // point must not let a second click create a duplicate product.
-      if (!productCreated) {
-        launchingRef.current = false;
-        setLaunching(false);
+      const message = err instanceof Error ? err.message : "Launchpad setup failed";
+      if (/already exists|launchpad_already_exists/i.test(message)) {
+        router.replace("/dashboard/products");
+        return;
       }
+      setError(message);
+      setBusy(false);
     }
   }
 
-  const stepProps = { state, update };
-
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="max-w-2xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">New Product</h1>
-        <p className="text-gray-500 mt-1">Launch a new customer-facing product.</p>
+        <h1 className="text-2xl font-bold text-gray-900">Set up Launchpad</h1>
+        <p className="text-gray-500 mt-1">Initialize Naelao’s single Launchpad product workspace.</p>
       </div>
-
-      {/* Step indicator */}
-      <div role="list" aria-label="Product creation steps" className="flex items-center gap-2 mb-8">
-        {STEPS.map((label, i) => (
-          <div key={label} role="listitem" aria-label={label} aria-current={i === step ? "step" : undefined} className="flex items-center gap-2 flex-1">
-            <div
-              aria-hidden="true"
-              className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 ${
-                i < step ? "bg-brand-600 text-white" : i === step ? "bg-brand-100 text-brand-700 border-2 border-brand-500" : "bg-gray-100 text-gray-400"
-              }`}
-            >
-              {i < step ? "✓" : i + 1}
-            </div>
-            {i < STEPS.length - 1 && <div className={`flex-1 h-0.5 ${i < step ? "bg-brand-600" : "bg-gray-200"}`} />}
-          </div>
-        ))}
-      </div>
-
-      <div ref={stepContentRef} className="bg-white rounded-xl border border-gray-200 p-6">
-        {step === 0 && <IdentityStep {...stepProps} />}
-        {step === 1 && <SpaceTypeStep {...stepProps} />}
-        {step === 2 && <AuthConfigStep {...stepProps} />}
-        {step === 3 && <PricingStep {...stepProps} />}
-        {step === 4 && <DomainStep {...stepProps} />}
-        {step === 5 && <ReviewStep state={state} />}
-
-        {error && (
-          <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-5">
-            {error}
-          </p>
-        )}
-
-        <div className="flex justify-between mt-8 pt-5 border-t border-gray-100">
-          <button
-            type="button"
-            onClick={goBack}
-            disabled={step === 0 || launching}
-            className="px-4 py-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40 transition-colors"
-          >
-            Back
+      <section className="bg-white rounded-xl border border-gray-200 p-6">
+        <h2 className="font-semibold text-gray-900">Launchpad</h2>
+        <p className="text-sm text-gray-500 mt-2">This creates the one Launchpad root for the Naelao team. Product type and defaults are managed centrally; there are no templates or separate product plans to choose here.</p>
+        {error && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-5">{error}</p>}
+        <div className="flex items-center gap-3 mt-6">
+          <button type="button" onClick={() => void initialize()} disabled={busy} className="px-5 py-2.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 disabled:opacity-50">
+            {busy ? "Setting up…" : "Initialize Launchpad"}
           </button>
-          {step < STEPS.length - 1 ? (
-            <button
-              type="button"
-              onClick={goNext}
-              className="px-5 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors"
-            >
-              Next
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void launch()}
-              disabled={launching}
-              className="px-5 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-300 text-white text-sm font-semibold rounded-lg transition-colors"
-            >
-              {launching ? "Launching..." : "Launch product"}
-            </button>
-          )}
+          <button type="button" onClick={() => router.back()} disabled={busy} className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50">Cancel</button>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

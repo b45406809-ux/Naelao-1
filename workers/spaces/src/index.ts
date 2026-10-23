@@ -96,6 +96,8 @@ export interface Env {
   /** Knowledge Worker — Foundry source-reference checks and grant-authorized document reads. */
   KNOWLEDGE_WORKER?: Fetcher;
   PRODUCT_SHELL_URL?: string;
+  /** Tenant allowed to operate and retain Naelao's single Launchpad root product. */
+  NAELAO_DASHBOARD_TENANT_ID?: string;
   TELEGRAM_BOT_USERNAME?: string;
   WHATSAPP_PHONE_NUMBER?: string;
   /** Either Meta Cloud API or Twilio may deliver passwordless WhatsApp challenges. */
@@ -351,6 +353,18 @@ app.post("/spaces", async (c) => {
     parent_space_id?: string;
     depth?: number;
   };
+
+  // A root space is the platform's single Launchpad product. Customer-owned spaces are
+  // departments/businesses under an existing root and use the dedicated parent-scoped flows.
+  // Keep this legacy route aligned with /builder/products so it cannot bypass team-only creation.
+  if (!body.parent_space_id) {
+    if (!c.env.NAELAO_DASHBOARD_TENANT_ID || tenantId !== c.env.NAELAO_DASHBOARD_TENANT_ID) {
+      return c.json({ error_code: "forbidden", message: "Only the Naelao team can create the Launchpad root product" }, 403);
+    }
+    if (body.name !== "Launchpad" || body.spacetype_id !== "launchpad" || body.template_id || body.config_overrides) {
+      return c.json({ error_code: "unsupported_product", message: "The Naelao dashboard creates one centrally configured Launchpad product" }, 400);
+    }
+  }
 
   try {
     const result = await createSpaceRecord(c.env, {
@@ -619,6 +633,14 @@ app.delete("/spaces/:id", async (c) => {
   const { tenantId, role } = getCallerIdentity(c);
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
   const spaceId = c.req.param("id");
+  if (tenantId && tenantId === c.env.NAELAO_DASHBOARD_TENANT_ID) {
+    const root = await c.env.PLATFORM_DB.prepare(
+      "SELECT spacetype_id, COALESCE(depth, 0) AS depth FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+    ).bind(spaceId, tenantId).first<{ spacetype_id: string; depth: number }>();
+    if (root?.spacetype_id === "launchpad" && root.depth === 0) {
+      return c.json({ error_code: "protected_platform_product", message: "The Naelao Launchpad root cannot be deleted" }, 409);
+    }
+  }
   const now = new Date().toISOString();
 
   const result = await c.env.PLATFORM_DB.prepare(

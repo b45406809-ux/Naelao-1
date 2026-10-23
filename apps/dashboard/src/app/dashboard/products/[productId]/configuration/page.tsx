@@ -4,8 +4,8 @@ export const runtime = "edge";
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { updateBuilderProduct, getTemplates, getOpenRouterWorkerModelCards, type OpenRouterWorkerModelCard } from "@/lib/api";
-import type { BuilderProductConfig, TemplateInfo } from "@/lib/api";
+import { updateBuilderProduct, getOpenRouterWorkerModelCards, type OpenRouterWorkerModelCard } from "@/lib/api";
+import type { BuilderProductConfig } from "@/lib/api";
 import { useProduct } from "../productContext";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 
@@ -46,9 +46,6 @@ export default function ProductConfigurationPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  // Phase F (§A1.17): fetched from the real, coming_soon-aware GET /templates catalog instead of
-  // a hardcoded duplicate of LAUNCHPAD_TEMPLATES — de-drifts this page from apps/shell's dialog.
-  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [workerCards, setWorkerCards] = useState<OpenRouterWorkerModelCard[]>([]);
   const [workerModelSearch, setWorkerModelSearch] = useState("");
 
@@ -58,10 +55,6 @@ export default function ProductConfigurationPage() {
       setName(product.name);
     }
   }, [product]);
-
-  useEffect(() => {
-    void getTemplates().then(setTemplates).catch(() => setTemplates([]));
-  }, []);
 
   useEffect(() => {
     if (product) void getOpenRouterWorkerModelCards(product.id).then(setWorkerCards).catch(() => setWorkerCards([]));
@@ -114,66 +107,6 @@ export default function ProductConfigurationPage() {
           />
           Require my approval before a new sign-up can use the product
         </label>
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Product Mode</h2>
-        <div className="space-y-3">
-          <div className="flex gap-3">
-            {(["team", "tenant", "hybrid"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => setForm((f) => ({ ...f, membershipModel: mode }))}
-                className={`flex-1 text-left px-4 py-3 rounded-lg border text-sm transition-colors ${
-                  (form.membershipModel ?? "team") === mode
-                    ? "border-brand-500 bg-brand-50 text-brand-800"
-                    : "border-gray-200 text-gray-600 hover:border-gray-300"
-                }`}
-              >
-                <div className="font-semibold capitalize">{mode}</div>
-                <div className="text-xs mt-0.5 text-gray-500">
-                  {mode === "team" && "One shared business — end users join by invite."}
-                  {mode === "tenant" && "End users create and own their own business."}
-                  {mode === "hybrid" && "End users can join the shared business AND create their own."}
-                </div>
-              </button>
-            ))}
-          </div>
-
-          {form.membershipModel !== "team" && (
-            <>
-              <label className="flex items-center gap-2 text-sm text-gray-700 pt-2">
-                <input
-                  type="checkbox"
-                  checked={form.allowPublicSignup ?? false}
-                  onChange={(e) => setForm((f) => ({ ...f, allowPublicSignup: e.target.checked }))}
-                  className="rounded border-gray-300 text-brand-600 focus:ring-brand-500"
-                />
-                Allow end users to sign up and create their own business
-              </label>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  SpaceTypes end users may instantiate
-                </label>
-                <label className="flex items-center gap-2 text-sm text-gray-600">
-                  <input
-                    type="checkbox"
-                    checked={(form.allowedChildSpaceTypes ?? []).includes("launchpad")}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        allowedChildSpaceTypes: e.target.checked ? ["launchpad"] : [],
-                      }))
-                    }
-                    className="rounded border-gray-300 text-brand-600 focus:ring-brand-500"
-                  />
-                  Launchpad
-                </label>
-              </div>
-            </>
-          )}
-        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-5">
@@ -260,46 +193,6 @@ export default function ProductConfigurationPage() {
         </div>}
       </div>
 
-      {form.membershipModel !== "team" && (
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Templates Catalog</h2>
-          <p className="text-xs text-gray-400 mb-3">
-            Which business templates end users can pick from when creating their own business.
-            Leave everything unchecked to offer all of them. Templates marked "Coming soon" are
-            not yet selectable by end users regardless of this setting.
-          </p>
-          <div className="grid grid-cols-2 gap-2">
-            {templates.map((t) => {
-              const selected = form.catalog?.businessTemplates ?? [];
-              const checked = selected.includes(t.id);
-              return (
-                <label
-                  key={t.id}
-                  className={`flex items-center gap-2 text-sm ${t.coming_soon ? "text-gray-400" : "text-gray-700"}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) =>
-                      setForm((f) => {
-                        const current = f.catalog?.businessTemplates ?? [];
-                        const next = e.target.checked ? [...current, t.id] : current.filter((id) => id !== t.id);
-                        return { ...f, catalog: { ...f.catalog, businessTemplates: next } };
-                      })
-                    }
-                    className="rounded border-gray-300 text-brand-600 focus:ring-brand-500"
-                  />
-                  {t.name}
-                  {t.coming_soon && (
-                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-yellow-50 text-yellow-700">Coming soon</span>
-                  )}
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       <div className="bg-white rounded-xl border border-gray-200 p-5">
         <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Limits</h2>
         <div className="grid grid-cols-2 gap-4">
@@ -372,17 +265,6 @@ export default function ProductConfigurationPage() {
         <p className="text-xs text-gray-400 mt-1">
           Runs completed, failures, and approvals from the last 24 hours — sent once a day, only
           when there was activity to report.
-        </p>
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Pricing</h2>
-        <p className="text-sm text-gray-700 capitalize">
-          Model: <span className="font-medium">{form.pricingConfig?.model ?? "free"}</span>
-        </p>
-        <p className="text-xs text-gray-400 mt-1">
-          Changing the pricing model requires care since it affects existing customers — contact
-          support to migrate.
         </p>
       </div>
 

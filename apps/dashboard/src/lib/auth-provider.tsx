@@ -26,7 +26,7 @@ export interface AuthContextValue {
    *  BEFORE this provider's own hydration effect, since React runs effects child-first within a
    *  single mount commit) sees the default `isAuthenticated: false` and bounces to /login even
    *  when a valid token exists in storage. This was a real, reproducible bug on every nested
-   *  /dashboard/* route (including /dashboard/clients) before this field existed. */
+   *  nested /dashboard/* route before this field existed. */
   isHydrated: boolean;
 }
 

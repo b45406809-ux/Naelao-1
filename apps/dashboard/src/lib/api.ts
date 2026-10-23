@@ -342,75 +342,6 @@ export async function revokeApiKey(id: string): Promise<void> {
   return apiFetch<void>(`/builder/api-keys/${pathSegment(id)}`, { method: "DELETE" });
 }
 
-// ── Reseller / client portfolio ──────────────────────────────────────────────
-
-export interface ResellerClient {
-  child_tenant_id: string;
-  child_owner_user_id: string;
-  status: string;
-  created_at: string;
-  space_count: number;
-}
-
-export interface ResellerClientsResponse {
-  clients: ResellerClient[];
-  client_count: number;
-  page: number;
-  page_size: number;
-  page_count: number;
-  current_period: string;
-  billing: {
-    retail: number;
-    wholesale: number;
-    margin: number;
-    events: number;
-  };
-}
-
-export async function getResellerClients(page = 1): Promise<ResellerClientsResponse> {
-  return apiFetch<ResellerClientsResponse>(`/reseller/clients?page=${encodeURIComponent(String(page))}`);
-}
-
-export interface ResellerClientSpace {
-  id: string;
-  name: string;
-  spacetype_id: string;
-  status: string;
-  tenancy_mode: string;
-  created_at: string;
-}
-
-export interface ResellerClientDetail {
-  child_tenant_id: string;
-  parent_tenant_id: string;
-  status: string;
-  spaces: ResellerClientSpace[];
-  space_count: number;
-}
-
-export async function getResellerClient(childTenantId: string): Promise<ResellerClientDetail> {
-  return apiFetch<ResellerClientDetail>(`/reseller/clients/${pathSegment(childTenantId)}`);
-}
-
-export async function setResellerClientStatus(
-  childTenantId: string,
-  status: "active" | "suspended"
-): Promise<{ child_tenant_id: string; status: string }> {
-  return apiFetch(`/reseller/clients/${pathSegment(childTenantId)}/status`, {
-    method: "POST",
-    body: JSON.stringify({ status }),
-  });
-}
-
-export async function promoteResellerClient(
-  childTenantId: string
-): Promise<{ promoted: boolean; child_tenant_id: string }> {
-  return apiFetch(`/reseller/clients/${pathSegment(childTenantId)}/promote`, {
-    method: "POST",
-    body: JSON.stringify({ acknowledge_irreversible: true }),
-  });
-}
-
 // ── Sub-spaces (departments) + cross-space grants ────────────────────────────
 
 export interface SubSpace {
@@ -575,39 +506,6 @@ export async function connectPlatform(
   });
 }
 
-// ── Templates + first-run onboarding wizard ──────────────────────────────────
-
-export interface OnboardingPrompt {
-  id: string;
-  type: "credential" | "choice" | "text" | "boolean";
-  question: string;
-  connector?: string;
-  options?: string[];
-  required?: boolean;
-}
-
-export interface TemplateBootstrap {
-  prompts: OnboardingPrompt[];
-  projects?: string[];
-  setup_scripts?: string[];
-}
-
-export interface TemplateInfo {
-  id: string;
-  name: string;
-  description: string;
-  free_tier_eligible: boolean;
-  connectors: string[];
-  coming_soon: boolean;
-  bootstrap?: TemplateBootstrap;
-}
-
-/** Launchpad templates incl. their first-run bootstrap (the onboarding wizard reads this). */
-export async function getTemplates(): Promise<TemplateInfo[]> {
-  const res = await apiFetch<{ templates: TemplateInfo[] }>("/templates");
-  return res.templates ?? [];
-}
-
 // ── Builder Dashboard API (Three-Tier Platform Model — /builder/*) ───────────────────────────
 // Named `BuilderProduct` (not `Product`) to avoid colliding with the existing `Product` type
 // above, which means a Launchpad commerce item a store sells — a completely different concept
@@ -630,6 +528,15 @@ export interface BuilderProductPage {
   page: number;
   page_size: number;
   page_count: number;
+}
+
+export interface NaelaoLaunchpadDashboard {
+  product: BuilderProductSummary | null;
+  can_initialize: boolean;
+}
+
+export function getNaelaoLaunchpadDashboard(): Promise<NaelaoLaunchpadDashboard> {
+  return apiFetch<NaelaoLaunchpadDashboard>("/builder/launchpad");
 }
 
 export interface PricingPlan {

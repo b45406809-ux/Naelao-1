@@ -42,6 +42,11 @@ ENVIRONMENT = "development"
 # set to the real, live Product Shell domain (see CLAUDE.md's Live Deployment Facts).
 PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev"
 
+# The internal product dashboard is restricted to this org/tenant ID. Configure the same value
+# in each deployed environment (and the matching local .dev.vars) before granting dashboard
+# access. The worker fails closed when this identifier is missing.
+#   wrangler secret put NAELAO_DASHBOARD_TENANT_ID
+
 # Cloudflare for SaaS custom-hostname provisioning (storefront custom domains).
 # Set the real values at deploy time as secrets:
 #   wrangler secret put CF_API_TOKEN      (zone-scoped: SSL and Certificates: Edit)

@@ -1,6 +1,6 @@
 "use client";
 
-import { createBillingCheckout, getBillingSubscription, getMyPreferences, updateMyPreferences } from "@/lib/api";
+import { getMyPreferences, updateMyPreferences } from "@/lib/api";
 import { useAuth } from "@/lib/auth-provider";
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -9,34 +9,6 @@ import { useEffect, useState } from "react";
 // (/dashboard/api-keys) — this page used to embed a second, simpler API-key UI pointed at a
 // route (/settings/api-keys) that no worker ever implemented; consolidated onto the one real
 // UI (scopes + expiry) instead of maintaining two dead call sites.
-
-const PLAN_TIERS = [
-  {
-    id: "growth",
-    name: "Growth",
-    price: "$49/mo",
-    description: "More Spaces, more documents, priority support",
-  },
-  {
-    id: "business",
-    name: "Business",
-    price: "$199/mo",
-    description: "Unlimited Spaces, advanced analytics, SLA",
-  },
-  {
-    id: "enterprise",
-    name: "Enterprise",
-    price: "Custom",
-    description: "Dedicated infrastructure, custom contracts",
-  },
-];
-
-const PLAN_BADGE: Record<string, string> = {
-  free: "bg-gray-100 text-gray-600",
-  growth: "bg-blue-100 text-blue-700",
-  business: "bg-purple-100 text-purple-700",
-  enterprise: "bg-yellow-100 text-yellow-700",
-};
 
 function SectionCard({
   title,
@@ -58,33 +30,10 @@ function SectionCard({
 export default function SettingsPage() {
   const { claims } = useAuth();
 
-  // Billing state
-  const [subscription, setSubscription] = useState<{
-    plan_tier: string;
-    status: string;
-    current_period_end: string;
-  } | null>(null);
-  const [billingLoading, setBillingLoading] = useState(true);
-  const [billingError, setBillingError] = useState<string | null>(null);
-  const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
   const [language, setLanguage] = useState("");
   const [languageLoading, setLanguageLoading] = useState(true);
   const [languageSaving, setLanguageSaving] = useState(false);
   const [languageMessage, setLanguageMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    async function loadBilling() {
-      try {
-        const sub = await getBillingSubscription();
-        setSubscription(sub);
-      } catch {
-        setBillingError("Could not load subscription info");
-      } finally {
-        setBillingLoading(false);
-      }
-    }
-    void loadBilling();
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -107,29 +56,12 @@ export default function SettingsPage() {
     } finally { setLanguageSaving(false); }
   }
 
-  async function handleUpgrade(planId: string) {
-    setCheckoutLoading(planId);
-    try {
-      const { url } = await createBillingCheckout(planId);
-      window.location.href = url;
-    } catch (err) {
-      setBillingError(
-        err instanceof Error ? err.message : "Failed to start checkout"
-      );
-    } finally {
-      setCheckoutLoading(null);
-    }
-  }
-
-  const planTier = subscription?.plan_tier ?? "free";
-  const planBadge = PLAN_BADGE[planTier] ?? PLAN_BADGE["free"]!;
-
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
         <p className="text-gray-500 mt-1">
-          Manage your subscription, API keys, and organization
+          Manage your account preferences and API access
         </p>
       </div>
 
@@ -180,70 +112,6 @@ export default function SettingsPage() {
           </button>
         </div>
         {languageMessage && <output className="text-sm text-gray-500 mt-2">{languageMessage}</output>}
-      </SectionCard>
-
-      {/* Subscription */}
-      <SectionCard title="Subscription">
-        {billingLoading ? (
-          <div className="text-sm text-gray-400">Loading...</div>
-        ) : billingError ? (
-          <p className="text-sm text-red-600">{billingError}</p>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex items-center gap-4">
-              <span
-                className={`px-3 py-1 rounded-full text-sm font-semibold capitalize ${planBadge}`}
-              >
-                {planTier} Plan
-              </span>
-              {subscription?.status && (
-                <span className="text-sm text-gray-500">
-                  Status: {subscription.status}
-                </span>
-              )}
-              {subscription?.current_period_end && (
-                <span className="text-sm text-gray-500">
-                  Renews:{" "}
-                  {new Date(subscription.current_period_end).toLocaleDateString()}
-                </span>
-              )}
-            </div>
-
-            {planTier !== "enterprise" && (
-              <div>
-                <p className="text-sm font-medium text-gray-700 mb-3">
-                  Upgrade your plan
-                </p>
-                <div className="grid gap-3">
-                  {PLAN_TIERS.filter((p) => p.id !== planTier).map((plan) => (
-                    <div
-                      key={plan.id}
-                      className="flex items-center justify-between p-4 rounded-lg border border-gray-200 hover:border-brand-200 hover:bg-brand-50 transition-colors"
-                    >
-                      <div>
-                        <p className="font-semibold text-gray-900">
-                          {plan.name}{" "}
-                          <span className="text-brand-600">{plan.price}</span>
-                        </p>
-                        <p className="text-xs text-gray-500 mt-0.5">
-                          {plan.description}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleUpgrade(plan.id)}
-                        disabled={checkoutLoading === plan.id}
-                        className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-300 text-white text-sm font-semibold rounded-lg transition-colors whitespace-nowrap"
-                      >
-                        {checkoutLoading === plan.id ? "Loading..." : "Upgrade"}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
       </SectionCard>
 
       {/* API Keys */}

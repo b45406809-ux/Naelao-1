@@ -11,15 +11,11 @@ const TABS = [
   { label: "Analytics", segment: "analytics" },
   { label: "Configuration", segment: "configuration" },
   { label: "Domain", segment: "domain" },
-  { label: "Pricing", segment: "pricing" },
   { label: "Agents", segment: "agents" },
   { label: "Activity", segment: "activity" },
   { label: "Local Machine", segment: "local-machine" },
   { label: "Feature Flags", segment: "feature-flags" },
   { label: "Legal", segment: "legal" },
-  { label: "Billing", segment: "billing" },
-  { label: "Wallet", segment: "wallet" },
-  { label: "Danger Zone", segment: "danger-zone" },
 ] as const;
 
 const STATUS_COLORS: Record<string, string> = {
@@ -40,7 +36,7 @@ function ProductHeader({ productId }: { productId: string }) {
     <div className="max-w-5xl mx-auto">
       <div className="mb-2">
         <Link href="/dashboard/products" className="text-sm text-gray-400 hover:text-gray-600">
-          ← Products
+          ← Launchpad
         </Link>
       </div>
 

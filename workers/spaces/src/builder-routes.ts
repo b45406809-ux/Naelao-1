@@ -44,6 +44,8 @@ export interface BuilderRoutesEnv extends CreateSpaceEnv {
   CF_SAAS_ZONE_ID?: string;
   STOREFRONT_ROOT?: string;
   BILLING_WORKER?: Fetcher;
+  /** Tenant allowed to operate Naelao's internal Launchpad dashboard. Empty means fail closed. */
+  NAELAO_DASHBOARD_TENANT_ID?: string;
 }
 
 interface SpaceRow {
@@ -227,6 +229,19 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const env = c.env as BuilderRoutesEnv;
     const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    if (!env.NAELAO_DASHBOARD_TENANT_ID || auth.tenantId !== env.NAELAO_DASHBOARD_TENANT_ID) {
+      return c.json({ error_code: "forbidden", message: "Only the Naelao team can create the Launchpad product" }, 403);
+    }
+
+    // Naelao operates one Launchpad root product from this dashboard. Businesses and
+    // departments are created through their own flows; never allow a second root here.
+    const existingLaunchpad = await env.PLATFORM_DB.prepare(
+      `SELECT id FROM spaces WHERE tenant_id = ? AND spacetype_id = 'launchpad'
+         AND COALESCE(depth, 0) = 0 AND status != 'deleted' LIMIT 1`
+    ).bind(auth.tenantId).first<{ id: string }>();
+    if (existingLaunchpad) {
+      return c.json({ error_code: "launchpad_already_exists", product_id: existingLaunchpad.id }, 409);
+    }
 
     let bodyBytes: Uint8Array;
     try {
@@ -247,26 +262,20 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const body = bodyValue as {
       name: string;
       spacetype_id: string;
-      template_id?: string;
-      product_slug?: unknown;
-      product_config?: Partial<SpaceTypeProductConfig>;
     };
-    if (body.product_slug !== undefined && typeof body.product_slug !== "string") {
-      return c.json({ error_code: "bad_request", message: "product_slug must be a string" }, 400);
-    }
-    if (body.product_config !== undefined && (!body.product_config || typeof body.product_config !== "object" || Array.isArray(body.product_config))) {
-      return c.json({ error_code: "bad_request", message: "product_config must be an object" }, 400);
+    const extraFields = Object.keys(bodyValue as Record<string, unknown>).some(
+      (key) => key !== "name" && key !== "spacetype_id"
+    );
+    if (extraFields || body.name !== "Launchpad" || body.spacetype_id !== "launchpad") {
+      return c.json({ error_code: "unsupported_product", message: "The Naelao dashboard creates one centrally configured Launchpad product" }, 400);
     }
 
     let result;
     try {
       result = await createSpaceRecord(env, {
         tenantId: auth.tenantId,
-        name: body.name,
-        spacetypeId: body.spacetype_id,
-        ...(body.template_id ? { templateId: body.template_id } : {}),
-        ...(body.product_slug ? { productSlug: body.product_slug } : {}),
-        ...(body.product_config ? { configOverrides: { productConfig: body.product_config } } : {}),
+        name: "Launchpad",
+        spacetypeId: "launchpad",
       });
     } catch (err) {
       if (err instanceof SpaceCreationError) {
@@ -292,6 +301,25 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     }
 
     return c.json({ id: result.id, name: body.name, spacetype_id: body.spacetype_id, status: result.status, product_slug: result.product_slug, created_at: result.created_at }, 201);
+  });
+
+  // The internal dashboard has a single default product surface. This endpoint deliberately
+  // returns only the Launchpad root and is unavailable to other tenants, even if they use the
+  // broader builder API for their own products.
+  app.get("/builder/launchpad", async (c) => {
+    const env = c.env as BuilderRoutesEnv;
+    const auth = await builderAuthFor(env, c);
+    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    if (!env.NAELAO_DASHBOARD_TENANT_ID || auth.tenantId !== env.NAELAO_DASHBOARD_TENANT_ID) {
+      return c.json({ error_code: "forbidden", message: "Naelao team access required" }, 403);
+    }
+    const product = await env.PLATFORM_DB.prepare(
+      `SELECT id, name, status, spacetype_id, product_slug, created_at, updated_at
+         FROM spaces WHERE tenant_id = ? AND spacetype_id = 'launchpad'
+           AND COALESCE(depth, 0) = 0 AND status != 'deleted'
+         ORDER BY created_at ASC, id ASC LIMIT 1`
+    ).bind(auth.tenantId).first();
+    return c.json({ product: product ?? null, can_initialize: product == null });
   });
 
   app.get("/builder/products", async (c) => {
@@ -571,6 +599,9 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+    if (auth.tenantId === env.NAELAO_DASHBOARD_TENANT_ID && product.spacetype_id === "launchpad") {
+      return c.json({ error_code: "unsupported_operation", message: "Reseller configuration is not part of the Naelao dashboard" }, 403);
+    }
 
     const body = await c.req.json<{
       billing_relationship?: "reseller" | "referral" | "platform";
@@ -628,6 +659,9 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+    if (auth.tenantId === env.NAELAO_DASHBOARD_TENANT_ID && product.spacetype_id === "launchpad") {
+      return c.json({ error_code: "protected_platform_product", message: "The Naelao Launchpad root cannot be deleted" }, 409);
+    }
     // Release the slug. The unique index on product_slug doesn't exclude deleted rows, so a
     // soft delete used to burn the name permanently — a builder who deleted "Launchpad" and
     // rebuilt it could never call it that again, and (since nothing lets a slug be set after

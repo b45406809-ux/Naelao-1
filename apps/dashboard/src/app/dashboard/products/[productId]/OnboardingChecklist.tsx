@@ -18,8 +18,6 @@ interface Step {
 
 function deriveSteps(product: BuilderProductDetail, base: string): Step[] {
   const cfg = product.product_config;
-  const pricing = cfg.pricingConfig;
-  const hasPricing = !!(pricing && ((pricing.plans && pricing.plans.length > 0) || (pricing.creditPacks && pricing.creditPacks.length > 0)));
   return [
     {
       id: "name",
@@ -34,13 +32,6 @@ function deriveSteps(product: BuilderProductDetail, base: string): Step[] {
       hint: "Optional — your product also works on its Naelao subdomain.",
       done: !!product.product_slug,
       href: `${base}/domain`,
-    },
-    {
-      id: "pricing",
-      label: "Set up pricing",
-      hint: "Add at least one plan or credit pack so end users can pay.",
-      done: hasPricing,
-      href: `${base}/pricing`,
     },
     {
       id: "legal",
