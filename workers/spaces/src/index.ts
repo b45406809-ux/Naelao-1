@@ -6895,8 +6895,17 @@ app.post("/reseller/spaces", async (c) => {
 
 // GET /reseller/clients — the calling reseller's client portfolio (G-AS34 dashboard data).
 app.get("/reseller/clients", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, role } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Reseller manager role required" }, 403);
+  const pageValue = c.req.query("page") ?? "1";
+  if (!/^\d+$/.test(pageValue)) return c.json({ error_code: "bad_request", message: "page must be a positive integer" }, 400);
+  const page = Number(pageValue);
+  const pageSize = 100;
+  if (!Number.isSafeInteger(page) || page < 1 || page > 1_000_000) {
+    return c.json({ error_code: "bad_request", message: "page must be between 1 and 1000000" }, 400);
+  }
+  const offset = (page - 1) * pageSize;
 
   const { results: clients } = await c.env.PLATFORM_DB.prepare(
     `SELECT h.child_tenant_id, h.child_owner_user_id, h.status, h.created_at,
@@ -6905,9 +6914,13 @@ app.get("/reseller/clients", async (c) => {
        LEFT JOIN spaces s ON s.tenant_id = h.child_tenant_id AND s.status != 'deleted'
       WHERE h.parent_tenant_id = ?
       GROUP BY h.child_tenant_id
-      ORDER BY h.created_at DESC
-      LIMIT 200`
-  ).bind(tenantId).all();
+      ORDER BY h.created_at DESC, h.child_tenant_id ASC
+      LIMIT ? OFFSET ?`
+  ).bind(tenantId, pageSize, offset).all();
+  const total = await c.env.PLATFORM_DB.prepare(
+    "SELECT COUNT(*) AS count FROM tenant_hierarchy WHERE parent_tenant_id = ?"
+  ).bind(tenantId).first<{ count: number }>();
+  const clientCount = total?.count ?? 0;
 
   const period = new Date().toISOString().slice(0, 7); // YYYY-MM
   const rollup = await c.env.PLATFORM_DB.prepare(
@@ -6921,7 +6934,10 @@ app.get("/reseller/clients", async (c) => {
 
   return c.json({
     clients,
-    client_count: clients.length,
+    client_count: clientCount,
+    page,
+    page_size: pageSize,
+    page_count: Math.ceil(clientCount / pageSize),
     current_period: period,
     billing: rollup ?? { retail: 0, wholesale: 0, margin: 0, events: 0 },
   });
@@ -6933,8 +6949,9 @@ app.get("/reseller/clients", async (c) => {
 // (wholesale) and can bill their own clients from (retail/margin), with a per-client breakdown.
 // Defaults to the current month. Grouped by currency so mixed-currency portfolios stay correct.
 app.get("/reseller/statement", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, role } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Reseller manager role required" }, 403);
 
   const period = c.req.query("period") ?? new Date().toISOString().slice(0, 7);
   if (!/^\d{4}-\d{2}$/.test(period)) {
@@ -7010,8 +7027,9 @@ async function assertResellerParent(
 
 // GET /reseller/clients/:childTenantId — one client's businesses + lineage (drill-down).
 app.get("/reseller/clients/:childTenantId", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, role } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Reseller manager role required" }, 403);
   const childTenantId = c.req.param("childTenantId");
 
   const hierarchy = await assertResellerParent(c.env, tenantId, childTenantId);
@@ -7034,11 +7052,12 @@ app.get("/reseller/clients/:childTenantId", async (c) => {
 // The reseller (parent) controls their customers' access: suspending cascades to the
 // child's spaces so no agent runs while suspended. Child data is untouched (reversible).
 app.post("/reseller/clients/:childTenantId/status", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, role } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Reseller manager role required" }, 403);
   const childTenantId = c.req.param("childTenantId");
-  const body = await c.req.json<{ status: "active" | "suspended" }>();
-  if (body.status !== "active" && body.status !== "suspended") {
+  const body = await c.req.json<{ status?: unknown }>().catch(() => null);
+  if (!body || (body.status !== "active" && body.status !== "suspended")) {
     return c.json({ error_code: "bad_request", message: "status must be 'active' or 'suspended'" }, 400);
   }
 
@@ -7072,11 +7091,12 @@ app.post("/reseller/clients/:childTenantId/status", async (c) => {
 // migration: the business is already its own SpaceDO under its own tenant, so promotion
 // just severs the reseller lineage. One-way; requires explicit acknowledgement.
 app.post("/reseller/clients/:childTenantId/promote", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, role } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden", message: "Reseller manager role required" }, 403);
   const childTenantId = c.req.param("childTenantId");
-  const body = await c.req.json<{ acknowledge_irreversible: boolean }>();
-  if (body.acknowledge_irreversible !== true) {
+  const body = await c.req.json<{ acknowledge_irreversible?: unknown }>().catch(() => null);
+  if (!body || body.acknowledge_irreversible !== true) {
     return c.json({ error_code: "acknowledgement_required", message: "acknowledge_irreversible must be true" }, 400);
   }
 
@@ -7085,12 +7105,14 @@ app.post("/reseller/clients/:childTenantId/promote", async (c) => {
 
   const now = new Date().toISOString();
   // Sever lineage: mark hierarchy terminated + clear parent_space_id on the child's spaces.
-  await c.env.PLATFORM_DB.prepare(
-    "UPDATE tenant_hierarchy SET status = 'terminated' WHERE child_tenant_id = ? AND parent_tenant_id = ?"
-  ).bind(childTenantId, tenantId).run();
-  await c.env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET parent_space_id = NULL, scenario_type = NULL, depth = 0, updated_at = ? WHERE tenant_id = ?"
-  ).bind(now, childTenantId).run();
+  await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare(
+      "UPDATE tenant_hierarchy SET status = 'terminated' WHERE child_tenant_id = ? AND parent_tenant_id = ?"
+    ).bind(childTenantId, tenantId),
+    c.env.PLATFORM_DB.prepare(
+      "UPDATE spaces SET parent_space_id = NULL, scenario_type = NULL, depth = 0, updated_at = ? WHERE tenant_id = ?"
+    ).bind(now, childTenantId),
+  ]);
 
   console.log(`[reseller][promote] child=${childTenantId} detached from parent=${tenantId} at=${now}`);
   return c.json({ promoted: true, child_tenant_id: childTenantId, promoted_at: now, note: "Business detached from reseller; now an independent product." });

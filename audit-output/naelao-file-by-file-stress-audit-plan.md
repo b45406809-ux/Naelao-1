@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2064` tracked files; `1878` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `aea6713d`.
+Inventory basis: `2066` tracked files; `1880` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `ca8b2529`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
@@ -160,7 +160,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `apps/dashboard/src/app/dashboard/clients`
 
-- [ ] `apps/dashboard/src/app/dashboard/clients/page.tsx`
+- [x] `apps/dashboard/src/app/dashboard/clients/page.tsx`
 
 ### `apps/dashboard/src/app/dashboard/products`
 
@@ -295,6 +295,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `apps/dashboard/src/lib`
 
+- [x] `apps/dashboard/src/lib/api-key-form.ts`
 - [ ] `apps/dashboard/src/lib/api.ts`
 - [x] `apps/dashboard/src/lib/auth-provider.tsx`
 - [x] `apps/dashboard/src/lib/auth.ts`
@@ -1492,6 +1493,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/cross-project-handoff.test.ts`
 - [ ] `tests/unit/customer-bot-rules-business-membership.test.ts`
 - [ ] `tests/unit/daily-digest.test.ts`
+- [x] `tests/unit/dashboard-api-key-form.test.ts`
 - [x] `tests/unit/dashboard-api-path.test.ts`
 - [x] `tests/unit/dashboard-auth.test.ts`
 - [x] `tests/unit/dashboard-confirm-dialog.test.ts`

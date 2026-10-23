@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiFetch, getSpace, updateProduct } from "../../apps/dashboard/src/lib/api";
+import { apiFetch, getResellerClients, getSpace, updateProduct } from "../../apps/dashboard/src/lib/api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -36,6 +36,20 @@ describe("dashboard API path identifiers", () => {
 
     const requested = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(requested.pathname).toBe("/spaces/space%2Fa/products/product%20b");
+  });
+
+  it("passes a page number when fetching reseller clients", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      clients: [], client_count: 205, page: 2, page_size: 100, page_count: 3,
+      current_period: "2026-10", billing: { retail: 0, wholesale: 0, margin: 0, events: 0 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getResellerClients(2);
+
+    const requested = new URL(fetchMock.mock.calls[0]![0] as string);
+    expect(requested.pathname).toBe("/reseller/clients");
+    expect(requested.searchParams.get("page")).toBe("2");
   });
 
   it("does not add JSON Content-Type to bodyless requests", async () => {

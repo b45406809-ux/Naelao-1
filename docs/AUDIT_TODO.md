@@ -1895,3 +1895,19 @@ first real business on free-tier resources before opening the platform to other 
   contrast, and screen-reader behavior remain open across the UI package and shell app. A headless
   Chromium check could not complete in the current environment, so these changes still need browser
   layout and assistive-technology validation.
+
+- [x] **Reseller client portfolio authorization, pagination, promotion atomicity, and dashboard handling.**
+  The portfolio, wholesale statement, client detail, suspension/reactivation, and promotion endpoints
+  relied only on the tenant header and did not restrict reseller-management operations to owner/admin
+  roles. They now reject other roles. The portfolio endpoint previously capped the response at 200
+  while reporting only that page's row count; it now returns stable 100-row pages and a portfolio-wide
+  count, and the dashboard exposes page controls. Promotion previously wrote the terminated hierarchy
+  and detached spaces in separate transactions; it now uses an atomic D1 batch. Malformed JSON is
+  rejected as 400 for status/promotion requests. The client drawer now has dialog semantics, Escape and
+  focus containment/restoration, keyboard-accessible row actions, stale-load protection, and closes
+  after successful promotion instead of refetching the now-detached relationship. SQLite-backed tests
+  cover viewer denial, malformed/missing confirmation, transaction rollback, successful detachment,
+  205-row pagination, and invalid page input. Focused worker/API-key/path suites and dashboard/spaces
+  typechecks passed before the current package-manager install issue; a post-change dashboard production
+  build is still open. Browser runtime checks for focus restoration, pagination interaction, and network
+  race handling remain open.

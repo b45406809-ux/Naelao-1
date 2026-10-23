@@ -355,6 +355,9 @@ export interface ResellerClient {
 export interface ResellerClientsResponse {
   clients: ResellerClient[];
   client_count: number;
+  page: number;
+  page_size: number;
+  page_count: number;
   current_period: string;
   billing: {
     retail: number;
@@ -364,8 +367,8 @@ export interface ResellerClientsResponse {
   };
 }
 
-export async function getResellerClients(): Promise<ResellerClientsResponse> {
-  return apiFetch<ResellerClientsResponse>("/reseller/clients");
+export async function getResellerClients(page = 1): Promise<ResellerClientsResponse> {
+  return apiFetch<ResellerClientsResponse>(`/reseller/clients?page=${encodeURIComponent(String(page))}`);
 }
 
 export interface ResellerClientSpace {

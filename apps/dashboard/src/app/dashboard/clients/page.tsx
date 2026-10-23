@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import {
   getResellerClients,
   getResellerClient,
@@ -95,8 +96,7 @@ function ClientRow({
 
   return (
     <tr
-      className="hover:bg-gray-50 transition-colors cursor-pointer"
-      onClick={() => onOpen(client)}
+      className="hover:bg-gray-50 transition-colors"
     >
       <td className="px-6 py-4">
         <div className="flex items-center gap-2">
@@ -119,7 +119,14 @@ function ClientRow({
       </td>
       <td className="px-6 py-4 text-sm text-gray-500">{joined}</td>
       <td className="px-6 py-4 text-right">
-        <span className="text-brand-600 text-xs font-medium">Manage →</span>
+        <button
+          type="button"
+          onClick={() => onOpen(client)}
+          className="text-brand-600 text-xs font-medium underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-600"
+          aria-label={`Manage client ${shortId}`}
+        >
+          Manage →
+        </button>
       </td>
     </tr>
   );
@@ -139,6 +146,39 @@ function ClientDrawer({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmPromote, setConfirmPromote] = useState(false);
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const dialogId = useId();
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    drawerRef.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus();
+    return () => previousFocusRef.current?.focus();
+  }, []);
+
+  function handleDrawerKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (!busy) onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = drawerRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (!focusable?.length) return;
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (event.shiftKey && (document.activeElement === first || !drawerRef.current?.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !drawerRef.current?.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -180,9 +220,8 @@ function ClientDrawer({
     setError(null);
     try {
       await promoteResellerClient(client.child_tenant_id);
-      await load();
       onChanged();
-      setConfirmPromote(false);
+      onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Promotion failed");
     } finally {
@@ -192,12 +231,20 @@ function ClientDrawer({
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} role="presentation" />
-      <div className="relative bg-white w-full max-w-md h-full shadow-2xl overflow-y-auto">
+      <div className="absolute inset-0 bg-black/40" onClick={() => { if (!busy) onClose(); }} role="presentation" />
+      <div
+        ref={drawerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`${dialogId}-title`}
+        aria-busy={busy}
+        onKeyDown={handleDrawerKeyDown}
+        className="relative bg-white w-full max-w-md h-full shadow-2xl overflow-y-auto"
+      >
         <div className="px-6 py-5 border-b border-gray-200 flex items-start justify-between">
           <div>
             <p className="text-xs text-gray-400 font-mono">{client.child_tenant_id}</p>
-            <h2 className="text-lg font-bold text-gray-900 mt-1">Client</h2>
+            <h2 id={`${dialogId}-title`} className="text-lg font-bold text-gray-900 mt-1">Client</h2>
             <div className="mt-2">
               <StatusBadge status={status} />
             </div>
@@ -205,15 +252,16 @@ function ClientDrawer({
           <button
             type="button"
             onClick={onClose}
+            disabled={busy}
             className="text-gray-400 hover:text-gray-700 text-xl leading-none"
-            aria-label="Close"
+            aria-label="Close client details"
           >
             ×
           </button>
         </div>
 
         {error && (
-          <div className="m-4 bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm">
+          <div role="alert" className="m-4 bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm">
             {error}
           </div>
         )}
@@ -248,7 +296,7 @@ function ClientDrawer({
               )}
             </div>
 
-            {!terminated && (
+            {detail && !terminated && (
               <div className="border-t border-gray-100 pt-5 space-y-3">
                 <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
                   Actions
@@ -282,7 +330,7 @@ function ClientDrawer({
                     Promote to standalone product
                   </button>
                 ) : (
-                  <div className="border border-red-200 bg-red-50 rounded-lg p-3 space-y-2">
+                  <div role="alert" className="border border-red-200 bg-red-50 rounded-lg p-3 space-y-2">
                     <p className="text-xs text-red-700">
                       This permanently detaches the business from your reseller program. It
                       becomes an independent product and stops counting toward your billing.
@@ -322,22 +370,29 @@ export default function ClientsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ResellerClient | null>(null);
+  const [page, setPage] = useState(1);
+  const loadRevision = useRef(0);
 
-  async function load() {
+  async function load(requestedPage = page) {
+    const revision = ++loadRevision.current;
     setLoading(true);
     setError(null);
     try {
-      const result = await getResellerClients();
+      const result = await getResellerClients(requestedPage);
+      if (revision !== loadRevision.current) return;
       setData(result);
+      setPage(result.page);
     } catch (err) {
+      if (revision !== loadRevision.current) return;
       setError(err instanceof Error ? err.message : "Failed to load clients");
     } finally {
-      setLoading(false);
+      if (revision === loadRevision.current) setLoading(false);
     }
   }
 
   useEffect(() => {
-    void load();
+    void load(1);
+    return () => { loadRevision.current++; };
   }, []);
 
   return (
@@ -384,13 +439,14 @@ export default function ClientsPage() {
                 </p>
               </div>
               <table className="w-full text-sm">
+                <caption className="sr-only">Reseller client portfolio</caption>
                 <thead>
                   <tr className="border-b border-gray-200 bg-gray-50">
-                    <th className="text-left px-6 py-3 font-semibold text-gray-600">Tenant</th>
-                    <th className="text-center px-6 py-3 font-semibold text-gray-600">Spaces</th>
-                    <th className="text-left px-6 py-3 font-semibold text-gray-600">Status</th>
-                    <th className="text-left px-6 py-3 font-semibold text-gray-600">Joined</th>
-                    <th className="px-6 py-3" />
+                    <th scope="col" className="text-left px-6 py-3 font-semibold text-gray-600">Tenant</th>
+                    <th scope="col" className="text-center px-6 py-3 font-semibold text-gray-600">Spaces</th>
+                    <th scope="col" className="text-left px-6 py-3 font-semibold text-gray-600">Status</th>
+                    <th scope="col" className="text-left px-6 py-3 font-semibold text-gray-600">Joined</th>
+                    <th scope="col" className="px-6 py-3"><span className="sr-only">Actions</span></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -403,6 +459,34 @@ export default function ClientsPage() {
                   ))}
                 </tbody>
               </table>
+              {data.page_count > 1 && (
+                <nav aria-label="Client pages" className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-4">
+                  <span className="text-xs text-gray-500" aria-live="polite">
+                    Showing {(data.page - 1) * data.page_size + 1}–{Math.min(data.page * data.page_size, data.client_count)} of {data.client_count}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void load(data.page - 1)}
+                      disabled={loading || data.page <= 1}
+                      className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-50"
+                    >
+                      Previous
+                    </button>
+                    <span className="self-center text-xs text-gray-500" aria-label={`Page ${data.page} of ${data.page_count}`}>
+                      {data.page} / {data.page_count}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void load(data.page + 1)}
+                      disabled={loading || data.page >= data.page_count}
+                      className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-50"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </nav>
+              )}
             </div>
           )}
         </>
@@ -410,6 +494,7 @@ export default function ClientsPage() {
 
       {selected && (
         <ClientDrawer
+          key={selected.child_tenant_id}
           client={selected}
           onClose={() => setSelected(null)}
           onChanged={() => void load()}
