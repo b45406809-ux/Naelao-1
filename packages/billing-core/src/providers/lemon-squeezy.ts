@@ -30,6 +30,13 @@ const LS_API = "https://api.lemonsqueezy.com/v1";
 const MAX_LS_PROVIDER_RESPONSE_BYTES = 256 * 1024;
 const LS_PROVIDER_TIMEOUT_MS = 15_000;
 
+function normalizedProviderTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 64
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) return undefined;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : undefined;
+}
+
 async function readLsJson<T>(response: Response, operation: string): Promise<T> {
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
@@ -116,6 +123,7 @@ export class LemonSqueezyProvider implements BillingProvider {
 
     const providerStatus = !isOrder && attrs["status"] ? String(attrs["status"]) : null;
     const currentPeriodEnd = !isOrder && (attrs["renews_at"] ?? attrs["ends_at"]) ? String(attrs["renews_at"] ?? attrs["ends_at"]) : null;
+    const providerUpdatedAt = !isOrder ? normalizedProviderTimestamp(attrs["updated_at"]) : undefined;
 
     return {
       type,
@@ -143,6 +151,7 @@ export class LemonSqueezyProvider implements BillingProvider {
       metadata: event.meta?.custom_data ?? attrs.custom_data ?? {},
       ...(providerStatus ? { providerStatus } : {}),
       ...(currentPeriodEnd ? { currentPeriodEnd } : {}),
+      ...(providerUpdatedAt ? { providerUpdatedAt } : {}),
     };
   }
 

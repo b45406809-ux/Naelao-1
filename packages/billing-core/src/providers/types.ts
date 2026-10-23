@@ -51,6 +51,9 @@ export interface NormalizedBillingEvent {
   /** ISO timestamp of the next renewal (or, once cancelled, the period end) — only present on
    *  subscription.* events. */
   currentPeriodEnd?: string;
+  /** Provider resource update timestamp, when the signed event includes one. Use it only to order
+   *  events from that same provider/resource; do not compare timestamps across providers. */
+  providerUpdatedAt?: string;
 }
 
 export interface CheckoutParams {

@@ -223,11 +223,13 @@ describe("Lemon Squeezy webhook — business subscription state", () => {
     );
     expect(res.status).toBe(200);
     expect(inserts).toHaveLength(1);
-    // args: id, business_space_id, product_space_id, plan_id, status, ls_subscription_id, ls_customer_id, current_period_end, updated_at
+    // args: id, business_space_id, product_space_id, plan_id, status, ls_subscription_id, ls_customer_id, current_period_end, provider_event_at, updated_at, event type
     expect(inserts[0]!.args[1]).toBe("biz-1");
     expect(inserts[0]!.args[2]).toBe("prod-root");
     expect(inserts[0]!.args[3]).toBe("pro");
     expect(inserts[0]!.args[4]).toBe("active");
+    expect(inserts[0]!.sql).toContain("excluded.provider_event_at > business_subscriptions.provider_event_at");
+    expect(inserts[0]!.args.at(-1)).toBe("subscription.created");
   });
 
   it("maps subscription_cancelled to status=cancelled regardless of the raw LS status field", async () => {
@@ -321,7 +323,34 @@ describe("Lemon Squeezy webhook — business subscription state", () => {
     expect(inserts).toHaveLength(0);
     expect(updates).toHaveLength(1);
     expect(updates[0]?.sql).toContain("ls_subscription_id = ?");
-    expect(updates[0]?.args).toEqual([expect.any(String), "biz-1", "prod-root", "pro", "sub_123"]);
+    expect(updates[0]?.args).toEqual([null, expect.any(String), "biz-1", "prod-root", "pro", "sub_123", null, null, null]);
+  });
+
+  it("migration-backed lifecycle writes ignore stale replaced-subscription events", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { createFakeD1 } = await import("../stubs/d1-sqlite.js");
+    const migration = (file: string) => readFileSync(join(__dirname, "../../infra/migrations/", file), "utf8");
+    const db = createFakeD1([
+      migration("0004_billing.sql"),
+      migration("0062_subscriptions_lemon_squeezy.sql"),
+      migration("0067_subscriptions_whop_platform_plan.sql"),
+      migration("0049_business_subscriptions.sql"),
+      migration("0125_subscription_event_ordering.sql"),
+    ]);
+    const { recordBusinessSubscription } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const event = (type: "subscription.created" | "subscription.expired", subscriptionId: string, providerUpdatedAt: string) => ({
+      type, provider: "lemon_squeezy" as const, spaceId: "biz-1", customerId: "cust-1", subscriptionId,
+      providerEventId: `${subscriptionId}:${providerUpdatedAt}`, variantOrPriceId: "pro", amountCents: 2900,
+      currency: "USD", metadata: { kind: "business_subscription", plan_id: "pro", product_space_id: "prod-root" },
+      providerUpdatedAt,
+    });
+    await recordBusinessSubscription(event("subscription.created", "sub-old", "2026-04-01T00:00:00.000Z"), { PLATFORM_DB: db } as never);
+    await recordBusinessSubscription(event("subscription.created", "sub-current", "2026-05-01T00:00:00.000Z"), { PLATFORM_DB: db } as never);
+    await recordBusinessSubscription(event("subscription.expired", "sub-old", "2026-04-15T00:00:00.000Z"), { PLATFORM_DB: db } as never);
+    const row = await db.prepare("SELECT status, ls_subscription_id, provider_event_at FROM business_subscriptions WHERE business_space_id = ?")
+      .bind("biz-1").first();
+    expect(row).toMatchObject({ status: "active", ls_subscription_id: "sub-current", provider_event_at: "2026-05-01T00:00:00.000Z" });
   });
 });
 

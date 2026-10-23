@@ -29,6 +29,19 @@ describe("Lemon Squeezy payment event identities", () => {
     expect(event.providerEventId).toBe("subscription-resource:subscription_payment_recovered:2026-10-12T12:00:00Z");
   });
 
+  it("normalizes a signed subscription update timestamp and ignores invalid versions", () => {
+    const valid = provider.parseWebhookEvent(JSON.stringify({
+      meta: { event_name: "subscription_updated" },
+      data: { id: "sub-1", attributes: { status: "active", updated_at: "2026-10-12T12:00:00+00:00" } },
+    }));
+    expect(valid.providerUpdatedAt).toBe("2026-10-12T12:00:00.000Z");
+    const invalid = provider.parseWebhookEvent(JSON.stringify({
+      meta: { event_name: "subscription_updated" },
+      data: { id: "sub-1", attributes: { status: "active", updated_at: "10/12/2026" } },
+    }));
+    expect(invalid.providerUpdatedAt).toBeUndefined();
+  });
+
   it("keeps explicit partial-refund amount separate from the original order total", () => {
     const event = provider.parseWebhookEvent(JSON.stringify({
       meta: { event_name: "order_refunded", custom_data: { kind: "personal_plan" } },

@@ -181,6 +181,8 @@ async function loadDb() {
     m("0052_webhook_idempotency_event_type.sql"),
     m("0062_subscriptions_lemon_squeezy.sql"),
     m("0067_subscriptions_whop_platform_plan.sql"),
+    m("0049_business_subscriptions.sql"),
+    m("0125_subscription_event_ordering.sql"),
   ]);
   await fakeDb.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier) VALUES (?, 'Test Org', 'user-1', 'free')")
     .bind(ORG_ID).run();
@@ -194,7 +196,7 @@ async function signedWebhook(rawBody: string, webhookSecret: string): Promise<Re
   return new Request("https://billing.naelao.com/webhooks/lemon-squeezy", { method: "POST", headers: { "X-Signature": sig }, body: rawBody });
 }
 
-function planEventBody(eventName: string, opts: { subId?: string; status?: string; plan?: string } = {}): string {
+function planEventBody(eventName: string, opts: { subId?: string; status?: string; plan?: string; updatedAt?: string } = {}): string {
   const custom = { kind: "platform_plan", org_id: ORG_ID, plan: opts.plan ?? "growth", spaceId: ORG_ID };
   return JSON.stringify({
     meta: { event_name: eventName, custom_data: custom },
@@ -203,6 +205,7 @@ function planEventBody(eventName: string, opts: { subId?: string; status?: strin
       attributes: {
         status: opts.status ?? "active",
         customer_id: "cust_9",
+        ...(opts.updatedAt ? { updated_at: opts.updatedAt } : {}),
         renews_at: "2026-08-11T00:00:00Z",
         custom_data: custom,
       },
@@ -246,13 +249,13 @@ describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dis
     expect(org).toMatchObject({ plan_tier: "growth" });
   });
 
-  it("subscription_expired drops the org back to free in both tables", async () => {
+  it("subscription_expired drops the org back to free only for the currently recorded subscription", async () => {
     const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
     const fakeDb = await loadDb();
     const env = await webhookEnv(fakeDb);
     await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_created", { subId: "sub_1" }), "whsec_test"), env as never);
     const res = await handleLemonSqueezyWebhook(
-      await signedWebhook(planEventBody("subscription_expired", { subId: "sub_2", status: "expired" }), "whsec_test"),
+      await signedWebhook(planEventBody("subscription_expired", { subId: "sub_1", status: "expired" }), "whsec_test"),
       env as never
     );
     expect(res.status).toBe(200);
@@ -279,7 +282,7 @@ describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dis
     const env = await webhookEnv(fakeDb);
     await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_created", { subId: "s1" }), "whsec_test"), env as never);
     await handleLemonSqueezyWebhook(
-      await signedWebhook(planEventBody("subscription_cancelled", { subId: "s2", status: "cancelled" }), "whsec_test"),
+      await signedWebhook(planEventBody("subscription_cancelled", { subId: "s1", status: "cancelled" }), "whsec_test"),
       env as never
     );
     const sub = await fakeDb.prepare("SELECT plan_tier, status FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
@@ -338,11 +341,11 @@ describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dis
     const fakeDb = await loadDb();
     const env = await webhookEnv(fakeDb);
     await handleLemonSqueezyWebhook(
-      await signedWebhook(planEventBody("subscription_created", { subId: "sub_old" }), "whsec_test"),
+      await signedWebhook(planEventBody("subscription_created", { subId: "sub_old", updatedAt: "2026-04-01T00:00:00Z" }), "whsec_test"),
       env as never
     );
     await handleLemonSqueezyWebhook(
-      await signedWebhook(planEventBody("subscription_created", { subId: "sub_current" }), "whsec_test"),
+      await signedWebhook(planEventBody("subscription_created", { subId: "sub_current", updatedAt: "2026-05-01T00:00:00Z" }), "whsec_test"),
       env as never
     );
     const res = await handleLemonSqueezyWebhook(
@@ -352,6 +355,30 @@ describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dis
     expect(res.status).toBe(200);
     const sub = await fakeDb.prepare("SELECT plan_tier, status, ls_subscription_id FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
     expect(sub).toMatchObject({ plan_tier: "growth", status: "active", ls_subscription_id: "sub_current" });
+  });
+
+  it("ignores late expiry from a replaced subscription and never downgrades the current org", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb);
+    await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_created", { subId: "sub_old", updatedAt: "2026-04-01T00:00:00Z" }), "whsec_test"), env as never);
+    await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_created", { subId: "sub_current", updatedAt: "2026-05-01T00:00:00Z" }), "whsec_test"), env as never);
+    const res = await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_expired", { subId: "sub_old", status: "expired", updatedAt: "2026-04-15T00:00:00Z" }), "whsec_test"), env as never);
+    expect(res.status).toBe(200);
+    const sub = await fakeDb.prepare("SELECT plan_tier, status, ls_subscription_id FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toMatchObject({ plan_tier: "growth", status: "active", ls_subscription_id: "sub_current" });
+    const org = await fakeDb.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(ORG_ID).first();
+    expect(org).toMatchObject({ plan_tier: "growth" });
+  });
+
+  it("rejects out-of-order lifecycle transitions for the same platform subscription", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb);
+    await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_created", { subId: "sub_same", updatedAt: "2026-05-02T00:00:00Z" }), "whsec_test"), env as never);
+    await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_expired", { subId: "sub_same", status: "expired", updatedAt: "2026-05-01T00:00:00Z" }), "whsec_test"), env as never);
+    const sub = await fakeDb.prepare("SELECT plan_tier, status FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toMatchObject({ plan_tier: "growth", status: "active" });
   });
 
   it("processes later subscription.updated events for the same resource id", async () => {

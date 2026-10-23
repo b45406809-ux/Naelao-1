@@ -1867,17 +1867,19 @@ first real business on free-tier resources before opening the platform to other 
   discarded it against the original positive ledger row. The ledger idempotency key now includes
   normalized event type, and a migration-backed sale/refund test verifies the positive and negative
   entries both persist and net to zero.
-- [ ] **Provider event ordering and replay retention need production evidence.** Body fingerprints
-  distinguish changed payloads but do not impose causal ordering. Code review found a concrete stale
-  lifecycle risk: platform and business `payment.failed` updates match the currently recorded
-  subscription ID, but their general `subscription.*` upserts do not. A delayed `subscription.expired`,
-  `cancelled`, or `updated` event for a replaced subscription can overwrite the current lifecycle
-  row; platform expiry can also reset the org tier to free. Add migration-backed regressions and a
-  conditional update based on a provider-monotonic revision/current subscription identity, while
-  preserving legitimate subscription replacement. Verify Lemon Squeezy and Whop event timestamp or
-  version guarantees before choosing that ordering key. The billing event table also has no
-  retention/cleanup path; design bounded payload retention while keeping durable exact replay
-  suppression for money events, rather than deleting dedupe keys after an arbitrary TTL.
+- [ ] **Provider event ordering and replay retention need production evidence (partially hardened 2026-10-23).**
+  Lemon Squeezy platform and business subscription rows now store a normalized `updated_at` revision;
+  same-provider updates must advance it when both revisions are available, and replacing a recorded
+  subscription ID requires a strictly newer `subscription.created` event. Failed-payment updates use
+  the same version fence. The organization tier is mirrored only if the subscription upsert actually
+  applied. Migration-backed tests prove an old subscription's expiry cannot downgrade a replacement
+  and an older update cannot revert the same subscription. Remaining: Whop's signed event payload
+  timestamp/revision guarantees were not independently verified, so its unversioned same-ID events
+  still rely on provider delivery semantics; legacy rows without an event revision cannot safely
+  accept a different subscription ID until reconciled; provider switching has no explicit checkout
+  intent record. Obtain documented/live provider ordering evidence and design reconciliation for
+  those cases. The billing event table also has no retention/cleanup path; preserve durable replay
+  suppression while designing bounded retention for event metadata.
 
 - [ ] **Workspace dependency ranges and peer compatibility need a full pass.** `packages/types`
   and `packages/ui` previously declared wildcard TypeScript development dependencies; both now use

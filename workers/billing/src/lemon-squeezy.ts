@@ -548,9 +548,15 @@ export async function recordPlatformPlanSubscription(
     if (!event.subscriptionId) return true;
     const subscriptionColumn = event.provider === "whop" ? "whop_subscription_id" : "ls_subscription_id";
     await env.PLATFORM_DB.prepare(
-      `UPDATE subscriptions SET status = 'past_due', updated_at = datetime('now')
-       WHERE org_id = ? AND plan_tier = ? AND ${subscriptionColumn} = ?`
-    ).bind(orgId, plan, event.subscriptionId).run();
+      `UPDATE subscriptions SET status = 'past_due', provider_event_at = COALESCE(?, provider_event_at),
+         billing_provider = COALESCE(billing_provider, ?), updated_at = datetime('now')
+       WHERE org_id = ? AND plan_tier = ? AND ${subscriptionColumn} = ?
+         AND (billing_provider IS NULL OR billing_provider = ?)
+         AND ((? IS NULL AND provider_event_at IS NULL) OR
+              (? IS NOT NULL AND (provider_event_at IS NULL OR ? > provider_event_at)))`
+    ).bind(event.providerUpdatedAt ?? null, event.provider, orgId, plan, event.subscriptionId,
+      event.provider, event.providerUpdatedAt ?? null, event.providerUpdatedAt ?? null,
+      event.providerUpdatedAt ?? null).run();
     return true;
   }
   if (event.type === "refund.issued") return true;
@@ -562,12 +568,13 @@ export async function recordPlatformPlanSubscription(
   // (dunning may still recover the payment) but surfaces the status.
   const planTier = status === "expired" ? "free" : plan;
   const isWhop = event.provider === "whop";
+  const subscriptionColumn = isWhop ? "whop_subscription_id" : "ls_subscription_id";
 
-  await env.PLATFORM_DB.prepare(
+  const write = await env.PLATFORM_DB.prepare(
     `INSERT INTO subscriptions
        (id, org_id, plan_tier, status, ls_customer_id, ls_subscription_id,
-        whop_customer_id, whop_subscription_id, current_period_end, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        whop_customer_id, whop_subscription_id, current_period_end, billing_provider, provider_event_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
      ON CONFLICT(org_id) DO UPDATE SET
        plan_tier          = excluded.plan_tier,
        status             = excluded.status,
@@ -576,13 +583,33 @@ export async function recordPlatformPlanSubscription(
        whop_customer_id     = COALESCE(excluded.whop_customer_id, subscriptions.whop_customer_id),
        whop_subscription_id = COALESCE(excluded.whop_subscription_id, subscriptions.whop_subscription_id),
        current_period_end = excluded.current_period_end,
-       updated_at         = datetime('now')`
+       billing_provider   = excluded.billing_provider,
+       provider_event_at  = excluded.provider_event_at,
+       updated_at         = datetime('now')
+     WHERE (subscriptions.billing_provider = excluded.billing_provider OR subscriptions.billing_provider IS NULL)
+       AND (
+         (subscriptions.${subscriptionColumn} = excluded.${subscriptionColumn})
+         OR (? = 'subscription.created' AND excluded.provider_event_at IS NOT NULL
+             AND (subscriptions.${subscriptionColumn} IS NULL OR
+                  (subscriptions.provider_event_at IS NOT NULL
+                   AND excluded.provider_event_at > subscriptions.provider_event_at)))
+       )
+       AND ((excluded.provider_event_at IS NULL AND subscriptions.provider_event_at IS NULL)
+            OR (excluded.provider_event_at IS NOT NULL
+                AND (subscriptions.provider_event_at IS NULL OR excluded.provider_event_at > subscriptions.provider_event_at)))`
   ).bind(
     crypto.randomUUID(), orgId, planTier, status,
     isWhop ? null : (event.customerId ?? null), isWhop ? null : (event.subscriptionId ?? null),
     isWhop ? (event.customerId ?? null) : null, isWhop ? (event.subscriptionId ?? null) : null,
-    event.currentPeriodEnd ?? null
+    event.currentPeriodEnd ?? null, event.provider, event.providerUpdatedAt ?? null, event.type
   ).run();
+
+  // A stale or unversioned event for a replaced subscription is acknowledged but cannot rewrite
+  // the active entitlement. Do not mirror its attempted tier into the organization row.
+  if (write.meta.changes === 0) {
+    console.warn(`[billing/${event.provider}] Ignored stale or unversioned platform lifecycle event org=${orgId} event=${event.type}`);
+    return true;
+  }
 
   await env.PLATFORM_DB.prepare(
     "UPDATE orgs SET plan_tier = ? WHERE id = ?"
@@ -602,7 +629,7 @@ export async function recordPlatformPlanSubscription(
  * revenue record) so a webhook retry or a later status transition is a no-op / in-place update,
  * never a duplicate row.
  */
-async function recordBusinessSubscription(
+export async function recordBusinessSubscription(
   event: NormalizedBillingEvent,
   env: LemonSqueezyEnv
 ): Promise<boolean> {
@@ -619,17 +646,21 @@ async function recordBusinessSubscription(
     // current plan, or downgrade a different plan that happens to belong to the same business.
     if (!event.subscriptionId) return true;
     await env.PLATFORM_DB.prepare(
-      `UPDATE business_subscriptions SET status = 'past_due', updated_at = ?
-       WHERE business_space_id = ? AND product_space_id = ? AND plan_id = ? AND ls_subscription_id = ?`
-    ).bind(new Date().toISOString(), businessSpaceId, productSpaceId, planId, event.subscriptionId).run();
+      `UPDATE business_subscriptions SET status = 'past_due', provider_event_at = COALESCE(?, provider_event_at), updated_at = ?
+       WHERE business_space_id = ? AND product_space_id = ? AND plan_id = ? AND ls_subscription_id = ?
+         AND ((? IS NULL AND provider_event_at IS NULL) OR
+              (? IS NOT NULL AND (provider_event_at IS NULL OR ? > provider_event_at)))`
+    ).bind(event.providerUpdatedAt ?? null, new Date().toISOString(), businessSpaceId, productSpaceId,
+      planId, event.subscriptionId, event.providerUpdatedAt ?? null, event.providerUpdatedAt ?? null,
+      event.providerUpdatedAt ?? null).run();
     return true;
   }
 
   const status = mapSubscriptionStatus(event);
   await env.PLATFORM_DB.prepare(
     `INSERT INTO business_subscriptions
-       (id, business_space_id, product_space_id, plan_id, status, ls_subscription_id, ls_customer_id, current_period_end, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (id, business_space_id, product_space_id, plan_id, status, ls_subscription_id, ls_customer_id, current_period_end, provider_event_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(business_space_id) DO UPDATE SET
        product_space_id = excluded.product_space_id,
        plan_id = excluded.plan_id,
@@ -637,11 +668,20 @@ async function recordBusinessSubscription(
        ls_subscription_id = excluded.ls_subscription_id,
        ls_customer_id = excluded.ls_customer_id,
        current_period_end = excluded.current_period_end,
-       updated_at = excluded.updated_at`
+       provider_event_at = excluded.provider_event_at,
+       updated_at = excluded.updated_at
+     WHERE (business_subscriptions.ls_subscription_id = excluded.ls_subscription_id
+            OR (? = 'subscription.created' AND excluded.provider_event_at IS NOT NULL
+                AND (business_subscriptions.ls_subscription_id IS NULL OR
+                     (business_subscriptions.provider_event_at IS NOT NULL
+                      AND excluded.provider_event_at > business_subscriptions.provider_event_at))))
+       AND ((excluded.provider_event_at IS NULL AND business_subscriptions.provider_event_at IS NULL)
+            OR (excluded.provider_event_at IS NOT NULL
+                AND (business_subscriptions.provider_event_at IS NULL OR excluded.provider_event_at > business_subscriptions.provider_event_at)))`
   ).bind(
     crypto.randomUUID(), businessSpaceId, productSpaceId, planId, status,
     event.subscriptionId ?? null, event.customerId ?? null, event.currentPeriodEnd ?? null,
-    new Date().toISOString()
+    event.providerUpdatedAt ?? null, new Date().toISOString(), event.type
   ).run();
   console.log(`[billing/ls] Business subscription ${status}: business=${businessSpaceId} plan=${planId}`);
   return true;
