@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateDeveloperCommission,
   calculateFixedLicenseCommission,
+  settleTemplateSubscriptionPayment,
   tierForPlanPrice,
 } from "./settlement.js";
 
@@ -32,5 +33,28 @@ describe("template marketplace settlement policy", () => {
     expect(() => calculateFixedLicenseCommission(Number.MAX_SAFE_INTEGER + 1)).toThrow("Invalid fixed-license gross");
     expect(() => calculateDeveloperCommission(Number.MAX_SAFE_INTEGER + 1, "MARKETPLACE_ORGANIC", "pro", 13)).toThrow("grossCents");
     expect(() => calculateDeveloperCommission(100, "MARKETPLACE_ORGANIC", "pro", Number.MAX_SAFE_INTEGER + 1)).toThrow("cycle");
+  });
+
+  it("settles a webhook against the exact template subscription instead of the latest one in a Space", async () => {
+    const seen: Array<{ sql: string; args: unknown[] }> = [];
+    let firstCall = 0;
+    const db = {
+      prepare(sql: string) {
+        return { bind(...args: unknown[]) {
+          seen.push({ sql, args });
+          return { async first() {
+            firstCall++;
+            if (firstCall === 1) return null;
+            if (firstCall === 2) return { id: "sub-target", developer_user_id: "fde", attribution_channel: "MARKETPLACE_ORGANIC", paid_cycles_total: 0, pioneer_eligible: 0 };
+            return { cycle_number: 1, developer_cents: 500, platform_cents: 1500 };
+          } };
+        } };
+      },
+      async batch() { return [{ success: true }, { success: true, meta: { changes: 1 } }]; },
+    } as unknown as D1Database;
+    const result = await settleTemplateSubscriptionPayment(db, "space", 2_000, "provider-event", "provider-sub", "sub-target");
+    expect(result.subscriptionId).toBe("sub-target");
+    expect(seen[1]?.sql).toContain("AND id = ?");
+    expect(seen[1]?.args).toEqual(["space", "sub-target"]);
   });
 });

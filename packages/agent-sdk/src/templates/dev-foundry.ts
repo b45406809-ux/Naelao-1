@@ -7,6 +7,9 @@ export interface NativeSpaceTemplate {
   description: string;
   shellRoute: `/${string}`;
   externalDomainRequired: false;
+  /** Foundry is a normal Launchpad Space with the same built-in workspace model. */
+  foundation: readonly string[];
+  /** Product-specific authoring and governance layers added on top of that foundation. */
   capabilities: readonly string[];
   projects: readonly {
     name: string;
@@ -20,11 +23,21 @@ export const DEV_FOUNDRY_TEMPLATE: NativeSpaceTemplate = Object.freeze({
   id: "tpl_dev_foundry_v1",
   version: "1.0.0",
   name: "FDE Foundry",
-  description: "Author and validate extensions, inspect actor SQLite schemas, and manage reusable Space templates.",
+  description: "A standard Launchpad Space for Naelao FDEs, with additional tools to author and validate extensions and APIs, build project templates, and publish Space templates to the marketplace.",
   shellRoute: "/foundry",
   externalDomainRequired: false,
+  foundation: Object.freeze([
+    "launchpad.projects",
+    "launchpad.extensions",
+    "launchpad.assistants",
+    "launchpad.knowledge_bases",
+  ]),
   capabilities: Object.freeze([
     "extension.author",
+    "api.author",
+    "project_template.author",
+    "space_template.publish",
+    "marketplace.manage",
     "sqlite.schema.inspect",
     "conformance.run",
   ]),

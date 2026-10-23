@@ -6,8 +6,12 @@ describe("tpl_dev_foundry_v1", () => {
     expect(getNativeSpaceTemplate("tpl_dev_foundry_v1")).toBe(DEV_FOUNDRY_TEMPLATE);
     expect(DEV_FOUNDRY_TEMPLATE.externalDomainRequired).toBe(false);
     expect(DEV_FOUNDRY_TEMPLATE.shellRoute).toBe("/foundry");
+    expect(DEV_FOUNDRY_TEMPLATE.foundation).toEqual(expect.arrayContaining([
+      "launchpad.projects", "launchpad.extensions", "launchpad.assistants", "launchpad.knowledge_bases",
+    ]));
     expect(DEV_FOUNDRY_TEMPLATE.capabilities).toEqual(expect.arrayContaining([
-      "extension.author", "sqlite.schema.inspect", "conformance.run",
+      "extension.author", "api.author", "project_template.author", "space_template.publish",
+      "marketplace.manage", "sqlite.schema.inspect", "conformance.run",
     ]));
     expect(DEV_FOUNDRY_TEMPLATE.name).toBe("FDE Foundry");
     expect(DEV_FOUNDRY_TEMPLATE.capabilities).not.toContain("referral.payout.request");

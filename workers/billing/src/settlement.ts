@@ -65,9 +65,11 @@ export async function settleTemplateSubscriptionPayment(
   spaceId: string,
   grossCents: number,
   providerEventId: string,
-  providerSubscriptionId?: string | null
+  providerSubscriptionId?: string | null,
+  templateSubscriptionId?: string
 ): Promise<SettlementResult> {
   if (!providerEventId || providerEventId.length > 255) throw new Error("providerEventId is required");
+  if (!templateSubscriptionId) throw new Error("templateSubscriptionId is required");
   const tier = tierForPlanPrice(grossCents);
   const prior = await db.prepare("SELECT id, template_subscription_id, tier, cycle_number, gross_cents, developer_cents, platform_cents FROM developer_earnings_ledger WHERE provider_event_id = ?")
     .bind(providerEventId).first<{ id: string; template_subscription_id: string; tier: SettlementTier; cycle_number: number; gross_cents: number; developer_cents: number; platform_cents: number }>();
@@ -77,9 +79,9 @@ export async function settleTemplateSubscriptionPayment(
     .prepare(
       `SELECT id, developer_user_id, attribution_channel, paid_cycles_total, pioneer_eligible
      FROM template_subscriptions WHERE space_id = ? AND status IN ('active','paused')
-     ORDER BY updated_at DESC LIMIT 1`
+       AND id = ?`
     )
-    .bind(spaceId)
+    .bind(spaceId, templateSubscriptionId)
     .first<{
       id: string;
       developer_user_id: string;

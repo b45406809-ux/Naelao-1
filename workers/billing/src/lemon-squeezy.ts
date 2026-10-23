@@ -723,7 +723,7 @@ async function settleNativeTemplateRoyalty(event: NormalizedBillingEvent, env: L
   const subscription = await env.PLATFORM_DB.prepare("SELECT id FROM template_subscriptions WHERE id = ? AND space_id = ? AND status IN ('active','paused')")
     .bind(subscriptionId, event.spaceId).first<{ id: string }>();
   if (!subscription) throw new Error("captured template payment has no active matching subscription");
-  await settleTemplateSubscriptionPayment(env.PLATFORM_DB, event.spaceId, event.amountCents, event.providerEventId, event.subscriptionId);
+  await settleTemplateSubscriptionPayment(env.PLATFORM_DB, event.spaceId, event.amountCents, event.providerEventId, event.subscriptionId, subscriptionId);
   return true;
 }
 

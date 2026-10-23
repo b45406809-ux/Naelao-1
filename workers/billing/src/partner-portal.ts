@@ -13,9 +13,7 @@ import { LemonSqueezyProvider } from "@naelao/billing-core";
 
 export interface TemplateSubscriptionInput {
   space_id: string;
-  template_id: string;
-  developer_user_id?: string;
-  ref?: string;
+  marketplace_listing_id: string;
   plan_price_cents: number;
   requested_price_cents: number;
   extensions?: WholesaleExtension[];
@@ -26,26 +24,15 @@ export async function resolveDeveloperAttribution(
   input: TemplateSubscriptionInput
 ): Promise<{
   developerId: string;
-  channel: "DEVELOPER_REFERRAL" | "MARKETPLACE_ORGANIC";
+  templateId: string;
+  channel: "MARKETPLACE_ORGANIC";
 }> {
-  if (input.ref) {
-    const profile = await db
-      .prepare(
-        "SELECT user_id FROM developer_partner_profiles WHERE handle = ? COLLATE NOCASE AND status = 'active'"
-      )
-      .bind(input.ref)
-      .first<{ user_id: string }>();
-    if (!profile) throw new Error("invalid_referral_code");
-    return { developerId: profile.user_id, channel: "DEVELOPER_REFERRAL" };
-  }
-  if (!input.developer_user_id) throw new Error("developer_user_id_required");
-  const profile = await db.prepare("SELECT user_id FROM developer_partner_profiles WHERE user_id = ? AND status = 'active'")
-    .bind(input.developer_user_id).first<{ user_id: string }>();
-  if (!profile) throw new Error("developer_profile_required");
-  return {
-    developerId: profile.user_id,
-    channel: "MARKETPLACE_ORGANIC",
-  };
+  const listing = await db.prepare(`SELECT developer_user_id, COALESCE(blueprint_id, space_type_id) AS template_id
+    FROM marketplace_listings WHERE id = ? AND status = 'published'
+      AND developer_user_id IS NOT NULL AND pricing_model = 'freemium_tiered'`)
+    .bind(input.marketplace_listing_id).first<{ developer_user_id: string; template_id: string }>();
+  if (!listing) throw new Error("published_template_listing_required");
+  return { developerId: listing.developer_user_id, templateId: listing.template_id, channel: "MARKETPLACE_ORGANIC" };
 }
 
 export function registerPartnerPortalRoutes(
@@ -62,11 +49,9 @@ export function registerPartnerPortalRoutes(
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return c.json({ error_code: "bad_request" }, 400);
     const input = parsed as Partial<TemplateSubscriptionInput>;
     const text = (value: unknown, max: number) => typeof value === "string" && value.length > 0 && value.length <= max;
-    if (!text(input.space_id, 128) || !text(input.template_id, 128) ||
+    if (!text(input.space_id, 128) || !text(input.marketplace_listing_id, 128) ||
         !Number.isSafeInteger(input.plan_price_cents) || input.plan_price_cents! <= 0 ||
         !Number.isSafeInteger(input.requested_price_cents) || input.requested_price_cents! <= 0 ||
-        (input.developer_user_id !== undefined && !text(input.developer_user_id, 128)) ||
-        (input.ref !== undefined && !text(input.ref, 64)) ||
         (input.extensions !== undefined && (!Array.isArray(input.extensions) || input.extensions.length > 64 || input.extensions.some(extension => !extension || !Number.isSafeInteger(extension.wholesaleFeeCents) || extension.wholesaleFeeCents < 0 || (extension.id !== undefined && !text(extension.id, 128)))))) {
       return c.json({ error_code: "bad_request" }, 400);
     }
@@ -108,7 +93,7 @@ export function registerPartnerPortalRoutes(
       return c.json(
         {
           error_code: String((error as Error).message),
-          message: "Referral or developer attribution is invalid",
+          message: "A published marketplace template is required for subscription attribution",
         },
         400
       );
@@ -122,7 +107,7 @@ export function registerPartnerPortalRoutes(
     let checkoutUrl: string;
     try {
       product = await createLsProductVariant({ apiKey: c.env.LEMON_SQUEEZY_API_KEY, storeId: c.env.LEMON_SQUEEZY_STORE_ID }, {
-        name: `Naelao template ${validInput.template_id}`.slice(0, 100),
+        name: `Naelao template ${attribution.templateId}`.slice(0, 100),
         description: "Monthly Naelao template subscription",
         price_cents: validInput.requested_price_cents,
         kind: "subscription",
@@ -140,13 +125,14 @@ export function registerPartnerPortalRoutes(
     }
     await c.env.PLATFORM_DB.prepare(
       `INSERT INTO template_subscriptions
-       (id, space_id, template_id, developer_user_id, attribution_channel, base_plan_price_cents, first_month_price_cents, extension_wholesale_cents, pioneer_eligible, ls_product_id, ls_variant_id, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paused')`
+       (id, space_id, template_id, marketplace_listing_id, developer_user_id, attribution_channel, base_plan_price_cents, first_month_price_cents, extension_wholesale_cents, pioneer_eligible, ls_product_id, ls_variant_id, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paused')`
     )
       .bind(
         id,
         validInput.space_id,
-        validInput.template_id,
+        attribution.templateId,
+        validInput.marketplace_listing_id,
         attribution.developerId,
         attribution.channel,
         validInput.plan_price_cents,
