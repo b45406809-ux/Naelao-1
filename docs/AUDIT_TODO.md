@@ -1967,3 +1967,12 @@ first real business on free-tier resources before opening the platform to other 
   and mid-run revocation. Agents suite passed 165 files / 749 tests; Security passed 22 files / 124
   tests; Agents typecheck and Wrangler dry-run passed. No live Cloudflare policy revocation or network
   packet test has been run; broader egress policy and deployment acceptance remain open.
+
+## Audit continuation — 2026-10-23
+
+- [x] Refresh the Launchpad dashboard API test assumptions to match the team-only, single-root product design; add a concurrent first-launch regression proving the singleton remains unique.
+- [x] Add runtime shape/size validation for `product_config`, legal metadata, model config, model policy, and compliance fields on `PATCH /builder/products/:id`, with no-write-on-rejection coverage.
+- [ ] Complete the remaining field-by-field review of all other persisted product-config fields and dashboard-facing response contracts.
+- [ ] Continue the repository-wide worker, Durable Object, container, API, persistence, and channel audit. The file-by-file checklist remains substantially open; see `audit-output/naelao-file-by-file-stress-audit-plan.md` and the chronological evidence in `audit-output/naelao-audit-progress.md`.
+- [ ] Triage remaining root Vitest failures, run the full workspace test/typecheck/deployment validation, and perform controlled live acceptance where credentials and infrastructure are available.
+- [ ] Resolve or explicitly disposition DNS rebinding on outbound fetch, production dependency advisories, and unverified deployment bindings before declaring the security audit complete.

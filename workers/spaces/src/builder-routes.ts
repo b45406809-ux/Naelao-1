@@ -65,6 +65,10 @@ interface SpaceRow {
 
 const ALLOWED_STATUSES = ["draft", "active", "paused"] as const;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -366,12 +370,30 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
-    const body = await c.req.json<{
+    let bodyValue: unknown;
+    try {
+      bodyValue = await c.req.json<unknown>();
+    } catch {
+      return c.json({ error_code: "invalid_request_body" }, 400);
+    }
+    if (!isRecord(bodyValue)) return c.json({ error_code: "invalid_request_body" }, 400);
+    const body = bodyValue as {
       name?: string;
       status?: string;
       product_config?: Partial<SpaceTypeProductConfig>;
       legal?: SpaceTypeProductConfig["legal"];
-    }>();
+    };
+
+    if (body.name !== undefined && (typeof body.name !== "string" || !body.name.trim() || body.name.length > 120)) {
+      return c.json({ error_code: "bad_request", message: "name must be a non-empty string of at most 120 characters" }, 400);
+    }
+
+    if (body.product_config !== undefined && !isRecord(body.product_config)) {
+      return c.json({ error_code: "bad_request", message: "product_config must be an object" }, 400);
+    }
+    if (body.legal !== undefined && !isRecord(body.legal)) {
+      return c.json({ error_code: "bad_request", message: "legal must be an object" }, 400);
+    }
 
     if (body.status !== undefined && !ALLOWED_STATUSES.includes(body.status as (typeof ALLOWED_STATUSES)[number])) {
       return c.json({ error_code: "bad_request", message: `status must be one of ${ALLOWED_STATUSES.join(", ")}` }, 400);
@@ -383,6 +405,9 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     if (body.legal) {
       for (const field of ["tosUrl", "privacyPolicyUrl", "dpaUrl", "supportContact"] as const) {
         const val = body.legal[field];
+        if (val !== undefined && (typeof val !== "string" || val.length > 2048)) {
+          return c.json({ error_code: "bad_request", message: `legal.${field} must be a string of at most 2048 characters` }, 400);
+        }
         if (val && !val.startsWith("https://") && !val.startsWith("mailto:")) {
           return c.json({ error_code: "bad_request", message: `legal.${field} must start with https:// or mailto:` }, 400);
         }
@@ -399,6 +424,24 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const model = body.product_config?.modelConfig?.model;
     const policy = body.product_config?.modelPolicy;
     const workerPool = body.product_config?.workerModelPool;
+    const modelConfig = body.product_config?.modelConfig;
+    if (modelConfig !== undefined && (!isRecord(modelConfig)
+      || (modelConfig.model !== undefined && (typeof modelConfig.model !== "string" || modelConfig.model.length === 0 || modelConfig.model.length > 256))
+      || (modelConfig.effort !== undefined && (typeof modelConfig.effort !== "string" || modelConfig.effort.length > 32)))) {
+      return c.json({ error_code: "bad_request", message: "modelConfig must contain a bounded model ID and effort" }, 400);
+    }
+    if (policy !== undefined && (!isRecord(policy)
+      || (policy.mode !== "open" && policy.mode !== "whitelist_only")
+      || !Array.isArray(policy.allowedModelIds)
+      || policy.allowedModelIds.length > 100
+      || policy.allowedModelIds.some(id => typeof id !== "string" || !id.trim() || id.length > 256))) {
+      return c.json({ error_code: "bad_request", message: "modelPolicy must contain a valid mode and at most 100 bounded model IDs" }, 400);
+    }
+    const compliance = body.product_config?.compliance;
+    if (compliance !== undefined && (!isRecord(compliance)
+      || (compliance.airGappedOnly !== undefined && typeof compliance.airGappedOnly !== "boolean"))) {
+      return c.json({ error_code: "bad_request", message: "compliance.airGappedOnly must be a boolean" }, 400);
+    }
     if (workerPool) {
       if (!Array.isArray(workerPool.modelIds) || workerPool.modelIds.length > 100
         || workerPool.modelIds.some(id => typeof id !== "string" || !/^openrouter\/[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(id))) {
@@ -419,12 +462,6 @@ export function registerBuilderRoutes(app: Hono<any>): void {
           return c.json({ error_code: "bad_request", message: `workerModelPool.${key} must be between 0 and 1000` }, 400);
         }
       }
-    }
-    if (policy && (policy.mode !== "open" && policy.mode !== "whitelist_only")) {
-      return c.json({ error_code: "bad_request", message: "modelPolicy.mode must be open or whitelist_only" }, 400);
-    }
-    if (policy && (!Array.isArray(policy.allowedModelIds) || policy.allowedModelIds.some((id: string) => typeof id !== "string" || !id.trim()))) {
-      return c.json({ error_code: "bad_request", message: "modelPolicy.allowedModelIds must contain non-empty model IDs" }, 400);
     }
     if (model && !model.startsWith("custom/") && !model.startsWith("local/") && !isAllowedModel(model)) {
       return c.json({ error_code: "bad_request", message: `modelConfig.model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);

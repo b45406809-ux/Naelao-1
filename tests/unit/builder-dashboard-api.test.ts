@@ -40,6 +40,7 @@ function makeEnv() {
   const events: unknown[] = [];
   return {
     PLATFORM_SECRET: "s",
+    NAELAO_DASHBOARD_TENANT_ID: "tenant-1",
     ENVIRONMENT: "test",
     PLATFORM_DB: fakeDb,
     EVENTS_QUEUE: { send: async (message: unknown) => { events.push(message); } },
@@ -164,33 +165,33 @@ describe("Builder Dashboard API — auth resolution", () => {
 });
 
 describe("Builder Dashboard API — /builder/products CRUD", () => {
-  it("creates a real, immediately-live product (no separate draft DB status — the wizard collects everything client-side and calls this once at launch), rejects a malformed slug, enforces slug uniqueness", async () => {
+  it("creates the single Launchpad root, rejects custom product configuration, and denies non-team creation", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "My Shop", spacetype_id: "launchpad", product_slug: "my-shop" } }),
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }),
       env as never, execCtx
     )).json() as { id: string; status: string };
     // No PROVISION_QUEUE bound in this test env, so createSpaceRecord's fallback (matching
     // /spaces POST's own local-dev behavior) is immediate 'active', not 'provisioning'.
     expect(created.status).toBe("active");
 
-    const badSlug = await spacesWorker.fetch(
+    const customProduct = await spacesWorker.fetch(
       await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "X", spacetype_id: "launchpad", product_slug: "NOT VALID" } }),
       env as never, execCtx
     );
-    expect(badSlug.status).toBe(400);
+    expect(customProduct.status).toBe(409); // existing singleton wins before body validation
 
     const dupeSlug = await spacesWorker.fetch(
       await req("/builder/products", { method: "POST", tenant: "tenant-2", body: { name: "Y", spacetype_id: "launchpad", product_slug: "my-shop" } }),
       env as never, execCtx
     );
-    expect(dupeSlug.status).toBe(409);
+    expect(dupeSlug.status).toBe(403);
   });
 
   it("lists only the calling tenant's products", async () => {
     const env = makeEnv();
-    await spacesWorker.fetch(await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx);
-    await spacesWorker.fetch(await req("/builder/products", { method: "POST", tenant: "tenant-2", body: { name: "B", spacetype_id: "launchpad" } }), env as never, execCtx);
+    await spacesWorker.fetch(await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx);
+    await env.PLATFORM_DB.prepare("INSERT INTO spaces (id, tenant_id, name, spacetype_id) VALUES ('other', 'tenant-2', 'Other', 'launchpad')").run();
     const list = await (await spacesWorker.fetch(await req("/builder/products", { tenant: "tenant-1" }), env as never, execCtx)).json() as { data: unknown[] };
     expect(list.data).toHaveLength(1);
   });
@@ -223,7 +224,7 @@ describe("Builder Dashboard API — /builder/products CRUD", () => {
   it("404s fetching another tenant's product — ownership never leaks", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-2" }), env as never, execCtx);
     expect(res.status).toBe(404);
@@ -232,7 +233,7 @@ describe("Builder Dashboard API — /builder/products CRUD", () => {
   it("PATCH rejects an unknown status but accepts an allowed one, and merges product_config", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
 
     const badStatus = await spacesWorker.fetch(
@@ -251,10 +252,36 @@ describe("Builder Dashboard API — /builder/products CRUD", () => {
     expect(fetched.product_config.branding?.brandColor).toBe("#111");
   });
 
+  it("rejects malformed nested config and bounded-list overflow without persisting changes", async () => {
+    const env = makeEnv();
+    const created = await (await spacesWorker.fetch(
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const invalidBodies = [
+      { product_config: [] },
+      { legal: "https://example.com" },
+      { product_config: { compliance: { airGappedOnly: "false" } } },
+      { product_config: { modelPolicy: { mode: "whitelist_only", allowedModelIds: Array.from({ length: 101 }, (_, i) => `openrouter/model-${i}`) } } },
+      { product_config: { modelConfig: { model: "" } } },
+      { name: 42 },
+      { legal: { tosUrl: 42 } },
+    ];
+    for (const body of invalidBodies) {
+      const response = await spacesWorker.fetch(
+        await req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body }), env as never, execCtx
+      );
+      expect(response.status).toBe(400);
+    }
+    const persisted = await (await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as { product_config: Record<string, unknown> };
+    expect(persisted.product_config).toMatchObject({ notificationsConfig: { dailyDigestEnabled: true } });
+    expect(persisted.product_config).not.toHaveProperty("compliance");
+    expect(persisted.product_config).not.toHaveProperty("modelPolicy");
+  });
+
   it("prevents product owners from releasing admin suspension through either status API", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     env.PLATFORM_DB.prepare("UPDATE spaces SET status = 'suspended', suspension_reason = 'admin_product' WHERE id = ?")
       .bind(created.id).run();
@@ -283,7 +310,7 @@ describe("Builder Dashboard API — /builder/products CRUD", () => {
   it("applies role permissions to the legacy space update and delete APIs", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
 
     const viewerPatch = await spacesWorker.fetch(
@@ -315,37 +342,42 @@ describe("Builder Dashboard API — /builder/products CRUD", () => {
     const editor = await spacesWorker.fetch(
       await req("/spaces", { method: "POST", tenant: "tenant-1", role: "editor", body: { name: "Editor Space", spacetype_id: "launchpad" } }), env as never, execCtx
     );
-    expect(editor.status).toBe(201);
+    expect(editor.status).toBe(400); // editors may create children, but cannot create another root
   });
 
-  it("DELETE soft-deletes — the product then 404s", async () => {
+  it("protects the dashboard Launchpad root from deletion", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const del = await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { method: "DELETE", tenant: "tenant-1" }), env as never, execCtx);
-    expect(del.status).toBe(204);
+    expect(del.status).toBe(409); // the dashboard's single Launchpad root is not deletable
     const after = await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx);
-    expect(after.status).toBe(404);
+    expect(after.status).toBe(200);
   });
 
-  it("frees the deleted product's address so the name can be used again", async () => {
-    // The unique index on product_slug doesn't exclude deleted rows, so a soft delete used to
-    // burn the name permanently: a builder who deleted a product and rebuilt it under the same
-    // name got a replacement with NO slug — and therefore no working URL at all, since nothing
-    // lets a slug be set after creation.
+  it("cannot delete or recreate the dashboard's singleton Launchpad product", async () => {
     const env = makeEnv();
     const first = await (await spacesWorker.fetch(
       await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
-    await spacesWorker.fetch(await req(`/builder/products/${first.id}`, { method: "DELETE", tenant: "tenant-1" }), env as never, execCtx);
-
-    const second = await (await spacesWorker.fetch(
+    expect((await spacesWorker.fetch(await req(`/builder/products/${first.id}`, { method: "DELETE", tenant: "tenant-1" }), env as never, execCtx)).status).toBe(409);
+    expect((await spacesWorker.fetch(
       await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
-    const row = await env.PLATFORM_DB.prepare("SELECT product_slug FROM spaces WHERE id = ?")
-      .bind(second.id).first<{ product_slug: string | null }>();
-    expect(row?.product_slug).toBe("launchpad");
+    )).status).toBe(409);
+    expect(await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM spaces WHERE tenant_id = 'tenant-1' AND depth = 0 AND spacetype_id = 'launchpad'").first())
+      .toEqual({ count: 1 });
+  });
+
+  it("admits at most one root when two first-launch requests race", async () => {
+    const env = makeEnv();
+    const [left, right] = await Promise.all([
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }).then((request) => spacesWorker.fetch(request, env as never, execCtx)),
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }).then((request) => spacesWorker.fetch(request, env as never, execCtx)),
+    ]);
+    expect([left.status, right.status].sort()).toEqual([201, 409]);
+    expect(await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM spaces WHERE tenant_id = 'tenant-1' AND depth = 0 AND spacetype_id = 'launchpad'").first())
+      .toEqual({ count: 1 });
   });
 });
 
@@ -378,7 +410,7 @@ describe("Builder Dashboard API — domain (dev path, no CF secrets configured)"
   it("records pending_dns intent without a live CF-for-SaaS call", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const domainRes = await spacesWorker.fetch(
       await req(`/builder/products/${created.id}/domain`, { method: "POST", tenant: "tenant-1", body: { custom_domain: "shop.example.com" } }), env as never, execCtx
@@ -396,7 +428,7 @@ describe("Builder Dashboard API — users roster", () => {
   it("suspend revokes ProductUserDO sessions and marks the roster row", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     await env.PLATFORM_DB.prepare(
       "INSERT INTO product_end_users (product_space_id, end_user_id) VALUES (?, ?)"
@@ -411,7 +443,7 @@ describe("Builder Dashboard API — users roster", () => {
   it("404s for a product owned by a different tenant", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(await req(`/builder/products/${created.id}/users`, { tenant: "tenant-2" }), env as never, execCtx);
     expect(res.status).toBe(404);
@@ -422,7 +454,7 @@ describe("Builder Dashboard API — analytics", () => {
   it("dau/mau/total_users reflect product_end_users.last_seen_at; credits_consumed is honestly null", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const now = new Date().toISOString();
     const longAgo = new Date(Date.now() - 90 * 86_400_000).toISOString();
@@ -439,7 +471,7 @@ describe("Builder Dashboard API — analytics", () => {
   it("revenue rolls up launchpad_orders (gross/fee/net) and reseller_ledger (wholesale cost)", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const period = new Date().toISOString().slice(0, 7);
     await env.PLATFORM_DB.prepare(
@@ -487,7 +519,7 @@ describe("Builder Dashboard API — feature flags and webhooks", () => {
   it("PUT feature-flags persists into config_json.productConfig.featureFlags", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     await spacesWorker.fetch(
       await req(`/builder/products/${created.id}/feature-flags`, { method: "PUT", tenant: "tenant-1", body: { flags: { betaWidget: true } } }), env as never, execCtx
@@ -499,7 +531,7 @@ describe("Builder Dashboard API — feature flags and webhooks", () => {
   it("registers and lists webhooks", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     await spacesWorker.fetch(
       await req(`/builder/products/${created.id}/webhooks`, { method: "POST", tenant: "tenant-1", body: { url: "https://example.com/hook", event_types: ["order.completed"] } }), env as never, execCtx
@@ -511,113 +543,18 @@ describe("Builder Dashboard API — feature flags and webhooks", () => {
   });
 });
 
-// WS-3: reseller rate config was declared (billingRelationship) but had NO write path anywhere —
-// business-create.ts hardcoded wholesale_cents=NULL/referral_share_pct=0.0 literals and its own
-// ON CONFLICT upsert never refreshed them. This PATCH is the missing write path, and it updates
-// the LIVE reseller_accounts row directly (not just config_json) so an existing tenant's rate
-// takes effect immediately.
-describe("Builder Dashboard API — PATCH /builder/products/:id/reseller (WS-3)", () => {
-  it("sets reseller mode + wholesale rate, persisted in config_json and the live reseller_accounts row", async () => {
+describe("Naelao dashboard product boundaries", () => {
+  it("does not expose reseller settings for the internal Launchpad product", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
-
-    const patchRes = await spacesWorker.fetch(
-      await req(`/builder/products/${created.id}/reseller`, {
-        method: "PATCH",
-        tenant: "tenant-1",
-        body: { billing_relationship: "reseller", wholesale_cents: 2000 },
-      }),
-      env as never, execCtx
-    );
-    expect(patchRes.status).toBe(200);
-    const body = await patchRes.json() as { billing_relationship: string; reseller_rates: { wholesale_cents: number | null; referral_share_pct: number } };
-    expect(body.billing_relationship).toBe("reseller");
-    expect(body.reseller_rates.wholesale_cents).toBe(2000);
-
-    // The actual money-path gate (recordResellerAttribution) reads reseller_accounts directly —
-    // prove the row was actually written, not just the config_json display copy.
-    const row = await env.PLATFORM_DB.prepare(
-      "SELECT billing_relationship, wholesale_cents, referral_share_pct FROM reseller_accounts WHERE tenant_id = ?"
-    ).bind("tenant-1").first<{ billing_relationship: string; wholesale_cents: number; referral_share_pct: number }>();
-    expect(row).toMatchObject({ billing_relationship: "reseller", wholesale_cents: 2000 });
-  });
-
-  it("sets referral mode + share pct", async () => {
-    const env = makeEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
-
-    await spacesWorker.fetch(
-      await req(`/builder/products/${created.id}/reseller`, {
-        method: "PATCH", tenant: "tenant-1", body: { billing_relationship: "referral", referral_share_pct: 25 },
-      }),
-      env as never, execCtx
-    );
-    const row = await env.PLATFORM_DB.prepare(
-      "SELECT billing_relationship, referral_share_pct FROM reseller_accounts WHERE tenant_id = ?"
-    ).bind("tenant-1").first<{ billing_relationship: string; referral_share_pct: number }>();
-    expect(row).toMatchObject({ billing_relationship: "referral", referral_share_pct: 25 });
-  });
-
-  it("REFRESHES an existing reseller_accounts row's rate — the exact gap business-create.ts's own upsert left open", async () => {
-    const env = makeEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
-    // Simulate a pre-existing row from an earlier business-create (the old hardcoded literals).
-    await env.PLATFORM_DB.prepare(
-      "INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct) VALUES (?, ?, 'platform', NULL, 0.0)"
-    ).bind("tenant-1", created.id).run();
-
-    await spacesWorker.fetch(
-      await req(`/builder/products/${created.id}/reseller`, {
-        method: "PATCH", tenant: "tenant-1", body: { billing_relationship: "reseller", wholesale_cents: 1500 },
-      }),
-      env as never, execCtx
-    );
-    const row = await env.PLATFORM_DB.prepare(
-      "SELECT billing_relationship, wholesale_cents FROM reseller_accounts WHERE tenant_id = ?"
-    ).bind("tenant-1").first<{ billing_relationship: string; wholesale_cents: number }>();
-    expect(row).toMatchObject({ billing_relationship: "reseller", wholesale_cents: 1500 });
-  });
-
-  it("rejects an invalid billing_relationship", async () => {
-    const env = makeEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
-    const res = await spacesWorker.fetch(
-      await req(`/builder/products/${created.id}/reseller`, { method: "PATCH", tenant: "tenant-1", body: { billing_relationship: "bogus" } }),
-      env as never, execCtx
-    );
-    expect(res.status).toBe(400);
-  });
-
-  it("rejects an out-of-range referral_share_pct", async () => {
-    const env = makeEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
-    const res = await spacesWorker.fetch(
-      await req(`/builder/products/${created.id}/reseller`, { method: "PATCH", tenant: "tenant-1", body: { referral_share_pct: 150 } }),
-      env as never, execCtx
-    );
-    expect(res.status).toBe(400);
-  });
-
-  it("404s for a product owned by a different tenant", async () => {
-    const env = makeEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
-    const res = await spacesWorker.fetch(
-      await req(`/builder/products/${created.id}/reseller`, { method: "PATCH", tenant: "tenant-2", body: { billing_relationship: "reseller" } }),
-      env as never, execCtx
-    );
-    expect(res.status).toBe(404);
+    const response = await spacesWorker.fetch(await req(`/builder/products/${created.id}/reseller`, {
+      method: "PATCH", tenant: "tenant-1", body: { billing_relationship: "reseller", wholesale_cents: 2000 },
+    }), env as never, execCtx);
+    expect(response.status).toBe(403);
+    expect(await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM reseller_accounts WHERE tenant_id = 'tenant-1'").first())
+      .toEqual({ count: 0 });
   });
 });
 
