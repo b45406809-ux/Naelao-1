@@ -56,7 +56,7 @@ async function req(path: string, opts: { method?: string; body?: unknown; tenant
   if (opts.tenant) {
     headers.set("x-naelao-tenant-id", opts.tenant);
     headers.set("x-naelao-internal-token", await mintInternalToken("s", opts.tenant));
-    if (opts.role) headers.set("x-naelao-role", opts.role);
+    headers.set("x-naelao-role", opts.role ?? "owner");
     if (opts.userId) headers.set("x-naelao-user-id", opts.userId);
   }
   if (opts.bearer) headers.set("authorization", `Bearer ${opts.bearer}`);
@@ -221,13 +221,13 @@ describe("Builder Dashboard API — /builder/products CRUD", () => {
     expect(outside.status).toBe(400);
   });
 
-  it("404s fetching another tenant's product — ownership never leaks", async () => {
+  it("denies dashboard access to a tenant outside the Naelao team", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
       await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-2" }), env as never, execCtx);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
   });
 
   it("PATCH rejects an unknown status but accepts an allowed one, and merges product_config", async () => {
@@ -440,13 +440,13 @@ describe("Builder Dashboard API — users roster", () => {
     expect(roster.data[0]!.suspended_at).not.toBeNull();
   });
 
-  it("404s for a product owned by a different tenant", async () => {
+  it("denies the Naelao dashboard API to another tenant before product lookup", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
       await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(await req(`/builder/products/${created.id}/users`, { tenant: "tenant-2" }), env as never, execCtx);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
   });
 });
 

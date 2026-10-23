@@ -8,15 +8,10 @@
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
 // file declares its own minimal structural Env shape instead of importing index.ts's Env).
 //
-// AUTH: every /builder/* route accepts EITHER of two callers, resolved by resolveBuilderAuth():
-//  - a router-authenticated session (x-naelao-tenant-id plus x-naelao-internal-token set by
-//    naelao-router after JWT verification). The HMAC is verified here so direct Worker access
-//    cannot forge the tenant. This is how the Dashboard UI itself calls these routes. Full access.
-//  - a Bearer `nbk_...` API key (the spec's programmatic Builder Dashboard API surface). Routed
-//    to the right BuilderAccountDO via builder_api_key_index (migration 0045, pure routing data —
-//    see its header comment for why this isn't a split-brain), then authoritatively re-verified
-//    against that DO. Route middleware enforces the stored scope, and descendants cannot request
-//    a wider scope when minting another key.
+// AUTH: every /builder/* route accepts a router-authenticated Naelao team session or a scoped
+// Builder API key created by that team. The signed router tenant assertion is verified here;
+// then all builder routes are restricted to NAELAO_DASHBOARD_TENANT_ID. FDEs use Foundry inside
+// their Space in the shell; this API is the internal Launchpad administration surface.
 // Note: wiring naelao-router to actually forward external `Authorization: Bearer nbk_...` calls
 // through to this worker (today the router only forwards already-JWT-authenticated sessions) is a
 // separate, tracked router-level follow-up — out of this file's scope. The Dashboard UI's own use
@@ -235,6 +230,18 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const env = c.env as BuilderRoutesEnv;
     const auth = await resolveBuilderAuth(env, c.req.raw.headers);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    // Naelao is the only platform builder. Fail closed when the internal team tenant is not
+    // configured; otherwise any authenticated tenant or legacy builder API key could use this
+    // administration API as a product-building surface.
+    if (!env.NAELAO_DASHBOARD_TENANT_ID || auth.tenantId !== env.NAELAO_DASHBOARD_TENANT_ID) {
+      return c.json({ error_code: "forbidden", message: "Naelao team access required" }, 403);
+    }
+    // Router sessions carry a role derived from the verified JWT (client-supplied role headers
+    // are stripped by the router). Keep dashboard administration to team owners/admins; scoped
+    // API keys remain usable for automation after an authorized admin creates them.
+    if (c.req.header("x-naelao-tenant-id") && !["owner", "admin"].includes(c.req.header("x-naelao-role") ?? "")) {
+      return c.json({ error_code: "forbidden", message: "Naelao team administrator access required" }, 403);
+    }
     const required = builderScopeFor(c.req.path, c.req.method);
     if (!hasBuilderScope(auth, required)) return c.json({ error_code: "insufficient_scope", required_scope: required }, 403);
     c.set("builderAuth", auth);

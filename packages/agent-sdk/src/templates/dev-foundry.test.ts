@@ -7,9 +7,10 @@ describe("tpl_dev_foundry_v1", () => {
     expect(DEV_FOUNDRY_TEMPLATE.externalDomainRequired).toBe(false);
     expect(DEV_FOUNDRY_TEMPLATE.shellRoute).toBe("/foundry");
     expect(DEV_FOUNDRY_TEMPLATE.capabilities).toEqual(expect.arrayContaining([
-      "extension.author", "sqlite.schema.inspect", "conformance.run", "referral.royalties.read",
+      "extension.author", "sqlite.schema.inspect", "conformance.run",
     ]));
-    expect(DEV_FOUNDRY_TEMPLATE.royalty.referralShareBps).toBe(4000);
+    expect(DEV_FOUNDRY_TEMPLATE.name).toBe("FDE Foundry");
+    expect(DEV_FOUNDRY_TEMPLATE.capabilities).not.toContain("referral.payout.request");
   });
 
   it("rejects identifiers outside the template namespace", () => {

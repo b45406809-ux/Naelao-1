@@ -13,30 +13,26 @@ export interface NativeSpaceTemplate {
     kind: string;
     workspaceDirectories: readonly string[];
   }[];
-  royalty: Readonly<{ referralShareBps: 4000; dashboard: true }>;
 }
 
-/** The built-in, self-hosting extension development environment. */
+/** The built-in Foundry workspace for Naelao's FDE team. */
 export const DEV_FOUNDRY_TEMPLATE: NativeSpaceTemplate = Object.freeze({
   id: "tpl_dev_foundry_v1",
   version: "1.0.0",
-  name: "Developer Foundry",
-  description: "Author and validate extensions, inspect actor SQLite schemas, and manage referral royalties.",
+  name: "FDE Foundry",
+  description: "Author and validate extensions, inspect actor SQLite schemas, and manage reusable Space templates.",
   shellRoute: "/foundry",
   externalDomainRequired: false,
   capabilities: Object.freeze([
     "extension.author",
     "sqlite.schema.inspect",
     "conformance.run",
-    "referral.royalties.read",
-    "referral.payout.request",
   ]),
   projects: Object.freeze([Object.freeze({
     name: "Extension Workshop",
     kind: "developer_foundry",
     workspaceDirectories: Object.freeze(["src/", "harness/conformance/"]),
   })]),
-  royalty: Object.freeze({ referralShareBps: 4000, dashboard: true }),
 });
 
 assertTemplateId(DEV_FOUNDRY_TEMPLATE.id);
