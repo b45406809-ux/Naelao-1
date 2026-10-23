@@ -1,7 +1,7 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2066` tracked files; `1880` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `4ae68cc2`.
+Inventory basis: `2067` tracked files; `1881` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `1dbe121f`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-22)
@@ -200,7 +200,7 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `apps/dashboard/src/app/dashboard/products/[productId]/domain`
 
-- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/domain/page.tsx`
+- [x] `apps/dashboard/src/app/dashboard/products/[productId]/domain/page.tsx`
 
 ### `apps/dashboard/src/app/dashboard/products/[productId]/feature-flags`
 
@@ -228,17 +228,17 @@ Check each file only after its behavior and runtime relationships are traced and
 
 ### `apps/dashboard/src/app/dashboard/products/new`
 
-- [ ] `apps/dashboard/src/app/dashboard/products/new/page.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/new/wizardTypes.ts`
+- [x] `apps/dashboard/src/app/dashboard/products/new/page.tsx`
+- [x] `apps/dashboard/src/app/dashboard/products/new/wizardTypes.ts`
 
 ### `apps/dashboard/src/app/dashboard/products/new/steps`
 
-- [ ] `apps/dashboard/src/app/dashboard/products/new/steps/AuthConfigStep.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/new/steps/DomainStep.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/new/steps/IdentityStep.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/new/steps/PricingStep.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/new/steps/ReviewStep.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/new/steps/SpaceTypeStep.tsx`
+- [x] `apps/dashboard/src/app/dashboard/products/new/steps/AuthConfigStep.tsx`
+- [x] `apps/dashboard/src/app/dashboard/products/new/steps/DomainStep.tsx`
+- [x] `apps/dashboard/src/app/dashboard/products/new/steps/IdentityStep.tsx`
+- [x] `apps/dashboard/src/app/dashboard/products/new/steps/PricingStep.tsx`
+- [x] `apps/dashboard/src/app/dashboard/products/new/steps/ReviewStep.tsx`
+- [x] `apps/dashboard/src/app/dashboard/products/new/steps/SpaceTypeStep.tsx`
 
 ### `apps/dashboard/src/app/dashboard/settings`
 
@@ -1436,7 +1436,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/bootstrap-complete-agent-projects.test.ts`
 - [ ] `tests/unit/browser-code-exec-prebuilt.test.ts`
 - [x] `tests/unit/browser-worker-kitesurf.test.ts`
-- [ ] `tests/unit/builder-account-do.test.ts`
+- [x] `tests/unit/builder-account-do.test.ts`
 - [x] `tests/unit/builder-dashboard-api.test.ts`
 - [x] `tests/unit/builder-payout-requests.test.ts`
 - [ ] `tests/unit/builder-revenue-share.test.ts`
@@ -1603,7 +1603,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/product-shell-manifest.test.ts`
 - [ ] `tests/unit/product-user-do.test.ts`
 - [ ] `tests/unit/product-user-erasure.test.ts`
-- [ ] `tests/unit/product-wizard-api.test.ts`
+- [x] `tests/unit/product-wizard-api.test.ts`
+- [x] `tests/unit/product-wizard-validation.test.ts`
 - [ ] `tests/unit/progressive-tool-disclosure.test.ts`
 - [ ] `tests/unit/project-assistant-mode.test.ts`
 - [ ] `tests/unit/project-collaboration-t1-t3.test.ts`

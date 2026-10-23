@@ -49,13 +49,18 @@ export default function SpaceTypeStep({ state, update }: StepProps) {
       </div>
 
       {loading && <div className="text-sm text-gray-400 py-8 text-center">Loading...</div>}
-      {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
+      {error && (
+        <div role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-center justify-between gap-3">
+          <span>{error}</span>
+          <button type="button" onClick={() => void load()} className="shrink-0 underline">Retry</button>
+        </div>
+      )}
 
       {!loading && !error && (
         <>
           <div>
             <h3 className="text-sm font-semibold text-gray-700 mb-3">Temples</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div role="group" aria-label="Temples" className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {temples.map((t) => {
                 const selected = state.templateId === t.id;
                 return (
@@ -63,6 +68,7 @@ export default function SpaceTypeStep({ state, update }: StepProps) {
                     key={t.id}
                     type="button"
                     onClick={() => pickTemple(t)}
+                    aria-pressed={selected}
                     className={`text-left p-4 rounded-xl border-2 transition-colors ${
                       selected ? "border-brand-500 bg-brand-50" : "border-gray-200 hover:border-brand-200 hover:bg-gray-50"
                     }`}
@@ -83,7 +89,7 @@ export default function SpaceTypeStep({ state, update }: StepProps) {
           {spaceTypes.length > 0 && (
             <div>
               <h3 className="text-sm font-semibold text-gray-700 mb-3">Or start blank</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div role="group" aria-label="Blank starting points" className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {spaceTypes.map((st) => {
                   const selected = state.spacetypeId === st.id && !state.templateId;
                   return (
@@ -91,6 +97,7 @@ export default function SpaceTypeStep({ state, update }: StepProps) {
                       key={st.id}
                       type="button"
                       onClick={() => pickBlank(st)}
+                      aria-pressed={selected}
                       className={`text-left p-4 rounded-xl border-2 transition-colors ${
                         selected ? "border-brand-500 bg-brand-50" : "border-gray-200 hover:border-brand-200 hover:bg-gray-50"
                       }`}

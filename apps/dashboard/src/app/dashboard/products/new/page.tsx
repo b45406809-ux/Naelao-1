@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createBuilderProduct, configureBuilderProductDomain } from "@/lib/api";
 import type { CreateBuilderProductInput } from "@/lib/api";
-import { INITIAL_WIZARD_STATE, SLUG_PATTERN } from "./wizardTypes";
+import { hasDerivableProductAddress, INITIAL_WIZARD_STATE, parseWizardInteger, SLUG_PATTERN } from "./wizardTypes";
 import type { WizardState } from "./wizardTypes";
 import IdentityStep from "./steps/IdentityStep";
 import SpaceTypeStep from "./steps/SpaceTypeStep";
@@ -18,17 +18,35 @@ const STEPS = ["Identity", "Starting Point", "Sign-in", "Pricing", "Domain", "Re
 function validateStep(step: number, state: WizardState): string | null {
   if (step === 0) {
     if (!state.name.trim()) return "Product name is required.";
+    if (state.name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(state.name)) {
+      return "Product name must contain 1–100 printable characters.";
+    }
+    if (!state.productSlug && !hasDerivableProductAddress(state.name)) {
+      return "Choose a product address; this name cannot create one automatically.";
+    }
     if (state.productSlug && !SLUG_PATTERN.test(state.productSlug)) {
       return "Platform subdomain must be 2-40 lowercase letters, numbers, or hyphens.";
     }
   }
   if (step === 1 && !state.spacetypeId) return "Choose a starting point to continue.";
+  if (step === 3) {
+    const fields: Array<[string, string]> = state.pricingModel === "credits"
+      ? [[state.creditsIncludedPerMonth, "Credits included per month"], [state.overageCreditsPriceCents, "Overage price"]]
+      : state.pricingModel === "subscription"
+        ? [[state.trialDays, "Trial days"]]
+        : state.pricingModel === "seats"
+          ? [[state.pricePerSeatCents, "Price per seat"], [state.includedSeats, "Seats included"]]
+          : [];
+    for (const [value, label] of fields) {
+      if (parseWizardInteger(value) === null) return `${label} must be a nonnegative whole number.`;
+    }
+  }
   return null;
 }
 
 function toNumberOrUndefined(v: string): number | undefined {
-  const n = Number(v);
-  return v.trim() !== "" && Number.isFinite(n) ? n : undefined;
+  const parsed = parseWizardInteger(v);
+  return typeof parsed === "number" ? parsed : undefined;
 }
 
 export default function NewProductWizardPage() {
@@ -37,6 +55,17 @@ export default function NewProductWizardPage() {
   const [state, setState] = useState<WizardState>(INITIAL_WIZARD_STATE);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  const launchingRef = useRef(false);
+  const stepContentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (step === 0) return;
+    const heading = stepContentRef.current?.querySelector<HTMLElement>("h2");
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
+  }, [step]);
 
   function update(patch: Partial<WizardState>) {
     setState((prev) => ({ ...prev, ...patch }));
@@ -58,6 +87,9 @@ export default function NewProductWizardPage() {
   }
 
   async function launch() {
+    if (launchingRef.current) return;
+    launchingRef.current = true;
+    let productCreated = false;
     setLaunching(true);
     setError(null);
     try {
@@ -82,23 +114,26 @@ export default function NewProductWizardPage() {
           },
           pricingConfig: {
             model: state.pricingModel,
-            ...(creditsIncludedPerMonth !== undefined ? { creditsIncludedPerMonth } : {}),
-            ...(overageCreditsPriceCents !== undefined ? { overageCreditsPriceCents } : {}),
-            ...(pricePerSeatCents !== undefined ? { pricePerSeatCents } : {}),
-            ...(includedSeats !== undefined ? { includedSeats } : {}),
-            ...(trialDays !== undefined ? { trialDays } : {}),
+            ...(state.pricingModel === "credits" && creditsIncludedPerMonth !== undefined ? { creditsIncludedPerMonth } : {}),
+            ...(state.pricingModel === "credits" && overageCreditsPriceCents !== undefined ? { overageCreditsPriceCents } : {}),
+            ...(state.pricingModel === "seats" && pricePerSeatCents !== undefined ? { pricePerSeatCents } : {}),
+            ...(state.pricingModel === "seats" && includedSeats !== undefined ? { includedSeats } : {}),
+            ...(state.pricingModel === "subscription" && trialDays !== undefined ? { trialDays } : {}),
           },
         },
       };
 
       const created = await createBuilderProduct(input);
+      productCreated = true;
 
       if (state.customDomain.trim()) {
         try {
           await configureBuilderProductDomain(created.id, state.customDomain.trim());
         } catch {
-          // Domain attachment failing shouldn't block the launch — it's reconfigurable from
-          // Product Settings; the product itself was already created successfully above.
+          // Product creation already committed. Send the builder to domain settings with a
+          // clear retry notice; swallowing this failure used to make the launch look complete.
+          router.push(`/dashboard/products/${encodeURIComponent(created.id)}/domain#setup-retry`);
+          return;
         }
       }
 
@@ -114,7 +149,12 @@ export default function NewProductWizardPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to launch product");
     } finally {
-      setLaunching(false);
+      // Keep the lock if D1 committed and navigation is underway. A failed response after that
+      // point must not let a second click create a duplicate product.
+      if (!productCreated) {
+        launchingRef.current = false;
+        setLaunching(false);
+      }
     }
   }
 
@@ -128,10 +168,11 @@ export default function NewProductWizardPage() {
       </div>
 
       {/* Step indicator */}
-      <div className="flex items-center gap-2 mb-8">
+      <div role="list" aria-label="Product creation steps" className="flex items-center gap-2 mb-8">
         {STEPS.map((label, i) => (
-          <div key={label} className="flex items-center gap-2 flex-1">
+          <div key={label} role="listitem" aria-label={label} aria-current={i === step ? "step" : undefined} className="flex items-center gap-2 flex-1">
             <div
+              aria-hidden="true"
               className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 ${
                 i < step ? "bg-brand-600 text-white" : i === step ? "bg-brand-100 text-brand-700 border-2 border-brand-500" : "bg-gray-100 text-gray-400"
               }`}
@@ -143,7 +184,7 @@ export default function NewProductWizardPage() {
         ))}
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div ref={stepContentRef} className="bg-white rounded-xl border border-gray-200 p-6">
         {step === 0 && <IdentityStep {...stepProps} />}
         {step === 1 && <SpaceTypeStep {...stepProps} />}
         {step === 2 && <AuthConfigStep {...stepProps} />}
@@ -152,7 +193,7 @@ export default function NewProductWizardPage() {
         {step === 5 && <ReviewStep state={state} />}
 
         {error && (
-          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-5">
+          <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-5">
             {error}
           </p>
         )}

@@ -4,7 +4,7 @@
 // PLATFORM_SECRET) — the same HMAC-named pattern SpaceDO uses, so a builder account DO can't be
 // enumerated by guessing a raw tenantId.
 //
-// Deliberately thin: this DO indexes a builder's products and holds their scoped API keys. It
+// Deliberately thin: this DO holds a builder's scoped API keys. It
 // does NOT reimplement usage aggregation, invoicing, or rate limiting — those already exist
 // platform-wide (@naelao/entitlements + Analytics Engine; reseller_ledger / GET
 // /reseller/statement; workers/router/src/RateLimitDO.ts) and the Builder Dashboard API (Phase
@@ -35,7 +35,6 @@ const BUILDER_API_KEY_SCOPES = new Set([
   "kb:read", "kb:write", "agents:read", "agents:write", "analytics:read", "billing:read",
 ]);
 const MAX_API_KEYS = 1_000;
-const MAX_PRODUCTS = 500;
 
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
@@ -48,11 +47,6 @@ export class BuilderAccountDO extends DurableObject {
   private ensureInit(): void {
     if (this.initialized) return;
     this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS products (
-        product_space_id TEXT PRIMARY KEY,
-        added_at          TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-
       CREATE TABLE IF NOT EXISTS api_keys (
         id            TEXT PRIMARY KEY,
         name          TEXT NOT NULL,
@@ -80,31 +74,6 @@ export class BuilderAccountDO extends DurableObject {
     this.ensureInit();
     const url = new URL(request.url);
     const method = request.method;
-
-    // POST /products — index a product this builder owns (called once at launch).
-    if (method === "POST" && url.pathname === "/products") {
-      const body = await request.json<unknown>().catch(() => null);
-      const productSpaceId = body && typeof body === "object" && !Array.isArray(body)
-        ? (body as { product_space_id?: unknown }).product_space_id : undefined;
-      if (typeof productSpaceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(productSpaceId)) {
-        return Response.json({ error: "product_space_id is required" }, { status: 400 });
-      }
-      const count = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM products").toArray()[0]?.count ?? 0;
-      if (count >= MAX_PRODUCTS) return Response.json({ error: "product_limit_reached" }, { status: 429 });
-      this.ctx.storage.sql.exec(
-        "INSERT OR IGNORE INTO products (product_space_id) VALUES (?)",
-        productSpaceId
-      );
-      return Response.json({ ok: true }, { status: 201 });
-    }
-
-    // GET /products — this builder's product index.
-    if (method === "GET" && url.pathname === "/products") {
-      const rows = this.ctx.storage.sql
-        .exec("SELECT product_space_id, added_at FROM products ORDER BY added_at DESC LIMIT ?", MAX_PRODUCTS)
-        .toArray() as unknown as { product_space_id: string; added_at: string }[];
-      return Response.json({ data: rows });
-    }
 
     // POST /api-keys — mint a new scoped builder API key. Returns the raw key exactly once;
     // only its SHA-256 hash and a short prefix (for UI display) are ever persisted.

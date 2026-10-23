@@ -1926,3 +1926,33 @@ first real business on free-tier resources before opening the platform to other 
   Products beyond page one remain reachable from the paginated product list, but add search or paging
   to the shared switcher and stress it with large portfolios before considering the navigation flow
   complete.
+
+- [x] **Product launch wizard validation, reachable addresses, and partial success.** Numeric pricing inputs
+  previously accepted fractions/unsafe values and retained values from inactive pricing modes; slugs
+  accepted leading/trailing hyphens that the server rejects; the wizard could create a product whose
+  name has no derivable address; and server address lookup failures silently created slugless products.
+  The wizard now validates whole safe nonnegative integers and printable name length, sends only fields
+  for the selected pricing mode, matches the server slug pattern, and requires an explicit address
+  for names that cannot derive one. Creation fails closed if uniqueness lookup fails or no slug can be
+  made, and both creation endpoints return the actual derived slug. Builder product creation now bounds
+  request bodies to 64 KiB and rejects malformed/non-object bodies and non-string slugs/config roots.
+  A synchronous launch lock prevents repeat submits after success. Domain setup failure now sends the
+  builder to a retryable settings page with a partial-success notice instead of silently discarding the
+  error. Wizard controls now expose labels, pressed/current states, retry feedback, and step-heading
+  focus. The write-only BuilderAccountDO product index was removed after tracing its only writer and
+  finding no reader; the authoritative list is the tenant-filtered D1 spaces query. Regression cases
+  are authored for slug rules, safe integers, unreachable names, lookup failure, derived response slug,
+  and product pagination, but the current workspace dependency installation policy prevents rerunning
+  them. Production build and browser behavior remain open.
+
+- [ ] **Validate product configuration at every server write boundary.** `POST /builder/products`
+  and `PATCH /builder/products/:id` type product config in TypeScript but still need runtime validation
+  for nested auth provider, email-domain, pricing model, and numeric fields. Schema validation is
+  optional when a SpaceType has no schema row and does not prove these nested product-specific rules.
+  Add malformed-object, invalid-enum, negative/fractional/unsafe-value, and 64 KiB boundary tests before
+  considering client-side wizard validation sufficient.
+
+- [ ] **Product creation still needs a durable idempotency boundary.** The browser locks duplicate clicks
+  while its request is in flight, but a lost success response can leave the caller unsure whether D1
+  committed and whether a provisioning queue message was accepted. Add a caller idempotency key and a
+  reconciliation path that cannot create a duplicate product or orphan a provision event under retry.

@@ -24,11 +24,13 @@ export default function DomainStep({ state, update }: StepProps) {
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
+        <label htmlFor="wizard-custom-domain" className="block text-sm font-medium text-gray-700 mb-1">
           Custom domain <span className="text-gray-400 font-normal">(optional)</span>
         </label>
         <input
+          id="wizard-custom-domain"
           type="text"
+          maxLength={253}
           value={state.customDomain}
           onChange={(e) => update({ customDomain: e.target.value })}
           placeholder="shop.yourcompany.com"

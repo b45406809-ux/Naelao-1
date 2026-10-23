@@ -2485,8 +2485,8 @@ falling through to the param-count-based DDL branch. All 14 existing consumers o
 (`rate-limit-do.test.ts`, `concurrency-do.test.ts`, `spacedo-*.test.ts`, etc.) still pass
 unchanged — the fix only changes behavior for the previously-broken param-less-SELECT case.
 
-Tests: `tests/unit/builder-account-do.test.ts` (9 — product index, key mint/list/verify/revoke,
-expiry, forged-key rejection) and `tests/unit/naelao-product-migration.test.ts` (6 — migration
+Tests: `tests/unit/builder-account-do.test.ts` (6 — key mint/list/verify/revoke, expiry,
+forged-key rejection) and `tests/unit/naelao-product-migration.test.ts` (6 — migration
 applies cleanly, columns default to NULL, slug uniqueness enforced but NULL-excluded, audit
 columns settable independently). 794/794 platform tests pass; `naelao-spaces` and the dashboard
 typecheck clean.

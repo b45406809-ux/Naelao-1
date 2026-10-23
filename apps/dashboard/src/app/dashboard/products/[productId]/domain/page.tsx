@@ -24,14 +24,18 @@ export default function ProductDomainPage() {
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [creationNotice, setCreationNotice] = useState(false);
 
   async function refresh() {
     setLoading(true);
+    setLoadError(null);
     try {
       const d = await getBuilderProductDomain(params.productId);
       setDomain(d);
-    } catch {
+    } catch (err) {
       setDomain(null);
+      setLoadError(err instanceof Error ? err.message : "Failed to load domain settings");
     } finally {
       setLoading(false);
     }
@@ -42,6 +46,12 @@ export default function ProductDomainPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.productId]);
 
+  useEffect(() => {
+    if (window.location.hash !== "#setup-retry") return;
+    setCreationNotice(true);
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }, []);
+
   async function handleConfigure() {
     if (!input.trim()) return;
     setSaving(true);
@@ -49,6 +59,7 @@ export default function ProductDomainPage() {
     try {
       const d = await configureBuilderProductDomain(params.productId, input.trim());
       setDomain(d);
+      setCreationNotice(false);
       setInput("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to configure domain");
@@ -60,7 +71,12 @@ export default function ProductDomainPage() {
   async function handleCheckStatus() {
     setChecking(true);
     try {
-      await refresh();
+      const d = await getBuilderProductDomain(params.productId);
+      setDomain(d);
+      setLoadError(null);
+      setCreationNotice(false);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : "Failed to load domain settings");
     } finally {
       setChecking(false);
     }
@@ -74,6 +90,11 @@ export default function ProductDomainPage() {
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-xl border border-gray-200 p-5">
+        {creationNotice && domain?.status !== "active" && domain?.status !== "pending_dns" && (
+          <div role="alert" className="mb-4 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-900">
+            The product was created, but the custom domain could not be confirmed during launch. The product remains available at its Naelao address. Review the domain and retry below.
+          </div>
+        )}
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Custom Domain</h2>
           <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${statusInfo.color}`}>{statusInfo.label}</span>
@@ -98,10 +119,22 @@ export default function ProductDomainPage() {
           </div>
         )}
 
-        {status !== "active" && (
+        {loadError && (
+          <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <span>Could not load the current domain configuration: {loadError}</span>
+            <button type="button" onClick={() => void handleCheckStatus()} disabled={checking} className="shrink-0 underline disabled:opacity-50">
+              {checking ? "Retrying…" : "Retry"}
+            </button>
+          </div>
+        )}
+
+        {!loadError && status !== "active" && (
           <div className="flex gap-2 mb-4">
+            <label htmlFor="product-custom-domain" className="sr-only">Custom domain</label>
             <input
+              id="product-custom-domain"
               type="text"
+              maxLength={253}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="shop.yourbrand.com"
@@ -118,7 +151,7 @@ export default function ProductDomainPage() {
           </div>
         )}
 
-        {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 mb-4 text-sm">{error}</div>}
+        {error && <div role="alert" className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 mb-4 text-sm">{error}</div>}
 
         {domain?.dns && status !== "active" && (
           <div className="border-t border-gray-100 pt-4">

@@ -102,7 +102,17 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
     expect(detail.product_config.pricingConfig.creditsIncludedPerMonth).toBe(1000);
   });
 
-  it("registers the created product in the builder's BuilderAccountDO index (so it appears in the Products list)", async () => {
+  it("returns the server-derived slug when the wizard leaves product address blank", async () => {
+    const env = makeEnv();
+    const response = await spacesWorker.fetch(
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Acme Store", spacetype_id: "launchpad" } }),
+      env as never, execCtx,
+    );
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ product_slug: "acme-store" });
+  });
+
+  it("lists a created product from the authoritative platform spaces table", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
       await req("/builder/products", { method: "POST", tenant: "tenant-1", body: WIZARD_LAUNCH_PAYLOAD }), env as never, execCtx
@@ -112,6 +122,16 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
     expect(list.data.map((p) => p.id)).toContain(created.id);
   });
 
+  it("returns the actual derived product slug when the caller leaves it blank", async () => {
+    const env = makeEnv();
+    const response = await spacesWorker.fetch(
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Acme Store", spacetype_id: "launchpad" } }),
+      env as never, execCtx,
+    );
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ product_slug: "acme-store" });
+  });
+
   it("rejects launch when the Identity step's slug is malformed (defense-in-depth behind client-side validation)", async () => {
     const env = makeEnv();
     const res = await spacesWorker.fetch(
@@ -119,6 +139,30 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
       env as never, execCtx
     );
     expect(res.status).toBe(400);
+  });
+
+  it("rejects malformed, oversized, and wrongly typed launch bodies before product creation", async () => {
+    const env = makeEnv();
+    const headers = new Headers({
+      "content-type": "application/json",
+      "x-naelao-tenant-id": "tenant-1",
+      "x-naelao-internal-token": await mintInternalToken("s", "tenant-1"),
+    });
+    const malformed = await spacesWorker.fetch(new Request("https://spaces.naelao.com/builder/products", {
+      method: "POST", headers, body: "{",
+    }), env as never, execCtx);
+    const oversized = await spacesWorker.fetch(await req("/builder/products", {
+      method: "POST", tenant: "tenant-1", body: "x".repeat(64 * 1024 + 1),
+    }), env as never, execCtx);
+    const wrongSlugType = await spacesWorker.fetch(await req("/builder/products", {
+      method: "POST", tenant: "tenant-1", body: { name: "Shop", spacetype_id: "launchpad", product_slug: 123 },
+    }), env as never, execCtx);
+
+    expect(malformed.status).toBe(400);
+    expect(oversized.status).toBe(413);
+    expect(wrongSlugType.status).toBe(400);
+    const rows = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM spaces").first<{ count: number }>();
+    expect(rows?.count).toBe(0);
   });
 
   it("without a Temple (blank SpaceType path), creates with no template_id in config_json", async () => {

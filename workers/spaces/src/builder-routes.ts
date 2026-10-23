@@ -24,7 +24,7 @@ import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, DEFAULT_WORKING_MOD
 
 import type { Context, Hono } from "hono";
 import { getDOName } from "@naelao/crypto";
-import { mintInternalToken, verifyInternalToken } from "@naelao/http";
+import { mintInternalToken, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { createCustomHostname, getCustomHostname, cfSaasConfig, normalizeCustomHostname } from "./cf-saas.js";
 import type { SpaceTypeProductConfig } from "./do/SpaceTypeRegistryDO.js";
 import { createSpaceRecord, SpaceCreationError, provisionBusinessWallet } from "./create-space.js";
@@ -228,13 +228,35 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
 
-    const body = await c.req.json<{
+    let bodyBytes: Uint8Array;
+    try {
+      bodyBytes = await readBoundedRequestBytes(c.req.raw, 64 * 1024);
+    } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) return c.json({ error_code: "payload_too_large" }, 413);
+      return c.json({ error_code: "invalid_request_body" }, 400);
+    }
+    let bodyValue: unknown;
+    try {
+      bodyValue = JSON.parse(new TextDecoder().decode(bodyBytes));
+    } catch {
+      return c.json({ error_code: "invalid_request_body" }, 400);
+    }
+    if (!bodyValue || typeof bodyValue !== "object" || Array.isArray(bodyValue)) {
+      return c.json({ error_code: "invalid_request_body" }, 400);
+    }
+    const body = bodyValue as {
       name: string;
       spacetype_id: string;
       template_id?: string;
-      product_slug?: string;
+      product_slug?: unknown;
       product_config?: Partial<SpaceTypeProductConfig>;
-    }>();
+    };
+    if (body.product_slug !== undefined && typeof body.product_slug !== "string") {
+      return c.json({ error_code: "bad_request", message: "product_slug must be a string" }, 400);
+    }
+    if (body.product_config !== undefined && (!body.product_config || typeof body.product_config !== "object" || Array.isArray(body.product_config))) {
+      return c.json({ error_code: "bad_request", message: "product_config must be an object" }, 400);
+    }
 
     let result;
     try {
@@ -248,13 +270,10 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       });
     } catch (err) {
       if (err instanceof SpaceCreationError) {
-        return c.json({ error_code: err.error_code, message: err.message, ...(err.errors ? { errors: err.errors } : {}) }, err.status as 400 | 402 | 409);
+        return c.json({ error_code: err.error_code, message: err.message, ...(err.errors ? { errors: err.errors } : {}) }, err.status as 400 | 402 | 404 | 409 | 429 | 503);
       }
       throw err;
     }
-
-    const stub = await builderAccountDoStubFor(env, auth.tenantId);
-    await stub.fetch(new Request("http://do/products", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ product_space_id: result.id }) }));
 
     // Every business auto-provisions a Whop sub-merchant wallet — no builder action required.
     // Best-effort, wrapped so ANY failure here (missing table/row in an unusual deployment,
@@ -272,7 +291,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       console.error(`[builder-routes] wallet provisioning lookup failed for space ${result.id}:`, (err as Error).message);
     }
 
-    return c.json({ id: result.id, name: body.name, spacetype_id: body.spacetype_id, status: result.status, product_slug: body.product_slug ?? null, created_at: result.created_at }, 201);
+    return c.json({ id: result.id, name: body.name, spacetype_id: body.spacetype_id, status: result.status, product_slug: result.product_slug, created_at: result.created_at }, 201);
   });
 
   app.get("/builder/products", async (c) => {

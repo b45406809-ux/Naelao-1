@@ -3,7 +3,7 @@ import { BuilderAccountDO } from "../../workers/spaces/src/do/BuilderAccountDO.j
 import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // Three-Tier Platform Model, Phase 1 (docs/spec-appendix A1.17). BuilderAccountDO is
-// deliberately thin — a per-builder product index + scoped API keys — everything else
+// deliberately thin — scoped API keys only — everything else
 // (usage/billing/rate-limiting) reads from systems that already exist elsewhere.
 
 function makeDO() {
@@ -14,46 +14,6 @@ function makeDO() {
 async function call(doInstance: BuilderAccountDO, path: string, init?: RequestInit) {
   return doInstance.fetch(new Request(`http://do${path}`, init));
 }
-
-describe("BuilderAccountDO — product index", () => {
-  it("indexes a product and lists it back", async () => {
-    const doInstance = makeDO();
-    const addRes = await call(doInstance, "/products", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ product_space_id: "space-1" }),
-    });
-    expect(addRes.status).toBe(201);
-
-    const listRes = await call(doInstance, "/products");
-    const body = await listRes.json() as { data: Array<{ product_space_id: string }> };
-    expect(body.data).toHaveLength(1);
-    expect(body.data[0]!.product_space_id).toBe("space-1");
-  });
-
-  it("adding the same product twice does not duplicate it", async () => {
-    const doInstance = makeDO();
-    await call(doInstance, "/products", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ product_space_id: "space-1" }),
-    });
-    await call(doInstance, "/products", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ product_space_id: "space-1" }),
-    });
-    const listRes = await call(doInstance, "/products");
-    const body = await listRes.json() as { data: unknown[] };
-    expect(body.data).toHaveLength(1);
-  });
-
-  it("rejects a missing product_space_id", async () => {
-    const doInstance = makeDO();
-    const res = await call(doInstance, "/products", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(400);
-  });
-});
 
 describe("BuilderAccountDO — scoped API keys", () => {
   it("mints a key, returns the raw value once, and never re-exposes it in the list", async () => {

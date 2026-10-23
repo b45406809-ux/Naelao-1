@@ -156,9 +156,8 @@ describe("createSpaceRecord — product_slug", () => {
     expect(result.id).toBeTruthy();
   });
 
-  // The Product Shell resolves every end-user URL as /p/{product_slug}. A product created without
-  // one provisioned fine, reported `active`, and could never be opened — by its owner or by a
-  // single customer. The wizard called the field optional, and nothing anywhere sets it later.
+  // The Product Shell resolves every end-user URL as /p/{product_slug}; omitted addresses must be
+  // derived from a usable product name before a row can become active.
   it("derives a slug from the name when none is given, so the product is reachable", async () => {
     const fakeDb = makeDb();
     const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Acme Creator Store", spacetypeId: "launchpad" });
@@ -182,14 +181,27 @@ describe("createSpaceRecord — product_slug", () => {
     expect(row?.product_slug).not.toBe("admin");
   });
 
-  it("creates the product anyway when no usable slug can be derived", async () => {
-    // Degrading to slugless is the old behavior — a name of pure punctuation must not block
-    // creation over a convenience value the builder never asked for.
+  it("rejects names from which no reachable address can be derived", async () => {
     const fakeDb = makeDb();
-    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "!!!", spacetypeId: "launchpad" });
-    expect(result.id).toBeTruthy();
-    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string | null }>();
-    expect(row?.product_slug).toBeNull();
+    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "!!!", spacetypeId: "launchpad" }))
+      .rejects.toMatchObject({ error_code: "product_slug_required", status: 400 });
+    const row = await fakeDb.prepare("SELECT COUNT(*) AS count FROM spaces").first<{ count: number }>();
+    expect(row?.count).toBe(0);
+  });
+
+  it("does not create a slugless product when address uniqueness cannot be checked", async () => {
+    const fakeDb = makeDb();
+    const prepare = fakeDb.prepare.bind(fakeDb);
+    fakeDb.prepare = ((sql: string) => {
+      if (sql === "SELECT 1 AS x FROM spaces WHERE product_slug = ?") {
+        return { bind: () => ({ first: async () => { throw new Error("database unavailable"); } }) } as never;
+      }
+      return prepare(sql);
+    }) as typeof fakeDb.prepare;
+
+    await expect(createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Acme", spacetypeId: "launchpad" }))
+      .rejects.toMatchObject({ error_code: "slug_lookup_failed", status: 503 });
+    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM spaces").get()).toEqual({ count: 0 });
   });
 });
 

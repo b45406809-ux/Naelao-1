@@ -210,6 +210,7 @@ export interface CreateSpaceResult {
   id: string;
   status: string;
   created_at: string;
+  product_slug: string;
 }
 
 
@@ -218,9 +219,8 @@ export interface CreateSpaceResult {
  *
  * Collisions are resolved by suffixing rather than by rejecting: a builder naming their product
  * "Launchpad" when someone else already has that slug should still end up with a working product,
- * not a 409 on a field they never filled in. Returns undefined only if nothing usable can be
- * derived at all (a name of pure punctuation), in which case the product is created slugless
- * exactly as before — degrading, never blocking creation over a derived convenience value.
+ * not a 409 on a field they never filled in. Returns undefined only if the name has no usable
+ * address base or all bounded candidates collide; the caller must then require an explicit slug.
  */
 export async function deriveAvailableSlug(db: D1Database, name: string): Promise<string | undefined> {
   const base = name
@@ -228,12 +228,14 @@ export async function deriveAvailableSlug(db: D1Database, name: string): Promise
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 32);
-  if (base.length < 2) return undefined;
+  if (base.length < 1) return undefined;
 
   for (let attempt = 0; attempt < 6; attempt++) {
     // First try the clean slug, then progressively-random suffixes. Random rather than an
     // incrementing counter so two products created at once can't race onto the same candidate.
-    const candidate = attempt === 0 ? base : `${base}-${Math.random().toString(36).slice(2, 6)}`;
+    const candidate = attempt === 0 && base.length >= 2
+      ? base
+      : `${base}-${Math.random().toString(36).slice(2, 6)}`;
     if (RESERVED_SLUGS.has(candidate)) continue;
     try {
       const taken = await db
@@ -242,9 +244,9 @@ export async function deriveAvailableSlug(db: D1Database, name: string): Promise
         .first<{ x: number }>();
       if (!taken) return candidate;
     } catch {
-      // Can't check: fall through to slugless rather than risk a UNIQUE failure that would turn
-      // a valid creation into an error.
-      return undefined;
+      // Never create a product with an unverified/unreachable address when the uniqueness check
+      // is unavailable. Returning undefined here used to create active but unopenable products.
+      throw new SpaceCreationError(503, "slug_lookup_failed", "Product address availability could not be checked. Retry shortly.");
     }
   }
   return undefined;
@@ -265,6 +267,9 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   }
   if (!params.spacetypeId) {
     throw new SpaceCreationError(400, "bad_request", "name and spacetype_id are required");
+  }
+  if (params.productSlug !== undefined && typeof params.productSlug !== "string") {
+    throw new SpaceCreationError(400, "bad_request", "product_slug must be a string");
   }
   if (params.templateId !== undefined && (typeof params.templateId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(params.templateId))) {
     throw new SpaceCreationError(400, "bad_request", "Invalid template_id");
@@ -351,7 +356,10 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   // products; a child business goes through createBusinessForEndUser and has no slug of its own.
   if (!params.productSlug) {
     const derived = await deriveAvailableSlug(env.PLATFORM_DB, params.name);
-    if (derived) params = { ...params, productSlug: derived };
+    if (!derived) {
+      throw new SpaceCreationError(400, "product_slug_required", "Choose a product address with at least two letters or numbers.");
+    }
+    params = { ...params, productSlug: derived };
   }
 
   if (params.productSlug) {
@@ -465,5 +473,5 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     }
   }
 
-  return { id, status: initialStatus, created_at: now };
+  return { id, status: initialStatus, created_at: now, product_slug: params.productSlug! };
 }

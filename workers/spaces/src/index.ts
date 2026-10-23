@@ -326,7 +326,23 @@ app.post("/spaces", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   if (!["owner", "admin", "editor"].includes(role)) return c.json({ error_code: "forbidden" }, 403);
 
-  const body = await c.req.json<{
+  let bodyBytes: Uint8Array;
+  try {
+    bodyBytes = await readBoundedRequestBytes(c.req.raw, 64 * 1024);
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) return c.json({ error_code: "payload_too_large" }, 413);
+    return c.json({ error_code: "invalid_request_body" }, 400);
+  }
+  let bodyValue: unknown;
+  try {
+    bodyValue = JSON.parse(new TextDecoder().decode(bodyBytes));
+  } catch {
+    return c.json({ error_code: "invalid_request_body" }, 400);
+  }
+  if (!bodyValue || typeof bodyValue !== "object" || Array.isArray(bodyValue)) {
+    return c.json({ error_code: "invalid_request_body" }, 400);
+  }
+  const body = bodyValue as {
     name: string;
     spacetype_id: string;
     /** For Launchpad: the selected product template (e.g. "creator-store"). */
@@ -334,7 +350,7 @@ app.post("/spaces", async (c) => {
     config_overrides?: Record<string, unknown>;
     parent_space_id?: string;
     depth?: number;
-  }>();
+  };
 
   try {
     const result = await createSpaceRecord(c.env, {
@@ -362,10 +378,10 @@ app.post("/spaces", async (c) => {
         console.error(`[spaces] wallet provisioning lookup failed for space ${result.id}:`, (err as Error).message);
       }
     }
-    return c.json({ id: result.id, name: body.name, status: result.status, created_at: result.created_at }, 201);
+    return c.json({ id: result.id, name: body.name, status: result.status, product_slug: result.product_slug, created_at: result.created_at }, 201);
   } catch (err) {
     if (err instanceof SpaceCreationError) {
-      return c.json({ error_code: err.error_code, message: err.message, ...(err.errors ? { errors: err.errors } : {}) }, err.status as 400 | 402 | 409);
+      return c.json({ error_code: err.error_code, message: err.message, ...(err.errors ? { errors: err.errors } : {}) }, err.status as 400 | 402 | 404 | 409 | 429 | 503);
     }
     throw err;
   }

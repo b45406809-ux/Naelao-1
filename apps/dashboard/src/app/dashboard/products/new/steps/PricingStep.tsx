@@ -19,12 +19,13 @@ export default function PricingStep({ state, update }: StepProps) {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div role="group" aria-label="Pricing model" className="grid grid-cols-2 gap-3">
         {MODELS.map((m) => (
           <button
             key={m.id}
             type="button"
             onClick={() => update({ pricingModel: m.id })}
+            aria-pressed={state.pricingModel === m.id}
             className={`text-left p-3 rounded-lg border-2 transition-colors ${
               state.pricingModel === m.id ? "border-brand-500 bg-brand-50" : "border-gray-200 hover:border-brand-200"
             }`}
@@ -38,17 +39,17 @@ export default function PricingStep({ state, update }: StepProps) {
       {state.pricingModel === "credits" && (
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Credits included / month</label>
+            <label htmlFor="wizard-credits-included" className="block text-sm font-medium text-gray-700 mb-1">Credits included / month</label>
             <input
-              type="number" min="0" value={state.creditsIncludedPerMonth}
+              id="wizard-credits-included" type="number" min="0" step="1" inputMode="numeric" value={state.creditsIncludedPerMonth}
               onChange={(e) => update({ creditsIncludedPerMonth: e.target.value })}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Overage price (cents/credit)</label>
+            <label htmlFor="wizard-overage-price" className="block text-sm font-medium text-gray-700 mb-1">Overage price (cents/credit)</label>
             <input
-              type="number" min="0" value={state.overageCreditsPriceCents}
+              id="wizard-overage-price" type="number" min="0" step="1" inputMode="numeric" value={state.overageCreditsPriceCents}
               onChange={(e) => update({ overageCreditsPriceCents: e.target.value })}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
             />
@@ -58,9 +59,9 @@ export default function PricingStep({ state, update }: StepProps) {
 
       {state.pricingModel === "subscription" && (
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Trial days</label>
+          <label htmlFor="wizard-trial-days" className="block text-sm font-medium text-gray-700 mb-1">Trial days</label>
           <input
-            type="number" min="0" value={state.trialDays}
+            id="wizard-trial-days" type="number" min="0" step="1" inputMode="numeric" value={state.trialDays}
             onChange={(e) => update({ trialDays: e.target.value })}
             className="w-40 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
           />
@@ -70,17 +71,17 @@ export default function PricingStep({ state, update }: StepProps) {
       {state.pricingModel === "seats" && (
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Price per seat (cents)</label>
+            <label htmlFor="wizard-price-per-seat" className="block text-sm font-medium text-gray-700 mb-1">Price per seat (cents)</label>
             <input
-              type="number" min="0" value={state.pricePerSeatCents}
+              id="wizard-price-per-seat" type="number" min="0" step="1" inputMode="numeric" value={state.pricePerSeatCents}
               onChange={(e) => update({ pricePerSeatCents: e.target.value })}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Seats included</label>
+            <label htmlFor="wizard-seats-included" className="block text-sm font-medium text-gray-700 mb-1">Seats included</label>
             <input
-              type="number" min="0" value={state.includedSeats}
+              id="wizard-seats-included" type="number" min="0" step="1" inputMode="numeric" value={state.includedSeats}
               onChange={(e) => update({ includedSeats: e.target.value })}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
             />

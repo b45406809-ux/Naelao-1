@@ -16,9 +16,12 @@ export default function IdentityStep({ state, update }: StepProps) {
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Product name</label>
+          <label htmlFor="wizard-product-name" className="block text-sm font-medium text-gray-700 mb-1">Product name</label>
         <input
+            id="wizard-product-name"
           type="text"
+            maxLength={100}
+            required
           value={state.name}
           onChange={(e) => update({ name: e.target.value })}
           placeholder="e.g. Acme Creator Store"
@@ -28,7 +31,7 @@ export default function IdentityStep({ state, update }: StepProps) {
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label htmlFor="wizard-product-slug" className="block text-sm font-medium text-gray-700 mb-1">
           Product address <span className="text-gray-400 font-normal">(optional)</span>
         </label>
         <div className="flex items-center">
@@ -36,7 +39,9 @@ export default function IdentityStep({ state, update }: StepProps) {
             /p/
           </span>
           <input
+            id="wizard-product-slug"
             type="text"
+            maxLength={40}
             value={state.productSlug}
             onChange={(e) => update({ productSlug: e.target.value.toLowerCase() })}
             placeholder="acme-store"

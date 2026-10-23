@@ -20,12 +20,13 @@ export default function AuthConfigStep({ state, update }: StepProps) {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div role="group" aria-label="End-user sign-in provider" className="grid grid-cols-2 gap-3">
         {PROVIDERS.map((p) => (
           <button
             key={p.id}
             type="button"
             onClick={() => update({ authProvider: p.id })}
+            aria-pressed={state.authProvider === p.id}
             className={`text-left p-3 rounded-lg border-2 text-sm transition-colors ${
               state.authProvider === p.id
                 ? "border-brand-500 bg-brand-50 text-brand-900"
@@ -55,10 +56,11 @@ export default function AuthConfigStep({ state, update }: StepProps) {
       </label>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
+        <label htmlFor="wizard-allowed-domains" className="block text-sm font-medium text-gray-700 mb-1">
           Restrict sign-ups to email domains <span className="text-gray-400 font-normal">(optional)</span>
         </label>
         <input
+          id="wizard-allowed-domains"
           type="text"
           value={state.allowedEmailDomains}
           onChange={(e) => update({ allowedEmailDomains: e.target.value })}

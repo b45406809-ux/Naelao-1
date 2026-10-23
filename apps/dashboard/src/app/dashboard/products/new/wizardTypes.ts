@@ -51,7 +51,21 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   customDomain: "",
 };
 
-export const SLUG_PATTERN = /^[a-z0-9-]{2,40}$/;
+// Match create-space.ts exactly: 2–40 chars, alphanumeric at both ends, hyphens only inside.
+export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])$/;
+
+export function hasDerivableProductAddress(name: string): boolean {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32).length >= 1;
+}
+
+/** undefined = optional blank; null = malformed; number = a safe nonnegative integer. */
+export function parseWizardInteger(value: string): number | undefined | null {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
 
 export interface StepProps {
   state: WizardState;
