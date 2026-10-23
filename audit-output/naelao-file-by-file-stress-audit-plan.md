@@ -1,12 +1,12 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2067` tracked files; `1881` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `1dbe121f`.
+Inventory basis: `2068` tracked files; `1881` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `2b7c8c7f`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-23)
 
-- The file-by-file checklist currently records **678 scoped reviews / 1,203 open files** out of 1,881 source/config files. Newly included style, template, and container/build files remain unaudited unless individually checked.
+- The file-by-file checklist currently records **679 scoped reviews / 1,202 open files** out of 1,881 source/config files. Newly included style, template, and container/build files remain unaudited unless individually checked.
 - Latest full workspace test run passed Turbo 58/58 tasks; the shared suite passed 373 files / 3,880 tests, Agents 165/749, Spaces 69/276, Billing 21/189, and Router 12/67. Workspace TypeScript passed 74/74 tasks. This confirms test/typecheck execution, not whole-repository review completeness or live deployment behavior.
 - Latest production dependency audit: 49 advisory records (4 critical, 11 high, 29 moderate, 5 low). All critical/high production findings trace to `next@14.2.18`; Pages adapter migration remains open.
 - Latest full dependency audit: 74 records (4 critical, 19 high, 42 moderate, 9 low). Remaining high build-tool findings include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`.
@@ -158,10 +158,6 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [x] `apps/dashboard/src/app/dashboard/api-keys/page.tsx`
 
-### `apps/dashboard/src/app/dashboard/clients`
-
-- [x] `apps/dashboard/src/app/dashboard/clients/page.tsx`
-
 ### `apps/dashboard/src/app/dashboard/products`
 
 - [x] `apps/dashboard/src/app/dashboard/products/page.tsx`
@@ -185,18 +181,9 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/analytics/page.tsx`
 
-### `apps/dashboard/src/app/dashboard/products/[productId]/billing`
-
-- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/billing/PaymentsAccountCard.tsx`
-- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/billing/page.tsx`
-
 ### `apps/dashboard/src/app/dashboard/products/[productId]/configuration`
 
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/configuration/page.tsx`
-
-### `apps/dashboard/src/app/dashboard/products/[productId]/danger-zone`
-
-- [x] `apps/dashboard/src/app/dashboard/products/[productId]/danger-zone/page.tsx`
 
 ### `apps/dashboard/src/app/dashboard/products/[productId]/domain`
 
@@ -214,31 +201,13 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/local-machine/page.tsx`
 
-### `apps/dashboard/src/app/dashboard/products/[productId]/pricing`
-
-- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/pricing/page.tsx`
-
 ### `apps/dashboard/src/app/dashboard/products/[productId]/users`
 
 - [ ] `apps/dashboard/src/app/dashboard/products/[productId]/users/page.tsx`
 
-### `apps/dashboard/src/app/dashboard/products/[productId]/wallet`
-
-- [ ] `apps/dashboard/src/app/dashboard/products/[productId]/wallet/page.tsx`
-
 ### `apps/dashboard/src/app/dashboard/products/new`
 
 - [x] `apps/dashboard/src/app/dashboard/products/new/page.tsx`
-- [x] `apps/dashboard/src/app/dashboard/products/new/wizardTypes.ts`
-
-### `apps/dashboard/src/app/dashboard/products/new/steps`
-
-- [x] `apps/dashboard/src/app/dashboard/products/new/steps/AuthConfigStep.tsx`
-- [x] `apps/dashboard/src/app/dashboard/products/new/steps/DomainStep.tsx`
-- [x] `apps/dashboard/src/app/dashboard/products/new/steps/IdentityStep.tsx`
-- [x] `apps/dashboard/src/app/dashboard/products/new/steps/PricingStep.tsx`
-- [x] `apps/dashboard/src/app/dashboard/products/new/steps/ReviewStep.tsx`
-- [x] `apps/dashboard/src/app/dashboard/products/new/steps/SpaceTypeStep.tsx`
 
 ### `apps/dashboard/src/app/dashboard/settings`
 
@@ -268,10 +237,6 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/kb/page.tsx`
 
-### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/onboarding`
-
-- [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/onboarding/page.tsx`
-
 ### `apps/dashboard/src/app/dashboard/spaces/[spaceId]/sessions`
 
 - [ ] `apps/dashboard/src/app/dashboard/spaces/[spaceId]/sessions/page.tsx`
@@ -300,7 +265,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `apps/dashboard/src/lib/auth-provider.tsx`
 - [x] `apps/dashboard/src/lib/auth.ts`
 - [x] `apps/dashboard/src/lib/product-url.ts`
-- [ ] `apps/dashboard/src/lib/temples.ts`
 
 ### `apps/launchpad/src`
 
@@ -614,6 +578,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `apps/shell/src/lib/dom-inspector-message.test.ts`
 - [ ] `apps/shell/src/lib/dom-inspector-message.ts`
 - [ ] `apps/shell/src/lib/modelPreference.ts`
+- [ ] `apps/shell/src/lib/presentation-profile.tsx`
 - [ ] `apps/shell/src/lib/product-context.tsx`
 - [ ] `apps/shell/src/lib/productAccount.ts`
 - [ ] `apps/shell/src/lib/relativeTime.ts`
@@ -772,6 +737,10 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `infra/migrations/0121_space_provisioning_leases.sql`
 - [x] `infra/migrations/0122_platform_assistant_sessions.sql`
 - [x] `infra/migrations/0123_builder_reset_token_expiry_index.sql`
+- [ ] `infra/migrations/0124_project_scoped_agent_email_addresses.sql`
+- [ ] `infra/migrations/0125_subscription_event_ordering.sql`
+- [ ] `infra/migrations/0126_space_provisioning_outbox.sql`
+- [x] `infra/migrations/0127_launchpad_order_seat_user_id.sql`
 
 ### `infra/scripts`
 
@@ -790,6 +759,8 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `infra/scripts/phase-runner-safety.mjs`
 - [ ] `infra/scripts/pin-workflow-build.mjs`
 - [ ] `infra/scripts/plan-preflight.mjs`
+- [ ] `infra/scripts/prepare-dynamic-containers.mjs`
+- [ ] `infra/scripts/prepare-dynamic-containers.test.mjs`
 - [ ] `infra/scripts/protected-preview.mjs`
 - [ ] `infra/scripts/run-eval-suite.mjs`
 - [ ] `infra/scripts/run-model-matrix.sh`
@@ -1604,7 +1575,6 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `tests/unit/product-user-do.test.ts`
 - [ ] `tests/unit/product-user-erasure.test.ts`
 - [x] `tests/unit/product-wizard-api.test.ts`
-- [x] `tests/unit/product-wizard-validation.test.ts`
 - [ ] `tests/unit/progressive-tool-disclosure.test.ts`
 - [ ] `tests/unit/project-assistant-mode.test.ts`
 - [ ] `tests/unit/project-collaboration-t1-t3.test.ts`
@@ -1796,8 +1766,11 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/container/child-runner.mjs`
 - [ ] `workers/agents/container/compile-runner.mjs`
 - [ ] `workers/agents/container/process-supervisor.mjs`
+- [ ] `workers/agents/container/process-supervisor.test.mjs`
 - [ ] `workers/agents/container/server.mjs`
 - [ ] `workers/agents/container/start.sh`
+- [ ] `workers/agents/container/workspace-path.mjs`
+- [ ] `workers/agents/container/workspace-path.test.mjs`
 
 ### `workers/agents/local-agent`
 
@@ -1891,6 +1864,8 @@ Check each file only after its behavior and runtime relationships are traced and
 
 - [x] `workers/agents/src/do/ConcurrencyDO.test.ts`
 - [x] `workers/agents/src/do/ConcurrencyDO.ts`
+- [ ] `workers/agents/src/do/DynamicSandboxDO.test.ts`
+- [ ] `workers/agents/src/do/DynamicSandboxDO.ts`
 - [x] `workers/agents/src/do/HITLApprovalDO.ts`
 - [x] `workers/agents/src/do/LocalTunnelDO.test.ts`
 - [x] `workers/agents/src/do/LocalTunnelDO.ts`
@@ -1971,6 +1946,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/container-catalogue.ts`
 - [ ] `workers/agents/src/script-engine/container-policy.test.ts`
 - [ ] `workers/agents/src/script-engine/container-policy.ts`
+- [ ] `workers/agents/src/script-engine/container-workspace.ts`
 - [ ] `workers/agents/src/script-engine/conversation-context.ts`
 - [ ] `workers/agents/src/script-engine/customer-triage.test.ts`
 - [ ] `workers/agents/src/script-engine/customer-triage.ts`
@@ -1983,6 +1959,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [ ] `workers/agents/src/script-engine/distill.ts`
 - [ ] `workers/agents/src/script-engine/dynamic-code.test.ts`
 - [ ] `workers/agents/src/script-engine/dynamic-code.ts`
+- [ ] `workers/agents/src/script-engine/dynamic-containers.ts`
 - [ ] `workers/agents/src/script-engine/execution-ladder.test.ts`
 - [ ] `workers/agents/src/script-engine/execution-ladder.ts`
 - [ ] `workers/agents/src/script-engine/federation.ts`
@@ -2021,6 +1998,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/agents/src/script-engine/request-context-budget.ts`
 - [ ] `workers/agents/src/script-engine/reserved-capabilities.ts`
 - [ ] `workers/agents/src/script-engine/runtime-context.test.ts`
+- [ ] `workers/agents/src/script-engine/sandbox-routing.ts`
 - [ ] `workers/agents/src/script-engine/script-find.ts`
 - [ ] `workers/agents/src/script-engine/shell-parser.ts`
 - [ ] `workers/agents/src/script-engine/skill-health.ts`
@@ -2581,6 +2559,7 @@ Check each file only after its behavior and runtime relationships are traced and
 - [x] `workers/spaces/src/project-steward-suspension.test.ts`
 - [ ] `workers/spaces/src/project-steward.test.ts`
 - [ ] `workers/spaces/src/project-steward.ts`
+- [ ] `workers/spaces/src/provisioning-outbox.ts`
 - [ ] `workers/spaces/src/remediation-pass-2.test.ts`
 - [x] `workers/spaces/src/request-body-boundaries.test.ts`
 - [ ] `workers/spaces/src/space-hierarchy-policy.test.ts`

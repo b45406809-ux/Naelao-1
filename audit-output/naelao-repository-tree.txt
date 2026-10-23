@@ -2,9 +2,9 @@ Naelao repository tree
 Root: /workspace/Naelao-1
 Inventory source: git ls-files (tracked files only)
 Source/config classification includes common code, style/template, infrastructure, and executable configuration formats; Markdown/docs are excluded.
-Files: 2067
+Files: 2068
 Files with source or executable-configuration extensions: 1881
-Inventory revision: 2026-10-23 audit refresh at 1dbe121f
+Inventory revision: 2026-10-23 audit refresh at 2b7c8c7f
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
@@ -114,8 +114,6 @@ apps/
         dashboard/
           api-keys/
             page.tsx
-          clients/
-            page.tsx
           layout.tsx
           page.tsx
           products/
@@ -126,12 +124,7 @@ apps/
                 page.tsx
               analytics/
                 page.tsx
-              billing/
-                page.tsx
-                PaymentsAccountCard.tsx
               configuration/
-                page.tsx
-              danger-zone/
                 page.tsx
               domain/
                 page.tsx
@@ -144,23 +137,11 @@ apps/
                 page.tsx
               OnboardingChecklist.tsx
               page.tsx
-              pricing/
-                page.tsx
               productContext.tsx
               users/
                 page.tsx
-              wallet/
-                page.tsx
             new/
               page.tsx
-              steps/
-                AuthConfigStep.tsx
-                DomainStep.tsx
-                IdentityStep.tsx
-                PricingStep.tsx
-                ReviewStep.tsx
-                SpaceTypeStep.tsx
-              wizardTypes.ts
             page.tsx
           settings/
             page.tsx
@@ -175,8 +156,6 @@ apps/
               eval/
                 page.tsx
               kb/
-                page.tsx
-              onboarding/
                 page.tsx
               sessions/
                 page.tsx
@@ -199,7 +178,6 @@ apps/
         auth-provider.tsx
         auth.ts
         product-url.ts
-        temples.ts
     tailwind.config.ts
     tsconfig.json
   launchpad/
@@ -411,6 +389,7 @@ apps/
         dom-inspector-message.test.ts
         dom-inspector-message.ts
         modelPreference.ts
+        presentation-profile.tsx
         product-context.tsx
         productAccount.ts
         relativeTime.ts
@@ -450,6 +429,7 @@ docs/
   DEPLOY_SECRETS.md
   DEPLOYMENT_SECRETS.md
   developer-preview.md
+  dynamic-containers-rollout.md
   E2E_2026-08-09_end_user_journey.md
   fast-python-execution.md
   LAUNCHPAD_ARCHITECTURE.md
@@ -607,6 +587,10 @@ infra/
     0121_space_provisioning_leases.sql
     0122_platform_assistant_sessions.sql
     0123_builder_reset_token_expiry_index.sql
+    0124_project_scoped_agent_email_addresses.sql
+    0125_subscription_event_ordering.sql
+    0126_space_provisioning_outbox.sql
+    0127_launchpad_order_seat_user_id.sql
   scripts/
     audit-ui.mjs
     await-quota-then-matrix.sh
@@ -623,6 +607,8 @@ infra/
     phase-runner-safety.mjs
     pin-workflow-build.mjs
     plan-preflight.mjs
+    prepare-dynamic-containers.mjs
+    prepare-dynamic-containers.test.mjs
     protected-preview.mjs
     run-eval-suite.mjs
     run-model-matrix.sh
@@ -1387,7 +1373,6 @@ tests/
     product-user-do.test.ts
     product-user-erasure.test.ts
     product-wizard-api.test.ts
-    product-wizard-validation.test.ts
     progressive-tool-disclosure.test.ts
     project-assistant-mode.test.ts
     project-collaboration-t1-t3.test.ts
@@ -1543,8 +1528,11 @@ workers/
       child-runner.mjs
       compile-runner.mjs
       process-supervisor.mjs
+      process-supervisor.test.mjs
       server.mjs
       start.sh
+      workspace-path.mjs
+      workspace-path.test.mjs
     Dockerfile.documents
     Dockerfile.media
     Dockerfile.toolsandbox
@@ -1627,6 +1615,8 @@ workers/
         conversation-compaction.test.ts
         delegation-admission.test.ts
         direct-do-request-boundaries.test.ts
+        DynamicSandboxDO.test.ts
+        DynamicSandboxDO.ts
         external-channel-spend.test.ts
         external-channel-spend.ts
         hitl-approval-boundaries.test.ts
@@ -1709,6 +1699,7 @@ workers/
         container-catalogue.ts
         container-policy.test.ts
         container-policy.ts
+        container-workspace.ts
         conversation-context.ts
         customer-triage.test.ts
         customer-triage.ts
@@ -1727,6 +1718,7 @@ workers/
         distill.ts
         dynamic-code.test.ts
         dynamic-code.ts
+        dynamic-containers.ts
         execution-ladder.test.ts
         execution-ladder.ts
         federation.ts
@@ -1841,6 +1833,7 @@ workers/
         request-context-budget.ts
         reserved-capabilities.ts
         runtime-context.test.ts
+        sandbox-routing.ts
         script-find.ts
         shell-parser.ts
         skill-health.ts
@@ -2269,6 +2262,7 @@ workers/
       project-steward-suspension.test.ts
       project-steward.test.ts
       project-steward.ts
+      provisioning-outbox.ts
       remediation-pass-2.test.ts
       request-body-boundaries.test.ts
       routes/
