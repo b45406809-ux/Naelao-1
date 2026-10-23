@@ -39,6 +39,16 @@ const facet = (id: string, name: string, schema: string, permissions: string[], 
   commands: [{ name: `ext:${id.slice(4)}`, scriptPath: `./${id}/command.ts` }],
 });
 
+const spaceFacet = (id: string, name: string, schema: string, permissions: string[]): ExtensionManifest => ({
+  id: id as `ext_${string}`,
+  type: "extension",
+  declaredPermissions: permissions,
+  capabilityRequirements: permissions,
+  gadgets: [{ id: `${id.slice(4)}_facet`, name, viewportComponent: `./${id}/viewport.ts`, scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: schema }],
+  daemons: [],
+  commands: [{ name: `ext:${id.slice(4)}`, scriptPath: `./${id}/command.ts` }],
+});
+
 const entry = (manifest: ExtensionManifest, maturity: FirstPartyExtensionMaturity): FirstPartyExtensionCatalogEntry => Object.freeze({
   manifest,
   maturity,
@@ -49,6 +59,27 @@ export const DOGFOOD_EXTENSION_CATALOG = Object.freeze([
   entry({ id: "ext_lsp_indexer", type: "extension", declaredPermissions: ["repo.read", "facet.sqlite.read", "facet.sqlite.write"],
     capabilityRequirements: ["repo.read", "facet.sqlite.read", "facet.sqlite.write"], gadgets: [], daemons: [],
     commands: [{ name: "lsp", scriptPath: "./ext_lsp_indexer/command.ts" }] }, "reference"),
+  entry(spaceFacet("ext_foundry_catalog", "Foundry Template Catalog", `
+    CREATE TABLE IF NOT EXISTS foundry_products (
+      product_id TEXT PRIMARY KEY,
+      studio_project_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('draft','building','in_review','published','suspended','retired')),
+      marketplace_listing_id TEXT,
+      current_version TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS foundry_product_releases (
+      product_id TEXT NOT NULL REFERENCES foundry_products(product_id),
+      version TEXT NOT NULL,
+      source_commit TEXT NOT NULL,
+      artifact_sha256 TEXT NOT NULL,
+      conformance_certificate_id TEXT,
+      status TEXT NOT NULL CHECK(status IN ('draft','certified','published','withdrawn')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY(product_id, version)
+    );`, ["facet.sqlite.read", "facet.sqlite.write"]), "reference"),
   entry(facet("ext_ledger_core", "Double-entry ledger", `CREATE TABLE IF NOT EXISTS ledger_accounts(id TEXT PRIMARY KEY,name TEXT NOT NULL); CREATE TABLE IF NOT EXISTS ledger_entries(id TEXT PRIMARY KEY,debit_account TEXT NOT NULL,credit_account TEXT NOT NULL,amount_minor INTEGER NOT NULL CHECK(amount_minor>0),currency TEXT NOT NULL,created_at TEXT NOT NULL);`, ["facet.sqlite.read", "facet.sqlite.write", "mcp.expose"]), "reference"),
   entry(facet("ext_crm_core", "CRM pipeline", `CREATE TABLE IF NOT EXISTS crm_leads(id TEXT PRIMARY KEY,name TEXT NOT NULL,stage TEXT NOT NULL,jev_score REAL NOT NULL DEFAULT 0,scored_at TEXT);`, ["facet.sqlite.read", "facet.sqlite.write", "workflow.execute"], { script: "score-leads", schedule: "*/5 * * * *" }), "anchor"),
   entry(facet("ext_esign_core", "Electronic signatures", `CREATE TABLE IF NOT EXISTS esign_documents(id TEXT PRIMARY KEY,pdf_sha256 TEXT NOT NULL UNIQUE,artifact_commit TEXT NOT NULL,signed_at TEXT);`, ["facet.sqlite.read", "facet.sqlite.write", "artifact.git.write", "crypto.sha256"]), "anchor"),

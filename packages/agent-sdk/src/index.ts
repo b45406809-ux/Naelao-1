@@ -187,6 +187,6 @@ export * from "./project-kinds.js";
 export * from "./project-templates.js";
 export * from "./dogfood-extensions/index.js";
 export * from "./fast-decision.js";
-export * from "./templates/dev-foundry.js";
+export * from "./templates/foundry-space.js";
 export * from "./tunnel-protocol.js";
 export { parseArtifactLinters, lintArtifact, type ArtifactLinterSpec, type ArtifactDiagnostic } from "./artifact-linters.js";

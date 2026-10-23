@@ -8,7 +8,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
-import { NATIVE_SPACE_TEMPLATES, assertTemplateId } from "@naelao/agent-sdk";
+import { assertTemplateId } from "@naelao/agent-sdk";
 import { LAUNCHPAD_MANIFEST } from "../launchpad-manifest.js";
 
 // ── SpaceType Manifest v2 (spec §61) ─────────────────────────────────────────
@@ -556,16 +556,9 @@ export class SpaceTypeRegistryDO extends DurableObject {
         updated_at INTEGER NOT NULL
       );
     `);
-    const templateUpdatedAt = Date.now();
-    for (const template of Object.values(NATIVE_SPACE_TEMPLATES)) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO native_space_templates (id, version, manifest, shell_route, updated_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET version=excluded.version, manifest=excluded.manifest,
-           shell_route=excluded.shell_route, updated_at=excluded.updated_at`,
-        template.id, template.version, JSON.stringify(template), template.shellRoute, templateUpdatedAt
-      );
-    }
+    // Foundry is now a portable Space Blueprint plus the ext_foundry_catalog extension; do not
+    // continue publishing the former special-case native /foundry template from old DO state.
+    this.ctx.storage.sql.exec("DELETE FROM native_space_templates WHERE id = ?", "tpl_dev_foundry_v1");
     this.initialized = true;
 
     // Self-heal: this registry must always carry at least the built-in Naelao
