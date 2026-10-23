@@ -280,6 +280,34 @@ describe("PATCH /builder/products/:id/pricing", () => {
     expect(billing.calls).toHaveLength(0);
   });
 
+  it("prevents generic product updates from bypassing the pricing endpoint", async () => {
+    const env = makeEnv();
+    const pricing = { model: "subscription", plans: [{ id: "basic", name: "Basic", priceCents: 1200, interval: "month" }] };
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, config_json) VALUES ('prod-1', 'tenant-1', 'active', 'Product', 'launchpad', ?)"
+    ).bind(JSON.stringify({ productConfig: { pricingConfig: pricing } })).run();
+
+    const bypass = await spacesWorker.fetch(
+      req("/builder/products/prod-1", {
+        method: "PATCH", headers: await builderHeaders("tenant-1"),
+        body: JSON.stringify({ product_config: { pricingConfig: { ...pricing, plans: [{ ...pricing.plans[0], priceCents: 1 }] } } }),
+      }), env as never, execCtx
+    );
+    expect(bypass.status).toBe(400);
+
+    // The configuration page sends its fetched price catalog back while changing unrelated
+    // settings; preserving that exact catalog must remain a successful update.
+    const regularEdit = await spacesWorker.fetch(
+      req("/builder/products/prod-1", {
+        method: "PATCH", headers: await builderHeaders("tenant-1"),
+        body: JSON.stringify({ product_config: { pricingConfig: pricing, modelConfig: { model: "claude-opus-4-8" } } }),
+      }), env as never, execCtx
+    );
+    expect(regularEdit.status).toBe(200);
+    const saved = await env.PLATFORM_DB.prepare("SELECT config_json FROM spaces WHERE id = 'prod-1'").first<{ config_json: string }>();
+    expect(JSON.parse(saved!.config_json).productConfig.pricingConfig.plans[0].priceCents).toBe(1200);
+  });
+
   it("provisions credit packs as one_time variants", async () => {
     const env = makeEnv();
     await env.PLATFORM_DB.prepare(

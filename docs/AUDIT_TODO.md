@@ -1973,8 +1973,10 @@ first real business on free-tier resources before opening the platform to other 
   malformed shapes. It now reads a 64 KiB-bounded body, rejects malformed JSON, unknown fields,
   duplicate IDs, invalid intervals, non-positive/fractional/unsafe amounts, invalid limits, and
   out-of-range revenue-cut basis points before provisioning. Regression cases prove rejected
-  payloads do not call billing or mutate config. Pricing suite: 23/23 passed; Spaces typecheck and
-  `git diff --check` passed. The broader product-config write validation item remains open.
+  payloads do not call billing or mutate config. Pricing suite: 24/24 passed; Spaces typecheck and
+  `git diff --check` passed. The generic product PATCH now also rejects pricing catalog changes
+  that bypass this validated endpoint while allowing an unchanged catalog in full-form dashboard
+  saves. The broader product-config write validation item remains open.
 
 - [ ] **Product creation still needs caller-level idempotency and reconciliation.** The browser locks
   duplicate clicks while its request is in flight, and Launchpad creation can reconcile an existing

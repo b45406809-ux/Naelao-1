@@ -69,6 +69,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
 function validatePricingPatch(value: unknown): string | null {
   if (!isRecord(value)) return "pricing configuration must be an object";
   const allowed = new Set(["plans", "creditPacks", "walletTopups", "externalRevenueCut"]);
@@ -534,6 +542,10 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     }
 
     const config = parseProductConfig(product.config_json);
+    if (body.product_config?.pricingConfig !== undefined
+      && canonicalJson(body.product_config.pricingConfig) !== canonicalJson(config.productConfig?.pricingConfig)) {
+      return c.json({ error_code: "bad_request", message: "pricingConfig changes must use the validated pricing endpoint" }, 400);
+    }
     if (body.product_config) {
       config.productConfig = { ...(config.productConfig ?? {}), ...body.product_config };
     }

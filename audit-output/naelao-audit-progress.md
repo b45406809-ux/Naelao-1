@@ -2794,4 +2794,6 @@ Verification: focused builder payout suite passed 15/15; Spaces TypeScript check
 
 Followed the product-config audit into the dedicated pricing endpoint, which provisions Lemon Squeezy variants. It parsed unchecked typed JSON and could call the billing worker with invalid prices before persisting. Added a 64 KiB read limit, client errors for malformed JSON, object/field allowlists, duplicate-ID checks, valid intervals, positive safe-integer prices and credits, nullable nonnegative safe-integer plan limits, bounded variant IDs, and revenue-cut basis-point bounds. Rejection happens before external provisioning or config writes. The general `PATCH /builder/products/:id` body reader is also explicitly bounded to 64 KiB.
 
-Verification: pricing catalog suite passed 23/23; Spaces TypeScript check and `git diff --check` passed. Product config validation for remaining write paths and fields remains open. No live Lemon Squeezy or Cloudflare test was run; repository-wide audit remains open.
+The generic product PATCH also accepted price-catalog edits, bypassing that validation route. It now rejects changed `pricingConfig` while allowing an unchanged catalog alongside unrelated dashboard settings. A SQLite-backed regression covers both behaviors.
+
+Verification: pricing catalog suite passed 24/24; Spaces TypeScript check and `git diff --check` passed. Product config validation for remaining write paths and fields remains open. No live Lemon Squeezy or Cloudflare test was run; repository-wide audit remains open.
