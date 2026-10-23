@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { listBuilderProducts } from "@/lib/api";
-import type { BuilderProductSummary } from "@/lib/api";
+import { listBuilderProductsPage } from "@/lib/api";
+import type { BuilderProductPage, BuilderProductSummary } from "@/lib/api";
 import { productShellDisplay } from "@/lib/product-url";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -27,21 +27,31 @@ export default function ProductsPage() {
   const [products, setProducts] = useState<BuilderProductSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageInfo, setPageInfo] = useState<BuilderProductPage | null>(null);
+  const loadRevision = useRef(0);
 
-  async function load() {
+  async function load(requestedPage = page) {
+    const revision = ++loadRevision.current;
     setLoading(true);
     setError(null);
     try {
-      setProducts(await listBuilderProducts());
+      const result = await listBuilderProductsPage(requestedPage);
+      if (revision !== loadRevision.current) return;
+      setProducts(result.data);
+      setPageInfo(result);
+      setPage(result.page);
     } catch (err) {
+      if (revision !== loadRevision.current) return;
       setError(err instanceof Error ? err.message : "Failed to load products");
     } finally {
-      setLoading(false);
+      if (revision === loadRevision.current) setLoading(false);
     }
   }
 
   useEffect(() => {
-    void load();
+    void load(1);
+    return () => { loadRevision.current++; };
   }, []);
 
   return (
@@ -72,7 +82,7 @@ export default function ProductsPage() {
         </div>
       )}
 
-      {!loading && !error && products.length === 0 && (
+      {!loading && !error && pageInfo?.product_count === 0 && (
         <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
           <p className="text-gray-500 mb-4">No products yet.</p>
           <Link
@@ -87,13 +97,14 @@ export default function ProductsPage() {
       {!loading && !error && products.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <table className="w-full text-sm">
+            <caption className="sr-only">Products</caption>
             <thead>
               <tr className="border-b border-gray-200 bg-gray-50">
-                <th className="text-left px-6 py-3 font-semibold text-gray-600">Name</th>
-                <th className="text-left px-6 py-3 font-semibold text-gray-600">Domain</th>
-                <th className="text-left px-6 py-3 font-semibold text-gray-600">Status</th>
-                <th className="text-left px-6 py-3 font-semibold text-gray-600">Created</th>
-                <th className="text-right px-6 py-3 font-semibold text-gray-600">Actions</th>
+                <th scope="col" className="text-left px-6 py-3 font-semibold text-gray-600">Name</th>
+                <th scope="col" className="text-left px-6 py-3 font-semibold text-gray-600">Domain</th>
+                <th scope="col" className="text-left px-6 py-3 font-semibold text-gray-600">Status</th>
+                <th scope="col" className="text-left px-6 py-3 font-semibold text-gray-600">Created</th>
+                <th scope="col" className="text-right px-6 py-3 font-semibold text-gray-600">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -111,7 +122,7 @@ export default function ProductsPage() {
                   </td>
                   <td className="px-6 py-4 text-right">
                     <Link
-                      href={`/dashboard/products/${p.id}`}
+                      href={`/dashboard/products/${encodeURIComponent(p.id)}`}
                       className="text-brand-600 hover:underline text-xs font-medium"
                     >
                       Manage
@@ -121,6 +132,34 @@ export default function ProductsPage() {
               ))}
             </tbody>
           </table>
+          {pageInfo && pageInfo.page_count > 1 && (
+            <nav aria-label="Product pages" className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-4">
+              <span className="text-xs text-gray-500" aria-live="polite">
+                Showing {(pageInfo.page - 1) * pageInfo.page_size + 1}–{Math.min(pageInfo.page * pageInfo.page_size, pageInfo.product_count)} of {pageInfo.product_count}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void load(pageInfo.page - 1)}
+                  disabled={loading || pageInfo.page <= 1}
+                  className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <span className="text-xs text-gray-500" aria-label={`Page ${pageInfo.page} of ${pageInfo.page_count}`}>
+                  {pageInfo.page} / {pageInfo.page_count}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void load(pageInfo.page + 1)}
+                  disabled={loading || pageInfo.page >= pageInfo.page_count}
+                  className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </nav>
+          )}
         </div>
       )}
     </div>

@@ -195,6 +195,31 @@ describe("Builder Dashboard API — /builder/products CRUD", () => {
     expect(list.data).toHaveLength(1);
   });
 
+  it("paginates portfolios beyond the previous 200-product cap with a full total", async () => {
+    const env = makeEnv();
+    for (let i = 0; i < 205; i++) {
+      env.PLATFORM_DB.db.prepare(`INSERT INTO spaces (id, tenant_id, name, spacetype_id)
+        VALUES (?, 'tenant-1', ?, 'launchpad')`).run(`product-${String(i).padStart(3, "0")}`, `Product ${i}`);
+    }
+    const fetchPage = async (page: number) => {
+      const response = await spacesWorker.fetch(await req(`/builder/products?page=${page}`, { tenant: "tenant-1" }), env as never, execCtx);
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{ data: Array<{ id: string }>; product_count: number; page: number; page_size: number; page_count: number }>;
+    };
+
+    const first = await fetchPage(1);
+    const second = await fetchPage(2);
+    expect(first).toMatchObject({ product_count: 205, page: 1, page_size: 200, page_count: 2 });
+    expect(first.data).toHaveLength(200);
+    expect(second.data).toHaveLength(5);
+    expect(new Set([...first.data, ...second.data].map((product) => product.id)).size).toBe(205);
+
+    const fractional = await spacesWorker.fetch(await req("/builder/products?page=1.5", { tenant: "tenant-1" }), env as never, execCtx);
+    const outside = await spacesWorker.fetch(await req("/builder/products?page=3", { tenant: "tenant-1" }), env as never, execCtx);
+    expect(fractional.status).toBe(400);
+    expect(outside.status).toBe(400);
+  });
+
   it("404s fetching another tenant's product — ownership never leaks", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(

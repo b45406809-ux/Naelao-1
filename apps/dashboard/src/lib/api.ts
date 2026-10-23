@@ -624,6 +624,14 @@ export interface BuilderProductSummary {
   updated_at: string;
 }
 
+export interface BuilderProductPage {
+  data: BuilderProductSummary[];
+  product_count: number;
+  page: number;
+  page_size: number;
+  page_count: number;
+}
+
 export interface PricingPlan {
   id: string;
   name: string;
@@ -724,8 +732,12 @@ export interface CreateBuilderProductInput {
 }
 
 export async function listBuilderProducts(): Promise<BuilderProductSummary[]> {
-  const res = await apiFetch<{ data: BuilderProductSummary[] }>("/builder/products");
+  const res = await apiFetch<BuilderProductPage>("/builder/products");
   return res.data ?? [];
+}
+
+export async function listBuilderProductsPage(page: number): Promise<BuilderProductPage> {
+  return apiFetch<BuilderProductPage>(`/builder/products?page=${encodeURIComponent(String(page))}`);
 }
 
 export async function getBuilderProduct(id: string): Promise<BuilderProductDetail> {

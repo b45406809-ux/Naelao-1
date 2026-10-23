@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiFetch, getResellerClients, getSpace, updateProduct } from "../../apps/dashboard/src/lib/api";
+import { apiFetch, getResellerClients, getSpace, listBuilderProductsPage, updateProduct } from "../../apps/dashboard/src/lib/api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -49,6 +49,19 @@ describe("dashboard API path identifiers", () => {
 
     const requested = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(requested.pathname).toBe("/reseller/clients");
+    expect(requested.searchParams.get("page")).toBe("2");
+  });
+
+  it("passes a page number when fetching builder products", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      data: [], product_count: 205, page: 2, page_size: 200, page_count: 2,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listBuilderProductsPage(2);
+
+    const requested = new URL(fetchMock.mock.calls[0]![0] as string);
+    expect(requested.pathname).toBe("/builder/products");
     expect(requested.searchParams.get("page")).toBe("2");
   });
 

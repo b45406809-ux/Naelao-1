@@ -1911,3 +1911,18 @@ first real business on free-tier resources before opening the platform to other 
   typechecks passed before the current package-manager install issue; a post-change dashboard production
   build is still open. Browser runtime checks for focus restoration, pagination interaction, and network
   race handling remain open.
+
+- [x] **Builder product list silently stopped at 200 entries.** `GET /builder/products` returned a
+  fixed first page, so older products became absent from the dashboard list. It now validates a page
+  number, counts non-deleted tenant-owned products, and returns stable 200-row pages with total/page
+  metadata. The products dashboard renders page controls and ignores stale overlapping list requests;
+  the existing layout API remains backward-compatible and continues to return page one. A real-SQLite
+  worker regression seeds 205 products and checks both pages, uniqueness, totals, fractional input,
+  and out-of-range pages. The test is authored but could not be rerun after pnpm's supply-chain
+  release-age guard blocked dependency installation; build/typecheck validation remains open.
+
+- [ ] **Dashboard shell product switcher still loads only the first 200 products.** Its layout uses
+  the backward-compatible `listBuilderProducts()` helper and does not expose the new page metadata.
+  Products beyond page one remain reachable from the paginated product list, but add search or paging
+  to the shared switcher and stress it with large portfolios before considering the navigation flow
+  complete.

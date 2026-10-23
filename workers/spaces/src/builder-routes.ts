@@ -279,11 +279,27 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const env = c.env as BuilderRoutesEnv;
     const auth = await builderAuthFor(env, c);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    const pageValue = c.req.query("page") ?? "1";
+    if (!/^\d+$/.test(pageValue)) return c.json({ error_code: "bad_request", message: "page must be a positive integer" }, 400);
+    const page = Number(pageValue);
+    const pageSize = 200;
+    if (!Number.isSafeInteger(page) || page < 1 || page > 1_000_000) {
+      return c.json({ error_code: "bad_request", message: "page must be between 1 and 1000000" }, 400);
+    }
+    const count = await env.PLATFORM_DB.prepare(
+      "SELECT COUNT(*) AS count FROM spaces WHERE tenant_id = ? AND status != 'deleted'"
+    ).bind(auth.tenantId).first<{ count: number }>();
+    const productCount = count?.count ?? 0;
+    const pageCount = Math.ceil(productCount / pageSize);
+    if (page > Math.max(1, pageCount)) {
+      return c.json({ error_code: "bad_request", message: "page is outside the product list" }, 400);
+    }
     const { results } = await env.PLATFORM_DB.prepare(
       `SELECT id, name, status, spacetype_id, product_slug, created_at, updated_at
-         FROM spaces WHERE tenant_id = ? AND status != 'deleted' ORDER BY created_at DESC LIMIT 200`
-    ).bind(auth.tenantId).all();
-    return c.json({ data: results });
+         FROM spaces WHERE tenant_id = ? AND status != 'deleted'
+         ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?`
+    ).bind(auth.tenantId, pageSize, (page - 1) * pageSize).all();
+    return c.json({ data: results, product_count: productCount, page, page_size: pageSize, page_count: pageCount });
   });
 
   app.get("/builder/products/:id", async (c) => {
