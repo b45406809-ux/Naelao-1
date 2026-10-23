@@ -1,9 +1,30 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { parseExtensionBundle, validateExtensionManifest } from "./extensions.js";
+import { isSharedFilesystemPathAllowed, parseExtensionBundle, validateExtensionManifest } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
 describe("immutable extension kernel", () => {
+  it("requires explicit read and write capabilities for shared-drive grants", () => {
+    const grant = { path: "/space/shared/dropzones/audio/", access: "READ_WRITE" };
+    expect(() => validateExtensionManifest({ ...valid, capabilityRequirements: ["space.shared.read"], shared_filesystem: [grant] }))
+      .toThrow("shared_filesystem_write_capability_required");
+    const manifest = validateExtensionManifest({ ...valid, capabilityRequirements: ["space.shared.read", "space.shared.write"], shared_filesystem: [grant] });
+    expect(manifest.shared_filesystem).toEqual([grant]);
+    expect(() => validateExtensionManifest({ ...valid, capabilityRequirements: ["space.shared.read"], shared_filesystem: [{ path: "/space/shared/dropzones/audio/", access: "READ" }] }))
+      .not.toThrow();
+  });
+  it.each(["/space/shared/../assistant/", "/space/shared//audio/", "/space/shared/audio", "/space/private/"])("rejects noncanonical or out-of-root shared grants: %s", path => {
+    expect(() => validateExtensionManifest({ ...valid, capabilityRequirements: ["space.shared.read"], shared_filesystem: [{ path, access: "READ" }] }))
+      .toThrow("invalid_shared_filesystem_path");
+  });
+  it("jails shared-drive paths to the granted directory and access mode", () => {
+    const grants = [{ path: "/space/shared/dropzones/audio/", access: "READ" as const }];
+    expect(isSharedFilesystemPathAllowed(grants, "dropzones/audio/in.wav", "read")).toBe(true);
+    expect(isSharedFilesystemPathAllowed(grants, "dropzones/audio/in.wav", "write")).toBe(false);
+    expect(isSharedFilesystemPathAllowed(grants, "dropzones/audio-old/in.wav", "read")).toBe(false);
+    expect(isSharedFilesystemPathAllowed(grants, "dropzones/audio/../../assistant/memory.sqlite", "read")).toBe(false);
+    expect(isSharedFilesystemPathAllowed(grants, "/space/shared/dropzones/audio/in.wav", "read")).toBe(false);
+  });
   it("verifies declared requirements against Gatekeeper capabilities", () => expect(validateExtensionManifest(valid, { gatekeeperCapabilities: ["repo.read"] }).id).toBe("ext_safe"));
   it("fails closed without explicit requirements", () => expect(() => validateExtensionManifest({ ...valid, capabilityRequirements: [] })).toThrow("capability_requirements_required"));
   it("rejects missing Gatekeeper grants", () => expect(() => validateExtensionManifest(valid, { gatekeeperCapabilities: [] })).toThrow("gatekeeper_capability_denied"));

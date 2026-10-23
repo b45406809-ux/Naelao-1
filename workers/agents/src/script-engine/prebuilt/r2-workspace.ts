@@ -63,6 +63,24 @@ function reqStr(args: Record<string, unknown>, name: string): string {
   return v;
 }
 
+/** Resolve a shared-drive path only from host-injected installation grants. A model-supplied
+ *  path can never select another workspace or broaden these grants. */
+function sharedDriveKey(ctx: PrebuiltOpContext, path: string, access: "read" | "write"): string {
+  const grants = ctx.env.spaceSharedFilesystemGrants;
+  if (!ctx.env.spaceWorkspaceExtensionId || !grants?.length || path.startsWith("/") || path.includes("\\") || path.includes("\0")
+    || path.split("/").some(part => !part || part === "." || part === ".."))
+    throw new Error("space_shared_filesystem_denied");
+  if (grants.some(grant => !grant || !["READ", "READ_WRITE"].includes(grant.access)
+    || typeof grant.path !== "string" || !/^\/space\/shared\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)+$/.test(grant.path)))
+    throw new Error("space_shared_filesystem_grant_invalid");
+  const clean = normalizeWorkspacePath(path);
+  if (!clean || clean.split("/").some(part => !part || part === "." || part === "..")) throw new Error("space_shared_filesystem_path_invalid");
+  const absolute = `/space/shared/${clean}`;
+  const allowed = grants.some(grant => (grant.access === "READ_WRITE" || access === "read") && absolute.startsWith(grant.path));
+  if (!allowed) throw new Error("space_shared_filesystem_denied");
+  return `spaces/${ctx.env.spaceId}/space-workspace/shared/${clean}`;
+}
+
 function requiredExpectedHash(args: Record<string, unknown>): string | null {
   if (!Object.prototype.hasOwnProperty.call(args, "expectedHash")) {
     throw new Error("'expectedHash' (SHA-256 string or null) is required for every workspace mutation");
@@ -387,6 +405,10 @@ export const r2Workspace: PrebuiltScript = {
       "(refused with too_large if the file exceeds the limit — then use offset/length or search_file).",
     stat_file: "path (string, REQUIRED). Returns size + whether it's readable in one call — call this " +
       "BEFORE read_file on anything that might be large.",
+    shared_read_file: "path (string, REQUIRED; relative to /space/shared and inside an installed READ grant).",
+    shared_write_file: "path (string, REQUIRED; relative to /space/shared and inside an installed READ_WRITE grant), content (string), expectedHash (SHA-256 or null for create).",
+    shared_list_directory: "path (string, optional directory prefix; only paths in installed shared-drive grants are listed).",
+    shared_delete_file: "path (string, REQUIRED; inside an installed READ_WRITE grant), expectedHash (SHA-256 or null).",
     search_file:
       "path (string, REQUIRED). query (string, REQUIRED — a substring, matched case-insensitively). " +
       "context (number, optional, 0-10) — lines of surrounding context per match. Returns matching " +
@@ -411,6 +433,50 @@ export const r2Workspace: PrebuiltScript = {
       "(string, optional prefix).",
   },
   operations: {
+    async shared_read_file(args, ctx) {
+      const path = reqStr(args, "path");
+      const object = await bucket(ctx).get(sharedDriveKey(ctx, path, "read"));
+      if (!object || object.customMetadata?.["deleted"] === "true") return { exists: false };
+      if (object.size > MAX_READABLE_FILE_BYTES) return { exists: true, too_large: true, size: object.size };
+      const bytes = await object.arrayBuffer();
+      if (bytes.byteLength !== object.size || bytes.byteLength > MAX_READABLE_FILE_BYTES) throw new Error("space_shared_file_changed_during_read");
+      return { exists: true, path, content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes), size: object.size, hash: object.customMetadata?.["sha256"] };
+    },
+
+    async shared_write_file(args, ctx) {
+      const path = reqStr(args, "path");
+      if (typeof args["content"] !== "string") throw new Error("'content' (string) is required");
+      const storageKey = sharedDriveKey(ctx, path, "write");
+      const { hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new TextEncoder().encode(args["content"] as string), requiredExpectedHash(args));
+      return { ok: true, path, hash };
+    },
+
+    async shared_delete_file(args, ctx) {
+      const path = reqStr(args, "path");
+      const storageKey = sharedDriveKey(ctx, path, "write");
+      const result = await deleteWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, requiredExpectedHash(args));
+      return { ok: true, deleted: result.deleted, path };
+    },
+
+    async shared_list_directory(args, ctx) {
+      const requested = typeof args["path"] === "string" ? args["path"] as string : "";
+      const grants = ctx.env.spaceSharedFilesystemGrants;
+      if (!ctx.env.spaceWorkspaceExtensionId || !grants?.length) throw new Error("space_shared_filesystem_denied");
+      const prefix = requested ? `${sharedDriveKey(ctx, requested, "read")}/` : `spaces/${ctx.env.spaceId}/space-workspace/shared/`;
+      const out: Array<{ path: string; size: number }> = [];
+      let cursor: string | undefined;
+      do {
+        const page = await bucket(ctx).list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000, include: ["customMetadata"] } as R2ListOptions & { include: string[] });
+        for (const item of page.objects) {
+          if (item.customMetadata?.["deleted"] === "true") continue;
+          const path = item.key.slice(`spaces/${ctx.env.spaceId}/space-workspace/shared/`.length);
+          if (grants.some(grant => (grant.access === "READ" || grant.access === "READ_WRITE") && `/space/shared/${path}`.startsWith(grant.path))) out.push({ path, size: item.size });
+        }
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+      return { files: out, count: out.length };
+    },
+
     async read_file(args, ctx) {
       const path = reqStr(args, "path");
       const k = key(ctx, path);

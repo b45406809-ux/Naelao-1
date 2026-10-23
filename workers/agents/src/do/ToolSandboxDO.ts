@@ -72,6 +72,8 @@ export interface SandboxWorkspaceScope {
   installationId?: string;
   installationScope?: InstallationScope;
   branch?: string;
+  /** Host-validated grants; only the matching subtree is materialized beneath /workspace/shared. */
+  sharedFilesystemGrants?: readonly { path: string; access: "READ" | "READ_WRITE" }[];
 }
 
 interface SandboxBindings {
@@ -148,6 +150,22 @@ export function sandboxWorkspacePrefix(scope: SandboxWorkspaceScope): string {
         ? `spaces/${scope.spaceId}/space-workspace/extensions/${scope.installationId}/workspace/`
         : `spaces/${scope.spaceId}/workspace/`;
   return branch ? `${base}branches/${branch}/` : base;
+}
+
+function sharedObjectKey(scope: SandboxWorkspaceScope, virtualPath: string, access: "read" | "write"): string | null {
+  if (!virtualPath.startsWith("shared/")) return null;
+  const relative = virtualPath.slice("shared/".length);
+  if (!isPortableWorkspacePath(relative) || relative.split("/").some(part => !part || part === "." || part === ".."))
+    throw new Error("sandbox_shared_path_invalid");
+  const absolute = `/space/shared/${relative}`;
+  const allowed = scope.installationScope === "SPACE_SHARED" && Boolean(scope.installationId)
+    && (scope.sharedFilesystemGrants ?? []).some(grant => (grant.access === "READ_WRITE" || access === "read") && absolute.startsWith(grant.path));
+  if (!allowed) throw new Error("sandbox_shared_filesystem_denied");
+  return `spaces/${scope.spaceId}/space-workspace/shared/${relative}`;
+}
+
+function workspaceObjectKey(scope: SandboxWorkspaceScope, virtualPath: string, access: "read" | "write"): string {
+  return sharedObjectKey(scope, virtualPath, access) ?? `${sandboxWorkspacePrefix(scope)}${virtualPath}`;
 }
 
 async function hashState(state: Omit<StoredShellState, "stateHash">): Promise<string> {
@@ -501,12 +519,29 @@ export class ToolSandboxDO extends DurableObject {
     const prefix = this.workspacePrefix(scope);
     const expectedHashes: Record<string, string> = {};
     for await (const { path, bytes, hash } of this.listR2Workspace(prefix)) {
+      // /workspace/shared is reserved as a virtual mount, never an alias into the private tree.
+      if (path.startsWith("shared/")) continue;
       const response = await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/write", {
         method: "POST", headers: { "content-type": "application/json", "x-avos-restore": "1" },
         body: JSON.stringify({ files_base64: { [path]: bytesToBase64(bytes) } }),
       }));
       if (!response.ok) throw new Error(`Workspace hydration failed (${response.status}): ${path}`);
       expectedHashes[path] = hash;
+    }
+    for (const grant of scope.sharedFilesystemGrants ?? []) {
+      if (scope.installationScope !== "SPACE_SHARED" || !scope.installationId) throw new Error("sandbox_shared_filesystem_denied");
+      const relativePrefix = grant.path.slice("/space/shared/".length);
+      const sharedPrefix = `spaces/${scope.spaceId}/space-workspace/shared/${relativePrefix}`;
+      for await (const { path, bytes, hash } of this.listR2Workspace(sharedPrefix)) {
+        const virtualPath = `shared/${relativePrefix}${path}`;
+        if (!isSyncableWorkspacePath(virtualPath)) continue;
+        const response = await container.getTcpPort(HARNESS_PORT).fetch(new Request("http://sandbox/workspace/write", {
+          method: "POST", headers: { "content-type": "application/json", "x-avos-restore": "1" },
+          body: JSON.stringify({ files_base64: { [virtualPath]: bytesToBase64(bytes) } }),
+        }));
+        if (!response.ok) throw new Error(`Shared workspace hydration failed (${response.status}): ${virtualPath}`);
+        expectedHashes[virtualPath] = hash;
+      }
     }
     // A second runtime may have deleted a canonical file while this container was warm.
     // Remove only previously tracked deliverables; local dependencies/control files are not
@@ -531,7 +566,6 @@ export class ToolSandboxDO extends DurableObject {
     if (tenantId && spaceId && !await this.tenantSpaceIsActive(tenantId, spaceId)) throw new Error("tenant_suspended");
     const bindings = this.env as unknown as SandboxBindings;
     if (!bindings.SCRIPTS_R2 || !bindings.CONCURRENCY_DO) throw new Error("Fenced workspace publication is unavailable");
-    const prefix = this.workspacePrefix(scope);
     const port = container.getTcpPort(HARNESS_PORT);
     const listed = await port.fetch(new Request("http://sandbox/workspace/list", { method: "POST" }));
     if (!listed.ok) throw new Error(`Workspace listing failed (${listed.status})`);
@@ -556,6 +590,9 @@ export class ToolSandboxDO extends DurableObject {
       const newHash = digest ? [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("") : null;
       const expectedHash = priorHashes[path] ?? null;
       if (newHash === expectedHash) continue;
+      // Shared files live outside the installation's private workspace and are published
+      // only through the explicit path grant below.
+      if (path.startsWith("shared/")) sharedObjectKey(scope, path, "write");
       const stagedKey = bytes ? `workspace-staging/${scope.spaceId}/${scope.projectId ?? "_assistant"}/${holderId}/${newHash}` : undefined;
       if (bytes && stagedKey) await bindings.SCRIPTS_R2.put(stagedKey, bytes, { customMetadata: { sha256: newHash! }, onlyIf: { etagDoesNotMatch: "*" } });
       changes.push({ path, expectedHash, newHash, ...(stagedKey ? { stagedKey } : {}) });
@@ -574,11 +611,10 @@ export class ToolSandboxDO extends DurableObject {
     const bindings = this.env as unknown as SandboxBindings;
     if (!bindings.SCRIPTS_R2 || !bindings.CONCURRENCY_DO) throw new Error("Fenced workspace recovery is unavailable");
     const { scope, changes } = publication;
-    const prefix = this.workspacePrefix(scope);
     const nextHashes = (await this.ctx.storage.get<Record<string, string>>("workspace_hashes")) ?? {};
     for (const change of changes) {
       const { path, expectedHash, newHash, stagedKey } = change;
-      const key = `${prefix}${path}`;
+      const key = workspaceObjectKey(scope, path, "write");
       const current = await readBytesWithHash(bindings.SCRIPTS_R2, key);
       if ((current?.hash ?? null) === newHash) {
         if (newHash) nextHashes[path] = newHash;
@@ -735,6 +771,7 @@ export class ToolSandboxDO extends DurableObject {
         ...(containerScope.projectId ? { projectId: containerScope.projectId } : {}),
         ...(containerScope?.installationId ? { installationId: containerScope.installationId } : {}),
         ...(containerScope?.installationScope ? { installationScope: containerScope.installationScope } : {}),
+        ...(containerScope?.sharedFilesystemGrants?.length ? { sharedFilesystemGrants: containerScope.sharedFilesystemGrants } : {}),
         ...(body.workspaceBranch ? { branch: body.workspaceBranch } : {}),
       };
     } else if (url.pathname === "/pdf/render" && request.method === "POST") {
@@ -782,7 +819,9 @@ export class ToolSandboxDO extends DurableObject {
         return Response.json({ ok: false, error: "sandbox_workspace_identity_mismatch" }, { status: 403 });
       }
       const workspaceScope: SandboxWorkspaceScope = { spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}),
-        ...(scope.workspaceBranch ? { branch: scope.workspaceBranch } : {}) };
+        ...(scope.workspaceBranch ? { branch: scope.workspaceBranch } : {}), ...(scope.installationId ? { installationId: scope.installationId } : {}),
+        ...(scope.installationScope ? { installationScope: scope.installationScope } : {}),
+        ...(scope.sharedFilesystemGrants?.length ? { sharedFilesystemGrants: scope.sharedFilesystemGrants } : {}) };
       try { this.workspacePrefix(workspaceScope); }
       catch { return Response.json({ ok: false, error: "invalid workspace scope" }, { status: 400 }); }
       const storedScope = await this.ctx.storage.get<SandboxWorkspaceScope>("workspace_scope");

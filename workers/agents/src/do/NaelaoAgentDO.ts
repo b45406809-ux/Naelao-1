@@ -1217,6 +1217,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!env) return Response.json({ error: "workflow_engine_unavailable" }, { status: 503 });
     const extensionWorkspaceId = workflowWorkspaceExtensionId(identity);
     if (extensionWorkspaceId) env.spaceWorkspaceExtensionId = extensionWorkspaceId;
+    if (identity.workflowClass === "vertical_extension" && grant.installation?.instance.scope === "SPACE_SHARED"
+      && grant.installation.manifest.shared_filesystem?.length
+      && grant.installation.manifest.capabilityRequirements?.includes("space.shared.read")
+      && identity.capabilities.includes("space.shared.read")
+      && identity.capabilities.includes(body.operation)) {
+      const canWriteSharedDrive = grant.installation.manifest.capabilityRequirements.includes("space.shared.write")
+        && identity.capabilities.includes("space.shared.write");
+      env.spaceSharedFilesystemGrants = grant.installation.manifest.shared_filesystem.map(grant_ =>
+        grant_.access === "READ_WRITE" && !canWriteSharedDrive ? { ...grant_, access: "READ" as const } : grant_);
+    }
     env.runId = body.idempotencyKey;
     env.taskId = body.idempotencyKey;
     env.humanInvokerId = identity.actorId;
@@ -2606,7 +2616,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         for (const contract of manifest.containers ?? []) {
           if (!contract.permissions.some(permission => permission.actions.includes("execute"))) continue;
           const installation = { tenantId, spaceId, ...(record.instance.project_id ? { projectId: record.instance.project_id } : {}), ...(record.instance.user_id ? { userId: record.instance.user_id } : {}),
-            installationId: record.instance.instance_id, extensionId: manifest.id, contract, scope: record.instance.scope };
+            installationId: record.instance.instance_id, extensionId: manifest.id, contract, scope: record.instance.scope,
+            ...(record.instance.scope === "SPACE_SHARED" && manifest.shared_filesystem?.length ? { sharedFilesystemGrants: manifest.shared_filesystem } : {}) };
           try { approvedContainer(installation, approvedImages); containers.push(installation); }
           catch { /* A removed/replaced deployment pin revokes this installed command. */ }
         }

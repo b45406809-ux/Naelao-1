@@ -54,3 +54,26 @@ describe("r2-workspace streamed object size boundaries", () => {
     ).rejects.toThrow("exceeded requested range");
   });
 });
+
+describe("Space-shared filesystem capability", () => {
+  const read = r2Workspace.operations.shared_read_file!;
+  const write = r2Workspace.operations.shared_write_file!;
+  it("fails closed without a host-injected Space extension grant", async () => {
+    const get = vi.fn();
+    const ctx = { env: { spaceId: "space-1", workspaceBucket: { get } } } as never;
+    await expect(read({ path: "dropzones/audio/input.wav" }, ctx)).rejects.toThrow("space_shared_filesystem_denied");
+    expect(get).not.toHaveBeenCalled();
+  });
+  it("reads only an opted-in directory and rejects writes under a read-only grant", async () => {
+    const get = vi.fn(async (key: string) => ({ size: 5, customMetadata: { sha256: "hash" }, arrayBuffer: async () => new TextEncoder().encode("audio").buffer }));
+    const put = vi.fn();
+    const ctx = { env: { spaceId: "space-1", spaceWorkspaceExtensionId: "install-a", spaceSharedFilesystemGrants: [
+      { path: "/space/shared/dropzones/audio/", access: "READ" },
+    ], workspaceBucket: { get, put } } } as never;
+    await expect(read({ path: "dropzones/audio/input.txt" }, ctx)).resolves.toMatchObject({ exists: true, content: "audio" });
+    expect(get).toHaveBeenCalledWith("spaces/space-1/space-workspace/shared/dropzones/audio/input.txt", undefined);
+    await expect(read({ path: "dropzones/private/input.txt" }, ctx)).rejects.toThrow("space_shared_filesystem_denied");
+    await expect(write({ path: "dropzones/audio/output.txt", content: "x", expectedHash: null }, ctx)).rejects.toThrow("space_shared_filesystem_denied");
+    expect(put).not.toHaveBeenCalled();
+  });
+});

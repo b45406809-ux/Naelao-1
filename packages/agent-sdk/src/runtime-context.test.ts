@@ -1,5 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { actorAddress, createProjectMcpClient, scopedInstallationId } from "./runtime-context.js";
+import { actorAddress, createProjectMcpClient, createRuntimeContext, scopedInstallationId, sharedDrivePath } from "./runtime-context.js";
+
+describe("three workspace SDK boundaries", () => {
+  it("keeps assistant/project files and the optional shared drive on separate roots", async () => {
+    const reads: string[] = [];
+    const fs = { read: async (path: string) => { reads.push(path); return path; }, write: async () => undefined,
+      edit: async () => undefined, diff: async () => "", grep: async () => [], glob: async () => [] };
+    const space = { createProject: async () => ({}), listProjects: async () => [], getWalletBalance: async () => ({}), sendNotification: async () => ({}) };
+    const context = createRuntimeContext({ scope: "SPACE_WIDE", spaceId: "s", services: { fs, sharedDrive: fs, space } as never });
+    expect("sharedDrive" in createRuntimeContext({ scope: "SPACE_WIDE", spaceId: "s", services: { fs, space } as never })).toBe(false);
+    await context.fs.read("notes.txt");
+    await context.sharedDrive?.read("dropzones/audio/input.wav");
+    expect(reads).toEqual(["/workspace/notes.txt", "/space/shared/dropzones/audio/input.wav"]);
+    await expect(context.sharedDrive!.read("../../assistant/memory.sqlite")).rejects.toThrow("Path escapes /space/shared");
+    expect(() => sharedDrivePath("/space/shared/../assistant/private")).toThrow("Path escapes /space/shared");
+  });
+  it("does not allow the shared-drive service to be attached to a project runtime", () => {
+    const fs = { read: async () => "", write: async () => undefined, edit: async () => undefined, diff: async () => "", grep: async () => [], glob: async () => [] };
+    expect(() => createRuntimeContext({ scope: "PROJECT_BOUND", projectId: "p", services: { fs, sharedDrive: fs } as never })).toThrow("shared_drive_requires_space_scope");
+  });
+});
 
 describe("actorAddress", () => {
   it("structurally isolates private, project and space actors", () => {

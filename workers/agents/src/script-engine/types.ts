@@ -1212,6 +1212,8 @@ export interface ScriptEngineEnv {
    *  deliberately separate from the Space Assistant's personal workspace and keyed by the
    *  installation instance, so two extensions cannot see each other's files by default. */
   spaceWorkspaceExtensionId?: string;
+  /** Host-verified path grants for the common Space drive. Never accept these from script input. */
+  spaceSharedFilesystemGrants?: readonly { path: string; access: "READ" | "READ_WRITE" }[];
   /** Mutable authorization rank shared by the local and project memory stores for this run. */
   memoryRoleRank?: { value: number };
   /**

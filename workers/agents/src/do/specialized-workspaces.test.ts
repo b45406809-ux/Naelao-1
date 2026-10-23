@@ -4,6 +4,7 @@ import { mintInternalToken } from "@naelao/http";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { ConcurrencyDO } from "./ConcurrencyDO.js";
 import { sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
+import { validateContainerScope } from "../script-engine/container-policy.js";
 import { readBytesWithHash, sha256Bytes } from "../script-engine/r2-cas.js";
 
 const image = "registry.example/media@sha256:" + "a".repeat(64);
@@ -79,10 +80,11 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
     BILLING_WORKER: { fetch: async () => Response.json({ ok: true }) } };
   const make = () => new ToolSandboxDO(ctx as never, env as never);
   let sandbox = make();
-  const exec = async (args = {}, sidecar = false, bodyScope = { spaceId: "space", projectId: "project" }, installationScope?: "SPACE_SHARED" | "PROJECT_SHARED") => {
+  const exec = async (args = {}, sidecar = false, bodyScope = { spaceId: "space", projectId: "project" }, installationScope?: "SPACE_SHARED" | "PROJECT_SHARED",
+    sharedFilesystemGrants?: Array<{ path: string; access: "READ" | "READ_WRITE" }>) => {
     const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
       executionId: crypto.randomUUID(), timeoutMs: 55000, deadline: Date.now() + 55000,
-      ...(sidecar ? { image, dynamicImage: false, installationId: "media-one", ...(installationScope ? { installationScope } : {}) } : {}) };
+      ...(sidecar ? { image, dynamicImage: false, installationId: "media-one", ...(installationScope ? { installationScope } : {}), ...(sharedFilesystemGrants ? { sharedFilesystemGrants } : {}) } : {}) };
     return sandbox.fetch(new Request("http://sandbox/exec", { method: "POST", headers: { "content-type": "application/json",
       "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") },
       body: JSON.stringify({ ...bodyScope, args }) }));
@@ -104,6 +106,13 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
 }
 
 describe("specialized project workspaces", () => {
+  it("accepts shared-drive container grants only for a Space-shared installation", () => {
+    const base = { tenantId: "tenant", spaceId: "space", actorId: "user", agentId: "worker", runId: "run", executionId: "exec", timeoutMs: 5000, deadline: Date.now() + 5000 };
+    const grant = [{ path: "/space/shared/dropzones/audio/", access: "READ_WRITE" as const }];
+    expect(() => validateContainerScope({ ...base, installationId: "install", installationScope: "SPACE_SHARED", image, sharedFilesystemGrants: grant })).not.toThrow();
+    expect(() => validateContainerScope({ ...base, projectId: "project", installationId: "install", installationScope: "PROJECT_SHARED", image, sharedFilesystemGrants: grant })).toThrow("container_shared_filesystem_scope_invalid");
+    expect(() => validateContainerScope({ ...base, installationId: "install", installationScope: "SPACE_SHARED", image, sharedFilesystemGrants: [{ path: "/space/shared/../assistant/", access: "READ" }] })).toThrow("container_shared_filesystem_grant_invalid");
+  });
   it("routes assistant, project, and Space-shared runtimes to distinct workspace roots", () => {
     expect(sandboxWorkspacePrefix({ spaceId: "space", installationId: "assistant-one", installationScope: "SPACE_ASSISTANT" }))
       .toBe("spaces/space/workspace/");
@@ -148,6 +157,23 @@ describe("specialized project workspaces", () => {
     expect(worker.files.has("assistant-private.txt")).toBe(false);
     expect(store.bucket.get.mock.calls.some(([key]) => key === extensionPrefix + "shared-state.json")).toBe(true);
     expect(store.bucket.get.mock.calls.some(([key]) => key.includes("project-private.txt") || key.includes("assistant-private.txt"))).toBe(false);
+  });
+
+  it("hydrates and publishes only granted shared-drive paths, preserving the private extension workspace", async () => {
+    const store = workspace(), worker = runtime(store);
+    const sharedPrefix = "spaces/space/space-workspace/shared/";
+    await store.seed(sharedPrefix + "dropzones/audio/in.txt", new TextEncoder().encode("input"));
+    await store.seed(sharedPrefix + "private/hidden.txt", new TextEncoder().encode("hidden"));
+    await store.seed(extensionPrefix + "local.txt", new TextEncoder().encode("private extension file"));
+    const grants = [{ path: "/space/shared/dropzones/audio/", access: "READ_WRITE" as const }];
+    const response = await worker.exec({ write: { "shared/dropzones/audio/out.txt": Buffer.from("result").toString("base64") } }, true,
+      { spaceId: "space", projectId: "project" }, "SPACE_SHARED", grants);
+    expect(response.ok).toBe(true);
+    expect(worker.files.has("shared/dropzones/audio/in.txt")).toBe(true);
+    expect(worker.files.has("shared/private/hidden.txt")).toBe(false);
+    expect(worker.files.has("local.txt")).toBe(true);
+    expect(new TextDecoder().decode(store.data.get(sharedPrefix + "dropzones/audio/out.txt"))).toBe("result");
+    expect(store.data.has(extensionPrefix + "shared/dropzones/audio/out.txt")).toBe(false);
   });
 
   it("rejects a deployed digest mismatch before exposing project files", async () => {

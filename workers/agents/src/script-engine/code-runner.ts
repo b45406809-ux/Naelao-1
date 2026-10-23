@@ -246,6 +246,7 @@ async function runContainer(
       const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}), actorId: params.userId,
         agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}), installationId: params.installationId,
         ...(installation.scope ? { installationScope: installation.scope } : {}), image: installation.contract.image,
+        ...(installation.sharedFilesystemGrants?.length ? { sharedFilesystemGrants: installation.sharedFilesystemGrants } : {}),
         ...(dynamicImage ? { dynamicImage: true } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
       const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + branchScope));
       return runContainerRequest(stub, opts, params, started, false, scope);

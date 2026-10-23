@@ -6,6 +6,7 @@ import type {
   RuntimeConnector,
   RuntimeConnectors,
   RuntimeFileSystem,
+  RuntimeSharedDrive,
   RuntimeMcp,
   ProjectMcpClientOptions,
   SpaceRuntimeContext,
@@ -325,6 +326,44 @@ function scopedFs(fs: RuntimeFileSystem): RuntimeFileSystem {
   });
 }
 
+/** The shared-drive service is injected only for installations with host-verified grants. */
+export function sharedDrivePath(path: string): string {
+  if (typeof path !== "string" || !path || path.includes("\0") || path.includes("\\")) throw new Error("Invalid shared-drive path");
+  const absolute = path.startsWith("/") ? path : `/space/shared/${path}`;
+  const parts: string[] = [];
+  for (const part of absolute.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length === 0) throw new Error("Path escapes /space/shared");
+      parts.pop();
+    } else parts.push(part);
+  }
+  const normalized = `/${parts.join("/")}`;
+  if (normalized !== "/space/shared" && !normalized.startsWith("/space/shared/")) throw new Error("Path escapes /space/shared");
+  if (normalized === "/space/shared") throw new Error("Shared-drive file path required");
+  return normalized;
+}
+
+function scopedSharedDrive(fs: RuntimeSharedDrive): RuntimeSharedDrive {
+  return Object.freeze({
+    read: async (path: string) => fs.read(sharedDrivePath(path)),
+    write: async (path: string, contents: string, options?: { expectedHash?: string }) => options
+      ? fs.write(sharedDrivePath(path), contents, options) : fs.write(sharedDrivePath(path), contents),
+    edit: async (path: string, oldText: string, newText: string, options?: { expectedHash?: string }) => options
+      ? fs.edit(sharedDrivePath(path), oldText, newText, options) : fs.edit(sharedDrivePath(path), oldText, newText),
+    diff: async (path: string, contents: string) => fs.diff(sharedDrivePath(path), contents),
+    grep: async (pattern: string, options: { path?: string; glob?: string } = {}) => {
+      if (options.glob && (options.glob.startsWith("/") || options.glob.split("/").includes(".."))) sharedDrivePath(options.glob);
+      return fs.grep(pattern, { ...options, ...(options.glob ? { glob: `/space/shared/${options.glob}` } : {}), path: options.path ? sharedDrivePath(options.path) : "/space/shared" });
+    },
+    glob: async (pattern: string) => {
+      if (pattern.startsWith("/")) return fs.glob(sharedDrivePath(pattern));
+      if (pattern.split("/").includes("..")) throw new Error("Path escapes /space/shared");
+      return fs.glob(`/space/shared/${pattern}`);
+    },
+  });
+}
+
 /**
  * Construct the one SDK surface shared by V8 scripts and durable Workflows.
  * The forbidden top-level property is physically absent rather than throwing at call time.
@@ -338,8 +377,10 @@ export function createRuntimeContext(options: CreateRuntimeContextOptions | Laun
     return createLaunchpadRuntimeContext(options, projectId, adapters);
   }
   const { services } = options;
+  if (services.sharedDrive && options.scope !== "SPACE_WIDE") throw new Error("shared_drive_requires_space_scope");
   const base = {
     fs: scopedFs(services.fs),
+    ...(services.sharedDrive ? { sharedDrive: scopedSharedDrive(services.sharedDrive) } : {}),
     vault: services.vault,
     browser: services.browser,
     mcp: services.mcp,

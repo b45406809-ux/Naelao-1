@@ -5,10 +5,12 @@ export interface ContainerInvocationScope {
   tenantId: string; spaceId: string; projectId?: string | undefined; actorId: string; agentId: string;
   runId: string; executionId: string; workspaceBranch?: string | undefined; installationId?: string | undefined; installationScope?: InstallationScope | undefined; image?: string; dynamicImage?: boolean;
   deadline: number; timeoutMs: number;
+  sharedFilesystemGrants?: readonly { path: string; access: "READ" | "READ_WRITE" }[];
 }
 export interface InstalledContainer {
   tenantId: string; spaceId: string; projectId?: string | undefined; userId?: string | undefined;
   installationId: string; extensionId: string; contract: ContainerContract; scope?: InstallationScope | undefined;
+  sharedFilesystemGrants?: readonly { path: string; access: "READ" | "READ_WRITE" }[];
 }
 export interface ApprovedContainerImage {
   image: string; binding: "DOCUMENT_SANDBOX" | "MEDIA_SANDBOX" | "TOOL_SANDBOX";
@@ -27,6 +29,17 @@ export function validateContainerScope(scope: ContainerInvocationScope, now = Da
   if (scope.workspaceBranch && (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(scope.workspaceBranch.replaceAll("\\", "/")) || scope.workspaceBranch.replaceAll("\\", "/").includes(".."))) throw new Error("container_workspace_branch_invalid");
   if (scope.installationScope && !["SPACE_SHARED", "SPACE_ASSISTANT", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(scope.installationScope)) throw new Error("container_installation_scope_invalid");
   if (scope.installationScope && !scope.installationId) throw new Error("container_installation_required");
+  if (scope.sharedFilesystemGrants !== undefined) {
+    if (scope.installationScope !== "SPACE_SHARED" || !scope.installationId || !Array.isArray(scope.sharedFilesystemGrants) || scope.sharedFilesystemGrants.length > 64)
+      throw new Error("container_shared_filesystem_scope_invalid");
+    for (const grant of scope.sharedFilesystemGrants) {
+      if (!grant || !["READ", "READ_WRITE"].includes(grant.access)
+        || typeof grant.path !== "string" || grant.path.length > 256
+        || !/^\/space\/shared\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)+$/.test(grant.path)
+        || grant.path.includes("..") || grant.path.includes("\\") || grant.path.includes("//"))
+        throw new Error("container_shared_filesystem_grant_invalid");
+    }
+  }
   if (scope.installationScope === "SPACE_ASSISTANT" && scope.projectId) throw new Error("assistant_runtime_project_scope_mismatch");
   if (["PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(scope.installationScope ?? "") && !scope.projectId) throw new Error("project_runtime_project_scope_required");
   if (!Number.isFinite(scope.timeoutMs) || scope.timeoutMs < 1 || scope.timeoutMs > 60000 || !Number.isFinite(scope.deadline) || scope.deadline <= now || scope.deadline > now + 65000)

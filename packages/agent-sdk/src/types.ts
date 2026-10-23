@@ -314,6 +314,9 @@ export interface RuntimeFileSystem {
   glob(pattern: string): Promise<string[]>;
 }
 
+/** Present only when the host grants this installation access to the common Space drive. */
+export type RuntimeSharedDrive = RuntimeFileSystem;
+
 export interface RuntimeProject {
   readonly id: string;
   getJournal(): Promise<unknown>;
@@ -440,6 +443,7 @@ export interface SubagentContext {
 
 export interface RuntimeContextBase {
   fs: RuntimeFileSystem;
+  sharedDrive?: RuntimeSharedDrive;
   vault: RuntimeVault;
   browser: RuntimeBrowser;
   mcp: RuntimeMcp;
@@ -479,6 +483,8 @@ export type RuntimeContext = SpaceRuntimeContext | ProjectRuntimeContext;
 /** Host-side implementations. Secrets belong behind `vault.fetchWithAuth`, never in here. */
 export interface RuntimeContextServices {
   fs: RuntimeFileSystem;
+  /** Omit unless the active SPACE_SHARED installation has explicit filesystem grants. */
+  sharedDrive?: RuntimeSharedDrive;
   vault: RuntimeVault;
   browser: RuntimeBrowser;
   mcp: RuntimeMcp;

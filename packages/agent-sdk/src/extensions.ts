@@ -20,6 +20,7 @@ export interface ExtensionDaemonManifest {
 }
 
 export interface ExtensionCommandManifest { name: string; scriptPath: string }
+export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
 
 /** Compatibility contract for extensions installed before modular manifests were introduced. */
 export type ExtensionPermission = "storage:read" | "storage:write" | "network" | "mcp:expose" | "alarms";
@@ -44,6 +45,8 @@ export interface ExtensionManifest {
   bundle?: ExtensionBundleManifest;
   /** Installed sidecars remain userspace declarations, never provider image authority. */
   containers?: readonly ContainerContract[];
+  /** Opt-in access to the common Space drive. Paths are directory prefixes below /space/shared/. */
+  shared_filesystem?: readonly SharedFilesystemGrant[];
 }
 
 const ID = /^[a-z][a-z0-9_-]{1,63}$/;
@@ -102,7 +105,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     return validateLegacyManifest(raw);
   }
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle"]);
+  const allowed = new Set(["id", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
@@ -112,6 +115,22 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
   if (context) {
     const granted = new Set(context.gatekeeperCapabilities);
     for (const capability of raw.capabilityRequirements as string[]) assert(granted.has(capability), `gatekeeper_capability_denied:${capability}`);
+  }
+  let canonicalSharedFilesystem: SharedFilesystemGrant[] | undefined;
+  if (raw.shared_filesystem !== undefined) {
+    assert(Array.isArray(raw.shared_filesystem) && raw.shared_filesystem.length <= 64, "invalid_shared_filesystem");
+    const capabilities = new Set(raw.capabilityRequirements as string[]);
+    canonicalSharedFilesystem = (raw.shared_filesystem as unknown[]).map((item) => {
+      assert(item && typeof item === "object" && !Array.isArray(item), "invalid_shared_filesystem_grant");
+      const grant = item as Record<string, unknown>;
+      assert(Object.keys(grant).every(key => key === "path" || key === "access"), "invalid_shared_filesystem_grant_field");
+      assert(typeof grant.path === "string" && /^\/space\/shared\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)+$/.test(grant.path)
+        && grant.path.length <= 256 && !grant.path.includes("..") && !grant.path.includes("\\") && !grant.path.includes("//"), "invalid_shared_filesystem_path");
+      assert(grant.access === "READ" || grant.access === "READ_WRITE", "invalid_shared_filesystem_access");
+      assert(capabilities.has("space.shared.read"), "shared_filesystem_read_capability_required");
+      if (grant.access === "READ_WRITE") assert(capabilities.has("space.shared.write"), "shared_filesystem_write_capability_required");
+      return Object.freeze({ path: grant.path, access: grant.access });
+    });
   }
   assert(Array.isArray(raw.gadgets) && raw.gadgets.length <= 128
     && Array.isArray(raw.daemons) && raw.daemons.length <= 64
@@ -175,7 +194,16 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
       containerIds.add(container.id);
     }
   }
-  return { ...raw, ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}) } as unknown as ExtensionManifest;
+  return { ...raw, ...(canonicalSharedFilesystem ? { shared_filesystem: Object.freeze(canonicalSharedFilesystem) } : {}), ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}) } as unknown as ExtensionManifest;
+}
+
+/** Verify a file path is contained in an installed Space-shared directory grant. */
+export function isSharedFilesystemPathAllowed(grants: readonly SharedFilesystemGrant[], path: string, access: "read" | "write"): boolean {
+  if (typeof path !== "string" || !path || path.length > 1024 || path.startsWith("/") || path.includes("\\") || path.includes("\0")) return false;
+  const segments = path.split("/");
+  if (segments.some(part => !part || part === "." || part === ".." || new TextEncoder().encode(part).byteLength > 255)) return false;
+  const absolute = `/space/shared/${path}`;
+  return grants.some(grant => (grant.access === "READ_WRITE" || access === "read") && absolute.startsWith(grant.path));
 }
 
 const LEGACY_PERMISSIONS = new Set<ExtensionPermission>(["storage:read", "storage:write", "network", "mcp:expose", "alarms"]);
