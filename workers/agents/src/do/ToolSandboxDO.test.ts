@@ -17,7 +17,7 @@ describe("sandbox workspace ownership", () => {
 });
 
 describe("ToolSandboxDO Runtime and State Coordination", () => {
-  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean } = {}) {
+  async function createTestSandbox(options: { timeoutMs?: number; hangExecution?: boolean; taintedExecution?: boolean; actorId?: string; runId?: string; sidecar?: boolean; platformDb?: boolean; hangReservation?: boolean; airGapped?: boolean } = {}) {
     const storage = new Map();
     const analyticsPoints: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     let alarmTime = null;
@@ -49,6 +49,8 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
             announceExecution?.();
             return new Promise<Response>(() => undefined);
           }
+          if (url.pathname === "/exec" && options.taintedExecution)
+            return Response.json({ ok: false, error: "guest_process_cleanup_unverified" }, { status: 500, headers: { "x-naelao-container-tainted": "1" } });
           if (url.pathname === "/workspace/list") return Response.json({ files: [] });
           if (url.pathname.endsWith("/display/capture")) {
             return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
@@ -221,16 +223,40 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     const { sandbox, storage } = await createTestSandbox();
     const first = await sandbox.fetch(new Request("https://sandbox/workspace/state-sync", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ files: { "package.json": { content: "{}", expected_hash: null }, "node_modules/x/a.js": { content: "ignored" } } }),
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", files: { "package.json": { content: "{}", expected_hash: null } } }),
     }));
     const result = await first.json();
     expect(result).toMatchObject({ ok: true, rehydrate: true });
     expect(Object.keys(storage.get("workspace_files"))).toEqual(["package.json"]);
     const stale = await sandbox.fetch(new Request("https://sandbox/workspace/state-sync", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ files: { "package.json": { content: "new", expected_hash: "stale" } } }),
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", files: { "package.json": { content: "new", expected_hash: "a".repeat(64) } } }),
     }));
     expect(stale.status).toBe(409);
+  });
+
+  it("rejects workspace identity mismatches, unsafe paths, and malformed write payloads before forwarding", async () => {
+    const { sandbox, mockContainer, storage } = await createTestSandbox();
+    const callsBefore = mockContainer.getTcpPort.mock.calls.length;
+    const stateSync = (body: unknown) => sandbox.fetch(new Request("https://sandbox/workspace/state-sync", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    }));
+    expect((await stateSync({ tenantId: "other", spaceId: "space", files: {} })).status).toBe(403);
+    storage.set("workspace_scope", { spaceId: "space", projectId: "project", installationId: "install-a", installationScope: "PROJECT_SHARED" });
+    expect((await stateSync({ tenantId: "tenant", spaceId: "space", files: {} })).status).toBe(409);
+    storage.delete("workspace_scope");
+    expect((await stateSync({ tenantId: "tenant", spaceId: "space", files: { "../outside": { content: "x", expected_hash: null } } })).status).toBe(400);
+    expect((await stateSync({ tenantId: "tenant", spaceId: "space", files: { ".env": { content: "secret", expected_hash: null } } })).status).toBe(400);
+    const unsafeWrite = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files: { "../outside": "x" }, expected_hashes: { "../outside": null } }),
+    }));
+    expect(unsafeWrite.status).toBe(400);
+    const emptyWrite = await sandbox.fetch(new Request("https://sandbox/workspace/write", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}),
+    }));
+    expect(emptyWrite.status).toBe(400);
+    expect(mockContainer.getTcpPort).toHaveBeenCalledTimes(callsBefore);
   });
 
   it("requires hashes on normal container workspace writes", async () => {
@@ -419,6 +445,17 @@ describe("ToolSandboxDO Runtime and State Coordination", () => {
     expect(analyticsPoints[0]?.doubles?.[7]).toBeGreaterThanOrEqual(900);
     expect(analyticsPoints[0]?.doubles?.[7]).toBeLessThanOrEqual(1500);
     expect(storage.has("container_runtime_metrics")).toBe(false);
+  });
+
+  it("destroys a container whose guest process cleanup could not be verified", async () => {
+    const { sandbox, storage, mockContainer } = await createTestSandbox({ taintedExecution: true, runId: "worker-tainted" });
+    const response = await sandbox.fetch(new Request("https://sandbox/exec", { method: "POST", body: "{}" }));
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(409);
+    expect(body).toMatchObject({ ok: false, workspace_may_require_reconciliation: true });
+    expect(body).not.toHaveProperty("workspace_sync");
+    expect(mockContainer.destroy).toHaveBeenCalledOnce();
+    expect([...storage.values()].some(value => value?.status === "indeterminate")).toBe(true);
   });
 
   it("stays warm before 60s and snapshots then hibernates at 60s", async () => {

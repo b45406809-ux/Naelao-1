@@ -119,7 +119,11 @@ interface StoredShellState {
 }
 
 export function isPortableWorkspacePath(path: string): boolean {
-  return !path.replace(/\\/g, "/").split("/").includes("node_modules");
+  if (typeof path !== "string" || !path || path.length > 1024 || path.includes("\0") || path.includes("\\") || path.startsWith("/")) return false;
+  const parts = path.split("/");
+  if (parts.some(part => !part || part === "." || part === ".." || new TextEncoder().encode(part).byteLength > 255)) return false;
+  return !parts.some(part => [".avos", ".naelao", ".git", "node_modules", ".cache", ".turbo", ".next", ".vite", "coverage", "tmp", ".tmp", ".artifactfs-staging"].includes(part)
+    || part === ".env" || part.startsWith(".env.") && part !== ".env.example");
 }
 
 export function sandboxWorkspacePrefix(scope: SandboxWorkspaceScope): string {
@@ -436,6 +440,7 @@ export class ToolSandboxDO extends DurableObject {
         new Promise<Response>((_, reject) => controller.signal.addEventListener("abort", () => reject(new Error("container_cancelled_or_deadline")), { once: true })),
       ]);
       if (controller.signal.aborted) throw new Error("container_cancelled_or_deadline");
+      if (response.headers.get("x-naelao-container-tainted") === "1") throw new Error("container_guest_cleanup_unverified");
       retainSidecarWarm = Boolean(scope.installationId && response.ok);
       if (new URL(request.url).pathname !== "/computer/screenshot") {
         const responseBody = await readBoundedResponseText(response.clone(), 2 * 1024 * 1024);
@@ -840,26 +845,51 @@ export class ToolSandboxDO extends DurableObject {
 
     if (url.pathname === "/workspace/state-sync" && request.method === "POST") {
       type SyncBody = { files?: Record<string, { content: string; expected_hash?: string | null }>; deleted?: Record<string, string> };
-      const body: SyncBody = await request.json<SyncBody>().catch(() => ({}));
+      let scope: ContainerInvocationScope;
+      try { scope = await this.authenticatedScope(request); }
+      catch { return Response.json({ error: "container_scope_denied" }, { status: 403 }); }
+      const body = await request.json<SyncBody & { tenantId?: string; spaceId?: string; projectId?: string; workspaceBranch?: string }>()
+        .catch((): SyncBody & { tenantId?: string; spaceId?: string; projectId?: string; workspaceBranch?: string } => ({}));
+      if (body.tenantId !== scope.tenantId || body.spaceId !== scope.spaceId || body.projectId !== scope.projectId
+        || body.workspaceBranch !== scope.workspaceBranch)
+        return Response.json({ error: "sandbox_workspace_identity_mismatch" }, { status: 403 });
+      const storedScope = await this.ctx.storage.get<SandboxWorkspaceScope>("workspace_scope");
+      if (storedScope && (storedScope.spaceId !== scope.spaceId || storedScope.projectId !== scope.projectId
+        || storedScope.installationId !== scope.installationId || storedScope.installationScope !== scope.installationScope
+        || storedScope.branch !== scope.workspaceBranch)) return Response.json({ error: "sandbox_workspace_scope_mismatch" }, { status: 409 });
+      if (!body.files || typeof body.files !== "object" || Array.isArray(body.files)
+        || body.deleted !== undefined && (!body.deleted || typeof body.deleted !== "object" || Array.isArray(body.deleted)))
+        return Response.json({ error: "workspace_payload_invalid" }, { status: 400 });
+      const entries = Object.entries(body.files);
+      const deletions = Object.entries(body.deleted ?? {});
+      if (entries.length + deletions.length > 300) return Response.json({ error: "workspace_file_limit_exceeded" }, { status: 413 });
+      let totalBytes = 0;
+      for (const [path, change] of entries) {
+        if (!isPortableWorkspacePath(path) || !change || typeof change !== "object" || typeof change.content !== "string"
+          || !Object.hasOwn(change, "expected_hash") || change.expected_hash !== null && (typeof change.expected_hash !== "string" || !/^[a-f0-9]{64}$/.test(change.expected_hash)))
+          return Response.json({ error: "workspace_file_invalid" }, { status: 400 });
+        const size = new TextEncoder().encode(change.content).byteLength;
+        if (size > 2 * 1024 * 1024 || (totalBytes += size) > 20_000_000) return Response.json({ error: "workspace_size_limit_exceeded" }, { status: 413 });
+      }
+      for (const [path, expected] of deletions) if (!isPortableWorkspacePath(path) || !/^[a-f0-9]{64}$/.test(expected))
+        return Response.json({ error: "workspace_delete_invalid" }, { status: 400 });
       const records = (await this.ctx.storage.get<Record<string, WorkspaceRecord>>("workspace_files")) ?? {};
       const conflicts: string[] = [];
-      for (const [path, change] of Object.entries(body.files ?? {})) {
-        if (path.split("/").includes("node_modules")) continue;
+      for (const [path, change] of entries) {
         const actual = records[path]?.hash ?? null;
         if (change.expected_hash !== undefined && change.expected_hash !== actual) conflicts.push(path);
       }
-      for (const [path, expected] of Object.entries(body.deleted ?? {}))
+      for (const [path, expected] of deletions)
         if (records[path]?.hash !== expected) conflicts.push(path);
       if (conflicts.length) return Response.json({ error: "workspace_state_conflict", conflicts }, { status: 409 });
       let lockfilesChanged = false;
-      for (const [path, change] of Object.entries(body.files ?? {})) {
-        if (path.split("/").includes("node_modules")) continue;
+      for (const [path, change] of entries) {
         const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(change.content));
         const hash = [...new Uint8Array(digest)].map((v) => v.toString(16).padStart(2, "0")).join("");
         if (records[path]?.hash !== hash && (path === "package.json" || path === "package-lock.json")) lockfilesChanged = true;
         records[path] = { content: change.content, hash };
       }
-      for (const path of Object.keys(body.deleted ?? {})) if (isPortableWorkspacePath(path)) delete records[path];
+      for (const [path] of deletions) delete records[path];
       await this.ctx.storage.put("workspace_files", records);
       return Response.json({ ok: true, hashes: Object.fromEntries(Object.entries(records).map(([path, value]) => [path, value.hash])), rehydrate: lockfilesChanged });
     }
@@ -1000,9 +1030,19 @@ export class ToolSandboxDO extends DurableObject {
       const body = await request.json<{ files?: Record<string, string>; expected_hashes?: Record<string, string | null> }>().catch(
         () => ({}) as { files?: Record<string, string>; expected_hashes?: Record<string, string | null> }
       );
-      const files = body.files ?? {};
+      const files = body.files;
       const expected = body.expected_hashes;
       const restoring = request.headers.get("x-avos-restore") === "1";
+      if (!files || typeof files !== "object" || Array.isArray(files))
+        return Response.json({ error: "workspace_files_invalid" }, { status: 400 });
+      const entries = Object.entries(files);
+      if (entries.length > 300) return Response.json({ error: "workspace_file_limit_exceeded" }, { status: 413 });
+      let totalBytes = 0;
+      for (const [path, content] of entries) {
+        if (!isPortableWorkspacePath(path) || typeof content !== "string") return Response.json({ error: "workspace_file_invalid" }, { status: 400 });
+        const size = new TextEncoder().encode(content).byteLength;
+        if (size > 2 * 1024 * 1024 || (totalBytes += size) > 20_000_000) return Response.json({ error: "workspace_size_limit_exceeded" }, { status: 413 });
+      }
       const records = (await this.ctx.storage.get<Record<string, WorkspaceRecord>>("workspace_files")) ?? {};
       if (!restoring) {
         if (!expected || Object.keys(files).some(path => !Object.prototype.hasOwnProperty.call(expected, path))) {
@@ -1010,8 +1050,7 @@ export class ToolSandboxDO extends DurableObject {
         }
         const conflicts: string[] = [];
         const nextRecords = { ...records };
-        for (const [path, content] of Object.entries(files)) {
-          if (!isPortableWorkspacePath(path)) continue;
+        for (const [path, content] of entries) {
           const actual = execScope ? (await this.ctx.storage.get<Record<string, string>>("workspace_hashes"))?.[path] ?? null : records[path]?.hash ?? null;
           if (expected[path] !== actual) conflicts.push(path);
           const nextHash = await hashWorkspaceContent(content);
@@ -1041,6 +1080,9 @@ export class ToolSandboxDO extends DurableObject {
     // hydrates from canonical R2 on a cold workspace and publishes each changed file through the
     // same fenced CAS gateway used by the other workspace writers before returning to the agent.
     const response = await container.getTcpPort(HARNESS_PORT).fetch(request);
+    // A harness response marked tainted means a guest process may still be alive. Preserve the
+    // marker for executeScoped() so it destroys the container, and never publish its workspace.
+    if (response.headers.get("x-naelao-container-tainted") === "1") return response;
     if ((url.pathname === "/exec" || url.pathname === "/workspace/delete" && response.ok) && execScope && (this.env as unknown as SandboxBindings).SCRIPTS_R2) {
       try {
         const workspace_sync = await this.publishWorkspaceChanges(container, execScope, crypto.randomUUID());

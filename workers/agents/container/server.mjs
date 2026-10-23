@@ -35,7 +35,6 @@ import {
   mkdtemp,
   readFile,
   readdir,
-  lstat,
   rm,
   stat,
   writeFile,
@@ -47,6 +46,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runGuest, cancelExecution, cancelAllExecutions, executionOutput } from "./process-supervisor.mjs";
 import { ArtifactFS } from "./artifact-fs.mjs";
+import { assertWorkspaceAncestors, safeWorkspacePath } from "./workspace-path.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,26 +62,8 @@ const MAX_PDF_RENDER_PAGES = 5;
 const MAX_PDF_PAGE_PIXELS = 2048 * 2048;
 const MAX_PDF_RENDER_OUTPUT_BYTES = 5 * 1024 * 1024;
 
-async function assertWorkspaceAncestors(path) {
-  let current = WORKSPACE_DIR;
-  for (const part of safeWorkspacePath(path).split("/")) {
-    current = join(current, part);
-    try {
-      if ((await lstat(current)).isSymbolicLink()) throw new Error("workspace symlink rejected");
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-  }
-}
-
-function safeWorkspacePath(path) {
-  const value = String(path).replaceAll("\\", "/");
-  if (value.startsWith("/.avos") || value === ".avos" || value.startsWith(".avos/")) throw new Error("agent state is not a deliverable");
-  const relativePath = value.startsWith("/workspace/") ? value.slice(11) : value.replace(/^\/+/, "");
-  const parts = relativePath.split("/");
-  if (!relativePath || parts.some((part) => !part || part === "." || part === "..")) throw new Error("workspace path traversal rejected");
-  if (parts.some((part) => [".avos", ".naelao", ".git", "node_modules", ".cache", ".turbo", ".next", ".vite", "coverage", "tmp", ".tmp"].includes(part) || part === ".env" || part.startsWith(".env.") && part !== ".env.example")) throw new Error("workspace control/cache/secret path rejected");
-  return parts.join("/");
+function rethrowGuestCleanupFailure(error) {
+  if (error?.code === "guest_process_cleanup_unverified") throw error;
 }
 
 async function materializeWorkspace(files, binary = false) {
@@ -200,6 +182,7 @@ async function buildAndTest(code, execution) {
       if (!compiled.result.ok) throw new Error(compiled.result.error);
       logs.push("build: ok");
     } catch (err) {
+      rethrowGuestCleanupFailure(err);
       logs.push(`build: failed — ${String(err).slice(0, 1000)}`);
       return { built: false, tests_passed: false, logs: logs.join("\n") };
     }
@@ -217,6 +200,7 @@ async function buildAndTest(code, execution) {
       logs.push(...result.results.map(String));
     return { built: true, tests_passed: passed, logs: logs.join("\n") };
   } catch (err) {
+    rethrowGuestCleanupFailure(err);
     logs.push(`harness error: ${String(err).slice(0, 1000)}`);
     return { built: false, tests_passed: false, logs: logs.join("\n") };
   } finally {
@@ -238,6 +222,7 @@ async function execScript(name, code, args, execution) {
       const compiled = await runGuest(process.execPath, ["/app/compile-runner.mjs"], { ...execution, message: { src, out } });
       if (!compiled.result.ok) throw new Error(compiled.result.error);
     } catch (err) {
+      rethrowGuestCleanupFailure(err);
       return {
         ok: false,
         error: `build failed: ${String(err).slice(0, 1000)}`,
@@ -249,6 +234,7 @@ async function execScript(name, code, args, execution) {
     });
     return { ...child.result, logs: child.stdout + child.stderr };
   } catch (err) {
+    rethrowGuestCleanupFailure(err);
     return { ok: false, error: String(err).slice(0, 2000) };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -397,6 +383,7 @@ createServer((req, res) => {
           if (audio.length < 4 || audio.length > MAX_AUDIO_BYTES || audio.toString("ascii", 0, 4) !== "OggS") throw new Error("video_audio_output_limit");
           res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ audioBase64: audio.toString("base64"), mimeType: "audio/ogg", durationLimitSeconds: 60 })); return;
         } catch (error) {
+          rethrowGuestCleanupFailure(error);
           const code = String(error?.message ?? error).replace(/[^a-z0-9_:-]/gi, "_").slice(0, 120);
           res.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ error: code || "video_audio_extract_failed" })); return;
         } finally {
@@ -452,6 +439,7 @@ createServer((req, res) => {
           }
           res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ pages, output_bytes: outputBytes })); return;
         } catch (error) {
+          rethrowGuestCleanupFailure(error);
           const code = String(error?.message ?? error).replace(/[^a-z0-9_:-]/gi, "_").slice(0, 120);
           res.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ error: code || "pdf_render_failed" })); return;
         } finally {
@@ -557,15 +545,15 @@ createServer((req, res) => {
         .writeHead(200, { "content-type": "application/json" })
         .end(JSON.stringify(result));
     } catch (err) {
-      res
-        .writeHead(500)
-        .end(
-          JSON.stringify(
-            isExec || isWorkspaceRoute
-              ? { ok: false, error: String(err) }
-              : { built: false, tests_passed: false, logs: String(err) }
-          )
-        );
+      const cleanupFailed = err?.code === "guest_process_cleanup_unverified";
+      const headers = cleanupFailed ? { "x-naelao-container-tainted": "1" } : undefined;
+      if (headers) res.writeHead(500, headers);
+      else res.writeHead(500);
+      res.end(JSON.stringify(
+        isExec || isWorkspaceRoute
+          ? { ok: false, error: String(err) }
+          : { built: false, tests_passed: false, logs: String(err) }
+      ));
     }
   });
 }).listen(PORT, () =>

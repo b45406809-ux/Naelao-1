@@ -16,6 +16,7 @@ WORKDIR /app
 COPY container/.vendor/node_modules /app/node_modules
 
 COPY container/server.mjs /app/server.mjs
+COPY container/workspace-path.mjs /app/workspace-path.mjs
 COPY container/child-runner.mjs /app/child-runner.mjs
 COPY container/compile-runner.mjs /app/compile-runner.mjs
 COPY container/process-supervisor.mjs /app/process-supervisor.mjs

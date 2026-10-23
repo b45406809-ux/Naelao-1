@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readdir, readFile } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 
 const active = new Map();
@@ -6,6 +7,7 @@ const outputs = new Map();
 export function executionOutput(id) { return outputs.get(id)?.value ?? { stdout: "", stderr: "" }; }
 const MAX_OUTPUT = 2 * 1024 * 1024;
 const SAFE_ENV = new Set(["LANG", "LC_ALL", "TERM", "DISPLAY", "TZ"]);
+const GUEST_UID = 10001;
 export function guestEnvironment(extra = {}) {
   const env = { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/home/runtime", TMPDIR: "/tmp/guest" };
   for (const [key, value] of Object.entries(extra)) if (SAFE_ENV.has(key) && typeof value === "string" && value.length <= 1024) env[key] = value;
@@ -13,6 +15,29 @@ export function guestEnvironment(extra = {}) {
 }
 export function cancelExecution(id) { active.get(id)?.cancel("container_cancelled"); }
 export function cancelAllExecutions() { for (const process of active.values()) process.cancel("container_shutting_down"); }
+export async function killProcessesForUid(uid = GUEST_UID, { procRoot = "/proc", kill = process.kill.bind(process), pause = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const pids = [];
+    for (const entry of await readdir(procRoot)) {
+      if (!/^\d+$/.test(entry) || Number(entry) <= 1) continue;
+      try {
+        const status = await readFile(`${procRoot}/${entry}/status`, "utf8");
+        const match = status.match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$/m);
+        const state = status.match(/^State:\s+([A-Z])/m)?.[1];
+        if (match && match.slice(1).every(value => Number(value) === uid) && state !== "Z" && state !== "X") pids.push(Number(entry));
+      } catch (error) {
+        if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
+      }
+    }
+    if (!pids.length) return;
+    for (const pid of pids) {
+      try { await kill(pid, "SIGKILL"); }
+      catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
+    await pause(10);
+  }
+  throw Object.assign(new Error("guest_process_cleanup_unverified"), { code: "guest_process_cleanup_unverified" });
+}
 export function runGuest(command, argv, { id, cwd = "/workspace", env, signal, timeoutMs = 55000, message } = {}) {
   if (!id || active.has(id)) return Promise.reject(new Error("container_execution_id_conflict"));
   if (signal?.aborted) return Promise.reject(new Error("container_cancelled"));
@@ -39,12 +64,15 @@ export function runGuest(command, argv, { id, cwd = "/workspace", env, signal, t
     const abort = () => cancel("container_cancelled");
     signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => cancel("container_deadline_exceeded"), timeoutMs);
-    const finish = (code) => {
+    const finish = async (code) => {
       if (settled) return;
       settled = true; clearTimeout(timer); active.delete(id); signal?.removeEventListener("abort", abort);
-      // Kill ordinary descendants even if the entrypoint exits successfully. The DO destroys
-      // the provider instance at hard cancellation/deadline to catch detached descendants too.
+      // Kill ordinary descendants by process group, then sweep the dedicated guest UID so
+      // descendants that called setsid() cannot survive into another request. If their death
+      // cannot be confirmed, fail closed; ToolSandboxDO tears down the container on this error.
       kill();
+      try { await killProcessesForUid(); }
+      catch (error) { failure ??= error; }
       if (failure) reject(failure);
       else resolve({ stdout, stderr, status: code ?? 1, ...(message ? { result: result ?? { ok: false, error: "container_child_no_result" } } : {}) });
     };
