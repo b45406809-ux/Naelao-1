@@ -1,12 +1,12 @@
 # Naelao file-by-file stress and security audit plan
 
 Inventory root: `/workspace/Naelao-1`
-Inventory basis: `2068` tracked files; `1881` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `2b7c8c7f`.
+Inventory basis: `2068` tracked files; `1881` files with source or executable-configuration extensions, matching `naelao-repository-tree.txt` at code commit `7d60d204`.
 Status: only files with checked boxes have a completed scoped review recorded in the audit ledger. This plan and inventory are not evidence that the remaining listed files have been reviewed.
 
 ## Audit state (2026-10-23)
 
-- The file-by-file checklist currently records **679 scoped reviews / 1,202 open files** out of 1,881 source/config files. Newly included style, template, and container/build files remain unaudited unless individually checked.
+- The file-by-file checklist currently records **669 scoped reviews / 1,212 open files** out of 1,881 source/config files. Newly included style, template, and container/build files remain unaudited unless individually checked.
 - Latest full workspace test run passed Turbo 58/58 tasks; the shared suite passed 373 files / 3,880 tests, Agents 165/749, Spaces 69/276, Billing 21/189, and Router 12/67. Workspace TypeScript passed 74/74 tasks. This confirms test/typecheck execution, not whole-repository review completeness or live deployment behavior.
 - Latest production dependency audit: 49 advisory records (4 critical, 11 high, 29 moderate, 5 low). All critical/high production findings trace to `next@14.2.18`; Pages adapter migration remains open.
 - Latest full dependency audit: 74 records (4 critical, 19 high, 42 moderate, 9 low). Remaining high build-tool findings include `undici@5`, `extract-zip@2.0.1`, `braces@3.0.3`, `basic-ftp`, and `@fastify/busboy`.

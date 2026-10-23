@@ -4,7 +4,7 @@ Inventory source: git ls-files (tracked files only)
 Source/config classification includes common code, style/template, infrastructure, and executable configuration formats; Markdown/docs are excluded.
 Files: 2068
 Files with source or executable-configuration extensions: 1881
-Inventory revision: 2026-10-23 audit refresh at 2b7c8c7f
+Inventory revision: 2026-10-23 audit refresh at 7d60d204
 Ignored dependencies, caches, generated build output, and .git internals are excluded.
 Empty directories are not represented because Git does not track them.
 
