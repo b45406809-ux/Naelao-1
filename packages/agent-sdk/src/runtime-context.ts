@@ -49,6 +49,26 @@ export interface ScopedInstallationRecord extends ScopedInstallationIdentity {
 }
 export interface LinkedSpaceGrant { grantId: string; tenantId: string; fromSpaceId: string; toSpaceId: string; userId: string; actions: readonly ("read" | "write")[]; expiresAt?: string; }
 
+/** Host supplied transport for a SPACE_SHARED extension UI. The adapter fixes the app identity
+ * and only exposes the extension's own scoped data actor; it never exposes session credentials. */
+export interface SpaceSharedExtensionTransport {
+  request(input: { method: "GET" | "POST" | "DELETE"; path: "/api/data" | "/api/storage" | "/mcp"; query?: Record<string, string>; body?: unknown }): Promise<unknown>;
+  operation(input: { capability: "blueprint.export" | "blueprint.status" | "marketplace.graduate"; input?: unknown }): Promise<unknown>;
+}
+export function createSpaceSharedExtensionClient(transport: SpaceSharedExtensionTransport) {
+  return Object.freeze({
+    read: (key: string) => transport.request({ method: "GET", path: "/api/data", query: { key } }),
+    list: (limit = 100) => transport.request({ method: "GET", path: "/api/data", query: { limit: String(limit) } }),
+    write: (key: string, value: unknown) => transport.request({ method: "POST", path: "/api/data", body: { key, value } }),
+    remove: (key: string) => transport.request({ method: "DELETE", path: "/api/data", query: { key } }),
+    storage: () => transport.request({ method: "GET", path: "/api/storage" }),
+    call: (name: string, arguments_: Record<string, unknown>) => transport.request({ method: "POST", path: "/mcp", body: { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/call", params: { name, arguments: arguments_ } } }),
+    exportBlueprint: (input: unknown) => transport.operation({ capability: "blueprint.export", input }),
+    exportStatus: (input: unknown) => transport.operation({ capability: "blueprint.status", input }),
+    graduate: (input: unknown) => transport.operation({ capability: "marketplace.graduate", input }),
+  });
+}
+
 const INSTALL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 function requireInstallId(label: string, value: string): void {
   if (!INSTALL_ID.test(value)) throw new Error(`invalid_${label}`);

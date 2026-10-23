@@ -19,14 +19,16 @@ Date: 2026-10-23
 | Old dashboard spaces list | `apps/dashboard/src/app/dashboard/spaces/page.tsx` | Already redirects to Launchpad; no separate create/list surface remains. |
 | Public builder roadmap | `apps/dashboard/src/app/catalog/page.tsx` | Removed; it advertised multiple future products/templates that no longer belong in this console. |
 | Builder API | `workers/spaces/src/builder-routes.ts` | All `/builder/*` routes now fail closed without the configured Naelao tenant and require owner/admin on router sessions. Scoped API keys remain supported for authorized Naelao automation. |
-| FDE Foundry | `apps/shell/src/app/p/[slug]/(shell)/foundry/page.tsx`, `/spaces/:spaceId/foundry/*` | The first dogfood Space Blueprint is now `tpl_foundry_space_v1` and declares `ext_foundry_catalog`; the former `tpl_dev_foundry_v1` native template is no longer seeded. The existing shell page and server routes remain a legacy implementation pending the general Space-shared extension UI/RPC host. |
+| FDE Foundry | `tpl_foundry_space_v1`, `ext_foundry_catalog` | Foundry is portable Space Template configuration and a first-party Space-shared extension. The former bespoke shell page and `/foundry/*` routes are removed; the generic Extensions directory discovers and mounts installed Space-shared canvases through a host-checked SDK bridge. Legacy Foundry tables remain only for upgrade compatibility; no active route uses them. |
 | Old partner dashboard widget | `apps/shell/src/components/PartnerFoundry.tsx` | Removed after confirming it had no imports; it described referral-style portfolio presentation separate from Foundry authoring. Existing earnings and payout APIs remain settlement infrastructure for product sales, not referral attribution. |
 
 ## Foundry and product boundary findings
 
 - Foundry is a Space template and shell experience, not a separate dashboard product. Its baseline is the regular Launchpad Space (projects, extensions, assistants, and knowledge bases); FDE authoring and publication tools extend that baseline.
 - The dogfood Space Blueprint provides one private Template Studio project with product brief, export allowlist, and evaluation starter files. It requires the `ext_foundry_catalog` Space-shared extension. The extension manifest defines an extension-owned catalog projection; marketplace listings and finances remain host-owned records.
-- The current Foundry page still has bespoke worker/runtime and review flows. A general Space-shared extension UI and host-scoped SDK API bridge are not yet implemented, so the declared catalog extension is not yet a drop-in replacement for that page.
+- Foundry's catalog, authoring UI, and publish controls now live in the `ext_foundry_catalog` extension canvas. The extension uses schema-validated Space-local storage and bounded MCP calls; export, status, and graduation operations are separate host capabilities authorized by the normal tenant/session checks. The opaque sandbox does not receive the bearer token.
+- The product export can be scoped to one Studio project and an explicit list of installed extensions. This prevents the private Foundry Studio project or unrelated Space projects from leaking into a customer blueprint. The source export and conformance job are stored under the owning tenant; graduation verifies the persisted certificate before creating a marketplace listing. Multiple distinct certified products can be graduated from one Foundry Space.
+- The source-controlled Foundry blueprint is the dogfood template definition. A published marketplace listing is tenant data, not a source-code seed: the publishing flow must run in the Naelao team's authorized tenant, pass the real conformance workflow, and then graduate the resulting certificate. No production listing or certificate is claimed by this repository change.
 - Monthly template subscription checkout requires a published `freemium_tiered` marketplace listing. Developer and template identity are resolved from the listing, never caller-supplied developer/referral fields. The subscription record stores the listing ID.
 - Recurring payment settlement is pinned to the subscription ID from the provider event. A Space with multiple subscriptions can no longer credit whichever subscription was updated most recently.
 - Existing fixed-license marketplace checkout remains a one-time product sale; its captured payment grants the certified Space Template and records the sale proceeds for the listing author.
@@ -43,3 +45,10 @@ The dashboard UI no longer calls reseller pricing, billing, or payout flows, but
 - `packages/agent-sdk/src/templates/dev-foundry.test.ts`: 2 tests passed.
 - TypeScript checks passed for `apps/dashboard`, `workers/spaces`, and `packages/agent-sdk`.
 - No deployed Cloudflare environment was exercised.
+
+## Foundry extension migration verification (2026-10-23)
+
+- Removed the legacy Foundry shell page and its route/API handlers; legacy storage schema is retained for safe Durable Object upgrades.
+- Added generic Space extension discovery, installation, isolated canvas hosting, scoped parent-mediated API calls, and capability-gated template export/status/graduation actions.
+- Focused verification: agent SDK extension/template tests; Spaces extension MCP, Foundry retirement, and blueprint tests; TypeScript checks for `packages/agent-sdk`, `workers/spaces`, and `apps/shell`.
+- Cloudflare deployment, real tenant conformance execution, certificate issuance, and marketplace listing publication require the configured production runtime and Naelao team tenant. They were not exercised here.

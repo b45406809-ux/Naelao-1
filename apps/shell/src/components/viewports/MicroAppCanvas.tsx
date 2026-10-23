@@ -2,8 +2,9 @@
 
 import * as React from "react";
 import { parseCanvasMessage } from "@naelao/agent-sdk";
+import { callSpaceSharedExtensionApi, callSpaceSharedExtensionOperation, type SessionCredentials, type SpaceExtensionHostCapability } from "@/lib/api";
 
-export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScoped = false, onAction }: { spaceId: string; appId: string; projectId?: string; projectScoped?: boolean; onAction(action: string, payload?: Record<string, unknown>): void }) {
+export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScoped = false, session, capabilities = [], onAction }: { spaceId: string; appId: string; projectId?: string; projectScoped?: boolean; session?: SessionCredentials; capabilities?: string[]; onAction(action: string, payload?: Record<string, unknown>): void }) {
   const frame = React.useRef<HTMLIFrameElement>(null);
   const src = projectScoped
     ? `/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/apps/${encodeURIComponent(appId)}/app`
@@ -13,6 +14,37 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
       // A sandbox without allow-same-origin intentionally has a null origin. Source identity is
       // therefore the security boundary; messages from any other window are ignored.
       if (event.source !== frame.current?.contentWindow || event.origin !== "null") return;
+      const rpc = event.data as { type?: unknown; id?: unknown; method?: unknown; path?: unknown; query?: unknown; body?: unknown };
+      const operation = event.data as { type?: unknown; id?: unknown; capability?: unknown; input?: unknown };
+      if (operation?.type === "naelao.extension.operation") {
+        if (typeof operation.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(operation.id) || !session || projectScoped
+          || !["blueprint.export", "blueprint.status", "marketplace.graduate"].includes(String(operation.capability))
+          || !capabilities.includes(String(operation.capability))) return;
+        let size = 0;
+        try { size = new TextEncoder().encode(JSON.stringify(operation.input ?? {})).byteLength; } catch { return; }
+        if (size > (operation.capability === "blueprint.export" ? 4_500_000 : 64_000)) return;
+        const capability = operation.capability as SpaceExtensionHostCapability;
+        void callSpaceSharedExtensionOperation(spaceId, session, capability, operation.input ?? {})
+          .then(result => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: operation.id, ok: true, result }, "*"))
+          .catch(error => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: operation.id, ok: false, error: error instanceof Error ? error.message.slice(0, 300) : "Extension operation failed" }, "*"));
+        return;
+      }
+      if (rpc?.type === "naelao.extension.rpc") {
+        if (typeof rpc.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(rpc.id) || !session || projectScoped
+          || !["GET", "POST", "DELETE"].includes(String(rpc.method)) || !["/api/data", "/api/storage", "/mcp"].includes(String(rpc.path))
+          || (rpc.path === "/mcp" && rpc.method !== "POST")
+          || (rpc.query !== undefined && (!rpc.query || typeof rpc.query !== "object" || Array.isArray(rpc.query)))) return;
+        const query = rpc.query as Record<string, unknown> | undefined;
+        if (query && (Object.keys(query).length > 8 || Object.entries(query).some(([key, value]) => key.length > 64 || typeof value !== "string" || value.length > 256))) return;
+        if (rpc.body !== undefined) {
+          try { if (new TextEncoder().encode(JSON.stringify(rpc.body)).byteLength > 64_000) return; }
+          catch { return; }
+        }
+        void callSpaceSharedExtensionApi(spaceId, appId, session, { method: rpc.method as "GET" | "POST" | "DELETE", path: rpc.path as "/api/data" | "/api/storage" | "/mcp", ...(query ? { query: query as Record<string, string> } : {}), ...(rpc.body !== undefined ? { body: rpc.body } : {}) })
+          .then(result => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: rpc.id, ok: true, result }, "*"))
+          .catch(error => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: rpc.id, ok: false, error: error instanceof Error ? error.message.slice(0, 300) : "Extension API request failed" }, "*"));
+        return;
+      }
       try {
         const message = parseCanvasMessage(event.data, projectId);
         if (message.type === "canvas.action") onAction(message.action, message.payload);
@@ -33,6 +65,6 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
     };
     window.addEventListener("naelao:mcp-ui-result", relay);
     return () => { window.removeEventListener("message", receive); window.removeEventListener("naelao:mcp-ui-result", relay); };
-  }, [onAction, projectId]);
+  }, [onAction, projectId, projectScoped, session, spaceId, appId, capabilities]);
   return <iframe ref={frame} data-testid="micro-app-canvas" title="Micro-app" src={src} sandbox="allow-forms allow-modals allow-popups allow-scripts" className="micro-app-frame" />;
 }

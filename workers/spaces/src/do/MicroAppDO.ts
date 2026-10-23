@@ -392,9 +392,16 @@ export class MicroAppDO extends DurableObject<MicroAppDOEnv> {
       try { releaseProof = JSON.parse(releaseProofJson) as CanvasReleaseProof; } catch { return Response.json({ error: "gadget_release_proof_invalid" }, { status: 503 }); }
       if (!await this.verifyCanvasReleaseProof(releaseProof, row.value)) return Response.json({ error: "gadget_release_proof_invalid" }, { status: 503 });
     }
+    const inlineHashes: string[] = [];
+    for (const match of row.value.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)) {
+      const script = match[1] ?? "";
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script)));
+      inlineHashes.push(`'sha256-${btoa(String.fromCharCode(...digest))}'`);
+      if (inlineHashes.length > 16) return Response.json({ error: "gadget_inline_script_limit" }, { status: 503 });
+    }
     return new Response(row.value, { headers: {
       "content-type": "text/html; charset=utf-8",
-      "content-security-policy": "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
+      "content-security-policy": `default-src 'none'; script-src 'self' ${inlineHashes.join(" ")}; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'self'`,
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       "cache-control": "private, no-store",

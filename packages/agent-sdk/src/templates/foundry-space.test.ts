@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FOUNDRY_SPACE_TEMPLATE } from "./foundry-space.js";
-import { DOGFOOD_EXTENSION_BY_ID, validateExtensionManifest } from "../index.js";
+import { DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, validateExtensionManifest } from "../index.js";
 
 describe("Foundry dogfood Space Template", () => {
   it("is a portable Launchpad Space blueprint with an isolated Template Studio project", () => {
@@ -23,7 +23,12 @@ describe("Foundry dogfood Space Template", () => {
     expect(manifest!.gadgets).toEqual(expect.arrayContaining([
       expect.objectContaining({ scope: "SPACE_SHARED", gadgetTier: 3 }),
     ]));
-    expect(manifest!.declaredPermissions).toEqual(["facet.sqlite.read", "facet.sqlite.write"]);
+    expect(manifest!.declaredPermissions).toEqual(["facet.sqlite.read", "facet.sqlite.write", "blueprint.export", "blueprint.status", "marketplace.graduate"]);
     expect(manifest!.capabilityRequirements).not.toContain("payments.disburse");
+    expect(manifest!.gadgets[0]?.migrations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ version: 1, up: expect.stringContaining("ALTER TABLE foundry_products ADD COLUMN description") }),
+    ]));
+    expect(DOGFOOD_EXTENSION_CANVASES.ext_foundry_catalog).toContain("/mcp");
+    expect(DOGFOOD_EXTENSION_CANVASES.ext_foundry_catalog).toContain("tenant-owned export");
   });
 });

@@ -17,7 +17,7 @@ describe("gadget MCP host adapter", () => {
     registerGadgetMcpRoutes(app as never);
     const env = {
       PLATFORM_SECRET: "test-secret",
-      PLATFORM_DB: { prepare: () => ({ bind: (...args: unknown[]) => ({ first: async () => args[0] === "s" && args[1] === "t" ? { 1: 1 } : null }) }) },
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...args: unknown[]) => ({ first: async () => query.includes("space_members") ? (args[2] === "active-member" ? { 1: 1 } : null) : args[0] === "s" && args[1] === "t" ? { 1: 1 } : null }) }) },
       MICRO_APP_DO: { idFromName, get: () => ({ fetch }) },
     } as never;
 
@@ -82,6 +82,23 @@ describe("gadget MCP host adapter", () => {
     const allowed = await app.request("/spaces/s/apps/app/mcp", { method: "POST", headers: await auth("t", { "x-naelao-user-id": "active-member", "x-naelao-role": "member" }) }, env);
     expect(allowed.status).toBe(200);
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("routes Space-shared extension MCP through the Space actor after membership checks", async () => {
+    const idFromName = vi.fn((name: string) => name as never);
+    const actorFetch = vi.fn(async (request: Request) => Response.json({ path: new URL(request.url).pathname }));
+    const app = testApp(); registerGadgetMcpRoutes(app as never);
+    const env = { PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare: (query: string) => ({ bind: (...args: unknown[]) => ({ first: async () => query.includes("space_members") ? null : args[0] === "s" && args[1] === "t" ? { 1: 1 } : null }) }) },
+      MICRO_APP_DO: { idFromName, get: () => ({ fetch: actorFetch }) },
+    } as never;
+    const denied = await app.request("/spaces/s/apps/foundry_catalog_facet/mcp", { method: "POST", headers: await auth("t", { "x-naelao-user-id": "outsider", "x-naelao-role": "member" }), body: JSON.stringify({ jsonrpc: "2.0" }) }, env);
+    expect(denied.status).toBe(403);
+    expect(actorFetch).not.toHaveBeenCalled();
+    const allowed = await app.request("/spaces/s/apps/foundry_catalog_facet/mcp", { method: "POST", headers: await auth("t", { "x-naelao-role": "admin" }), body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }, env);
+    expect(await allowed.json()).toEqual({ path: "/mcp" });
+    expect(idFromName).toHaveBeenCalledWith("gadget:foundry_catalog_facet:space:s");
+    expect(actorFetch).toHaveBeenCalledOnce();
   });
 
   it("mounts an owner-approved project gadget in its project-bound actor after project ACL checks", async () => {

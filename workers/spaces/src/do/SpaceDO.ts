@@ -103,25 +103,6 @@ function safeJsonParseArr(text: string): unknown[] {
   }
 }
 
-function normalizeFoundryCalibrationExamples(value: unknown): Array<{ input: string; desiredOutcome: string }> | null {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 8) return null;
-  const examples: Array<{ input: string; desiredOutcome: string }> = [];
-  let totalBytes = 0;
-  for (const item of value) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-    const record = item as Record<string, unknown>;
-    if (Object.keys(record).some(key => !["input", "desiredOutcome"].includes(key)) ||
-      typeof record.input !== "string" || typeof record.desiredOutcome !== "string") return null;
-    const input = record.input.trim(), desiredOutcome = record.desiredOutcome.trim();
-    if (!input || input.length > 1200 || !desiredOutcome || desiredOutcome.length > 1200) return null;
-    totalBytes += new TextEncoder().encode(input + desiredOutcome).byteLength;
-    if (totalBytes > 16_384) return null;
-    examples.push({ input, desiredOutcome });
-  }
-  return examples;
-}
-
 function safeJsonParseCondition(text: string): TriggerCondition {
   try {
     const v = JSON.parse(text) as unknown;
@@ -2830,6 +2811,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/business-wallet/settle") return this.settleBusinessWallet(request);
       if (method === "POST" && url.pathname === "/internal/business-wallet/withdraw") return this.withdrawBusinessWallet(request);
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
+      if (url.pathname === "/space-shared-extensions" && method === "GET") return this.listSpaceSharedExtensions(url.searchParams);
       if (url.pathname === "/project-steward-facts" && method === "GET") return this.projectStewardFacts(url.searchParams);
       if (url.pathname === "/project-lifecycle" && method === "GET") return this.projectLifecycle(url.searchParams);
       if (url.pathname === "/machine-authority" && method === "POST") return this.machineAuthority(request);
@@ -2976,9 +2958,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/internal/customer-conversations/urgent") return this.listUrgentCustomerConversations(url.searchParams);
       if (method === "POST" && url.pathname === "/internal/customer-conversations/mark-alerted") return this.markCustomerConversationsAlerted(request);
       if (method === "POST" && url.pathname === "/blueprints/export") {
-        const body = await request.json<{ space_id?: string }>();
+        const body = await request.json<{ space_id?: string; project_id?: string; required_extensions?: string[]; name?: string; description?: string; template_category?: string }>();
         if (!body.space_id) return Response.json({ error: "space_id is required" }, { status: 400 });
-        return Response.json(await this.exportBlueprint(body.space_id));
+        return Response.json(await this.exportBlueprint(body.space_id, {
+          ...(body.project_id ? { projectId: body.project_id } : {}), ...(body.required_extensions ? { requiredExtensions: body.required_extensions } : {}),
+          ...(body.name ? { name: body.name } : {}), ...(body.description ? { description: body.description } : {}),
+          ...(body.template_category ? { templateCategory: body.template_category } : {}),
+        }));
       }
       if (method === "POST" && url.pathname === "/blueprints/instantiate") {
         const body = await request.json<{ blueprint?: SpaceBlueprint; target_space_id?: string }>();
@@ -3811,20 +3797,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/rfcs") {
         return this.triggerSponsorRfc(request);
       }
-      if (url.pathname === "/foundry/templates" && method === "GET") return this.listFoundryTemplates(url.searchParams);
-      if (url.pathname === "/foundry/templates" && method === "POST") return this.createFoundryTemplate(request);
-      const foundryTemplateGet = url.pathname.match(/^\/foundry\/templates\/([^/]+)$/);
-      if (foundryTemplateGet?.[1] && method === "GET") return this.getFoundryTemplate(decodeURIComponent(foundryTemplateGet[1]), url.searchParams);
-      if (foundryTemplateGet?.[1] && method === "PUT") return this.updateFoundryTemplate(decodeURIComponent(foundryTemplateGet[1]), request);
-      const foundryTemplateTest = url.pathname.match(/^\/foundry\/templates\/([^/]+)\/test$/);
-      if (foundryTemplateTest?.[1] && method === "POST") return this.testFoundryTemplate(decodeURIComponent(foundryTemplateTest[1]), request);
-      const foundryTemplateMatch = url.pathname.match(/^\/foundry\/templates\/([^/]+)\/(submit|review)$/);
-      if (foundryTemplateMatch?.[1] && foundryTemplateMatch[2] === "submit" && method === "POST") return this.submitFoundryTemplate(decodeURIComponent(foundryTemplateMatch[1]));
-      if (foundryTemplateMatch?.[1] && foundryTemplateMatch[2] === "review" && method === "POST") return this.reviewFoundryTemplate(decodeURIComponent(foundryTemplateMatch[1]), request);
-      if (url.pathname === "/foundry/requests" && method === "GET") return this.listFoundryRequests(url.searchParams);
-      if (url.pathname === "/foundry/requests" && method === "POST") return this.createFoundryRequest(request);
-      const foundryRequestMatch = url.pathname.match(/^\/foundry\/requests\/([^/]+)$/);
-      if (foundryRequestMatch?.[1] && method === "PATCH") return this.reviewFoundryRequest(decodeURIComponent(foundryRequestMatch[1]), request);
       const taskIdMatch = url.pathname.match(/^\/tasks\/([^/]+)$/);
       // PATCH /tasks/:id — status/title/dependencies/assigned_agent, any subset.
       if (method === "PATCH" && taskIdMatch?.[1]) {
@@ -4089,12 +4061,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   /** Produce the raw portable representation. The public worker always scrubs it before R2. */
-  async exportBlueprint(spaceId: string): Promise<SpaceBlueprint> {
+  async exportBlueprint(spaceId: string, options: { projectId?: string; requiredExtensions?: string[]; name?: string; description?: string; templateCategory?: string } = {}): Promise<SpaceBlueprint> {
     this.ensureInit();
+    if (options.projectId) {
+      const project = queryOne<{ id: string }>(this.ctx.storage.sql as never,
+        "SELECT id FROM projects WHERE id=? AND space_id=? AND status!='archived'", options.projectId, spaceId);
+      if (!project) throw new Error("project_not_found");
+    }
+    if (options.requiredExtensions && (!Array.isArray(options.requiredExtensions) || options.requiredExtensions.length > 128 ||
+      options.requiredExtensions.some(id => typeof id !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(id)))) throw new Error("invalid_required_extensions");
+    if (options.name !== undefined && (typeof options.name !== "string" || !options.name.trim() || options.name.length > 160)) throw new Error("invalid_blueprint_name");
+    if (options.description !== undefined && (typeof options.description !== "string" || options.description.length > 2000)) throw new Error("invalid_blueprint_description");
+    if (options.templateCategory !== undefined && !/^[a-z][a-z0-9_-]{1,63}$/.test(options.templateCategory)) throw new Error("invalid_template_category");
     const projects = queryAll<{
       id: string; name: string; kind: string; template_mode: TemplateMode; viewport_config: string; default_agent_id: string | null; execution_ceiling: number; channel_config: string; artifact_linter_policy: string;
     }>(this.ctx.storage.sql as never,
-      "SELECT id, name, kind, template_mode, viewport_config, default_agent_id, execution_ceiling, channel_config, artifact_linter_policy FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at, id", spaceId);
+      `SELECT id, name, kind, template_mode, viewport_config, default_agent_id, execution_ceiling, channel_config, artifact_linter_policy FROM projects
+       WHERE space_id = ? AND status != 'archived' ${options.projectId ? "AND id=?" : ""} ORDER BY created_at, id`,
+      ...(options.projectId ? [spaceId, options.projectId] : [spaceId]));
     const exportedProjects = projects.map((project) => {
       const agent = project.default_agent_id ? queryOne<{ config_json: string }>(this.ctx.storage.sql as never,
         "SELECT config_json FROM agent_definitions WHERE id = ? AND space_id = ?", project.default_agent_id, spaceId) : null;
@@ -4112,10 +4096,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         starterFiles: files.map((file) => ({ path: `/workspace/${file.path.replace(/^\/+/, "")}`, content: file.content })),
       };
     });
-    const extensions = queryAll<{ extension_id: string }>(this.ctx.storage.sql as never, "SELECT extension_id FROM installed_extensions ORDER BY extension_id");
+    const installedExtensions = queryAll<{ extension_id: string }>(this.ctx.storage.sql as never, "SELECT extension_id FROM installed_extensions ORDER BY extension_id");
+    const availableExtensions = new Set(installedExtensions.map(item => item.extension_id));
+    const requestedExtensions = options.projectId ? (options.requiredExtensions ?? []) : (options.requiredExtensions ?? [...availableExtensions]);
+    if (requestedExtensions.some(id => !availableExtensions.has(id))) throw new Error("required_extension_not_installed");
     return {
-      id: crypto.randomUUID(), schemaVersion: "2.0", metadata: { exportedAt: new Date().toISOString(), sourceSpaceId: spaceId },
-      templateCategory: "venture", projects: exportedProjects, requiredExtensions: extensions.map((item) => item.extension_id), requiredCredentials: [],
+      id: crypto.randomUUID(), schemaVersion: "2.0", metadata: { exportedAt: new Date().toISOString(), sourceSpaceId: spaceId,
+        ...(options.name ? { name: options.name.trim() } : {}), ...(options.description ? { description: options.description.trim() } : {}) },
+      templateCategory: options.templateCategory ?? (options.projectId ? "developer-tools" : "venture"), projects: exportedProjects,
+      requiredExtensions: [...new Set(requestedExtensions)].sort(), requiredCredentials: [],
     };
   }
 
@@ -5333,187 +5322,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         config: JSON.parse(r.config_json) as unknown,
       })),
     });
-  }
-
-  private listFoundryTemplates(params: URLSearchParams): Response {
-    const spaceId = params.get("space_id") ?? "";
-    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
-    const rows = queryAll<{ id: string; space_id: string; created_by: string; name: string; description: string; definition_json: string; status: string; version: number; reviewed_by: string | null; review_note: string | null; created_at: string; updated_at: string; published_at: string | null }>(
-      this.ctx.storage.sql as never,
-      "SELECT * FROM foundry_templates WHERE space_id = ? ORDER BY updated_at DESC,id",
-      spaceId,
-    );
-    return Response.json({ data: rows.map((row) => ({ ...row, definition: JSON.parse(row.definition_json) as Record<string, unknown> })) });
-  }
-
-  private getFoundryTemplate(id: string, params: URLSearchParams): Response {
-    const spaceId = params.get("space_id") ?? "";
-    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
-    const row = queryOne<{ id: string; space_id: string; created_by: string; name: string; description: string; definition_json: string; status: string; version: number; reviewed_by: string | null; review_note: string | null; created_at: string; updated_at: string; published_at: string | null }>(
-      this.ctx.storage.sql as never,
-      `SELECT * FROM foundry_templates WHERE id=? AND space_id=? ${params.get("published_only") === "true" ? "AND status='published'" : ""}`,
-      id, spaceId,
-    );
-    if (!row) return Response.json({ error_code: "not_found" }, { status: 404 });
-    return Response.json({ ...row, definition: JSON.parse(row.definition_json) as Record<string, unknown> });
-  }
-
-  private async createFoundryTemplate(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id?: string; created_by?: string; name?: string; description?: string; definition?: Record<string, unknown> }>().catch(() => ({} as { space_id?: string; created_by?: string; name?: string; description?: string; definition?: Record<string, unknown> }));
-    const definition = body.definition;
-    const shortText = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
-    const boundedList = (value: unknown, maxItems: number, maxLength: number) => Array.isArray(value) && value.length <= maxItems && value.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= maxLength);
-    const runtimeDependencies = Array.isArray(definition?.runtimeDependencies) ? definition.runtimeDependencies : [];
-    const calibrationExamples = normalizeFoundryCalibrationExamples(definition?.calibrationExamples);
-    if (!body.space_id || !body.created_by || !shortText(body.name, 120) || !shortText(body.description, 500) || !definition ||
-      !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
-      !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
-      !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
-      calibrationExamples === null ||
-      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool)) ||
-      definition.runtimeDependencies !== undefined && !Array.isArray(definition.runtimeDependencies) ||
-      !boundedList(runtimeDependencies, 8, 64) || runtimeDependencies.some((id) => !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(String(id))) || new Set(runtimeDependencies).size !== runtimeDependencies.length) {
-      return Response.json({ error_code: "bad_request", message: "A template needs bounded domain, audience, outcome, workflow, safety limits, reviewed tool choices, and source references" }, { status: 400 });
-    }
-    const now = new Date().toISOString();
-    const id = crypto.randomUUID();
-    execute(this.ctx.storage.sql as never,
-      `INSERT INTO foundry_templates(id,space_id,created_by,name,description,definition_json,status,version,created_at,updated_at)
-       VALUES(?,?,?,?,?,?,'draft',1,?,?)`,
-      id, body.space_id, body.created_by, body.name!.trim(), body.description!.trim(), JSON.stringify({
-        expertise: (definition.expertise as string).trim(), audience: (definition.audience as string).trim(), outcome: (definition.outcome as string).trim(),
-        workflow: (definition.workflow as string).trim(), safetyLimits: (definition.safetyLimits as string).trim(), instructions: (definition.instructions as string).trim(),
-        sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()),
-        calibrationExamples,
-        toolAllowlist: [...new Set(definition.toolAllowlist as string[])], runtimeDependencies: [...new Set(runtimeDependencies as string[])], approvalMode: "always_ask",
-      }), now, now);
-    return Response.json({ id, space_id: body.space_id, status: "draft", version: 1, created_at: now }, { status: 201 });
-  }
-
-  private async updateFoundryTemplate(id: string, request: Request): Promise<Response> {
-    const body = await request.json<{ updated_by?: string; name?: string; description?: string; definition?: Record<string, unknown> }>().catch(() => ({} as { updated_by?: string; name?: string; description?: string; definition?: Record<string, unknown> }));
-    const definition = body.definition;
-    const shortText = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
-    const boundedList = (value: unknown, maxItems: number, maxLength: number) => Array.isArray(value) && value.length <= maxItems && value.every((item) => typeof item === "string" && item.trim().length > 0 && item.length <= maxLength);
-    const runtimeDependencies = Array.isArray(definition?.runtimeDependencies) ? definition.runtimeDependencies : [];
-    const calibrationExamples = normalizeFoundryCalibrationExamples(definition?.calibrationExamples);
-    if (!body.updated_by || !shortText(body.name, 120) || !shortText(body.description, 500) || !definition ||
-      !shortText(definition.expertise, 2000) || !shortText(definition.audience, 500) || !shortText(definition.outcome, 1000) ||
-      !shortText(definition.workflow, 3000) || !shortText(definition.safetyLimits, 2000) || !shortText(definition.instructions, 6000) ||
-      !boundedList(definition.sourceReferences, 30, 300) || !boundedList(definition.toolAllowlist, 8, 64) ||
-      calibrationExamples === null ||
-      (definition.toolAllowlist as string[]).some((tool) => !["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(tool)) ||
-      definition.runtimeDependencies !== undefined && !Array.isArray(definition.runtimeDependencies) ||
-      !boundedList(runtimeDependencies, 8, 64) || runtimeDependencies.some((id) => !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(String(id))) || new Set(runtimeDependencies).size !== runtimeDependencies.length) {
-      return Response.json({ error_code: "bad_request", message: "A bounded and reviewed template definition is required" }, { status: 400 });
-    }
-    const now = new Date().toISOString();
-    const updated = queryOne<{ status: string; version: number }>(this.ctx.storage.sql as never,
-      `UPDATE foundry_templates SET name=?,description=?,definition_json=?,version=version+1,validated_version=0,validation_json='{}',updated_at=?
-       WHERE id=? AND status IN ('draft','rejected') RETURNING status,version`,
-      body.name!.trim(), body.description!.trim(), JSON.stringify({
-        expertise: (definition.expertise as string).trim(), audience: (definition.audience as string).trim(), outcome: (definition.outcome as string).trim(),
-        workflow: (definition.workflow as string).trim(), safetyLimits: (definition.safetyLimits as string).trim(), instructions: (definition.instructions as string).trim(),
-        sourceReferences: (definition.sourceReferences as string[]).map((item) => item.trim()), calibrationExamples, toolAllowlist: [...new Set(definition.toolAllowlist as string[])],
-        runtimeDependencies: [...new Set(runtimeDependencies as string[])], approvalMode: "always_ask",
-      }), now, id);
-    if (!updated) return Response.json({ error_code: "not_found_or_not_editable" }, { status: 409 });
-    return Response.json({ id, status: updated.status, version: updated.version, updated_by: body.updated_by });
-  }
-
-  private submitFoundryTemplate(id: string): Response {
-    const now = new Date().toISOString();
-    const updated = queryOne<{ status: string }>(this.ctx.storage.sql as never,
-      `UPDATE foundry_templates SET status='in_review',reviewed_by=NULL,review_note=NULL,updated_at=?
-       WHERE id=? AND status IN ('draft','rejected') AND validated_version=version RETURNING status`, now, id);
-    if (!updated) return Response.json({ error_code: "template_checks_required", message: "Run the template configuration checks before submitting it for review" }, { status: 409 });
-    return Response.json({ id, status: updated.status });
-  }
-
-  private async testFoundryTemplate(id: string, request: Request): Promise<Response> {
-    const body = await request.json<{ source_reference_checks?: Array<{ id: string; title?: string; resolved: boolean; reason?: string }>; manual_reference_count?: number; approved_runtime_ids?: string[] }>().catch(() => ({} as { source_reference_checks?: Array<{ id: string; title?: string; resolved: boolean; reason?: string }>; manual_reference_count?: number; approved_runtime_ids?: string[] }));
-    const row = queryOne<{ definition_json: string; version: number; status: string }>(this.ctx.storage.sql as never,
-      "SELECT definition_json,version,status FROM foundry_templates WHERE id=?", id);
-    if (!row || !["draft", "rejected"].includes(row.status)) return Response.json({ error_code: "not_found_or_not_testable" }, { status: 409 });
-    let definition: Record<string, unknown>;
-    try { definition = JSON.parse(row.definition_json) as Record<string, unknown>; }
-    catch { return Response.json({ error_code: "template_definition_invalid" }, { status: 422 }); }
-    const expectedKnowledgeIds = Array.isArray(definition.sourceReferences)
-      ? [...new Set(definition.sourceReferences.filter((reference): reference is string => typeof reference === "string" && reference.startsWith("kb:")).map((reference) => reference.slice(3)))]
-      : [];
-    const sourceChecks = Array.isArray(body.source_reference_checks) ? body.source_reference_checks : [];
-    const checksById = new Map(sourceChecks.map((check) => [check.id, check]));
-    const knowledgeSourcesResolved = expectedKnowledgeIds.every((id) => checksById.get(id)?.resolved === true);
-    const runtimeDependencies = Array.isArray(definition.runtimeDependencies) ? definition.runtimeDependencies as string[] : [];
-    const approvedRuntimeIds = new Set(Array.isArray(body.approved_runtime_ids) ? body.approved_runtime_ids.filter((value): value is string => typeof value === "string") : []);
-    const runtimeDependenciesValid = runtimeDependencies.length <= 8 && runtimeDependencies.every((runtimeId) => /^[a-z0-9][a-z0-9._-]{0,63}$/.test(runtimeId) && approvedRuntimeIds.has(runtimeId));
-    const checks = [
-      { id: "domain-context", passed: typeof definition.expertise === "string" && Boolean(definition.expertise.trim()) && typeof definition.audience === "string" && Boolean(definition.audience.trim()) && typeof definition.outcome === "string" && Boolean(definition.outcome.trim()) },
-      { id: "workflow-and-safety", passed: typeof definition.workflow === "string" && Boolean(definition.workflow.trim()) && typeof definition.safetyLimits === "string" && Boolean(definition.safetyLimits.trim()) },
-      { id: "bounded-tools", passed: Array.isArray(definition.toolAllowlist) && definition.toolAllowlist.length <= 8 && definition.toolAllowlist.every((tool) => ["knowledge-base", "web-search", "file-manager", "foundry-inbox"].includes(String(tool))) },
-      { id: "approval-and-data-boundary", passed: definition.approvalMode === "always_ask" && typeof definition.instructions === "string" && definition.instructions.length <= 6000 },
-      { id: "source-references", passed: Array.isArray(definition.sourceReferences) && definition.sourceReferences.length <= 30 && definition.sourceReferences.every((source) => typeof source === "string" && source.length <= 300) },
-      { id: "container-runtime-dependencies", passed: runtimeDependenciesValid, runtime_ids: runtimeDependencies },
-      { id: "knowledge-source-resolution", passed: knowledgeSourcesResolved, sources: sourceChecks.map((source) => ({ id: source.id, title: source.title, resolved: source.resolved, reason: source.reason })), manual_reference_count: Math.max(0, Math.min(30, Number(body.manual_reference_count ?? 0))) },
-    ];
-    const passed = checks.every((check) => check.passed);
-    const result = { kind: "deterministic_configuration_checks", passed, checks, tested_version: row.version, tested_at: new Date().toISOString() };
-    execute(this.ctx.storage.sql as never,
-      "UPDATE foundry_templates SET validated_version=?,validation_json=?,updated_at=? WHERE id=? AND version=? AND status IN ('draft','rejected')",
-      passed ? row.version : 0, JSON.stringify(result), result.tested_at, id, row.version);
-    return Response.json({ id, ...result });
-  }
-
-  private async reviewFoundryTemplate(id: string, request: Request): Promise<Response> {
-    const body = await request.json<{ decision?: string; reviewed_by?: string; review_note?: string }>().catch(() => ({} as { decision?: string; reviewed_by?: string; review_note?: string }));
-    if (!body.reviewed_by || !["publish", "reject"].includes(body.decision ?? "") || (body.review_note?.length ?? 0) > 2000)
-      return Response.json({ error_code: "bad_request", message: "reviewed_by, a publish/reject decision, and a bounded review note are required" }, { status: 400 });
-    const published = body.decision === "publish";
-    const now = new Date().toISOString();
-    const updated = queryOne<{ status: string; version: number }>(this.ctx.storage.sql as never,
-      `UPDATE foundry_templates SET status=?,version=version+?,reviewed_by=?,review_note=?,updated_at=?,published_at=?
-       WHERE id=? AND status='in_review' AND validated_version=version RETURNING status,version`,
-      published ? "published" : "rejected", published ? 1 : 0, body.reviewed_by, body.review_note?.trim() ?? "", now, published ? now : null, id);
-    if (!updated) return Response.json({ error_code: "not_found_or_not_in_review" }, { status: 409 });
-    return Response.json({ id, status: updated.status, version: updated.version, reviewed_by: body.reviewed_by });
-  }
-
-  private listFoundryRequests(params: URLSearchParams): Response {
-    const spaceId = params.get("space_id") ?? "";
-    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
-    const rows = queryAll<{ id: string; space_id: string; requested_by: string; title: string; problem: string; workflow: string; evidence_json: string; status: string; reviewed_by: string | null; review_note: string | null; created_at: string; updated_at: string }>(
-      this.ctx.storage.sql as never,
-      "SELECT * FROM foundry_feature_requests WHERE space_id = ? ORDER BY created_at DESC,id",
-      spaceId,
-    );
-    return Response.json({ data: rows.map((row) => ({ ...row, evidence: JSON.parse(row.evidence_json) as string[] })) });
-  }
-
-  private async createFoundryRequest(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id?: string; requested_by?: string; title?: string; problem?: string; workflow?: string; evidence?: string[] }>().catch(() => ({} as { space_id?: string; requested_by?: string; title?: string; problem?: string; workflow?: string; evidence?: string[] }));
-    const text = (value: unknown, max: number) => typeof value === "string" && value.trim().length > 0 && value.trim().length <= max;
-    if (!body.space_id || !body.requested_by || !text(body.title, 160) || !text(body.problem, 3000) || !text(body.workflow, 3000) ||
-      (body.evidence !== undefined && (!Array.isArray(body.evidence) || body.evidence.length > 12 || body.evidence.some((item) => typeof item !== "string" || item.length > 500)))) {
-      return Response.json({ error_code: "bad_request", message: "A request needs a title, problem, workflow, and bounded evidence references" }, { status: 400 });
-    }
-    const now = new Date().toISOString();
-    const id = crypto.randomUUID();
-    execute(this.ctx.storage.sql as never,
-      `INSERT INTO foundry_feature_requests(id,space_id,requested_by,title,problem,workflow,evidence_json,status,created_at,updated_at)
-       VALUES(?,?,?,?,?,?,?,'open',?,?)`, id, body.space_id, body.requested_by, body.title!.trim(), body.problem!.trim(), body.workflow!.trim(), JSON.stringify(body.evidence ?? []), now, now);
-    return Response.json({ id, space_id: body.space_id, status: "open", created_at: now }, { status: 201 });
-  }
-
-  private async reviewFoundryRequest(id: string, request: Request): Promise<Response> {
-    const body = await request.json<{ status?: string; reviewed_by?: string; review_note?: string }>().catch(() => ({} as { status?: string; reviewed_by?: string; review_note?: string }));
-    if (!body.reviewed_by || !["accepted", "declined", "delivered"].includes(body.status ?? "") || (body.review_note?.length ?? 0) > 2000)
-      return Response.json({ error_code: "bad_request", message: "A reviewed_by identity, accepted/declined/delivered status, and bounded review note are required" }, { status: 400 });
-    const now = new Date().toISOString();
-    const updated = queryOne<{ status: string }>(this.ctx.storage.sql as never,
-      `UPDATE foundry_feature_requests SET status=?,reviewed_by=?,review_note=?,updated_at=?
-       WHERE id=? AND status IN ('open','accepted') RETURNING status`, body.status, body.reviewed_by, body.review_note?.trim() ?? "", now, id);
-    if (!updated) return Response.json({ error_code: "not_found_or_closed" }, { status: 409 });
-    return Response.json({ id, status: updated.status, reviewed_by: body.reviewed_by });
   }
 
   private async createAgentDefinition(request: Request): Promise<Response> {
@@ -12198,6 +12006,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       "SELECT manifest_json,installed_by,installed_at,updated_at FROM installed_extensions ORDER BY extension_id"
     );
     return Response.json({ extensions: rows.map((row) => ({ manifest: JSON.parse(row.manifest_json) as ExtensionManifest, installedBy: row.installed_by, installedAt: row.installed_at, updatedAt: row.updated_at })) });
+  }
+
+  private listSpaceSharedExtensions(params: URLSearchParams): Response {
+    const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
+    if (!tenantId || !spaceId) return Response.json({ error_code: "extension_scope_required" }, { status: 400 });
+    const rows = queryAll<{ extension_id: string; instance_id: string; instance_key: string | null; manifest_json: string; installed_at: string }>(
+      this.ctx.storage.sql as never,
+      `SELECT i.extension_id,i.instance_id,i.instance_key,i.installed_at,e.manifest_json
+       FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
+       WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status='active'
+       ORDER BY i.installed_at,i.extension_id`, tenantId, spaceId,
+    );
+    const apps = rows.flatMap(row => {
+      const manifest = JSON.parse(row.manifest_json) as ExtensionManifest;
+      const gadgets = (manifest.gadgets ?? []).filter(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3);
+      const canvases = (manifest.bundle?.primitives ?? []).filter((part): part is Extract<typeof part, { kind: "canvas" }> => part.kind === "canvas");
+      const candidates = [...gadgets.map(gadget => ({ id: gadget.id, name: gadget.name })), ...canvases.map(canvas => ({ id: canvas.id, name: canvas.id }))];
+      return candidates.map(item => ({ extension_id: row.extension_id, installation_id: row.instance_id, instance_key: row.instance_key ?? "default",
+        app_id: row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_${item.id}` : item.id,
+        name: item.name, installed_at: row.installed_at, scope: "SPACE_SHARED" as const,
+        capabilities: Array.isArray(manifest.capabilityRequirements) ? manifest.capabilityRequirements : [] }));
+    });
+    return Response.json({ apps });
   }
 
   /** Small, deterministic portfolio facts for the platform Steward. No task text, files,
