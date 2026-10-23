@@ -82,7 +82,9 @@ async function deleteOne(ctx: PrebuiltOpContext, ws: WorkspaceName, path: string
     return;
   }
   if (!ctx.env.containerWorkspace) throw new Error("container workspace unavailable: TOOL_SANDBOX not configured");
-  await ctx.env.containerWorkspace.remove([path]);
+  const existing = await ctx.env.containerWorkspace.read([path]);
+  const prior = existing.files[path];
+  await ctx.env.containerWorkspace.remove([path], { [path]: expectedHash ?? (prior === undefined ? null : await contentHash(prior)) });
 }
 
 /** Every R2 workspace key under this run's prefix, as {relativePath: content} — the bulk-read

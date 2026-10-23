@@ -1,3 +1,17 @@
+## Focused sandbox audit continuation (2026-10-23)
+
+A focused review of the Tier-6 workspace path found several related defects beyond the dynamic-container scheduling mismatch:
+
+- `NaelaoAgentDO` used authenticated prewarm, then called workspace list/read/write/delete directly without the signed container scope; workspace operations therefore failed the ToolSandboxDO trust boundary. The stub name also omitted delegated worker branches.
+- Workspace RPC handling trusted raw JSON parsing without checking HTTP/body failure status. Writes did not immediately publish to canonical R2/CAS, and deletes had no expected-revision check.
+- Lockfile rehydration sent an unsigned direct request after prewarm. The run-finalization lifecycle ping was unsigned and always addressed the root sandbox, so delegated branches could update the wrong idle window.
+
+The current pass adds a shared authenticated workspace gateway and sandbox naming helper; includes the branch in validated invocation scopes; routes all workspace operations through scoped execution and tenant/grant checks; refreshes canonical state before operations; publishes writes/deletes through the existing fenced R2/CAS path; requires a revision for deletes; and sends rehydration/lifecycle calls through signed, branch-scoped requests. Responses are bounded to 2 MiB and HTTP/body errors fail closed. Focused tests cover cold read/publication/deletion, stale revision rejection, branch isolation, scope/grant rejection, warm refresh, a 32-writer stale-revision race, lifecycle authentication, and signed branch-scoped lockfile rehydration.
+
+Verification so far: 7 focused Agents test files / 85 tests passed; Agents TypeScript check passed; `git diff --check` passed. Direct all-Agents Vitest completed: 166 test files / 769 tests passed. The `pnpm test` wrapper cannot start in this environment: installed pnpm is 11.25 despite repository `packageManager: pnpm@9.12.0`; it warns that it ignores root override settings, then aborts its attempted workspace install with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. This is an environment/toolchain result, not a test pass. CI setup is separately pinned/configured and requires review against the current workflow files.
+
+Residual within this area: `/workspace/state-sync` remains a distinct older state path with no production caller found in the current Agents source search; it needs full runtime/build reachability proof before removal or closure. The workspace path validator and harness filesystem boundary still need a separate adversarial traversal/symlink pass. No live Cloudflare deployment, provider test, or network isolation test was performed. The repository-wide audit, historical file checklist, DNS rebinding, dependency/adaptor migration, and live deployment checks remain open; this focused pass does not update the historical inventory's reviewed-file counts.
+
 # Naelao audit progress and evidence
 
 This records completed passes from the current change set. It does not represent a completed audit of all repository files. The file-by-file checklist remains pending until each file's callers, runtime registration, and trust boundaries have been reviewed and evidence recorded.

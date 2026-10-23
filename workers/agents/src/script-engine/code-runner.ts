@@ -1,3 +1,4 @@
+import { workspaceBranchScope, sandboxInstanceName } from "./sandbox-routing.js";
 /** Execution backends: validated fresh Dynamic Workers for JS/TS and provider Python/Wasm;
  * durable Workflows for long jobs, browser services for perception, cloud/local containers
  * for authorized native execution. Only explicit scoped RPC capabilities cross into guests.
@@ -209,9 +210,11 @@ async function runContainer(
   params: Parameters<TieredCodeRunner["run"]>[0]
 ): Promise<ScriptRunResult> {
   const started = Date.now();
-  const branchScope = workspaceBranchScope(params.workspaceBranch);
   const backend: ContainerBackend = params.containerOptions?.backend ?? "cloudflare_container";
   const fail = (error: string): ScriptRunResult => ({ ok: false, error, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 });
+  let branchScope: string;
+  try { branchScope = workspaceBranchScope(params.workspaceBranch); }
+  catch { return fail("container_workspace_branch_invalid"); }
   if (!params.userId || !params.runId || params.userId === "system" || (params.maxTier ?? 6) < 6 || params.signal?.aborted) return fail("container_authorized_actor_run_required");
   if (!opts.authorizeContainer || !await opts.authorizeContainer(params)) return fail("container_execution_denied");
   if (opts.airGappedOnly && backend !== "local_workstation") {
@@ -241,7 +244,7 @@ async function runContainer(
       if (installation.installationId !== params.installationId || installation.contract.image !== params.containerImage) return fail("container_image_installation_mismatch");
       const timeoutMs = Math.min(opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS, installation.contract.resources.timeoutSeconds * 1000);
       const scope: ContainerInvocationScope = { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}), actorId: params.userId,
-        agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), installationId: params.installationId,
+        agentId: params.agentId, runId: params.runId, executionId: crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}), installationId: params.installationId,
         ...(installation.scope ? { installationScope: installation.scope } : {}), image: installation.contract.image,
         ...(dynamicImage ? { dynamicImage: true } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
       const stub = namespace.get(namespace.idFromName(sidecarKey(scope) + branchScope));
@@ -267,7 +270,7 @@ async function runContainer(
   // space/project scoping. "_assistant" is a fixed per-space slot for the Space Assistant
   // (projectId absent), analogous to workspacePrefix()'s space-scoped fallback.
   const doId = opts.toolSandbox.idFromName(
-    `sandbox:${params.spaceId}:${params.projectId ?? "_assistant"}${branchScope}`
+    sandboxInstanceName(params.spaceId, params.projectId, params.workspaceBranch)
   );
   const stub = opts.toolSandbox.get(doId);
   if (params.containerOptions?.migration) {
@@ -280,16 +283,10 @@ async function runContainer(
   if (params.containerOptions?.lockfiles) {
     const warmed = await runContainerRequest(stub, opts, { ...params, name: "container.prewarm", code: "", args: {} }, started);
     if (!warmed.ok) return warmed;
-    let response: Response;
-    try {
-      response = await stub.fetch(new Request("http://sandbox/workspace/rehydrate", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lockfiles: params.containerOptions.lockfiles }), signal: AbortSignal.timeout(2_500),
-      }));
-    } catch (error) {
-      return { ok: false, error: `Lockfile rehydration exceeded 2500ms: ${String(error)}`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
-    }
-    if (!response.ok) return { ok: false, error: `Lockfile rehydration failed (${response.status})`, tier: 6, actual_tier: 6, engine: "container", duration_ms: Date.now() - started, tokens_used: 0 };
+    const rehydrated = await runContainerRequest(stub, { ...opts, containerTimeoutMs: 2500 }, {
+      ...params, name: "container.rehydrate", code: "", args: { lockfiles: params.containerOptions.lockfiles },
+    }, started);
+    if (!rehydrated.ok) return rehydrated;
   }
   const result = await runContainerRequest(stub, opts, params, started);
   if (result.ok && params.containerOptions?.migration) {
@@ -313,7 +310,7 @@ async function runContainerRequest(
   const controller = new AbortController();
   const timeoutMs = Math.min(60000, suppliedScope?.timeoutMs ?? opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS);
   const scope: ContainerInvocationScope = suppliedScope ?? { tenantId: params.tenantId, spaceId: params.spaceId, ...(params.projectId ? { projectId: params.projectId } : {}),
-    actorId: params.userId!, agentId: params.agentId, runId: params.runId!, executionId: crypto.randomUUID(), timeoutMs, deadline: Date.now() + timeoutMs };
+    actorId: params.userId!, agentId: params.agentId, runId: params.runId!, executionId: crypto.randomUUID(), ...(params.workspaceBranch ? { workspaceBranch: params.workspaceBranch } : {}), timeoutMs, deadline: Date.now() + timeoutMs };
   validateContainerScope(scope);
   const token = opts.platformSecret ? await mintInternalToken(opts.platformSecret, params.tenantId) : undefined;
   const headers = { "content-type": "application/json", "x-naelao-container-scope": JSON.stringify(scope), ...(token ? { "x-naelao-internal-token": token } : {}) };
@@ -341,7 +338,7 @@ async function runContainerRequest(
   const outputTimer = params.onOutput ? setInterval(() => { void poll(); }, 500) : undefined;
   try {
     if (params.signal?.aborted) { cancel(); throw new Error("container_cancelled"); }
-    const computerEndpoint = localTunnel ? "/exec" : params.name === "container.prewarm" ? "/prewarm" : params.name === "computer-use.screenshot"
+    const computerEndpoint = localTunnel ? "/exec" : params.name === "container.prewarm" ? "/prewarm" : params.name === "container.rehydrate" ? "/workspace/rehydrate" : params.name === "computer-use.screenshot"
       ? "/computer/screenshot"
       : params.name === "computer-use.action" ? "/computer/action" : "/exec";
     const resp = await stub.fetch(
@@ -352,6 +349,7 @@ async function runContainerRequest(
           ...(opts.activeTask && !localTunnel ? { "x-avos-task-active": "1" } : {}),
         },
         body: JSON.stringify(localTunnel ? { op: "exec", params: { command: params.code, args: params.args }, scope } : {
+          ...(params.name === "container.rehydrate" ? { lockfiles: params.args["lockfiles"] } : {}),
           name: params.name,
           code: params.code,
           args: params.args,
@@ -408,16 +406,6 @@ async function runContainerRequest(
     params.signal?.removeEventListener("abort", cancel);
     if (controller.signal.aborted) cancel();
   }
-}
-
-/** Validate and turn a speculative branch into a stable Durable Object namespace suffix. */
-function workspaceBranchScope(branch?: string): string {
-  if (!branch) return "";
-  const normalized = branch.replaceAll("\\", "/");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(normalized) || normalized.includes("..")) {
-    throw new Error("workspaceBranch contains an invalid path");
-  }
-  return `:branch:${normalized}`;
 }
 
 /** Builds the TieredCodeRunner the host (NaelaoAgentDO) wires into ScriptEngineEnv.codeRunner. */

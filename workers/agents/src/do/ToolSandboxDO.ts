@@ -190,7 +190,7 @@ export class ToolSandboxDO extends DurableObject {
     const path = new URL(request.url).pathname;
     if (path === "/output") return this.output(request);
     if (path === "/cancel") return this.cancel(request);
-    const execution = this.executionQueue.then(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render", "/media/extract-audio"].includes(path)
+    const execution = this.executionQueue.then(() => ["/exec", "/shell", "/build", "/prewarm", "/computer/action", "/computer/screenshot", "/pdf/render", "/media/extract-audio", ...WORKSPACE_ROUTES].includes(path)
       ? this.executeScoped(request) : (async () => {
         try { await this.authenticatedScope(request); }
         catch { return Response.json({ ok: false, error: "container_scope_denied" }, { status: 403 }); }
@@ -718,11 +718,12 @@ export class ToolSandboxDO extends DurableObject {
     }
     const url = new URL(request.url);
     let execScope: SandboxWorkspaceScope | undefined;
-    if (url.pathname === "/exec" && request.method === "POST") {
+    if ((url.pathname === "/exec" || WORKSPACE_ROUTES.includes(url.pathname)) && request.method === "POST") {
       const body = await request.clone().json<{ spaceId?: string; projectId?: string; workspaceBranch?: string }>().catch((): { spaceId?: string; projectId?: string; workspaceBranch?: string } => ({}));
       const containerScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
       if (!containerScope || body.spaceId !== undefined && body.spaceId !== containerScope.spaceId
-        || body.projectId !== undefined && body.projectId !== containerScope.projectId)
+        || body.projectId !== undefined && body.projectId !== containerScope.projectId
+        || body.workspaceBranch !== containerScope.workspaceBranch)
         return Response.json({ ok: false, error: "sandbox_workspace_identity_mismatch" }, { status: 403 });
       execScope = {
         spaceId: containerScope.spaceId,
@@ -765,8 +766,23 @@ export class ToolSandboxDO extends DurableObject {
     }
 
     if (url.pathname === "/lifecycle" && request.method === "POST") {
-      const body = await request.json<{ status?: "active" | "blocked" | "completed" }>()
-        .catch((): { status?: "active" | "blocked" | "completed" } => ({}));
+      let scope: ContainerInvocationScope;
+      try { scope = await this.authenticatedScope(request); }
+      catch { return Response.json({ ok: false, error: "container_scope_denied" }, { status: 403 }); }
+      const body = await request.json<{ status?: "active" | "blocked" | "completed"; tenantId?: string; spaceId?: string;
+        projectId?: string; workspaceBranch?: string }>().catch((): { status?: "active" | "blocked" | "completed"; tenantId?: string;
+          spaceId?: string; projectId?: string; workspaceBranch?: string } => ({}));
+      if (body.tenantId !== scope.tenantId || body.spaceId !== scope.spaceId || body.projectId !== scope.projectId
+        || body.workspaceBranch !== scope.workspaceBranch) {
+        return Response.json({ ok: false, error: "sandbox_workspace_identity_mismatch" }, { status: 403 });
+      }
+      const workspaceScope: SandboxWorkspaceScope = { spaceId: scope.spaceId, ...(scope.projectId ? { projectId: scope.projectId } : {}),
+        ...(scope.workspaceBranch ? { branch: scope.workspaceBranch } : {}) };
+      try { this.workspacePrefix(workspaceScope); }
+      catch { return Response.json({ ok: false, error: "invalid workspace scope" }, { status: 400 }); }
+      const storedScope = await this.ctx.storage.get<SandboxWorkspaceScope>("workspace_scope");
+      if (storedScope && (storedScope.spaceId !== workspaceScope.spaceId || storedScope.projectId !== workspaceScope.projectId
+        || storedScope.branch !== workspaceScope.branch)) return Response.json({ ok: false, error: "sandbox_workspace_scope_mismatch" }, { status: 409 });
       if (body.status === "active") await this.ctx.storage.put("task_active", true);
       else if (body.status === "blocked" || body.status === "completed") await this.ctx.storage.delete("task_active");
       else return Response.json({ error: "status must be active, blocked, or completed" }, { status: 400 });
@@ -951,7 +967,7 @@ export class ToolSandboxDO extends DurableObject {
 
     if (url.pathname !== "/prewarm" && execScope && (this.env as unknown as SandboxBindings).SCRIPTS_R2) {
       const currentScope = await this.ctx.storage.get<SandboxWorkspaceScope>("workspace_scope");
-      if (coldStart || !currentScope || url.pathname === "/exec") await this.hydrateWorkspace(container, execScope);
+      if (coldStart || !currentScope || url.pathname === "/exec" || WORKSPACE_ROUTES.includes(url.pathname)) await this.hydrateWorkspace(container, execScope);
     } else if (url.pathname !== "/prewarm" && coldStart) {
       const snapshot = await this.ctx.storage.get<Record<string, string>>("workspace_snapshot");
       if (snapshot && Object.keys(snapshot).length) {
@@ -996,7 +1012,7 @@ export class ToolSandboxDO extends DurableObject {
         const nextRecords = { ...records };
         for (const [path, content] of Object.entries(files)) {
           if (!isPortableWorkspacePath(path)) continue;
-          const actual = records[path]?.hash ?? null;
+          const actual = execScope ? (await this.ctx.storage.get<Record<string, string>>("workspace_hashes"))?.[path] ?? null : records[path]?.hash ?? null;
           if (expected[path] !== actual) conflicts.push(path);
           const nextHash = await hashWorkspaceContent(content);
           nextRecords[path] = { content, hash: nextHash };
@@ -1005,14 +1021,27 @@ export class ToolSandboxDO extends DurableObject {
         await this.ctx.storage.put("workspace_files", nextRecords);
       }
       const forwarded = new Request(request, { body: JSON.stringify({ files }), headers: request.headers });
-      return container.getTcpPort(HARNESS_PORT).fetch(forwarded);
+      const response = await container.getTcpPort(HARNESS_PORT).fetch(forwarded);
+      if (response.ok && execScope) await this.publishWorkspaceChanges(container, execScope, crypto.randomUUID());
+      return response;
+    }
+
+    if (url.pathname === "/workspace/delete") {
+      const body = await request.clone().json<{ paths?: string[]; expected_hashes?: Record<string, string | null> }>();
+      if (!Array.isArray(body.paths) || body.paths.some(path => typeof path !== "string" || !isPortableWorkspacePath(path)))
+        return Response.json({ ok: false, error: "workspace_paths_invalid" }, { status: 400 });
+      const actual = await this.ctx.storage.get<Record<string, string>>("workspace_hashes") ?? {};
+      if (!body.expected_hashes || body.paths.some(path => !Object.hasOwn(body.expected_hashes!, path)))
+        return Response.json({ ok: false, error: "workspace_hash_required" }, { status: 400 });
+      if (body.paths.some(path => body.expected_hashes![path] !== (actual[path] ?? null)))
+        return Response.json({ ok: false, error: "workspace_state_conflict" }, { status: 409 });
     }
 
     // /build and the remaining /workspace/* routes forward to the harness. Tier-6 execution
     // hydrates from canonical R2 on a cold workspace and publishes each changed file through the
     // same fenced CAS gateway used by the other workspace writers before returning to the agent.
     const response = await container.getTcpPort(HARNESS_PORT).fetch(request);
-    if (url.pathname === "/exec" && execScope && (this.env as unknown as SandboxBindings).SCRIPTS_R2) {
+    if ((url.pathname === "/exec" || url.pathname === "/workspace/delete" && response.ok) && execScope && (this.env as unknown as SandboxBindings).SCRIPTS_R2) {
       try {
         const workspace_sync = await this.publishWorkspaceChanges(container, execScope, crypto.randomUUID());
         const body = await response.clone().json<Record<string, unknown>>().catch(() => ({}));

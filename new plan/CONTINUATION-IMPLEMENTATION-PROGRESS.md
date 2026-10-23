@@ -1791,3 +1791,10 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 - ToolSandboxDO now reads the canonical Space egress policy on each execution. Missing or failed policy lookup disables package-host interceptions. Air-gapped cold starts receive no interception; warm containers are destroyed and recreated when the resolved profile changes; an active bounded container step is hard-stopped when the periodic alarm detects that policy changed to air-gapped.
 - Regression coverage verifies air-gapped cold start, absent policy storage, warm-container revocation, and revocation during an active execution.
 - Verification: Agents suite passed 165 files / 749 tests; Security suite passed 22 files / 124 tests; Agents typecheck and Wrangler container-aware dry-run passed; `git diff --check` passed. No live Cloudflare policy-revocation or packet-level test was performed. Broader egress review and deployment acceptance remain open; the full audit remains partial.
+
+
+## Focused workspace trust-boundary audit (2026-10-23)
+
+- Found and fixed unsigned workspace RPCs and unsigned lockfile rehydration, omitted delegated branch addressing, unchecked workspace response failures, delayed canonical write publication, unversioned deletes, and root-only lifecycle pings. Workspace scopes now bind the branch; grant checks gate workspace RPCs; successful writes and deletes flow through the canonical R2/CAS journal.
+- Added end-to-end DO/CAS regression coverage plus signed branch-scoped rehydration coverage. Verification: 7 focused test files / 84 tests passed; Agents TypeScript check passed; `git diff --check` passed. Direct full Agents Vitest passed (166 files / 769 tests). The pnpm 11.25 wrapper cannot run its workspace install in this noninteractive environment; the repository pins pnpm 9.12.0.
+- Open follow-up: verify reachability and security of `/workspace/state-sync`, complete filesystem traversal/symlink stress cases, run the full suite under pinned pnpm, and perform live Cloudflare validation. This audit slice does not complete any transcript pair or the repository-wide audit.

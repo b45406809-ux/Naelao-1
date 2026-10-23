@@ -865,7 +865,7 @@ export interface ContainerWorkspaceGateway {
   list(): Promise<{ files: string[] }>;
   read(paths?: string[]): Promise<{ files: Record<string, string> }>;
   write(files: Record<string, string>, expectedHashes?: Record<string, string | null>): Promise<{ ok: boolean }>;
-  remove(paths: string[]): Promise<{ ok: boolean }>;
+  remove(paths: string[], expectedHashes?: Record<string, string | null>): Promise<{ ok: boolean }>;
 }
 
 /**

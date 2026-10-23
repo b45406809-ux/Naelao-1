@@ -3,7 +3,7 @@ import { parseExtensionPrimitive, type ContainerContract, type InstallationScope
 
 export interface ContainerInvocationScope {
   tenantId: string; spaceId: string; projectId?: string | undefined; actorId: string; agentId: string;
-  runId: string; executionId: string; installationId?: string | undefined; installationScope?: InstallationScope | undefined; image?: string; dynamicImage?: boolean;
+  runId: string; executionId: string; workspaceBranch?: string | undefined; installationId?: string | undefined; installationScope?: InstallationScope | undefined; image?: string; dynamicImage?: boolean;
   deadline: number; timeoutMs: number;
 }
 export interface InstalledContainer {
@@ -24,6 +24,7 @@ export function validateContainerScope(scope: ContainerInvocationScope, now = Da
   for (const value of [scope.tenantId, scope.spaceId, scope.actorId, scope.agentId, scope.runId, scope.executionId])
     if (!ID.test(value) || value === "system") throw new Error("container_actor_scope_required");
   if (scope.projectId && !ID.test(scope.projectId) || scope.installationId && !ID.test(scope.installationId)) throw new Error("container_scope_invalid");
+  if (scope.workspaceBranch && (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(scope.workspaceBranch.replaceAll("\\", "/")) || scope.workspaceBranch.replaceAll("\\", "/").includes(".."))) throw new Error("container_workspace_branch_invalid");
   if (scope.installationScope && !["SPACE_SHARED", "SPACE_ASSISTANT", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(scope.installationScope)) throw new Error("container_installation_scope_invalid");
   if (scope.installationScope && !scope.installationId) throw new Error("container_installation_required");
   if (scope.installationScope === "SPACE_ASSISTANT" && scope.projectId) throw new Error("assistant_runtime_project_scope_mismatch");

@@ -1,4 +1,7 @@
+import { createContainerWorkspaceGateway } from "../script-engine/container-workspace.js";
 import { dynamicSandboxNamespace } from "../script-engine/dynamic-containers.js";
+import { sandboxInstanceName } from "../script-engine/sandbox-routing.js";
+import { validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.js";
@@ -2719,35 +2722,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // container, so workspace.copy and code.execute_* operate on the SAME /workspace).
     if (dynamicSandboxNamespace(this.env)) {
       const toolSandbox = dynamicSandboxNamespace(this.env)!;
-      const sandboxStub = () => toolSandbox.get(toolSandbox.idFromName(`sandbox:${spaceId}:${projectId ?? "_assistant"}`));
-      const warmWorkspace = async () => {
-        if (!env.runId || !userId || !env.codeRunner) throw new Error("container_authorized_actor_run_required");
-        const warmed = await env.codeRunner.run({ name: "container.prewarm", code: "", args: {}, tier: 6, tenantId, spaceId, agentId, ...(projectId ? { projectId } : {}),
-          userId, runId: env.runId, ...(env.executionSignal ? { signal: env.executionSignal } : {}), ...(env.maxTier ? { maxTier: env.maxTier } : {}) });
-        if (!warmed.ok) throw new Error(warmed.error ?? "container_prewarm_failed");
-      };
-      env.containerWorkspace = {
-        list: async () => {
-          await warmWorkspace();
-          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/list", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: "{}" }));
-          return readBoundedResponseJson(resp, 2 * 1024 * 1024);
-        },
-        read: async (paths) => {
-          await warmWorkspace();
-          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/read", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: JSON.stringify({ paths }) }));
-          return readBoundedResponseJson(resp, 2 * 1024 * 1024);
-        },
-        write: async (files, expectedHashes) => {
-          await warmWorkspace();
-          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/write", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: JSON.stringify({ files, expected_hashes: expectedHashes }) }));
-          return readBoundedResponseJson(resp, 2 * 1024 * 1024);
-        },
-        remove: async (paths) => {
-          await warmWorkspace();
-          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/delete", { method: "POST", headers: { "content-type": "application/json", ...(commitContext ? { "x-avos-task-active": "1" } : {}) }, body: JSON.stringify({ paths }) }));
-          return readBoundedResponseJson(resp, 2 * 1024 * 1024);
-        },
-      };
+      env.containerWorkspace = createContainerWorkspaceGateway({
+        namespace: toolSandbox, secret: this.env.PLATFORM_SECRET ?? "",
+        actor: () => ({ tenantId, spaceId, projectId, actorId: userId ?? "", agentId,
+          runId: env.runId ?? "", branch: env.workspaceBranch, signal: env.executionSignal }),
+        authorize: async actor => !airGappedOnly && (env.maxTier ?? 6) >= 6 && await nativeGrantActive({
+          tenantId: actor.tenantId, spaceId: actor.spaceId, projectId: actor.projectId, agentId: actor.agentId,
+          userId: actor.actorId, runId: actor.runId,
+        }),
+      });
     }
 
     // §A1.17 Phase J: runtime:"workflow" scripts dispatch here instead of codeRunner —
@@ -3113,17 +3096,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   /** Release the extended Tier-6 warm window when work completes or pauses for a person. */
-  private signalContainerLifecycle(spaceId: string, projectId: string | undefined, status: "blocked" | "completed"): void {
+  private async signalContainerLifecycle(input: { tenantId: string; spaceId: string; projectId?: string; actorId?: string; agentId: string;
+    runId: string; branch?: string; status: "blocked" | "completed" }): Promise<void> {
     const namespace = dynamicSandboxNamespace(this.env);
-    if (!namespace) return;
-    const stub = namespace.get(namespace.idFromName(`sandbox:${spaceId}:${projectId ?? "_assistant"}`));
-    this.ctx.waitUntil(
-      stub.fetch(new Request("http://sandbox/lifecycle", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ status }),
-      })).then(() => undefined).catch(() => undefined)
-    );
+    if (!namespace || !input.actorId || !input.tenantId || !this.env.PLATFORM_SECRET) return;
+    const scope: ContainerInvocationScope = { tenantId: input.tenantId, spaceId: input.spaceId,
+      ...(input.projectId ? { projectId: input.projectId } : {}), actorId: input.actorId, agentId: input.agentId,
+      runId: input.runId, executionId: crypto.randomUUID(), ...(input.branch ? { workspaceBranch: input.branch } : {}), timeoutMs: 5000, deadline: Date.now() + 5000 };
+    try { validateContainerScope(scope); } catch { return; }
+    try {
+      const stub = namespace.get(namespace.idFromName(sandboxInstanceName(input.spaceId, input.projectId, input.branch)));
+      const token = await mintInternalToken(this.env.PLATFORM_SECRET, input.tenantId);
+      this.ctx.waitUntil(
+        stub.fetch(new Request("http://sandbox/lifecycle", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-container-scope": JSON.stringify(scope),
+            "x-naelao-internal-token": token },
+          body: JSON.stringify({ status: input.status, tenantId: input.tenantId, spaceId: input.spaceId,
+            ...(input.projectId ? { projectId: input.projectId } : {}), ...(input.branch ? { workspaceBranch: input.branch } : {}) }),
+        })).then(() => undefined).catch(() => undefined)
+      );
+    } catch { /* Lifecycle signals are best-effort; they never change a completed run result. */ }
   }
 
   // ── Sub-agents (spec "Advanced Agent SDK Patterns" §3 Sub-Agent Coordination) ───────────
@@ -6049,7 +6042,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       );
     } finally {
       this.executionControllers.delete(runId);
-      this.signalContainerLifecycle(spaceId, projectId, containerLifecycleTerminal);
+      await this.signalContainerLifecycle({ tenantId, spaceId, ...(projectId ? { projectId } : {}), ...(userId ? { actorId: userId } : {}),
+        agentId, runId, ...(body.workspaceBranch ? { branch: body.workspaceBranch } : {}), status: containerLifecycleTerminal });
       // Every normal exit above records a terminal state, which keeps the entry (briefly) rather
       // than dropping it. Anything that reaches here WITHOUT one left the run unresolved — there
       // is nothing to report and no more onProgress will fire, so the live window is over.

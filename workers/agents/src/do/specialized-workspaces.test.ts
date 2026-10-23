@@ -1,9 +1,10 @@
+import { createContainerWorkspaceGateway } from "../script-engine/container-workspace.js";
 import { describe, expect, it, vi } from "vitest";
 import { mintInternalToken } from "@naelao/http";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { ConcurrencyDO } from "./ConcurrencyDO.js";
 import { sandboxWorkspacePrefix, ToolSandboxDO } from "./ToolSandboxDO.js";
-import { sha256Bytes } from "../script-engine/r2-cas.js";
+import { readBytesWithHash, sha256Bytes } from "../script-engine/r2-cas.js";
 
 const image = "registry.example/media@sha256:" + "a".repeat(64);
 const prefix = "spaces/space/projects/project/workspace/";
@@ -52,10 +53,14 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
     inspect: vi.fn(async () => ({ image: deployedImage })),
     getTcpPort: () => ({ fetch: async (request: Request) => {
       const path = new URL(request.url).pathname; calls.push(path);
-      const body = await request.json().catch(() => ({})) as { files_base64?: Record<string, string>; paths?: string[]; args?: { write?: Record<string, string>; remove?: string[] } };
-      if (path === "/workspace/write") for (const [key, value] of Object.entries(body.files_base64 ?? {})) files.set(key, value);
+      const body = await request.json().catch(() => ({})) as { files_base64?: Record<string, string>; paths?: string[]; files?: Record<string, string>; encoding?: string; args?: { write?: Record<string, string>; remove?: string[] } };
+      if (path === "/workspace/write") {
+        for (const [key, value] of Object.entries(body.files_base64 ?? {})) files.set(key, value);
+        for (const [key, value] of Object.entries(body.files ?? {})) files.set(key, Buffer.from(value).toString("base64"));
+      }
       if (path === "/workspace/delete") for (const key of body.paths ?? []) files.delete(key);
       if (path === "/workspace/list") return Response.json({ files: [...files.keys()] });
+      if (path === "/workspace/read" && body.encoding !== "base64") return Response.json({ files: Object.fromEntries((body.paths ?? [...files.keys()]).filter(key => files.has(key)).map(key => [key, Buffer.from(files.get(key)!, "base64").toString()])) });
       if (path === "/workspace/read") return Response.json({ files_base64: Object.fromEntries((body.paths ?? [...files.keys()]).map(key => [key, files.get(key)])) });
       if (path === "/exec") {
         for (const [key, value] of Object.entries(body.args?.write ?? {})) files.set(key, value);
@@ -82,7 +87,20 @@ function runtime(store: ReturnType<typeof workspace>, deployedImage = image) {
       "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") },
       body: JSON.stringify({ ...bodyScope, args }) }));
   };
-  return { files, records, calls, transport, exec, restart: () => { sandbox = make(); }, afterExec: (fn: () => Promise<void>) => { afterExec = fn; } };
+  const addresses: string[] = [];
+  const gateway = (branch?: string, authorize = true) => createContainerWorkspaceGateway({
+    namespace: { idFromName: (key: string) => { addresses.push(key); return key; }, get: () => ({ fetch: (request: Request) => sandbox.fetch(request) }) } as never,
+    secret: "test-secret", actor: () => ({ tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run", branch }),
+    authorize: async () => authorize,
+  });
+  const lifecycle = async (branch?: string, status: "active" | "blocked" | "completed" = "active", bodyBranch = branch, signed = true) => {
+    const scope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "user", agentId: "worker", runId: "run",
+      executionId: crypto.randomUUID(), ...(branch ? { workspaceBranch: branch } : {}), timeoutMs: 5000, deadline: Date.now() + 5000 };
+    return sandbox.fetch(new Request("http://sandbox/lifecycle", { method: "POST", headers: { "content-type": "application/json",
+      "x-naelao-container-scope": JSON.stringify(scope), ...(signed ? { "x-naelao-internal-token": await mintInternalToken("test-secret", "tenant") } : {}) },
+      body: JSON.stringify({ status, tenantId: "tenant", spaceId: "space", projectId: "project", ...(bodyBranch ? { workspaceBranch: bodyBranch } : {}) }) }));
+  };
+  return { gateway, addresses, files, records, calls, transport, exec, lifecycle, restart: () => { sandbox = make(); }, afterExec: (fn: () => Promise<void>) => { afterExec = fn; } };
 }
 
 describe("specialized project workspaces", () => {
@@ -163,4 +181,67 @@ describe("specialized project workspaces", () => {
     expect(Buffer.from(store.data.get(prefix + "report.txt")!).toString()).toBe("concurrent");
     expect(worker.calls.filter(path => path === "/exec")).toHaveLength(1);
   });
+});
+
+
+describe("signed workspace gateway through real ToolSandboxDO and ConcurrencyDO", () => {
+  it("reads canonical files cold, publishes edits immediately, and rejects stale writes and deletes", async () => {
+    const store = workspace(); await store.seed(prefix + "report.txt", new TextEncoder().encode("old"));
+    const r = runtime(store), gateway = r.gateway();
+    expect(await gateway.read(["report.txt"])).toMatchObject({ files: { "report.txt": "old" } });
+    const original = await sha256Bytes(new TextEncoder().encode("old"));
+    await gateway.write({ "report.txt": "new" }, { "report.txt": original });
+    expect(new TextDecoder().decode(store.data.get(prefix + "report.txt"))).toBe("new");
+    await expect(gateway.write({ "report.txt": "lost-update" }, { "report.txt": original })).rejects.toThrow("workspace_state_conflict");
+    await expect(gateway.remove(["report.txt"], { "report.txt": original })).rejects.toThrow("workspace_state_conflict");
+    expect(new TextDecoder().decode(store.data.get(prefix + "report.txt"))).toBe("new");
+    await gateway.remove(["report.txt"], { "report.txt": await sha256Bytes(new TextEncoder().encode("new")) });
+    expect(await readBytesWithHash(store.bucket as never, prefix + "report.txt")).toBeNull();
+    r.restart(); expect(await gateway.list()).toMatchObject({ files: [] });
+  });
+  it("uses the worker branch's actor and R2 prefix while leaving the project root untouched", async () => {
+    const store = workspace(); await store.seed(prefix + "root.txt", new TextEncoder().encode("root"));
+    const r = runtime(store), gateway = r.gateway("task/worker-one");
+    expect(await gateway.list()).toMatchObject({ files: [] });
+    await gateway.write({ "worker.txt": "branch" }, { "worker.txt": null });
+    expect(r.addresses.every(key => key === "sandbox:space:project:branch:task/worker-one")).toBe(true);
+    const branchPrefix = sandboxWorkspacePrefix({ spaceId: "space", projectId: "project", branch: "task/worker-one" });
+    expect(new TextDecoder().decode(store.data.get(branchPrefix + "worker.txt"))).toBe("branch");
+    expect(new TextDecoder().decode(store.data.get(prefix + "root.txt"))).toBe("root");
+    expect(store.data.has(prefix + "worker.txt")).toBe(false);
+  });
+  it("denies missing grants and invalid branches without allocating or accessing an actor", async () => {
+    const r = runtime(workspace());
+    await expect(r.gateway(undefined, false).list()).rejects.toThrow("not_authorized");
+    await expect(r.gateway("../escape").list()).rejects.toThrow("container_workspace_branch_invalid");
+    expect(r.addresses).toHaveLength(0); expect(r.transport.start).not.toHaveBeenCalled();
+  });
+
+  it("authenticates lifecycle updates and binds them to the addressed workspace branch", async () => {
+    const store = workspace(), app = runtime(store);
+    expect((await app.lifecycle("task/worker-one", "active", "task/worker-one", false)).status).toBe(403);
+    expect((await app.lifecycle("task/worker-one", "active", "task/worker-two")).status).toBe(403);
+    expect((await app.lifecycle("task/worker-one", "active")).status).toBe(200);
+    expect(app.records.get("task_active")).toBe(true);
+    expect((await app.lifecycle("task/worker-one", "completed")).status).toBe(200);
+    expect(app.records.has("task_active")).toBe(false);
+  });
+  it("refreshes warm readers after another runtime changes the canonical file", async () => {
+    const store = workspace(); const r = runtime(store), gateway = r.gateway();
+    await store.seed(prefix + "shared.txt", new TextEncoder().encode("first"));
+    expect(await gateway.read(["shared.txt"])).toMatchObject({ files: { "shared.txt": "first" } });
+    await store.seed(prefix + "shared.txt", new TextEncoder().encode("second"));
+    expect(await gateway.read(["shared.txt"])).toMatchObject({ files: { "shared.txt": "second" } });
+  });
+  it("allows exactly one winner in a 32-way stale-revision write burst", async () => {
+    const store = workspace(); await store.seed(prefix + "race.txt", new TextEncoder().encode("baseline"));
+    const gateway = runtime(store).gateway();
+    const baseline = await sha256Bytes(new TextEncoder().encode("baseline"));
+    const results = await Promise.allSettled(Array.from({ length: 32 }, (_, index) =>
+      gateway.write({ "race.txt": "writer-" + index }, { "race.txt": baseline })));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(result => result.status === "rejected")).toHaveLength(31);
+    expect(new TextDecoder().decode(store.data.get(prefix + "race.txt"))).toMatch(/^writer-/);
+  });
+
 });

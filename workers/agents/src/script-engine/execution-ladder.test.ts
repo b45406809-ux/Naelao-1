@@ -296,6 +296,38 @@ describe("Execution Ladder & Code Runner", () => {
     expect(ids).toEqual(["sandbox:s1:p1:branch:race/task/model-a"]);
   });
 
+  it("rehydrates lockfiles through the signed, branch-scoped sandbox protocol", async () => {
+    const requests: Request[] = [];
+    const stub = { fetch: vi.fn(async (request: Request) => {
+      requests.push(request);
+      return Response.json({ ok: true, result: { restored: true } });
+    }) };
+    const runner = buildCodeRunner({ toolSandbox: { idFromName: (name: string) => name, get: () => stub } as never,
+      authorizeContainer: async () => true, platformSecret: "secret" });
+    const result = await runner.run({ name: "Bash", code: "npm test", tier: 6, args: { commands: "npm test" },
+      tenantId: "t1", spaceId: "s1", projectId: "p1", agentId: "a1", userId: "u1", runId: "run",
+      workspaceBranch: "workers/lockfile", maxTier: 6,
+      containerOptions: { lockfiles: { "package-lock.json": "{}" } } });
+
+    expect(result.ok).toBe(true);
+    expect(requests.map(request => new URL(request.url).pathname)).toEqual(["/prewarm", "/workspace/rehydrate", "/exec"]);
+    for (const request of requests) {
+      expect(request.headers.get("x-naelao-internal-token")).toBeTruthy();
+      expect(JSON.parse(request.headers.get("x-naelao-container-scope") ?? "{}")).toMatchObject({ workspaceBranch: "workers/lockfile" });
+    }
+    expect(await requests[1]!.clone().json()).toMatchObject({ lockfiles: { "package-lock.json": "{}" }, workspaceBranch: "workers/lockfile" });
+  });
+
+  it("returns a controlled error for an invalid workspace branch", async () => {
+    const toolSandbox = { idFromName: vi.fn(), get: vi.fn() };
+    const result = await buildCodeRunner({ toolSandbox: toolSandbox as never, authorizeContainer: async () => true }).run({
+      name: "Bash", code: "true", tier: 6, args: { commands: "true" }, tenantId: "t1", spaceId: "s1", projectId: "p1",
+      agentId: "a1", userId: "u1", runId: "run", maxTier: 6, workspaceBranch: "../escape",
+    });
+    expect(result).toMatchObject({ ok: false, error: "container_workspace_branch_invalid" });
+    expect(toolSandbox.get).not.toHaveBeenCalled();
+  });
+
   it("dispatches durable workflow scripts via workflowRunner", async () => {
     const startMock = vi.fn(async () => ({ id: "wf-123" }));
     const env = {
