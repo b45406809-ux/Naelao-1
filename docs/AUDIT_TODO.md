@@ -1983,9 +1983,9 @@ first real business on free-tier resources before opening the platform to other 
 - [x] **Private runs no longer make worker-model catalog requests.** The worker pool loaded an
   OpenRouter catalog even when the run was air-gapped or bound to a local model machine; later model
   selection would preserve the private route, but the metadata request itself still crossed the
-  boundary. Catalog discovery is now explicitly gated off for air-gapped/local runs. Regression
-  tests cover private-route suppression and normal configured discovery. The Agents focused routing
-  tests and typecheck passed. This does not replace the separate unresolved DNS-pinned egress work.
+  boundary. Catalog discovery is now gated off, and cloud model IDs are rejected before credential
+  lookup or pricing on private/local routes. Regression tests cover both gates. Agents routing tests
+  (9) and typecheck passed. This does not replace the separate unresolved DNS-pinned egress work.
 
 ## Audit continuation — 2026-10-23
 

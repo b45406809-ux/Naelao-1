@@ -27,6 +27,12 @@ export function mayDiscoverWorkerModelCatalog(input: {
   return !input.privateRoute && input.hasPool && input.hasCredential;
 }
 
+/** A private/local execution must reject cloud model IDs before credential lookup, pricing, or
+ * model-catalog requests run. */
+export function isCloudModelForbiddenOnPrivateRoute(model: string, privateRoute: boolean): boolean {
+  return privateRoute && !model.startsWith("local/");
+}
+
 /** A changed provider price cannot silently turn the pinned economy worker into a costly one.
  * User-selected planners remain governed by their own explicit model choice and live budget. */
 export function isWorkerPriceAllowed(model: string, pricing: { inputUsdPerToken: number; outputUsdPerToken: number } | undefined): boolean {

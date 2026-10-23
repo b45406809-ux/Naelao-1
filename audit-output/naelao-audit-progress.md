@@ -2774,7 +2774,7 @@ Verification: Spaces suite 69 files / 276 tests; root create-space tests 40 / 40
 
 ## 2026-10-23 — air-gapped agent model discovery
 
-Expanded the compliance audit from containers into agent orchestration and model selection. `NaelaoAgentDO` fetched the OpenRouter catalog for a configured worker pool before sub-agent routing, even when the run was air-gapped or bound to a local model machine. Although later selection preserved the private model route, this metadata fetch still made an external request. Gated catalog discovery on the route being non-private and added focused routing regressions. Agents routing suite passed 8/8 and Agents typecheck passed. This closes the specific catalog lookup path only; DNS-pinned outbound transport and live egress proof remain open.
+Expanded the compliance audit from containers into agent orchestration and model selection. `NaelaoAgentDO` fetched the OpenRouter catalog for a configured worker pool before sub-agent routing, even when the run was air-gapped or bound to a local model machine. Although later selection preserved the private model route, this metadata fetch still made an external request. Gated catalog discovery and reject cloud-model IDs before credential lookup/pricing on private/local routes. Agents routing suite passed 9/9 and Agents typecheck passed. DNS-pinned outbound transport and live egress proof remain open.
 
 ## 2026-10-23 — billing lifecycle event ordering
 

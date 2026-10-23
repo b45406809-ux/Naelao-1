@@ -130,7 +130,7 @@ function boundedCheckpointJson(value: unknown, maxChars = 64_000): string {
 }
 import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
 import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
-import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog } from "../script-engine/worker-model-routing.js";
+import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog, isCloudModelForbiddenOnPrivateRoute } from "../script-engine/worker-model-routing.js";
 import { DurableDaemon } from "../script-engine/daemons/durable-daemon.js";
 import { validateModelForSpacePolicy } from "../model-policy.js";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
@@ -5193,6 +5193,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId, { goal: body.goal, taskId: runId, threadId: sessionId }, body.airGappedOnly === true, templateMode, body.workspaceBranch, callerRole);
     if (!engineEnv) {
       return this.finishScriptFailure(runId, "script engine unavailable: SCRIPTS_R2 not bound", 503, "script_engine_unavailable");
+    }
+    const privateExecutionRoute = engineEnv.airGappedOnly === true || Boolean(engineEnv.localModelMachine) || Boolean(body.localMachineId);
+    if (isCloudModelForbiddenOnPrivateRoute(requestedModel, privateExecutionRoute)) {
+      return this.finishScriptFailure(runId, "This space requires a local model for private execution", 403, "compliance_violation");
     }
     if (modelPolicy?.workerModelIds?.length) engineEnv.workerModelPool = {
       modelIds: modelPolicy.workerModelIds.slice(0, 100),

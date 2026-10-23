@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_WORKING_MODEL, OPENROUTER_WORKING_MODEL } from "@naelao/billing-core";
-import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog } from "./worker-model-routing.js";
+import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog, isCloudModelForbiddenOnPrivateRoute } from "./worker-model-routing.js";
 
 describe("automatic worker model routing", () => {
   it("never calls the external model catalog for private or local runs", () => {
@@ -8,6 +8,12 @@ describe("automatic worker model routing", () => {
     expect(mayDiscoverWorkerModelCatalog({ privateRoute: false, hasPool: false, hasCredential: true })).toBe(false);
     expect(mayDiscoverWorkerModelCatalog({ privateRoute: false, hasPool: true, hasCredential: false })).toBe(false);
     expect(mayDiscoverWorkerModelCatalog({ privateRoute: false, hasPool: true, hasCredential: true })).toBe(true);
+  });
+  it("rejects cloud model IDs before credentials and pricing on a private route", () => {
+    expect(isCloudModelForbiddenOnPrivateRoute("openrouter/vendor/model", true)).toBe(true);
+    expect(isCloudModelForbiddenOnPrivateRoute("anthropic/claude", true)).toBe(true);
+    expect(isCloudModelForbiddenOnPrivateRoute("local/qwen", true)).toBe(false);
+    expect(isCloudModelForbiddenOnPrivateRoute("openrouter/vendor/model", false)).toBe(false);
   });
   it("rejects missing or increased live prices for the pinned economy worker", () => {
     expect(isWorkerPriceAllowed(OPENROUTER_WORKING_MODEL, undefined)).toBe(false);
