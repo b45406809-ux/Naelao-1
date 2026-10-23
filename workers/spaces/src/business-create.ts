@@ -12,6 +12,7 @@
 import type { SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2, SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
 import { checkFreeTierTemplateEligibility, loadTemplateCatalogOrNull } from "./template-catalog.js";
 import { provisionBusinessWallet } from "./create-space.js";
+import { deliverProvisioningOutboxEntry } from "./provisioning-outbox.js";
 import { resolveEffectiveBusinessLimit, isPersonalPlanTier, type PersonalPlanTier } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
 
@@ -350,61 +351,54 @@ async function createBusinessForEndUserUnlocked(
       presentation_profile: primaryTemplate.presentation_profile,
     } : {}),
   });
+  const provisionMessage: ProvisionMessage = {
+    type: "space_provision",
+    spaceId,
+    tenantId: childTenantId,
+    spaceTypeId: opts.spacetypeId,
+    spaceName: opts.name,
+    ...(templateIds.length > 0 ? { templateId: templateIds[0]!, templateIds } : {}),
+    userId: opts.userId,
+    requestedAt: now,
+  };
   // The child business is its OWN top-level space under its OWN tenant (saas per-end-user
   // isolation, G-Y16): own SpaceDO, own SQLite. parent_space_id links it to the reseller's
   // product for portfolio/promotion queries; scenario_type marks it a user-created business.
-  const rollbackUnprovisioned = async (includeActive = false) => {
-    const cleanup = [
-      env.PLATFORM_DB.prepare("DELETE FROM business_memberships WHERE business_space_id = ? AND end_user_id = ?").bind(spaceId, opts.userId).run(),
-      env.PLATFORM_DB.prepare("DELETE FROM spaces WHERE id = ? AND (status = 'provisioning' OR (? = 1 AND status = 'active'))").bind(spaceId, includeActive ? 1 : 0).run(),
-    ];
-    if (!existing) cleanup.push(env.PLATFORM_DB.prepare("DELETE FROM tenant_hierarchy WHERE child_tenant_id = ? AND child_space_id = ?").bind(childTenantId, spaceId).run());
-    await Promise.allSettled(cleanup);
-  };
   try {
-    await env.PLATFORM_DB.prepare(
+    const writes = [env.PLATFORM_DB.prepare(
       `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, parent_space_id, depth, tenancy_mode, scenario_type, created_at, updated_at, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'saas', 'user-workspace', ?, ?, ?)`
-    ).bind(spaceId, childTenantId, opts.spacetypeId, opts.name, initialStatus, configJson, opts.resellerProductSpaceId, now, now, opts.userId).run();
+    ).bind(spaceId, childTenantId, opts.spacetypeId, opts.name, initialStatus, configJson, opts.resellerProductSpaceId, now, now, opts.userId)];
 
     // 5. Record the hierarchy on first business for this child tenant, and index owner membership
-    // before the queue can provision asynchronously. If any D1 write fails, remove the incomplete
-    // provisioning state so a client retry does not consume quota or create a phantom business.
+    // before the queue can provision asynchronously. Keep these writes and the queue intent in
+    // one D1 batch so failures cannot leave a partial business without durable provisioning intent.
     if (!existing) {
-      await env.PLATFORM_DB.prepare(
+      writes.push(env.PLATFORM_DB.prepare(
         `INSERT INTO tenant_hierarchy (child_tenant_id, parent_tenant_id, reseller_product_space_id, child_space_id, child_owner_user_id)
          VALUES (?, ?, ?, ?, ?)`
-      ).bind(childTenantId, parentTenantId, opts.resellerProductSpaceId, spaceId, opts.userId).run();
+      ).bind(childTenantId, parentTenantId, opts.resellerProductSpaceId, spaceId, opts.userId));
     }
-    await env.PLATFORM_DB.prepare(
+    writes.push(env.PLATFORM_DB.prepare(
       `INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status, joined_at)
        VALUES (?, ?, ?, 'owner', 'active', datetime('now'))
        ON CONFLICT(business_space_id, end_user_id) DO NOTHING`
-    ).bind(spaceId, opts.resellerProductSpaceId, opts.userId).run();
+    ).bind(spaceId, opts.resellerProductSpaceId, opts.userId));
+    if (useProvisioningQueue) {
+      writes.push(env.PLATFORM_DB.prepare(
+        `INSERT INTO space_provisioning_outbox (space_id, tenant_id, payload_json)
+         VALUES (?, ?, ?)`
+      ).bind(spaceId, childTenantId, JSON.stringify(provisionMessage)));
+    }
+    await env.PLATFORM_DB.batch(writes);
   } catch (error) {
-    await rollbackUnprovisioned(true);
     console.error(`[business-create] failed to persist business ${spaceId}:`, (error as Error).message);
     return { ok: false, error_code: "business_creation_unavailable", message: "Business creation is temporarily unavailable.", status: 503 };
   }
 
   // 6. Provision under the CHILD tenant (reuses the 10-step provisioner unchanged).
   if (useProvisioningQueue && env.PROVISION_QUEUE) {
-    try {
-      await env.PROVISION_QUEUE.send({
-        type: "space_provision",
-        spaceId,
-        tenantId: childTenantId,
-        spaceTypeId: opts.spacetypeId,
-        spaceName: opts.name,
-        ...(templateIds.length > 0 ? { templateId: templateIds[0]!, templateIds } : {}),
-        userId: opts.userId,
-        requestedAt: now,
-      });
-    } catch (error) {
-      await rollbackUnprovisioned();
-      console.error(`[business-create] provision queue rejected business ${spaceId}:`, (error as Error).message);
-      return { ok: false, error_code: "provision_queue_unavailable", message: "Business provisioning could not be queued. Retry shortly.", status: 503 };
-    }
+    await deliverProvisioningOutboxEntry(env.PLATFORM_DB, env.PROVISION_QUEUE, spaceId);
   }
 
   // Every customer-created business gets the same isolated Whop business-wallet attempt as a

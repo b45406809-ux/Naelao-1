@@ -9,6 +9,7 @@ import { mintInternalToken } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { checkFreeTierTemplateEligibility } from "./template-catalog.js";
 import { scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { deliverProvisioningOutboxEntry } from "./provisioning-outbox.js";
 
 /** Stable identity used by SpaceDO-owned extension records. A project is included only for
  * project scopes; no project can become the parent of a space-owned installation. */
@@ -30,6 +31,7 @@ export interface ProvisionMessage {
   spaceTypeId: string;
   spaceName: string;
   templateId?: string;
+  templateIds?: string[];
   requestedAt: string;
   userId?: string;
 }
@@ -399,12 +401,33 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   const useProvisioningQueue = Boolean(env.PROVISION_QUEUE) && env.ENVIRONMENT !== "development";
   const initialStatus = useProvisioningQueue ? "provisioning" : "active";
 
+  const provisionMessage: ProvisionMessage = {
+    type: "space_provision",
+    spaceId: id,
+    tenantId: params.tenantId,
+    spaceTypeId: params.spacetypeId,
+    spaceName: params.name,
+    ...(params.templateId ? { templateId: params.templateId } : {}),
+    ...(params.userId ? { userId: params.userId } : {}),
+    requestedAt: now,
+  };
   const insertSpace = async (): Promise<void> => {
-    await env.PLATFORM_DB.prepare(
+    const spaceInsert = env.PLATFORM_DB.prepare(
       `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, product_slug, parent_space_id, depth, created_at, updated_at, created_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(id, params.tenantId, params.spacetypeId, params.name.trim(), initialStatus, configJson, params.productSlug ?? null,
-      params.parentSpaceId ?? null, derivedDepth, now, now, params.userId ?? null).run();
+      params.parentSpaceId ?? null, derivedDepth, now, now, params.userId ?? null);
+    if (useProvisioningQueue) {
+      await env.PLATFORM_DB.batch([
+        spaceInsert,
+        env.PLATFORM_DB.prepare(
+          `INSERT INTO space_provisioning_outbox (space_id, tenant_id, payload_json)
+           SELECT ?, ?, ? WHERE changes() = 1`,
+        ).bind(id, params.tenantId, JSON.stringify(provisionMessage)),
+      ]);
+    } else {
+      await spaceInsert.run();
+    }
   };
   const checkQuotaAndInsert = async (): Promise<void> => {
     await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
@@ -450,27 +473,9 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   }
 
   if (useProvisioningQueue && env.PROVISION_QUEUE) {
-    try {
-      await env.PROVISION_QUEUE.send({
-        type: "space_provision",
-        spaceId: id,
-        tenantId: params.tenantId,
-        spaceTypeId: params.spacetypeId,
-        spaceName: params.name,
-        ...(params.templateId ? { templateId: params.templateId } : {}),
-        ...(params.userId ? { userId: params.userId } : {}),
-        requestedAt: now,
-      });
-    } catch (err) {
-      // Match the business-create path: a definite queue rejection must not leave a permanently
-      // counted `provisioning` row that blocks retries. Queue acceptance followed by a lost error
-      // response is inherently ambiguous across D1 and Queue and remains a production risk.
-      try {
-        await env.PLATFORM_DB.prepare("DELETE FROM spaces WHERE id = ? AND status = 'provisioning'").bind(id).run();
-      } catch { /* retain the original queue failure; the orphan can be reconciled operationally */ }
-      console.error(`[create-space] provision queue rejected space ${id}:`, (err as Error).message);
-      throw new SpaceCreationError(503, "provision_queue_unavailable", "Space provisioning could not be queued. Retry shortly.");
-    }
+    // The durable outbox was committed atomically with the space row. A failed or ambiguous
+    // queue send is retried by the scheduled dispatcher; do not delete a valid product here.
+    await deliverProvisioningOutboxEntry(env.PLATFORM_DB, env.PROVISION_QUEUE, id);
   }
 
   return { id, status: initialStatus, created_at: now, product_slug: params.productSlug! };

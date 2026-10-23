@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { createBusinessForEndUser } from "../../workers/spaces/src/business-create.js";
 import { LockDO } from "../../workers/spaces/src/do/LockDO.js";
 import { createDOStorage } from "./helpers/sqlite-do-shim.js";
@@ -41,6 +42,7 @@ const SCHEMA = [
     invited_by TEXT, joined_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (business_space_id, end_user_id)
   );`,
+  readFileSync(new URL("../../infra/migrations/0126_space_provisioning_outbox.sql", import.meta.url), "utf8"),
 ];
 
 function make404RegistryDo(): DurableObjectNamespace {
@@ -187,6 +189,36 @@ describe("createBusinessForEndUser", () => {
 
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0]).toMatchObject({ templateId: "creator-store", templateIds: ["creator-store", "newsletter-business"], userId: "u1" });
+  });
+
+  it("retains the business and atomic queue intent when queue delivery fails", async () => {
+    const { env, fakeDb } = makeEnv({ membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"] });
+    env.PROVISION_QUEUE = { send: async () => { throw new Error("queue unavailable"); } } as unknown as Queue<unknown>;
+    const result = await createBusinessForEndUser(env as never, {
+      resellerProductSpaceId: "prod-1", userId: "u1", name: "My Biz", spacetypeId: "launchpad",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(fakeDb.db.prepare("SELECT status FROM spaces WHERE id = ?").get(result.spaceId)).toEqual({ status: "provisioning" });
+    expect(fakeDb.db.prepare("SELECT status, attempt_count FROM space_provisioning_outbox WHERE space_id = ?").get(result.spaceId))
+      .toEqual({ status: "pending", attempt_count: 1 });
+    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM business_memberships WHERE business_space_id = ?").get(result.spaceId))
+      .toEqual({ count: 1 });
+  });
+
+  it("rolls back the space, hierarchy, membership, and outbox together on a mid-batch write failure", async () => {
+    const { env, fakeDb } = makeEnv({ membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"] });
+    fakeDb.db.exec(`CREATE TRIGGER fail_business_membership BEFORE INSERT ON business_memberships
+      BEGIN SELECT RAISE(ABORT, 'simulated membership storage failure'); END;`);
+    const result = await createBusinessForEndUser(env as never, {
+      resellerProductSpaceId: "prod-1", userId: "u1", name: "My Biz", spacetypeId: "launchpad",
+    });
+    expect(result).toMatchObject({ ok: false, error_code: "business_creation_unavailable", status: 503 });
+    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM spaces WHERE parent_space_id = 'prod-1'").get())
+      .toEqual({ count: 0 });
+    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM tenant_hierarchy").get()).toEqual({ count: 0 });
+    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM business_memberships").get()).toEqual({ count: 0 });
+    expect(fakeDb.db.prepare("SELECT COUNT(*) AS count FROM space_provisioning_outbox").get()).toEqual({ count: 0 });
   });
 
   it("reuses the SAME child tenant for a second business from the same customer", async () => {

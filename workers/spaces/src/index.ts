@@ -12,6 +12,7 @@ import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError, provisionBusinessWallet } from "./create-space.js";
+import { dispatchPendingProvisioningOutbox } from "./provisioning-outbox.js";
 import type { ProvisionMessage } from "./create-space.js";
 import { requireBusinessMembership, requireBusinessMembershipForWallet, resolveEndUserBusinessRole } from "./business-auth.js";
 import { createBusinessForEndUser } from "./business-create.js";
@@ -7207,8 +7208,13 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    if (!env.EVENTS_QUEUE) return;
-    const result = await dispatchPendingErasureOutbox(env.PLATFORM_DB, env.EVENTS_QUEUE);
-    console.log(`[erasure-outbox] sent=${result.sent} deferred=${result.deferred}`);
+    if (env.PROVISION_QUEUE) {
+      const provisions = await dispatchPendingProvisioningOutbox(env.PLATFORM_DB, env.PROVISION_QUEUE);
+      console.log(`[provisioning-outbox] sent=${provisions.sent} deferred=${provisions.deferred}`);
+    }
+    if (env.EVENTS_QUEUE) {
+      const erasures = await dispatchPendingErasureOutbox(env.PLATFORM_DB, env.EVENTS_QUEUE);
+      console.log(`[erasure-outbox] sent=${erasures.sent} deferred=${erasures.deferred}`);
+    }
   },
 } satisfies ExportedHandler<Env>;

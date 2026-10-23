@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { createSpaceRecord, SpaceCreationError } from "../../workers/spaces/src/create-space.js";
+import { dispatchPendingProvisioningOutbox } from "../../workers/spaces/src/provisioning-outbox.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 // Three-Tier Platform Model, Phase 4. createSpaceRecord is the single space-creation code path
@@ -26,7 +28,8 @@ const SPACES_TABLE_SQL = `
 `;
 
 function makeDb() {
-  return createFakeD1([SPACES_TABLE_SQL]);
+  const outboxMigration = readFileSync(new URL("../../infra/migrations/0126_space_provisioning_outbox.sql", import.meta.url), "utf8");
+  return createFakeD1([SPACES_TABLE_SQL, outboxMigration]);
 }
 
 describe("createSpaceRecord — quota enforcement queries the REAL orgs table", () => {
@@ -110,17 +113,37 @@ describe("createSpaceRecord — bounded inputs and tenant quota serialization", 
     expect(lockFetch.mock.calls.map(([request]) => new URL(request.url).pathname)).toEqual(["/acquire", "/release"]);
   });
 
-  it("removes the provisioning row after a rejected queue send so a retry is not blocked", async () => {
+  it("keeps the space and retries a rejected queue send from the durable outbox", async () => {
     const fakeDb = makeDb();
+    const send = vi.fn(async () => { throw new Error("queue unavailable"); });
     const env = {
       PLATFORM_DB: fakeDb,
       ENVIRONMENT: "production",
-      PROVISION_QUEUE: { send: vi.fn(async () => { throw new Error("queue unavailable"); }) },
+      PROVISION_QUEUE: { send },
     } as never;
-    await expect(createSpaceRecord(env, { tenantId: "t1", name: "A", spacetypeId: "launchpad" }))
-      .rejects.toMatchObject({ error_code: "provision_queue_unavailable", status: 503 });
-    const row = await fakeDb.prepare("SELECT COUNT(*) AS count FROM spaces").first<{ count: number }>();
-    expect(row?.count).toBe(0);
+    const result = await createSpaceRecord(env, { tenantId: "t1", name: "A", spacetypeId: "launchpad" });
+    expect(result.status).toBe("provisioning");
+    const row = await fakeDb.prepare("SELECT status FROM spaces WHERE id = ?").bind(result.id).first<{ status: string }>();
+    const outbox = await fakeDb.prepare("SELECT status, attempt_count FROM space_provisioning_outbox WHERE space_id = ?").bind(result.id)
+      .first<{ status: string; attempt_count: number }>();
+    expect(row?.status).toBe("provisioning");
+    expect(outbox).toMatchObject({ status: "pending", attempt_count: 1 });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it("redelivers due provisioning outbox entries and marks successful sends", async () => {
+    const fakeDb = makeDb();
+    const send = vi.fn(async () => {});
+    const result = await createSpaceRecord(
+      { PLATFORM_DB: fakeDb, ENVIRONMENT: "production", PROVISION_QUEUE: { send: async () => { throw new Error("offline"); } } as never },
+      { tenantId: "t1", name: "A", spacetypeId: "launchpad" },
+    );
+    fakeDb.db.prepare("UPDATE space_provisioning_outbox SET next_attempt_at = datetime('now', '-1 second') WHERE space_id = ?").run(result.id);
+    expect(await dispatchPendingProvisioningOutbox(fakeDb, { send })).toEqual({ sent: 1, deferred: 0 });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: "space_provision", spaceId: result.id }));
+    const state = await fakeDb.prepare("SELECT status, attempt_count FROM space_provisioning_outbox WHERE space_id = ?").bind(result.id)
+      .first<{ status: string; attempt_count: number }>();
+    expect(state).toMatchObject({ status: "sent", attempt_count: 1 });
   });
 });
 

@@ -1958,10 +1958,16 @@ first real business on free-tier resources before opening the platform to other 
   Add malformed-object, invalid-enum, negative/fractional/unsafe-value, and 64 KiB boundary tests before
   considering client-side wizard validation sufficient.
 
-- [ ] **Product creation still needs a durable idempotency boundary.** The browser locks duplicate clicks
-  while its request is in flight, but a lost success response can leave the caller unsure whether D1
-  committed and whether a provisioning queue message was accepted. Add a caller idempotency key and a
-  reconciliation path that cannot create a duplicate product or orphan a provision event under retry.
+- [ ] **Product creation still needs caller-level idempotency and reconciliation.** The browser locks
+  duplicate clicks while its request is in flight, and Launchpad creation can reconcile an existing
+  singleton root. The D1-to-Queue gap is now closed for shared product/space creation: the provisioning
+  intent is committed atomically with the space and retried by the scheduled outbox. Add a caller
+  idempotency key and a status/result lookup for non-singleton creation so lost responses can be
+  reconciled without relying on product-specific duplicate checks.
+- [x] **Space and customer-business provisioning intent is durable.** Both shared `createSpaceRecord`
+  and `createBusinessForEndUser` now atomically commit provisioning intent with their space records
+  (and business hierarchy/membership), then use the retryable scheduled outbox. This closes the
+  cross-system D1/Queue gap for both paths. Caller idempotency and response reconciliation remain open.
 
 - [x] **Tool container package egress now follows the Space air-gap policy.** Cold starts previously
   installed exact-host HTTPS interceptions for npm/Python/Git package sources regardless of the

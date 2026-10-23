@@ -2764,6 +2764,14 @@ This is a substantial test-harness and regression-coverage closure, not completi
 
 While reconciling remaining webhook gaps against the current implementation, traced platform and business subscription updates beyond the prior payment-failure guard. `payment.failed` is constrained to the currently stored provider subscription ID, but ordinary `subscription.*` events upsert the lifecycle row without the same identity/version condition. A delayed `subscription.expired` or `subscription.cancelled` event from a replaced subscription can therefore overwrite current access; for platform plans an expired stale event can set `orgs.plan_tier` to `free`. Recorded this as a concrete unresolved security/correctness item in `docs/AUDIT_TODO.md`; it needs an explicit replacement policy plus a provider-guaranteed monotonic ordering key, not a guessed timestamp. No provider event-ordering guarantee or live payload has been verified.
 
+## 2026-10-23 — space provisioning queue durability
+
+Traced product/space creation through dashboard requests, quota and slug enforcement, D1 persistence, Queue delivery, provisioner lease/state checks, and the scheduled Spaces worker. Found a D1/Queue dual-write gap: after D1 committed a provisioning row, Queue send failure attempted to delete it even though the send result could be ambiguous. This could leave a valid request without durable recovery intent.
+
+Added `0126_space_provisioning_outbox.sql`; `createSpaceRecord` now batches the space insert with a provisioning outbox insert, then attempts immediate Queue delivery. Failed sends remain pending with bounded exponential backoff and are retried by the existing five-minute cron. Duplicate sends are safe under the existing per-Space provision lease and state checks. Added SQL-backed retry/failure tests.
+
+Verification: Spaces suite 69 files / 276 tests; root create-space tests 40 / 40; Spaces TypeScript check; `git diff --check`. A follow-up extended the same transaction/outbox to `createBusinessForEndUser`: space, hierarchy, membership, and queue intent now share one D1 batch. Added both root regressions to the Spaces package's normal Vitest include list; they pass 54/54. Non-singleton create calls still need a caller idempotency key/status reconciliation; no live D1 migration or Cloudflare Queue test was run.
+
 ## 2026-10-23 — billing lifecycle event ordering
 
 Expanded the audit to `workers/billing` and `packages/billing-core`, tracing signed Lemon Squeezy event parsing through platform-plan entitlements, business-subscription persistence, webhook deduplication, migrations, and the real-SQLite test harness. Found that platform and business subscription upserts accepted any subscription ID and status, so a late expiry for an old subscription could overwrite the current subscription; platform expiry could also set `orgs.plan_tier = 'free'`. Existing tests incorrectly treated expiry for a different ID as expected behavior.
