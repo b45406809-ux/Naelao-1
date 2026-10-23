@@ -2797,3 +2797,9 @@ Followed the product-config audit into the dedicated pricing endpoint, which pro
 The generic product PATCH also accepted price-catalog edits, bypassing that validation route. It now rejects changed `pricingConfig` while allowing an unchanged catalog alongside unrelated dashboard settings. A SQLite-backed regression covers both behaviors.
 
 Verification: pricing catalog suite passed 24/24; Spaces TypeScript check and `git diff --check` passed. Product config validation for remaining write paths and fields remains open. No live Lemon Squeezy or Cloudflare test was run; repository-wide audit remains open.
+
+## 2026-10-23 — refunded seat membership
+
+Continued the refund lifecycle audit. Product orders and seat purchases share `launchpad_orders`; the refund path clawed back settled wallet proceeds but left the member created by a paid seat active. Added migration `0127_launchpad_order_seat_user_id.sql`, stored the Naelao user ID at seat activation, and on refund removed that member through the existing tenant-scoped, HMAC-authenticated Spaces endpoint before marking the order refunded. The stored identity is authoritative; preserved signed checkout metadata is only a fallback for old rows. Repeated deletes are safe, and a removal failure leaves the refund retryable.
+
+Verification: four focused Billing suites passed 44/44; the full Billing suite passed 22 files / 197 tests; Billing TypeScript check passed; migration integrity suite passed 7/7; Wrangler Billing dry-run bundled successfully; `git diff --check` passed. The membership revocation test verifies the stored user ID is used even when refund metadata omits it. Provider partial-refund behavior and overall audit remain open; no live provider or deployed D1 test was run.

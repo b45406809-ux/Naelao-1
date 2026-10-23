@@ -183,6 +183,8 @@ async function loadDb() {
     m("0067_subscriptions_whop_platform_plan.sql"),
     m("0049_business_subscriptions.sql"),
     m("0125_subscription_event_ordering.sql"),
+    m("0061_reseller_ledger_kind.sql"),
+    m("0127_launchpad_order_seat_user_id.sql"),
   ]);
   await fakeDb.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier) VALUES (?, 'Test Org', 'user-1', 'free')")
     .bind(ORG_ID).run();

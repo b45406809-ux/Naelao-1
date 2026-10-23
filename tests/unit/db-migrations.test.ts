@@ -67,6 +67,20 @@ describe("atomic versioned DO migrations", () => {
     expect(storage.sql.exec<{ id: string }>("SELECT id FROM whop_payout_requests").toArray()).toEqual([{ id: "wallet-1" }]);
   });
 
+  it("stores the Naelao member identity granted by a seat for later refund revocation", () => {
+    const db = createDOStorage();
+    db.sql.exec(readFileSync(join(__dirname, "../../infra/migrations/0033_reseller_accounts.sql"), "utf8"));
+    db.sql.exec(readFileSync(join(__dirname, "../../infra/migrations/0035_commerce.sql"), "utf8"));
+    db.sql.exec(readFileSync(join(__dirname, "../../infra/migrations/0061_reseller_ledger_kind.sql"), "utf8"));
+    const migration = readFileSync(join(__dirname, "../../infra/migrations/0127_launchpad_order_seat_user_id.sql"), "utf8");
+    db.sql.exec(migration);
+    const columns = db.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('launchpad_orders')").toArray().map(column => column.name);
+    expect(columns).toContain("seat_user_id");
+    db.sql.exec(`INSERT INTO launchpad_orders (id,space_id,tenant_id,gross_cents,seat_user_id)
+      VALUES ('o1','s1','t1',1000,'u1')`);
+    expect(db.sql.exec<{ seat_user_id: string }>("SELECT seat_user_id FROM launchpad_orders WHERE id='o1'").toArray()).toEqual([{ seat_user_id: "u1" }]);
+  });
+
   it("adds independent language preference fields to platform members and product end users", () => {
     const storage = createDOStorage();
     storage.sql.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");

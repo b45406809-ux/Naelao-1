@@ -21,6 +21,7 @@ async function loadDb() {
     m("0050_webhook_idempotency.sql"),
     m("0052_webhook_idempotency_event_type.sql"),
     m("0061_reseller_ledger_kind.sql"), // adds launchpad_orders.builder_fee_cents (recordOrderRefund reads it)
+    m("0127_launchpad_order_seat_user_id.sql"),
   ]);
   await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space-1", "tenant-1").run();
   return fakeDb;
@@ -41,6 +42,34 @@ function refundBody(custom: Record<string, unknown>, orderId = "ord_1") {
 }
 
 describe("F-29: refund clawback routes by original checkout kind", () => {
+  it("revokes the Naelao member whose paid seat was refunded", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    await fakeDb.prepare(
+      `INSERT INTO launchpad_orders
+       (id, space_id, tenant_id, gross_cents, fee_cents, builder_fee_cents, net_cents, currency, status, provider_event_id, seat_user_id)
+       VALUES ('seat-order', 'space-1', 'tenant-1', 5000, 250, 0, 0, 'USD', 'paid', 'ord_seat_refund', 'user-seat-1')`
+    ).run();
+    const calls: string[] = [];
+    const spacesWorker = {
+      async fetch(reqInput: Request | string, init?: RequestInit) {
+        const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        calls.push(`${req.method} ${req.url}`);
+        return Response.json({ project_id: null, deleted: true });
+      },
+    };
+    const env = {
+      PLATFORM_SECRET: SECRET, PLATFORM_DB: fakeDb, LEMON_SQUEEZY_WEBHOOK_SECRET: "whsec_test",
+      AGENTS_WORKER: { fetch: async () => new Response("{}") }, SPACES_WORKER: spacesWorker,
+    };
+    const req = await signedWebhook(refundBody({ spaceId: "space-1", kind: "seat" }, "ord_seat_refund"), "whsec_test");
+    const res = await handleLemonSqueezyWebhook(req, env as never);
+    expect(res.status).toBe(200);
+    expect(calls).toContain("DELETE http://spaces-worker/spaces/space-1/members/user-seat-1");
+    const order = await fakeDb.prepare("SELECT status FROM launchpad_orders WHERE id = 'seat-order'").first<{ status: string }>();
+    expect(order?.status).toBe("refunded");
+  });
+
   it("debits the wallet on a refunded wallet_topup", async () => {
     const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
     const fakeDb = await loadDb();

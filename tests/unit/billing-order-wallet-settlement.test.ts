@@ -25,6 +25,7 @@ const SPACES_SQL = `
 const RESELLER_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0033_reseller_accounts.sql"), "utf8");
 const COMMERCE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0035_commerce.sql"), "utf8");
 const LEDGER_KIND_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0061_reseller_ledger_kind.sql"), "utf8");
+const SEAT_USER_ID_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0127_launchpad_order_seat_user_id.sql"), "utf8");
 const WEBHOOK_IDEMPOTENCY_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0050_webhook_idempotency.sql"), "utf8");
 const WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0052_webhook_idempotency_event_type.sql"), "utf8");
 
@@ -106,7 +107,7 @@ function makeEnv(db: D1Database, spacesWorker: ReturnType<typeof makeSpacesWorke
 
 describe("Lemon Squeezy webhook — storefront sale settles to the seller's own wallet (P0-5)", () => {
   it("credits net_cents (gross minus platform fee) to the space's wallet on a new order", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const { fetcher, calls } = makeSpacesWorker();
@@ -121,7 +122,7 @@ describe("Lemon Squeezy webhook — storefront sale settles to the seller's own 
   });
 
   it("falls back to a safe fee when provider metadata and configuration exceed 100 percent", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
     const { fetcher, calls } = makeSpacesWorker();
     const env = { ...makeEnv(fakeDb as unknown as D1Database, fetcher), LAUNCHPAD_FEE_BPS: "10001" };
@@ -139,7 +140,7 @@ describe("Lemon Squeezy webhook — storefront sale settles to the seller's own 
   });
 
   it("never double-settles the same order on a replayed webhook delivery", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const { fetcher, calls } = makeSpacesWorker();
@@ -152,7 +153,7 @@ describe("Lemon Squeezy webhook — storefront sale settles to the seller's own 
   });
 
   it("records a negative reseller attribution for the refund of the same order resource", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
     await fakeDb.prepare("INSERT INTO tenant_hierarchy (child_tenant_id, parent_tenant_id, reseller_product_space_id, child_space_id, status) VALUES (?, ?, ?, ?, 'active')")
       .bind("tenant1", "parent1", "reseller-product", "space1").run();
@@ -175,7 +176,7 @@ describe("Lemon Squeezy webhook — storefront sale settles to the seller's own 
   });
 
   it("degrades honestly (never blocks order recording) when the space has no wallet project", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const { fetcher } = makeSpacesWorker({ walletProjectId: null });
@@ -188,7 +189,7 @@ describe("Lemon Squeezy webhook — storefront sale settles to the seller's own 
   });
 
   it("keeps a paid product event retryable when its referenced space is missing", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     const { fetcher } = makeSpacesWorker();
     const env = makeEnv(fakeDb as unknown as D1Database, fetcher);
     const response = await post(makeOrderPaidBody("space-does-not-exist", "ord_missing_space", "prod_a"), env);
@@ -203,7 +204,7 @@ describe("Lemon Squeezy webhook — storefront sale settles to the seller's own 
 
 describe("Lemon Squeezy webhook — refund claws back the settled amount (P0-5)", () => {
   it("debits the ORIGINAL order's net_cents from the wallet and marks the order refunded", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const { fetcher, calls } = makeSpacesWorker();
@@ -221,7 +222,7 @@ describe("Lemon Squeezy webhook — refund claws back the settled amount (P0-5)"
   });
 
   it("is idempotent — replaying the same refund delivery only debits the wallet once", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const { fetcher, calls } = makeSpacesWorker();
@@ -236,7 +237,7 @@ describe("Lemon Squeezy webhook — refund claws back the settled amount (P0-5)"
   });
 
   it("keeps an order retryable when wallet clawback fails transiently", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
     let debitCalls = 0;
     const worker = {
@@ -262,7 +263,7 @@ describe("Lemon Squeezy webhook — refund claws back the settled amount (P0-5)"
   });
 
   it("never touches the wallet for a refund on an order this platform never recorded", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const { fetcher, calls } = makeSpacesWorker();
@@ -274,7 +275,7 @@ describe("Lemon Squeezy webhook — refund claws back the settled amount (P0-5)"
   });
 
   it("a refund clawback that exceeds the wallet's current balance fails honestly (402), does not go negative", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const { fetcher } = makeSpacesWorker({ debitOk: false });
@@ -300,7 +301,7 @@ describe("Lemon Squeezy webhook — a seat sale settles to the seller's own wall
   }
 
   it("credits the wallet with the seat's net (gross − platform fee), not just recording the order", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id) VALUES ('space-1', 'tenant-1')").run();
     const worker = makeSpacesWorker(); // wallet-project → wallet-proj-1, credit ok
     const env = makeEnv(fakeDb, worker.fetcher);
@@ -311,12 +312,12 @@ describe("Lemon Squeezy webhook — a seat sale settles to the seller's own wall
     expect(creditCall).toBeDefined();
     expect((creditCall!.body as { cents: number }).cents).toBe(855);
     // And the order row records it too.
-    const order = await fakeDb.prepare("SELECT net_cents, fee_cents FROM launchpad_orders WHERE provider_event_id = 'seat_ord_1'").first<{ net_cents: number; fee_cents: number }>();
-    expect(order).toMatchObject({ net_cents: 855, fee_cents: 45 });
+    const order = await fakeDb.prepare("SELECT net_cents, fee_cents, seat_user_id FROM launchpad_orders WHERE provider_event_id = 'seat_ord_1'").first<{ net_cents: number; fee_cents: number; seat_user_id: string }>();
+    expect(order).toMatchObject({ net_cents: 855, fee_cents: 45, seat_user_id: "buyer-42" });
   });
 
   it("retries the webhook when paid seat activation fails transiently", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id) VALUES ('space-1', 'tenant-1')").run();
     let activationCalls = 0;
     const worker = {
@@ -366,7 +367,7 @@ describe("Lemon Squeezy webhook — transient settlement failure retries instead
   }
 
   it("first delivery 500s and releases the event; the retry settles (no lost revenue)", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION, SEAT_USER_ID_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id) VALUES ('space-1', 'tenant-1')").run();
     const worker = makeFlakyCreditWorker(1); // credit fails once, then succeeds
     const env = makeEnv(fakeDb, worker.fetcher as unknown as Fetcher);

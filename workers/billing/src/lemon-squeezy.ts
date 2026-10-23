@@ -181,6 +181,11 @@ async function recordSeatActivation(
   if (!space) throw new Error("paid seat webhook references a missing space");
 
   const gross = event.amountCents ?? 0;
+  const rawUserId = custom["user_id"];
+  if (rawUserId !== undefined && (typeof rawUserId !== "string" || rawUserId.length === 0 || rawUserId.length > 256)) {
+    throw new Error("seat checkout contains an invalid Naelao user id");
+  }
+  const userId = typeof rawUserId === "string" ? rawUserId : null;
   const feeBps = normalizeFeeBps(custom["fee_bps"], env.LAUNCHPAD_FEE_BPS);
   const fee = Math.min(Math.max(0, gross), Math.round((Math.max(0, gross) * feeBps) / 10_000));
   // ARCH-REVENUE-6: builder's slice on a child business's seat sale (same as product sales).
@@ -196,11 +201,11 @@ async function recordSeatActivation(
   await env.PLATFORM_DB.prepare(
     `INSERT OR IGNORE INTO launchpad_orders
        (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, builder_fee_cents, net_cents,
-        currency, ls_subscription_id, status, provider_event_id)
-     VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'paid', ?)`
+        currency, ls_subscription_id, status, provider_event_id, seat_user_id)
+     VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'paid', ?, ?)`
   ).bind(
     id, event.spaceId, space.tenant_id, event.customerId ?? null,
-    gross, fee, builderFee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId
+    gross, fee, builderFee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId, userId
   ).run();
   // Settle the seat's net proceeds into the SELLING space's own wallet — the same P0-5 loop
   // recordProductOrder closes (a business's own sales fund its own agent's compute). Was missing
@@ -217,7 +222,6 @@ async function recordSeatActivation(
   // Activate the member in SpaceDO (idempotent — addMember upserts).
   // A Lemon Squeezy customer id is provider-scoped and must never be treated as a Naelao user id.
   // Older checkout links without a Naelao identity remain recorded, but they cannot auto-enroll.
-  const userId = custom["user_id"] ? String(custom["user_id"]) : "";
   if (userId) {
     if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for paid seat activation");
     try {
@@ -377,8 +381,8 @@ async function recordOrderRefund(
   if (event.type !== "refund.issued" || !event.providerEventId) return;
 
   const order = await env.PLATFORM_DB.prepare(
-    "SELECT space_id, tenant_id, net_cents, builder_fee_cents, status FROM launchpad_orders WHERE provider_event_id = ?"
-  ).bind(event.providerEventId).first<{ space_id: string; tenant_id: string; net_cents: number; builder_fee_cents: number; status: string }>();
+    "SELECT space_id, tenant_id, net_cents, builder_fee_cents, status, seat_user_id FROM launchpad_orders WHERE provider_event_id = ?"
+  ).bind(event.providerEventId).first<{ space_id: string; tenant_id: string; net_cents: number; builder_fee_cents: number; status: string; seat_user_id: string | null }>();
   if (!order || order.status === "refunded") return; // unknown order, or already clawed back (idempotent)
   // Do retryable/idempotent side effects before the durable refunded state. If the wallet or
   // reseller ledger is unavailable, the webhook releases its event claim; leaving the order paid
@@ -399,6 +403,23 @@ async function recordOrderRefund(
         event, order.builder_fee_cents, event.providerEventId, true
       );
     }
+  }
+  const refundMetadata = (event.metadata ?? {}) as Record<string, unknown>;
+  const seatUserId = order.seat_user_id
+    ?? (refundMetadata["kind"] === "seat" && typeof refundMetadata["user_id"] === "string" ? refundMetadata["user_id"] : null);
+  if (seatUserId) {
+    if (!env.SPACES_WORKER) throw new Error("Spaces worker is not bound for paid-seat refund revocation");
+    const response = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${encodeURIComponent(order.space_id)}/members/${encodeURIComponent(seatUserId)}`,
+      {
+        method: "DELETE",
+        headers: {
+          "x-naelao-tenant-id": order.tenant_id,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, order.tenant_id),
+        },
+      }
+    ));
+    if (!response.ok) throw new Error(`seat refund membership revocation ${response.status}: ${await responseDetail(response)}`);
   }
   await env.PLATFORM_DB.prepare(
     "UPDATE launchpad_orders SET status = 'refunded' WHERE provider_event_id = ? AND status != 'refunded'"

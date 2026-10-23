@@ -991,15 +991,15 @@ the expected incremental-build path, not a fallback state to design around.
   current plan); plan switching requires cancelling old sub first via LS API (or use LS's 
   variant-change endpoint for proration).
 
-- [x] **F-22 (race): `POST /builder/payouts/request` is read-then-insert — concurrent requests 
-  can each create payout for FULL balance.** Evidence: builder-routes.ts:853-884 calls 
-  `computeAvailableBalances` (SELECT), checks if > 0, then INSERT with no uniqueness. 
-  **VERIFIED REAL**. Scenario: builder has $100 balance; two concurrent requests both read 
-  $100, both INSERT payout_requests rows for $100 → admin fulfilling both pays $200 from 
-  Naelao account. No atomic check-and-insert. Manual fulfillment (human-reviewed) is only 
-  backstop. Fix: partial unique index `payout_requests(tenant_id, currency) WHERE status=
-  'pending'` — D1 doesn't support SELECT FOR UPDATE, so index forces 409 on conflict; 
-  one open request per currency per tenant.
+- [x] **F-22 (race): builder payout requests used a read-then-insert and could reserve the same
+  balance twice.** Fixed in commit `c252f35e`: reservation now uses one conditional
+  `INSERT ... SELECT ... RETURNING` that recomputes earned less outstanding payouts in the write
+  itself. Concurrent requests cannot both reserve the same amount; one succeeds and the other
+  sees no remaining balance or receives a 409 if it raced after the preliminary display read.
+  Regression coverage in `tests/unit/builder-payout-requests.test.ts` runs two simultaneous
+  requests and asserts aggregate reservations never exceed earned funds. A partial unique index is
+  unnecessary because the atomic balance predicate is the invariant, and this still permits a
+  later payout request after new earnings arrive.
 
 - [x] **F-7: FIXED at HEAD (verified, do not re-report)** — `NaelaoAgentDO.
   checkBusinessSubscriptionGate` (agents/do/NaelaoAgentDO.ts:1960) now reads
@@ -1086,8 +1086,13 @@ the expected incremental-build path, not a fallback state to design around.
   balance since the money was refunded), revenue_cut_surcharge → new
   `/revenue-tracking/unmark-billed` (SpaceDO `markRevenueUnbilled`). Each keyed on
   `refund:{providerEventId}` for idempotency. Tests in `billing-refund-clawback.test.ts`.
-  **Still open (noted, not fixed here):** a refunded SEAT purchase claws back the wallet
-  settlement but doesn't deactivate the seat member — tracked separately.
+  **Seat access revocation fixed (2026-10-23):** `launchpad_orders.seat_user_id` now persists the
+  Naelao user granted by a seat payment, and refund handling removes that user through the signed
+  Spaces membership route before marking the order refunded. Legacy refund metadata is a fallback
+  when it still includes the user ID. Migration-backed tests verify identity persistence and
+  end-to-end removal; repeated removal is idempotent. Billing worker suite passed 22 files /
+  197 tests, Billing typecheck passed, migration integrity suite passed 7/7, and Wrangler dry-run
+  bundled successfully. No live provider or deployed migration test was run.
   Evidence: the `refund.issued` handler (lemon-squeezy.ts:215-227) only matches
   `launchpad_orders` rows and returns silently for anything else. A business tops up its
   wallet, spends nothing, requests an LS refund (or chargeback) → money returned by LS,
@@ -1100,9 +1105,9 @@ the expected incremental-build path, not a fallback state to design around.
   checkout `kind` (custom_data survives on the refund event, same as the mark-billed
   path): wallet_topup → wallet debit `refund_clawback` (the 402-tolerant path already
   exists), credit_pack → negative credit_ledger entry, revenue_cut_surcharge → un-mark
-  periods. Related: a refunded SEAT purchase (recordSeatActivation writes into
-  launchpad_orders, so the clawback path does fire) claws back the wallet settlement but
-  never deactivates the seat member — the refunded member keeps access.
+  periods. These non-order clawbacks and the seat access revocation are implemented; see the
+  F-29 evidence above. Provider refund amounts and partial-refund semantics remain a separate
+  unverified policy gap.
 
 - [x] **F-30 (paying customer gets nothing): credit-pack / wallet-top-up idempotency keys
   are derived from purchase ATTRIBUTES, so two identical legitimate purchases collide and

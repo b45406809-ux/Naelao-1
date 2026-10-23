@@ -20,6 +20,7 @@ async function loadDb() {
     m("0050_webhook_idempotency.sql"),
     m("0052_webhook_idempotency_event_type.sql"),
     m("0061_reseller_ledger_kind.sql"),
+    m("0127_launchpad_order_seat_user_id.sql"),
   ]);
   await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES ('biz-1', 'child-tenant', 'active')").run();
   // child-tenant is a child business under parent builder tenant "builder-tenant".
@@ -99,7 +100,7 @@ describe("ARCH-REVENUE-6: builder revenue share on a child business sale", () =>
     const m = (f: string) => readFileSync(join(__dirname, "../../infra/migrations/", f), "utf8");
     const fakeDb = createFakeD1([
       `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', parent_space_id TEXT);`,
-      m("0033_reseller_accounts.sql"), m("0035_commerce.sql"), m("0050_webhook_idempotency.sql"), m("0052_webhook_idempotency_event_type.sql"), m("0061_reseller_ledger_kind.sql"),
+      m("0033_reseller_accounts.sql"), m("0035_commerce.sql"), m("0050_webhook_idempotency.sql"), m("0052_webhook_idempotency_event_type.sql"), m("0061_reseller_ledger_kind.sql"), m("0127_launchpad_order_seat_user_id.sql"),
     ]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES ('top-1', 'builder-tenant', 'active')").run();
     const settled: Array<{ op: string; cents: number }> = [];
