@@ -8,10 +8,8 @@
  * revenue (read-only) and store a snapshot the billing worker can bill a builder-configured cut
  * % against (see docs/spec-appendix for the full surcharge design).
  *
- * Deliberately does NOT invent a new credential or connector mechanism — Whop is already
- * reachable through the existing mcp-connector prebuilt exactly as any other connector is
- * (`mcp.register("whop", ..., credential_name: "whop_api_key")` once, then this reads its
- * `list_payments` op). This prebuilt reuses mcp-connector's own hub-request helpers rather than
+ * Whop is connected through the generic hosted MCP connector flow. This prebuilt reuses
+ * mcp-connector's own hub-request helpers rather than
  * going through a second script.run hop, so the credential-resolution/SSRF-guard/audit-trail
  * machinery mcp-hub already owns is exercised identically to every other connector call.
  *

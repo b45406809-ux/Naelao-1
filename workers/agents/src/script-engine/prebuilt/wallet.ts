@@ -32,7 +32,6 @@ import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } f
 // names) — a false positive here would incorrectly flag an unrelated credential as a "bypass."
 const THIRD_PARTY_PAYMENT_CREDENTIAL_NAMES = [
   "stripe_api_key",
-  "whop_api_key",
   "shopify_api_key",
   "shopify_access_token",
   "paypal_api_key",

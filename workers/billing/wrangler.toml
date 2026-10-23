@@ -13,7 +13,7 @@ workers_dev = false
 crons = ["0 0 * * *", "15 * * * *"]
 # Optional native FDE settlement: STRIPE_CONNECT_SECRET_KEY, active Connect destinations,
 # an authorized partner opt-in or withdrawal request, and a funded Stripe platform balance.
-# This does not move a userland business wallet or a Lemon Squeezy balance.
+# This does not move a customer project balance or a Lemon Squeezy balance.
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
@@ -56,23 +56,6 @@ service = "naelao-agents"
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
-# Whop sub-merchant wallets: vaults payout destination details (AES-256-GCM in the credentials
-# worker — never D1 plaintext).
-# Additional secrets (set via `wrangler secret put`, per environment):
-#   WHOP_PLATFORM_API_KEY — Naelao's ONE Whop master Platform account API key (sub-merchant
-#                           provisioning, balance reads, checkouts, withdrawals)
-#   WHOP_WEBHOOK_SECRET   — signing secret of the Whop webhook → /v1/webhooks/whop
-# And a per-environment var:
-#   PUBLIC_WEBHOOK_BASE_URL — public base URL for the one-time payout approval email link
-[[services]]
-binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
-
-# Sends the one-time payout approval email.
-[[services]]
-binding = "NOTIFICATIONS_WORKER"
-service = "naelao-notifications"
-
 [vars]
 ENVIRONMENT = "development"
 
@@ -89,14 +72,6 @@ service = "naelao-agents"
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
-[[env.staging.services]]
-binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
-
-[[env.staging.services]]
-binding = "NOTIFICATIONS_WORKER"
-service = "naelao-notifications"
-
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
 vars = { ENVIRONMENT = "production" }
@@ -109,19 +84,11 @@ service = "naelao-agents"
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
-[[env.production.services]]
-binding = "CREDENTIALS_WORKER"
-service = "naelao-credentials"
-
-[[env.production.services]]
-binding = "NOTIFICATIONS_WORKER"
-service = "naelao-notifications"
-
 [env.staging.triggers]
 crons = ["0 0 * * *", "15 * * * *"]
 # Optional native FDE settlement: STRIPE_CONNECT_SECRET_KEY, active Connect destinations,
 # an authorized partner opt-in or withdrawal request, and a funded Stripe platform balance.
-# This does not move a userland business wallet or a Lemon Squeezy balance.
+# This does not move a customer project balance or a Lemon Squeezy balance.
 
 
 [[env.staging.d1_databases]]
@@ -164,7 +131,7 @@ dead_letter_queue = "naelao-billing-events-dlq"
 crons = ["0 0 * * *", "15 * * * *"]
 # Optional native FDE settlement: STRIPE_CONNECT_SECRET_KEY, active Connect destinations,
 # an authorized partner opt-in or withdrawal request, and a funded Stripe platform balance.
-# This does not move a userland business wallet or a Lemon Squeezy balance.
+# This does not move a customer project balance or a Lemon Squeezy balance.
 
 
 [[env.production.d1_databases]]

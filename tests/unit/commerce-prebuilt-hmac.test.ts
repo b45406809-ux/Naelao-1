@@ -141,9 +141,8 @@ describe("commerce can actually put something up for sale", () => {
 
 describe("the revenue review can see what actually sold", () => {
   it("lists orders — the seeded daily cron asks for exactly this and had no operation for it", async () => {
-    // The recurring job every Launchpad business ships with says "check business_wallet.balance/
-    // history and any storefront/commerce orders". There was only `get_order`, which needs an id
-    // you could only have got from a list, so half that job was impossible.
+    // The recurring revenue review needs the complete order list; a get-by-id operation cannot
+    // discover orders created since its previous run.
     const capture: { url?: string; method?: string } = {};
     const env = {
       scriptsBucket: {} as never,

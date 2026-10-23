@@ -6,7 +6,7 @@ import { mintInternalToken } from "@naelao/http";
 // Whop as a second PLATFORM billing provider, tried before Lemon Squeezy (AUDIT_TODO.md AI-7 —
 // LS's own onboarding requires a Stripe-linked payout path unavailable in some sellers'
 // countries). Naelao's OWN normal Whop seller account (WHOP_API_KEY), NOT the invite-gated
-// Platforms API (WHOP_PLATFORM_API_KEY) the business-wallet rail uses.
+// Platform-plan checkout runs under Naelao’s own Whop account.
 
 const SECRET = "test-platform-secret";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;

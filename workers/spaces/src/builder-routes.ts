@@ -22,7 +22,7 @@ import { getDOName } from "@naelao/crypto";
 import { mintInternalToken, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { createCustomHostname, getCustomHostname, cfSaasConfig, normalizeCustomHostname } from "./cf-saas.js";
 import type { SpaceTypeProductConfig } from "./do/SpaceTypeRegistryDO.js";
-import { createSpaceRecord, SpaceCreationError, provisionBusinessWallet } from "./create-space.js";
+import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import type { CreateSpaceEnv } from "./create-space.js";
 
 /** The minimal env shape this file needs — kept local (not imported from index.ts's Env) so
@@ -355,22 +355,6 @@ export function registerBuilderRoutes(app: Hono<any>): void {
         return c.json({ error_code: err.error_code, message: err.message, ...(err.errors ? { errors: err.errors } : {}) }, err.status as 400 | 402 | 404 | 409 | 429 | 503);
       }
       throw err;
-    }
-
-    // Every business auto-provisions a Whop sub-merchant wallet — no builder action required.
-    // Best-effort, wrapped so ANY failure here (missing table/row in an unusual deployment,
-    // transient billing-worker error) never turns an otherwise-successful product creation into
-    // a 500 — the wallet just stays unprovisioned until a retry, surfaced honestly by the
-    // wallet balance read rather than blocking the thing the caller actually asked for.
-    try {
-      const owner = await env.PLATFORM_DB.prepare(
-        "SELECT u.email AS email FROM orgs o JOIN users u ON u.id = o.owner_id WHERE o.id = ?"
-      ).bind(auth.tenantId).first<{ email: string }>();
-      if (owner?.email) {
-        await provisionBusinessWallet(env, { tenantId: auth.tenantId, spaceId: result.id, ownerEmail: owner.email, businessName: body.name });
-      }
-    } catch (err) {
-      console.error(`[builder-routes] wallet provisioning lookup failed for space ${result.id}:`, (err as Error).message);
     }
 
     return c.json({ id: result.id, name: body.name, spacetype_id: body.spacetype_id, status: result.status, product_slug: result.product_slug, created_at: result.created_at }, 201);

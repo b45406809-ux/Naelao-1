@@ -1,15 +1,9 @@
 /**
  * Connector catalogue (Naelao-authored, like SpaceTypes — CLAUDE.md #7).
  *
- * A "connector" is how the script-native agent reaches an external creator platform (Whop,
- * Gumroad, Beehiiv, …). It is NOT a hardcoded integration: each entry below is DATA describing
- * how to register the platform as an MCP server (mcp-connector / mcp-hub) and what operations it
- * exposes. The agent then reaches the platform purely through script.run("mcp.call", …). Adding a
- * connector is adding a row here + (optionally) hosting its MCP shim — never a code branch.
- *
- * "Whop first, everything else coming soon": Whop is `available`; the rest of the creator-economy
- * platforms are `coming_soon` placeholders the dashboard renders greyed out. Flipping one on is a
- * one-field change here once its MCP shim is hosted.
+ * Connectors are data-driven MCP integrations reached through script.run("mcp.call", …). They may
+ * use a hosted Composio flow, a provider OAuth flow, or a scoped MCP endpoint; connector-specific
+ * capabilities live in the connector provider rather than the Naelao billing kernel.
  *
  * MODEL A (automation layer): these connectors are READ-mostly — the platform processes payments,
  * the agent reads orders/members and does the labor (fulfil, support, market). They therefore
@@ -63,7 +57,7 @@ export interface ConnectorWebhookSpec {
  * OAuth2 + PKCE "Sign in with X" support — a real-account redirect flow (Whop's Developer
  * Dashboard OAuth app model), distinct from the manual-API-key-paste path `auth` above already
  * supports. Self-serve, no invite needed (unlike Whop's separate Platforms/connected-accounts
- * API used by the business-wallet rail). Client id/secret are env-var NAMES, never values —
+ * API). Client id/secret are env-var NAMES, never values —
  * resolved from Workers Secrets at request time by the routes that use this config.
  */
 export interface ConnectorOAuthSpec {
@@ -80,7 +74,7 @@ export interface ConnectorOAuthSpec {
    *  real-world account being connected to more than one business under this tenant — a soft,
    *  best-effort warning (never a hard block: a builder may legitimately share one account across
    *  related businesses), since a BYO "Connect with X" account has no platform-enforced isolation
-   *  the way the Whop sub-merchant wallet rail (business-wallet.ts) does. */
+   *  a provider-specific merchant account does. */
   userinfo_url?: string;
 }
 
@@ -116,7 +110,7 @@ export interface ConnectorDefinition {
    * between an org-wide integration and a person's own account. `"space"` (default when absent,
    * preserving every pre-existing connector's behavior): one shared credential for the whole
    * business, connected once by an admin (Whop, a company Slack, a shared Notion workspace — the
-   * business-wallet precedent). `"user"`: each member connects their OWN account — a member's
+   * shared-credential precedent). `"user"`: each member connects their OWN account — a member's
    * personal credential is never visible to or usable by another member, resolved via the
    * existing credential hierarchy's user tier (packages this repo already built — see
    * `workers/credentials`'s `resolveCredential` — the gap was that connectors never threaded an
@@ -164,56 +158,8 @@ const WHOP: ConnectorDefinition = {
     "Communities, memberships, courses and digital products on Whop. The agent reads memberships, " +
     "members, orders and payments, and posts community updates — Whop keeps processing the payments.",
   docs_url: "https://dev.whop.com/api-reference",
-  auth: { type: "bearer", credential_name: "WHOP_API_KEY" },
-  // "Sign in with Whop" — a real OAuth2+PKCE app registered once in Whop's Developer Dashboard
-  // (self-serve, no invite — a completely separate mechanism from the invite-gated Platforms/
-  // connected-accounts API the business-wallet rail uses). Exact endpoint paths per Whop's
-  // published OAuth guide; verify against the live Whop Developer Dashboard when registering the
-  // app, since this wasn't exercised against a real Whop OAuth app in this pass.
-  oauth: {
-    authorize_url: "https://api.whop.com/oauth/authorize",
-    token_url: "https://api.whop.com/oauth/token",
-    // §A1.18 follow-up #3 — the prior two passes got the MECHANISM right (openid/profile/email +
-    // nonce is genuinely what unblocks the standalone `/oauth/authorize` flow — confirmed live,
-    // unchanged here) but were guessing at the resource-permission scopes beyond that OIDC triad,
-    // since `docs.whop.com`'s scopes reference page 404s from this environment. The owner pulled
-    // the app's REAL, full scope catalog straight from the Whop Developer Dashboard (~190 values)
-    // — every scope name below is copied verbatim from that list, not invented. Selected on
-    // least-privilege: only what this connector's own `operations` below actually call, plus the
-    // exact five (`checkout_configuration:create`, `plan:create`, `access_pass:create/update`,
-    // `company:manage_checkout`) item 58's OAuth-delegated end-user checkout depends on — those
-    // were flagged UNVERIFIED-as-real-scopes in the prior pass; the dashboard list now confirms
-    // they genuinely exist, resolving that flag (whether the connecting user's OWN Whop role
-    // actually grants them at consent time is still unverified — no live consent flow has run).
-    // NOT requested: anything company-admin-destructive (company:delete, developer:*,
-    // incorporation:*), payout/wallet scopes (that's the separate invite-gated Platforms API,
-    // items 50-51, not this BYO connector), or write scopes beyond what `operations` declares.
-    scopes: [
-      "openid", "profile", "email",
-      "company:basic:read",
-      "member:basic:read", "member:email:read",
-      "access_pass:basic:read",
-      "plan:basic:read",
-      "payment:basic:read",
-      "dms:read", "dms:message:manage",
-      "forum:read", "forum:post:create",
-      // item 58's delegated end-user checkout (business's own connected Whop company sells directly):
-      "checkout_configuration:basic:read", "checkout_configuration:create",
-      "plan:create", "access_pass:create", "access_pass:update",
-      "company:manage_checkout",
-    ],
-    client_id_env: "WHOP_OAUTH_CLIENT_ID",
-    client_secret_env: "WHOP_OAUTH_CLIENT_SECRET",
-    credential_name: "WHOP_OAUTH_TOKENS",
-    userinfo_url: "https://api.whop.com/oauth/userinfo",
-  },
-  mcp_endpoint: "https://mcp.naelao.com/connectors/whop",
-  webhook: {
-    signature_header: "x-whop-signature",
-    signature_encoding: "hex",
-    event_path: "action",
-    secret_credential_name: "WHOP_WEBHOOK_SECRET",
-  },
+  auth: { type: "none", credential_name: "" },
+  composio: { toolkit_slug: "whop", auth_config_id_env: "COMPOSIO_WHOP_AUTH_CONFIG_ID" },
   operations: [
     { name: "list_memberships", description: "List the company's memberships (active/expired).", kind: "read" },
     { name: "get_membership", description: "Get one membership by id (status, plan, member).", kind: "read" },

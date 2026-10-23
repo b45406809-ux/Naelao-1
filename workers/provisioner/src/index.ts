@@ -415,7 +415,7 @@ export async function seedDefaultRevenueReviewCron(spaceId: string, tenantId: st
           agent_id: LAUNCHPAD_ASSISTANT_PROFILE.agentId,
           goal:
             "Run your recurring revenue review. Read the project journal for what's already known, then check " +
-            "business_wallet.balance/history and any storefront/commerce orders since your last review. Log what " +
+            "available storefront/commerce orders and connected app activity since your last review. Log what " +
             // Name a REAL operation, never a prebuilt's descriptive phrase. A model copies the
             // wording it is given: "the notifications prebuilt" was reproduced verbatim as a
             // script name and killed this exact job in production (the `notifications` prebuilt

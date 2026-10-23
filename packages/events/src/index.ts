@@ -39,15 +39,6 @@ export type NaelaoEventType =
   | "wallet.debited"
   | "wallet.low_balance"
   | "wallet.bypass_detected"
-  // Business Wallet (Whop autonomous sub-merchant model, workers/agents/src/script-engine/
-  // prebuilt/business-wallet.ts + workers/billing/src/whop-wallet.ts): a DIFFERENT wallet from
-  // the Naelao-cost ledger above — this is the business's OWN bank account, funded by real
-  // revenue. Fired by the billing worker via POST /internal/spaces/:spaceId/events/fire so a
-  // builder/assistant can wire no-code triggers to revenue milestones, payout requests, and
-  // completions (e.g. "notify the owner on every payout_completed").
-  | "business_wallet.revenue_received"
-  | "business_wallet.payout_requested"
-  | "business_wallet.payout_completed"
   // A file in a project's workspace was written or removed by an agent. This is what makes a
   // handoff between projects possible without inventing a second mechanism: one project's agent
   // records what it found (a lead, a spec, a finished build) as an ordinary file, that write

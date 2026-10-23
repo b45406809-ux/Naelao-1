@@ -46,7 +46,7 @@ describe("atomic versioned DO migrations", () => {
     expect(() => validateMigrationSequence([migrations[0]!, migrations[0]!])).toThrow(/duplicate_migration_version/);
   });
 
-  it("keeps builder withdrawal requests separate from Whop business-wallet payouts", () => {
+  it("preserves legacy Whop payout history separately from builder withdrawal requests", () => {
     const storage = createDOStorage();
     for (const name of ["0053_payout_requests.sql", "0064_whop_sub_merchants.sql", "0066_payout_request_expiry.sql"]) {
       storage.sql.exec(readFileSync(join(__dirname, "../../infra/migrations", name), "utf8"));

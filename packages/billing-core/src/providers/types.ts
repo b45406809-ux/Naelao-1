@@ -1,13 +1,7 @@
 /**
- * Provider-agnostic billing (original spec, Appendix H "Billing Provider Strategy",
- * byte ~2261k). Lemon Squeezy is the ONLY platform billing provider (item 45). Stripe Connect
- * (the former Wallet Connect rail) has been removed entirely and replaced by the Whop
- * sub-merchant wallet model (`./whop.ts`) — Whop is not a `BillingProvider` (its checkout/
- * withdrawal shape doesn't fit this interface; see `./whop.ts`'s own standalone functions,
- * mirroring the precedent Stripe Connect's account-lifecycle helpers set: "not on
- * BillingProvider").
- *
- * See CLAUDE.md CURRENT DIRECTION #9.
+ * Provider-agnostic billing interface for Naelao platform billing. Lemon Squeezy is the primary
+ * platform provider; Whop is supported separately for Naelao's own plan checkout. Customer app
+ * connections use generic MCP connectors and never enter this billing interface.
  */
 
 /** A billing event normalized across providers (the only shape downstream code sees). */
@@ -22,11 +16,7 @@ export interface NormalizedBillingEvent {
     | "subscription.resumed"
     | "subscription.expired"
     | "refund.issued";
-  /** "whop" is used ONLY for the platform-plan checkout (`./whop-platform-plan.ts`) — a Whop
-   *  event routed through the SAME provider-agnostic downstream logic (recordPlatformPlanSubscription)
-   *  LS events already use. Whop is still not a `BillingProvider` (see this file's own header on
-   *  why `./whop.ts`'s sub-merchant shape doesn't fit that interface) — this is a narrower reuse of
-   *  just the normalized-event shape, not a claim that Whop implements `BillingProvider`. */
+  /** "whop" is used only for Naelao platform plan checkout. */
   provider: "lemon_squeezy" | "whop";
   spaceId: string;
   customerId: string;

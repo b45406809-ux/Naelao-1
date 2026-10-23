@@ -157,7 +157,7 @@ describe("GET /spaces/:spaceId/bootstrap — the setup checklist", () => {
     // The distinction that matters: a stored answer string must never be mistaken for a working
     // connection. Here a key was "answered" but nothing is registered in the hub.
     const unconnected = makeHarness({
-      config: whopSellerSpace({ preferences: { whop_connection: "yes", whop_api_key: "sk_live_x" } }),
+      config: whopSellerSpace({ preferences: { whop_connection: "yes" } }),
     });
     const a = (await (await call(unconnected, `/spaces/${SPACE}/bootstrap`)).json()) as any;
     expect(a.prompts.find((p: any) => p.id === "whop_connection").satisfied).toBe(false);
@@ -168,7 +168,7 @@ describe("GET /spaces/:spaceId/bootstrap — the setup checklist", () => {
   });
 
   it("never echoes a credential answer back to the client", async () => {
-    const h = makeHarness({ config: whopSellerSpace({ preferences: { whop_api_key: "sk_live_secret" } }) });
+    const h = makeHarness({ config: whopSellerSpace({ preferences: { whop_connection: "yes" } }) });
     const body = (await (await call(h, `/spaces/${SPACE}/bootstrap`)).json()) as any;
     const credentialPrompt = body.prompts.find((p: any) => p.id === "whop_api_key");
     expect(credentialPrompt.answer).toBeUndefined();

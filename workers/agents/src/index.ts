@@ -330,12 +330,6 @@ export interface AgentsEnv extends Cloudflare.Env {
   /** Phase 5: artifact worker — agent-authored deliverables (a rendered HTML page, a report),
    *  space-scoped R2 storage. Optional: the artifacts panel/prebuilt degrade honestly when unbound. */
   ARTIFACT_WORKER?: Fetcher;
-  /** "Connect with Whop" OAuth2+PKCE app — self-serve via Whop's Developer Dashboard, no invite
-   *  needed (a completely separate mechanism from the invite-gated Platforms API the
-   *  business-wallet rail uses). Optional: the OAuth start/callback routes degrade to an honest
-   *  `oauth_not_configured` error when unset; the manual-API-key connect flow still works. */
-  WHOP_OAUTH_CLIENT_ID?: string;
-  WHOP_OAUTH_CLIENT_SECRET?: string;
   /** Public base URL this worker is reachable at (e.g. https://api.naelao.com) — used to build
    *  the OAuth redirect_uri registered with Whop's Developer Dashboard. Optional: the OAuth start
    *  route degrades honestly when unset (a redirect_uri must be an exact match, so a guess would
@@ -4517,7 +4511,7 @@ app.post("/connectors/:platform/connect", async (c) => {
   return c.json({ connected: true, platform: connector.id, server_id: serverId }, 201);
 });
 
-// POST /connectors/:platform/oauth/start — "Connect with X" (Whop first): generates a PKCE pair,
+// POST /connectors/:platform/oauth/start — generic provider OAuth: generates a PKCE pair,
 // stashes it server-side under a short-lived single-use ticket (AGENT_CACHE, 10 min TTL — see
 // oauth.ts's header for why this mirrors the stream-ticket precedent rather than putting anything
 // sensitive in a browser-navigable URL), and returns the real authorize URL for the frontend to
@@ -8932,15 +8926,14 @@ function promptSatisfied(
 /** Whether this deployment can actually run a connector's one-click OAuth flow. Mirrors the exact
  *  condition the /connectors/:platform/oauth/start route checks, so the two can't disagree about
  *  what "configured" means. */
-function oauthConfigured(env: AgentsEnv, platform: string): boolean {
+function connectionMethod(env: AgentsEnv, platform: string): "composio" | "oauth" | "manual" {
   const connector = CONNECTOR_CATALOGUE.find((x) => x.id === platform);
-  if (!connector?.oauth) return false;
-  const record = env as unknown as Record<string, string | undefined>;
-  return Boolean(
-    record[connector.oauth.client_id_env] &&
-    record[connector.oauth.client_secret_env] &&
-    env.PUBLIC_AGENTS_URL
-  );
+  if (connector?.composio && env.COMPOSIO_API_KEY && env.PUBLIC_AGENTS_URL) return "composio";
+  if (connector?.oauth) {
+    const record = env as unknown as Record<string, string | undefined>;
+    if (record[connector.oauth.client_id_env] && record[connector.oauth.client_secret_env] && env.PUBLIC_AGENTS_URL) return "oauth";
+  }
+  return "manual";
 }
 
 // GET /spaces/:spaceId/bootstrap — everything a setup wizard needs in ONE call: the template's
@@ -8959,13 +8952,10 @@ app.get("/spaces/:spaceId/bootstrap", async (c) => {
     ...p,
     answer: p.type === "credential" || p.type === "connection" ? undefined : answers[p.id] ?? null,
     satisfied: promptSatisfied(p, answers, connected),
-    // Whether one-click connect actually works on THIS deployment. A connector's OAuth needs a
-    // registered app (client id + secret) that a self-hosted or not-yet-configured deployment
-    // won't have — and a wizard that leads with a button which can only ever return
-    // "OAuth is not configured on this deployment" is a dead end phrased in platform-internal
-    // language, at the one step a business owner cannot skip. Reported up front so the wizard can
-    // lead with the path that works (pasting a key) instead of discovering this on a failed click.
-    oauth_available: p.connector ? oauthConfigured(c.env, p.connector) : false,
+    // Pick a real connection method for this deployment. Composio can provision its hosted
+    // auth config on demand; provider-specific OAuth remains available for connectors that use it.
+    connect_method: p.connector ? connectionMethod(c.env, p.connector) : "manual",
+    connection_available: p.connector ? connectionMethod(c.env, p.connector) !== "manual" : false,
   }));
 
   return c.json({
@@ -9274,7 +9264,6 @@ app.get("/templates", async (c) => {
       description: t.description,
       template_mode: t.template_mode ?? "ave",
       vertical: t.vertical ?? "Digital business",
-      wallet_mode: t.wallet_mode ?? "business_wallet",
       free_tier_eligible: t.free_tier_eligible,
       presentation_profile: t.presentation_profile ?? "guided",
       connectors: t.connectors ?? [],
@@ -9320,8 +9309,7 @@ app.get("/catalog/product", (c) => {
         description: t.description,
         template_mode: t.template_mode ?? "ave",
         vertical: t.vertical ?? "Digital business",
-        wallet_mode: t.wallet_mode ?? "business_wallet",
-        coming_soon: t.coming_soon ?? false,
+          coming_soon: t.coming_soon ?? false,
       })),
       CUSTOM_NICHE,
     ],
@@ -9347,7 +9335,6 @@ app.get("/catalog/dev", (c) => {
       description: t.description,
       template_mode: t.template_mode ?? "ave",
       vertical: t.vertical ?? "Digital business",
-      wallet_mode: t.wallet_mode ?? "business_wallet",
       coming_soon: t.coming_soon ?? false,
       connectors: t.connectors ?? [],
     })),

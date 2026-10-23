@@ -214,7 +214,6 @@ export interface ShellManifest {
     description?: string;
     template_mode?: "ave" | "cowork";
     vertical?: string;
-    wallet_mode?: "business_wallet" | "company_budget";
     coming_soon: boolean;
     free_tier_eligible: boolean;
     presentation_profile?: "guided" | "balanced" | "advanced";
@@ -2807,85 +2806,6 @@ export async function deleteChatUpload(
   });
 }
 
-// ── Business Wallet (Whop sub-merchant model): the business's OWN bank account ────────────────
-// Every business auto-provisions an isolated Whop sub-merchant wallet the moment it's created —
-// no owner action, no OAuth, no personal bank/card details. Balance/history are member-visible;
-// managing payout destinations and requesting a payout is admin-only (enforced by
-// requireBusinessMembership on the spaces worker).
-
-export interface WhopWalletBalance {
-  status: "pending" | "awaiting_kyc" | "active" | "error" | "not_provisioned";
-  balance_cents?: number;
-  currency?: string;
-  last_synced_at?: string | null;
-  /** Set only while status='awaiting_kyc' — the one-time Whop verification link the owner must
-   *  complete before payouts work. Null when Whop's response didn't include a direct link. */
-  onboarding_url?: string | null;
-}
-
-export interface WhopWalletTransaction {
-  type: "revenue" | "expense" | "payout" | "fee_debit";
-  amount_cents: number;
-  currency: string;
-  description: string | null;
-  external_ref: string | null;
-  created_at: string;
-}
-
-export interface PayoutDestination {
-  id: string;
-  type: "bank" | "crypto" | "venmo" | "cashapp";
-  label: string;
-  status: "pending" | "verified" | "error";
-  is_default: number;
-  created_at: string;
-}
-
-export async function getBusinessWalletBalance(spaceId: string, session: SessionCredentials): Promise<WhopWalletBalance> {
-  const res = await apiFetch<{ wallet: WhopWalletBalance | null; status?: string }>(`/v1/spaces/${spaceId}/business-wallet/balance`, { session });
-  return res.wallet ?? { status: (res.status as WhopWalletBalance["status"]) ?? "not_provisioned" };
-}
-
-export async function getBusinessWalletTransactions(spaceId: string, session: SessionCredentials, limit = 20): Promise<WhopWalletTransaction[]> {
-  const res = await apiFetch<{ transactions: WhopWalletTransaction[] }>(`/v1/spaces/${spaceId}/business-wallet/transactions?limit=${limit}`, { session });
-  return res.transactions ?? [];
-}
-
-export async function getPayoutDestinations(spaceId: string, session: SessionCredentials): Promise<PayoutDestination[]> {
-  const res = await apiFetch<{ destinations: PayoutDestination[] }>(`/v1/spaces/${spaceId}/business-wallet/destinations`, { session });
-  return res.destinations ?? [];
-}
-
-export async function addPayoutDestination(
-  spaceId: string,
-  session: SessionCredentials,
-  params: { type: PayoutDestination["type"]; label: string; details: Record<string, unknown> }
-): Promise<{ destination: PayoutDestination }> {
-  return apiFetch(`/v1/spaces/${spaceId}/business-wallet/destinations`, {
-    method: "POST",
-    body: JSON.stringify(params),
-    session,
-  });
-}
-
-export async function requestPayout(
-  spaceId: string,
-  session: SessionCredentials,
-  params: { destination_id: string; amount_cents: number; note?: string }
-): Promise<{ payout: { id: string; status: string } }> {
-  return apiFetch(`/v1/spaces/${spaceId}/business-wallet/payouts`, {
-    method: "POST",
-    body: JSON.stringify(params),
-    session,
-  });
-}
-
-// ── Connect your OWN Whop account (no Naelao Platforms invite needed) ─────────────────────────
-// A business owner's OWN Whop API key (from their own Whop dashboard — generally available, no
-// invite required, unlike the Platforms/business-wallet rail above). The agent then reads it
-// read-only via mcp-connector, and Naelao's revenue cut is billed as a surcharge on the builder's
-// NEXT platform subscription (the existing revenue-tracker mechanism), not auto-split at checkout.
-
 export interface ConnectorInfo {
   id: string;
   name: string;
@@ -3040,7 +2960,7 @@ export async function connectPlatform(
   });
 }
 
-/** "Connect with X" OAuth flow (Whop first) — returns the real Whop authorize URL to navigate
+/** Provider OAuth flow for catalogued connectors with a configured OAuth spec — returns the provider authorize URL to navigate
  *  the browser to; the caller does `window.location.href = authorize_url` itself (a real page
  *  navigation, never a fetch — no Naelao credential appears in it, only an opaque single-use
  *  ticket). return_url should be the current page — the callback redirects back here with
@@ -3116,6 +3036,8 @@ export interface OnboardingPrompt {
    *  registered). False means the key-paste path is the only one that works — lead with it rather
    *  than offering a button whose only possible outcome is a platform-internal error. */
   oauth_available?: boolean;
+  connect_method?: "composio" | "oauth" | "manual";
+  connection_available?: boolean;
 }
 
 export interface OnboardingState {

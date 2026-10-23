@@ -60,15 +60,13 @@ describe("the web studio template", () => {
     expect(prompts.find((p) => p.id === "outreach_cap")?.required).toBe(true);
   });
 
-  it("offers Whop OAuth as the primary connect, with the pasted key only as a fallback", () => {
+  it("offers Whop as a hosted MCP connection with no API-key prompt", () => {
     const prompts = template!.bootstrap!.prompts;
     const connect = prompts.find((p) => p.id === "whop_connection");
     const key = prompts.find((p) => p.id === "whop_api_key");
     expect(connect?.type).toBe("connection");
     expect(connect?.required).toBe(true);
-    expect(key?.required).toBe(false);
-    // Ordering is the UX: a non-technical owner must meet the button before the API key.
-    expect(prompts.indexOf(connect!)).toBeLessThan(prompts.indexOf(key!));
+    expect(key).toBeUndefined();
   });
 
   it("routes store setup through the deterministic skill, not improvised MCP calls", () => {

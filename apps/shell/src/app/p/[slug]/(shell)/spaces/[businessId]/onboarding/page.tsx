@@ -24,6 +24,7 @@ import {
   saveOnboarding,
   completeOnboarding,
   startOAuthConnect,
+  startProviderConnect,
   connectPlatform,
   ApiError,
   type OnboardingState,
@@ -188,13 +189,17 @@ export default function BusinessOnboardingPage() {
     try {
       // Save anything typed so far before the browser leaves this page entirely.
       if (Object.keys(answers).length > 0) await saveOnboarding(params.businessId, creds, answers);
-      const { authorize_url } = await startOAuthConnect(params.businessId, creds, connector, window.location.href);
-      window.location.href = authorize_url;
+      if (step?.prompt.connect_method === "composio") {
+        const { connect_url } = await startProviderConnect(params.businessId, creds, connector, window.location.href);
+        window.location.href = connect_url;
+      } else {
+        const { authorize_url } = await startOAuthConnect(params.businessId, creds, connector, window.location.href);
+        window.location.href = authorize_url;
+      }
     } catch (err) {
-      // Belt-and-braces alongside the oauth_available check above: if the deployment's config
-      // changed between loading this page and clicking, fall through to the key form rather than
-      // showing "OAuth is not configured on this deployment" to someone who cannot configure it.
-      if (err instanceof ApiError && err.errorCode === "oauth_not_configured") {
+      // If provider configuration changed after the wizard loaded, present the manual path when
+      // the connector allows one rather than exposing a deployment configuration error.
+      if (err instanceof ApiError && (err.errorCode === "oauth_not_configured" || err.errorCode === "provider_not_configured")) {
         setShowManualKey(true);
         setError("One-click connect isn't available — paste an API key instead.");
       } else {
@@ -376,11 +381,7 @@ export default function BusinessOnboardingPage() {
               <Badge color="green">Connected</Badge>
             ) : (
               <>
-                {/* One-click connect needs a registered OAuth app for this connector. When this
-                    deployment doesn't have one, showing the button anyway leads a business owner
-                    to a failure they cannot act on, phrased in platform-internal language, at the
-                    one setup step they can't skip. Lead with the path that works instead. */}
-                {prompt.oauth_available !== false ? (
+                {prompt.connection_available !== false ? (
                   <div>
                     <Button onClick={() => handleConnect(prompt.connector!)} disabled={busy}>
                       {busy ? "Opening…" : `Connect ${titleCase(prompt.connector)}`}
@@ -388,9 +389,7 @@ export default function BusinessOnboardingPage() {
                   </div>
                 ) : (
                   <p style={{ fontSize: 12.5, color: "var(--text3)", margin: 0 }}>
-                    One-click connect isn&rsquo;t set up for {titleCase(prompt.connector)} yet.
-                    Paste an API key from your {titleCase(prompt.connector)} dashboard instead —
-                    it gives your assistant the same access.
+                    Hosted connect is not configured here. You can use a connector key if this app supports one.
                   </p>
                 )}
                 {step.fallback && (
@@ -402,7 +401,7 @@ export default function BusinessOnboardingPage() {
                     >
                       {step.fallback.question}
                     </button>
-                    {(showManualKey || prompt.oauth_available === false) && (
+                    {(showManualKey || (prompt.connection_available === false && prompt.connect_method !== "composio")) && (
                       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                         <FormInput
                           placeholder="API key"

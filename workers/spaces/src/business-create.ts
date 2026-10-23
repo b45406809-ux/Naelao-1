@@ -11,7 +11,6 @@
 
 import type { SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2, SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
 import { checkFreeTierTemplateEligibility, loadTemplateCatalogOrNull } from "./template-catalog.js";
-import { provisionBusinessWallet } from "./create-space.js";
 import { deliverProvisioningOutboxEntry } from "./provisioning-outbox.js";
 import { resolveEffectiveBusinessLimit, isPersonalPlanTier, type PersonalPlanTier } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
@@ -48,9 +47,6 @@ export interface BusinessCreateEnv {
    *  the agents worker. Optional — absent (dev/test), the gate degrades open; see
    *  checkFreeTierTemplateEligibility. */
   AGENTS_WORKER?: Fetcher;
-  /** Customer-created businesses use the same best-effort Whop business-wallet provisioning
-   *  path as builder-created spaces. */
-  BILLING_WORKER?: Fetcher;
   /** Phase 4 (money): resolves the CALLING end user's own personal-plan tier
    *  (ProductUserDO's /plan-tier), which narrows or widens their slice of
    *  productConfig.maxBusinessesPerEndUser — see resolveEffectiveBusinessLimit. Optional so
@@ -346,7 +342,6 @@ async function createBusinessForEndUserUnlocked(
     ...(templateIds.length > 0 ? { template_id: templateIds[0], template_ids: templateIds } : {}),
     ...(primaryTemplate ? {
       template_mode: primaryTemplate.template_mode,
-      wallet_mode: primaryTemplate.wallet_mode,
       vertical: primaryTemplate.vertical,
       presentation_profile: primaryTemplate.presentation_profile,
     } : {}),
@@ -399,27 +394,6 @@ async function createBusinessForEndUserUnlocked(
   // 6. Provision under the CHILD tenant (reuses the 10-step provisioner unchanged).
   if (useProvisioningQueue && env.PROVISION_QUEUE) {
     await deliverProvisioningOutboxEntry(env.PLATFORM_DB, env.PROVISION_QUEUE, spaceId);
-  }
-
-  // Every customer-created business gets the same isolated Whop business-wallet attempt as a
-  // builder-created space. Product users are already stored in D1, so the owner email is
-  // available without reaching through ProductUserDO. This remains best-effort: a billing outage
-  // must not turn a successfully-created business into a 500; the wallet status is surfaced by
-  // the wallet routes and can be retried.
-  try {
-    const owner = await env.PLATFORM_DB.prepare(
-      "SELECT email FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
-    ).bind(opts.resellerProductSpaceId, opts.userId).first<{ email: string | null }>();
-    if (owner?.email) {
-      await provisionBusinessWallet(env, {
-        tenantId: childTenantId,
-        spaceId,
-        ownerEmail: owner.email,
-        businessName: opts.name,
-      });
-    }
-  } catch (err) {
-    console.error(`[business-create] wallet provisioning lookup failed for space ${spaceId}:`, (err as Error).message);
   }
 
   return { ok: true, tenantId: childTenantId, spaceId, status: initialStatus, parentTenantId };

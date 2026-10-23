@@ -84,7 +84,6 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
     tools: [
       "commerce",
       "storefront",
-      "business-wallet",
       "wallet",
       "revenue-tracker",
     ],

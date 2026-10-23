@@ -5,7 +5,6 @@
 // fully-working `POST /spaces` route this file now backs too. Both routes call the SAME
 // createSpaceRecord(); there is exactly one space-creation code path.
 
-import { mintInternalToken } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { checkFreeTierTemplateEligibility } from "./template-catalog.js";
 import { scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
@@ -45,45 +44,7 @@ export interface CreateSpaceEnv {
    *  see checkFreeTierTemplateEligibility. */
   NAELAO_CONFIG_KV?: KVNamespace;
   AGENTS_WORKER?: Fetcher;
-  /** Every business auto-provisions a Whop sub-merchant wallet — no builder action, no OAuth.
-   *  Both optional: absent (dev/test), provisioning is skipped and the wallet stays
-   *  unprovisioned until an operator retries (see provisionBusinessWallet). */
-  BILLING_WORKER?: Fetcher;
-  PLATFORM_SECRET?: string;
   LOCK_DO?: DurableObjectNamespace;
-}
-
-/**
- * Fire off Whop sub-merchant provisioning for a freshly-created business. Best-effort and
- * non-blocking of the caller's own success path (matches seedOwnerMember's own "idempotent and
- * non-fatal on failure" precedent) — a business is usable immediately even if wallet
- * provisioning is still in flight or the billing worker is briefly unavailable; the wallet
- * balance read surfaces `status: "not_provisioned"`/`"error"` honestly rather than pretending.
- */
-export async function provisionBusinessWallet(
-  env: CreateSpaceEnv,
-  params: { tenantId: string; spaceId: string; ownerEmail: string; businessName: string }
-): Promise<void> {
-  if (!env.BILLING_WORKER || !env.PLATFORM_SECRET || !params.ownerEmail) return;
-  try {
-    await env.BILLING_WORKER.fetch(
-      new Request("http://billing-worker/billing/whop-wallet/provision", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-naelao-tenant-id": params.tenantId,
-          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, params.tenantId),
-        },
-        body: JSON.stringify({
-          space_id: params.spaceId,
-          owner_email: params.ownerEmail,
-          business_name: params.businessName,
-        }),
-      })
-    );
-  } catch (err) {
-    console.error(`[create-space] wallet provisioning request failed for space ${params.spaceId}:`, (err as Error).message);
-  }
 }
 
 export interface SchemaValidationError {

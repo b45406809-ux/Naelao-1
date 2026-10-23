@@ -25,10 +25,6 @@ import {
   createLocalGrant,
   deleteLocalGrant,
   mintLocalTunnelConnectToken,
-  getBusinessWalletBalance,
-  getBusinessWalletTransactions,
-  getPayoutDestinations,
-  addPayoutDestination,
   getConnectorStatus,
   connectPlatform,
   startOAuthConnect,
@@ -42,9 +38,6 @@ import {
   type RevenueSummary,
   type BusinessWallet,
   type LocalGrant,
-  type WhopWalletBalance,
-  type WhopWalletTransaction,
-  type PayoutDestination,
   getOnboarding,
   type OnboardingState,
   type ConnectorInfo,
@@ -91,24 +84,10 @@ export default function BusinessDetailPage() {
   const [creatingGrant, setCreatingGrant] = React.useState(false);
   const [connectInfo, setConnectInfo] = React.useState<{ token: string; connect_path: string; expires_in_seconds: number } | null>(null);
   const [connecting, setConnecting] = React.useState(false);
-  // Business Wallet (Whop sub-merchant model): the business's OWN auto-provisioned bank account.
-  const [whopWallet, setWhopWallet] = React.useState<WhopWalletBalance | null>(null);
-  const [whopTransactions, setWhopTransactions] = React.useState<WhopWalletTransaction[]>([]);
-  const [payoutDestinations, setPayoutDestinations] = React.useState<PayoutDestination[]>([]);
-  const [payBusy, setPayBusy] = React.useState(false);
-  const [destOpen, setDestOpen] = React.useState(false);
-  const [destType, setDestType] = React.useState<PayoutDestination["type"]>("bank");
-  const [destLabel, setDestLabel] = React.useState("");
-  const [destDetails, setDestDetails] = React.useState("");
-  // Connect your OWN Whop account (BYO, no Naelao Platforms invite needed) — the working revenue
-  // path today, while the business-wallet rail above waits on Whop Platforms access.
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [onboarding, setOnboarding] = React.useState<OnboardingState | null>(null);
-  const [whopKeyOpen, setWhopKeyOpen] = React.useState(false);
-  const [whopKey, setWhopKey] = React.useState("");
-  const [connectBusy, setConnectBusy] = React.useState(false);
-  // Growth-layer "Connect Apps" panel (G-1/G-3): every OTHER available connector besides Whop
-  // (which has its own dedicated card above). manualKeyOpenFor tracks which connector's inline
+  // Growth-layer "Connect Apps" panel: all available connectors use the same provider-aware
+  // connection flow. manualKeyOpenFor tracks which connector's inline
   // key-paste form is open; dismissedApps is a client-only "skip for now" per the onboarding ask
   // ("or can skip and do later") — not persisted server-side, just this browser.
   const [appBusy, setAppBusy] = React.useState<string | null>(null);
@@ -139,17 +118,13 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, pricing, manifest, grants, wal, whopBal, whopTx, destinations, conns, onboard] = await Promise.all([
+      const [mine, mem, pricing, manifest, grants, wal, conns, onboard] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
         getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
         getShellManifest(params.businessId, creds).catch(() => null),
         listLocalGrants(params.businessId, creds).catch(() => []),
         getBusinessWallet(params.businessId, creds).catch(() => null),
-        getBusinessWalletBalance(params.businessId, creds).catch(() => null),
-        getBusinessWalletTransactions(params.businessId, creds).catch(() => []),
-        // Admin-only route — a plain member's 403 is expected, not an error.
-        getPayoutDestinations(params.businessId, creds).catch(() => []),
         getConnectorStatus(params.businessId, creds).catch(() => []),
         // Member-level read; a 403 here just means the caller lost membership mid-load.
         getOnboarding(params.businessId, creds).catch(() => null),
@@ -160,9 +135,6 @@ export default function BusinessDetailPage() {
       setCreditPacks(pricing.credit_packs);
       setLocalGrants(grants);
       setWallet(wal);
-      setWhopWallet(whopBal);
-      setWhopTransactions(whopTx);
-      setPayoutDestinations(destinations);
       setConnectors(conns);
       setOnboarding(onboard);
       const commerce = manifest?.ui.sidebar_items.some((item) => item.id === "revenue") ?? false;
@@ -259,58 +231,9 @@ export default function BusinessDetailPage() {
     }
   }
 
-  async function handleAddPayoutDestination() {
-    if (!creds || !destLabel.trim()) return;
-    setPayBusy(true);
-    try {
-      let details: Record<string, unknown>;
-      try {
-        details = destDetails ? (JSON.parse(destDetails) as Record<string, unknown>) : {};
-      } catch {
-        details = { raw: destDetails };
-      }
-      await addPayoutDestination(params.businessId, creds, { type: destType, label: destLabel.trim(), details });
-      setDestOpen(false);
-      setDestLabel("");
-      setDestDetails("");
-      await refresh();
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Failed to add payout destination");
-    } finally {
-      setPayBusy(false);
-    }
-  }
-
-  async function handleConnectWhop() {
-    if (!creds || !whopKey.trim()) return;
-    setConnectBusy(true);
-    try {
-      await connectPlatform(params.businessId, creds, "whop", whopKey.trim());
-      setWhopKeyOpen(false);
-      setWhopKey("");
-      await refresh();
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Failed to connect your Whop account");
-    } finally {
-      setConnectBusy(false);
-    }
-  }
-
-  async function handleConnectWhopOAuth() {
-    if (!creds) return;
-    setConnectBusy(true);
-    try {
-      const { authorize_url } = await startOAuthConnect(params.businessId, creds, "whop", window.location.href);
-      window.location.href = authorize_url;
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Failed to start the Whop connection");
-      setConnectBusy(false);
-    }
-  }
-
   // Growth-layer "click Install" connect (G-1/G-3): branches on how the connector reaches the
-  // real app — a Composio-hosted redirect, a bespoke OAuth redirect (mirrors handleConnectWhopOAuth
-  // above), or the inline manual-key form (opened via setManualKeyOpenFor).
+  // real app — a Composio-hosted redirect, a provider OAuth redirect, or the inline manual-key
+  // form (opened via setManualKeyOpenFor).
   async function handleConnectApp(connector: ConnectorInfo) {
     if (!creds) return;
     if (connector.composio) {
@@ -354,27 +277,15 @@ export default function BusinessDetailPage() {
     }
   }
 
-  // Land back here after ANY connector's redirect (Whop's own OAuth, or a growth-layer app's
-  // Composio/OAuth redirect) — every flow sets `${platform}_connected=1` or `${platform}_oauth_
-  // error=` on return, so this scans every known connector id rather than hardcoding one.
+  // Handle return markers from generic connector OAuth/Composio flows.
   React.useEffect(() => {
     const params2 = new URLSearchParams(window.location.search);
     let touched = false;
-    // "whop" is handled by its own dedicated effect below (it has extra duplicate-account-warning
-    // handling) — skip it here so the two effects don't double-toast/double-clean the same params.
-    for (const c of connectors.filter((x) => x.id !== "whop")) {
+    for (const c of connectors) {
       const connectedKey = `${c.id}_connected`;
       const errorKey = `${c.id}_oauth_error`;
-      if (params2.get(connectedKey)) {
-        show(`${c.name} connected.`);
-        params2.delete(connectedKey);
-        touched = true;
-      }
-      if (params2.get(errorKey)) {
-        show(`${c.name} connection failed: ${params2.get(errorKey)}`);
-        params2.delete(errorKey);
-        touched = true;
-      }
+      if (params2.get(connectedKey)) { show(`${c.name} connected.`); params2.delete(connectedKey); touched = true; }
+      if (params2.get(errorKey)) { show(`${c.name} connection failed: ${params2.get(errorKey)}`); params2.delete(errorKey); touched = true; }
     }
     if (touched) {
       const clean = `${window.location.pathname}${params2.toString() ? `?${params2}` : ""}`;
@@ -383,33 +294,6 @@ export default function BusinessDetailPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectors.length]);
-
-  // Land back here after the OAuth redirect — clean the marker out of the URL either way so a
-  // reload doesn't re-trigger the toast, and refresh so the newly-connected status shows up.
-  React.useEffect(() => {
-    const params2 = new URLSearchParams(window.location.search);
-    const connected = params2.get("whop_connected");
-    const error = params2.get("whop_oauth_error");
-    const warning = params2.get("whop_oauth_warning");
-    if (!connected && !error) return;
-    if (connected && warning === "account_already_connected") {
-      // Non-blocking: the same real Whop account is already connected to another business under
-      // this account. Surfaced as a heads-up, not an error — revenue/data may be commingled if
-      // that wasn't intentional, but sharing one account across related businesses is valid too.
-      show("Whop account connected — heads up, this same Whop account is already connected to another one of your businesses.");
-    } else if (connected) {
-      show("Whop account connected.");
-    }
-    if (error) show(`Whop connection failed: ${error}`);
-    params2.delete("whop_connected");
-    params2.delete("whop_oauth_error");
-    params2.delete("whop_oauth_warning");
-    params2.delete("whop_oauth_warning_space");
-    const clean = `${window.location.pathname}${params2.toString() ? `?${params2}` : ""}`;
-    window.history.replaceState({}, "", clean);
-    void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   async function handleCreateProduct(e: React.FormEvent) {
     e.preventDefault();
@@ -595,86 +479,12 @@ export default function BusinessDetailPage() {
         </form>
       )}
 
-      {/* Connect your OWN Whop account — the working path today (no Naelao Platforms invite
-          needed). Naelao's revenue cut is billed as a surcharge on the builder's next platform
-          subscription rather than auto-split at checkout, since a BYO account can't do that. */}
-      {canManage && (() => {
-        const whopConnector = connectors.find((c) => c.id === "whop");
-        return (
-          <>
-            <div className="section-label">Connect Your Whop Account</div>
-            <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
-              Connect your own Whop account (an API key from your own Whop dashboard — no special
-              access required) so the assistant can read your orders/members and help you run this
-              business. Naelao&rsquo;s revenue-share cut is billed as a line item on your next
-              subscription payment, not split automatically at checkout.
-            </p>
-            <div className="settings-block">
-              {whopConnector?.connected ? (
-                <div className="settings-row">
-                  <div className="settings-row-label">Whop</div>
-                  <Badge color="green">Connected</Badge>
-                </div>
-              ) : (
-                <div className="settings-row">
-                  <div>
-                    <div className="settings-row-label">Whop</div>
-                    <div className="settings-row-sub">Not connected yet</div>
-                  </div>
-                  {!whopKeyOpen && (
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <Button onClick={handleConnectWhopOAuth} disabled={connectBusy}>
-                        {connectBusy ? "Redirecting…" : "Connect with Whop"}
-                      </Button>
-                      <button
-                        className="btn btn-secondary"
-                        type="button"
-                        onClick={() => setWhopKeyOpen(true)}
-                        disabled={connectBusy}
-                        style={{ fontSize: 12 }}
-                      >
-                        Use an API key instead
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-              {whopKeyOpen && !whopConnector?.connected && (
-                <div style={{ padding: "0 12px 12px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
-                  <FormInput
-                    type="password"
-                    placeholder="Whop API key"
-                    value={whopKey}
-                    onChange={(e) => setWhopKey(e.target.value)}
-                    style={{ flex: 1, minWidth: 220 }}
-                  />
-                  <Button onClick={handleConnectWhop} disabled={connectBusy || !whopKey.trim()}>
-                    {connectBusy ? "Connecting…" : "Connect"}
-                  </Button>
-                  <button
-                    className="btn btn-secondary"
-                    type="button"
-                    onClick={() => { setWhopKeyOpen(false); setWhopKey(""); }}
-                    disabled={connectBusy}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-            </div>
-          </>
-        );
-      })()}
-
       {/* Growth-layer "Connect Apps" (G-1/G-3): a real click-to-install experience, same idea as
-          adding a connector in Claude or ChatGPT — most of what a business needs beyond the
-          wallet/email is a real third-party app reached over MCP, not a Naelao-built feature. Whop
-          has its own dedicated card above; this covers everything else in the catalogue that's
-          actually live (Higgsfield for image/video, X/LinkedIn/Instagram/TikTok for social).
+          adding a connector in Claude or ChatGPT — connected apps are managed through MCP connectors. Choose only the apps this space needs;
           "Skip for now" is a client-only dismissal (this ask explicitly allows skipping) — the
           panel disappears once every recommended app is either connected or dismissed. */}
       {canManage && (() => {
-        const appConnectors = connectors.filter((c) => c.status === "available" && c.id !== "whop");
+        const appConnectors = connectors.filter((c) => c.status === "available");
         const visible = appConnectors.filter((c) => !c.connected && !dismissedApps.has(c.id));
         if (appConnectors.length === 0 || visible.length === 0) return null;
         return (
@@ -805,133 +615,6 @@ export default function BusinessDetailPage() {
           </>
         );
       })()}
-
-      {/* Business Wallet (Whop Platforms/sub-merchant model): every business auto-provisions its
-          own isolated wallet — but this rail needs Naelao's own invite-only Whop Platforms API
-          access, not yet granted, so it stays inactive until then. The Connect card above is the
-          working path today. Balance is member-visible; adding a payout destination is admin-only. */}
-      <div className="section-label">Business Wallet — Naelao-managed (coming soon)</div>
-      <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
-        This business&rsquo;s own Whop sub-merchant wallet — a real bank account, auto-provisioned
-        at creation. Revenue from Whop&rsquo;s own storefront/checkout and any connected 3rd-party
-        platform settles here automatically; Naelao never holds this money.
-      </p>
-      {whopWallet?.status === "not_provisioned" && connectors.find((c) => c.id === "whop")?.connected && (
-        // The bare "not provisioned yet" badge below, seen right after connecting Whop, reads
-        // like the connection didn't take — it's a genuinely different, separate rail (this one
-        // needs Naelao's own invite-only Whop Platforms API access; connecting your OWN Whop
-        // account above doesn't grant that). Say so explicitly rather than leaving that only in a
-        // source comment nobody using the product can see.
-        <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8, padding: "6px 10px", background: "var(--surface2)", borderRadius: "var(--radius-sm)" }}>
-          Your Whop account is connected (see &ldquo;Connect Your Whop Account&rdquo; above) — that&rsquo;s
-          the real, working path for this business today, and it&rsquo;s already what the
-          assistant reads for orders and revenue. This separate wallet below only activates once
-          Naelao&rsquo;s own Whop Platforms API access is approved; &ldquo;not provisioned yet&rdquo;
-          here does not mean anything is broken.
-        </p>
-      )}
-      <div className="settings-block">
-        <div className="settings-row">
-          <div>
-            <div className="settings-row-label">Balance</div>
-            <div className="settings-row-sub">
-              {/* Step 23: "not provisioned" is a FUTURE rail, not a failure — a red badge read as
-                  "your connection didn't take". Show it as a neutral "coming soon" (amber), so the
-                  connected Whop OAuth account above clearly stays the live path. */}
-              <Badge color={whopWallet?.status === "active" ? "green" : whopWallet?.status === "not_provisioned" || whopWallet?.status === "pending" || whopWallet?.status === "awaiting_kyc" ? "amber" : "red"}>
-                {whopWallet?.status === "not_provisioned" ? "coming soon" : whopWallet?.status === "awaiting_kyc" ? "verification needed" : whopWallet?.status ?? "loading"}
-              </Badge>
-            </div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div className="settings-row-label">{centsToDisplay(whopWallet?.balance_cents ?? 0)}</div>
-            <div className="settings-row-sub">{whopWallet?.currency ?? "USD"}</div>
-          </div>
-        </div>
-        {whopWallet?.status === "awaiting_kyc" && (
-          <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
-            <div className="settings-row-sub" style={{ color: "var(--amber, #b45309)" }}>
-              One more step before this wallet can send payouts: Whop requires a quick identity
-              verification.
-              {whopWallet.onboarding_url ? "" : " Check your email for a verification link from Whop."}
-            </div>
-            {whopWallet.onboarding_url && (
-              <a href={whopWallet.onboarding_url} target="_blank" rel="noopener noreferrer" className="btn btn-secondary" style={{ display: "inline-block" }}>
-                Complete verification
-              </a>
-            )}
-          </div>
-        )}
-        {whopTransactions.slice(0, 8).map((t, i) => (
-          <div className="settings-row" key={i}>
-            <div>
-              <div className="settings-row-label">{t.description ?? t.type}</div>
-              <div className="settings-row-sub">{new Date(t.created_at).toLocaleString()}</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div className="settings-row-label" style={{ color: t.amount_cents >= 0 ? "var(--green, #16a34a)" : "inherit" }}>
-                {t.amount_cents >= 0 ? "+" : ""}{centsToDisplay(t.amount_cents)}
-              </div>
-            </div>
-          </div>
-        ))}
-        {canManage && (
-          <>
-            <div className="settings-row">
-              <div>
-                <div className="settings-row-label">Payout destinations</div>
-                <div className="settings-row-sub">
-                  {payoutDestinations.length === 0 ? "None on file yet" : `${payoutDestinations.length} on file`}
-                </div>
-              </div>
-              {!destOpen && (
-                <button className="btn btn-secondary" type="button" onClick={() => setDestOpen(true)} disabled={payBusy}>
-                  Add destination
-                </button>
-              )}
-            </div>
-            {payoutDestinations.map((d) => (
-              <div className="settings-row" key={d.id}>
-                <div className="settings-row-label">{d.label} ({d.type})</div>
-                <Badge color={d.status === "verified" ? "green" : "amber"}>{d.status}</Badge>
-              </div>
-            ))}
-            {destOpen && (
-              <div style={{ padding: "0 12px 12px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
-                <FormSelect value={destType} onChange={(e) => setDestType(e.target.value as PayoutDestination["type"])} style={{ minWidth: 140 }}>
-                  <option value="bank">Bank</option>
-                  <option value="crypto">Crypto</option>
-                  <option value="venmo">Venmo</option>
-                  <option value="cashapp">CashApp</option>
-                </FormSelect>
-                <FormInput
-                  placeholder="Label (e.g. Chase checking ...1234)"
-                  value={destLabel}
-                  onChange={(e) => setDestLabel(e.target.value)}
-                  style={{ flex: 1, minWidth: 200 }}
-                />
-                <FormInput
-                  placeholder="Account/routing details"
-                  value={destDetails}
-                  onChange={(e) => setDestDetails(e.target.value)}
-                  style={{ flex: 1, minWidth: 200 }}
-                />
-                <Button onClick={handleAddPayoutDestination} disabled={payBusy || !destLabel.trim()}>
-                  {payBusy ? "Saving…" : "Save"}
-                </Button>
-                <button
-                  className="btn btn-secondary"
-                  type="button"
-                  onClick={() => { setDestOpen(false); setDestLabel(""); setDestDetails(""); }}
-                  disabled={payBusy}
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
 
       {/* F-WALLET-7: the transparency section — "your AI only spends money this business earned". */}
       {wallet && (wallet.project_id || wallet.lifetime.order_count > 0) && (

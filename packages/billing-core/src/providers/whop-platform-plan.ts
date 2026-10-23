@@ -7,11 +7,7 @@ import { readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
  * removed; Whop is added here ALONGSIDE it, tried first, LS kept as a fallback for a deployment/
  * region where it works — see AUDIT_TODO.md AI-7).
  *
- * Distinct from BOTH other Whop integrations in this codebase:
- *   - `./whop.ts` (Platforms API, invite-only) — auto-provisions a sub-merchant company PER
- *     BUSINESS. Not used here at all.
- *   - `./whop-oauth-checkout.ts` — a BUSINESS's own connected Whop company (OAuth-delegated).
- *     Not used here either.
+ * This is Naelao platform billing, separate from a user connecting Whop through an MCP provider.
  * Here, Naelao itself is a normal Whop seller with its OWN company and its OWN master API key
  * (`WHOP_API_KEY`) — the same relationship any creator selling on Whop has, no invite needed.
  * Growth/Business plans are created ONCE in Naelao's own Whop company (like the LS variant ids
@@ -95,9 +91,9 @@ export async function createWhopPlatformPlanCheckout(
 /** Whop has no mintable per-customer portal session — a fixed, already-authenticated page. */
 export const WHOP_CUSTOMER_ORDERS_URL = "https://whop.com/orders/";
 
-// ── Webhook verification + parsing (mirrors ./whop.ts's HMAC scheme — same Whop-Signature
+// ── Webhook verification + parsing (Whop-Signature
 // header/hex-HMAC-SHA256 mechanism, but this reads Naelao's OWN company's webhook secret, a
-// DIFFERENT secret than the per-business sub-merchant wallet webhook uses) ──
+// secret for Naelao’s own platform-plan webhook) ──
 
 function timingSafeEqualHex(a: string, b: string): boolean {
   if (a.length !== b.length) return false;

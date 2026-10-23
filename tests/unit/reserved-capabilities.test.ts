@@ -93,12 +93,7 @@ describe("reserved-capability guard (income-wallet protection)", () => {
       expect(isReservedPaymentHost("https://api.cal.com")).toBe(false);
     });
 
-    // Whop is a SPECIAL CASE (not Model A): it's now ALSO the reserved business-wallet payment
-    // rail (every business's auto-provisioned sub-merchant wallet), so a user-authored script
-    // may not construct its own fetch() to Whop directly — the read-only connector-whop MCP shim
-    // (list_memberships/list_payments/etc.) is unaffected, since this host check only fires
-    // against code/URLs a user script embeds itself, not the platform's own MCP shim.
-    it("blocks Whop directly (now the reserved business-wallet payment rail)", () => {
+    it("blocks direct Whop API access while allowing policy-governed MCP connectors", () => {
       expect(isReservedPaymentHost("https://api.whop.com/graphql")).toBe(true);
       expect(isReservedPaymentHost("https://api.whop.com/v2")).toBe(true);
     });

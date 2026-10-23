@@ -3,8 +3,7 @@ import { readBoundedResponseJson } from "@naelao/http";
 /**
  * Generic OAuth2 + PKCE helpers for "Connect with X" connector flows (starting with Whop's
  * "Sign in with Whop" — a real, self-serve OAuth app, no invite needed; a completely separate
- * mechanism from the invite-gated Platforms/connected-accounts API the business-wallet rail
- * (business-wallet.ts) uses). Not Whop-specific code — any future connector with an `oauth` spec
+ * mechanism from provider-specific account APIs. Not provider-specific code — connectors with an `oauth` spec
  * in the catalogue reuses these same functions.
  *
  * Flow (mirrors the codebase's own stream-ticket precedent — a short-lived, single-use,

@@ -143,8 +143,6 @@ export interface LaunchpadTemplate {
   template_mode?: "ave" | "cowork";
   /** Domain/focus metadata for filtering and setup copy; not an operating-system mode. */
   vertical?: string;
-  /** @deprecated Legacy billing/catalog metadata retained for existing templates; no longer displayed as a Space operating mode. */
-  wallet_mode?: "business_wallet" | "company_budget";
   /** Core agent ids this template installs (subset/superset of LAUNCHPAD_CORE_AGENTS). */
   agents: string[];
   /** Marketplace skills the template needs wired (commerce/Lemon Squeezy, email, etc.). */
@@ -156,7 +154,7 @@ export interface LaunchpadTemplate {
   bootstrap?: TemplateBootstrap;
   /**
    * When true the dashboard renders the template greyed out as "Coming soon" — selectable once
-   * its connector/shim ships. "Whop first, everything else coming soon" lives as this flag.
+   * its connector/provider is configured. Availability is data, not a platform-wide Whop assumption.
    */
   coming_soon?: boolean;
   /**
@@ -377,7 +375,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     // the highest-leverage "click Install" recommendation for this template's onboarding.
     connectors: ["higgsfield", "twitter", "instagram"],
     free_tier_eligible: true,
-    // Whop-first rollout (CLAUDE.md Phase F): Whop Seller is the only live template at launch;
+    // The Whop seller template is the initial creator-commerce example; its app connection is opt-in.
     // this one is fully built but deliberately gated coming_soon until the wider rollout.
     coming_soon: true,
     bootstrap: {
@@ -407,7 +405,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     // G-1 growth layer: cross-post issue highlights to build the free list.
     connectors: ["twitter", "linkedin"],
     free_tier_eligible: true,
-    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
     // Both installed agents get their own pre-wired project + starter thread: "Content" for
     // drafting issues, "Orders" for subscription/payment events (so billing/lemon-squeezy.ts's
@@ -429,7 +426,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1", "launchpad-fulfillment-v1"],
     skills: ["commerce", "email-tool", "crm-tool"],
     free_tier_eligible: false,
-    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
     // Same reasoning as newsletter-business above: "Support" for tier-1 questions, "Orders"
     // for billing events — both pre-wired, both reassignable/removable.
@@ -448,7 +444,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-content-v1", "launchpad-support-v1"],
     skills: ["email-tool", "file-manager", "web-search"],
     free_tier_eligible: false,
-    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
     bootstrap: {
       prompts: [],
@@ -465,7 +460,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1", "launchpad-content-v1"],
     skills: ["email-tool", "web-search", "file-manager"],
     free_tier_eligible: true,
-    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
     bootstrap: {
       prompts: [],
@@ -475,7 +469,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       ],
     },
   },
-  // ── Platform-connector templates ("Whop first, everything else coming soon") ──
+  // ── Platform-connector templates ──
   // A platform template wires an external creator platform via the connector catalogue +
   // mcp-connector. Whop is live; the rest of the catalogue surfaces as coming_soon in the UI.
   {
@@ -488,32 +482,18 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       "layer; you're billed for the labor, not a cut of the sale).",
     agents: ["launchpad-support-v1", "launchpad-content-v1"],
     skills: ["mcp-connector", "email-tool", "web-search"],
-    // G-1/G-3: whop-seller is the only live template at launch — highest-leverage place to offer
-    // the growth-layer "click Install" onboarding for real (content + social marketing) alongside
-    // the required Whop connection.
+    // Creator-commerce starter template; its Whop app connection is opt-in and provider-hosted.
     connectors: ["whop", "higgsfield", "twitter", "instagram", "tiktok"],
     free_tier_eligible: false,
     bootstrap: {
       prompts: [
-        // "Connect with Whop" is a real OAuth2+PKCE click-through (connectors/oauth.ts) — a
-        // non-technical owner must never be told to go find an API key when this exists. The
-        // pasted-key prompt stays ONLY as an explicit fallback, marked optional, for someone
-        // whose Whop account can't complete OAuth.
         {
           id: "whop_connection",
           type: "connection",
           connector: "whop",
-          question: "Connect your Whop account.",
-          help: "Opens Whop and asks you to approve access. Your assistant then reads your products, members and orders so it can answer questions and spot what needs attention. Whop keeps handling all payments.",
+          question: "Connect Whop to this space.",
+          help: "Authorize the Whop MCP connector so the assistant can work with the products, members and orders you choose to expose. Payments remain managed in Whop.",
           required: true,
-        },
-        {
-          id: "whop_api_key",
-          type: "credential",
-          connector: "whop",
-          question: "Prefer to paste an API key instead?",
-          help: "Optional — only needed if the Connect button above doesn't work for your account.",
-          required: false,
         },
         // How the BUSINESS reaches its OWNER. This is what makes the assistant proactive rather
         // than something you have to remember to open — approvals, plans and escalations all
@@ -605,14 +585,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
           required: true,
         },
         {
-          id: "whop_api_key",
-          type: "credential",
-          connector: "whop",
-          question: "Prefer to paste an API key instead?",
-          help: "Optional — only needed if the Connect button above doesn't work for your account.",
-          required: false,
-        },
-        {
           id: "service_area",
           type: "text",
           question: "Which town, city or area do you want customers from?",
@@ -685,7 +657,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1"],
     skills: ["email-tool", "web-search", "mcp-connector"],
     free_tier_eligible: true,
-    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
     bootstrap: {
       prompts: [
@@ -922,7 +893,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "A private firm workspace for matter intake, contract review, research, deadlines and client updates. The assistant drafts and routes work; attorneys approve legal conclusions and outbound advice.",
     template_mode: "cowork",
     vertical: "Legal operations",
-    wallet_mode: "company_budget",
     agents: ["launchpad-support-v1", "launchpad-content-v1"],
     skills: ["knowledge-base", "web-search", "file-manager", "email-tool", "mcp-connector"],
     connectors: ["notion"],
@@ -951,7 +921,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "A healthcare operations workspace for intake, scheduling, policy knowledge and follow-up. The assistant coordinates administrative work while clinical decisions remain with qualified staff.",
     template_mode: "cowork",
     vertical: "Clinical operations",
-    wallet_mode: "company_budget",
     agents: ["launchpad-support-v1", "launchpad-content-v1"],
     skills: ["knowledge-base", "file-manager", "email-tool", "mcp-connector"],
     connectors: ["notion"],
@@ -980,7 +949,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "A finance team workspace for close, actuals, budgets, forecasts, variance reviews and board reporting. The assistant prepares analysis with a clear audit trail and routes approvals to the right owner.",
     template_mode: "cowork",
     vertical: "Finance and FP&A",
-    wallet_mode: "company_budget",
     agents: ["launchpad-content-v1", "launchpad-support-v1"],
     skills: ["knowledge-base", "file-manager", "web-search", "mcp-connector"],
     connectors: ["notion"],
@@ -1004,16 +972,13 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     },
   },
   // ── Business-focused templates ───────────────────────────────────────────
-  // These are owner-operated ventures. Their onboarding explicitly establishes the business
-  // wallet/payout rail and an owner command channel, then creates revenue, growth and delivery
-  // projects for the assistant to run continuously.
+  // These are owner-operated ventures with an owner command channel and projects for the assistant.
   {
     id: "ave-local-services",
     name: "Local Services Growth Engine",
     description: "An autonomous venture for a focused local service: attract leads, qualify demand, book work, coordinate delivery and report revenue from one owner command center.",
     template_mode: "ave",
     vertical: "Local services",
-    wallet_mode: "business_wallet",
     agents: ["launchpad-leadgen-v1", "launchpad-support-v1", "launchpad-fulfillment-v1"],
     skills: ["commerce", "crm-tool", "email-tool", "web-search", "mcp-connector"],
     connectors: ["whop"],
@@ -1022,7 +987,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     bootstrap: {
       prompts: [
         { id: "service_offer", type: "text", question: "What service, location and customer should this venture focus on?", required: true },
-        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the venture's payout and checkout rail.", help: "This template connects the project budget and checkout flow through the selected provider.", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your venture operator reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
         { id: "autonomy", type: "choice", question: "How much may the assistant do without asking?", options: ["Draft everything for approval", "Run routine growth and support, ask on exceptions", "Run within the configured tools and project budget"], required: true },
       ],
@@ -1032,7 +996,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { name: "Customer Desk", default_agent_id: "launchpad-support-v1" },
         { name: "Revenue & Growth", default_agent_id: "launchpad-leadgen-v1" },
       ],
-      first_contact: { goal: "Turn the local service offer into an operating plan. Confirm the isolated business wallet and checkout connection, define the first customer segment and service area, draft the lead-to-booking flow, and send the owner a concrete first-week growth plan with any approvals needed." },
+      first_contact: { goal: "Turn the local service offer into an operating plan. Review the selected commerce connectors, define the first customer segment and service area, draft the lead-to-booking flow, and send the owner a concrete first-week growth plan with any approvals needed." },
     },
   },
   {
@@ -1041,7 +1005,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "An autonomous niche commerce venture for a focused product category: shape the offer, manage the catalogue, coordinate fulfilment, support customers and grow demand.",
     template_mode: "ave",
     vertical: "Niche commerce",
-    wallet_mode: "business_wallet",
     agents: ["launchpad-fulfillment-v1", "launchpad-content-v1", "launchpad-support-v1"],
     skills: ["commerce", "email-tool", "file-manager", "mcp-connector"],
     connectors: ["whop", "gumroad"],
@@ -1050,7 +1013,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     bootstrap: {
       prompts: [
         { id: "category", type: "text", question: "What product category and customer niche should the brand own?", required: true },
-        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the brand's payout and checkout rail.", help: "The template keeps its budget separate and uses the connected checkout provider for configured commerce tasks.", required: true },
         { id: "catalogue_source", type: "connection", connector: "gumroad", question: "Connect an existing product catalogue, if you have one.", help: "Optional: import products and sales so the venture can start from what already exists.", required: false },
         { id: "owner_channel", type: "channel", question: "Where should the brand operator reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
         { id: "autonomy", type: "choice", question: "How should it handle routine commerce work?", options: ["Draft changes for approval", "Run routine catalogue, support and growth work", "Run within the configured tools and project budget"], required: true },
@@ -1061,7 +1023,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { name: "Content & Growth", default_agent_id: "launchpad-content-v1" },
         { name: "Revenue Review", default_agent_id: "launchpad-fulfillment-v1" },
       ],
-      first_contact: { goal: "Set up the niche commerce venture around the chosen category. Confirm the isolated business wallet, inspect the connected catalogue if present, propose the first offer and fulfilment workflow, and send the owner the first campaign and revenue-review plan. Report missing product facts instead of inventing them." },
+      first_contact: { goal: "Set up the niche commerce venture around the chosen category. Inspect the connected catalogue if present, propose the first offer and fulfilment workflow, and send the owner the first campaign and revenue-review plan. Report missing product facts instead of inventing them." },
     },
   },
   {
@@ -1070,7 +1032,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "An autonomous productized service venture that turns a specialist capability into a repeatable offer, qualified intake, delivery workflow and customer success loop.",
     template_mode: "ave",
     vertical: "Productized expert services",
-    wallet_mode: "business_wallet",
     agents: ["launchpad-leadgen-v1", "launchpad-content-v1", "launchpad-support-v1"],
     skills: ["commerce", "crm-tool", "file-manager", "web-search", "email-tool", "mcp-connector"],
     connectors: ["whop", "notion"],
@@ -1079,7 +1040,6 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     bootstrap: {
       prompts: [
         { id: "specialty", type: "text", question: "What expertise and deliverable should this venture sell?", help: "For example: paid audits, research briefs, design sprints or implementation packages.", required: true },
-        { id: "business_wallet", type: "connection", connector: "whop", question: "Connect the venture's payout and checkout rail.", help: "The template keeps its budget separate and uses the connected checkout provider for paid intake.", required: true },
         { id: "offer_constraints", type: "text", question: "What scope, price or turnaround limits should the operator respect?", required: true },
         { id: "owner_channel", type: "channel", question: "Where should your service operator reach you?", options: ["email", "slack", "whatsapp", "telegram"], required: true },
         { id: "autonomy", type: "choice", question: "How should it handle leads and delivery?", options: ["Draft offers and deliverables for approval", "Run intake and routine delivery, ask on exceptions", "Run within the configured tools and project budget"], required: true },
@@ -1090,7 +1050,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { name: "Lead Generation", default_agent_id: "launchpad-leadgen-v1" },
         { name: "Client Success", default_agent_id: "launchpad-support-v1" },
       ],
-      first_contact: { goal: "Package the specialist capability into a clear paid offer without making up proof or results. Confirm the isolated business wallet, draft the intake and delivery stages within the stated constraints, create the first lead-generation brief, and send the owner a launch checklist with explicit approval points." },
+      first_contact: { goal: "Package the specialist capability into a clear paid offer without making up proof or results. Review the configured connector, draft the intake and delivery stages within the stated constraints, create the first lead-generation brief, and send the owner a launch checklist with explicit approval points." },
     },
   },
 ];

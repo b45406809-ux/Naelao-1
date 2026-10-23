@@ -80,7 +80,7 @@ export interface OperationGroup {
 
 export type RoomType = "public_team" | "public_channel" | "private_scratchpad";
 export interface ToolSurfaceContext { roomType?: RoomType; role?: UniversalAgentRole; plannerScope?: PlannerScope; defaultSkills?: string[]; skillAllowlist?: string[] }
-const PRIVATE_SCRIPT_NAMES = new Set(["business-email", "schedule", "local-machine", "file-manager", "r2-workspace", "code-exec", "wallet", "business-wallet"]);
+const PRIVATE_SCRIPT_NAMES = new Set(["business-email", "schedule", "local-machine", "file-manager", "r2-workspace", "code-exec", "wallet"]);
 const HIGH_PRIVILEGE_OPERATIONS = /(?:^|\.)(?:send|delete|write|edit|bash|execute|provision|add_destination|transfer|payout)(?:$|\.)/i;
 const BUILTIN_PLATFORM_SKILLS = [
   {

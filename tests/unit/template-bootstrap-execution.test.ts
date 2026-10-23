@@ -121,11 +121,9 @@ describe("whop-seller — the populated template", () => {
     expect(connect.connector).toBe("whop");
     expect(connect.required).toBe(true);
 
-    // The pasted-key path still exists, but only as an explicitly optional fallback — a
-    // non-technical owner must never be REQUIRED to go find an API key.
-    const pasted = tpl.bootstrap!.prompts.find((p) => p.id === "whop_api_key")!;
-    expect(pasted.type).toBe("credential");
-    expect(pasted.required).toBe(false);
+    // Credentials are collected by the hosted MCP provider flow, not pasted into template setup.
+    const pasted = tpl.bootstrap!.prompts.find((p) => p.id === "whop_api_key");
+    expect(pasted).toBeUndefined();
   });
 
   it("asks where the assistant should reach the owner, and how autonomous it should be", () => {

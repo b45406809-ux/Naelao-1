@@ -42,8 +42,6 @@ import {
   listMyBusinesses,
   getShellManifest,
   listBusinessMembers,
-  getBusinessWalletBalance,
-  getBusinessWalletTransactions,
   getBusinessRevenue,
   listBusinessOrders,
   getConnectorStatus,
@@ -59,8 +57,6 @@ import {
   type AgentDefinitionSummary,
   type ProductUserMe,
   type Business,
-  type WhopWalletBalance,
-  type WhopWalletTransaction,
   type RevenueSummary,
   type LaunchpadOrder,
   type ConnectorInfo,
@@ -101,13 +97,6 @@ const MODEL_LABELS: Record<string, string> = {
 
 function centsToDisplay(cents: number, currency = "USD"): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
-}
-
-function walletBadge(status: WhopWalletBalance["status"] | undefined): BadgeColor {
-  if (status === "active") return "green";
-  if (status === "awaiting_kyc" || status === "pending") return "amber";
-  if (status === "error") return "red";
-  return "blue";
 }
 
 function pctChange(n: number | null): string {
@@ -222,8 +211,6 @@ export default function DashboardPage() {
   // Business dashboard state — only fetched/rendered when the active space is a real business.
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
   const [business, setBusiness] = React.useState<Business | null>(null);
-  const [wallet, setWallet] = React.useState<WhopWalletBalance | null>(null);
-  const [walletTx, setWalletTx] = React.useState<WhopWalletTransaction[]>([]);
   const [hasCommerce, setHasCommerce] = React.useState(false);
   const [revenue, setRevenue] = React.useState<RevenueSummary | null>(null);
   const [orders, setOrders] = React.useState<LaunchpadOrder[]>([]);
@@ -295,15 +282,11 @@ export default function DashboardPage() {
           listMyBusinesses(product.space_id, creds).then((list) => list.find((b) => b.id === activeSpaceId) ?? null),
           setBusiness
         ),
-        settle(getBusinessWalletBalance(activeSpaceId, creds), setWallet),
-        settle(getBusinessWalletTransactions(activeSpaceId, creds, 6), setWalletTx),
         settle(listBusinessMembers(activeSpaceId, creds), setMembers),
         settle(getConnectorStatus(activeSpaceId, creds), setConnectors)
       );
     } else {
       setBusiness(null);
-      setWallet(null);
-      setWalletTx([]);
       setHasCommerce(false);
       setRevenue(null);
       setOrders([]);
@@ -456,17 +439,6 @@ export default function DashboardPage() {
       {/* KPI row — the numbers worth seeing at a glance. */}
       <div style={{ ...panelGrid, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", marginBottom: 8 }}>
         <Stat label="Your credits" value={me ? String(me.credits_balance) : "…"} />
-        {isBusinessSpace && (
-          <Stat
-            label="Wallet balance"
-            value={wallet ? centsToDisplay(wallet.balance_cents ?? 0, wallet.currency) : "…"}
-            badge={
-              wallet && wallet.status !== "active"
-                ? { color: walletBadge(wallet.status), text: wallet.status.replace("_", " ") }
-                : undefined
-            }
-          />
-        )}
         {isBusinessSpace && hasCommerce && (
           <Stat
             label={`Revenue (${revenue?.period ?? "this month"})`}
@@ -683,37 +655,6 @@ export default function DashboardPage() {
             Business
           </SectionHeading>
           <div style={panelGrid}>
-            <Panel title="Wallet">
-              {wallet?.status === "awaiting_kyc" && (
-                <div style={{ marginBottom: 8, color: "var(--amber, #b45309)" }}>
-                  Verification needed before payouts work.
-                  {wallet.onboarding_url && (
-                    <>
-                      {" "}
-                      <a href={wallet.onboarding_url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>
-                        Complete verification
-                      </a>
-                    </>
-                  )}
-                </div>
-              )}
-              {walletTx.length === 0 ? (
-                <Empty>No transactions yet.</Empty>
-              ) : (
-                walletTx.map((t, i) => (
-                  <Row
-                    key={i}
-                    left={t.description ?? t.type}
-                    right={
-                      <span style={{ color: t.amount_cents >= 0 ? "var(--green, #16a34a)" : "inherit" }}>
-                        {t.amount_cents >= 0 ? "+" : ""}{centsToDisplay(t.amount_cents, t.currency)}
-                      </span>
-                    }
-                  />
-                ))
-              )}
-            </Panel>
-
             {hasCommerce && (
               <Panel title="Recent orders" count={orders.length}>
                 {orders.length === 0 ? (

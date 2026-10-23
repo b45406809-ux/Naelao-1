@@ -18,7 +18,7 @@
  *
  * Deliberately NOT included: projects, agents, connectors, revenue. Those change per-run, cost a
  * round trip each, and the agent already has real tools for them (`project.list`, `agent.list`,
- * `diagnostics.overview`, `business_wallet.balance`). This carries only what is true for the whole
+ * `diagnostics.overview`). This carries only what is true for the whole
  * life of the business and cheap enough to send every single turn.
  */
 

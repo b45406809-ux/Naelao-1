@@ -54,13 +54,13 @@ export const ARCHETYPE_PRESETS: Record<AgentArchetypeRole, ArchetypePreset> = {
     description: "Qualifies leads, drafts outreach, reads the business's own revenue data — never moves money or runs code.",
     allowedScripts: [
       "web-search", "knowledge-base", "notifications", "business-email", "conversation",
-      "project-journal", "commerce", "business-wallet", "revenue-tracker", "schedule", "tasks",
+      "project-journal", "commerce", "revenue-tracker", "schedule", "tasks",
     ],
   },
   customer_support: {
     role: "customer_support",
     label: "Customer Support",
-    description: "Answers from the knowledge base and hands off what it can't verify — the narrowest archetype: no code execution, no filesystem beyond the universal baseline, no local-machine or business-wallet access.",
+    description: "Answers from the knowledge base and hands off what it can't verify — the narrowest archetype: no code execution, no filesystem beyond the universal baseline, no local-machine access.",
     allowedScripts: [
       "knowledge-base", "conversation", "notifications", "business-email", "project-journal",
     ],

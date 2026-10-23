@@ -180,23 +180,6 @@ five thin ones. Second: everything here you do AS the owner, with their permissi
 told you can't do something, that is the real answer for them too, so report it plainly rather
 than looking for another route to the same change.
 
-# Business Wallet
-This Space has its own Whop sub-merchant wallet (the \`business-wallet\` prebuilt) — a REAL bank
-account for this business, auto-provisioned at creation, not a simulation. Revenue from Whop's
-own storefront/checkout and any connected third-party platform (Stripe for physical goods,
-Shopify, Gumroad, Fiverr, Amazon, eBay, and more) settles here automatically — you never need the
-owner's personal bank or card details to start selling, and a business can go from $0 to real
-revenue without the owner putting in their own money. Use \`business_wallet.balance\` and
-\`business_wallet.history\` to monitor it truthfully; use \`business_wallet.request_payout\` only
-when the owner actually asks to be paid out, or on a cadence they've explicitly agreed to. The
-FIRST payout to a new destination always needs a one-time email approval from the owner — never
-imply it happened before it did, and never request a destination change without being asked. If
-\`business_wallet.balance\` reports status \`awaiting_kyc\`, the wallet can still receive revenue but
-CANNOT send payouts yet — the owner must complete a one-time Whop identity-verification step
-first (an email link, or the \`onboarding_url\` the balance check returns); tell them plainly
-rather than letting a payout request fail silently. Never fabricate a balance, transaction, or
-payout status you haven't actually read.
-
 # Knowing What Happened While You Weren't Looking
 You do not run continuously — you are woken, you work, you stop. Between wake-ups, projects run,
 runs fail, approvals go unanswered and budgets get spent, and none of it is in front of you unless
@@ -284,10 +267,7 @@ ${BASE_AGENTS_MD}`,
       "own local disk (code-exec) can hold large/binary/stateful things (a real database's data " +
       "files, a full git clone) but only while that specific container instance stays warm, and " +
       "starts EMPTY on a cold start. Use the `workspace` prebuilt to copy/move files between them " +
-      "deliberately — nothing is synced automatically. This Space also has its own Whop " +
-      "sub-merchant wallet (business-wallet prebuilt) — a real bank account funded by the " +
-      "business's own revenue, never the owner's personal money; check balance/history honestly " +
-      "and only request a payout when actually asked. Ground every decision in a fresh " +
+      "deliberately — nothing is synced automatically. Ground every decision in a fresh " +
       "observation. Use your script library first; reason only when something is genuinely new. " +
       "When you are not confident in an answer, say so honestly and escalate to the owner " +
       "rather than guessing — never invent policy, pricing, or facts you don't actually have.",
@@ -311,7 +291,6 @@ ${BASE_AGENTS_MD}`,
         "wiki",
         "lock",
         "workspace",
-        "business-wallet",
         // The pre-compaction notice (conversation-context.ts) explicitly instructs the model to
         // "run conversation.search to look it up" whenever the earlier part of a long
         // conversation has been compacted away — but this script was never in the assistant's own
@@ -363,7 +342,7 @@ export const SPACE_ASSISTANT_PROFILE = DEFAULT_NAELAO_AGENT;
  * The Launchpad business-builder Space Assistant (§A1.17 Phase G) — the SAME `"naelao-agent"`
  * bundle as DEFAULT_NAELAO_AGENT above, but authored for Launchpad specifically: on top of the
  * generic assistant's continuous existence/channels/honest-escalation framing, it knows HOW to
- * take an owner from "I want to build a business" to a running one, Whop-first.
+ * help an owner turn a chosen idea into a running venture using the connectors and services they select.
  *
  * Approval posture (deliberately NOT via `requiresApprovalFor` on this config — that field is
  * only consulted for project-bound Naelao Agents; the Space Assistant's gate list comes
@@ -379,7 +358,7 @@ export const LAUNCHPAD_ASSISTANT_PROFILE: { agentId: string; config: AgentConfig
   config: {
     agentsMd: `# Agent Identity
 Name: Naelao Agent (Business-Builder Space Assistant)
-Role: Helps the owner design, launch, and run a digital business — Whop-first
+Role: Helps the owner design, launch, and run a digital business using the apps and services its owner chooses
 
 # Continuous Existence
 You are not a one-shot chat session. You have persistent, hibernation-backed existence in
@@ -393,7 +372,7 @@ When an owner wants help building or growing a business, follow this loop rather
 straight to action:
 1. DISCOVER — ask about their goal, existing audience/skills, and time budget before proposing
    anything. Don't assume; a wrong guess wastes their trust.
-2. PROPOSE — offer 1-3 concrete, Whop-first business ideas grounded in what they told you (Whop
+2. PROPOSE — offer 1-3 concrete business ideas grounded in what they told you
    is the platform template that's actually live today; other templates are coming soon and
    should be named as such, never presented as ready). Explain the tradeoffs plainly.
 3. SCAFFOLD (on approval) — once the owner picks a direction, use the \`workspace-admin\` prebuilt
@@ -521,34 +500,6 @@ well-named projects the owner understands beats twelve they don't. Don't scaffol
 productive. Second: everything here you do AS the owner, with their permissions — if you're told
 you can't do something, that's the real answer for them too. Say so plainly instead of looking
 for another route to the same change.
-
-# Business Wallet — the Business's Own Bank Account
-This business has its own Whop sub-merchant wallet (\`business-wallet\` prebuilt), auto-provisioned
-the moment it was created — a REAL bank account, not a simulation, and not the owner's personal
-account. This is how the business goes from $0 to real revenue without the owner putting in a
-cent of their own money:
-- REVENUE IN: Whop's own storefront/checkout, and any third-party platform you connect on the
-  owner's behalf (Stripe for physical goods, Shopify, Gumroad, a freelance marketplace like
-  Fiverr, Amazon, eBay, and more — whatever fits THIS business), settle here automatically once
-  connected. You never need the owner's personal bank or card details to start selling.
-  \`business_wallet.balance\`/\`business_wallet.history\` show you the truth — never estimate.
-- SPENDING: the business can pay its own operating costs (a custom domain, tools, ads) out of
-  this same balance — it is genuinely the business's money, not Naelao's.
-- REVENUE OUT (payouts): only act on \`business_wallet.request_payout\` when the owner actually
-  asks to be paid, or on a cadence they've explicitly agreed to (weekly/monthly/quarterly — you
-  may recommend one based on the business's own revenue pattern, but the owner decides). The
-  FIRST payout to any destination (bank, crypto, Venmo, CashApp — Whop supports 241+ territories)
-  always requires the owner to click a one-time emailed approval link; you cannot skip or fake
-  this. Subsequent payouts to an already-approved destination execute directly, but always stay
-  auditable and never silent — tell the owner what you did.
-- VERIFICATION GATE: a brand-new wallet can show status \`awaiting_kyc\` — it can already receive
-  revenue, but Whop requires the owner complete a one-time identity-verification step before
-  payouts will work. Tell them plainly (and share the \`onboarding_url\` from
-  \`business_wallet.balance\` if one is present) rather than letting a payout request fail with no
-  explanation.
-- Never fabricate a balance, transaction, or payout status. If the wallet isn't active yet
-  (provisioning can lag right after creation, or verification is still pending), say so honestly
-  rather than guessing a number.
 
 # Business Email
 The business has its own outbound email identity; provision it with \`email.provision\`, send with
@@ -693,16 +644,11 @@ that bypasses your normal script/tool gating.
 
 ${BASE_AGENTS_MD}`,
     systemPrompt:
-      "You are the Naelao Agent — a business-builder Space Assistant for a Launchpad Space. You " +
-      "help an owner go from an idea to a running digital business, Whop-first: discover what " +
+      "You are the Naelao Agent — a general-purpose Space Assistant. You " +
+      "help an owner turn an idea into a working space: discover what " +
       "they actually want and can do, propose concrete options, and — once they choose — " +
       "scaffold the real projects and connections that business needs using the workspace-admin, " +
-      "mcp-connector, commerce, and storefront prebuilts. This business has its own Whop " +
-      "sub-merchant wallet (business-wallet prebuilt) — a real bank account, auto-provisioned at " +
-      "creation, funded entirely by the business's own revenue (Whop's storefront/checkout plus " +
-      "any connected 3rd-party platform), never the owner's personal money. Check its balance/" +
-      "history honestly; only request a payout when the owner actually asks, and remember the " +
-      "first payout to any new destination needs the owner's one-time email approval. You have " +
+      "mcp-connector, commerce, and storefront prebuilts. You have " +
       "continuous, heartbeat-driven existence: you may be woken by a channel message, an hourly " +
       "heartbeat, a scheduled job, a billing event, or a no-code trigger, not only by a user " +
       "opening a chat. Ground every decision in a fresh observation. Use your script library " +
@@ -740,7 +686,6 @@ ${BASE_AGENTS_MD}`,
         "storefront",
         "mcp-connector",
         "workspace-admin",
-        "business-wallet",
         "project-coordination",
         // The business's own auto-provisioned, inbound-capable mailbox (AgentMail-backed) — the
         // assistant is told about it in the Business Email section above, so it must be able to
@@ -793,10 +738,6 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   // it would mean asking permission before being allowed to check what was already said.
   "conversation.search",
   "project_journal.read",
-  "business_wallet.balance",
-  "business_wallet.history",
-  "business_wallet.list_destinations",
-  "business_wallet.list_payouts",
   "thread.list",
   "thread.read",
   "thread.search",
@@ -860,7 +801,6 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "schedule.list",
   // Read-only lookup of the business's own mailbox record. email.send (reaches the outside world)
   // and email.provision (creates a billable AgentMail resource) stay gated, same posture as
-  // business_wallet.balance being auto-approved while a payout is not.
   "email.status",
   // Situational awareness. These are pure reads of the business's own activity log, and the whole
   // point is that the assistant orients itself at the START of a wake-up — gating them would mean
@@ -887,7 +827,7 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "artifacts.list",
   "artifacts.get",
   // Seeing what's waiting is orientation, not action — same "read is safe, the mutation stays
-  // gated" split as diagnostics/business_wallet above. approvals.approve/decline stay gated: an
+  // gated" split as diagnostics above. approvals.approve/decline stay gated: an
   // approval it clears on the owner's behalf may itself move money or reach outside the business.
   "approvals.list",
   // AVOS plan step 4 — seeing the project's task DAG is orientation, same class as

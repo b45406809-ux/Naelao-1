@@ -440,22 +440,6 @@ app.all("/v1/webhooks/lemon-squeezy", async (c) => {
   );
 });
 
-// ── Whop wallet webhook ingress (unauthenticated; Whop-Signature HMAC is the auth) ──
-// Same posture as the platform LS webhook above: /v1/webhooks/whop is the platform's ONE Whop
-// sub-merchant webhook endpoint (verified against WHOP_WEBHOOK_SECRET in the billing worker);
-// /v1/webhooks/whop-wallet/payouts/:id/approve is the single-use payout-approval link (the token
-// itself is the auth, same precedent as business_invites/password-reset links).
-const proxyBillingWebhook = async (c: { env: Env; req: { url: string; method: string; raw: Request } }) => {
-  if (!c.env.BILLING_WORKER) return new Response(JSON.stringify({ error_code: "billing_unavailable", message: "Billing worker not configured" }), { status: 503, headers: { "content-type": "application/json" } });
-  const u = new URL(c.req.url);
-  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
-  return c.env.BILLING_WORKER.fetch(
-    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit)
-  );
-};
-app.all("/v1/webhooks/whop", proxyBillingWebhook);
-app.all("/v1/webhooks/whop-wallet/payouts/:id/approve", proxyBillingWebhook);
-
 // ── Whop platform-plan webhook ingress (unauthenticated; Whop-Signature HMAC is the auth) ──
 // Naelao's OWN normal Whop seller company's webhook (builder Growth/Business plans) — a
 // DIFFERENT Whop company/secret than /v1/webhooks/whop above (that one is the per-business
@@ -737,11 +721,6 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // pricing/products routes above (identity here, authorization there).
   /^\/spaces\/([^/]+)\/local-grants(\/|$)/,
   /^\/spaces\/([^/]+)\/local-tunnel\/connect-token$/,
-  // Whop business wallet: every business's auto-provisioned sub-merchant wallet — additionally
-  // gated by requireBusinessMembership on the spaces worker exactly like the routes above
-  // (identity here, authorization there; balance/transactions are member-level, destinations/
-  // payouts are admin-level).
-  /^\/spaces\/([^/]+)\/business-wallet\/(balance|transactions|destinations|payouts)$/,
   // Per-business connector connect (BYO Whop account — no Naelao Platforms invite needed):
   // additionally gated by requireBusinessMembership on the spaces worker exactly like the
   // routes above (status is member-level read, connect is admin-level write).
@@ -1457,16 +1436,6 @@ const proxyBilling = async (c: { env: Env; get: (k: "claims") => NaelaoJwtClaims
 api.all("/billing/subscription", proxyBilling);
 api.all("/billing/checkout", proxyBilling);
 api.all("/billing/portal", proxyBilling);
-// Whop business wallet (dashboard's own direct path — builder JWT, not the shell's
-// business-membership wrapper above). Same explicit-not-blanket rule as above. The billing
-// worker's own requireInternalHmac gate verifies the token proxyTo mints from validated JWT
-// claims, and its guard() additionally enforces owner/admin role (where required) + space-tenant
-// ownership.
-api.all("/billing/whop-wallet/balance", proxyBilling);
-api.all("/billing/whop-wallet/transactions", proxyBilling);
-api.all("/billing/whop-wallet/destinations", proxyBilling);
-api.all("/billing/whop-wallet/payouts", proxyBilling);
-
 // Owner-only runtime distribution evidence. The analytics worker performs a second role and
 // platform-secret check before querying the private agent-event dataset.
 api.get("/analytics/runtime-economics", async (c) => {

@@ -133,7 +133,6 @@ export const commerce: PrebuiltScript = {
         ...(a["status"] ? { status: a["status"] } : {}),
       }),
     // What actually sold. The seeded daily revenue-review cron asks the assistant to "check
-    // business_wallet.balance/history and any storefront/commerce orders" — and there was no
     // operation to list orders at all, only `get_order`, which needs an id you could only have
     // got from a list. So the one recurring job every Launchpad business ships with could not do
     // half of what it was told to do. The route was already there; nothing exposed it.

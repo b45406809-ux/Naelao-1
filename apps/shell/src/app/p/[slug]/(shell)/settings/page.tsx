@@ -19,7 +19,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Badge, Button, FormInput, FormSelect, Toggle, type BadgeColor } from "@naelao/ui";
+import { Badge, Button, FormInput, FormSelect, Toggle } from "@naelao/ui";
 import { ALLOWED_MODELS, effortOptionsForModel } from "@naelao/billing-core";
 import { useProduct } from "@/lib/product-context";
 import { useSessionCredentials } from "@/lib/auth-provider";
@@ -40,7 +40,6 @@ import {
   listBusinessMembers,
   inviteToBusiness,
   removeBusinessMember,
-  getBusinessWalletBalance,
   getPricing,
   checkoutBusinessSubscription,
   checkoutCreditPack,
@@ -56,7 +55,6 @@ import {
   type Business,
   type ShellManifest,
   type BusinessMember,
-  type WhopWalletBalance,
   type PricingPlan,
   type CreditPack,
   type AssistantPolicy,
@@ -92,13 +90,6 @@ function centsToDisplay(cents: number, currency = "USD"): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
 }
 
-function walletBadge(status: WhopWalletBalance["status"] | undefined): BadgeColor {
-  if (status === "active") return "green";
-  if (status === "awaiting_kyc" || status === "pending") return "amber";
-  if (status === "error") return "red";
-  return "blue";
-}
-
 const TAB_ICONS: Record<TabId, React.ReactNode> = {
   general: (
     <svg viewBox="0 0 16 16" fill="none" strokeWidth="1.5" stroke="currentColor"><circle cx="8" cy="8" r="2.5" /><path d="M8 1V2.5M8 13.5V15M1 8H2.5M13.5 8H15M3.2 3.2L4.3 4.3M11.7 11.7L12.8 12.8" /></svg>
@@ -132,7 +123,6 @@ export default function SettingsPage() {
   const [business, setBusiness] = React.useState<Business | null>(null);
   const [manifest, setManifest] = React.useState<ShellManifest | null>(null);
   const [members, setMembers] = React.useState<BusinessMember[]>([]);
-  const [wallet, setWallet] = React.useState<WhopWalletBalance | null>(null);
   const [plans, setPlans] = React.useState<PricingPlan[]>([]);
   const [packs, setPacks] = React.useState<CreditPack[]>([]);
   const [policy, setPolicy] = React.useState<AssistantPolicy | null>(null);
@@ -156,7 +146,6 @@ export default function SettingsPage() {
           )
         : Promise.resolve(),
       isBusinessSpace ? settle(listBusinessMembers(activeSpaceId, creds), setMembers) : Promise.resolve(),
-      isBusinessSpace ? settle(getBusinessWalletBalance(activeSpaceId, creds), setWallet) : Promise.resolve(),
       isBusinessSpace
         ? settle(getPricing(activeSpaceId, creds), (r) => { setPlans(r.plans); setPacks(r.credit_packs); })
         : Promise.resolve(),
@@ -220,7 +209,6 @@ export default function SettingsPage() {
           <BillingTab
             spaceId={activeSpaceId}
             creds={creds}
-            wallet={wallet}
             plans={plans}
             packs={packs}
             canManage={canManage}
@@ -507,7 +495,6 @@ function MembersTab({
 function BillingTab({
   spaceId,
   creds,
-  wallet,
   plans,
   packs,
   canManage,
@@ -515,7 +502,6 @@ function BillingTab({
 }: {
   spaceId: string;
   creds: { sessionToken: string; endUserId: string } | null;
-  wallet: WhopWalletBalance | null;
   plans: PricingPlan[];
   packs: CreditPack[];
   canManage: boolean;
@@ -552,22 +538,9 @@ function BillingTab({
   return (
     <div>
       <div className="settings-section-title">Billing</div>
-      <div className="settings-section-sub">This business's wallet, plan, and credits.</div>
+      <div className="settings-section-sub">This business's plan and credits.</div>
 
       <div className="settings-block">
-        <div className="settings-row">
-          <div>
-            <div className="settings-row-label">Business wallet</div>
-            <div className="settings-row-sub">Revenue and payouts for this business.</div>
-          </div>
-          <Badge color={walletBadge(wallet?.status)}>{wallet?.status ?? "loading…"}</Badge>
-        </div>
-        {wallet?.status === "active" && wallet.balance_cents !== undefined && (
-          <div className="settings-row">
-            <div><div className="settings-row-label">Available balance</div></div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{centsToDisplay(wallet.balance_cents, wallet.currency)}</div>
-          </div>
-        )}
         {me && (
           <div className="settings-row">
             <div><div className="settings-row-label">Your credits</div><div className="settings-row-sub">Personal balance, this product.</div></div>

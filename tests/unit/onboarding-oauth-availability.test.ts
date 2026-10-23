@@ -57,45 +57,45 @@ async function bootstrap(env: AgentsEnv) {
   );
   expect(res.status).toBe(200);
   return (await res.json()) as {
-    prompts: Array<{ id: string; type: string; connector?: string; oauth_available?: boolean }>;
+    prompts: Array<{ id: string; type: string; connector?: string; oauth_available?: boolean; connect_method?: string; connection_available?: boolean }>;
   };
 }
 
 describe("onboarding reports whether one-click connect actually works here", () => {
-  it("says false when the connector's OAuth app isn't configured", async () => {
+  it("says manual when hosted connector credentials are absent", async () => {
     const body = await bootstrap(makeEnv());
     const connection = body.prompts.find((p) => p.type === "connection" && p.connector === "whop");
     expect(connection).toBeDefined();
-    expect(connection!.oauth_available).toBe(false);
+    expect(connection!.connection_available).toBe(false);
   });
 
-  it("says true once the client id, secret AND public callback origin are all present", async () => {
+  it("selects Composio once its key AND public callback origin are present", async () => {
     const body = await bootstrap(
       makeEnv({
-        WHOP_OAUTH_CLIENT_ID: "client-abc",
-        WHOP_OAUTH_CLIENT_SECRET: "secret-abc",
+        COMPOSIO_API_KEY: "composio-test-key",
         PUBLIC_AGENTS_URL: "https://agents.naelao.com",
       })
     );
     const connection = body.prompts.find((p) => p.type === "connection" && p.connector === "whop");
-    expect(connection!.oauth_available).toBe(true);
+    expect(connection!.connection_available).toBe(true);
+    expect(connection!.connect_method).toBe("composio");
   });
 
-  it("stays false when the callback origin is missing — the flow cannot complete without it", async () => {
+  it("stays manual when the callback origin is missing — the flow cannot complete without it", async () => {
     // The redirect target is half the flow: with credentials but no public origin, the authorize
     // URL has nowhere to come back to, so reporting "available" would send someone into a
     // redirect that dead-ends.
     const body = await bootstrap(
-      makeEnv({ WHOP_OAUTH_CLIENT_ID: "client-abc", WHOP_OAUTH_CLIENT_SECRET: "secret-abc" })
+      makeEnv({ COMPOSIO_API_KEY: "composio-test-key" })
     );
     const connection = body.prompts.find((p) => p.type === "connection" && p.connector === "whop");
-    expect(connection!.oauth_available).toBe(false);
+    expect(connection!.connection_available).toBe(false);
   });
 
   it("is false for a prompt with no connector at all", async () => {
     const body = await bootstrap(makeEnv());
     const nonConnection = body.prompts.find((p) => p.type !== "connection" && p.type !== "credential");
     expect(nonConnection).toBeDefined();
-    expect(nonConnection!.oauth_available).toBe(false);
+    expect(nonConnection!.connection_available).toBe(false);
   });
 });

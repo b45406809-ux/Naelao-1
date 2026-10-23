@@ -3,7 +3,7 @@ import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
 
-// Regression coverage for two real bugs found in a business-wallet/connector audit:
+// Regression coverage for two real bugs found in a wallet retirement and connector audit:
 //   1. POST /connectors/:platform/connect vaulted the API key with NO x-naelao-user-id header
 //      (the real credentials worker 400s without one) and no `scope` (defaults to 'user', a row
 //      mcp-hub's actingUserId-less resolveCredential() call can never read back).

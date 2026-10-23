@@ -458,7 +458,7 @@ export async function getBillingSubscription(): Promise<{
   );
 }
 
-// ── Connectors (external-platform connector layer; "Whop first, rest coming soon") ──
+// ── Connectors (external-platform MCP connector layer) ──
 
 export interface ConnectorOperation {
   name: string;
@@ -480,7 +480,7 @@ export interface Connector {
   connected?: boolean;
 }
 
-/** The read-only catalogue (Whop available, the rest coming_soon). */
+/** The configured connector catalogue, including hosted Composio integrations. */
 export async function listConnectors(): Promise<Connector[]> {
   const res = await apiFetch<{ connectors: Connector[] }>("/connectors");
   return res.connectors ?? [];
@@ -924,96 +924,4 @@ export async function getBuilderBilling(period?: string): Promise<BuilderBilling
 export async function getBuilderBillingHistory(): Promise<BuilderBillingPeriod[]> {
   const res = await apiFetch<{ data: BuilderBillingPeriod[] }>("/builder/billing/history");
   return res.data ?? [];
-}
-
-// ── Business Wallet (Whop sub-merchant model) — the business's OWN bank account ───────────────
-// Every business auto-provisions an isolated Whop sub-merchant wallet the moment it's created —
-// no builder action, no OAuth, no personal bank/card details. Revenue from Whop's own
-// storefront/checkout and connected 3rd-party platforms settles here automatically. Routes are
-// proxied by naelao-router (explicit entries, owner/admin only).
-
-export interface BusinessWalletBalance {
-  status: "pending" | "awaiting_kyc" | "active" | "error" | "not_provisioned";
-  balance_cents?: number;
-  currency?: string;
-  last_synced_at?: string | null;
-  /** Set only while status='awaiting_kyc' — the one-time Whop verification link the owner must
-   *  complete before payouts work. Null when Whop's response didn't include a direct link (the
-   *  owner should check their email from Whop instead). */
-  onboarding_url?: string | null;
-}
-
-export interface WalletTransaction {
-  type: "revenue" | "expense" | "payout" | "fee_debit";
-  amount_cents: number;
-  currency: string;
-  description: string | null;
-  external_ref: string | null;
-  created_at: string;
-}
-
-export interface PayoutDestination {
-  id: string;
-  type: "bank" | "crypto" | "venmo" | "cashapp";
-  label: string;
-  status: "pending" | "verified" | "error";
-  is_default: number;
-  created_at: string;
-}
-
-export interface PayoutRequest {
-  id: string;
-  destination_id: string;
-  amount_cents: number;
-  note: string | null;
-  status: "pending_approval" | "approved" | "executed" | "denied" | "failed";
-  created_at: string;
-}
-
-export async function getBusinessWalletBalance(spaceId: string): Promise<BusinessWalletBalance> {
-  const res = await apiFetch<{ wallet: BusinessWalletBalance | null; status?: string }>(
-    `/billing/whop-wallet/balance?space_id=${encodeURIComponent(spaceId)}`
-  );
-  return res.wallet ?? { status: (res.status as BusinessWalletBalance["status"]) ?? "not_provisioned" };
-}
-
-export async function getBusinessWalletTransactions(spaceId: string, limit = 50): Promise<WalletTransaction[]> {
-  const res = await apiFetch<{ transactions: WalletTransaction[] }>(
-    `/billing/whop-wallet/transactions?space_id=${encodeURIComponent(spaceId)}&limit=${limit}`
-  );
-  return res.transactions ?? [];
-}
-
-export async function getPayoutDestinations(spaceId: string): Promise<PayoutDestination[]> {
-  const res = await apiFetch<{ destinations: PayoutDestination[] }>(
-    `/billing/whop-wallet/destinations?space_id=${encodeURIComponent(spaceId)}`
-  );
-  return res.destinations ?? [];
-}
-
-export async function addPayoutDestination(
-  spaceId: string,
-  params: { type: PayoutDestination["type"]; label: string; details: Record<string, unknown> }
-): Promise<{ destination: PayoutDestination }> {
-  return apiFetch<{ destination: PayoutDestination }>("/billing/whop-wallet/destinations", {
-    method: "POST",
-    body: JSON.stringify({ space_id: spaceId, ...params }),
-  });
-}
-
-export async function getPayoutRequests(spaceId: string): Promise<PayoutRequest[]> {
-  const res = await apiFetch<{ payouts: PayoutRequest[] }>(
-    `/billing/whop-wallet/payouts?space_id=${encodeURIComponent(spaceId)}`
-  );
-  return res.payouts ?? [];
-}
-
-export async function requestPayout(
-  spaceId: string,
-  params: { destination_id: string; amount_cents: number; note?: string }
-): Promise<{ payout: { id: string; status: string; withdrawal_id?: string } }> {
-  return apiFetch("/billing/whop-wallet/payouts", {
-    method: "POST",
-    body: JSON.stringify({ space_id: spaceId, ...params }),
-  });
 }

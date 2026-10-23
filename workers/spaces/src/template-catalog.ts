@@ -15,7 +15,6 @@ export interface TemplateCatalogEntry {
   description: string;
   template_mode: "ave" | "cowork";
   vertical: string;
-  wallet_mode: "business_wallet" | "company_budget";
   coming_soon: boolean;
   free_tier_eligible: boolean;
   presentation_profile?: "guided" | "balanced" | "advanced";
@@ -35,7 +34,7 @@ export interface TemplateCatalogEnv {
 // operating-model metadata, v3 gained connectors, v2 gained free_tier_eligible) — a stale cache entry from an
 // older shape would make the onboarding "Recommended apps" panel silently show nothing for up to
 // an hour after deploy, so the key is bumped again rather than reusing v2.
-const CATALOG_CACHE_KEY = "launchpad-template-catalog:v5";
+const CATALOG_CACHE_KEY = "launchpad-template-catalog:v6";
 const CATALOG_REQUEST_TIMEOUT_MS = 5_000;
 const CATALOG_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -58,7 +57,6 @@ function normalizeTemplateCatalog(value: unknown): TemplateCatalogEntry[] | null
       description: typeof t.description === "string" ? t.description.slice(0, 2000) : "Preconfigured workspace, agents and setup.",
       template_mode: t.template_mode === "cowork" ? "cowork" : "ave",
       vertical: typeof t.vertical === "string" ? t.vertical.slice(0, 120) : "Digital business",
-      wallet_mode: t.wallet_mode === "company_budget" ? "company_budget" : "business_wallet",
       coming_soon: t.coming_soon === true,
       free_tier_eligible: t.free_tier_eligible === true,
       presentation_profile: t.presentation_profile === "advanced" || t.presentation_profile === "balanced" ? t.presentation_profile : "guided",

@@ -43,7 +43,6 @@ import { skillManager } from "./skill-manager.js";
 import { localMachine } from "./local-machine.js";
 import { workspace } from "./workspace.js";
 import { wallet } from "./wallet.js";
-import { businessWallet } from "./business-wallet.js";
 import { revenueTracker } from "./revenue-tracker.js";
 import { schedule } from "./schedule.js";
 import { tasks } from "./tasks.js";
@@ -166,10 +165,6 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Launchpad Wallet (user-directed feature) — a business's own Naelao-held stored-value
   // balance; see wallet.ts's header for the money-transmission scope boundary this keeps to.
   [wallet.name]: wallet,
-  // Business wallet (Whop autonomous sub-merchant model) — the business's OWN bank account:
-  // real revenue in, real payouts out. A different concept from `wallet` above; see
-  // business-wallet.ts's header for the distinction.
-  [businessWallet.name]: businessWallet,
   // External revenue tracker (go-live monetization pass) — tracks a business's own reported
   // revenue on platforms Naelao never custodies money through (Whop), so a builder-configured
   // revenue-cut % can be billed as a surcharge; see revenue-tracker.ts's header.

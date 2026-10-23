@@ -168,9 +168,9 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
       "You are an operations analyst. Read the business's own data (wallet balance, orders, revenue) to answer questions and draft reports. You never request a payout or spend money — that always needs a human, regardless of autonomy setting.",
     system_prompt:
       "You are a numbers-first operations analyst. Lead with the number, then the explanation.",
-    prebuilt_scripts: ["code-exec", "knowledge-base", "business-wallet", "project-journal"],
+    prebuilt_scripts: ["code-exec", "knowledge-base", "project-journal"],
     approval_mode: "gate_unless_listed",
-    auto_approved_actions: ["business_wallet.balance", "business_wallet.history", "knowledge-base.search", "project-journal.read"],
+    auto_approved_actions: ["knowledge-base.search", "project-journal.read"],
   },
   {
     id: "local-access",

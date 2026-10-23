@@ -11,7 +11,7 @@ import { cfSaasConfig, createCustomHostname, deleteCustomHostname, getCustomHost
 import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
-import { createSpaceRecord, SpaceCreationError, provisionBusinessWallet } from "./create-space.js";
+import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import { dispatchPendingProvisioningOutbox } from "./provisioning-outbox.js";
 import type { ProvisionMessage } from "./create-space.js";
 import { requireBusinessMembership, requireBusinessMembershipForWallet, resolveEndUserBusinessRole } from "./business-auth.js";
@@ -378,21 +378,6 @@ app.post("/spaces", async (c) => {
       ...(body.template_id ? { templateId: body.template_id } : {}),
       ...(body.config_overrides ? { configOverrides: body.config_overrides } : {}),
     });
-    // Every business auto-provisions a Whop sub-merchant wallet — no builder action required.
-    // Best-effort, wrapped so ANY failure here (missing table/row in an unusual deployment,
-    // transient billing-worker error) never turns an otherwise-successful space creation into
-    // a 500 — the wallet just stays unprovisioned until a retry, surfaced honestly by the
-    // wallet balance read rather than blocking the thing the caller actually asked for.
-    if (userId) {
-      try {
-        const owner = await c.env.PLATFORM_DB.prepare("SELECT email FROM users WHERE id = ?").bind(userId).first<{ email: string }>();
-        if (owner?.email) {
-          await provisionBusinessWallet(c.env, { tenantId, spaceId: result.id, ownerEmail: owner.email, businessName: body.name });
-        }
-      } catch (err) {
-        console.error(`[spaces] wallet provisioning lookup failed for space ${result.id}:`, (err as Error).message);
-      }
-    }
     return c.json({ id: result.id, name: body.name, status: result.status, product_slug: result.product_slug, created_at: result.created_at }, 201);
   } catch (err) {
     if (err instanceof SpaceCreationError) {
@@ -2727,7 +2712,7 @@ app.post("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits",
   const deductRes = await produserStub.fetch(new Request("http://produser/credits/deduct", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ credits, reason: "deposit_to_business_wallet", idempotency_key: idempotencyKey }),
+    body: JSON.stringify({ credits, reason: "deposit_to_project_balance", idempotency_key: idempotencyKey }),
   }));
   if (!deductRes.ok) {
     return new Response(deductRes.body, { status: deductRes.status, headers: { "content-type": "application/json" } });
@@ -2749,9 +2734,9 @@ app.post("/spaces/:spaceId/projects/:projectId/wallet/deposit-personal-credits",
     await produserStub.fetch(new Request("http://produser/credits/grant", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ credits, reason: "deposit_to_business_wallet_reversal", idempotency_key: `${idempotencyKey}:reversal` }),
+      body: JSON.stringify({ credits, reason: "deposit_to_project_balance_reversal", idempotency_key: `${idempotencyKey}:reversal` }),
     })).catch(() => { /* best-effort — a failed reversal is logged by the grant route itself if reachable */ });
-    return c.json({ error_code: "wallet_credit_failed", message: "Could not credit the business wallet — your personal balance was not charged." }, 502);
+    return c.json({ error_code: "wallet_credit_failed", message: "Could not credit the project balance; your personal balance was not charged." }, 502);
   }
   const walletBody = await creditRes.json<{ balance_cents: number }>();
   return c.json({ deposited_credits: credits, personal_balance_credits: personalBalanceAfter, wallet_balance_cents: walletBody.balance_cents }, 201);
@@ -3046,98 +3031,9 @@ app.post("/spaces/:spaceId/tunnel-authority", async c => {
   return stub.fetch(new Request("http://space-do/machine-authority", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, tenantId, spaceId }) }));
 });
 
-// ── Whop wallet shell wrapper ──────────────────────────────────────────────────────────────────
-// Every business gets an auto-provisioned Whop sub-merchant wallet (no builder action). The
-// balance/transactions read is member-visible (a business's own bank-account balance is
-// operating information the whole team can see, like the wallet_ledger panel); managing payout
-// destinations and requesting a payout is admin-only. Same two-gate pattern as local-grants
-// above: requireInternalHmac proves the request came through naelao-router;
-// requireBusinessMembership does the real per-business authorization (a product session is
-// product-scoped, never per-business — Phase C's cross-business fix). The handler proxies to the
-// billing worker's /billing/whop-wallet/* routes with the caller's real role — never hardcoded
-// to admin, since GET is member-level here (unlike the removed Wallet Connect's admin-only GET).
-app.use("/spaces/:spaceId/business-wallet/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use(
-  "/spaces/:spaceId/business-wallet/balance",
-  requireBusinessMembership({ GET: "member" })
-);
-app.use(
-  "/spaces/:spaceId/business-wallet/transactions",
-  requireBusinessMembership({ GET: "member" })
-);
-app.use(
-  "/spaces/:spaceId/business-wallet/destinations",
-  requireBusinessMembership({ GET: "admin", POST: "admin" })
-);
-app.use(
-  "/spaces/:spaceId/business-wallet/payouts",
-  requireBusinessMembership({ GET: "admin", POST: "admin" })
-);
-
-async function proxyWalletToBilling(
-  c: { env: Env; req: { header: (n: string) => string | undefined } },
-  path: string,
-  method: "GET" | "POST" | "DELETE",
-  body?: Record<string, unknown>,
-  role = "admin"
-): Promise<Response> {
-  if (!c.env.BILLING_WORKER) {
-    return Response.json({ error_code: "billing_unavailable", message: "Billing worker not configured" }, { status: 503 });
-  }
-  const identity = getCallerIdentity(c);
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
-  if (!tenantId) return Response.json({ error_code: "unauthorized", message: "Missing tenant" }, { status: 401 });
-  const resp = await c.env.BILLING_WORKER.fetch(
-    new Request(`http://billing-worker${path}`, {
-      method,
-      headers: {
-        "content-type": "application/json",
-        "x-naelao-tenant-id": tenantId,
-        "x-naelao-user-id": identity.userId ?? "",
-        "x-naelao-role": role,
-        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    })
-  );
-  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
-}
-
-app.get("/spaces/:spaceId/business-wallet/balance", async (c) =>
-  proxyWalletToBilling(c, `/billing/whop-wallet/balance?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET", undefined, "member")
-);
-
-app.get("/spaces/:spaceId/business-wallet/transactions", async (c) =>
-  proxyWalletToBilling(
-    c,
-    `/billing/whop-wallet/transactions?space_id=${encodeURIComponent(c.req.param("spaceId"))}&limit=${encodeURIComponent(c.req.query("limit") ?? "50")}`,
-    "GET",
-    undefined,
-    "member"
-  )
-);
-
-app.get("/spaces/:spaceId/business-wallet/destinations", async (c) =>
-  proxyWalletToBilling(c, `/billing/whop-wallet/destinations?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
-);
-
-app.post("/spaces/:spaceId/business-wallet/destinations", async (c) => {
-  const body = await c.req.json<{ type?: string; label?: string; details?: Record<string, unknown> }>().catch(() => ({}) as Record<string, never>);
-  return proxyWalletToBilling(c, "/billing/whop-wallet/destinations", "POST", {
-    space_id: c.req.param("spaceId"),
-    type: body.type,
-    label: body.label,
-    details: body.details,
-  });
-});
-
-app.get("/spaces/:spaceId/business-wallet/payouts", async (c) =>
-  proxyWalletToBilling(c, `/billing/whop-wallet/payouts?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
-);
-
 // ── Per-business connector connect (BYO Whop account, no Naelao Platforms invite needed) ──────
 // Every business's revenue-cut billing runs through the existing revenue-tracker + reseller_ledger
-// surcharge mechanism, NOT the invite-only Whop Platforms/business-wallet rail above — a business
+// surcharge mechanism — a business
 // owner connects their OWN Whop account here (a normal Whop API key from their own dashboard,
 // generally available, no invite required), the agent reads it read-only via mcp-connector, and
 // revenue-tracker bills Naelao's configured cut % on the builder's NEXT platform subscription.
@@ -3614,18 +3510,6 @@ app.post("/spaces/:spaceId/onboarding", async (c) => {
   }
   const path = action === "complete" ? `/spaces/${spaceId}/bootstrap/complete` : `/spaces/${spaceId}/bootstrap/save`;
   return proxyToAgentsWorker(c, path, "POST", { answers: body.answers ?? {} });
-});
-
-app.post("/spaces/:spaceId/business-wallet/payouts", async (c) => {
-  const body = await c.req.json<{ destination_id?: string; amount_cents?: number; note?: string }>().catch(() => ({}) as Record<string, never>);
-  const identity = getCallerIdentity(c);
-  return proxyWalletToBilling(c, "/billing/whop-wallet/payouts", "POST", {
-    space_id: c.req.param("spaceId"),
-    destination_id: body.destination_id,
-    amount_cents: body.amount_cents,
-    note: body.note,
-    requested_by: identity.userId ?? "unknown",
-  });
 });
 
 // Presence (space collaboration, A1.8) — heartbeat: "I'm here" (space-level, or scoped to a

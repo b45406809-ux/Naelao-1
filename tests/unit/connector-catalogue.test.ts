@@ -8,7 +8,7 @@ import {
 } from "../../workers/agents/src/connectors/catalogue.js";
 import { LAUNCHPAD_TEMPLATES, getLaunchpadTemplate } from "../../workers/agents/src/launchpad/spacetype.js";
 
-// "Whop first, everything else coming soon" — the connector catalogue is the source of truth the
+// "Available integrations are connector data" — the connector catalogue is the source of truth the
 // dashboard renders. These tests lock that contract + the reserved-money-in invariant.
 
 describe("connector catalogue", () => {
