@@ -89,10 +89,14 @@ export async function createAgentEmailAddress(input: {
   tenantId: string;
   spaceId: string;
   agentId: string;
+  projectId?: string;
   secret: string;
 }): Promise<string> {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(input.secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`agent-email\0${input.tenantId}\0${input.spaceId}\0${input.agentId}`));
+  // Preserve legacy Space assistant addresses while giving each project assistant its own
+  // independently routable address, even when it shares the same agent id.
+  const scope = input.projectId ? `\0project\0${input.projectId}` : "";
+  const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`agent-email\0${input.tenantId}\0${input.spaceId}\0${input.agentId}${scope}`));
   const token = [...new Uint8Array(digest).slice(0, 16)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return `agent-${token}@${input.domain}`;
 }

@@ -43,6 +43,7 @@ function makeSpacesEnv() {
   return {
     PLATFORM_SECRET: "s",
     ENVIRONMENT: "test",
+    NAELAO_DASHBOARD_TENANT_ID: "tenant-1",
     PLATFORM_DB: fakeDb,
     BUILDER_ACCOUNT_DO: makeStatefulDoNamespace(BuilderAccountDO),
     PRODUCT_USER_DO: makeStatefulDoNamespace(ProductUserDO),
@@ -68,7 +69,7 @@ describe("PATCH /builder/products/:id — modelConfig allowlist", () => {
   it("rejects a model not on the curated allowlist", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(
       await req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "gpt-5-super-mega" } } } }),
@@ -80,7 +81,7 @@ describe("PATCH /builder/products/:id — modelConfig allowlist", () => {
   it("accepts an allowed model and persists it", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const ok = await spacesWorker.fetch(
       await req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "claude-opus-4-8" } } } }),
@@ -276,7 +277,7 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
   it("accepts ultra on a model with no native thinking mode", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(
       await req(`/spaces/${created.id}/model-config`, {
@@ -291,7 +292,7 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
   it("still rejects an effort value that is not a real level at all", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const res = await spacesWorker.fetch(
       await req(`/spaces/${created.id}/model-config`, {
@@ -306,7 +307,7 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
   it("accepts and persists a valid model+effort pair, readable back from shell/manifest's projection", async () => {
     const env = makeSpacesEnv();
     const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
     )).json() as { id: string };
     const ok = await spacesWorker.fetch(
       await req(`/spaces/${created.id}/model-config`, {

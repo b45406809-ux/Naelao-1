@@ -4,7 +4,8 @@
  *
  * Outbound routes, chosen automatically:
  *   1. Cloudflare Email Service sends from the verified platform domain; its matching inbound
- *      Email Routing alias is provisioned per agent when EMAIL_INGRESS_DOMAIN is configured.
+ *      Email Routing aliases are provisioned per Space assistant or project assistant when
+ *      EMAIL_INGRESS_DOMAIN is configured.
  *   2. AgentMail remains an optional hosted-inbox compatibility provider.
  *   3. Resend through the notifications worker remains the last-resort outbound path.
  *
@@ -73,6 +74,7 @@ async function provision(ctx: PrebuiltOpContext, a: Record<string, unknown>): Pr
   const am = await agentMailCall(ctx, "/internal/business-email/provision", {
     slug: toSlug(slug),
     agentId: ctx.env.agentId,
+    ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
     ...(a["display_name"] ? { displayName: String(a["display_name"]) } : {}),
   });
   if (am && am["configured"] === true && am["ok"] === true) {
@@ -109,6 +111,17 @@ async function replyAddress(ctx: PrebuiltOpContext): Promise<unknown> {
   return { address: result["address"], expires_at: result["expires_at"] ?? null, already: result["already"] === true };
 }
 
+async function status(ctx: PrebuiltOpContext): Promise<unknown> {
+  const scoped = await agentMailCall(ctx, "/internal/business-email/status", {
+    agentId: ctx.env.agentId,
+    ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
+  });
+  if (scoped?.["configured"] === true) return scoped;
+  // A project bot must not see the Space assistant's shared inbox status as its own.
+  if (ctx.env.projectId) return scoped ?? { configured: false, inbound: false };
+  return bizService(ctx, "GET");
+}
+
 async function readTextAttachment(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise<unknown> {
   if (!ctx.env.taskId) throw new Error("email.attachment.read_text requires an active task run");
   const id = typeof a["id"] === "string" ? a["id"] : "";
@@ -142,6 +155,7 @@ async function send(ctx: PrebuiltOpContext, a: Record<string, unknown>): Promise
   const am = await agentMailCall(ctx, "/internal/business-email/send", {
     to,
     agentId: ctx.env.agentId,
+    ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
     ...(typeof a["reply_to"] === "string" ? { replyTo: a["reply_to"], taskId: ctx.env.taskId } : {}),
     ...(a["subject"] !== undefined ? { subject: a["subject"] } : {}),
     ...(a["body"] !== undefined ? { text: a["body"] } : {}),
@@ -204,6 +218,6 @@ export const businessEmail: PrebuiltScript = {
     "email.attachment.read_text": (a, c) => readTextAttachment(c, a),
     "email.attachment.ocr_image": (a, c) => ocrImageAttachment(c, a),
     "email.send": (a, c) => send(c, a),
-    "email.status": (_a, c) => bizService(c, "GET"),
+    "email.status": (_a, c) => status(c),
   },
 };

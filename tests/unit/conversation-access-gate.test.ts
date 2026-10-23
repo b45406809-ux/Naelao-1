@@ -45,6 +45,7 @@ function makeEnv() {
   return {
     PLATFORM_SECRET: "s",
     ENVIRONMENT: "test",
+    NAELAO_DASHBOARD_TENANT_ID: "tenant-1",
     PLATFORM_DB: fakeDb,
     BUILDER_ACCOUNT_DO: makeStatefulDoNamespace(BuilderAccountDO),
     PRODUCT_USER_DO: makeStatefulDoNamespace(ProductUserDO),
@@ -74,10 +75,24 @@ async function seedProduct(
   tenant: string,
   opts: { featureFlagOn?: boolean; staffApproved?: boolean; userConsented?: boolean } = {}
 ): Promise<{ productId: string; userId: string }> {
-  const created = await (await spacesWorker.fetch(
-    await req("/builder/products", { method: "POST", tenant, body: { name: "A", spacetype_id: "launchpad" } }),
+  const createResponse = await spacesWorker.fetch(
+    await req("/builder/products", { method: "POST", tenant, body: { name: "Launchpad", spacetype_id: "launchpad" } }),
     env as never, execCtx
-  )).json() as { id: string };
+  );
+  let created: { id: string };
+  if (createResponse.ok) {
+    created = await createResponse.json() as { id: string };
+  } else {
+    if (createResponse.status !== 409) {
+      throw new Error(`Expected singleton conflict while seeding a second legacy space; received ${createResponse.status}`);
+    }
+    // The dashboard exposes one singleton Launchpad now. This ownership-isolation suite also
+    // needs a second, legacy space to prove approval state is scoped by space, so seed it directly.
+    created = { id: "legacy-space-secondary" };
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, config_json) VALUES (?, ?, 'active', 'Legacy', 'launchpad', '{}')"
+    ).bind(created.id, tenant).run();
+  }
 
   if (opts.featureFlagOn) {
     await spacesWorker.fetch(

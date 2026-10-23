@@ -39,6 +39,7 @@ function makeEnv() {
   const fakeDb = createFakeD1([SPACES_TABLE_SQL, NAELAO_PRODUCT_MIGRATION, BUILDER_DASHBOARD_MIGRATION]);
   return {
     PLATFORM_SECRET: "s",
+    NAELAO_DASHBOARD_TENANT_ID: "tenant-1",
     ENVIRONMENT: "test",
     PLATFORM_DB: fakeDb,
     BUILDER_ACCOUNT_DO: makeStatefulDoNamespace(BuilderAccountDO),
@@ -62,83 +63,31 @@ async function req(path: string, opts: { method?: string; body?: unknown; tenant
   });
 }
 
-// The exact shape apps/dashboard/src/app/dashboard/products/new/page.tsx's launch() builds,
-// with a Temple selected (spacetype_id "launchpad" + template_id "creator-store") and every
-// wizard step's fields populated.
-const WIZARD_LAUNCH_PAYLOAD = {
-  name: "Acme Creator Store",
-  spacetype_id: "launchpad",
-  template_id: "creator-store",
-  product_slug: "acme-store",
-  product_config: {
-    branding: { brandColor: "#4f46e5", logoUrl: "https://cdn.example.com/logo.png", productDescription: "A store" },
-    authProvider: { provider: "naelao-native", requireAdminApproval: false, allowedEmailDomains: ["acme.com"] },
-    pricingConfig: { model: "credits", creditsIncludedPerMonth: 1000, overageCreditsPriceCents: 2 },
-  },
-};
-
-describe("Product Creation Wizard — launch payload round-trips through POST /builder/products", () => {
-  it("creates a real product carrying the Temple's template_id, the platform slug, and every step's product_config", async () => {
-    const env = makeEnv();
-    const res = await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: WIZARD_LAUNCH_PAYLOAD }),
-      env as never, execCtx
-    );
-    expect(res.status).toBe(201);
-    const created = await res.json() as { id: string; name: string; spacetype_id: string; status: string; product_slug: string };
-    expect(created.name).toBe("Acme Creator Store");
-    expect(created.spacetype_id).toBe("launchpad");
-    expect(created.product_slug).toBe("acme-store");
-    // No PROVISION_QUEUE bound in this test env — matches local-dev fallback, same as /spaces POST.
-    expect(created.status).toBe("active");
-
-    const detail = await (await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as {
-      product_config: { branding: { brandColor: string }; authProvider: { provider: string; allowedEmailDomains: string[] }; pricingConfig: { model: string; creditsIncludedPerMonth: number } };
-    };
-    expect(detail.product_config.branding.brandColor).toBe("#4f46e5");
-    expect(detail.product_config.authProvider.provider).toBe("naelao-native");
-    expect(detail.product_config.authProvider.allowedEmailDomains).toEqual(["acme.com"]);
-    expect(detail.product_config.pricingConfig.model).toBe("credits");
-    expect(detail.product_config.pricingConfig.creditsIncludedPerMonth).toBe(1000);
-  });
-
-  it("returns the server-derived slug when the wizard leaves product address blank", async () => {
+describe("Naelao Launchpad dashboard — singleton creation boundary", () => {
+  it("creates the centrally configured Launchpad and lists it from authoritative D1", async () => {
     const env = makeEnv();
     const response = await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Acme Store", spacetype_id: "launchpad" } }),
+      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }),
       env as never, execCtx,
     );
     expect(response.status).toBe(201);
-    expect(await response.json()).toMatchObject({ product_slug: "acme-store" });
-  });
-
-  it("lists a created product from the authoritative platform spaces table", async () => {
-    const env = makeEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: WIZARD_LAUNCH_PAYLOAD }), env as never, execCtx
-    )).json() as { id: string };
-
+    const created = await response.json() as { id: string; name: string; spacetype_id: string; status: string; product_slug: string };
+    expect(created).toMatchObject({ name: "Launchpad", spacetype_id: "launchpad", status: "active", product_slug: "launchpad" });
     const list = await (await spacesWorker.fetch(await req("/builder/products", { tenant: "tenant-1" }), env as never, execCtx)).json() as { data: Array<{ id: string }> };
-    expect(list.data.map((p) => p.id)).toContain(created.id);
+    expect(list.data.map((product) => product.id)).toEqual([created.id]);
   });
 
-  it("returns the actual derived product slug when the caller leaves it blank", async () => {
+  it("denies custom product/template creation and non-team root creation", async () => {
     const env = makeEnv();
-    const response = await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Acme Store", spacetype_id: "launchpad" } }),
-      env as never, execCtx,
-    );
-    expect(response.status).toBe(201);
-    expect(await response.json()).toMatchObject({ product_slug: "acme-store" });
-  });
-
-  it("rejects launch when the Identity step's slug is malformed (defense-in-depth behind client-side validation)", async () => {
-    const env = makeEnv();
-    const res = await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { ...WIZARD_LAUNCH_PAYLOAD, product_slug: "Not Valid!" } }),
-      env as never, execCtx
-    );
-    expect(res.status).toBe(400);
+    const custom = await spacesWorker.fetch(await req("/builder/products", {
+      method: "POST", tenant: "tenant-1", body: { name: "Acme Store", spacetype_id: "launchpad", template_id: "creator-store" },
+    }), env as never, execCtx);
+    const nonTeam = await spacesWorker.fetch(await req("/builder/products", {
+      method: "POST", tenant: "tenant-2", body: { name: "Launchpad", spacetype_id: "launchpad" },
+    }), env as never, execCtx);
+    expect(custom.status).toBe(400);
+    expect(nonTeam.status).toBe(403);
+    expect(await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM spaces").first()).toEqual({ count: 0 });
   });
 
   it("rejects malformed, oversized, and wrongly typed launch bodies before product creation", async () => {
@@ -154,25 +103,13 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
     const oversized = await spacesWorker.fetch(await req("/builder/products", {
       method: "POST", tenant: "tenant-1", body: "x".repeat(64 * 1024 + 1),
     }), env as never, execCtx);
-    const wrongSlugType = await spacesWorker.fetch(await req("/builder/products", {
-      method: "POST", tenant: "tenant-1", body: { name: "Shop", spacetype_id: "launchpad", product_slug: 123 },
+    const unsupported = await spacesWorker.fetch(await req("/builder/products", {
+      method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad", product_slug: 123 },
     }), env as never, execCtx);
-
     expect(malformed.status).toBe(400);
     expect(oversized.status).toBe(413);
-    expect(wrongSlugType.status).toBe(400);
-    const rows = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM spaces").first<{ count: number }>();
-    expect(rows?.count).toBe(0);
-  });
-
-  it("without a Temple (blank SpaceType path), creates with no template_id in config_json", async () => {
-    const env = makeEnv();
-    const { template_id: _templateId, ...withoutTemple } = WIZARD_LAUNCH_PAYLOAD;
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: withoutTemple }), env as never, execCtx
-    )).json() as { id: string };
-    const detail = await (await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as Record<string, unknown>;
-    expect(detail["template_id"]).toBeUndefined();
+    expect(unsupported.status).toBe(400);
+    expect(await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM spaces").first()).toEqual({ count: 0 });
   });
 });
 

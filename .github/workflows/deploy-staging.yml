@@ -134,6 +134,14 @@ jobs:
             --command="SELECT rowid FROM builder_password_reset_tokens INDEXED BY idx_builder_password_reset_tokens_expiry WHERE julianday(expires_at) < julianday('now') LIMIT 0" \
             --remote \
             --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0124_project_scoped_agent_email_addresses.sql \
+            --remote \
+            --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT project_id FROM project_agent_email_addresses LIMIT 0" \
+            --remote \
+            --env=staging
 
       - name: Deploy router worker (staging)
         env:
@@ -151,7 +159,13 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        run: npx wrangler deploy --env=staging --config=workers/agents/wrangler.toml
+          EMAIL_INGRESS_DOMAIN: ${{ vars.EMAIL_INGRESS_DOMAIN }}
+        run: |
+          if [ -n "$EMAIL_INGRESS_DOMAIN" ]; then
+            npx wrangler deploy --var "EMAIL_INGRESS_DOMAIN:${EMAIL_INGRESS_DOMAIN}" --env=staging --config=workers/agents/wrangler.toml
+          else
+            npx wrangler deploy --env=staging --config=workers/agents/wrangler.toml
+          fi
 
       - name: Deploy auth worker (staging)
         env:

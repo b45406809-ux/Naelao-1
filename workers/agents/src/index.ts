@@ -6872,7 +6872,7 @@ app.post("/internal/business-email/provision", async (c) => {
   const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
   if (!headerTenantId || !valid) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; slug?: string; displayName?: string }>().catch(() => null);
+  const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; projectId?: string; slug?: string; displayName?: string }>().catch(() => null);
   if (!body?.spaceId || !body.tenantId) return c.json({ error_code: "bad_request", message: "spaceId and tenantId are required" }, 400);
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
   if (!await isActiveTenantSpace(c.env, body.spaceId, body.tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
@@ -6882,21 +6882,35 @@ app.post("/internal/business-email/provision", async (c) => {
   if (airGappedOnlyFromConfig(activeSpace.config_json)) {
     return c.json({ error_code: "air_gap_email_denied", message: "Cloud email provisioning is disabled for this air-gapped Space" }, 403);
   }
+  if (body.projectId !== undefined && (typeof body.projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.projectId))) {
+    return c.json({ error_code: "invalid_project_scope" }, 400);
+  }
 
-  // Native Cloudflare Email Routing provides an address per agent without a hosted inbox vendor.
-  // The operator still has to configure the domain's Email Routing Worker action and apply D1
-  // migration 0094. AgentMail remains an optional compatibility provider below.
+  // Native Cloudflare Email Routing provides an address per space or project assistant.
+  // Inbound routing is keyed to both assistant and project so messages cannot fall into a
+  // Space-wide or different project's conversation. Migration 0124 adds the project-scoped map.
   const ingressDomain = normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN);
   if (body.agentId && ingressDomain) {
-    const email = await createAgentEmailAddress({ domain: ingressDomain, tenantId: body.tenantId, spaceId: body.spaceId, agentId: body.agentId, secret: c.env.PLATFORM_SECRET });
+    const email = await createAgentEmailAddress({ domain: ingressDomain, tenantId: body.tenantId, spaceId: body.spaceId, agentId: body.agentId, ...(body.projectId ? { projectId: body.projectId } : {}), secret: c.env.PLATFORM_SECRET });
     const addressHash = await hashEmailAddress(email);
-    await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO agent_email_addresses (address_hash, tenant_id, space_id, agent_id, status, created_at)
-       VALUES (?, ?, ?, ?, 'active', ?)
-       ON CONFLICT(tenant_id, space_id, agent_id) DO UPDATE SET address_hash = excluded.address_hash, status = 'active'`
-    ).bind(addressHash, body.tenantId, body.spaceId, body.agentId, new Date().toISOString()).run();
+    if (body.projectId) {
+      await c.env.PLATFORM_DB.prepare(
+        `INSERT INTO project_agent_email_addresses (address_hash, tenant_id, space_id, agent_id, project_id, status, created_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?)
+         ON CONFLICT(tenant_id, space_id, agent_id, project_id) DO UPDATE SET address_hash = excluded.address_hash, status = 'active'`
+      ).bind(addressHash, body.tenantId, body.spaceId, body.agentId, body.projectId, new Date().toISOString()).run();
+    } else {
+      await c.env.PLATFORM_DB.prepare(
+        `INSERT INTO agent_email_addresses (address_hash, tenant_id, space_id, agent_id, status, created_at)
+         VALUES (?, ?, ?, ?, 'active', ?)
+         ON CONFLICT(tenant_id, space_id, agent_id) DO UPDATE SET address_hash = excluded.address_hash, status = 'active'`
+      ).bind(addressHash, body.tenantId, body.spaceId, body.agentId, new Date().toISOString()).run();
+    }
     return c.json({ ok: true, configured: true, provider: "cloudflare_email_routing", email, inbound_wired: true });
   }
+
+  // A project assistant cannot safely share the Space AgentMail inbox or a send-only alias.
+  if (body.projectId) return c.json({ ok: false, configured: false, error_code: "project_email_ingress_not_configured" }, 409);
 
   if (!agentMailConfigured(c.env)) {
     const domain = normalizeEmailSendingDomain(c.env.EMAIL_SENDING_DOMAIN);
@@ -7442,7 +7456,7 @@ app.post("/internal/business-email/send", async (c) => {
   const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
   if (!headerTenantId || !valid) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; taskId?: string; to?: string | string[]; subject?: string; text?: string; html?: string; replyTo?: string }>().catch(() => null);
+  const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; projectId?: string; taskId?: string; to?: string | string[]; subject?: string; text?: string; html?: string; replyTo?: string }>().catch(() => null);
   if (!body?.spaceId || !body.tenantId || !body.to) return c.json({ error_code: "bad_request", message: "spaceId, tenantId, to are required" }, 400);
   if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
   if (!await isActiveTenantSpace(c.env, body.spaceId, body.tenantId)) {
@@ -7460,8 +7474,8 @@ app.post("/internal/business-email/send", async (c) => {
     }
     const routeHash = await hashEmailAddress(body.replyTo);
     const route = await c.env.PLATFORM_DB.prepare(
-      "SELECT address_hash FROM email_reply_routes WHERE address_hash = ? AND tenant_id = ? AND space_id = ? AND task_id = ? AND status = 'active' AND expires_at > ?"
-    ).bind(routeHash, body.tenantId, body.spaceId, body.taskId, new Date().toISOString()).first<{ address_hash: string }>();
+      "SELECT address_hash FROM email_reply_routes WHERE address_hash = ? AND tenant_id = ? AND space_id = ? AND task_id = ? AND project_id IS ? AND status = 'active' AND expires_at > ?"
+    ).bind(routeHash, body.tenantId, body.spaceId, body.taskId, body.projectId ?? null, new Date().toISOString()).first<{ address_hash: string }>();
     if (!route) return c.json({ error_code: "reply_route_not_owned_by_task" }, 403);
     // The AgentMail send contract does not document reply-to support. Use the existing Resend
     // path, which has an explicit reply_to field, rather than silently dropping task correlation.
@@ -7482,7 +7496,7 @@ app.post("/internal/business-email/send", async (c) => {
     try {
       const from = await cloudflareSpaceSenderAddress(body.tenantId, body.spaceId, domain);
       const agentReplyTo = body.agentId && normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN)
-        ? await resolveAgentEmailAddress(c.env, body.tenantId, body.spaceId, body.agentId)
+        ? await resolveAgentEmailAddress(c.env, body.tenantId, body.spaceId, body.agentId, body.projectId)
         : null;
       const result = await c.env.EMAIL.send({
         from,
@@ -7514,16 +7528,34 @@ app.post("/internal/business-email/send", async (c) => {
   return c.json({ ok: false, configured: false, reason: "no_outbound_email_provider" });
 });
 
-async function resolveAgentEmailAddress(env: AgentsEnv, tenantId: string, spaceId: string, agentId: string): Promise<string | null> {
+async function resolveAgentEmailAddress(env: AgentsEnv, tenantId: string, spaceId: string, agentId: string, projectId?: string): Promise<string | null> {
   const domain = normalizeIngressDomain(env.EMAIL_INGRESS_DOMAIN);
   if (!domain) return null;
-  const email = await createAgentEmailAddress({ domain, tenantId, spaceId, agentId, secret: env.PLATFORM_SECRET });
+  const email = await createAgentEmailAddress({ domain, tenantId, spaceId, agentId, ...(projectId ? { projectId } : {}), secret: env.PLATFORM_SECRET });
   const hash = await hashEmailAddress(email);
+  const table = projectId ? "project_agent_email_addresses" : "agent_email_addresses";
   const row = await env.PLATFORM_DB.prepare(
-    "SELECT address_hash FROM agent_email_addresses WHERE address_hash = ? AND tenant_id = ? AND space_id = ? AND agent_id = ? AND status = 'active'"
-  ).bind(hash, tenantId, spaceId, agentId).first<{ address_hash: string }>();
+    `SELECT address_hash FROM ${table} WHERE address_hash = ? AND tenant_id = ? AND space_id = ? AND agent_id = ?${projectId ? " AND project_id = ?" : ""} AND status = 'active'`
+  ).bind(hash, tenantId, spaceId, agentId, ...(projectId ? [projectId] : [])).first<{ address_hash: string }>();
   return row ? email : null;
 }
+
+app.post("/internal/business-email/status", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    return c.json({ error_code: "forbidden" }, 403);
+  }
+  const body = await c.req.json<{ tenantId?: string; spaceId?: string; agentId?: string; projectId?: string }>().catch(() => null);
+  if (!body?.spaceId || !body.agentId || body.tenantId !== tenantId
+    || (body.projectId !== undefined && (typeof body.projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.projectId)))) {
+    return c.json({ error_code: "bad_request" }, 400);
+  }
+  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
+  const address = await resolveAgentEmailAddress(c.env, tenantId, body.spaceId, body.agentId, body.projectId);
+  return c.json(address
+    ? { ok: true, configured: true, address, inbound: true, provider: "cloudflare_email_routing", project_id: body.projectId ?? null }
+    : { ok: false, configured: false, inbound: false, provider: "cloudflare_email_routing", project_id: body.projectId ?? null });
+});
 
 function normalizeEmailSendingDomain(value: string | undefined): string | null {
   const domain = value?.trim().toLowerCase().replace(/\.$/, "");
@@ -10213,14 +10245,19 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
   const addressHash = await hashEmailAddress(recipient);
   const now = new Date().toISOString();
   const replyRoute = await env.PLATFORM_DB.prepare(
-    `SELECT tenant_id, space_id, task_id, agent_id FROM email_reply_routes
+    `SELECT tenant_id, space_id, task_id, agent_id, project_id FROM email_reply_routes
      WHERE address_hash = ? AND status = 'active' AND expires_at > ? LIMIT 1`
   ).bind(addressHash, now).first<{ tenant_id: string; space_id: string; task_id: string; agent_id: string; project_id: string | null }>();
-  const mailboxRoute = replyRoute ? null : await env.PLATFORM_DB.prepare(
+  const projectMailboxRoute = replyRoute ? null : await env.PLATFORM_DB.prepare(
+    `SELECT tenant_id, space_id, agent_id, project_id FROM project_agent_email_addresses
+     WHERE address_hash = ? AND status = 'active' LIMIT 1`
+  ).bind(addressHash).first<{ tenant_id: string; space_id: string; agent_id: string; project_id: string }>();
+  const mailboxRoute = replyRoute || projectMailboxRoute ? null : await env.PLATFORM_DB.prepare(
     `SELECT tenant_id, space_id, agent_id FROM agent_email_addresses
      WHERE address_hash = ? AND status = 'active' LIMIT 1`
   ).bind(addressHash).first<{ tenant_id: string; space_id: string; agent_id: string }>();
-  const route = replyRoute ?? (mailboxRoute ? { ...mailboxRoute, task_id: null, project_id: null } : null);
+  const route = replyRoute ?? projectMailboxRoute ?? (mailboxRoute ? { ...mailboxRoute, task_id: null, project_id: null } : null);
+  const isMailboxRoute = Boolean(projectMailboxRoute || mailboxRoute);
   if (!route) {
     message.setReject("Unknown or expired Naelao reply address");
     return;
@@ -10305,7 +10342,7 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
     return;
   }
   const stub = await getAgentDOForSpace(env, route.tenant_id, route.space_id, route.agent_id);
-  const inboundText = mailboxRoute
+  const inboundText = isMailboxRoute
     ? `[Untrusted inbound email]\nSubject: ${parsed.subject}\n\n${parsed.text}`
     : emailReplyBody({ taskId: route.task_id!, subject: parsed.subject, text: parsed.text, attachments: stored });
   const response = await stub.fetch(new Request("http://agent-do/channels/email/inbound", {

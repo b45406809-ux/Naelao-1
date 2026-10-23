@@ -71,6 +71,7 @@ function makeEnv(state: DBState, billingVariantId?: string): Record<string, unkn
 function req(path: string, init: RequestInit & { tenant?: string } = {}): Request {
   const headers = new Headers(init.headers);
   headers.set("x-naelao-tenant-id", init.tenant ?? "tenant-1");
+  headers.set("x-naelao-role", "owner");
   if (init.body) headers.set("content-type", "application/json");
   return new Request(`https://spaces.naelao.com${path}`, { ...init, headers });
 }

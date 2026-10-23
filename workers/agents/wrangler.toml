@@ -330,8 +330,10 @@ ENVIRONMENT = "development"
 # Set to a domain onboarded for Cloudflare Email Service sending. Empty disables the native
 # outbound path; arbitrary-recipient sends also require this account to be on Workers Paid.
 EMAIL_SENDING_DOMAIN = ""
-# Set only after Cloudflare Email Routing is enabled for the domain and a Worker route targets
-# this export's email() handler. Empty keeps task-specific Reply-To aliases disabled.
+# Set to the receiving domain only after Cloudflare Email Routing is enabled and its Worker
+# action targets this export's email() handler. Deploy workflows override this default from the
+# EMAIL_INGRESS_DOMAIN variable in the staging/production GitHub Environment. Empty disables
+# inbound aliases and task-specific Reply-To addresses.
 EMAIL_INGRESS_DOMAIN = ""
 # CF AI Gateway — every LLM call routes through this (spec §15).
 # The real account id + gateway name (dash.cloudflare.com → account id in the URL/sidebar;

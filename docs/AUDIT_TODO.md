@@ -1868,12 +1868,16 @@ first real business on free-tier resources before opening the platform to other 
   normalized event type, and a migration-backed sale/refund test verifies the positive and negative
   entries both persist and net to zero.
 - [ ] **Provider event ordering and replay retention need production evidence.** Body fingerprints
-  distinguish changed payloads but do not impose causal ordering. A late `subscription.created` or
-  stale status event may still race a newer lifecycle transition unless provider timestamps and
-  current-subscription identity are sufficient for every checkout path. Verify Lemon Squeezy and
-  Whop ordering/version fields, then persist a monotonic provider revision or prove the current
-  identity checks cover replacement, renewal, cancellation, and recovery. The billing event table
-  also has no retention/cleanup path and needs bounded retention without reopening old deliveries.
+  distinguish changed payloads but do not impose causal ordering. Code review found a concrete stale
+  lifecycle risk: platform and business `payment.failed` updates match the currently recorded
+  subscription ID, but their general `subscription.*` upserts do not. A delayed `subscription.expired`,
+  `cancelled`, or `updated` event for a replaced subscription can overwrite the current lifecycle
+  row; platform expiry can also reset the org tier to free. Add migration-backed regressions and a
+  conditional update based on a provider-monotonic revision/current subscription identity, while
+  preserving legitimate subscription replacement. Verify Lemon Squeezy and Whop event timestamp or
+  version guarantees before choosing that ordering key. The billing event table also has no
+  retention/cleanup path; design bounded payload retention while keeping durable exact replay
+  suppression for money events, rather than deleting dedupe keys after an arbitrary TTL.
 
 - [ ] **Workspace dependency ranges and peer compatibility need a full pass.** `packages/types`
   and `packages/ui` previously declared wildcard TypeScript development dependencies; both now use

@@ -122,11 +122,18 @@ jobs:
           npx wrangler d1 execute "$DB_ID" \
             --command="SELECT rowid FROM builder_password_reset_tokens INDEXED BY idx_builder_password_reset_tokens_expiry WHERE julianday(expires_at) < julianday('now') LIMIT 0" \
             --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0124_project_scoped_agent_email_addresses.sql \
+            --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT project_id FROM project_agent_email_addresses LIMIT 0" \
+            --remote
 
       - name: Deploy all workers (production)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          EMAIL_INGRESS_DOMAIN: ${{ vars.EMAIL_INGRESS_DOMAIN }}
         run: |
           # F-16: a bash `for` loop's exit code is the LAST iteration's, so a mid-loop deploy
           # failure was silently masked by a later success — production could half-deploy and still
@@ -142,7 +149,15 @@ jobs:
               # F-13: MUST pass --env=production, or wrangler deploys the top-level config
               # (ENVIRONMENT="development", localhost CORS) to production. Every worker defines an
               # [env.production] block (parity enforced by wrangler-vars-parity.test.ts).
-              if ! npx wrangler deploy --env=production --config="workers/$w/wrangler.toml"; then
+              if [ "$w" = "agents" ]; then
+                deploy_args=()
+                if [ -n "$EMAIL_INGRESS_DOMAIN" ]; then
+                  deploy_args=(--var "EMAIL_INGRESS_DOMAIN:${EMAIL_INGRESS_DOMAIN}")
+                fi
+              else
+                deploy_args=()
+              fi
+              if ! npx wrangler deploy "${deploy_args[@]}" --env=production --config="workers/$w/wrangler.toml"; then
                 echo "❌ $w deploy failed"
                 failed+=("$w")
               fi
