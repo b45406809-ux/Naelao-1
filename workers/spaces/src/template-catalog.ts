@@ -18,6 +18,7 @@ export interface TemplateCatalogEntry {
   wallet_mode: "business_wallet" | "company_budget";
   coming_soon: boolean;
   free_tier_eligible: boolean;
+  presentation_profile?: "guided" | "balanced" | "advanced";
   /** Connector catalogue ids (catalogue.ts) this template's onboarding recommends connecting —
    *  e.g. creator-store recommends higgsfield + social platforms for marketing. Empty means "no
    *  specific recommendation," not "connect nothing" — the shell still shows the full catalogue
@@ -60,6 +61,7 @@ function normalizeTemplateCatalog(value: unknown): TemplateCatalogEntry[] | null
       wallet_mode: t.wallet_mode === "company_budget" ? "company_budget" : "business_wallet",
       coming_soon: t.coming_soon === true,
       free_tier_eligible: t.free_tier_eligible === true,
+      presentation_profile: t.presentation_profile === "advanced" || t.presentation_profile === "balanced" ? t.presentation_profile : "guided",
       connectors,
     });
   }

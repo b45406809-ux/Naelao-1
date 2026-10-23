@@ -4347,6 +4347,27 @@ app.get("/spaces/:spaceId/business-analytics", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// Space-scoped user preferences. The user id is always derived from verified claims so callers
+// can change only their own presentation and detail-filter preferences.
+app.use("/spaces/:spaceId/preferences", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/preferences", requireBusinessMembership({ GET: "member", PUT: "member" }));
+app.get("/spaces/:spaceId/preferences", async (c) => {
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized", message: "Authenticated Space membership required" }, 401);
+  const spaceId = c.req.param("spaceId");
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const response = await forwardToSpaceDO(stub, `/spaces/${encodeURIComponent(spaceId)}/users/${encodeURIComponent(userId)}/preferences`, "GET");
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+});
+app.put("/spaces/:spaceId/preferences", async (c) => {
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId) return c.json({ error_code: "unauthorized", message: "Authenticated Space membership required" }, 401);
+  const spaceId = c.req.param("spaceId");
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const response = await forwardToSpaceDO(stub, `/spaces/${encodeURIComponent(spaceId)}/users/${encodeURIComponent(userId)}/preferences`, "PUT", c.req.raw.body);
+  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+});
+
 // ── Notifications inbox ──────────────────────────────────────────────────────
 // Unlike agent-activity (builder-only technical audit trail), this IS end-user-facing — a
 // business admin reading their own business's inbox — so the public route is
@@ -6652,6 +6673,8 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
   const manifest = await loadManifest(c.env, space.spacetype_id);
   if (!manifest) return c.json({ error_code: "not_found", message: "SpaceType manifest not found" }, 404);
   const pc = await loadEffectiveProductConfig(c.env, space.spacetype_id, space.config_json);
+  let spaceConfig: Record<string, unknown> = {};
+  try { const parsed: unknown = JSON.parse(space.config_json ?? "{}"); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) spaceConfig = parsed as Record<string, unknown>; } catch { /* malformed legacy config uses product default */ }
 
   const businessTemplates = pc?.catalog?.businessTemplates ?? [];
   const fullCatalog = await loadTemplateCatalog(c.env);
@@ -6684,6 +6707,7 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
       suppress_naelao_branding: pc?.branding?.suppressNaelaoBranding ?? false,
     },
     assistant_mode: pc?.assistantMode ?? "per-user",
+    presentation_profile: ["guided", "balanced", "advanced"].includes(String(spaceConfig["presentation_profile"])) ? spaceConfig["presentation_profile"] : "guided",
     // §A1.28 (model switcher): null means "unset" — the dispatch layer's own DEFAULT_WORKING_MODEL
     // fallback (@naelao/billing-core, a Workers AI id — see CLAUDE.md item 68/79: a Claude default
     // 404s on an account with no Anthropic provider on its gateway) applies, same meaning as every

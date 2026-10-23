@@ -1052,8 +1052,8 @@ function WorkersPanel({
                 {sa.progress_note && <div style={{ marginTop: 3 }}>{sa.progress_note}</div>}
                 {sa.error && <div style={{ marginTop: 5, color: "#dc2626" }}>Error: {sa.error}</div>}
                 {sa.result && <pre style={{ margin: "6px 0 0", padding: 7, maxHeight: 150, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 7, background: "var(--surface2)", color: "var(--text2)", font: "10.5px/1.45 var(--font-mono, monospace)" }}>{sa.result}</pre>}
-                {sa.tokens_used !== undefined && <div style={{ marginTop: 3 }}>{sa.tokens_used.toLocaleString()} tokens</div>}
-                <div style={{ marginTop: 3, fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>Run {sa.id.slice(0, 8)}</div>
+                {sa.tokens_used !== undefined && <div data-technical-detail="model_routing" style={{ marginTop: 3 }}>{sa.tokens_used.toLocaleString()} tokens</div>}
+                <div data-technical-detail="identifiers" style={{ marginTop: 3, fontFamily: "var(--font-mono, monospace)", fontSize: 10 }}>Run {sa.id.slice(0, 8)}</div>
               </div>
             </details>
           ))}

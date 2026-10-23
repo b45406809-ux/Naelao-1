@@ -59,13 +59,16 @@ export function AppCard({
             {app.name}
           </div>
           <div className="app-card-publisher">
-            {app.provider}
+            <span data-technical-detail="model_routing">{app.provider}</span>
             {app.personal ? " · personal" : ""}
           </div>
         </div>
       </div>
 
       <div className="app-card-desc">{app.description}</div>
+      {app.connected && <div className="settings-row-sub" style={{ marginTop: 7 }}>
+        {app.personal ? "Personal connection: only you can use this account." : "Space connection: the Space assistant and project agents can use it where their project permissions allow."}
+      </div>}
 
       <div className="app-card-footer">
         {app.recommended ? <span className="app-card-tag">Recommended</span> : <span />}

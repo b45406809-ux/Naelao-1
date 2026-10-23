@@ -181,6 +181,8 @@ export interface ShellManifest {
     suppress_naelao_branding: boolean;
   };
   assistant_mode: string;
+  /** Template default; presentation only. User preferences can override this per Space. */
+  presentation_profile?: "guided" | "balanced" | "advanced";
   /** §A1.28 model switcher — null means unset (the dispatch layer's own DEFAULT_WORKING_MODEL
    *  fallback applies). Present in the real backend response since item 48; the type just never
    *  carried it (item 79 — same "server sends it, TS type didn't know" gap as template_catalog's
@@ -215,6 +217,7 @@ export interface ShellManifest {
     wallet_mode?: "business_wallet" | "company_budget";
     coming_soon: boolean;
     free_tier_eligible: boolean;
+    presentation_profile?: "guided" | "balanced" | "advanced";
   }>;
   /** Browse-only: the project presets a business is configured with, and the core agents that
    *  run it. Static product data — an agent's system_prompt is never included. Absent on an older
@@ -230,6 +233,26 @@ export interface ShellManifest {
     cookie_policy: "none" | "analytics" | "third_party";
     support_contact: string | null;
   };
+}
+
+export interface SpaceUserPreferences {
+  space_id: string;
+  user_id: string;
+  display_mode: "business" | "developer";
+  presentation_profile: "guided" | "balanced" | "advanced" | null;
+  technical_detail_filters: Array<"identifiers" | "model_routing" | "execution_trace">;
+}
+
+export async function getSpaceUserPreferences(spaceId: string, session: SessionCredentials): Promise<SpaceUserPreferences> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/preferences`, { session });
+}
+
+export async function updateSpaceUserPreferences(
+  spaceId: string,
+  update: Partial<Pick<SpaceUserPreferences, "display_mode" | "presentation_profile" | "technical_detail_filters">>,
+  session: SessionCredentials
+): Promise<SpaceUserPreferences> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/preferences`, { method: "PUT", body: JSON.stringify(update), session });
 }
 
 /** GET /v1/spaces/:spaceId/shell/manifest — safe projection, works pre- and post-login. */
@@ -2392,6 +2415,8 @@ export async function getTemplateActivity(productSpaceId: string, session: Sessi
 export interface BusinessAnalytics {
   window_days: number;
   runs: { total: number; completed: number; failed: number; success_rate: number | null; vs_prior_period: number | null };
+  autonomy: { tracked_runs: number; approval_interrupted_runs: number; completed_with_approval: number; completed_without_approval: number; completion_without_approval_rate: number | null; approval_requests: number };
+  reliability: { avg_completion_duration_ms: number | null; recovered_runs: number; completed_runs_with_duration: number; recovery_rate: number | null; repeated_mutation_calls: number };
   credits: { used: number; vs_prior_period: number | null };
   tokens_used: number;
   by_agent: Array<{ agent_id: string; runs: number; completed: number; failed: number; success_rate: number | null; credits: number }>;
@@ -2979,7 +3004,8 @@ export async function getConnectorAliases(spaceId: string, session: SessionCrede
 }
 
 export async function createConnectorAlias(spaceId: string, input: { alias: string; scope: "space" | "project" | "user"; connector_name: string; project_id?: string; granted_scopes?: string[] }, session: SessionCredentials): Promise<void> {
-  await apiFetch(`/v1/spaces/${spaceId}/connector-aliases`, { method: "POST", body: JSON.stringify(input), session });
+  const scope = input.scope === "space" ? "space_shared" : input.scope === "project" ? "project_bound" : "user_personal";
+  await apiFetch(`/v1/spaces/${spaceId}/connector-aliases`, { method: "POST", body: JSON.stringify({ ...input, scope }), session });
 }
 
 export async function deleteConnectorAlias(spaceId: string, aliasId: string, session: SessionCredentials): Promise<void> {

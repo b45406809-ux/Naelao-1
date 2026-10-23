@@ -347,6 +347,7 @@ async function createBusinessForEndUserUnlocked(
       template_mode: primaryTemplate.template_mode,
       wallet_mode: primaryTemplate.wallet_mode,
       vertical: primaryTemplate.vertical,
+      presentation_profile: primaryTemplate.presentation_profile,
     } : {}),
   });
   // The child business is its OWN top-level space under its OWN tenant (saas per-end-user

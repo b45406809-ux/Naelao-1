@@ -24,3 +24,15 @@ body {
 .micro-app-frame,.desktop-frame{width:100%;height:100%;min-height:500px;border:0;background:white}.terminal-canvas{height:100%;background:#11151b;color:#d7e0ea;font:12px/1.6 ui-monospace,monospace;overflow:auto}.terminal-canvas header{position:sticky;top:0;padding:8px 12px;background:#191f27;color:#8c99a8}.terminal-canvas header span:last-child{float:right}.terminal-online{color:#32d583}.terminal-canvas pre{padding:12px;white-space:pre-wrap}.desktop-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;color:#52606e;gap:8px}.desktop-placeholder span{font-size:45px}.desktop-frame img{width:100%;height:100%;object-fit:contain}.mobile-workspace-toggle{display:none}
 @media(max-width:900px){.project-workspace{display:flex;flex-direction:column;height:calc(100vh - 52px)}.project-rail{display:none}.mobile-workspace-toggle{display:grid;grid-template-columns:1fr 1fr;flex:none;padding:6px;background:var(--sidebar-bg);border-bottom:1px solid var(--border)}.mobile-workspace-toggle button{padding:8px;border:0;background:transparent;color:var(--text3);border-radius:7px}.mobile-workspace-toggle button.active{background:var(--surface2);color:var(--text)}.workspace-stage{flex:1}.workspace-stage.mobile-chat .conversation-stage{display:flex!important;width:100%!important}.workspace-stage.mobile-chat .canvas-sidebar,.workspace-stage.mobile-chat .canvas-divider{display:none}.workspace-stage.mobile-canvas .conversation-stage,.workspace-stage.mobile-canvas .canvas-divider{display:none}.workspace-stage.mobile-canvas .canvas-sidebar{display:block;width:100%!important;padding:5px}.canvas-header .canvas-maximize{display:none}.document-redline{grid-template-columns:1fr}.canvas-file-list{display:flex;border-right:0;border-bottom:1px solid var(--border)}.redline-columns{grid-template-columns:1fr}.redline-columns>div+div{border-left:0;border-top:1px solid var(--border);padding:12px 0 0}}
 .chat-area{position:relative}
+/* Presentation filters affect only display. Data and authorization remain unchanged. */
+[data-hide-identifiers="true"] [data-technical-detail="identifiers"],
+[data-hide-model-routing="true"] [data-technical-detail="model_routing"],
+[data-hide-execution-trace="true"] [data-technical-detail="execution_trace"] {
+  display: none !important;
+}
+[data-hide-identifiers="true"] [data-filter-hint="identifiers"],
+[data-hide-model-routing="true"] [data-filter-hint="model_routing"],
+[data-hide-execution-trace="true"] [data-filter-hint="execution_trace"] {
+  display: block;
+}
+.technical-filter-hint { display: none; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--text3); font-size: 12px; }

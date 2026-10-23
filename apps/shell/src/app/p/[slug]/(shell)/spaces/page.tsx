@@ -314,6 +314,7 @@ export default function DiscoverPage() {
           {t.vertical && <Badge color="blue">{t.vertical}</Badge>}
           {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
           {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
+          <Badge color="blue">{t.presentation_profile === "advanced" ? "Advanced controls" : t.presentation_profile === "balanced" ? "Balanced controls" : "Guided setup"}</Badge>
           {activity && <Badge color={activity.color}>{activity.label}</Badge>}
         </div>
       </Card>
@@ -339,6 +340,7 @@ export default function DiscoverPage() {
           {t.vertical && <Badge color="blue">{t.vertical}</Badge>}
           {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
           {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
+          <Badge color="blue">{t.presentation_profile === "advanced" ? "Advanced controls" : t.presentation_profile === "balanced" ? "Balanced controls" : "Guided setup"}</Badge>
         </div>
       </button>
     );

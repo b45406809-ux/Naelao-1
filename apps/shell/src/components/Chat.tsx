@@ -1754,9 +1754,9 @@ export function Chat({
                       that reveal on the finalized bubble is the same "snap" as re-typing the answer
                       text — the sequence is already read. (The reload path below is a different
                       branch: PersistedActivitySequence fetches a trace nobody watched live.) */}
-                  {m.role !== "user" && m.activity && <ActivitySequence steps={m.activity} animate={false} />}
+                  {m.role !== "user" && m.activity && <div data-technical-detail="execution_trace"><ActivitySequence steps={m.activity} animate={false} /></div>}
                   {m.role !== "user" && !m.activity && m.metadata?.run_id && chatSessionId && (
-                    <PersistedActivitySequence spaceId={spaceId} sessionId={chatSessionId} runId={m.metadata.run_id} session={session} />
+                    <div data-technical-detail="execution_trace"><PersistedActivitySequence spaceId={spaceId} sessionId={chatSessionId} runId={m.metadata.run_id} session={session} /></div>
                   )}
                   {editingId === m.id ? (
                     <div className="bubble user" style={{ display: "grid", gap: 6, minWidth: 260 }}>

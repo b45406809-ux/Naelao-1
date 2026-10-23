@@ -177,8 +177,12 @@ export default function NotificationsPage() {
                   <CardTitle>{n.title}</CardTitle>
                   {n.body && <CardDesc>{n.body}</CardDesc>}
                   {n.source_agent_id && (
-                    <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 4 }}>from {n.source_agent_id}</div>
+                    <div data-technical-detail="identifiers" style={{ fontSize: 12, color: "var(--text3)", marginTop: 4 }}>from {n.source_agent_id}</div>
                   )}
+                  {(n.project_id || n.related_id) && <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    {n.related_id && <Link className="btn btn-secondary btn-sm" href={`/p/${params.slug}/sessions/${encodeURIComponent(n.related_id)}`}>Open task conversation</Link>}
+                    {n.project_id && <Link className="btn btn-ghost btn-sm" href={`/p/${params.slug}/projects/${encodeURIComponent(n.project_id)}`}>Open project</Link>}
+                  </div>}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
                   <Badge color={severityColor(n.severity)}>{timeAgo(n.created_at)}</Badge>

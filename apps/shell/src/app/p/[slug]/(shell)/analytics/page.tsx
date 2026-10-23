@@ -13,6 +13,7 @@ import * as React from "react";
 import { useSessionCredentials } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { getBusinessAnalytics, type BusinessAnalytics } from "@/lib/api";
+import { usePresentationProfile } from "@/lib/presentation-profile";
 
 type Window = "7d" | "30d" | "90d";
 
@@ -25,6 +26,7 @@ function pct(n: number | null): string {
 export default function AnalyticsPage() {
   const creds = useSessionCredentials();
   const { activeSpaceId } = useActiveSpace();
+  const presentation = usePresentationProfile();
   const [win, setWin] = React.useState<Window>("7d");
   const [data, setData] = React.useState<BusinessAnalytics | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -101,6 +103,55 @@ export default function AnalyticsPage() {
             </div>
           </div>
 
+          <div className="section-label" style={{ marginTop: 24 }}>Delegated work</div>
+          <div className="grid-4">
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Completed without approval</div>
+              <div className="card-value">{data.autonomy.completion_without_approval_rate === null ? "—" : `${Math.round(data.autonomy.completion_without_approval_rate * 100)}%`}</div>
+              <div className="card-sub">{data.autonomy.completed_without_approval} of {data.autonomy.completed_without_approval + data.autonomy.completed_with_approval} tracked completions</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Approval-interrupted runs</div>
+              <div className="card-value">{data.autonomy.approval_interrupted_runs.toLocaleString()}</div>
+              <div className="card-sub">Completed or failed runs that requested an approval</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Approval requests</div>
+              <div className="card-value">{data.autonomy.approval_requests.toLocaleString()}</div>
+              <div className="card-sub">Human decisions requested in this period</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }} data-technical-detail="identifiers">
+              <div className="card-label">Runs with durable IDs</div>
+              <div className="card-value">{data.autonomy.tracked_runs.toLocaleString()}</div>
+              <div className="card-sub">Used for reliable approval-to-run attribution</div>
+            </div>
+          </div>
+          <p className="settings-row-sub">These figures use recorded approval events as the human-intervention signal. Browser challenges and ordinary clarification questions are not counted as approvals.</p>
+          <div className="section-label" style={{ marginTop: 20 }}>Recovery and safety</div>
+          <div className="grid-4">
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Average completion time</div>
+              <div className="card-value">{data.reliability.avg_completion_duration_ms === null ? "—" : data.reliability.avg_completion_duration_ms < 60_000 ? `${Math.max(1, Math.round(data.reliability.avg_completion_duration_ms / 1000))}s` : `${(data.reliability.avg_completion_duration_ms / 60_000).toFixed(1)}m`}</div>
+              <div className="card-sub">Elapsed time for completed runs with timing data</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Recovered runs</div>
+              <div className="card-value">{data.reliability.recovered_runs.toLocaleString()}</div>
+              <div className="card-sub">Browser page changes recovered by re-observing</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Recovery rate</div>
+              <div className="card-value">{data.reliability.recovery_rate === null ? "—" : `${Math.round(data.reliability.recovery_rate * 100)}%`}</div>
+              <div className="card-sub">Recovered runs among completed runs with timing data</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Repeated mutating calls</div>
+              <div className="card-value">{data.reliability.repeated_mutation_calls.toLocaleString()}</div>
+              <div className="card-sub">Same tool and parameters repeated within a run</div>
+            </div>
+          </div>
+          <p className="settings-row-sub">Repeated calls are a safety signal, not proof that an external duplicate occurred. Provider receipts and idempotency keys determine whether an effect was actually applied twice.</p>
+
           <div className="section-label">Credit Usage — Last {data.window_days} Days</div>
           <div className="card" style={{ cursor: "default", padding: "20px 20px 12px" }}>
             {data.daily.every((d) => d.credits === 0) ? (
@@ -135,7 +186,7 @@ export default function AnalyticsPage() {
               <tbody>
                 {data.by_agent.map((a) => (
                   <tr key={a.agent_id}>
-                    <td className="cell-primary">{a.agent_id}</td>
+                    <td className="cell-primary" data-technical-detail="identifiers">{presentation.isDetailVisible("identifiers") ? a.agent_id : `Assistant ${data.by_agent.indexOf(a) + 1}`}</td>
                     <td>{a.runs}</td>
                     <td>{a.credits}</td>
                     <td>

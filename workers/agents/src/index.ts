@@ -9237,6 +9237,7 @@ app.get("/templates", async (c) => {
       vertical: t.vertical ?? "Digital business",
       wallet_mode: t.wallet_mode ?? "business_wallet",
       free_tier_eligible: t.free_tier_eligible,
+      presentation_profile: t.presentation_profile ?? "guided",
       connectors: t.connectors ?? [],
       coming_soon: t.coming_soon ?? false,
       ...(t.bootstrap ? { bootstrap: t.bootstrap } : {}),

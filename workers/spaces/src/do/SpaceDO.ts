@@ -2164,6 +2164,19 @@ const MIGRATIONS: Migration[] = [
     description: "scope external revenue surcharge checkout claims to checkout ids",
     up: `ALTER TABLE external_revenue_snapshots ADD COLUMN pending_checkout_id TEXT;`,
   },
+  {
+    version: 94,
+    description: "space-scoped presentation preferences",
+    up: `ALTER TABLE user_settings ADD COLUMN presentation_profile TEXT CHECK (presentation_profile IS NULL OR presentation_profile IN ('guided','balanced','advanced'));
+      ALTER TABLE user_settings ADD COLUMN technical_detail_filters_json TEXT NOT NULL DEFAULT '[]';`,
+  },
+  {
+    version: 95,
+    description: "task completion duration and recovery metrics",
+    up: `ALTER TABLE agent_activity_log ADD COLUMN duration_ms INTEGER;
+      ALTER TABLE agent_activity_log ADD COLUMN recovery_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE agent_activity_log ADD COLUMN repeated_mutation_calls INTEGER NOT NULL DEFAULT 0;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -7877,6 +7890,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         run_id?: string | null;
         /** What woke this run: chat, heartbeat, scheduled_job, connector_poll, trigger. */
         trigger_source?: string | null;
+        duration_ms?: number | null;
+        recovery_count?: number;
+        repeated_mutation_calls?: number;
       }>()
       .catch(() => null);
     if (!body?.space_id || !body.agent_id || !body.event_type) {
@@ -7891,8 +7907,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO agent_activity_log (id, space_id, project_id, thread_id, agent_id, event_type, summary, tokens_used, cost_credits,
-                                       failure_kind, session_id, run_id, trigger_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                       failure_kind, session_id, run_id, trigger_source, duration_ms, recovery_count, repeated_mutation_calls)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       crypto.randomUUID(),
       body.space_id,
       body.project_id ?? null,
@@ -7905,7 +7921,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       isFailureKind(body.failure_kind) ? body.failure_kind : null,
       body.session_id ?? null,
       body.run_id ?? null,
-      body.trigger_source ?? null
+      body.trigger_source ?? null,
+      typeof body.duration_ms === "number" && Number.isSafeInteger(body.duration_ms) && body.duration_ms >= 0 ? body.duration_ms : null,
+      typeof body.recovery_count === "number" && Number.isSafeInteger(body.recovery_count) && body.recovery_count >= 0 ? Math.min(body.recovery_count, 10_000) : 0,
+      typeof body.repeated_mutation_calls === "number" && Number.isSafeInteger(body.repeated_mutation_calls) && body.repeated_mutation_calls >= 0 ? Math.min(body.repeated_mutation_calls, 10_000) : 0
     );
     return Response.json({ ok: true }, { status: 201 });
   }
@@ -8329,6 +8348,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const runsCompleted = counts["run_completed"] ?? 0;
     const runsFailed = counts["run_failed"] ?? 0;
     const runsTotal = runsCompleted + runsFailed;
+    // Approval requests are the durable, user-visible proxy for human interruptions. Correlate
+    // only rows with a run_id; older records without one remain in the general run totals but do
+    // not inflate the autonomy rate with guessed joins.
+    const autonomy = queryOne<{ tracked_runs: number; approval_interrupted_runs: number; completed_with_approval: number; completed_without_approval: number; approval_requests: number }>(
+      sql,
+      `SELECT
+        (SELECT COUNT(DISTINCT run_id) FROM agent_activity_log WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed') AND run_id IS NOT NULL) AS tracked_runs,
+        (SELECT COUNT(DISTINCT run_id) FROM agent_activity_log completed WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed') AND run_id IS NOT NULL AND EXISTS (SELECT 1 FROM agent_activity_log approvals WHERE approvals.run_id=completed.run_id AND approvals.event_type='approval_requested')) AS approval_interrupted_runs,
+        (SELECT COUNT(DISTINCT run_id) FROM agent_activity_log completed WHERE created_at >= ${since} AND event_type='run_completed' AND run_id IS NOT NULL AND EXISTS (SELECT 1 FROM agent_activity_log approvals WHERE approvals.run_id=completed.run_id AND approvals.event_type='approval_requested')) AS completed_with_approval,
+        (SELECT COUNT(DISTINCT run_id) FROM agent_activity_log completed WHERE created_at >= ${since} AND event_type='run_completed' AND run_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM agent_activity_log approvals WHERE approvals.run_id=completed.run_id AND approvals.event_type='approval_requested')) AS completed_without_approval,
+        (SELECT COUNT(*) FROM agent_activity_log WHERE created_at >= ${since} AND event_type='approval_requested') AS approval_requests`
+    ) ?? { tracked_runs: 0, approval_interrupted_runs: 0, completed_with_approval: 0, completed_without_approval: 0, approval_requests: 0 };
+    const reliability = queryOne<{ avg_completion_duration_ms: number | null; recovered_runs: number; completed_runs_with_duration: number; repeated_mutation_calls: number }>(
+      sql,
+      `SELECT
+        (SELECT AVG(duration_ms) FROM agent_activity_log WHERE created_at >= ${since} AND event_type='run_completed' AND duration_ms IS NOT NULL) AS avg_completion_duration_ms,
+        (SELECT COUNT(*) FROM agent_activity_log WHERE created_at >= ${since} AND event_type='run_completed' AND recovery_count > 0) AS recovered_runs,
+        (SELECT COUNT(*) FROM agent_activity_log WHERE created_at >= ${since} AND event_type='run_completed' AND duration_ms IS NOT NULL) AS completed_runs_with_duration,
+        (SELECT COALESCE(SUM(repeated_mutation_calls),0) FROM agent_activity_log WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed')) AS repeated_mutation_calls`
+    ) ?? { avg_completion_duration_ms: null, recovered_runs: 0, completed_runs_with_duration: 0, repeated_mutation_calls: 0 };
 
     return Response.json({
       window_hours: windowHours,
@@ -8338,6 +8377,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         failed: runsFailed,
         error_rate:
           runsTotal > 0 ? Number((runsFailed / runsTotal).toFixed(3)) : 0,
+      },
+      autonomy: {
+        ...autonomy,
+        completion_without_approval_rate: autonomy.completed_without_approval + autonomy.completed_with_approval > 0
+          ? Number((autonomy.completed_without_approval / (autonomy.completed_without_approval + autonomy.completed_with_approval)).toFixed(3))
+          : null,
+      },
+      reliability: {
+        ...reliability,
+        recovery_rate: reliability.completed_runs_with_duration > 0
+          ? Number((reliability.recovered_runs / reliability.completed_runs_with_duration).toFixed(3))
+          : null,
       },
       spend: { tokens_used: totalTokens, credits: totalCredits },
       approvals: {
@@ -11523,30 +11574,47 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private getUserPreferences(spaceId: string, userId: string): Response {
-    const row = queryOne<{ display_mode: DisplayMode }>(
+    const row = queryOne<{ display_mode: DisplayMode; presentation_profile: "guided" | "balanced" | "advanced" | null; technical_detail_filters_json: string }>(
       this.ctx.storage.sql as never,
-      "SELECT display_mode FROM user_settings WHERE space_id = ? AND user_id = ?",
+      "SELECT display_mode, presentation_profile, technical_detail_filters_json FROM user_settings WHERE space_id = ? AND user_id = ?",
       spaceId,
       userId
     );
-    return Response.json({ space_id: spaceId, user_id: userId, display_mode: row?.display_mode ?? "business" });
+    let technicalDetailFilters: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(row?.technical_detail_filters_json ?? "[]");
+      if (Array.isArray(parsed)) technicalDetailFilters = parsed.filter((v): v is string => ["identifiers", "model_routing", "execution_trace"].includes(String(v)));
+    } catch { /* an invalid preference falls back to the safe default */ }
+    return Response.json({ space_id: spaceId, user_id: userId, display_mode: row?.display_mode ?? "business", presentation_profile: row?.presentation_profile ?? null, technical_detail_filters: technicalDetailFilters });
   }
 
   private async putUserPreferences(spaceId: string, userId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ display_mode?: DisplayMode }>().catch((): { display_mode?: DisplayMode } => ({}));
-    if (body.display_mode !== "business" && body.display_mode !== "developer") {
-      return Response.json({ error_code: "bad_request", message: "display_mode must be 'business' or 'developer'" }, { status: 400 });
+    const body = await request.json<{ display_mode?: DisplayMode; presentation_profile?: "guided" | "balanced" | "advanced" | null; technical_detail_filters?: string[] }>().catch((): { display_mode?: DisplayMode; presentation_profile?: "guided" | "balanced" | "advanced" | null; technical_detail_filters?: string[] } => ({}));
+    if (body.display_mode !== undefined && body.display_mode !== "business" && body.display_mode !== "developer") return Response.json({ error_code: "bad_request", message: "display_mode must be 'business' or 'developer'" }, { status: 400 });
+    if (body.presentation_profile !== undefined && body.presentation_profile !== null && !["guided", "balanced", "advanced"].includes(body.presentation_profile)) return Response.json({ error_code: "bad_request", message: "presentation_profile must be guided, balanced, advanced, or null" }, { status: 400 });
+    const allowedFilters = new Set(["identifiers", "model_routing", "execution_trace"]);
+    if (body.technical_detail_filters !== undefined && (!Array.isArray(body.technical_detail_filters) || body.technical_detail_filters.length > allowedFilters.size || body.technical_detail_filters.some((v) => typeof v !== "string" || !allowedFilters.has(v)))) return Response.json({ error_code: "bad_request", message: "technical_detail_filters contains an unsupported filter" }, { status: 400 });
+    if (body.display_mode === undefined && body.presentation_profile === undefined && body.technical_detail_filters === undefined) return Response.json({ error_code: "bad_request", message: "At least one preference is required" }, { status: 400 });
+    const current = queryOne<{ display_mode: DisplayMode; presentation_profile: "guided" | "balanced" | "advanced" | null; technical_detail_filters_json: string }>(this.ctx.storage.sql as never, "SELECT display_mode, presentation_profile, technical_detail_filters_json FROM user_settings WHERE space_id=? AND user_id=?", spaceId, userId);
+    const displayMode = body.display_mode ?? current?.display_mode ?? "business";
+    const profile = body.presentation_profile === undefined ? current?.presentation_profile ?? null : body.presentation_profile;
+    let filters = body.technical_detail_filters;
+    if (!filters) {
+      try { const parsed: unknown = JSON.parse(current?.technical_detail_filters_json ?? "[]"); filters = Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string" && allowedFilters.has(v)) : []; }
+      catch { filters = []; }
     }
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO user_settings (user_id, space_id, display_mode, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(user_id, space_id) DO UPDATE SET display_mode = excluded.display_mode, updated_at = excluded.updated_at`,
+      `INSERT INTO user_settings (user_id, space_id, display_mode, presentation_profile, technical_detail_filters_json, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, space_id) DO UPDATE SET display_mode = excluded.display_mode, presentation_profile = excluded.presentation_profile, technical_detail_filters_json = excluded.technical_detail_filters_json, updated_at = excluded.updated_at`,
       userId,
       spaceId,
-      body.display_mode,
+      displayMode,
+      profile,
+      JSON.stringify([...new Set(filters)]),
       new Date().toISOString()
     );
-    return Response.json({ space_id: spaceId, user_id: userId, display_mode: body.display_mode });
+    return Response.json({ space_id: spaceId, user_id: userId, display_mode: displayMode, presentation_profile: profile, technical_detail_filters: [...new Set(filters)] });
   }
 
   /** Authoritative hierarchy RBAC. Membership is intentionally read only from the requested

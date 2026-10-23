@@ -7,6 +7,8 @@ import {
   createConnectorAlias,
   deleteConnectorAlias,
   getConnectorAliases,
+  listProjects,
+  type Project,
 } from "@/lib/api";
 import { Button, FormInput } from "@naelao/ui";
 import * as React from "react";
@@ -25,6 +27,9 @@ export function ConnectorAliases({
   const [aliases, setAliases] = React.useState<ConnectorAlias[]>([]);
   const [name, setName] = React.useState("");
   const [connector, setConnector] = React.useState("");
+  const [scope, setScope] = React.useState<"space" | "project" | "user">("space");
+  const [projectId, setProjectId] = React.useState("");
+  const [projects, setProjects] = React.useState<Project[]>([]);
   const [busy, setBusy] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
@@ -39,16 +44,19 @@ export function ConnectorAliases({
     }
   }, [spaceId, session, onError]);
 
-  React.useEffect(() => void refresh(), [refresh]);
+  React.useEffect(() => {
+    void refresh();
+    listProjects(spaceId, session).then((items) => setProjects(items.filter((item) => item.status !== "archived"))).catch(() => setProjects([]));
+  }, [refresh, spaceId, session]);
   const connected = connectors.filter((item) => item.connected);
 
   async function create() {
-    if (!name || !connector) return;
+    if (!name || !connector || (scope === "project" && !projectId)) return;
     setBusy(true);
     try {
       await createConnectorAlias(
         spaceId,
-        { alias: name, scope: "space", connector_name: connector },
+        { alias: name, scope, connector_name: connector, ...(scope === "project" ? { project_id: projectId } : {}) },
         session
       );
       setName("");
@@ -105,9 +113,18 @@ export function ConnectorAliases({
               </option>
             ))}
           </select>
+          <select aria-label="Connector availability scope" value={scope} onChange={(event) => setScope(event.target.value as "space" | "project" | "user")}>
+            <option value="space">Space assistant and permitted projects</option>
+            <option value="project">One project</option>
+            <option value="user">My account only</option>
+          </select>
+          {scope === "project" && <select aria-label="Connector project" value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+            <option value="">Choose project</option>
+            {projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>}
           <Button
             size="sm"
-            disabled={busy || name.length < 2 || !connector}
+            disabled={busy || name.length < 2 || !connector || (scope === "project" && !projectId)}
             onClick={() => void create()}
           >
             {busy ? "Saving…" : "Add alias"}
@@ -124,7 +141,8 @@ export function ConnectorAliases({
                 <code>{alias.alias}</code>
               </div>
               <div className="settings-row-sub">
-                {alias.scope} connector · {alias.server_id}
+                {alias.scope === "space" ? "Space assistant and permitted projects" : alias.scope === "project" ? `Project · ${projects.find((project) => project.id === alias.project_id)?.name ?? "selected project"}` : "Only your account"}
+                <span data-technical-detail="identifiers"> · {alias.server_id}</span>
               </div>
             </div>
             <Button

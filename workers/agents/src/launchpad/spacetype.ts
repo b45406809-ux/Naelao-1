@@ -137,6 +137,8 @@ export interface LaunchpadTemplate {
   id: string;
   name: string;
   description: string;
+  /** Initial shell complexity for this template. Users may change it per Space. */
+  presentation_profile?: "guided" | "balanced" | "advanced";
   /** @deprecated Legacy catalog classification retained for stored-template compatibility; all templates now use the same Space and autonomy model. */
   template_mode?: "ave" | "cowork";
   /** Domain/focus metadata for filtering and setup copy; not an operating-system mode. */
@@ -479,6 +481,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
   {
     id: "whop-seller",
     name: "Whop Seller",
+    presentation_profile: "guided",
     description:
       "Run an existing Whop business on autopilot. Agents read your Whop memberships, members, and " +
       "orders and handle support + community updates — Whop keeps processing the payments (automation " +
@@ -572,6 +575,7 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
   {
     id: "whop-webdev-agency",
     name: "Web Studio (ultra-cheap sites)",
+    presentation_profile: "advanced",
     description:
       "Build and sell small business websites from $10. Your agents find local businesses with a " +
       "weak web presence, draft the outreach for you to approve, quote the job, build the site, and " +
@@ -1144,6 +1148,9 @@ export function validateLaunchpadSpaceType(st: LaunchpadSpaceType = LAUNCHPAD_SP
   for (const t of st.templates) {
     if (seen.has(t.id)) throw new Error(`Launchpad: duplicate template id '${t.id}'`);
     seen.add(t.id);
+    if (t.presentation_profile !== undefined && !["guided", "balanced", "advanced"].includes(t.presentation_profile)) {
+      throw new Error(`Launchpad template '${t.id}' has an invalid presentation profile`);
+    }
     for (const aid of t.agents) {
       if (!CORE_AGENT_IDS.has(aid)) {
         throw new Error(`Launchpad template '${t.id}' references unknown core agent '${aid}'`);

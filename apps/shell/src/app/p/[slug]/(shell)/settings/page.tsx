@@ -27,6 +27,7 @@ import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useRouter } from "next/navigation";
 import { canManageSpaceSettings } from "@/lib/roles";
+import { PRESENTATION_PROFILE_LABELS, usePresentationProfile, type PresentationProfile, type TechnicalDetailFilter } from "@/lib/presentation-profile";
 import { DomainGlossaryPanel } from "@/components/DomainGlossaryPanel";
 import { ArchiveKeyRotationPanel } from "@/components/ArchiveKeyRotationPanel";
 import { AttachmentOcrSettings } from "@/components/AttachmentOcrSettings";
@@ -233,14 +234,15 @@ export default function SettingsPage() {
 
         {tab === "ai" && (
           <>
-          <AiTab
+          <p className="technical-filter-hint" data-filter-hint="model_routing">Model and provider controls are hidden by your presentation profile. Switch to Advanced under General settings to show them.</p>
+          <div data-technical-detail="model_routing"><AiTab
             spaceId={activeSpaceId}
             creds={creds}
             policy={policy}
             canManage={canManage}
           isBusinessSpace={isBusinessSpace}
             onChanged={(p) => setPolicy(p)}
-          />
+          /></div>
           {isBusinessSpace && <AttachmentOcrSettings spaceId={activeSpaceId} session={creds} canManage={canManage} />}
           {creds && <div style={{ marginTop: 24 }}><DomainGlossaryPanel spaceId={activeSpaceId} creds={creds} canEdit={canManage} /></div>}
           </>
@@ -287,6 +289,7 @@ function GeneralTab({
 }) {
   return (
     <div>
+      <PresentationSettings />
       <div className="settings-section-title">General</div>
       <div className="settings-section-sub">
         {isBusinessSpace ? "Basic information about this business." : "Basic information about this product."}
@@ -341,6 +344,59 @@ function GeneralTab({
       <ArchiveKeyRotationPanel spaceId={activeSpaceId} session={session} canManage={canManage} />
     </div>
   );
+}
+
+function PresentationSettings() {
+  const prefs = usePresentationProfile();
+  const [saving, setSaving] = React.useState(false);
+  const [message, setMessage] = React.useState<string | null>(null);
+  async function changeProfile(value: PresentationProfile) {
+    setSaving(true); setMessage(null);
+    try { await prefs.saveProfile(value); setMessage("Your display preference was saved for this Space."); }
+    catch { setMessage("Couldn't save this preference. Try again."); }
+    finally { setSaving(false); }
+  }
+  async function toggleFilter(filter: TechnicalDetailFilter, checked: boolean) {
+    const next = checked ? [...prefs.filters, filter] : prefs.filters.filter((item) => item !== filter);
+    setSaving(true); setMessage(null);
+    try { await prefs.saveFilters(next); }
+    catch { setMessage("Couldn't save these detail filters. Try again."); }
+    finally { setSaving(false); }
+  }
+  async function reset() {
+    setSaving(true); setMessage(null);
+    try { await prefs.resetToTemplateDefault(); setMessage("Restored this template's recommended display."); }
+    catch { setMessage("Couldn't restore the template default. Try again."); }
+    finally { setSaving(false); }
+  }
+  return <section aria-labelledby="presentation-heading" className="settings-block" style={{ marginBottom: 24 }}>
+    <div className="settings-row" style={{ alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+      <div style={{ flex: "1 1 280px" }}>
+        <div id="presentation-heading" className="settings-row-label">Workspace presentation</div>
+        <div className="settings-row-sub">Controls how much configuration and diagnostic detail you see. It does not change assistant access or permissions.</div>
+      </div>
+      <label style={{ display: "grid", gap: 4, minWidth: 190 }}>
+        <span className="settings-row-sub">Display profile</span>
+        <select aria-label="Workspace presentation profile" className="form-input" value={prefs.profile} disabled={saving || prefs.loading} onChange={(event) => void changeProfile(event.target.value as PresentationProfile)}>
+          {(Object.keys(PRESENTATION_PROFILE_LABELS) as PresentationProfile[]).map((profile) => <option key={profile} value={profile}>{PRESENTATION_PROFILE_LABELS[profile].title}</option>)}
+        </select>
+      </label>
+    </div>
+    <div style={{ padding: "0 16px 14px" }}>
+      <p className="settings-row-sub" style={{ margin: "0 0 10px" }}>{PRESENTATION_PROFILE_LABELS[prefs.profile].detail}</p>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+        {(Object.keys(prefs.labels) as TechnicalDetailFilter[]).map((filter) => <label key={filter} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--text2)" }}>
+          <input type="checkbox" checked={prefs.filters.includes(filter)} disabled={saving || prefs.loading} onChange={(event) => void toggleFilter(filter, event.target.checked)} />
+          Hide {prefs.labels[filter]}
+        </label>)}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={saving || prefs.loading || prefs.profile === prefs.templateDefault} onClick={() => void reset()}>Use template default ({PRESENTATION_PROFILE_LABELS[prefs.templateDefault].title})</button>
+        {message && <span role="status" className="settings-row-sub">{message}</span>}
+        {prefs.error && <span role="alert" className="settings-row-sub">{prefs.error}</span>}
+      </div>
+    </div>
+  </section>;
 }
 
 // ── Members ─────────────────────────────────────────────────────────────────

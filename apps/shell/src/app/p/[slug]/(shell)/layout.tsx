@@ -15,6 +15,7 @@ import { Sidebar, Toast, useToast, useTheme, type SidebarNavEntry } from "@naela
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { ActiveSpaceProvider, useActiveSpace } from "@/lib/active-space-context";
+import { PresentationProfileProvider } from "@/lib/presentation-profile";
 import {
   getShellManifest,
   getMe,
@@ -77,7 +78,7 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
   const product = useProduct();
   return (
     <ActiveSpaceProvider productSpaceId={product.space_id}>
-      <ShellLayoutInner>{children}</ShellLayoutInner>
+      <PresentationProfileProvider><ShellLayoutInner>{children}</ShellLayoutInner></PresentationProfileProvider>
     </ActiveSpaceProvider>
   );
 }

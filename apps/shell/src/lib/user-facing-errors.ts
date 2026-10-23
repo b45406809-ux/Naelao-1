@@ -25,6 +25,12 @@ export function userFacingErrorMessage(raw: unknown, errorCode?: string, fallbac
   if (value.includes("run not found") || value.includes("run_not_found")) {
     return "That run is no longer available. Please send the request again.";
   }
+  if (value.includes("browser_observation_stale")) {
+    return "The page changed while the assistant was working. It will inspect the current page and continue from the latest state; if sign-in or verification is needed, finish that step in the open browser and resume the task.";
+  }
+  if (value.includes("captcha") || value.includes("human verification") || value.includes("automation blocked")) {
+    return "The site requires a human verification step. Continue in the same browser session, then resume the task; the assistant will keep its completed work and continue from there.";
+  }
   if (value.includes("workflow_effect_reconciliation_required") || value.includes("workflow_effect_indeterminate")) {
     return "A workflow step may have completed before it stopped. Review that step's result before retrying so an external action is not repeated.";
   }

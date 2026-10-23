@@ -158,6 +158,12 @@ export type ProjectMode = "solo_cockpit" | "multiplayer_office";
 /** User-facing complexity level. Business mode deliberately receives a redacted projection. */
 export type DisplayMode = "business" | "developer";
 
+/** Controls how much configuration and diagnostic detail the shell shows. This is a
+ * presentation preference only and must never change an assistant's permissions. */
+export type PresentationProfile = "guided" | "balanced" | "advanced";
+
+export const PRESENTATION_PROFILES: readonly PresentationProfile[] = ["guided", "balanced", "advanced"];
+
 /**
  * Product taxonomy only. Both modes run the same autonomous kernel (including
  * planning, delegation and proactive REPL wakes); the mode selects seeded

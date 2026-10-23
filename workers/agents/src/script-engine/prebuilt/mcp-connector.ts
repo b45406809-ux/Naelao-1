@@ -137,6 +137,13 @@ export const mcpConnector: PrebuiltScript = {
   description:
     "Connect to and use external platforms over MCP (Whop, Gumroad, Beehiiv, Cal.com, etc.). " +
     "register a server, list its tools, and call them. Money-in capabilities are reserved.",
+  manual_markdown: `# Connected app routing
+
+Use a connected app's declared MCP tools when they cover the requested operation; they are the preferred supported path because the app author defines the available operations. Browser automation is the fallback for steps that the connector does not expose.
+
+Before acting, confirm the connection's scope and use only the account available to this Space, project, or user. Do not switch to a broader account just because a narrower connection is missing. If the app is not connected, surface the exact app and scope needed so the user can connect it once.
+
+Verify the result after an external write. If a request times out or returns an uncertain result, check the provider state before retrying. Never repeat a send, purchase, refund, deletion, or submission just to see whether it worked.`,
   domain: "comms",
   requires_tier: 2,
   operations: {

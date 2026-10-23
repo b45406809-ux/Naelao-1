@@ -5946,6 +5946,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         : "chat";
       const failed = result.result?.ok === false;
       const failureText = result.result?.error ? String(result.result.error) : "";
+      const runTrace = result.trace ?? [];
+      let runDurationMs: number | null = null;
+      try {
+        const row = this.ctx.storage.sql.exec("SELECT started_at FROM run_state WHERE run_id = ?", runId).toArray()[0] as { started_at?: number } | undefined;
+        if (typeof row?.started_at === "number" && Number.isFinite(row.started_at)) runDurationMs = Math.max(0, Date.now() - row.started_at);
+      } catch { /* metrics are best effort; they never affect task completion */ }
+      let browserRecoveries = 0;
+      for (let i = 0; i < runTrace.length; i++) {
+        const step = runTrace[i]!;
+        if (!String(step.detail ?? "").includes("browser_observation_stale")) continue;
+        if (runTrace.slice(i + 1).some((later) => later.ok && /browser-use\.observe$/.test(later.name ?? ""))) browserRecoveries++;
+      }
+      const mutationAttempts = new Map<string, number>();
+      for (const step of runTrace) {
+        if (step.phase !== "run" || !step.name || !/(?:send|create|update|delete|transfer|refund|purchase|submit|publish)(?:$|[._])/i.test(step.name) || step.params === undefined) continue;
+        let stableParams: string;
+        try { stableParams = JSON.stringify(step.params); } catch { continue; }
+        const key = `${step.name}:${stableParams}`;
+        mutationAttempts.set(key, (mutationAttempts.get(key) ?? 0) + 1);
+      }
+      const repeatedMutationCalls = [...mutationAttempts.values()].reduce((sum, count) => sum + Math.max(0, count - 1), 0);
 
       void this.logAgentActivity(spaceId, tenantId, agentId, result.result?.ok ? "run_completed" : "run_failed", {
         projectId: projectId ?? null,
@@ -5953,6 +5974,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         sessionId,
         runId,
         triggerSource,
+        durationMs: runDurationMs,
+        recoveryCount: browserRecoveries,
+        repeatedMutationCalls,
         // origin matters: see ScriptRunResult.failure_origin. A model give_up misclassified as
         // a self-clearing capacity failure freezes every future wake-up.
         ...(failed ? { failureKind: classifyFailure(failureText, undefined, result.result?.failure_origin).kind } : {}),
@@ -7346,6 +7370,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       sessionId?: string | null; runId?: string | null;
       /** What woke this run: chat, heartbeat, scheduled_job, connector_poll, trigger. */
       triggerSource?: string | null;
+      durationMs?: number | null;
+      recoveryCount?: number;
+      repeatedMutationCalls?: number;
     } = {}
   ): Promise<void> {
     if (!this.env.SPACES_WORKER || !tenantId) return;
@@ -7368,6 +7395,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             session_id: opts.sessionId ?? null,
             run_id: opts.runId ?? null,
             trigger_source: opts.triggerSource ?? null,
+            duration_ms: opts.durationMs ?? null,
+            recovery_count: opts.recoveryCount ?? 0,
+            repeated_mutation_calls: opts.repeatedMutationCalls ?? 0,
           }),
         }
       ));
