@@ -4,6 +4,8 @@ interface Env {
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   KB_BUCKET: R2Bucket;
+  /** R2 bucket backing assistant, project, and space-wide virtual filesystems. */
+  SCRIPTS_R2: R2Bucket;
   KB_VECTORS: VectorizeIndex;
 }
 
@@ -197,18 +199,20 @@ export async function cleanFailedDocs(db: D1Database, bucket: R2Bucket, vectors:
 }
 
 // G-D07: Cascade-delete resources for soft-deleted spaces (R2, Vectorize, D1)
-export async function cleanDeletedSpaces(db: D1Database, bucket: R2Bucket, vectors: VectorizeIndex): Promise<number> {
-  // Find deleted spaces with either non-purged documents or leftover D1 chunks, including
-  // chunks left behind by older sweeper versions that already marked their document purged.
+export async function cleanDeletedSpaces(
+  db: D1Database,
+  bucket: R2Bucket,
+  vectors: VectorizeIndex,
+  workspaceBucket: R2Bucket,
+): Promise<number> {
+  // Select every deleted space until all data stores have been purged. This includes spaces
+  // with no KB records, whose workspace files and extension data still need removal.
   const deletedSpaces = await selectFairSweepBatch(
     db,
     "deleted_spaces",
     (after) => db.prepare(
     `SELECT s.id AS space_id FROM spaces s
-     WHERE s.status = 'deleted' AND (
-       EXISTS (SELECT 1 FROM kb_documents kd WHERE kd.space_id = s.id AND kd.status != 'purged')
-       OR EXISTS (SELECT 1 FROM kb_chunks kc WHERE kc.space_id = s.id)
-     )
+     WHERE s.status = 'deleted' AND s.cleanup_completed_at IS NULL
        AND s.id > COALESCE(?, '')
      ORDER BY s.id ASC LIMIT 20`
     ).bind(after),
@@ -259,6 +263,9 @@ export async function cleanDeletedSpaces(db: D1Database, bucket: R2Bucket, vecto
 
       if (!(await deleteR2Prefix(bucket, `kb/${spaceId}/`))) continue;
       if (!(await deleteR2Prefix(bucket, `autorag/${spaceId}/`))) continue;
+      // Space workspace files are stored separately from the KB bucket and include shared
+      // extension data plus assistant/project workspaces. Purge only after KB cleanup succeeds.
+      if (!(await deleteR2Prefix(workspaceBucket, `spaces/${spaceId}/`))) continue;
       await db.prepare("DELETE FROM kb_chunks WHERE space_id = ?").bind(spaceId).run();
 
       // Clean up D1 session records for deleted space
@@ -271,6 +278,10 @@ export async function cleanDeletedSpaces(db: D1Database, bucket: R2Bucket, vecto
       ).bind(spaceId).run();
       await db.prepare(
         "UPDATE threads SET session_count = 0 WHERE space_id = ?"
+      ).bind(spaceId).run();
+
+      await db.prepare(
+        "UPDATE spaces SET cleanup_completed_at = datetime('now') WHERE id = ? AND status = 'deleted'"
       ).bind(spaceId).run();
 
       cleaned++;
@@ -328,7 +339,7 @@ export default {
     ctx.waitUntil(Promise.all([
       cleanOldSessions(env.PLATFORM_DB).then((n) => console.log(`[sweeper] Cleaned ${n} old sessions`)),
       cleanFailedDocs(env.PLATFORM_DB, env.KB_BUCKET, env.KB_VECTORS).then((n) => console.log(`[sweeper] Cleaned ${n} failed docs`)),
-      cleanDeletedSpaces(env.PLATFORM_DB, env.KB_BUCKET, env.KB_VECTORS).then((n) => console.log(`[sweeper] Cascade-cleaned ${n} deleted spaces`)),
+      cleanDeletedSpaces(env.PLATFORM_DB, env.KB_BUCKET, env.KB_VECTORS, env.SCRIPTS_R2).then((n) => console.log(`[sweeper] Cascade-cleaned ${n} deleted spaces`)),
       cleanExpiredApiKeys(env.PLATFORM_DB).then((n) => console.log(`[sweeper] Cleaned ${n} expired API keys`)),
       cleanExpiredIdempotencyKeys(env.PLATFORM_DB).then((n) => console.log(`[sweeper] Cleaned ${n} expired idempotency keys`)),
       cleanExpiredBuilderPasswordResetTokens(env.PLATFORM_DB).then((n) => console.log(`[sweeper] Cleaned ${n} expired builder password reset tokens`)),

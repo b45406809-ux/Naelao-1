@@ -2158,6 +2158,20 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE agent_activity_log ADD COLUMN recovery_count INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE agent_activity_log ADD COLUMN repeated_mutation_calls INTEGER NOT NULL DEFAULT 0;`,
   },
+  {
+    version: 96,
+    description: "per-installation owner-approved Space shared filesystem grants",
+    up: `CREATE TABLE IF NOT EXISTS extension_shared_filesystem_grants (
+      instance_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      access TEXT NOT NULL CHECK (access IN ('READ','READ_WRITE')),
+      approved_by TEXT NOT NULL,
+      approved_at TEXT NOT NULL,
+      PRIMARY KEY(instance_id,path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_extension_shared_filesystem_grants_instance
+      ON extension_shared_filesystem_grants(instance_id);`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2812,14 +2826,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/business-wallet/withdraw") return this.withdrawBusinessWallet(request);
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
       if (url.pathname === "/space-shared-extensions" && method === "GET") return this.listSpaceSharedExtensions(url.searchParams);
+      if (url.pathname === "/extension-shared-filesystem-grants" && method === "POST") return this.updateSharedFilesystemGrants(request);
       if (url.pathname === "/project-steward-facts" && method === "GET") return this.projectStewardFacts(url.searchParams);
       if (url.pathname === "/project-lifecycle" && method === "GET") return this.projectLifecycle(url.searchParams);
       if (url.pathname === "/machine-authority" && method === "POST") return this.machineAuthority(request);
       if (url.pathname === "/container-installations" && method === "GET") {
-        const rows = queryAll<{ manifest_json: string }>(this.ctx.storage.sql as never,
+        const rows = queryAll<{ manifest_json: string; instance_id: string }>(this.ctx.storage.sql as never,
           "SELECT i.*, e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status='active' AND (i.scope='SPACE_SHARED' OR (i.scope='SPACE_ASSISTANT' AND ?='') OR (i.scope='SPACE_USER' AND i.user_id=?) OR (i.scope='PROJECT_BOUND' AND i.project_id=?) OR (i.scope='PROJECT_SHARED' AND i.project_id=?) OR (i.scope='PROJECT_USER' AND i.project_id=? AND i.user_id=?))",
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), url.searchParams.get("project_id") ?? "", url.searchParams.get("user_id"), url.searchParams.get("project_id"), url.searchParams.get("project_id"), url.searchParams.get("user_id"));
-        return Response.json({ installations: rows.map(row => { const { manifest_json, ...instance } = row; return { instance, manifest: JSON.parse(manifest_json) }; }) });
+        return Response.json({ installations: rows.map(row => { const { manifest_json, ...instance } = row; return { instance, manifest: JSON.parse(manifest_json),
+          approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }; }) });
       }
       if (url.pathname === "/extension-installations" && method === "GET") {
         const rows = queryAll<{ instance_id: string; project_id: string | null; scope: string; status: string; installed_at: string }>(this.ctx.storage.sql as never,
@@ -2876,11 +2892,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const { manifest_json, ...instance } = row;
         const manifest = JSON.parse(manifest_json) as ExtensionManifest;
         const bundle = manifest.bundle;
-        if (!bundle) return Response.json({ instance, manifest });
+        const approved_shared_filesystem = this.listApprovedSharedFilesystemGrants(instance.instance_id);
+        if (!bundle) return Response.json({ instance, manifest, approved_shared_filesystem });
         const release = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_id: string | null; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
           "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", manifest.id, bundle.version);
         const expected = release ? await this.signExtensionRelease(manifest.id, bundle.version, manifest_json, release.artifact_sha256) : "";
-        return Response.json({ instance, manifest, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
+        return Response.json({ instance, manifest, approved_shared_filesystem, release: release ? { version: bundle.version, artifactSha256: release.artifact_sha256,
           signatureValid: release.manifest_json === manifest_json && expected === release.host_signature && (!release.publisher_signature || !release.publisher_revoked_at), signer: "naelao-host",
           ...(release.publisher_key_id ? { publisher: { id: release.publisher_id, keyId: release.publisher_key_id, signature: release.publisher_signature,
             payloadSha256: release.publisher_payload_sha256, revoked: Boolean(release.publisher_revoked_at) } } : {}) } : null });
@@ -2894,6 +2911,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const result = this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now')
           WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status='active'`,
         instanceId, tenantId, spaceId, projectId);
+        if (result.rowsWritten === 1) execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
         return result.rowsWritten === 1
           ? Response.json({ removed: true, instance_id: instanceId })
           : Response.json({ error_code: "extension_installation_not_found" }, { status: 404 });
@@ -12026,9 +12044,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return candidates.map(item => ({ extension_id: row.extension_id, installation_id: row.instance_id, instance_key: row.instance_key ?? "default",
         app_id: row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_${item.id}` : item.id,
         name: item.name, installed_at: row.installed_at, scope: "SPACE_SHARED" as const,
-        capabilities: Array.isArray(manifest.capabilityRequirements) ? manifest.capabilityRequirements : [] }));
+        // Filesystem grants are worker-only and must never flow into the iframe's host API list.
+        capabilities: Array.isArray(manifest.capabilityRequirements) ? manifest.capabilityRequirements.filter(capability => !capability.startsWith("space.shared.")) : [],
+        requested_shared_filesystem: manifest.shared_filesystem ?? [],
+        approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }));
     });
     return Response.json({ apps });
+  }
+
+  private listApprovedSharedFilesystemGrants(instanceId: string): Array<{ path: string; access: "READ" | "READ_WRITE" }> {
+    return queryAll<{ path: string; access: "READ" | "READ_WRITE" }>(this.ctx.storage.sql as never,
+      "SELECT path,access FROM extension_shared_filesystem_grants WHERE instance_id=? ORDER BY path", instanceId);
+  }
+
+  private async updateSharedFilesystemGrants(request: Request): Promise<Response> {
+    const body = await request.json<{ tenantId?: string; spaceId?: string; instanceId?: string; approvedBy?: string; grants?: unknown }>()
+      .catch((): { tenantId?: string; spaceId?: string; instanceId?: string; approvedBy?: string; grants?: unknown } => ({}));
+    if (!body.tenantId || !body.spaceId || !body.instanceId || !body.approvedBy
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    if (!Array.isArray(body.grants) || body.grants.length > 64) return Response.json({ error_code: "shared_filesystem_grants_invalid" }, { status: 400 });
+    const row = queryOne<{ extension_id: string; manifest_json: string; scope: string }>(this.ctx.storage.sql as never,
+      `SELECT i.extension_id,i.scope,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
+       WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active'`, body.instanceId, body.tenantId, body.spaceId);
+    if (!row || row.scope !== "SPACE_SHARED") return Response.json({ error_code: "space_shared_installation_not_found" }, { status: 404 });
+    const manifest = JSON.parse(row.manifest_json) as ExtensionManifest;
+    const requested = manifest.shared_filesystem ?? [];
+    const approved = body.grants as Array<{ path?: unknown; access?: unknown }>;
+    if (approved.some(item => !item || typeof item.path !== "string" || !["READ", "READ_WRITE"].includes(String(item.access))
+      || !requested.some(grant => grant.path === item.path && (grant.access === item.access || grant.access === "READ_WRITE" && item.access === "READ")))
+      || new Set(approved.map(item => item.path)).size !== approved.length)
+      return Response.json({ error_code: "shared_filesystem_grant_not_requested" }, { status: 400 });
+    this.ctx.storage.transactionSync(() => {
+      execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", body.instanceId);
+      for (const grant of approved) execute(this.ctx.storage.sql as never,
+        "INSERT INTO extension_shared_filesystem_grants(instance_id,path,access,approved_by,approved_at) VALUES(?,?,?,?,?)",
+        body.instanceId, grant.path, grant.access, body.approvedBy, new Date().toISOString());
+    });
+    return Response.json({ instance_id: body.instanceId, approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(body.instanceId) });
   }
 
   /** Small, deterministic portfolio facts for the platform Steward. No task text, files,
@@ -12078,12 +12131,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; artifactSha256?: string; publisherId?: string; publisherKeyId?: string; publisherSignature?: string; publisherPayloadSha256?: string }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; artifactSha256?: string; publisherId?: string; publisherKeyId?: string; publisherSignature?: string; publisherPayloadSha256?: string; approvedSharedFilesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
     if (body.scope && (!body.tenantId || !body.spaceId)) return Response.json({ error: "tenantId and spaceId are required for scoped installations" }, { status: 400 });
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
+    const approvedSharedFilesystem = body.approvedSharedFilesystem ?? [];
+    const requestedSharedFilesystem = manifest.shared_filesystem ?? [];
+    if (!Array.isArray(approvedSharedFilesystem) || approvedSharedFilesystem.length > 64
+      || (approvedSharedFilesystem.length > 0 && body.scope !== "SPACE_SHARED")
+      || approvedSharedFilesystem.some(grant => !grant || !requestedSharedFilesystem.some(requested => requested.path === grant.path
+        && (requested.access === grant.access || requested.access === "READ_WRITE" && grant.access === "READ")))
+      || new Set(approvedSharedFilesystem.map(grant => grant.path)).size !== approvedSharedFilesystem.length)
+      return Response.json({ error_code: "shared_filesystem_approval_invalid" }, { status: 400 });
     const artifactSha256 = body.artifactSha256 ?? "0".repeat(64);
     if (!/^[a-f0-9]{64}$/.test(artifactSha256)) return Response.json({ error: "extension_artifact_digest_invalid" }, { status: 400 });
     if (body.scope && !["SPACE_SHARED", "SPACE_ASSISTANT", "SPACE_USER", "PROJECT_BOUND", "PROJECT_SHARED", "PROJECT_USER"].includes(body.scope))
@@ -12164,6 +12225,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
              VALUES(?,?,?,?,?,?,?,?,?,?,'active',?,NULL)
              ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status='active',removed_at=NULL`,
             instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, instanceKey, ownerKey, body.installedBy, now);
+          execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
+          for (const grant of approvedSharedFilesystem) execute(this.ctx.storage.sql as never,
+            "INSERT INTO extension_shared_filesystem_grants(instance_id,path,access,approved_by,approved_at) VALUES(?,?,?,?,?)",
+            instanceId, grant.path, grant.access, body.installedBy, now);
           if (body.promoteExisting) {
             const projectInstalls = queryOne<{ count: number }>(this.ctx.storage.sql as never,
               "SELECT COUNT(*) AS count FROM extension_instances WHERE extension_id=? AND tenant_id=? AND space_id=? AND scope='PROJECT_SHARED' AND status='active'",
@@ -12172,6 +12237,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             execute(this.ctx.storage.sql as never,
               "UPDATE extension_instances SET status='removed',removed_at=? WHERE extension_id=? AND tenant_id=? AND space_id=? AND scope='PROJECT_SHARED' AND status='active'",
               now, manifest.id, body.tenantId, body.spaceId);
+            execute(this.ctx.storage.sql as never,
+              "DELETE FROM extension_shared_filesystem_grants WHERE instance_id IN (SELECT instance_id FROM extension_instances WHERE extension_id=? AND tenant_id=? AND space_id=? AND scope='PROJECT_SHARED')",
+              manifest.id, body.tenantId, body.spaceId);
           }
         }
       });
@@ -12344,6 +12412,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private uninstallExtension(extensionId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id IN (SELECT instance_id FROM extension_instances WHERE extension_id=?)", extensionId);
     execute(this.ctx.storage.sql as never, "DELETE FROM installed_extensions WHERE extension_id = ?", extensionId);
     execute(this.ctx.storage.sql as never, "UPDATE extension_instances SET status='removed', removed_at=datetime('now') WHERE extension_id = ? AND status='active'", extensionId);
     return Response.json({ uninstalled: true, extensionId });

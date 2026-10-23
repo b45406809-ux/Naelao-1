@@ -34,6 +34,7 @@ export async function workflowHeaders(env: DurableWorkflowHostEnv, tenantId: str
 /** Changes to membership, installation or agent configuration invalidate resumed grants. */
 export interface WorkflowInstallationGrant {
   instance: { instance_id?: string; tenant_id: string; space_id: string; project_id?: string | null; instance_key?: string | null; user_id?: string | null; scope?: string; status: string };
+  approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
   manifest: { id?: string; daemons?: Array<{ workflowScript?: string }>; shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>; capabilityRequirements?: string[]; bundle?: { id?: string; version?: string; primitives?: Array<{ kind?: string; id?: string; entry?: string; steps?: string[]; toolNames?: string[] }>; workerRoles?: Array<{ id?: string; principal?: string; invocation?: string; execution?: string; entry?: string; primitiveIds?: string[]; gadgetActions?: Array<{ gadgetId: string; operations: string[]; tables: string[] }> }> } };
   release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
 }

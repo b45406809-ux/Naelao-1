@@ -128,6 +128,12 @@ jobs:
           npx wrangler d1 execute "$DB_ID" \
             --command="SELECT project_id FROM project_agent_email_addresses LIMIT 0" \
             --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0128_space_workspace_cleanup_marker.sql \
+            --remote
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT cleanup_completed_at FROM spaces LIMIT 0" \
+            --remote
 
       - name: Deploy all workers (production)
         env:

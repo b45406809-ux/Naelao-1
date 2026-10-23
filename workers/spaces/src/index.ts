@@ -558,7 +558,8 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
 });
 
-async function installFirstPartySpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string, extensionId: string): Promise<{ ok: true; installationId: string } | { ok: false; error: string }> {
+async function installFirstPartySpaceExtension(env: Env, tenantId: string, spaceId: string, installedBy: string, extensionId: string,
+  approvedSharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }> = []): Promise<{ ok: true; installationId: string } | { ok: false; error: string }> {
   const source = DOGFOOD_EXTENSION_BY_ID[extensionId];
   if (!source) return { ok: false, error: "first_party_extension_not_found" };
   let manifest: ReturnType<typeof validateExtensionManifest>;
@@ -567,7 +568,7 @@ async function installFirstPartySpaceExtension(env: Env, tenantId: string, space
   if (!manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)) return { ok: false, error: "space_shared_gadget_required" };
   const spaceStub = await spaceDoStub(env, spaceId, tenantId);
   const installed = await spaceStub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ manifest, installedBy, tenantId, spaceId, scope: "SPACE_SHARED", gatekeeperCapabilities: manifest.capabilityRequirements }) }));
+    body: JSON.stringify({ manifest, installedBy, tenantId, spaceId, scope: "SPACE_SHARED", approvedSharedFilesystem, gatekeeperCapabilities: manifest.capabilityRequirements }) }));
   if (!installed.ok) return { ok: false, error: "extension_installation_rejected" };
   const result = await installed.json<{ installationId?: string }>().catch(() => ({} as { installationId?: string }));
   if (!result.installationId) return { ok: false, error: "extension_installation_id_missing" };
@@ -587,7 +588,9 @@ app.post("/spaces/:spaceId/shared-extensions/:extensionId/install", async c => {
   const spaceId = c.req.param("spaceId"), identity = getCallerIdentity(c);
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
-  const result = await installFirstPartySpaceExtension(c.env, owned.tenantId, spaceId, identity.userId ?? "space-admin", c.req.param("extensionId"));
+  const body = await c.req.json<{ approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>()
+    .catch((): { approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> } => ({}));
+  const result = await installFirstPartySpaceExtension(c.env, owned.tenantId, spaceId, identity.userId ?? "space-admin", c.req.param("extensionId"), body.approved_shared_filesystem ?? []);
   return result.ok ? c.json({ extension_id: c.req.param("extensionId"), installation_id: result.installationId, scope: "SPACE_SHARED" }, 201)
     : c.json({ error_code: result.error }, result.error === "first_party_extension_not_found" ? 404 : 503);
 });
@@ -607,7 +610,24 @@ app.use("/spaces/:spaceId/shared-extension-catalog", requireInternalHmac(c => c.
 app.use("/spaces/:spaceId/shared-extension-catalog", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/shared-extension-catalog", c => c.json({ extensions: Object.values(DOGFOOD_EXTENSION_BY_ID)
   .filter(manifest => manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3))
-  .map(manifest => ({ id: manifest.id, name: manifest.gadgets.find(gadget => gadget.scope === "SPACE_SHARED")?.name ?? manifest.id })) }));
+  .map(manifest => ({ id: manifest.id, name: manifest.gadgets.find(gadget => gadget.scope === "SPACE_SHARED")?.name ?? manifest.id,
+    requested_shared_filesystem: manifest.shared_filesystem ?? [] })) }));
+
+app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireBusinessMembership({ PATCH: "admin" }));
+app.patch("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", async c => {
+  const identity = getCallerIdentity(c), spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const body = await c.req.json<{ grants?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>()
+    .catch((): { grants?: Array<{ path: string; access: "READ" | "READ_WRITE" }> } => ({}));
+  if (!Array.isArray(body.grants)) return c.json({ error_code: "shared_filesystem_grants_required" }, 400);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  const response = await stub.fetch(new Request("http://space-do/extension-shared-filesystem-grants", { method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) },
+    body: JSON.stringify({ tenantId: owned.tenantId, spaceId, instanceId: c.req.param("instanceId"), approvedBy: identity.userId ?? "space-admin", grants: body.grants }) }));
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
 
 // ── PATCH /spaces/:id ───────────────────────────────────────────────────────
 app.patch("/spaces/:id", async (c) => {

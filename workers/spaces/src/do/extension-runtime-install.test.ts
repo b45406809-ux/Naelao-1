@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SpaceDO } from "./SpaceDO.js";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
+import { mintInternalToken } from "@naelao/http";
 
 const image = "registry.example/media@sha256:" + "a".repeat(64);
 function manifest(binary = "ffmpeg") {
@@ -11,6 +12,34 @@ function manifest(binary = "ffmpeg") {
 }
 
 describe("runtime extension installation", () => {
+  it("requires owner-approved per-installation grants and exposes only approved access to workers", async () => {
+    const storage = createDOStorage(), secret = "filesystem-grant-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    const manifest = { id: "ext_shared_drive_demo", type: "extension", declaredPermissions: [], capabilityRequirements: ["space.shared.read", "space.shared.write"],
+      gadgets: [{ id: "shared_console", name: "Shared Console", viewportComponent: "./console.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" }],
+      daemons: [], commands: [], shared_filesystem: [{ path: "/space/shared/dropzones/audio/", access: "READ_WRITE" }] };
+    const install = (approvedSharedFilesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }> = []) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: manifest.capabilityRequirements, approvedSharedFilesystem }) }));
+    const first = await install(); expect(first.status).toBe(201);
+    const { installationId } = await first.json() as { installationId: string };
+    const appList = await space.fetch(new Request("http://space/space-shared-extensions?tenant_id=tenant&space_id=space"));
+    expect(await appList.json()).toMatchObject({ apps: [expect.objectContaining({ capabilities: [], requested_shared_filesystem: manifest.shared_filesystem, approved_shared_filesystem: [] })] });
+    const lookup = () => space.fetch(new Request("http://space/workflow-installation?" + new URLSearchParams({ instance_id: installationId, tenant_id: "tenant", space_id: "space" })));
+    expect(await (await lookup()).json()).toMatchObject({ approved_shared_filesystem: [] });
+    const token = await mintInternalToken(secret, "tenant");
+    const update = (grants: Array<{ path: string; access: "READ" | "READ_WRITE" }>) => space.fetch(new Request("http://space/extension-shared-filesystem-grants", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", instanceId: installationId, approvedBy: "owner", grants }),
+    }));
+    expect((await update([{ path: "/space/shared/unrequested/", access: "READ" }])).status).toBe(400);
+    expect((await update([{ path: "/space/shared/dropzones/audio/", access: "READ" }])).status).toBe(200);
+    expect(await (await lookup()).json()).toMatchObject({ approved_shared_filesystem: [{ path: "/space/shared/dropzones/audio/", access: "READ" }] });
+    const containerList = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=owner&project_id="));
+    expect(await containerList.json()).toMatchObject({ installations: [expect.objectContaining({ approved_shared_filesystem: [{ path: "/space/shared/dropzones/audio/", access: "READ" }] })] });
+    await update([]);
+    expect(await (await lookup()).json()).toMatchObject({ approved_shared_filesystem: [] });
+  });
+
   it("host-signs immutable bundle releases and only rolls back to a verified recorded version", async () => {
     const storage = createDOStorage(), state = { storage };
     const space = new SpaceDO(state as never, { PLATFORM_SECRET: "release-test-secret" } as never);

@@ -51,6 +51,8 @@ describe("sweeper cursor migration deployment", () => {
       expect(text).toContain('--command="SELECT id FROM assistant_sessions LIMIT 0"');
       expect(text).toContain("--file=infra/migrations/0123_builder_reset_token_expiry_index.sql");
       expect(text).toContain('--command="SELECT rowid FROM builder_password_reset_tokens INDEXED BY idx_builder_password_reset_tokens_expiry WHERE julianday(expires_at) < julianday(\'now\') LIMIT 0"');
+      expect(text).toContain("--file=infra/migrations/0128_space_workspace_cleanup_marker.sql");
+      expect(text).toContain('--command="SELECT cleanup_completed_at FROM spaces LIMIT 0"');
     }
   });
 });
@@ -186,12 +188,15 @@ describe("bounded knowledge cleanup", () => {
     const list = vi.fn().mockResolvedValue({ objects: [], truncated: false });
     const deleteObject = vi.fn().mockResolvedValue(undefined);
     const vectorsDelete = vi.fn().mockResolvedValue(undefined);
+    const workspaceList = vi.fn().mockResolvedValue({ objects: [], truncated: false });
     await expect(cleanDeletedSpaces(
       db as never,
       { list, delete: deleteObject } as never,
-      { deleteByIds: vectorsDelete } as never
+      { deleteByIds: vectorsDelete } as never,
+      { list: workspaceList, delete: deleteObject } as never
     )).resolves.toBe(1);
     expect(list).toHaveBeenCalledWith({ prefix: "kb/space-a/project-a/doc-a/", limit: 1000 });
+    expect(workspaceList).toHaveBeenCalledWith({ prefix: "spaces/space-a/", limit: 1000 });
     expect(deleteObject).toHaveBeenCalledWith("autorag/space-a/project-a/doc-a.md");
     expect(vectorsDelete).toHaveBeenCalledWith(["doc-a_chunk_0"]);
     expect(statements).toHaveBeenCalledWith(
@@ -199,6 +204,38 @@ describe("bounded knowledge cleanup", () => {
     );
     expect(statements).toHaveBeenCalledWith("DELETE FROM kb_chunks WHERE space_id = ?");
     expect(statements).toHaveBeenCalledWith("UPDATE threads SET session_count = 0 WHERE space_id = ?");
+    expect(statements).toHaveBeenCalledWith(
+      "UPDATE spaces SET cleanup_completed_at = datetime('now') WHERE id = ? AND status = 'deleted'"
+    );
+  });
+
+  it("purges workspace-only deleted spaces with no knowledge-base rows", async () => {
+    const run = vi.fn().mockResolvedValue({ meta: { changes: 1 } });
+    const prepare = vi.fn((sql: string) => {
+      if (sql.includes("SELECT cursor_value")) return { bind: vi.fn().mockReturnValue({ first: vi.fn().mockResolvedValue(null) }) };
+      if (sql.includes("INSERT INTO sweeper_cursors")) return { bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({}) }) };
+      if (sql.includes("FROM spaces s")) return { bind: vi.fn().mockReturnValue({ all: vi.fn().mockResolvedValue({ results: [{ space_id: "workspace-only" }] }) }) };
+      if (sql.includes("SELECT d.id, d.tenant_id, d.project_id")) return { bind: vi.fn().mockReturnValue({ all: vi.fn().mockResolvedValue({ results: [] }) }) };
+      return { bind: vi.fn().mockReturnValue({ run }) };
+    });
+    const kbList = vi.fn().mockResolvedValue({ objects: [], truncated: false });
+    const workspaceList = vi.fn().mockResolvedValue({ objects: [{ key: "spaces/workspace-only/shared/file.txt" }], truncated: false });
+    const removeWorkspaceFile = vi.fn().mockResolvedValue(undefined);
+
+    await expect(cleanDeletedSpaces(
+      { prepare } as never,
+      { list: kbList, delete: vi.fn() } as never,
+      { deleteByIds: vi.fn() } as never,
+      { list: workspaceList, delete: removeWorkspaceFile } as never,
+    )).resolves.toBe(1);
+
+    expect(kbList).toHaveBeenCalledWith({ prefix: "kb/workspace-only/", limit: 1000 });
+    expect(kbList).toHaveBeenCalledWith({ prefix: "autorag/workspace-only/", limit: 1000 });
+    expect(workspaceList).toHaveBeenCalledWith({ prefix: "spaces/workspace-only/", limit: 1000 });
+    expect(removeWorkspaceFile).toHaveBeenCalledWith("spaces/workspace-only/shared/file.txt");
+    expect(prepare).toHaveBeenCalledWith(
+      "UPDATE spaces SET cleanup_completed_at = datetime('now') WHERE id = ? AND status = 'deleted'"
+    );
   });
 
   it("cleans orphaned D1 chunks together with their R2 objects and vectors", async () => {
@@ -249,7 +286,8 @@ describe("bounded knowledge cleanup", () => {
     await expect(cleanDeletedSpaces(
       { prepare } as never,
       { list, delete: vi.fn() } as never,
-      { deleteByIds: vi.fn() } as never
+      { deleteByIds: vi.fn() } as never,
+      { list: vi.fn().mockResolvedValue({ objects: [], truncated: false }), delete: vi.fn() } as never
     )).resolves.toBe(0);
     expect(prepare).not.toHaveBeenCalledWith(expect.stringContaining("UPDATE kb_documents SET status = 'purged'"));
     expect(run).not.toHaveBeenCalled();

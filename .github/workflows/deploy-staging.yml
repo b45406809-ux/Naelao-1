@@ -142,6 +142,14 @@ jobs:
             --command="SELECT project_id FROM project_agent_email_addresses LIMIT 0" \
             --remote \
             --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --file=infra/migrations/0128_space_workspace_cleanup_marker.sql \
+            --remote \
+            --env=staging
+          npx wrangler d1 execute "$DB_ID" \
+            --command="SELECT cleanup_completed_at FROM spaces LIMIT 0" \
+            --remote \
+            --env=staging
 
       - name: Deploy router worker (staging)
         env:
