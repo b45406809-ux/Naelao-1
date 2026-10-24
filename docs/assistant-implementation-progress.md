@@ -104,3 +104,15 @@ input parameterization, enable gating, real interpreter replay, digest tampering
 Agents and Shell type checks and the production Agents Worker dry-run passed.
 Still open: configured production video/frame analyzer and its metering, schedule UX, reconciliation
 of interrupted demonstrations, and sharing/promoting a reviewed private demonstration explicitly.
+
+## Step 6 — credit forwarding regression found during phone billing preparation
+
+Fixed the existing end-user credit proxy dropping idempotency_key before ProductUserDO, which
+could double-charge a retried agent run despite the DO's own deduplication. Added bounded debit
+request parsing and positive integer/retry-key validation. Balance, debit, reservation and monthly
+refresh routes now reject a signed token for a different tenant; root resolution also rejects
+cross-tenant parent references. Existing credit test setup used a removed commerce endpoint and
+silently seeded no balance; fixtures now seed the actual DO directly without restoring commerce.
+Fresh tests: 40 passed, including 30 concurrent repeated debit requests charging only once,
+malformed requests and cross-tenant mutation rejection. Spaces type check passed. This does not
+activate managed carrier resale or introduce a wallet.

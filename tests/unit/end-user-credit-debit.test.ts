@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import spacesWorker from "../../workers/spaces/src/index.js";
+import { getDOName } from "@naelao/crypto";
 import { mintInternalToken } from "@naelao/http";
 import { ProductUserDO } from "../../workers/spaces/src/do/ProductUserDO.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
@@ -52,15 +53,10 @@ function req(path: string, init: RequestInit & { headers?: Record<string, string
 }
 
 async function grantCredits(env: ReturnType<typeof makeEnv>, spaceId: string, endUserId: string, credits: number) {
-  const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
-  await spacesWorker.fetch(
-    req("/internal/credit-packs/grant", {
-      method: "POST",
-      headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
-      body: JSON.stringify({ product_space_id: spaceId, end_user_id: endUserId, credits, idempotency_key: `grant-${crypto.randomUUID()}` }),
-    }),
-    env as never, execCtx
-  );
+  // Seed the actual DO directly; the old commerce-specific credit-pack route was removed.
+  const stub=env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(await getDOName("produser",`${spaceId}:${endUserId}`,"tenant-1",PLATFORM_SECRET)));
+  const response=await stub.fetch(new Request("https://user/credits/grant",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({credits,idempotency_key:`fixture:${crypto.randomUUID()}`})}));
+  expect(response.status).toBe(201);
 }
 
 describe("POST /internal/product-users/:spaceId/:endUserId/credits/deduct", () => {
@@ -90,6 +86,30 @@ describe("POST /internal/product-users/:spaceId/:endUserId/credits/deduct", () =
     expect(res.status).toBe(201);
     const body = await res.json() as { balance_credits: number };
     expect(body.balance_credits).toBe(70);
+  });
+
+  it("preserves the retry key through the route and charges a repeated run once", async () => {
+    const env=makeEnv();await seedProduct(env,"prod-1","tenant-1");await grantCredits(env,"prod-1","alice",100);
+    const headers={"x-naelao-tenant-id":"tenant-1","x-naelao-internal-token":await mintInternalToken(PLATFORM_SECRET,"tenant-1")};
+    const responses=await Promise.all(Array.from({length:30},()=>spacesWorker.fetch(req("/internal/product-users/prod-1/alice/credits/deduct",{method:"POST",headers,body:JSON.stringify({credits:30,idempotency_key:"run:retry-regression"})}),env as never,execCtx)));
+    const bodies=await Promise.all(responses.map(r=>r.json() as Promise<{balance_credits:number;deduplicated?:boolean}>));
+    expect(bodies.every(b=>b.balance_credits===70)).toBe(true);
+    expect(bodies.filter(b=>b.deduplicated)).toHaveLength(29);
+  });
+  it("does not let a valid signature for another tenant debit or reserve this tenant's credits", async () => {
+    const env=makeEnv();await seedProduct(env,"prod-1","tenant-1");await grantCredits(env,"prod-1","alice",100);
+    const headers={"x-naelao-tenant-id":"other-tenant","x-naelao-internal-token":await mintInternalToken(PLATFORM_SECRET,"other-tenant")};
+    for(const [path,payload] of [["deduct",{credits:30,idempotency_key:"cross-tenant"}],["reservations",{action:"reserve",run_id:"r",reservation_id:"r:1",credits:30}]] as const){
+      const response=await spacesWorker.fetch(req("/internal/product-users/prod-1/alice/credits/"+path,{method:"POST",headers,body:JSON.stringify(payload)}),env as never,execCtx);
+      expect(response.status).toBe(403);
+    }
+  });
+  it("rejects malformed debit bodies and oversized or empty retry keys before reaching a DO", async () => {
+    const env=makeEnv();await seedProduct(env,"prod-1","tenant-1");
+    const headers={"x-naelao-tenant-id":"tenant-1","x-naelao-internal-token":await mintInternalToken(PLATFORM_SECRET,"tenant-1")};
+    for(const body of ['{','null',JSON.stringify({credits:0.5}),JSON.stringify({credits:10,idempotency_key:""}),JSON.stringify({credits:10,idempotency_key:"x".repeat(201)})]){
+      const r=await spacesWorker.fetch(req("/internal/product-users/prod-1/alice/credits/deduct",{method:"POST",headers,body}),env as never,execCtx);expect(r.status).toBe(400);
+    }
   });
 
   it("fails CLOSED (402) on insufficient balance — does not go negative", async () => {

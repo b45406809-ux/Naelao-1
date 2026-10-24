@@ -1561,7 +1561,7 @@ async function resolveProductRootSpace(
   const root = await env.PLATFORM_DB.prepare(
     "SELECT id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
   ).bind(space.parent_space_id).first<{ id: string; tenant_id: string }>();
-  return root ?? null;
+  return root?.tenant_id === space.tenant_id ? root : null;
 }
 
 /** Forward a request to a path on the SpaceDO, preserving method/headers/body. Spec-compliant
@@ -4574,6 +4574,7 @@ app.get("/internal/product-users/:spaceId/:endUserId/credits/balance", async (c)
   const endUserId = c.req.param("endUserId");
   const root = await resolveProductRootSpace(c.env, spaceId);
   if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  if (root.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({error_code:"forbidden"},403);
 
   const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
   const balRes = await stub.fetch(new Request("http://do/credits/balance"));
@@ -4591,18 +4592,20 @@ app.use("/internal/product-users/:spaceId/:endUserId/credits/deduct", requireInt
 app.post("/internal/product-users/:spaceId/:endUserId/credits/deduct", async (c) => {
   const spaceId = c.req.param("spaceId");
   const endUserId = c.req.param("endUserId");
-  const body = await c.req.json<{ credits: number; reason?: string; model?: string }>();
-  if (!Number.isFinite(body.credits) || body.credits <= 0) {
-    return c.json({ error_code: "bad_request", message: "credits must be a positive number" }, 400);
+  let body: {credits:number;reason?:string;model?:string;idempotency_key?:string};
+  try {body=JSON.parse(await readBoundedRequestText(c.req.raw,16384));} catch {return c.json({error_code:"bad_request"},400);}
+  if (!body || !Number.isSafeInteger(body.credits) || body.credits <= 0
+    || body.idempotency_key !== undefined && (typeof body.idempotency_key !== "string" || body.idempotency_key.length < 1 || body.idempotency_key.length > 200)) {
+    return c.json({error_code:"bad_request",message:"credits must be a positive safe integer and the retry key must be bounded"},400);
   }
   const root = await resolveProductRootSpace(c.env, spaceId);
   if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-
+  if (root.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({error_code:"forbidden"},403);
   const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
   const deductRes = await stub.fetch(new Request("http://do/credits/deduct", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ credits: body.credits, reason: body.reason ?? "agent_run", ...(body.model ? { model: body.model } : {}) }),
+    body: JSON.stringify({ credits: body.credits, reason: body.reason ?? "agent_run", ...(body.model ? { model: body.model } : {}), ...(body.idempotency_key ? {idempotency_key:body.idempotency_key}:{}) }),
   }));
   const result = await deductRes.json<{ balance_credits: number; error?: string }>();
   return c.json(result, deductRes.status as 201 | 402 | 400);
@@ -4611,10 +4614,12 @@ app.post("/internal/product-users/:spaceId/:endUserId/credits/deduct", async (c)
 app.use("/internal/product-users/:spaceId/:endUserId/credits/reservations", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/internal/product-users/:spaceId/:endUserId/credits/reservations", async (c) => {
   const spaceId = c.req.param("spaceId"), endUserId = c.req.param("endUserId");
-  const body = await c.req.json<{ action?: string; reservation_id?: string; run_id?: string; credits?: number }>();
-  if (!body.action || !body.run_id) return c.json({ error_code: "bad_request" }, 400);
+  let body: {action?:string;reservation_id?:string;run_id?:string;credits?:number};
+  try {body=JSON.parse(await readBoundedRequestText(c.req.raw,16384));} catch {return c.json({error_code:"bad_request"},400);}
+  if (!body || !body.action || !body.run_id) return c.json({ error_code: "bad_request" }, 400);
   const root = await resolveProductRootSpace(c.env, spaceId);
   if (!root) return c.json({ error_code: "not_found" }, 404);
+  if (root.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({error_code:"forbidden"},403);
   const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
   const response = await stub.fetch(new Request("http://do/credits/reservations", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
@@ -4640,6 +4645,7 @@ app.post("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", 
   const endUserId = c.req.param("endUserId");
   const root = await resolveProductRootSpace(c.env, spaceId);
   if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  if (root.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({error_code:"forbidden"},403);
   // Pricing (like the plan/credit-pack catalog — see loadPricingCatalog's own comment) is
   // authored on the product ROOT, never on a business's own row — read the root's config, not
   // whatever spaceId was passed in.
