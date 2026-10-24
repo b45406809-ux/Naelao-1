@@ -70,7 +70,17 @@ export const notifications: PrebuiltScript = {
   description: "Send notifications to the owner/customer over email, Slack, Discord, WhatsApp, Telegram, APNs, FCM, and enrolled browser push devices.",
   domain: "comms",
   requires_tier: 2,
+  paramHints:{"notify.owner":"event_id (stable task/notification retry key), message (max 4000 chars), urgency normal|urgent. Host chooses a verified permitted channel using this user’s preferences. Unknown delivery outcomes are held, never blindly retried."},
   operations: {
+    "notify.owner":async(a,c)=>{
+      if(!c.env.userId){
+        if(!c.env.agentsWorker||c.env.airGappedOnly)throw new Error("notification_route_unavailable");
+        const response=await c.env.agentsWorker.fetch(new Request("http://agents/internal/assistant-background-notification",{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":c.env.tenantId,"x-naelao-internal-token":await mintInternalToken(c.env.platformSecret??"",c.env.tenantId)},body:JSON.stringify({spaceId:c.env.spaceId,projectId:c.env.projectId,event_id:a["event_id"],message:a["message"],urgency:a["urgency"]})}));
+        return response.json();
+      }
+      const {callAssistantCommunication}=await import("./assistant-mail.js");
+      return callAssistantCommunication(c,"notify-owner",{event_id:a["event_id"],message:a["message"],urgency:a["urgency"]});
+    },
     "notify.email": async (a, c) => {
       const to = typeof a["to"] === "string" && a["to"].trim() ? (a["to"] as string) : await resolveOwnerEmail(c);
       if (!to) {

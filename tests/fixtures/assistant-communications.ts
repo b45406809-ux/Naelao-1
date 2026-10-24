@@ -14,10 +14,51 @@ export function fixture() {
       "utf8"
     ),
   ]);
-  db.db.exec(readFileSync(new URL("../../infra/migrations/0131_assistant_phones.sql", import.meta.url), "utf8"));
-  db.db.exec(readFileSync(new URL("../../infra/migrations/0132_assistant_sms_verification.sql", import.meta.url), "utf8"));
-  db.db.exec(readFileSync(new URL("../../infra/migrations/0133_phone_extension_handlers.sql",import.meta.url),"utf8"));
-  db.db.exec(readFileSync(new URL("../../infra/migrations/0134_assistant_live_calls.sql",import.meta.url),"utf8"));
+  db.db.exec(
+    readFileSync(
+      new URL(
+        "../../infra/migrations/0131_assistant_phones.sql",
+        import.meta.url
+      ),
+      "utf8"
+    )
+  );
+  db.db.exec(
+    readFileSync(
+      new URL(
+        "../../infra/migrations/0132_assistant_sms_verification.sql",
+        import.meta.url
+      ),
+      "utf8"
+    )
+  );
+  db.db.exec(
+    readFileSync(
+      new URL(
+        "../../infra/migrations/0133_phone_extension_handlers.sql",
+        import.meta.url
+      ),
+      "utf8"
+    )
+  );
+  db.db.exec(
+    readFileSync(
+      new URL(
+        "../../infra/migrations/0134_assistant_live_calls.sql",
+        import.meta.url
+      ),
+      "utf8"
+    )
+  );
+  db.db.exec(
+    readFileSync(
+      new URL(
+        "../../infra/migrations/0135_assistant_coordination.sql",
+        import.meta.url
+      ),
+      "utf8"
+    )
+  );
   const objects = new Map<string, string>();
   const fetch = vi.fn(async (req: Request) =>
     req.url.includes("assistant-access")
@@ -39,6 +80,10 @@ export function fixture() {
     SPACES_WORKER: { fetch },
     EMAIL: { send },
     SCRIPTS_R2: {
+      delete: async (keys: string | string[]) => {
+        for (const key of Array.isArray(keys) ? keys : [keys])
+          objects.delete(key);
+      },
       put: async (key: string, value: string) => objects.set(key, value),
       get: async (key: string) =>
         objects.has(key)

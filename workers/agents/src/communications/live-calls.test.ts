@@ -4,7 +4,12 @@ import {
   scope,
 } from "../../../../tests/fixtures/assistant-communications.js";
 import { ensureIdentity } from "./core.js";
-import { armLiveCall, claimLiveCall, liveCodeHash } from "./live-calls.js";
+import {
+  armLiveCall,
+  claimLiveCall,
+  liveCodeHash,
+  liveCallAllowed,
+} from "./live-calls.js";
 import { defaultPhonePolicy, type AssistantPhoneBinding } from "./phones.js";
 async function setup() {
   const f = fixture(),
@@ -114,5 +119,56 @@ describe("app-authorized live telephone sessions", () => {
       )
     );
     expect(calls.filter(Boolean)).toHaveLength(1);
+  });
+});
+
+describe("private member telephone boundaries", () => {
+  it("does not revoke another member's authorization when rearming", async () => {
+    const f = await setup();
+    const first = await armLiveCall(f.env, scope, f.binding, "session");
+    const otherScope = { ...scope, userId: "another-member" };
+    const other = await armLiveCall(f.env, otherScope, f.binding, "session");
+    const replacement = await armLiveCall(f.env, scope, f.binding, "session");
+    expect(
+      await claimLiveCall(f.env, f.binding, sid, first.code, 300)
+    ).toBeNull();
+    expect(
+      (
+        await claimLiveCall(
+          f.env,
+          f.binding,
+          "CA" + "b".repeat(32),
+          other.code,
+          300
+        )
+      )?.user_id
+    ).toBe(otherScope.userId);
+    expect(
+      (
+        await claimLiveCall(
+          f.env,
+          f.binding,
+          "CA" + "c".repeat(32),
+          replacement.code,
+          300
+        )
+      )?.user_id
+    ).toBe(scope.userId);
+  });
+  it("cannot authorize or continue an internal call on an extension line", async () => {
+    const f = await setup();
+    const armed = await armLiveCall(f.env, scope, f.binding, "session");
+    const live = await claimLiveCall(f.env, f.binding, sid, armed.code, 300);
+    await f.db
+      .prepare("UPDATE assistant_phone_bindings SET purpose='extension'")
+      .run();
+    expect(await liveCallAllowed(f.env, live!)).toBe(false);
+    const external = { ...f.binding, purpose: "extension" as const };
+    await expect(
+      armLiveCall(f.env, scope, external, "session")
+    ).rejects.toThrow("internal_assistant_line_required");
+    expect(
+      await claimLiveCall(f.env, external, sid, armed.code, 300)
+    ).toBeNull();
   });
 });

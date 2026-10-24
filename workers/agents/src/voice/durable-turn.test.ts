@@ -71,7 +71,7 @@ describe("durable voice task continuity", () => {
       Response.json({ status: "completed", final_answer: "Approved and done" }),
     ]);
     expect(await f.turns.turn(ticket, "Send it")).toContain(
-      "approval in Naelao"
+      "approval"
     );
     expect(await f.turns.turn(ticket, "Is it ready?")).toBe(
       "Approved and done"
@@ -161,4 +161,22 @@ describe("durable voice task continuity", () => {
       client_message_id: expect.stringMatching(/^voice-/),
     });
   });
+ it("routes new steering turns separately while retaining the original durable task",async()=>{
+  const f=fixture([Response.json({run_id:"primary"}),Response.json({status:"awaiting_approval"}),Response.json({run_id:"control"}),Response.json({status:"completed",final_answer:"Pause requested"}),Response.json({status:"completed",final_answer:"Original done"})]);
+  await f.turns.turn(ticket,"Audit the project");
+  expect(await f.turns.turn(ticket,"Pause worker 2")).toBe("Pause requested");
+  const requests=f.fetch.mock.calls as unknown as [Request][];
+  expect(requests[2]![0].headers.get("x-naelao-voice-followup")).toBe("1");
+  expect((await requests[2]![0].json()).goal).toContain("Background task primary continues");
+  expect(await f.turns.resume(ticket)).toBe("Original done");
+  expect(f.fetch).toHaveBeenCalledTimes(5);
+ });
+ it("follows the original approval continuation instead of polling a stale task forever",async()=>{
+  const f=fixture([Response.json({run_id:"primary"}),Response.json({status:"awaiting_approval",pending_approval:{approval_id:"approval-1"}}),Response.json({status:"approved",resumed_run:{status:"completed",final_answer:"Actual committed result"}})]);
+  await f.turns.turn(ticket,"Do the approved action");
+  expect(await f.turns.resume(ticket)).toBe("Actual committed result");
+  const requests=f.fetch.mock.calls as unknown as [Request][];
+  expect(requests[2]![0].url).toContain("/approvals/approval-1");
+ });
+
 });

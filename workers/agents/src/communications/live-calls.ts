@@ -1,4 +1,3 @@
-import { mintInternalToken } from "@naelao/http";
 import type { AgentsEnv } from "../index.js";
 import type { CommunicationScope } from "./core.js";
 import { scopeAccess, channelPreferences } from "./core.js";
@@ -48,63 +47,14 @@ export async function armLiveCall(
       !/^[A-Za-z0-9._:-]{1,160}$/.test(sessionId))
   )
     throw new Error("live_call_session_required");
+  if (binding.purpose === "extension")
+    throw new Error("internal_assistant_line_required");
   if (binding.status !== "active")
     throw new Error("assistant_phone_not_connected");
-  const headers = {
-    "x-naelao-tenant-id": scope.tenantId,
-    "x-naelao-user-id": scope.userId,
-    "x-naelao-role": scope.role,
-    "x-naelao-internal-token": await mintInternalToken(
-      env.PLATFORM_SECRET,
-      scope.tenantId
-    ),
-  };
-  if (sessionId === undefined) {
-    const previous = await env.PLATFORM_DB.prepare(
-      "SELECT session_id FROM assistant_live_calls WHERE binding_id=? AND user_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1"
-    )
-      .bind(binding.id, scope.userId)
-      .first<{ session_id: string }>();
-    if (previous) sessionId = previous.session_id;
-  }
-  if (sessionId === undefined) {
-    sessionId = crypto.randomUUID();
-    const threadId = scope.projectId ? crypto.randomUUID() : undefined;
-    if (threadId) {
-      const created = await env.SPACES_WORKER.fetch(
-        new Request(
-          `http://spaces/spaces/${encodeURIComponent(scope.spaceId)}/threads`,
-          {
-            method: "POST",
-            headers: { ...headers, "content-type": "application/json" },
-            body: JSON.stringify({
-              id: threadId,
-              project_id: scope.projectId,
-              session_id: sessionId,
-              title: "Voice conversation",
-              thread_tier: "tier_2_task",
-              thread_kind: "primary",
-            }),
-          }
-        )
-      );
-      if (!created.ok) throw new Error("live_call_thread_unavailable");
-    }
-    const created = await env.SPACES_WORKER.fetch(
-      new Request(
-        `http://spaces/spaces/${encodeURIComponent(scope.spaceId)}/sessions`,
-        {
-          method: "POST",
-          headers: { ...headers, "content-type": "application/json" },
-          body: JSON.stringify({
-            id: sessionId,
-            ...(threadId ? { thread_id: threadId } : {}),
-          }),
-        }
-      )
-    );
-    if (!created.ok) throw new Error("live_call_session_unavailable");
-  }
+  if (sessionId === undefined)
+    sessionId = await (
+      await import("./conversations.js")
+    ).assistantConversation(env, scope);
   const actualSessionId = sessionId as string;
   await verifyVoiceSession(
     env.SPACES_WORKER,
@@ -122,8 +72,8 @@ export async function armLiveCall(
   const id = crypto.randomUUID();
   await env.PLATFORM_DB.batch([
     env.PLATFORM_DB.prepare(
-      "UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND status='armed'"
-    ).bind(binding.id),
+      "UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND user_id=? AND status='armed'"
+    ).bind(binding.id, scope.userId),
     env.PLATFORM_DB.prepare(
       "INSERT INTO assistant_live_calls(id,binding_id,tenant_id,space_id,project_id,user_id,caller_role,session_id,code_hash,status,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,'armed',?,?)"
     ).bind(
@@ -157,6 +107,7 @@ export async function claimLiveCall(
   maxSeconds: number
 ): Promise<LiveCall | null> {
   if (
+    binding.purpose === "extension" ||
     !/^CA[a-fA-F0-9]{32}$/.test(callSid) ||
     !/^\d{8}$/.test(code) ||
     !Number.isSafeInteger(maxSeconds) ||
@@ -194,6 +145,17 @@ export async function liveCallAllowed(
   env: AgentsEnv,
   call: LiveCall
 ): Promise<boolean> {
+  const binding = await env.PLATFORM_DB.prepare(
+    "SELECT b.id FROM assistant_phone_bindings b JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE b.id=? AND b.purpose='assistant' AND b.status='active' AND i.status='active' AND i.tenant_id=? AND i.space_id=? AND i.project_id IS ?"
+  )
+    .bind(
+      call.binding_id,
+      call.tenant_id,
+      call.space_id,
+      call.project_id ?? null
+    )
+    .first();
+  if (!binding) return false;
   const scope: CommunicationScope = {
     tenantId: call.tenant_id,
     spaceId: call.space_id,
@@ -202,7 +164,7 @@ export async function liveCallAllowed(
     ...(call.project_id ? { projectId: call.project_id } : {}),
   };
   return (
-    (await scopeAccess(env, scope, true)) &&
+    (await scopeAccess(env, scope, false)) &&
     (await channelPreferences(env, scope)).enabled.phone &&
     !(await isSpaceNetworkEgressDenied(env.PLATFORM_DB, call.space_id))
   );

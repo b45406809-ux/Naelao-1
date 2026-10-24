@@ -106,6 +106,7 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   "plan.add_step",
   "plan.complete_step",
   "plan.status",
+  "agent.list_workers",
   "plan.clear",
 ]);
 

@@ -12,22 +12,91 @@ export async function eraseCommunicationIdentities(
     .bind(spaceId, tenantId)
     .first();
   if (!owned) throw new Error("communication_erasure_scope_mismatch");
+  const coordinationSpaces = await env.PLATFORM_DB.prepare(
+    `SELECT id FROM spaces WHERE tenant_id=? AND ${includeChildren ? "(id=? OR parent_space_id=?)" : "id=?"}`
+  )
+    .bind(tenantId, spaceId, ...(includeChildren ? [spaceId] : []))
+    .all<{ id: string }>();
+  for (const space of coordinationSpaces.results) {
+    for (const table of [
+      "assistant_active_voice_endpoints",
+      "assistant_approval_decisions",
+    ]) {
+      await env.PLATFORM_DB.prepare(
+        `DELETE FROM ${table} WHERE tenant_id=? AND space_id=? ${userId ? "AND user_id=?" : ""}`
+      )
+        .bind(tenantId, space.id, ...(userId ? [userId] : []))
+        .run();
+    }
+    for (const table of [
+      "assistant_delivery_preferences",
+      "assistant_channel_conversations",
+    ]) {
+      await env.PLATFORM_DB.prepare(
+        `DELETE FROM ${table} WHERE identity_id IN (SELECT id FROM assistant_communication_identities WHERE tenant_id=? AND space_id=?) ${userId ? "AND user_id=?" : ""}`
+      )
+        .bind(tenantId, space.id, ...(userId ? [userId] : []))
+        .run();
+    }
+    for (;;) {
+      const payloads = await env.PLATFORM_DB.prepare(
+        `SELECT r.identity_id,r.user_id,r.event_id,r.message_key FROM assistant_delivery_receipts r JOIN assistant_communication_identities i ON i.id=r.identity_id WHERE i.tenant_id=? AND i.space_id=? ${userId ? "AND r.user_id=?" : ""} ORDER BY r.identity_id,r.user_id,r.event_id LIMIT 100`
+      )
+        .bind(tenantId, space.id, ...(userId ? [userId] : []))
+        .all<{
+          identity_id: string;
+          user_id: string;
+          event_id: string;
+          message_key: string | null;
+        }>();
+      if (!payloads.results.length) break;
+      const { coordinationHash } = await import("./approval-decisions.js");
+      for (const row of payloads.results) {
+        const id =
+          "delivery-" +
+          (await coordinationHash(JSON.stringify([row.user_id, row.event_id])));
+        const expected = `spaces/${space.id}/communications/${row.identity_id}/${id}.json`;
+        if (row.message_key) {
+          if (row.message_key !== expected || !env.SCRIPTS_R2)
+            throw new Error("delivery_erasure_scope_mismatch");
+          await env.SCRIPTS_R2.delete(row.message_key);
+        }
+        await env.PLATFORM_DB.prepare(
+          "DELETE FROM assistant_delivery_receipts WHERE identity_id=? AND user_id=? AND event_id=?"
+        )
+          .bind(row.identity_id, row.user_id, row.event_id)
+          .run();
+      }
+    }
+  }
   // Learning can be used with email disabled, so it cannot depend on a mailbox existing.
   if (env.SCRIPTS_R2) {
     const learningSpaces = await env.PLATFORM_DB.prepare(
       `SELECT id FROM spaces WHERE tenant_id=? AND ${includeChildren ? "(id=? OR parent_space_id=?)" : "id=?"}`
-    ).bind(tenantId, spaceId, ...(includeChildren ? [spaceId] : [])).all<{id:string}>();
+    )
+      .bind(tenantId, spaceId, ...(includeChildren ? [spaceId] : []))
+      .all<{ id: string }>();
     for (const space of learningSpaces.results) {
       let cursor: string | undefined;
       const seen = new Set<string>();
       do {
-        const page = await env.SCRIPTS_R2.list({prefix:`spaces/${space.id}/assistant-learning/`,limit:100,...cursor?{cursor}:{}});
-        const keys = page.objects.filter(object => !userId || object.key.includes(`/users/${userId}/`)).map(object=>object.key);
-        if(keys.length)await env.SCRIPTS_R2.delete(keys);
-        if(!page.truncated)break;
-        if(!page.cursor||seen.has(page.cursor))throw new Error("learning_erasure_cursor_invalid");
-        seen.add(page.cursor);cursor=page.cursor;
-      } while(cursor);
+        const page = await env.SCRIPTS_R2.list({
+          prefix: `spaces/${space.id}/assistant-learning/`,
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        });
+        const keys = page.objects
+          .filter(
+            (object) => !userId || object.key.includes(`/users/${userId}/`)
+          )
+          .map((object) => object.key);
+        if (keys.length) await env.SCRIPTS_R2.delete(keys);
+        if (!page.truncated) break;
+        if (!page.cursor || seen.has(page.cursor))
+          throw new Error("learning_erasure_cursor_invalid");
+        seen.add(page.cursor);
+        cursor = page.cursor;
+      } while (cursor);
     }
   } else throw new Error("learning_storage_erasure_unavailable");
   for (;;) {
@@ -45,7 +114,9 @@ export async function eraseCommunicationIdentities(
     if (!env.SCRIPTS_R2)
       throw new Error("communication_storage_erasure_unavailable");
     for (const identity of results) {
-      await (await import('./phone-lifecycle.js')).detachAssistantPhonesForErasure(env,identity.id);
+      await (
+        await import("./phone-lifecycle.js")
+      ).detachAssistantPhonesForErasure(env, identity.id);
       await env.PLATFORM_DB.prepare(
         "UPDATE assistant_communication_identities SET status='erasing' WHERE id=? AND tenant_id=?"
       )

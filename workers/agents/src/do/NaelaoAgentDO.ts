@@ -1,3 +1,5 @@
+import {issueApprovalDecisions,applyApprovalDecision} from "../communications/approval-decisions.js";
+import {receiveSteering,drainSteering} from "../script-engine/worker-steering.js";
 import { createContainerWorkspaceGateway } from "../script-engine/container-workspace.js";
 import { dynamicSandboxNamespace } from "../script-engine/dynamic-containers.js";
 import { sandboxInstanceName } from "../script-engine/sandbox-routing.js";
@@ -33,7 +35,7 @@ import { createWorkflowHooks } from "../workflows/workflow-orchestration.js";
 import { startDurableWorkflow, workflowHash, workflowRunStub, readWorkflowGrant, resolveExtensionGadgetAppId, verifyExtensionArtifactSet, workflowWorkspaceExtensionId, type DurableWorkflowHostEnv } from "../workflows/workflow-host.js";
 import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
-import { mintInternalToken, verifyInternalToken, broadcastSpaceEvent, readBoundedRequestBytes, readBoundedResponseJson, readBoundedResponseText, readResponsePrefixText, RequestBodyTooLargeError } from "@naelao/http";
+import { mintInternalToken, verifyInternalToken, broadcastSpaceEvent, readBoundedRequestText, readBoundedRequestBytes, readBoundedResponseJson, readBoundedResponseText, readResponsePrefixText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { createNamedTunnelGateway } from "../tunnels/host.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
@@ -1511,6 +1513,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         PRIMARY KEY (ledger_key, action_name, params_hash)
       )
     `);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS action_claims (ledger_key TEXT NOT NULL,action_name TEXT NOT NULL,params_hash TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(ledger_key,action_name,params_hash))`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_action_ledger_age ON action_ledger(created_at)`);
 
     // Runs suspended at a HITL gate, waiting for a human. The checkpoint that makes an approval
@@ -1843,6 +1846,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     try {
+      if(method==='POST'&&url.pathname==='/internal/worker-view')return this.handleWorkerView(request);
+      if(method==='POST'&&url.pathname==='/internal/steer-worker')return this.handleSteerWorker(request);
+      if(method==='POST'&&url.pathname==='/internal/steering'){
+        const text=await readBoundedRequestText(request,8192);
+        return this.ctx.storage.transaction(tx=>receiveSteering(new Request(request.url,{method:"POST",headers:request.headers,body:text}),this.env.PLATFORM_SECRET,tx));
+      }
       if(method==='POST'&&url.pathname==='/phone-extension')return this.handlePhoneExtension(request);
       // POST /warm — pre-warm DO (creates tables, returns status)
       if (method === "POST" && url.pathname === "/warm") {
@@ -3032,6 +3041,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Exactly-once record of executed actions (see ActionLedger). Always wired — unlike the
     // gateways around it there is no binding to be missing; the store is this DO's own SQLite.
     env.actionLedger = {
+      claim:async(key,actionName,paramsHash)=>{
+        const digest=await (await import("../communications/approval-decisions.js")).coordinationHash(paramsHash);
+        const receipt=this.ctx.storage.sql.exec("INSERT INTO action_claims(ledger_key,action_name,params_hash,created_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",key,actionName,digest,Date.now());
+        return receipt.rowsWritten>0;
+      },
       lookup: async (key, actionName, paramsHash) => {
         const rows = this.ctx.storage.sql
           .exec(
@@ -3043,9 +3057,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         try {
           return JSON.parse(rows[0].result_json) as ScriptRunResult;
         } catch {
-          // An unparseable row is worse than no row: returning null re-runs the action, which is
-          // the behavior we had before a ledger existed, rather than handing back garbage.
-          return null;
+          throw new Error("action_receipt_corrupt_reconciliation_required");
         }
       },
       record: async (key, actionName, paramsHash, result) => {
@@ -3511,13 +3523,39 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           await this.releaseConcurrencySlot(concurrencyKey, parentRunId);
         }
       };
-      hooks.receiveFromSubAgent = this.receiveFromSubAgentImpl.bind(this);
+      const workerView=async(workerId?:string)=>{
+        if(!userId||runtimeEnv?.delegationPlanner===false)throw new Error("planner_worker_scope_required");
+        const target=runtimeEnv?.steeringParentDoId?agentDO.get(agentDO.idFromString(runtimeEnv.steeringParentDoId)):this;
+        const response=await target.fetch(new Request("http://agent/internal/worker-view",{method:"POST",headers:await this.internalHeaders(tenantId,{"content-type":"application/json"}),body:JSON.stringify({spaceId,projectId,actorId:userId,workerId})}));
+        if(!response.ok)throw new Error("worker_view_denied");return response.json();
+      };
+      hooks.listSubAgents=()=>workerView();
+      hooks.receiveFromSubAgent=runtimeEnv?.steeringParentDoId?(id)=>workerView(id):this.receiveFromSubAgentImpl.bind(this);
       hooks.terminateSubAgent = async id => {
         const route = await this.ctx.storage.get<string>(`sub-agent-route:${id}`);
         if (!route) throw new Error("sub_agent_route_unavailable");
         const response = await agentDO.get(agentDO.idFromName(route)).fetch(new Request("http://agent-do/cancel", { method: "POST" }));
         if (!response.ok) throw new Error("sub_agent_cancel_failed");
         await this.terminateSubAgentImpl(id);
+      };
+      hooks.steerSubAgent=async(id,command)=>{
+        if(runtimeEnv?.steeringParentDoId){
+          const parent=agentDO.get(agentDO.idFromString(runtimeEnv.steeringParentDoId));
+          const response=await parent.fetch(new Request("http://parent/internal/steer-worker",{method:"POST",headers:await this.internalHeaders(tenantId,{"content-type":"application/json"}),body:JSON.stringify({spaceId,projectId,actorId:userId,workerId:id,command})}));
+          if(!response.ok)throw new Error("worker_steering_denied");
+          return response.json();
+        }
+
+        if(runtimeEnv?.delegationPlanner===false||!userId)throw new Error("planner_steering_required");
+        if(!await (await import("../communications/core.js")).scopeAccess(this.env as unknown as import("../index.js").AgentsEnv,{tenantId,spaceId,userId,role:runtimeEnv?.callerRole??"product_end_user",...projectId?{projectId}:{}},true))throw new Error("worker_steering_access_revoked");
+        const rows=this.ctx.storage.sql.exec("SELECT configuration_json FROM sub_agents WHERE id=?",id).toArray() as Array<{configuration_json:string|null}>;
+        const scope=rows[0]?.configuration_json?JSON.parse(rows[0].configuration_json):null;
+        if(!scope||scope.tenantId!==tenantId||scope.spaceId!==spaceId||scope.actorId!==userId||(scope.projectId??null)!==(projectId??null))throw new Error("worker_session_scope_mismatch");
+        const route=await this.ctx.storage.get<string>(`sub-agent-route:${id}`);
+        if(!route)throw new Error("sub_agent_route_unavailable");
+        const response=await agentDO.get(agentDO.idFromName(route)).fetch(new Request("http://agent-do/internal/steering",{method:"POST",headers:await this.internalHeaders(tenantId,{"content-type":"application/json"}),body:JSON.stringify({...command,spaceId,...projectId?{projectId}:{},actorId:userId,workerId:id})}));
+        if(!response.ok)throw new Error("worker_steering_failed");
+        return response.json();
       };
       hooks.sendToSubAgent = async (id, task) => {
         // This is parent-to-worker continuation, never worker-to-worker messaging. Reuse the
@@ -4088,6 +4126,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       })
     );
     return { id: spawned.map((s) => s.id).join(","), results: spawned } as unknown as { id: string };
+  }
+
+  private async handleWorkerView(request:Request):Promise<Response>{
+    const tenant=request.headers.get("x-naelao-tenant-id")??"";
+    if(!tenant||!await verifyInternalToken(request.headers.get("x-naelao-internal-token")??undefined,tenant,this.env.PLATFORM_SECRET))return Response.json({error_code:"forbidden"},{status:403});
+    const body=JSON.parse(await readBoundedRequestText(request,8192)) as {spaceId:string;projectId?:string;actorId:string;workerId?:string};
+    if(!await (await import("../communications/core.js")).scopeAccess(this.env as unknown as import("../index.js").AgentsEnv,{tenantId:tenant,spaceId:body.spaceId,userId:body.actorId,role:"product_end_user",...body.projectId?{projectId:body.projectId}:{}},false))return Response.json({error_code:"worker_access_revoked"},{status:403});
+    const rows=this.ctx.storage.sql.exec("SELECT id,goal,status,workspace_branch,progress_note FROM sub_agents WHERE json_extract(configuration_json,'$.tenantId')=? AND json_extract(configuration_json,'$.spaceId')=? AND json_extract(configuration_json,'$.actorId')=? AND json_extract(configuration_json,'$.projectId') IS ? ORDER BY updated_at DESC LIMIT 50",tenant,body.spaceId,body.actorId,body.projectId??null).toArray() as Array<{id:string;goal:string;status:string;workspace_branch:string|null;progress_note:string|null}>;
+    if(body.workerId){if(!rows.some(r=>r.id===body.workerId))return Response.json({error_code:"worker_not_found"},{status:404});return Response.json(await this.receiveFromSubAgentImpl(body.workerId));}
+    return Response.json({workers:rows.map(r=>({...r,goal:r.goal.slice(0,1000),progress_note:r.progress_note?.slice(0,500)??null}))});
+  }
+
+  private async handleSteerWorker(request:Request):Promise<Response>{
+    const tenant=request.headers.get("x-naelao-tenant-id")??"";
+    if(!tenant||!await verifyInternalToken(request.headers.get("x-naelao-internal-token")??undefined,tenant,this.env.PLATFORM_SECRET))return Response.json({error_code:"forbidden"},{status:403});
+    const body=JSON.parse(await readBoundedRequestText(request,8192)) as {spaceId:string;projectId?:string;actorId:string;workerId:string;command:import("../script-engine/worker-steering.js").SteeringCommand};
+    const row=this.ctx.storage.sql.exec("SELECT configuration_json FROM sub_agents WHERE id=?",body.workerId).toArray() as Array<{configuration_json:string|null}>;
+    const saved=row[0]?.configuration_json?JSON.parse(row[0].configuration_json):null;
+    if(!saved||saved.tenantId!==tenant||saved.spaceId!==body.spaceId||saved.actorId!==body.actorId||(saved.projectId??null)!==(body.projectId??null))return Response.json({error_code:"worker_session_scope_mismatch"},{status:403});
+    if(!await (await import("../communications/core.js")).scopeAccess(this.env as unknown as import("../index.js").AgentsEnv,{tenantId:tenant,spaceId:body.spaceId,userId:body.actorId,role:"product_end_user",...body.projectId?{projectId:body.projectId}:{}},true))return Response.json({error_code:"worker_steering_access_revoked"},{status:403});
+    const route=await this.ctx.storage.get<string>(`sub-agent-route:${body.workerId}`);
+    if(!route||!this.env.NAELAO_AGENT_DO)return Response.json({error_code:"worker_unavailable"},{status:404});
+    return this.env.NAELAO_AGENT_DO.get(this.env.NAELAO_AGENT_DO.idFromName(route)).fetch(new Request("http://agent/internal/steering",{method:"POST",headers:await this.internalHeaders(tenant,{"content-type":"application/json"}),body:JSON.stringify({...body.command,spaceId:body.spaceId,projectId:body.projectId,actorId:body.actorId,workerId:body.workerId})}));
   }
 
   private async handleSubAgentSessionUpdate(request: Request): Promise<Response> {
@@ -5128,6 +5189,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!body.goal || !spaceId) {
       return this.finishScriptFailure(runId, "goal and spaceId are required", 400, "bad_request");
     }
+    if(body.context?.["trigger"]==="scheduled_job"||body.context?.["trigger"]==="space_trigger"){
+      try{await (await import("../communications/heartbeat-scope.js")).verifyHeartbeatSession(this.env.SPACES_WORKER,this.env.PLATFORM_SECRET,tenantId,spaceId,sessionId,projectId);}catch{return this.finishScriptFailure(runId,"Scheduled work requires its own persisted heartbeat session",403,"heartbeat_scope_mismatch");}
+    }
     const requestedModel = body.model ?? DEFAULT_WORKING_MODEL;
     let modelPolicy = body.modelPolicy;
     if (modelPolicy === undefined && this.env.SPACES_WORKER && tenantId) {
@@ -5240,6 +5304,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (callerRole) engineEnv.callerRole = callerRole;
     if (delegation?.filePaths !== undefined) engineEnv.workspaceFileScope = delegation.filePaths;
     if (delegation?.knowledgeScopes !== undefined) engineEnv.knowledgeScopes = delegation.knowledgeScopes;
+    if(isLeaf&&delegation){
+      await this.ctx.storage.put("worker:scope",{tenantId,spaceId,...projectId?{projectId}:{},actorId:userId,workerId:delegation.workerId});
+      await this.ctx.storage.put("worker:paused",false);
+    }
     if (isLeaf && delegation) engineEnv.workerSessionId = delegation.workerId;
     engineEnv.outputSessionId = sessionId;
     engineEnv.taskId = runId;
@@ -5389,6 +5457,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
     // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
     const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
+    if(typeof body.context?.["steering_parent_do_id"]==="string")engineEnv.steeringParentDoId=body.context["steering_parent_do_id"];
     engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort, engineEnv);
     // Resolve the worker's approved runtime before model execution, but allocate it only when the
     // worker actually invokes a command. Prewarming here would make the model think first and
@@ -5709,6 +5778,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // Checked once per step, so a Stop button actually stops something. Only wired here —
         // the interactive path — since a cron wake or channel drain has nobody watching it.
         shouldCancel: () => this.isCancelRequested(runId),
+        ...(isLeaf?{pollSteering:async()=>{
+          let instructions:string[]=[];
+          do {
+            instructions.push(...await this.ctx.storage.transaction(tx=>drainSteering(tx)));
+            if(!await this.ctx.storage.get<boolean>("worker:paused")||this.isCancelRequested(runId))return instructions;
+            await new Promise(resolve=>setTimeout(resolve,500));
+          }while(true);
+        }}:{}),
         ...(this.env.PLATFORM_DB ? { shouldStopForTenant: () => this.tenantSpaceSuspended(tenantId, spaceId) } : {}),
         ...(continuation?.approvedActionEvidence ? { preApprovedActions: [continuation.approvedActionEvidence] } : {}),
         ...(isLeaf ? { ledgerKey: delegation!.workerId } : continuation?.ledgerKey ? { ledgerKey: continuation.ledgerKey } : {}),
@@ -6297,6 +6374,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const envelope = toNormalizedInboundMessage({ channel: norm.channel, senderId: norm.channel_user_id,
       text: norm.text, externalId: norm.external_id, timestamp: norm.timestamp });
 
+    if((norm.channel==="whatsapp"||norm.channel==="telegram")&&body.spaceId&&body.tenantId&&/^ad_[a-f0-9]{48}$/.test(norm.text.trim())){
+      const result=await applyApprovalDecision(this.env as unknown as import("../index.js").AgentsEnv,{tenantId:body.tenantId,spaceId:body.spaceId,channel:norm.channel,contact:norm.channel_user_id,token:norm.text.trim()},promise=>this.ctx.waitUntil(promise));
+      return Response.json(result);
+    }
     // WhatsApp/Telegram owner contacts form a private control plane. Verification is performed
     // against SpaceDO's live owner/admin membership on every message, so removing an admin takes
     // effect immediately. Unknown senders fall through to the quarantined customer plane.
@@ -6459,7 +6540,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return Response.json({ session_id: sessionId, queued: false, duplicate: true, internal: true });
       }
       const spaceId = body.spaceId, tenantId = body.tenantId, projectId = body.projectId;
+      sessionId=await (await import("../communications/conversations.js")).assistantConversation(this.env as unknown as import("../index.js").AgentsEnv,{tenantId,spaceId,userId:verifiedChannelMemberId!,role:"product_end_user",...projectId?{projectId}:{}});
+
       this.ctx.waitUntil((async () => {
+        const saved=await this.env.SPACES_WORKER.fetch(new Request(`http://spaces/spaces/${spaceId}/sessions/${sessionId}/messages`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":verifiedChannelMemberId!,"x-naelao-role":"product_end_user","x-naelao-internal-token":await mintInternalToken(this.env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({role:"user",content:norm.text.slice(0,8000),client_message_id:`${norm.channel}:${norm.external_id}`})}));
+        if(!saved.ok)throw new Error("assistant_channel_transcript_unavailable");
         const response = await this.env.AGENTS_WORKER!.fetch(new Request(
           `http://agents-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/agent/run`,
           { method: "POST", headers: {
@@ -7478,12 +7563,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (executivePresent.some(Boolean)) return;
       const approvalText = `Approval needed: agent '${agentId}' wants to ${actionName}. ${description}\n\nOpen Naelao Approvals to review. Approval id: ${approvalId}.`;
       for (const contact of mobileContacts) {
+        const decision=await issueApprovalDecisions(this.env as unknown as import("../index.js").AgentsEnv,tenantId,spaceId,approvalId,contact);
         const sent = await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
           method: "POST",
           headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
-          body: JSON.stringify({ channel: contact.channel, space_id: spaceId, to: contact.contact_id, body: approvalText, actions: [{ id: `review:${approvalId}`, label: "Review approval" }] }),
+          body: JSON.stringify({ channel: contact.channel, space_id: spaceId, to: contact.contact_id, body: decision.summary?`${approvalText.slice(0,180)}\n${decision.summary}`:approvalText, actions: decision.actions.length?decision.actions:[{id:`review:${approvalId}`,label:"Review approval"}] }),
         }));
-        if (sent.ok) return;
+        if (sent.ok && (await sent.json<{delivered?:boolean}>()).delivered === true) return;
       }
 
       // Keep email as the backstop when no verified mobile contact exists or mobile delivery

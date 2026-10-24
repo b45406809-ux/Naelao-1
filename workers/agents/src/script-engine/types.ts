@@ -549,7 +549,9 @@ export interface OrchestrationHooks {
   spawnSubAgent?(config: Record<string, unknown>): Promise<{ id: string }>;
   sendToSubAgent?(id: string, task: unknown): Promise<unknown>;
   receiveFromSubAgent?(id: string): Promise<unknown>;
+  listSubAgents?():Promise<unknown>;
   terminateSubAgent?(id: string): Promise<void>;
+  steerSubAgent?(id:string,command:import("./worker-steering.js").SteeringCommand):Promise<unknown>;
   workflowCreate?(name: string, code: string, options?: { capabilities?: string[] }): Promise<{ id: string }>;
   workflowListExtensions?(): Promise<Array<{ extensionId: string; version: string; installationId: string; workflows: Array<{ id: string; entry: string; toolNames: string[] }> }>>;
   workflowRun?(name: string, params: Record<string, unknown>, options?: { startKey?: string; installationId?: string; extensionId?: string; detach?: boolean; cleanContext?: boolean; maxContextTokens?: number; contextSources?: string[]; inheritChatHistory?: boolean; workflowClass?: string; budgetKey?: string; budgetCredits?: number; reportTarget?: string; escalationTarget?: string }): Promise<unknown>;
@@ -932,14 +934,15 @@ export interface HITLGateway {
  * within-run repeat guard), never to a blocked run.
  */
 export interface ActionLedger {
+  /** Reserve an operation before external effects. A held claim requires reconciliation. */
+  claim?(key:string,actionName:string,paramsHash:string):Promise<boolean>;
   /** The recorded result of this exact action, if it has already run under this key. */
   lookup(
     key: string,
     actionName: string,
     paramsHash: string
   ): Promise<ScriptRunResult | null>;
-  /** Record an action that just executed. Never throws — a ledger write failure must not fail a
-   *  run that already succeeded (the cost is a possible repeat on replay, not a lost result). */
+  /** Persist the first outcome. An unconfirmed receipt leaves the claim held for reconciliation. */
   record(
     key: string,
     actionName: string,
@@ -978,6 +981,7 @@ export interface PlanState {
 
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
 export interface ScriptEngineEnv {
+  steeringParentDoId?:string;
   /** Server-resolved per-worker session token ceiling from the tenant's subscription plan. */
   workerTokenBudget?: number;
   /** Canonical AVOS/Cowork mode resolved by the host; both modes share this kernel. */

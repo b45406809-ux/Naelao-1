@@ -966,7 +966,7 @@ app.get("/internal/spaces/:spaceId/owner-contact", async (c) => {
   if (!owner) return c.json({ found: false }, 404);
   const user = await c.env.PLATFORM_DB.prepare("SELECT email FROM users WHERE id = ?").bind(owner.user_id).first<{ email: string }>();
   if (!user?.email) return c.json({ found: false }, 404);
-  return c.json({ found: true, email: user.email });
+  return c.json({ found: true, email: user.email,user_id:owner.user_id });
 });
 
 // Executive-channel and customer-analytics storage. These are service-to-service only; the
@@ -977,7 +977,7 @@ app.all("/internal/spaces/:spaceId/executive/*", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const suffix = new URL(c.req.url).pathname.split(`/internal/spaces/${spaceId}/executive/`)[1] ?? "";
-  const target = suffix === "contacts" ? "/internal/executive-contacts"
+  const target = suffix === "contacts" ? `/internal/executive-contacts?space_id=${encodeURIComponent(spaceId)}`
     : suffix === "verify" ? "/internal/executive/verify" : "/internal/emergency-stop";
   return forwardToSpaceDO(stub, target, c.req.method, c.req.raw.body);
 });

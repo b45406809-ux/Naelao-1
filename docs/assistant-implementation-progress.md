@@ -256,3 +256,53 @@ including 100-way concurrent call claims and utterance dispatch; 14 Spaces insta
 and 28 Router path tests passed (134 total). Agents, Spaces, Router and Shell TypeScript checks
 passed. The production Agents Worker bundle dry-run passed with unchanged container builds skipped.
 These are offline checks; they do not replace live carrier, speech-provider and deployment acceptance.
+
+
+## Step 4 — internal Space/Project assistant coordination
+
+Implemented the same scoped planner/worker path for interactive voice follow-ups while the
+original durable task continues. Follow-ups can list and cooperatively steer that actor's workers;
+commands preserve session/branch identity, are idempotent, and apply at execution boundaries.
+An instruction arriving during reasoning discards the obsolete decision before tool execution.
+Audio interruption stops speech; it does not claim to undo an in-flight operation. Cancellation,
+status polling and traces also locate the follow-up planner's execution DO.
+
+Persisted cross-channel bindings are private per verified member and assistant scope. Existing
+private telephone conversations are reused on upgrade; explicit app conversation binding rechecks
+access. Dedicated persisted heartbeat metadata is mandatory for unattended wakes and cannot bind
+to a human call/conversation. Private phone code slots are per member, and current binding purpose
+and membership are checked on continuation. Public extension numbers are separate from internal
+assistant numbers; conversion preserves carrier callbacks and revokes private authorization.
+
+Host-owned delivery preferences now appear in Space/Project settings: ordered verified channels,
+timezone/quiet hours, daily limit and explicit proactive-call opt-in. Delivery uses stable event
+receipts, encrypted payloads, bounded/fair deferred sweeps, retention and erasure. An uncertain send
+is held rather than tried on another channel. Delayed attempts consume the current delivery budget.
+Live voice notifications use the existing speech transport without running heartbeat planning in
+the call. Durable background task completions use the same notification route.
+
+Verified WhatsApp/Telegram decisions are opaque, recipient-bound, expiring tokens for an exact
+approval payload. The host rechecks current authorization and resumes the original recorded run;
+voice follows that actual continuation. Oversized actions require full app review. Duplicate
+callbacks return the receipt; unknown approval outcomes remain held. Twilio WhatsApp fallback uses
+explicit token commands, not unsupported native interactive buttons.
+
+Native action ledgers now claim mutating operations atomically before dispatch and fail closed on
+unreadable/corrupt ledgers or unconfirmed result writes. A dropped call cannot cause automatic
+re-execution under the same operation identity; uncertain effects require reconciliation. No
+blind compensating saga or new financial authority was added. Default runtime instructions cover
+these controls, host channel selection and heartbeat isolation.
+
+Deployment requires migration 0135 first. No live deployment, carrier, speech-provider, WhatsApp
+or Telegram acceptance was performed: credentials are unavailable. Offline checks do not establish
+Grokbot parity, speech latency or production billing. The legacy customer voice class and older
+managed billing/video-learning tasks above remain open; this is the coordination checkpoint.
+
+Fresh verification: 281 focused tests passed: 155 Agents/runtime route checks, 69 root loop/
+ledger/durable-approval tests, 21 Notifications tests, 32 Router tests and 4 Spaces tests. Stress
+cases include 100 concurrent call-code claims, 100 duplicate notifications/approval callbacks,
+30 concurrent operation replays, changed payloads/recipients, revoked membership, delayed-delivery
+limits and encrypted payload retention. Agents, Spaces, Notifications and Shell typechecks passed;
+the production Agents bundle dry-run passed with container rollout disabled. Two root tests that
+require Cloudflare modules were moved into the Agents test configuration's existing runtime shims
+and passed there. The source-map warnings in root tests refer to existing billing dist artifacts.

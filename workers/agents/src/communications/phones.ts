@@ -89,6 +89,7 @@ export function validatePhonePolicy(value: unknown): AssistantPhonePolicy {
 export interface AssistantPhoneBinding {
   id: string;
   identity_id: string;
+  purpose?: "assistant" | "extension";
   payer: "byo" | "managed";
   provider_account_sid: string;
   provider_number_sid: string | null;
@@ -102,14 +103,14 @@ export interface AssistantPhoneBinding {
 }
 export async function assistantPhone(env: AgentsEnv, identityId: string) {
   return env.PLATFORM_DB.prepare(
-    "SELECT * FROM assistant_phone_bindings WHERE identity_id=? ORDER BY rowid DESC LIMIT 1"
+    "SELECT * FROM assistant_phone_bindings WHERE identity_id=? AND purpose='assistant' ORDER BY rowid DESC LIMIT 1"
   )
     .bind(identityId)
     .first<AssistantPhoneBinding>();
 }
 async function livePhoneAllowed(env: AgentsEnv, scope: CommunicationScope) {
   if (
-    !(await scopeAccess(env, scope, true)) ||
+    !(await scopeAccess(env, scope, false)) ||
     !(await channelPreferences(env, scope)).enabled.phone ||
     (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, scope.spaceId))
   )
@@ -160,6 +161,15 @@ export async function handlePhoneAction(
     const preferences = await channelPreferences(env, scope);
     return {
       phone: metadata(await assistantPhone(env, identity.id)),
+      extension_lines: manager
+        ? (
+            await env.PLATFORM_DB.prepare(
+              "SELECT b.id,b.phone_number,b.status,h.installation_id FROM assistant_phone_bindings b LEFT JOIN assistant_phone_extension_handlers h ON h.binding_id=b.id WHERE b.identity_id=? AND b.purpose='extension' AND b.status NOT IN ('detached','released')"
+            )
+              .bind(identity.id)
+              .all()
+          ).results
+        : [],
       enabled: preferences.enabled.phone,
       managed_available: false,
       managed_reason:
@@ -172,6 +182,8 @@ export async function handlePhoneAction(
   }
   if (
     ![
+      "phone-live",
+      "phone-live-end",
       "phone-draft",
       "phone-send",
       "phone-actions",
@@ -195,10 +207,35 @@ export async function handlePhoneAction(
   )
     await livePhoneAllowed(env, scope);
   let binding = await assistantPhone(env, identity.id);
+  if (body.binding_id !== undefined) {
+    if (
+      !manager ||
+      agent ||
+      typeof body.binding_id !== "string" ||
+      ![
+        "phone-detach",
+        "phone-release",
+        "phone-handler",
+        "phone-policy",
+      ].includes(action)
+    )
+      throw new Error("human_control_required");
+    binding = await env.PLATFORM_DB.prepare(
+      "SELECT * FROM assistant_phone_bindings WHERE id=? AND identity_id=? AND purpose='extension'"
+    )
+      .bind(body.binding_id, identity.id)
+      .first<AssistantPhoneBinding>();
+  }
   if (action === "phone-credentials") {
     if (!env.CREDENTIALS_WORKER)
       throw new Error("credential_vault_unavailable");
-    if (binding && !["released", "detached"].includes(binding.status))
+    if (
+      await env.PLATFORM_DB.prepare(
+        "SELECT id FROM assistant_phone_bindings WHERE identity_id=? AND status NOT IN ('released','detached') LIMIT 1"
+      )
+        .bind(identity.id)
+        .first()
+    )
       throw new Error("detach_phone_before_changing_credentials");
     const credentials = parseTwilioVoiceCredentials(
       JSON.stringify({
@@ -573,22 +610,53 @@ export async function handlePhoneAction(
   if (!binding || !binding.provider_number_sid)
     throw new Error("assistant_phone_not_connected");
   if (action === "phone-live") {
-    if (!manager || agent || body.confirm !== true) throw new Error("human_control_required");
+    if (binding.purpose === "extension")
+      throw new Error("internal_assistant_line_required");
+    if (agent || body.confirm !== true)
+      throw new Error("human_control_required");
     const { armLiveCall } = await import("./live-calls.js");
     return armLiveCall(env, scope, binding, body.session_id);
   }
   if (action === "phone-live-end") {
-    if (!manager || agent || body.confirm !== true) throw new Error("human_control_required");
-    const live=await env.PLATFORM_DB.prepare("SELECT call_sid FROM assistant_live_calls WHERE binding_id=? AND user_id=? AND status='connected'").bind(binding.id,scope.userId).all<{call_sid:string}>();
-    await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND user_id=? AND status IN ('armed','connected')").bind(binding.id,scope.userId).run();
-    const credentials=await resolvePhoneCredentials(env,identity,binding.payer);
-    if(live.results.length && !credentials)throw new Error("phone_access_revoked_carrier_hangup_unconfirmed");
-    for(const call of live.results)await phoneProvider(credentials!,`Calls/${call.call_sid}.json`,"POST",new URLSearchParams({Status:"completed"}));
-    return {revoked:true};
+    if (agent || body.confirm !== true)
+      throw new Error("human_control_required");
+    const live = await env.PLATFORM_DB.prepare(
+      "SELECT call_sid FROM assistant_live_calls WHERE binding_id=? AND user_id=? AND status='connected'"
+    )
+      .bind(binding.id, scope.userId)
+      .all<{ call_sid: string }>();
+    await env.PLATFORM_DB.prepare(
+      "UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND user_id=? AND status IN ('armed','connected')"
+    )
+      .bind(binding.id, scope.userId)
+      .run();
+    const credentials = await resolvePhoneCredentials(
+      env,
+      identity,
+      binding.payer
+    );
+    if (live.results.length && !credentials)
+      throw new Error("phone_access_revoked_carrier_hangup_unconfirmed");
+    for (const call of live.results)
+      await phoneProvider(
+        credentials!,
+        `Calls/${call.call_sid}.json`,
+        "POST",
+        new URLSearchParams({ Status: "completed" })
+      );
+    return { revoked: true };
   }
   if (action === "phone-handler") {
     if (!manager || agent || body.confirm !== true)
       throw new Error("phone_handler_owner_confirmation_required");
+    if (
+      await env.PLATFORM_DB.prepare(
+        "SELECT id FROM assistant_live_calls WHERE binding_id=? AND status='connected' AND deadline>?"
+      )
+        .bind(binding.id, Math.floor(Date.now() / 1000))
+        .first()
+    )
+      throw new Error("end_live_calls_before_extension_conversion");
     const installation = String(body.installation_id ?? ""),
       digest = String(body.handler_sha256 ?? "");
     if (
@@ -636,8 +704,21 @@ export async function handlePhoneAction(
       )
         .bind(binding.id, installation, digest)
         .run();
-      if (activated.meta.changes !== 1) throw new Error("phone_handler_changed_during_validation");
-      return { bound: true };
+      if (activated.meta.changes !== 1)
+        throw new Error("phone_handler_changed_during_validation");
+      await env.PLATFORM_DB.batch([
+        env.PLATFORM_DB.prepare(
+          "UPDATE assistant_phone_bindings SET purpose='extension' WHERE id=?"
+        ).bind(binding.id),
+        env.PLATFORM_DB.prepare(
+          "UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND status='armed'"
+        ).bind(binding.id),
+      ]);
+      return {
+        bound: true,
+        purpose: "extension",
+        requires_separate_assistant_number: true,
+      };
     } catch (e) {
       if (previous)
         await env.PLATFORM_DB.prepare(

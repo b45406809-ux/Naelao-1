@@ -14,7 +14,7 @@ export { DynamicSandboxDO };
 import { Hono, type Context } from "hono";
 import { routeAgentRequest } from "agents";
 import { resolveEndUserBusinessRole } from "../../spaces/src/business-auth.js";
-import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, parseBoundedInteger, verifyInternalToken } from "@naelao/http";
+import { readBoundedResponseJson, errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, parseBoundedInteger, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
@@ -1034,6 +1034,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/voice-ticket", async (c) => {
     await (await import("./voice/session-scope.js")).verifyVoiceSession(c.env.SPACES_WORKER,c.env.PLATFORM_SECRET,
       {tenantId,spaceId,userId,role:callerRole,...body.project_id?{projectId:body.project_id}:{}},sessionId);
   } catch { return c.json({error_code:"voice_session_scope_mismatch"},403); }
+  await (await import("./communications/conversations.js")).assistantConversation(c.env,{tenantId,spaceId,userId,role:callerRole,...body.project_id?{projectId:body.project_id}:{}},sessionId);
   const voiceIdentity = new TextEncoder().encode(JSON.stringify([tenantId,spaceId,userId,sessionId,body.project_id??null]));
   const agentName = "voice-"+Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",voiceIdentity)),b=>b.toString(16).padStart(2,"0")).join("");
   const expiresAt = Math.floor(Date.now() / 1000) + 180;
@@ -1508,6 +1509,13 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }
 
   const durableVoice = c.req.header("x-naelao-durable-voice") === "1";
+  const voiceFollowup=c.req.header("x-naelao-voice-followup")==="1";
+  let voiceParentDoId:string|undefined;
+  if(voiceFollowup){
+    try{await (await import("./voice/session-scope.js")).verifyVoiceSession(c.env.SPACES_WORKER,c.env.PLATFORM_SECRET,{tenantId,spaceId,userId,role:callerRole,...rawBody.project_id?{projectId:rawBody.project_id}:{}},sessionId);}catch{return c.json({error_code:"voice_followup_scope_denied"},403);}
+    const parent=await getAgentDO(c.env,tenantId,sessionId);voiceParentDoId=parent.id.toString();
+  }
+  const voiceExecutionKey=voiceFollowup?`${sessionId}:voice-control`:undefined;
   if (durableVoice && (!c.env.AGENT_TASK_WORKFLOW || !c.env.TASK_DO)) return c.json({error_code:"durable_voice_unavailable"},503);
   // A voice action must use its own task receipt, never a semantic-cache response.
   // G-AZ19: Semantic response cache check — skip for async tasks (checked per-request only)
@@ -1597,6 +1605,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         model: rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL,
         ...(dynamicModelCandidate ? { openRouterCapabilityEvidence: dynamicModelCandidate } : {}),
         taskDoName,
+        ...(voiceExecutionKey?{agentDoKey:voiceExecutionKey,controlParentDoId:voiceParentDoId}:{}),
         // Go-live audit A-1/A-2: threaded through to /internal/tasks/:taskId/run's own
         // http://agent-do/script/run call — see that route's own comment.
         userId,
@@ -1643,7 +1652,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // (per the confirmed decision: per-thread-PER-AGENT instances, not one shared thread agent).
   // Omitting agent_definition_id keeps today's exact addressing — every existing single-agent
   // session is unaffected.
-  const doKey = rawBody.agent_definition_id ? `${sessionId}:${rawBody.agent_definition_id}` : sessionId;
+  const doKey = voiceExecutionKey ?? (rawBody.agent_definition_id ? `${sessionId}:${rawBody.agent_definition_id}` : sessionId);
   const stub = await getAgentDO(c.env, tenantId, doKey, c.get("requestId"));
 
   // A-2 cutover: dispatch to the script-native engine (handleScriptRun) instead of the legacy
@@ -1685,7 +1694,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         ...(dynamicModelCandidate ? { openRouterCapabilityEvidence: dynamicModelCandidate } : {}),
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
-        context: { worker_token_budget: workerTokenBudget },
+        context: { worker_token_budget: workerTokenBudget,...voiceParentDoId?{steering_parent_do_id:voiceParentDoId}:{} },
         // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
         // so a durable/async run knows exactly as much about the business as a sync one.
         spaceContext,
@@ -2272,8 +2281,8 @@ async function resolveWakeContext(
  * blocking the wake — a heartbeat that can't get a session should still try to do its job.
  */
 async function createHeartbeatSession(env: AgentsEnv, spaceId: string, tenantId: string, title: string, projectId?: string, sessionId?: string): Promise<string | null> {
-  const fallback = `scheduled-job-${Date.now()}`;
-  if (!env.SPACES_WORKER) return projectId ? null : fallback;
+  const fallback = null;
+  if (!env.SPACES_WORKER) return null;
   try {
     const headers = {
       "content-type": "application/json",
@@ -2696,6 +2705,9 @@ async function fetchRunOrTaskStatus(
     const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; error_code?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; pending_question?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>();
     return { status: 200, body: doBody };
   }
+  const control=await getAgentDO(env,tenantId,`${sessionId}:voice-control`);
+  const controlResponse=await control.fetch(new Request(`http://agent/runs/${encodeURIComponent(runId)}`));
+  if(controlResponse.ok)return {status:200,body:await controlResponse.json()};
   if (!env.TASK_DO) return { status: doResponse.status, body: { id: runId, status: "failed", error: "run not found" } };
   const taskStub = getTaskDO(env, spaceId);
   const taskResponse = await taskStub.fetch(`http://task-do/tasks/${runId}`);
@@ -2842,9 +2854,13 @@ app.post(
     if (!space) throw notFound("Space");
 
     const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
-    const doResponse = await stub.fetch(
-      new Request(`http://agent-do/runs/${runId}/cancel`, { method: "POST" })
+    let doResponse = await stub.fetch(
+      new Request(`http://agent-do/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" })
     );
+    if (doResponse.status === 404) {
+      const control = await getAgentDO(c.env, tenantId, `${sessionId}:voice-control`, c.get("requestId"));
+      doResponse = await control.fetch(new Request(`http://agent-do/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }));
+    }
 
     const doBody = await doResponse.json<unknown>();
     return c.json(doBody, doResponse.status as 200 | 400 | 404 | 500);
@@ -2900,6 +2916,14 @@ app.get(
       doResponse.ok &&
       Array.isArray((doBody as { trace?: unknown[] } | null)?.trace) &&
       (doBody as { trace: unknown[] }).trace.length === 0;
+    if (empty || doResponse.status === 404) {
+      const control = await getAgentDO(c.env, tenantId, `${sessionId}:voice-control`, c.get("requestId"));
+      const response = await control.fetch(new Request(`http://agent-do/runs/${encodeURIComponent(runId)}/trace`));
+      if (response.ok) {
+        const body = await response.json<{ trace?: unknown[] }>();
+        if (body.trace?.length) return c.json(body, 200);
+      }
+    }
     if (empty) {
       try {
         // "naelao-agent" — the id every dispatcher in this file hardcodes for the Space Assistant.
@@ -3335,6 +3359,8 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
   }
   const body = await c.req.json<{
     taskId: string;
+    agentDoKey?:string;
+    controlParentDoId?:string;
     spaceId: string;
     sessionId: string;
     tenantId: string;
@@ -3370,7 +3396,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
   }
 
   try {
-    const stub = await getAgentDO(c.env, body.tenantId, body.sessionId);
+    const stub = await getAgentDO(c.env, body.tenantId, body.agentDoKey ?? body.sessionId);
     const doResponse = await stub.fetch(
       new Request("http://agent-do/script/run", {
         method: "POST",
@@ -3394,7 +3420,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           userId: body.userId,
           projectId: body.projectId,
           sessionCreditCeiling: body.sessionCreditCeiling,
-          context: { worker_token_budget: body.workerTokenBudget, long_running: true },
+          context: { worker_token_budget: body.workerTokenBudget, long_running: true,...body.controlParentDoId?{steering_parent_do_id:body.controlParentDoId}:{} },
           spaceContext: body.spaceContext,
           reasoningEffort: body.reasoningEffort,
           effort: body.effort,
@@ -3569,6 +3595,10 @@ app.get("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId", async (c) 
       if (status) {
         body["resumed_run_id"] = status.resumed_run_id;
         body["resume_status"] = status.status;
+        if(status.resumed_run_id){
+          const run=await agentStub.fetch(`http://agent-do/runs/${encodeURIComponent(status.resumed_run_id)}`);
+          if(run.ok)body["resumed_run"]=await readBoundedResponseJson<Record<string,unknown>>(run,262144);
+        }
       }
     } catch {
       /* the approval row itself is still returned correctly either way */
@@ -3598,6 +3628,19 @@ app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", asy
 // Space Assistant's own DO instance ("naelao-agent") since it's always provisioned in any space
 // that has agent keys at all — the create/consume logic itself doesn't touch that DO's own
 // state, it only proxies to HITL_APPROVAL_DO.
+app.post("/internal/assistant-background-notification",async c=>{
+  const tenant=c.req.header("x-naelao-tenant-id")??"";
+  if(!tenant||!await verifyInternalToken(c.req.header("x-naelao-internal-token"),tenant,c.env.PLATFORM_SECRET))return c.json({error_code:"forbidden"},403);
+  const body=JSON.parse(await readBoundedRequestText(c.req.raw,8192)) as {spaceId:string;projectId?:string;event_id:string;message:string;urgency?:string};
+  if(!await isActiveTenantSpace(c.env,body.spaceId,tenant))return c.json({error_code:"space_inactive"},403);
+  const owner=await c.env.SPACES_WORKER.fetch(new Request(`http://spaces/internal/spaces/${encodeURIComponent(body.spaceId)}/owner-contact`,{headers:{"x-naelao-tenant-id":tenant,"x-naelao-internal-token":await mintInternalToken(c.env.PLATFORM_SECRET,tenant)}}));
+  const result=owner.ok?await readBoundedResponseJson<{user_id?:string}>(owner,4096):null;
+  if(!result?.user_id)return c.json({error_code:"notification_recipient_unavailable"},409);
+  const scope={tenantId:tenant,spaceId:body.spaceId,userId:result.user_id,role:"product_end_user",...body.projectId?{projectId:body.projectId}:{}};
+  const {ensureIdentity}=await import("./communications/core.js");
+  return c.json(await (await import("./communications/delivery-policy.js")).deliverAssistantEvent(c.env,scope,await ensureIdentity(c.env,scope),body));
+});
+
 app.post("/internal/agent-approvals", async (c) => {
   const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const validToken = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
@@ -6159,6 +6202,11 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
     }
   }
 
+  if((channel==="whatsapp"||channel==="telegram")&&/^ad_[a-f0-9]{48}$/.test(inbound.text.trim())){
+    const result=await (await import("./communications/approval-decisions.js")).applyApprovalDecision(c.env,{tenantId:paired.tenantId,spaceId:paired.spaceId,channel,contact:inbound.channel_user_id,token:inbound.text.trim()},promise=>c.executionCtx.waitUntil(promise));
+    await replyOnPlatformChannel(c.env,channel,inbound.channel_user_id,result.applied?"Your decision was recorded. The task will report its actual result.":"That decision was not applied. Open Naelao to review its current status.");
+    return c.json({ok:true,...result});
+  }
   const desktopCommand = /^(?:desktop|open canvas)(?: dd_([a-f0-9]{32}))?$|^\/start dd_([a-f0-9]{32})$/i.exec(inbound.text.trim());
   const reviewCommand = /^review:[a-zA-Z0-9_-]{1,48}$/.test(inbound.text.trim());
   if ((channel === "whatsapp" || channel === "telegram") && (desktopCommand || reviewCommand)) {
@@ -9708,6 +9756,7 @@ export default {
     // enqueueAgentTicks/handleAgentTicksQueue above for why this is a queue fan-out rather than a
     // serial in-invocation loop. (The old daily "0 2 * * *" trigger drove the retired BusinessDO/
     // ProductDO nightly Whop cycle — removed from wrangler.toml's crons alongside this.)
+    _ctx.waitUntil((await import("./communications/delivery-policy.js")).sweepAssistantDelivery(env).catch(()=>{console.warn("Assistant deferred delivery sweep postponed");}));
     _ctx.waitUntil((await import("./communications/erasure.js")).sweepAssistantCommunications(env).catch(()=>{console.warn("Assistant communication retention deferred; retry on next sweep");}));
     await enqueueAgentTicks(env);
   },

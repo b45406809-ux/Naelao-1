@@ -622,4 +622,15 @@ describe("assistant telephone safety and lifecycle", () => {
   expect((await invoke("live-code",armed.code)).status).toBe(403);
  });
 
+ it("separates public extension lines from the internal assistant number",async()=>{
+  const f=await phoneFixture();f.env.AGENTS_WORKER={fetch:vi.fn(async()=>Response.json({valid:true}))} as unknown as Fetcher;
+  await f.act("phone-handler",{installation_id:"extension",handler_sha256:"a".repeat(64),confirm:true});
+  const status=await f.act("phone-status") as {phone:unknown;extension_lines:unknown[]};
+  expect(status.phone).toBeNull();expect(status.extension_lines).toHaveLength(1);
+  await expect(f.act("phone-live",{session_id:"session",confirm:true})).rejects.toThrow("assistant_phone_not_connected");
+  await expect(f.act("phone-credentials",{account_sid:account,auth_token:token})).rejects.toThrow("detach_phone_before_changing_credentials");
+  await f.act("phone-detach",{binding_id:f.binding.id,confirm:true});
+  expect((await f.act("phone-status") as {extension_lines:unknown[]}).extension_lines).toHaveLength(0);
+ });
+
 });

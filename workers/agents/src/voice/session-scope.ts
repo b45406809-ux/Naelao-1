@@ -25,6 +25,7 @@ export async function verifyVoiceSession(
     thread_id?: string | null;
     project_id?: string | null;
     status?: string;
+    metadata?: string | Record<string, unknown>;
     space_id?: string;
     tenant_id?: string;
   }>(response, 16384);
@@ -35,6 +36,12 @@ export async function verifyVoiceSession(
     (session.tenant_id !== undefined && session.tenant_id !== scope.tenantId)
   )
     throw new Error("voice_session_mismatch");
+  const metadata =
+    typeof session.metadata === "string"
+      ? JSON.parse(session.metadata)
+      : session.metadata;
+  if (metadata?.session_kind === "heartbeat")
+    throw new Error("heartbeat_is_not_a_conversation");
   let project = session.project_id ?? null;
   if (session.thread_id) {
     const response = await worker.fetch(

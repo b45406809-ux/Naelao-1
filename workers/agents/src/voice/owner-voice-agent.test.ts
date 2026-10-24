@@ -23,6 +23,15 @@ function setup() {
   Object.assign(agent, {
     ctx: { id: { name: "voice" } },
     allowed,
+    env: {
+      PLATFORM_DB: {
+        prepare: vi.fn(() => ({
+          bind: vi.fn(() => ({
+            run: vi.fn(async () => ({ meta: { changes: 1 } })),
+          })),
+        })),
+      },
+    },
     turns: { turn, pending: async () => false },
   });
   const context = {

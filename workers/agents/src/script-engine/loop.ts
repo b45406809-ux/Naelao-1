@@ -1,3 +1,4 @@
+import {isReadSafeOperation} from "./assistant-access.js";
 import { validProviderUsage } from "@naelao/agent-sdk";
 /**
  * The script-first loop (spec §2) + escalation ladder (spec §5), implemented as the agent
@@ -549,6 +550,7 @@ export interface RunLoopOptions {
    * sub-agent), which have no one watching to press a button.
    */
   shouldCancel?: () => boolean | Promise<boolean>;
+  pollSteering?:()=>Promise<string[]>;
   /** Recheck the tenant/Space grant at every reasoning step boundary. This revocation is a
    * terminal failure, not a user cancellation: it must not create a resumable interrupted run. */
   shouldStopForTenant?: () => boolean | Promise<boolean>;
@@ -658,6 +660,7 @@ export async function runScriptLoop(
       const verified = verification.ok ? result : { ...result, ok: false, error: `post-step verification failed: ${JSON.stringify(verification.failures)}` };
       return env.lastWorkspaceCommitOid ? { ...verified, commit_oid: env.lastWorkspaceCommitOid } : verified;
     }
+    if(name==="agent.receive"||name==="agent.list_workers"||name==="agent.steer")return invoke(name,params); // live status is never a committed mutation receipt
     const paramsHash = stableStringify(params);
     try {
       const recorded = await ledger.lookup(ledgerKey, name, paramsHash);
@@ -667,16 +670,19 @@ export async function runScriptLoop(
         return recorded;
       }
     } catch {
-      // A ledger that can't be read must not block real work. The exposure is a possible repeat
-      // on replay — the same risk as having no ledger at all, which is where this started.
+      return {ok:false,error:"action_ledger_unavailable_reconciliation_required",tier:1,duration_ms:0,tokens_used:0};
+    }
+    if(ledger.claim&&!isReadSafeOperation(name)){
+      try{if(!await ledger.claim(ledgerKey,name,paramsHash))return {ok:false,error:"action_outcome_unknown_reconciliation_required",tier:1,duration_ms:0,tokens_used:0};}
+      catch{return {ok:false,error:"action_claim_unavailable_reconciliation_required",tier:1,duration_ms:0,tokens_used:0};}
     }
     let result = await invoke(name, params);
     if (result.ok) { const verification = await runAfterStep(opts.pipeline, env.pipelineRuntime); if (!verification.ok) result = { ...result, ok: false, error: `post-step verification failed: ${JSON.stringify(verification.failures)}` }; }
     if (env.lastWorkspaceCommitOid) result = { ...result, commit_oid: env.lastWorkspaceCommitOid };
-    if (result.ok) {
+    if (result.ok || ledger.claim) {
       try {
         await ledger.record(ledgerKey, name, paramsHash, result);
-      } catch { /* recorded-or-not, the action really happened; never fail the run over the write */ }
+      } catch { return {ok:false,error:"action_receipt_unconfirmed_reconciliation_required",tier:1,duration_ms:result.duration_ms,tokens_used:result.tokens_used}; }
     }
     return result;
   };
@@ -975,6 +981,8 @@ export async function runScriptLoop(
       // Explicit protocol state: two consultation rounds is the hard horizon. A third consult
       // transitions to BLOCKED_AWAITING_HUMAN instead of spending tokens without new authority.
       for (let step = 0; ; step++) {
+        const steering=await opts.pollSteering?.()??[];
+        if(steering.length)opts.goal += "\n\nAuthenticated parent steering (same permissions and budget):\n"+steering.join("\n");
         if (await tenantSuspended()) return tenantSuspensionResult();
         // Stopped by a person. Not an error and not a failure: the steps already taken are real
         // and are reported, which is the difference between "I stopped, here is what I did" and a
@@ -1107,6 +1115,9 @@ export async function runScriptLoop(
           pushTrace({ phase: "reason", detail: "context overflow → compacting harder", ok: false });
           continue;
         }
+        const arrived=await opts.pollSteering?.()??[];
+        if(arrived.length){opts.goal += "\n\nAuthenticated parent steering (same permissions and budget):\n"+arrived.join("\n");continue;}
+        if(opts.shouldCancel&&await opts.shouldCancel())continue;
         // Normalize a script-qualified operation name BEFORE anything authorizes or records it —
         // the gate, the repeat guard and the action ledger all key on decision.name, so an alias
         // resolved any later would be a different action to every one of them. See

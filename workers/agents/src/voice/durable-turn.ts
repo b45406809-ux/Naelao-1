@@ -8,6 +8,7 @@ type Pending = {
   state: "dispatching" | "running" | "done";
   text: string;
   runId?: string;
+  approvalId?: string;
   reply?: string;
   at: number;
 };
@@ -15,24 +16,76 @@ type Pending = {
  * possibly committed tool action. Unknown dispatch outcomes are held for app reconciliation. */
 export class DurableVoiceTurns {
   private busy = false;
+  private followup: DurableVoiceTurns | undefined;
+  completionReady = false;
+  private auxiliary() {
+    if (!this.followup) {
+      const journal = this.journal,
+        worker = this.worker;
+      this.followup = new DurableVoiceTurns(
+        {
+          get: <T>(key: string) => journal.get<T>("followup:" + key),
+          put: <T>(key: string, value: T) =>
+            journal.put("followup:" + key, value),
+        },
+        {
+          fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+            const request =
+              input instanceof Request ? input : new Request(input, init);
+            if (
+              request.method === "POST" &&
+              new URL(request.url).pathname.endsWith("/run")
+            ) {
+              const headers = new Headers(request.headers);
+              headers.set("x-naelao-voice-followup", "1");
+              return worker.fetch(new Request(request, { headers }));
+            }
+            return worker.fetch(request);
+          },
+        } as Fetcher,
+        this.secret,
+        this.spacesWorker,
+        false
+      );
+    }
+    return this.followup;
+  }
   constructor(
     private journal: VoiceTurnJournal,
     private worker: Fetcher,
     private secret: string,
-    private spacesWorker?: Fetcher
+    private spacesWorker?: Fetcher,
+    private allowFollowup = true
   ) {}
+  async ownsTask(id: string): Promise<boolean> {
+    if ((await this.journal.get<Pending>("voice:pending"))?.runId === id)
+      return true;
+    return this.allowFollowup && (await this.auxiliary().ownsTask(id));
+  }
   async pending(): Promise<boolean> {
     return (
-      (await this.journal.get<Pending>("voice:pending"))?.state === "running"
+      (await this.journal.get<Pending>("voice:pending"))?.state === "running" ||
+      (this.allowFollowup && (await this.auxiliary().pending()))
     );
   }
   async resume(
     ticket: OwnerVoiceTicket,
     signal?: AbortSignal
   ): Promise<string> {
+    this.completionReady = false;
     const pending = await this.journal.get<Pending>("voice:pending");
-    if (pending?.state !== "running") return "";
-    return this.turn(ticket, pending.text, signal, true);
+    if (pending?.state === "running") {
+      const reply = await this.turn(ticket, pending.text, signal, true);
+      this.completionReady =
+        (await this.journal.get<Pending>("voice:pending"))?.state === "done";
+      return reply;
+    }
+    if (this.allowFollowup) {
+      const reply = await this.auxiliary().resume(ticket, signal);
+      this.completionReady = this.auxiliary().completionReady;
+      return reply;
+    }
+    return "";
   }
   async turn(
     ticket: OwnerVoiceTicket,
@@ -43,6 +96,23 @@ export class DurableVoiceTurns {
     const text = transcript.trim();
     if (!text || text.length > 2000)
       throw new Error("voice_transcript_invalid");
+    const current = await this.journal.get<Pending>("voice:pending");
+    const progress =
+      /^(?:is it ready\??|status\??|any update\??|what(?:'s| is) the status\??|how is it going\??)$/i.test(
+        text
+      );
+    if (
+      this.allowFollowup &&
+      !resumeOnly &&
+      current?.state === "running" &&
+      text !== current.text &&
+      !progress
+    )
+      return this.auxiliary().turn(
+        ticket,
+        `Background task ${current.runId} continues. Answer this authenticated follow-up or steer its existing workers; do not restart that task.\n\n${text}`,
+        signal
+      );
     if (this.busy) return "Your previous request is still being processed.";
     this.busy = true;
     try {
@@ -120,28 +190,72 @@ export class DurableVoiceTurns {
       // caller can ask for progress/reconnect to the same voice session.
       for (let n = 0; n < 12; n++) {
         if (signal?.aborted) throw new Error("voice_turn_cancelled");
-        const response = await this.worker.fetch(
-          new Request(base + "/runs/" + encodeURIComponent(pending.runId!), {
-            headers,
-            signal: signal
-              ? AbortSignal.any([signal, AbortSignal.timeout(5000)])
-              : AbortSignal.timeout(5000),
-          })
-        );
-        if (!response.ok)
-          throw new Error(`voice_task_status_unavailable_${response.status}`);
-        const run = await readBoundedResponseJson<{
+        let run: {
           status?: string;
           final_answer?: string;
           pending_approval?: unknown;
           pending_question?: unknown;
-        }>(response, 65536);
+        };
+        if (pending.approvalId) {
+          const response = await this.worker.fetch(
+            new Request(
+              base.replace(/\/agent$/, "/approvals/") +
+                encodeURIComponent(pending.approvalId),
+              {
+                headers,
+                signal: signal
+                  ? AbortSignal.any([signal, AbortSignal.timeout(5000)])
+                  : AbortSignal.timeout(5000),
+              }
+            )
+          );
+          if (!response.ok)
+            throw new Error("voice_approval_status_unavailable");
+          const approval = await readBoundedResponseJson<{
+            status?: string;
+            resumed_run?: typeof run;
+          }>(response, 262144);
+          if (["rejected", "timeout"].includes(approval.status ?? "")) {
+            const reply =
+              "That action was not authorized. The task’s saved progress is available in Naelao.";
+            await this.journal.put("voice:pending", {
+              ...pending,
+              state: "done",
+              reply,
+              at: Date.now(),
+            });
+            return reply;
+          }
+          if (!approval.resumed_run)
+            return "The task is waiting for authorized input or its saved continuation. You can keep talking while it waits.";
+          run = approval.resumed_run;
+        } else {
+          const response = await this.worker.fetch(
+            new Request(base + "/runs/" + encodeURIComponent(pending.runId!), {
+              headers,
+              signal: signal
+                ? AbortSignal.any([signal, AbortSignal.timeout(5000)])
+                : AbortSignal.timeout(5000),
+            })
+          );
+          if (!response.ok)
+            throw new Error(`voice_task_status_unavailable_${response.status}`);
+          run = await readBoundedResponseJson<typeof run>(response, 262144);
+        }
         if (
           run.pending_approval ||
           run.pending_question ||
           run.status === "awaiting_approval"
-        )
-          return "I need your input or approval in Naelao. The task is saved and will continue after you respond there.";
+        ) {
+          const approval = (run.pending_approval ?? run.pending_question) as
+            | { approval_id?: string }
+            | undefined;
+          if (approval?.approval_id) {
+            pending = { ...pending, approvalId: approval.approval_id };
+            await this.journal.put("voice:pending", pending);
+          }
+          return "I need your input or approval. Use the authenticated approval card in Naelao or your verified messaging channel; I can keep this call open.";
+        }
         if (run.status === "completed" || run.status === "failed") {
           const reply =
             run.status === "completed"

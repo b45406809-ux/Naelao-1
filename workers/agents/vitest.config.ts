@@ -40,6 +40,6 @@ export default defineConfig({
   test: {
     environment: "node",
     server: { deps: { inline: ["@cloudflare/dynamic-workflows"] } },
-    include: ["src/**/*.test.ts", "container/**/*.test.mjs"],
+    include: ["src/**/*.test.ts", "container/**/*.test.mjs", "../../tests/unit/run-cancellation.test.ts", "../../tests/unit/run-status-pending-approval.test.ts"],
   },
 });

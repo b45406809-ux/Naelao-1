@@ -35,6 +35,7 @@ export function AssistantPhonePanel({
   const [state, setState] = React.useState<{
       phone: Phone | null;
       enabled: boolean;
+      extension_lines?:Array<{id:string;phone_number:string|null;installation_id:string|null;status:string}>;
     } | null>(null),
     [error, setError] = React.useState(""),
     [busy, setBusy] = React.useState(false);
@@ -165,6 +166,7 @@ export function AssistantPhonePanel({
   return (
     <section aria-label="Assistant phone">
       <h4>Optional phone</h4>
+      {state?.extension_lines?.map(line=><div key={line.id}><p>External extension line: {line.phone_number} · {line.status}</p><button type="button" disabled={busy} onClick={()=>void act("phone-detach",{binding_id:line.id,confirm:true})}>Disconnect external line</button></div>)}
       <p>
         {state?.phone?.phone_number ?? "No number connected"}{" "}
         {state?.phone?.status ?? ""}
@@ -413,7 +415,7 @@ export function AssistantPhonePanel({
                   )}
                 </fieldset>
                 <fieldset disabled={busy}>
-                  <legend>Installed voice extension</legend>
+                  <legend>Separate external bot line</legend>
                   <p>
                     Bind a signed channel extension installed in this
                     assistant’s Space or project, declaring provider phone. Its
@@ -421,6 +423,7 @@ export function AssistantPhonePanel({
                     (say, gather, hangup). The host validates the installation
                     and exact source digest before activation.
                   </p>
+                  <p>Assigning this number to an extension makes it an external bot line. Your internal assistant needs a separate number. End private calls before changing the line.</p>
                   <label>
                     Installation ID{" "}
                     <input
@@ -446,7 +449,7 @@ export function AssistantPhonePanel({
                       })
                     }
                   >
-                    Validate and bind extension
+                    Assign this number to the extension
                   </button>
                 </fieldset>
 

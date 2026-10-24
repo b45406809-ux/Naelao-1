@@ -161,7 +161,7 @@ describe("the action ledger stops a replay redoing real work", () => {
     expect(result.result?.ok).toBe(true);
   });
 
-  it("survives a ledger that throws rather than failing the run", async () => {
+  it("does not execute a mutation when its ledger cannot be read", async () => {
     const broken: ActionLedger = {
       async lookup() { throw new Error("ledger unavailable"); },
       async record() { throw new Error("ledger unavailable"); },
@@ -171,7 +171,63 @@ describe("the action ledger stops a replay redoing real work", () => {
     const result = await runScriptLoop(env, countingTools(env, executed), writeThenAnswer(), ["r2-workspace"], {
       goal: "write a file", startupObserve: "observe_filesystem", ledgerKey: "run-x",
     });
+    expect(executed).toEqual([]);
+    expect(JSON.stringify(result)).toContain("action_ledger_unavailable_reconciliation_required");
+  });
+});
+
+
+describe("durable mutation claims", () => {
+  it("allows only one claimant across 30 concurrent replays", async () => {
+    const { ledger } = makeLedger();
+    const claims = new Set<string>();
+    ledger.claim = async (key, action, hash) => {
+      const id = JSON.stringify([key, action, hash]);
+      if (claims.has(id)) return false;
+      claims.add(id); return true;
+    };
+    const executed: string[] = [];
+    await Promise.all(Array.from({ length: 30 }, async () => {
+      const env = makeEnv(ledger);
+      return runScriptLoop(env, countingTools(env, executed), writeThenAnswer(), ["r2-workspace"], {
+        goal: "write once", startupObserve: "observe_filesystem", ledgerKey: "shared-operation",
+      });
+    }));
     expect(executed).toEqual(["write_file"]);
-    expect(result.result?.ok).toBe(true);
+  });
+  it("holds the operation if the result receipt cannot be persisted", async () => {
+    const claims = new Set<string>();
+    const ledger: ActionLedger = {
+      async lookup() { return null; },
+      async claim(key, action, hash) {
+        const id = JSON.stringify([key, action, hash]);
+        if (claims.has(id)) return false;
+        claims.add(id); return true;
+      },
+      async record() { throw new Error("storage interrupted after execution"); },
+    };
+    const executed: string[] = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const env = makeEnv(ledger);
+      const result = await runScriptLoop(env, countingTools(env, executed), writeThenAnswer(), ["r2-workspace"], {
+        goal: "write once", startupObserve: "observe_filesystem", ledgerKey: "unknown-operation",
+      });
+      expect(JSON.stringify(result)).toContain("reconciliation_required");
+    }
+    expect(executed).toEqual(["write_file"]);
+  });
+  it("discards an obsolete action when authenticated steering arrives during reasoning", async () => {
+    const env = makeEnv(); const executed: string[] = []; let polls = 0; let decisions = 0;
+    const reasoner: Reasoner = { async decide() {
+      return decisions++ === 0
+        ? { action: "run", name: "write_file", params: { path: "obsolete.txt", content: "x", expectedHash: null } }
+        : { action: "answer", text: "Updated instructions received." };
+    } };
+    await runScriptLoop(env, countingTools(env, executed), reasoner, ["r2-workspace"], {
+      goal: "write a file", startupObserve: "observe_filesystem",
+      pollSteering: async () => ++polls === 2 ? ["Stop editing; summarize only."] : [],
+    });
+    expect(decisions).toBe(2);
+    expect(executed).toEqual([]);
   });
 });

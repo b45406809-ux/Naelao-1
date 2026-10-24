@@ -236,10 +236,16 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       role: "product_end_user",
       ...(identity.project_id ? { projectId: identity.project_id } : {}),
     };
+    // Internal voice admission authenticates the actual member using an app-issued code.
+    // A Project identity's original creator is not the principal of later members' calls.
+    const privateVoice =
+      binding.purpose !== "extension" &&
+      ["answer", "live-code"].includes(event);
     if (
       binding.status !== "active" ||
-      !(await scopeAccess(c.env, scope, true)) ||
-      !(await channelPreferences(c.env, scope)).enabled.phone ||
+      (!privateVoice && !(await scopeAccess(c.env, scope, true))) ||
+      (!privateVoice &&
+        !(await channelPreferences(c.env, scope)).enabled.phone) ||
       (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, identity.space_id))
     )
       return reject();
@@ -345,59 +351,20 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       if (!live || !(await liveCallAllowed(c.env, live))) return reject();
       return liveStreamResponse(c.env, live);
     }
+    // Internal lines never become public customer entry points, even when no code is armed.
+    if (
+      (event === "answer" || event === "menu") &&
+      binding.purpose !== "extension"
+    )
+      return reject();
+    if (event === "sms" && binding.purpose === "extension") return reject();
     const configuredHandler = await c.env.PLATFORM_DB.prepare(
       "SELECT binding_id FROM assistant_phone_extension_handlers WHERE binding_id=?"
     )
       .bind(binding.id)
       .first();
-    // Compatibility during staged migration: only unbound existing numbers use their saved
-    // presentation. Binding a validated extension switches this number to the restricted executor.
-    if (!configuredHandler && (event === "answer" || event === "menu")) {
-      const menu = () =>
-        !policy.greeting.trim()
-          ? response("<Reject/>")
-          : response(
-              `<Gather input="dtmf" numDigits="1" timeout="10" action="${xml(root + "/menu")}" method="POST"><Say>${xml(policy.greeting)}</Say></Gather><Hangup/>`
-            );
-      if (event === "menu") {
-        const admitted = await c.env.PLATFORM_DB.prepare(
-          "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=? AND kind='call' AND sender=?"
-        )
-          .bind(sid, binding.id, from)
-          .first();
-        if (!admitted) return reject();
-        if (form.get("Digits") === "2" && policy.transferTo)
-          return response(
-            `<Dial callerId="${xml(binding.phone_number!)}" timeLimit="${policy.maxCallSeconds}" timeout="20"><Number>${xml(policy.transferTo)}</Number></Dial><Hangup/>`
-          );
-        if (form.get("Digits") === "1" && policy.voicemail)
-          return response(
-            `<Say>This message will be recorded and transcribed for the assistant owner. Please leave your message after the tone.</Say><Record maxLength="${Math.min(120, policy.maxCallSeconds)}" playBeep="true" action="${xml(root + "/voicemail")}" method="POST" recordingStatusCallback="${xml(root + "/voicemail")}" recordingStatusCallbackMethod="POST" transcribe="true" transcribeCallback="${xml(root + "/transcript")}"/><Hangup/>`
-          );
-        return response(
-          "<Say>No destination is configured for that option.</Say><Hangup/>"
-        );
-      }
-      const prior = await c.env.PLATFORM_DB.prepare(
-        "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=?"
-      )
-        .bind(sid, binding.id)
-        .first();
-      if (!prior) {
-        const quota = await c.env.PLATFORM_DB.prepare(
-          "INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?"
-        )
-          .bind(binding.id, policy.maxDailyInboundCalls)
-          .run();
-        if (!quota.meta.changes) return reject();
-        await c.env.PLATFORM_DB.prepare(
-          "INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status) VALUES(?,?,'call',?,'received')"
-        )
-          .bind(sid, binding.id, from)
-          .run();
-      }
-      return menu();
-    }
+    if ((event === "answer" || event === "menu") && !configuredHandler)
+      return reject();
     if (event === "answer" || event === "menu") {
       const admitted = await c.env.PLATFORM_DB.prepare(
         "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=? AND sender=? AND kind='call'"

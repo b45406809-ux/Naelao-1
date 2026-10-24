@@ -244,7 +244,7 @@ async function sendChatMessage(
         body: new URLSearchParams({
           From: `whatsapp:+${(env.TWILIO_WHATSAPP_NUMBER ?? "").replace(/^\+/, "")}`,
           To: `whatsapp:+${to.replace(/^\+/, "")}`,
-          Body: message,
+          Body: actions.length ? message+"\n"+actions.map(action=>`${action.label}: ${action.id}`).join("\n") : message,
         }),
         redirect: "error",
         signal: AbortSignal.timeout(CHANNEL_SEND_TIMEOUT_MS),

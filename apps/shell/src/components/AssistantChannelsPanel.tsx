@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import { AssistantDeliveryPanel } from "./AssistantDeliveryPanel";
 import { Button, FormSelect } from "@naelao/ui";
 import {
   ASSISTANT_CHANNELS,
@@ -200,6 +201,13 @@ export function AssistantChannelsPanel({
             Use inherited defaults
           </Button>
         </>
+      )}
+      {!template && target !== "project-defaults" && (
+        <AssistantDeliveryPanel
+          spaceId={spaceId}
+          session={session}
+          {...(scope.projectId ? { projectId: scope.projectId } : {})}
+        />
       )}
       {error && <p role="alert">{error}</p>}
     </section>

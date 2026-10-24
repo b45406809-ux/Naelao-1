@@ -1,3 +1,4 @@
+import { verifyInternalToken, readBoundedRequestText } from "@naelao/http";
 import { Agent } from "agents";
 import { synthesizeVoicePcm } from "./pcm-speech.js";
 import { WorkersAIFluxSTT, withVoice } from "agents/voice";
@@ -72,7 +73,7 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
     }
     if (ticket.phoneBindingId) {
       const call = await this.env.PLATFORM_DB.prepare(
-        "SELECT l.* FROM assistant_live_calls l JOIN assistant_phone_bindings b ON b.id=l.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE l.id=? AND l.binding_id=? AND l.call_sid=? AND l.tenant_id=? AND l.space_id=? AND l.user_id=? AND l.session_id=? AND l.status='connected' AND b.status='active' AND i.status='active' AND l.deadline>?"
+        "SELECT l.* FROM assistant_live_calls l JOIN assistant_phone_bindings b ON b.id=l.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE l.id=? AND l.binding_id=? AND l.call_sid=? AND l.tenant_id=? AND l.space_id=? AND l.user_id=? AND l.session_id=? AND l.status='connected' AND b.status='active' AND b.purpose='assistant' AND i.status='active' AND l.deadline>?"
       )
         .bind(
           ticket.nonce,
@@ -97,7 +98,7 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
           role: ticket.callerRole,
           ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
         },
-        true
+        false
       )) &&
       !(await isSpaceNetworkEgressDenied(this.env.PLATFORM_DB, ticket.spaceId))
     );
@@ -143,6 +144,68 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
       (await this.allowed(ticket))
     );
   }
+  override async onCallStart(
+    connection: Parameters<Agent<AgentsEnv>["onConnect"]>[0]
+  ): Promise<void> {
+    const ticket = connection.state as OwnerVoiceTicket | null;
+    if (!ticket || !(await this.allowed(ticket)))
+      throw new Error("voice_scope_unavailable");
+    await this.env.PLATFORM_DB.prepare(
+      "INSERT INTO assistant_active_voice_endpoints(tenant_id,space_id,project_key,user_id,agent_name,connection_id,expires_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,project_key,user_id) DO UPDATE SET agent_name=excluded.agent_name,connection_id=excluded.connection_id,expires_at=excluded.expires_at"
+    )
+      .bind(
+        ticket.tenantId,
+        ticket.spaceId,
+        ticket.projectId ?? "",
+        ticket.userId,
+        ticket.agentName,
+        connection.id,
+        Date.now() + 900000
+      )
+      .run();
+  }
+  override async onRequest(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname !== "/internal/voice-notification")
+      return super.onRequest(request);
+    const tenant = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (
+      request.method !== "POST" ||
+      !(await verifyInternalToken(
+        request.headers.get("x-naelao-internal-token") ?? undefined,
+        tenant,
+        this.env.PLATFORM_SECRET
+      ))
+    )
+      return new Response("Forbidden", { status: 403 });
+    const body = JSON.parse(await readBoundedRequestText(request, 8192)) as {
+      spaceId: string;
+      projectId: string | null;
+      userId: string;
+      eventId: string;
+      message: string;
+    };
+    const ticket = this.activeTicket;
+    if (
+      !ticket ||
+      ticket.tenantId !== tenant ||
+      ticket.spaceId !== body.spaceId ||
+      (ticket.projectId ?? null) !== body.projectId ||
+      ticket.userId !== body.userId ||
+      typeof body.message !== "string" ||
+      body.message.length > 4000 ||
+      !(await this.allowed(ticket))
+    )
+      return new Response("No active authorized call", { status: 404 });
+    const connection = [...this.getConnections()].find(
+      (c) => c.id === this.audioConnectionId && c.readyState === 1
+    );
+    if (!connection) return new Response("No active call", { status: 404 });
+    const task = /^task:([-a-zA-Z0-9._]+):completed$/.exec(body.eventId);
+    if (task && (await this.turns.ownsTask(task[1]!)))
+      return Response.json({ delivered: true, coalesced: true });
+    await this.speak(connection, "Assistant update. " + body.message);
+    return Response.json({ delivered: true });
+  }
   override async onInterrupt(
     connection: Parameters<Agent<AgentsEnv>["onConnect"]>[0]
   ): Promise<void> {
@@ -154,6 +217,19 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
     if (this.audioConnectionId === connection.id) {
       this.watcher?.abort();
       this.activeTicket = null;
+      const ticket = connection.state as OwnerVoiceTicket | null;
+      if (ticket)
+        await this.env.PLATFORM_DB.prepare(
+          "DELETE FROM assistant_active_voice_endpoints WHERE tenant_id=? AND space_id=? AND project_key=? AND user_id=? AND connection_id=?"
+        )
+          .bind(
+            ticket.tenantId,
+            ticket.spaceId,
+            ticket.projectId ?? "",
+            ticket.userId,
+            connection.id
+          )
+          .run();
     }
   }
   private watchCompletion(
@@ -177,15 +253,14 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
           )
             return;
           const reply = await this.turns.resume(ticket, watcher.signal);
-          if (!(await this.turns.pending())) {
-            if (
-              reply &&
-              !watcher.signal.aborted &&
-              (await this.allowed(ticket))
-            )
-              await this.speak(connection, reply);
-            return;
-          }
+          if (
+            this.turns.completionReady &&
+            reply &&
+            !watcher.signal.aborted &&
+            (await this.allowed(ticket))
+          )
+            await this.speak(connection, reply);
+          if (!(await this.turns.pending())) return;
         }
       })().catch(() => {})
     );
@@ -208,6 +283,8 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
       throw new Error("voice_scope_unavailable");
     }
     this.activeTicket = ticket;
+    await this.env.PLATFORM_DB.prepare("UPDATE assistant_active_voice_endpoints SET expires_at=? WHERE tenant_id=? AND space_id=? AND project_key=? AND user_id=? AND connection_id=?")
+      .bind(Date.now()+900000,ticket.tenantId,ticket.spaceId,ticket.projectId??"",ticket.userId,context.connection.id).run();
     let reply: string;
     try {
       reply = await this.turns.turn(ticket, transcript, context.signal);

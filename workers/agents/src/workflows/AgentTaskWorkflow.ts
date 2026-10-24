@@ -33,6 +33,8 @@ export interface AgentTaskParams {
   model: string;
   /** Fresh, non-secret public catalog evidence resolved for the Space's active BYOK key. */
   openRouterCapabilityEvidence?: OpenRouterModelCandidate;
+  agentDoKey?:string;
+  controlParentDoId?:string;
   taskDoName: string;  // DO name for TaskDO stub
   // Go-live audit A-1/A-2: carried through to /internal/tasks/:taskId/run so enforceRunGates can
   // resolve the F-36 clamp / project wallet gate / product_end_user credit gate — previously
@@ -198,6 +200,8 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
             },
             body: JSON.stringify({
               taskId: p.taskId,
+              agentDoKey:p.agentDoKey,
+              controlParentDoId:p.controlParentDoId,
               spaceId: p.spaceId,
               sessionId: p.sessionId,
               tenantId: p.tenantId,
@@ -370,6 +374,13 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       if (!resp.ok) throw new Error(`Failed to update task result: ${resp.status}`);
       return { ok: true };
     });
+    // Completion delivery is a separate idempotent step, never a replay of the agent/tools.
+    if(p.userId&&outcome!=="waiting"&&Date.now()-event.timestamp.getTime()>=30000){
+      await step.do("notify-result",retry,async()=>{
+        const response=await this.env.AGENTS_WORKER.fetch("http://agents/internal/assistant-communications",{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":p.tenantId,"x-naelao-user-id":p.userId!,"x-naelao-role":p.callerRole??"product_end_user","x-naelao-internal-token":await mintInternalToken(this.env.PLATFORM_SECRET,p.tenantId)},body:JSON.stringify({action:"notify-owner",spaceId:p.spaceId,projectId:p.projectId,event_id:`task:${p.taskId}:completed`,message:outcome==="failed"?"Your assistant task stopped and needs attention. Its saved progress is available in Naelao.":(runResult.final_answer??"Your assistant task completed. Its result is available in Naelao.").slice(0,4000)})});
+        return {accepted:response.ok};
+      });
+    }
     return outcome;
   }
 
