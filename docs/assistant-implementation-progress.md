@@ -62,3 +62,17 @@ reconciliation UI and full call/number cleanup/retention. Managed numbers delibe
 unavailable, and the existing WhatsApp carrier account is never implicitly charged. Calls in this
 checkpoint speak an approved message; the UI/manual do not claim interactive AI conversations.
 Next: complete these phone paths, then browser/video demonstrations and model capability selection.
+
+## Step 4 — capability-aware worker selection
+
+Worker tasks can declare bounded media/context requirements. Selection uses fresh public
+OpenRouter card evidence (modalities, tools, context), passed through to System One and exposed
+in `agent.list_models`; unsupported/stale candidates cannot satisfy a visual/video task merely
+because their name sounds capable. This only narrows the existing owner-configured price-filtered
+pool; provider/payer, subscription admission, pinned economy ceiling and private/local routing
+remain enforced. A single eligible model is now selected correctly even when System One exists.
+Requirements are signed into the delegation contract, persisted with worker sessions and restored
+on resume, then rechecked against fresh evidence at child admission. Capability gaps fail clearly
+without silently buying a frontier model or widening the pool. No model was added automatically.
+Fresh validation: Agents type check and 24 focused model-catalog/routing/delegation tests passed.
+No live provider inference/latency benchmark was run (no configured provider credentials).

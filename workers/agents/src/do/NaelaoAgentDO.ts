@@ -130,7 +130,7 @@ function boundedCheckpointJson(value: unknown, maxChars = 64_000): string {
 }
 import { handleDaemonMcp, treeSitterDaemonTarget } from "../script-engine/daemons/daemon-mcp.js";
 import { TreeSitterIndexer } from "../script-engine/daemons/tree-sitter-indexer.js";
-import { resolveWorkerModel, selectWorkerModel, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog, isCloudModelForbiddenOnPrivateRoute } from "../script-engine/worker-model-routing.js";
+import { resolveWorkerModel, selectWorkerModel, validateWorkerModelRequirements, workerModelMeetsRequirements, isWorkerPriceAllowed, mayDiscoverWorkerModelCatalog, isCloudModelForbiddenOnPrivateRoute } from "../script-engine/worker-model-routing.js";
 import { DurableDaemon } from "../script-engine/daemons/durable-daemon.js";
 import { validateModelForSpacePolicy } from "../model-policy.js";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
@@ -3909,9 +3909,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const plannerModel = currentModel ?? DEFAULT_WORKING_MODEL;
         const privateRoute = runtimeEnv?.airGappedOnly === true || Boolean(runtimeEnv?.localModelMachine)
           || (byokProviderForModel(plannerModel) !== null && !plannerModel.startsWith("openrouter/"));
+        let leafSlotKey: string | undefined;
+        try {
+        const modelRequirements = validateWorkerModelRequirements(savedConfiguration?.modelRequirements ?? t["model_requirements"]);
         let modelResolution = t["planner"] === true
           ? resolveWorkerModel({ plannerModel, contextAffinity: "shared", effort: effortLevel, privateRoute: true })
           : await selectWorkerModel({ plannerModel, contextAffinity, effort: effortLevel, privateRoute, goal,
+            ...(modelRequirements ? {requirements:modelRequirements}:{}),
             ...(runtimeEnv?.workerModelPool ? { workerModelPool: runtimeEnv.workerModelPool } : {}),
             ...(runtimeEnv?.workerModelCandidates ? { workerModelCandidates: runtimeEnv.workerModelCandidates } : {}),
             ...(typeof t["worker_model"] === "string" ? { requestedWorkerModel: t["worker_model"] } : {}),
@@ -3919,8 +3923,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (existing && typeof savedConfiguration?.model === "string") {
           modelResolution = { model: savedConfiguration.model, downgraded: false, reason: "resumed_worker_session_policy" };
         }
-        let leafSlotKey: string | undefined;
-        try {
+        if (modelRequirements && !privateRoute && !workerModelMeetsRequirements(runtimeEnv?.workerModelCandidates?.find(card=>card.model===modelResolution.model),modelRequirements)) throw new Error("worker_model_capability_unavailable_within_configured_pool");
           if (!userId || !runtimeEnv) throw new Error("delegation_authorized_parent_required");
           const depth = ((runtimeEnv.delegationDepth ?? 1) + 1) as 2 | 3;
           const planner = t["planner"] === true;
@@ -3967,7 +3970,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const contract: DelegationContract = {
             tenantId, spaceId, ...(projectId ? { projectId } : {}), actorId: userId, agentId: workerAgentId,
             rootRunId: runtimeEnv.rootRunId ?? parentRunId, parentRunId, parentDoId: this.ctx.id.toString(), workerId: subId,
-            depth, planner, maxTokens: budgetTokens, maxSteps, model: modelResolution.model,
+            depth, planner, maxTokens: budgetTokens, maxSteps, ...(modelRequirements ? {modelRequirements}:{}), model: modelResolution.model,
             role: typeof t["role"] === "string" ? t["role"] : "worker", callerRole: runtimeEnv.callerRole ?? runtimeEnv.effectiveRole ?? "viewer",
             maxTier: runtimeEnv.maxTier ?? 6, localOnly: runtimeEnv.airGappedOnly === true,
             ...(workerCapabilities ? { workerCapabilities } : {}),
@@ -3983,7 +3986,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             workspaceBranch, JSON.stringify({ model: contract.model, role: contract.role, maxTier: contract.maxTier,
               actorId: userId, agentId: workerAgentId, tenantId, spaceId, projectId: projectId ?? null,
               parentDoId: this.ctx.id.toString(),
-              filePaths: contract.filePaths ?? [], workerCapabilities: contract.workerCapabilities ?? null,
+              modelRequirements, filePaths: contract.filePaths ?? [], workerCapabilities: contract.workerCapabilities ?? null,
               knowledgeScopes: contract.knowledgeScopes ?? [] }), Date.now(), subId);
           const route = `sub:${spaceId}:${subId}`;
           await this.ctx.storage.put(`sub-agent-route:${subId}`, route);
@@ -4024,6 +4027,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 ...(contract.filePaths !== undefined ? { file_paths: contract.filePaths } : {}),
                 ...(contract.workerCapabilities !== undefined ? { worker_capabilities: contract.workerCapabilities } : {}),
                 ...(contract.knowledgeScopes !== undefined ? { knowledge_scopes: contract.knowledgeScopes } : {}),
+                ...(modelRequirements ? {worker_model_requirements:modelRequirements}:{}),
                 parent_run_id: parentRunId,
                 sub_agent_id: subId,
                 max_steps: maxSteps,
@@ -5156,6 +5160,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         maxTokens: context["max_tokens"] as number, maxSteps: context["max_steps"] as number,
         model: requestedModel, role: body.functionalRole ?? "DEV_OPERATOR", callerRole: callerRole ?? "",
         maxTier: context["delegation_max_tier"] as number, localOnly: body.airGappedOnly === true,
+        ...(context["worker_model_requirements"] !== undefined ? {modelRequirements:context["worker_model_requirements"] as NonNullable<DelegationContract["modelRequirements"]>}:{}),
         ...(context["worker_capabilities"] && typeof context["worker_capabilities"] === "object"
           ? { workerCapabilities: context["worker_capabilities"] as NonNullable<DelegationContract["workerCapabilities"]> }
           : {}),
@@ -5423,6 +5428,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (isLeaf && !isWorkerPriceAllowed(requestedModel, resolvedPricing)) return this.finishScriptFailure(runId, "The economy worker's live price exceeds its pinned price ceiling; model policy needs review", 503, "worker_model_price_ceiling");
       if (isLeaf && requestedModel.startsWith("openrouter/")) {
         const liveCard = engineEnv.workerModelCandidates?.find(candidate => candidate.model === requestedModel);
+        const requirements = validateWorkerModelRequirements(delegation?.modelRequirements);
+        if (requirements && !workerModelMeetsRequirements(liveCard,requirements)) return this.finishScriptFailure(runId,"The worker model lacks fresh evidence for the task's required media or context capabilities",503,"worker_model_capability_unavailable");
         if (!liveCard) return this.finishScriptFailure(runId, "The worker model is no longer in the owner-configured, live-card-verified pool", 503, "worker_model_not_eligible");
         const inputLimit = engineEnv.workerModelPool?.inputUsdPerMillion;
         const outputLimit = engineEnv.workerModelPool?.outputUsdPerMillion;
@@ -7176,6 +7183,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           sub_agent_id: resumeDelegation.workerId, max_steps: resumeDelegation.maxSteps, max_tokens: resumeDelegation.maxTokens,
           worker_token_budget: resumeDelegation.maxTokens,
           ...(resumeDelegation.filePaths !== undefined ? { file_paths: resumeDelegation.filePaths } : {}),
+          ...(resumeDelegation.modelRequirements ? {worker_model_requirements:resumeDelegation.modelRequirements}:{}),
           ...(resumeDelegation.workerCapabilities !== undefined ? { worker_capabilities: resumeDelegation.workerCapabilities } : {}),
           ...(resumeDelegation.knowledgeScopes !== undefined ? { knowledge_scopes: resumeDelegation.knowledgeScopes } : {}),
         };

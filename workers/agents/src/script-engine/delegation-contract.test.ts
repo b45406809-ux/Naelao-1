@@ -28,3 +28,12 @@ describe("host-signed worker identity", () => {
     await expect(issueDelegationContract({ ...contract, workerCapabilities: { enabledPrebuilts: ["../escape"], selectedSkills: [] } }, "test-host-secret")).rejects.toThrow("delegation_worker_capabilities_invalid");
   });
 });
+
+
+it("signs worker media requirements and rejects their removal or downgrade", async () => {
+ const visual = {...contract,modelRequirements:{inputModalities:["text","image"] as Array<"text"|"image">,minContextTokens:32000}};
+ const token=await issueDelegationContract(visual,"test-host-secret");
+ await expect(verifyDelegationContract(visual,token,"test-host-secret")).resolves.toBeUndefined();
+ await expect(verifyDelegationContract(contract,token,"test-host-secret")).rejects.toThrow();
+ await expect(verifyDelegationContract({...visual,modelRequirements:{inputModalities:["text"],minContextTokens:16000}},token,"test-host-secret")).rejects.toThrow();
+});

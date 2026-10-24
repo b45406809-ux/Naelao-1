@@ -1,4 +1,5 @@
 import { issueScopedCapabilityToken, verifyScopedCapabilityToken } from "@naelao/security";
+import { validateWorkerModelRequirements, type WorkerModelRequirements } from "./worker-model-routing.js";
 import { normalizeWorkspacePath } from "./workspace-paths.js";
 
 /** Host-signed execution identity. No conversational history is part of this contract. */
@@ -6,6 +7,7 @@ export interface DelegationContract {
   tenantId: string; spaceId: string; projectId?: string; actorId: string; agentId: string;
   rootRunId: string; parentRunId: string; parentDoId: string; workerId: string;
   depth: 2 | 3; planner: boolean; maxTokens: number; maxSteps: number;
+  modelRequirements?: WorkerModelRequirements;
   model: string; role: string; callerRole: string; workspaceBranch?: string;
   /** Exact project files a task worker may access through the host VFS. [] means none. */
   filePaths?: string[];
@@ -44,10 +46,12 @@ function resource(contract: DelegationContract): string {
   }
   if (contract.knowledgeScopes?.length && !contract.workerCapabilities?.enabledPrebuilts.includes("knowledge-base"))
     throw new Error("delegation_knowledge_scope_without_tool");
+  const requirements=validateWorkerModelRequirements(contract.modelRequirements);
   // Fixed order includes every field used to grant child execution permissions.
   return JSON.stringify([contract.agentId, contract.rootRunId, contract.parentRunId, contract.parentDoId, contract.workerId,
     contract.depth, contract.planner, contract.maxTokens, contract.maxSteps, contract.model, contract.role, contract.callerRole, contract.workspaceBranch ?? null, contract.maxTier, contract.localOnly, contract.localModelMachine ?? null, contract.filePaths === undefined ? null : [...contract.filePaths].sort(), contract.knowledgeScopes === undefined ? null : [...contract.knowledgeScopes].sort(),
-    contract.workerCapabilities === undefined ? null : [ [...contract.workerCapabilities.enabledPrebuilts].sort(), [...contract.workerCapabilities.selectedSkills].sort() ]]);
+    contract.workerCapabilities === undefined ? null : [ [...contract.workerCapabilities.enabledPrebuilts].sort(), [...contract.workerCapabilities.selectedSkills].sort() ],
+    ...(requirements ? [[...requirements.inputModalities].sort(), requirements.minContextTokens] : [])]);
 }
 const context = (contract: DelegationContract) => ({ tenantId: contract.tenantId, spaceId: contract.spaceId,
   ...(contract.projectId ? { projectId: contract.projectId } : {}), actorId: contract.actorId,

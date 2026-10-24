@@ -32,7 +32,7 @@ export const subAgent: PrebuiltScript = {
   requires_tier: 2,
   paramHints: {
     "agent.spawn":
-      "tasks (array, required) — each {goal, worker_model?, maxTokens?}. worker_model is accepted only when the owner configured planner selection and the exact model appears in agent.list_models. In automatic mode omit it; System One selects from live-card-verified candidates. Use a " +
+      "tasks (array, required) — each {goal, worker_model?, maxTokens?, model_requirements?:{inputModalities:[text|image|audio|video],minContextTokens:16000..2000000}}. worker_model is accepted only when the owner configured planner selection and the exact model appears in agent.list_models. In automatic mode omit it; System One selects from live-card-verified candidates. Use a " +
       "stable sub_agent_id to address a worker session; use resume:true only to continue that session.",
     "agent.list_models":
       "No arguments. Returns every model a spawn may name, with its context window, whether it " +
@@ -53,7 +53,7 @@ export const subAgent: PrebuiltScript = {
         default: DEFAULT_WORKING_MODEL,
         worker_selection_mode: ctx.env.workerModelPool?.selectionMode ?? "automatic",
         configured_worker_models: (ctx.env.workerModelCandidates ?? []).map(card => ({ id: card.model, name: card.name,
-          context_window: card.contextLength, input_usd_per_million: card.promptPriceUsdPerToken === undefined ? null : card.promptPriceUsdPerToken * 1_000_000,
+          context_window: card.contextLength, input_modalities:card.inputModalities, output_modalities:card.outputModalities, supported_parameters:card.supportedParameters, card_observed_at:card.catalogObservedAt, input_usd_per_million: card.promptPriceUsdPerToken === undefined ? null : card.promptPriceUsdPerToken * 1_000_000,
           output_usd_per_million: card.completionPriceUsdPerToken === undefined ? null : card.completionPriceUsdPerToken * 1_000_000 })),
         models: [...ALLOWED_MODELS.map((m) => {
           const cap = capabilityForModel(m);
@@ -69,7 +69,7 @@ export const subAgent: PrebuiltScript = {
           };
         }), ...(ctx.env.workerModelCandidates ?? []).map(card => ({ id: card.model, family: "OpenRouter", cost_tier: null,
           context_window: card.contextLength ?? null, supports_thinking: false, thinking_levels: [], best_for: [],
-          name: card.name, provider: "openrouter", source: "owner_configured_pool",
+          name: card.name, provider: "openrouter", source: "owner_configured_pool", input_modalities:card.inputModalities, output_modalities:card.outputModalities, supported_parameters:card.supportedParameters, card_observed_at:card.catalogObservedAt,
           input_usd_per_million: card.promptPriceUsdPerToken === undefined ? null : card.promptPriceUsdPerToken * 1_000_000,
           output_usd_per_million: card.completionPriceUsdPerToken === undefined ? null : card.completionPriceUsdPerToken * 1_000_000 })),
         ],

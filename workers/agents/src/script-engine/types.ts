@@ -1120,6 +1120,7 @@ export interface ScriptEngineEnv {
     inputModalities?: string[];
     outputModalities?: string[];
     supportedParameters?: string[];
+    catalogObservedAt?: string;
   }>;
   /** Host resolves advisory capability labels to the current authorized installation. */
   activatePlanRuntime?: (capability?: string) => Promise<void>;
