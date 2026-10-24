@@ -178,6 +178,23 @@ async function handle(c: C, agent: boolean) {
   const preferences = await channelPreferences(c.env, scope);
   if (action === "identity" && !preferences.enabled.email)
     return c.json({ identity: null, preferences, email_status: "disabled" });
+  if (action.startsWith("learning-")) {
+    if(agent)return c.json({error_code:"human_control_required"},403);
+    if(!c.env.SCRIPTS_R2)return c.json({error_code:"learning_storage_unavailable"},503);
+    if(c.req.method==="GET"&&!["learning-list","learning-read"].includes(action))return c.json({error_code:"method_not_allowed"},405);
+    const params=c.req.method==="GET"?Object.fromEntries(new URL(c.req.url).searchParams):body;
+    try {
+      const {BrowserDemonstrationStore}=await import("../script-engine/browser-demonstrations.js");
+      const library=new BrowserDemonstrationStore(c.env.SCRIPTS_R2,{spaceId:space,userId:user,...scope.projectId?{projectId:scope.projectId}:{}});
+      const name=String(params.name??"");
+      if(action==="learning-list")return c.json({skills:await library.list()});
+      if(action==="learning-read")return c.json({skill:(await library.read(name))?.skill??null});
+      if(action==="learning-draft")return c.json({skill:await library.draft(name,String(params.description??""),params.steps,"browser")});
+      if(action==="learning-enable"&&params.confirm===true)return c.json({skill:await library.enable(name,params.enabled===true)});
+      if(action==="learning-discard"&&params.confirm===true){await library.discard(name);return c.json({discarded:true});}
+      return c.json({error_code:"learning_confirmation_required"},400);
+    }catch(error){return c.json({error_code:error instanceof Error&&/^[a-z][a-z0-9_]+$/.test(error.message)?error.message:"learning_unavailable"},409);}
+  }
   let identity: CommunicationIdentity;
   try {
     identity = await ensureIdentity(c.env, scope);

@@ -76,3 +76,31 @@ on resume, then rechecked against fresh evidence at child admission. Capability 
 without silently buying a frontier model or widening the pool. No model was added automatically.
 Fresh validation: Agents type check and 24 focused model-catalog/routing/delegation tests passed.
 No live provider inference/latency benchmark was run (no configured provider credentials).
+
+## Step 5a — browser demonstration skills and video draft safety
+
+Added private per-author/per-assistant-workspace semantic demonstration skills, separate from
+Space-shared executable scripts. Website accounts can record/pause/discard actions and save a
+reviewable draft with a final success assertion. Typed values become parameters; stored handles,
+literal secrets, credential-field recording, arbitrary code and terminal commands are refused.
+Replay resolves fresh, unique role/name targets before every action and uses the normal browser
+operations/grants/approvals. Actual replay plus final assertion produces validation evidence;
+a separate authenticated Apps action explicitly enables that tested digest. Workers cannot enable
+their own drafts. Interrupted replays stay held for review; repeat calls in the same run reuse a
+saved completion instead of doing the work again. Apps exposes review, enable, disable and delete.
+Erasure also covers learning data even when the author never provisioned a mailbox.
+
+Replaced the old video-to-executable-selector path with scoped semantic drafts. Video reads now
+check workspace paths, delegated file grants, type, declared/actual byte size and a 20 MiB limit.
+Generated actions do not store demonstrated input values. Syntax checks no longer claim that a
+video or trace was verified. A configured multimodal analyzer is still required: production does
+not currently wire one, so uploaded-video interpretation reports unavailable rather than claiming
+it watched the file. Source videos remain the user's workspace files; no new raw recording copies
+are created by this path.
+
+Fresh validation: 69 focused communication/model/learning/CLI tests passed, including 30-way draft
+creation, cross-user/project isolation, changed and ambiguous targets, missing assertions, private
+input parameterization, enable gating, real interpreter replay, digest tampering and no blind replay.
+Agents and Shell type checks and the production Agents Worker dry-run passed.
+Still open: configured production video/frame analyzer and its metering, schedule UX, reconciliation
+of interrupted demonstrations, and sharing/promoting a reviewed private demonstration explicitly.

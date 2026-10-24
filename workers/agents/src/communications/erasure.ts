@@ -12,6 +12,24 @@ export async function eraseCommunicationIdentities(
     .bind(spaceId, tenantId)
     .first();
   if (!owned) throw new Error("communication_erasure_scope_mismatch");
+  // Learning can be used with email disabled, so it cannot depend on a mailbox existing.
+  if (env.SCRIPTS_R2) {
+    const learningSpaces = await env.PLATFORM_DB.prepare(
+      `SELECT id FROM spaces WHERE tenant_id=? AND ${includeChildren ? "(id=? OR parent_space_id=?)" : "id=?"}`
+    ).bind(tenantId, spaceId, ...(includeChildren ? [spaceId] : [])).all<{id:string}>();
+    for (const space of learningSpaces.results) {
+      let cursor: string | undefined;
+      const seen = new Set<string>();
+      do {
+        const page = await env.SCRIPTS_R2.list({prefix:`spaces/${space.id}/assistant-learning/`,limit:100,...cursor?{cursor}:{}});
+        const keys = page.objects.filter(object => !userId || object.key.includes(`/users/${userId}/`)).map(object=>object.key);
+        if(keys.length)await env.SCRIPTS_R2.delete(keys);
+        if(!page.truncated)break;
+        if(!page.cursor||seen.has(page.cursor))throw new Error("learning_erasure_cursor_invalid");
+        seen.add(page.cursor);cursor=page.cursor;
+      } while(cursor);
+    }
+  } else throw new Error("learning_storage_erasure_unavailable");
   for (;;) {
     const { results } = await env.PLATFORM_DB.prepare(
       `SELECT id,space_id FROM assistant_communication_identities WHERE tenant_id=? AND ${includeChildren ? "space_id IN (SELECT id FROM spaces WHERE id=? OR parent_space_id=?)" : "space_id=?"} ${userId ? "AND project_id IS NULL AND owner_user_id=?" : ""} ORDER BY id LIMIT 100`

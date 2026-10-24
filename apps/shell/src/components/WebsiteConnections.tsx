@@ -2,6 +2,7 @@
 import * as React from "react";
 import { Button, FormInput, FormSelect } from "@naelao/ui";
 import {
+  assistantMailApi,
   listProjects,
   listWebsiteConnections,
   createWebsiteConnection,
@@ -37,6 +38,11 @@ export function WebsiteConnections({
     [image, setImage] = React.useState(""),
     [field, setField] = React.useState(""),
     [value, setValue] = React.useState("");
+  const [recording, setRecording] = React.useState(false),
+    [recorded, setRecorded] = React.useState<Array<Record<string, unknown>>>(
+      []
+    ),
+    [skillName, setSkillName] = React.useState("");
   const generation = React.useRef(0);
   const refresh = React.useCallback(async () => {
     try {
@@ -48,6 +54,8 @@ export function WebsiteConnections({
   React.useEffect(() => {
     generation.current++;
     setActive(null);
+    setRecording(false);
+    setRecorded([]);
     setObservation(null);
     setImage("");
     setValue("");
@@ -66,6 +74,10 @@ export function WebsiteConnections({
     action?: BrowserScopedAction
   ) {
     const version = generation.current;
+    const demonstrated =
+      recording && action?.handle
+        ? observation?.elements.find((e) => e.handle === action.handle)
+        : undefined;
     setBusy(true);
     setError("");
     try {
@@ -75,7 +87,40 @@ export function WebsiteConnections({
         ...(action ? { action } : {}),
       });
       if (version !== generation.current) return;
+      if (operation === "act" && action && demonstrated && recording) {
+        if (action.type === "scroll") {
+          /* scrolling is re-observed, not stored as a brittle coordinate */
+        } else if (
+          (action.type === "type" || action.type === "select") &&
+          /password|passcode|one.?time|otp|verification|security.?code|recovery.?code/i.test(
+            demonstrated.name
+          )
+        ) {
+          setRecording(false);
+          setError(
+            "Recording paused: credentials and verification codes must not become skill steps."
+          );
+        } else
+          setRecorded((previous) =>
+            previous.length >= 31
+              ? previous
+              : [
+                  ...previous,
+                  {
+                    type: action.type,
+                    target: {
+                      role: demonstrated.role,
+                      name: demonstrated.name,
+                    },
+                    ...(action.type === "type" || action.type === "select"
+                      ? { parameter: "input_" + previous.length }
+                      : {}),
+                  },
+                ]
+          );
+      }
       if (operation === "close") {
+        setRecording(false);
         setActive(null);
         setObservation(null);
         setImage("");
@@ -109,6 +154,8 @@ export function WebsiteConnections({
   }
   async function start(item: WebsiteConnection) {
     const next = { id: item.id, session_id: crypto.randomUUID() };
+    setRecording(false);
+    setRecorded([]);
     setActive(next);
     setObservation(null);
     setImage("");
@@ -137,6 +184,53 @@ export function WebsiteConnections({
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not connect website");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function saveDemonstration() {
+    if (!active || !observation) return;
+    const expected = observation.elements.find(
+      (e) => e.handle === field && e.enabled
+    );
+    if (!expected) {
+      setError(
+        "Select the control that proves the workflow finished before saving."
+      );
+      return;
+    }
+    const connection = items.find((item) => item.id === active.id);
+    setBusy(true);
+    setError("");
+    try {
+      await assistantMailApi(
+        spaceId,
+        session,
+        {
+          action: "learning-draft",
+          ...(connection?.project_id
+            ? { projectId: connection.project_id }
+            : {}),
+          name: skillName,
+          description:
+            "Workflow demonstrated through the private website browser",
+          steps: [
+            ...recorded,
+            {
+              type: "assert",
+              target: { role: expected.role, name: expected.name },
+            },
+          ],
+        },
+        true
+      );
+      setRecording(false);
+      setRecorded([]);
+      setSkillName("");
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Could not save the demonstration"
+      );
     } finally {
       setBusy(false);
     }
@@ -257,6 +351,55 @@ export function WebsiteConnections({
             verification codes only in this panel. If the page expires while you
             verify, refresh to observe its current state.
           </p>
+          <fieldset disabled={busy}>
+            <legend>Teach a reusable workflow</legend>
+            <p>
+              Sign in first, then record a workflow using test data. Recorded
+              inputs become named parameters; passwords, codes and screenshots
+              are not saved as skill steps. Unsaved recordings stay in this tab.
+            </p>
+            <Button
+              disabled={!observation || recorded.length > 0}
+              onClick={() => {
+                setRecorded([{ type: "navigate" }]);
+                setRecording(true);
+              }}
+            >
+              Start recording
+            </Button>
+            {recorded.length > 0 && (
+              <>
+                <Button onClick={() => setRecording(!recording)}>
+                  {recording ? "Pause recording" : "Resume recording"}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setRecording(false);
+                    setRecorded([]);
+                  }}
+                >
+                  Discard recording
+                </Button>
+                <p>
+                  {recorded.length} steps. Select the final expected website
+                  control, then save a draft. A real test and explicit
+                  enablement are required before reuse.
+                </p>
+                <FormInput
+                  aria-label="Demonstration skill name"
+                  value={skillName}
+                  onChange={(e) => setSkillName(e.target.value)}
+                  placeholder="my-workflow"
+                />
+                <Button
+                  disabled={!field || !skillName}
+                  onClick={() => void saveDemonstration()}
+                >
+                  Save skill draft
+                </Button>
+              </>
+            )}
+          </fieldset>
           {image && (
             <img
               src={image}

@@ -57,11 +57,11 @@ export interface DemonstrationStep {
 
 export type VideoSkillAction =
   | { type: "NAVIGATE"; url: string }
-  | { type: "CLICK"; selector: string }
-  | { type: "TYPE"; selector: string; value: string; parameter?: string }
+  | { type: "CLICK"; selector?: string; target?: {role:string;name:string} }
+  | { type: "TYPE"; selector?: string; target?: {role:string;name:string}; value?: string; parameter?: string }
   | { type: "EXTRACT"; selector: string; as: string }
   | { type: "BASH"; command: string }
-  | { type: "ASSERT"; selector: string; text?: string };
+  | { type: "ASSERT"; selector?: string; target?: {role:string;name:string}; text?: string };
 
 /** Recency verdict for a stored skill. Derived in skill-health.ts (all the logic lives there;
  *  the shape lives here so `FindCandidate` can carry it without a circular import). */

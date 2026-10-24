@@ -229,7 +229,7 @@ async function distillTrace(a: Record<string, unknown>, ctx: PrebuiltOpContext):
     ...(typeof a["description"] === "string" ? { description: a["description"] } : {}),
     workspace: { bucket: ctx.env.workspaceBucket ?? ctx.env.scriptsBucket, prefix: workspacePrefix(ctx.env) },
   });
-  return { ok: true, name: result.metadata.name, parameters: result.metadata.parameters, verified: true };
+  return { ok: true, name: result.metadata.name, parameters: result.metadata.parameters, verified: false, validation: "syntactic_only" };
 }
 
 async function distillVideo(a: Record<string, unknown>, ctx: PrebuiltOpContext): Promise<unknown> {

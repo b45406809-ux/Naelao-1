@@ -1,4 +1,5 @@
 "use client";
+import { AssistantLearningPanel } from "./AssistantLearningPanel";
 import { AssistantPhonePanel } from "./AssistantPhonePanel";
 import * as React from "react";
 import { Button, FormInput, FormTextarea, FormSelect } from "@naelao/ui";
@@ -289,6 +290,7 @@ export function AssistantMailboxPanel({
       />
       {error && <p role="alert">{error}</p>}
       <AssistantPhonePanel spaceId={spaceId} {...(project ? {projectId:project} : {})} session={session} />
+      <AssistantLearningPanel spaceId={spaceId} {...(project ? {projectId:project} : {})} session={session} />
     </section>
   );
 }
