@@ -70,6 +70,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("assistant telephone safety and lifecycle", () => {
   it("keeps numbers optional and rejects invalid limits and transfer addresses", () => {
     expect(defaultPhonePolicy.voicemail).toBe(false);
+    expect(defaultPhonePolicy.greeting).toBe("");
     for (const patch of [
       { maxCallSeconds: 0 },
       { maxDailyActions: 0 },

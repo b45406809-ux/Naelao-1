@@ -176,3 +176,12 @@ are retained for reconciliation. Shared command-inbox bodies retain their existi
 owner. Every deleted object key is checked against the exact assistant namespace. The focused
 phone regression suite and Agents type check passed. The larger implementation list above is
 still open; this change does not activate managed telephony or live provider acceptance.
+
+## Kernel boundary correction
+
+Removed the built-in inbound assistant greeting for newly connected phones. Inbound calls are
+rejected until an owner/template workflow supplies a greeting; Apps now exposes that configuration.
+Existing configured greetings are preserved. Phone tests (14) and Agents/Shell type checks passed.
+This is only a boundary correction: the fixed menu and legacy customer voice runtime still need
+migration to extension handlers. Managed billing, interactive voice/MMS, production video analysis,
+scheduling, remaining integrations and live acceptance remain unfinished and are not certified.

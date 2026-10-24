@@ -346,6 +346,8 @@ export function AssistantPhonePanel({
               </fieldset>
               <fieldset disabled={busy || !state.enabled}>
                 <legend>Inbound calls</legend>
+                <p>No inbound greeting is supplied by the kernel. Configure the greeting for your workflow before accepting calls. The current transport menu uses 1 for enabled voicemail and 2 for an enabled transfer destination.</p>
+                <label>Workflow greeting <textarea key={state.phone.id+state.phone.policy.greeting} defaultValue={state.phone.policy.greeting} maxLength={1000} onBlur={e=>{if(e.target.value!==state.phone!.policy.greeting)void act('phone-policy',{policy:{...state.phone!.policy,greeting:e.target.value}});}} /></label>
                 <label>
                   <input
                     type="checkbox"

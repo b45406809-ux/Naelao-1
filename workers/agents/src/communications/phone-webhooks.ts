@@ -181,7 +181,7 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
     )
       return reject();
     const root = `${phonePublicOrigin(c.env)}/assistant-phone/twilio/${binding.id}`;
-    const menu = () =>
+    const menu = () => !policy.greeting.trim() ? response("<Reject/>") :
       response(
         `<Gather input="dtmf" numDigits="1" timeout="10" action="${xml(root + "/menu")}" method="POST"><Say>${xml(policy.greeting)}</Say></Gather><Hangup/>`
       );

@@ -41,8 +41,7 @@ export const defaultPhonePolicy: AssistantPhonePolicy = {
   maxDailyInboundMessages: 100,
   maxDailyInboundCalls: 20,
   maxCallSeconds: 300,
-  greeting:
-    "You have reached an AI assistant. Press 1 to leave a message, or 2 to speak to a person.",
+  greeting: "",
   voicemail: false,
   transferTo: null,
 };
@@ -65,7 +64,6 @@ export function validatePhonePolicy(value: unknown): AssistantPhonePolicy {
     p.maxCallSeconds < 30 ||
     p.maxCallSeconds > 900 ||
     typeof p.greeting !== "string" ||
-    p.greeting.length < 1 ||
     p.greeting.length > 1000 ||
     typeof p.voicemail !== "boolean" ||
     (p.transferTo !== null &&
