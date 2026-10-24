@@ -223,6 +223,7 @@ export interface BlueprintProject {
 }
 
 export interface SpaceBlueprint {
+  assistantChannels?: import("./assistant-channels.js").AssistantChannelTemplateDefaults;
   id: string;
   schemaVersion: "2.0";
   metadata: Record<string, unknown> & { name?: string; exportedAt?: string };

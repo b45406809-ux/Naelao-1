@@ -15,6 +15,7 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Button, Badge, FormInput, FormTextarea, useToast, Toast } from "@naelao/ui";
+import { AssistantChannelsPanel } from "@/components/AssistantChannelsPanel";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
@@ -257,6 +258,7 @@ export default function BusinessOnboardingPage() {
   if (loading || provisioning) {
     return (
       <div className="page-view" style={{ maxWidth: 620 }}>
+        {creds && <AssistantChannelsPanel spaceId={params.businessId} session={creds} onboarding />}
         <div className="page-title">{provisioning ? "Building your business…" : "Loading setup…"}</div>
         {provisioning && (
           <p style={{ fontSize: 13.5, color: "var(--text2)", marginTop: 10, lineHeight: 1.55 }}>
@@ -272,6 +274,7 @@ export default function BusinessOnboardingPage() {
     const channel = answers["owner_channel"] ?? "your chosen channel";
     return (
       <div className="page-view" style={{ maxWidth: 620 }}>
+        {creds && <AssistantChannelsPanel spaceId={params.businessId} session={creds} onboarding />}
         <div className="page-title">You&rsquo;re set up 🎉</div>
         <p style={{ fontSize: 14, color: "var(--text2)", marginTop: 8 }}>
           {templateName} is configured and your assistant has taken over from here.
@@ -303,6 +306,7 @@ export default function BusinessOnboardingPage() {
   if (!step) {
     return (
       <div className="page-view" style={{ maxWidth: 620 }}>
+        {creds && <AssistantChannelsPanel spaceId={params.businessId} session={creds} onboarding />}
         <div className="page-title">Ready to go</div>
         <p style={{ fontSize: 14, color: "var(--text2)", marginTop: 8 }}>
           That&rsquo;s everything. Finishing setup hands {templateName} to your assistant: it will read
@@ -359,6 +363,7 @@ export default function BusinessOnboardingPage() {
 
   return (
     <div className="page-view" style={{ maxWidth: 620 }}>
+        {creds && <AssistantChannelsPanel spaceId={params.businessId} session={creds} onboarding />}
       <div style={{ fontSize: 12, color: "var(--text3)", letterSpacing: 0.3, textTransform: "uppercase" }}>
         Set up {templateName} · {stepIndex + 1} of {steps.length}
       </div>

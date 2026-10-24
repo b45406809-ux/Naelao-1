@@ -2941,3 +2941,8 @@ export async function disconnectWebsite(spaceId: string, session: SessionCredent
 export async function websiteBrowser(spaceId: string, session: SessionCredentials, input: {id:string;session_id:string;operation:string;action?:unknown}) {
   return apiFetch<{result?: import("@naelao/agent-sdk").BrowserObservation;image_base64?:string}>(`/v1/spaces/${encodeURIComponent(spaceId)}/website-browser`,{session,method:"POST",body:JSON.stringify(input)});
 }
+
+export interface AssistantChannelSettings {preferences: import("@naelao/agent-sdk").AssistantChannelPreferences; overrides: import("@naelao/agent-sdk").AssistantChannelPatch; templateDefaults: import("@naelao/agent-sdk").AssistantChannelTemplateDefaults}
+function assistantChannelsPath(spaceId:string,scope:{projectId?:string;projectDefaults?:boolean}={}) {const query=new URLSearchParams({...scope.projectId?{project_id:scope.projectId}:{},...scope.projectDefaults?{project_defaults:"true"}:{}});return `/v1/spaces/${encodeURIComponent(spaceId)}/assistant-channels?${query}`;}
+export function getAssistantChannels(spaceId:string,session:SessionCredentials,scope:{projectId?:string;projectDefaults?:boolean}={}) {return apiFetch<AssistantChannelSettings>(assistantChannelsPath(spaceId,scope),{session});}
+export function saveAssistantChannels(spaceId:string,session:SessionCredentials,body:{preferences?:import("@naelao/agent-sdk").AssistantChannelPatch;templateDefaults?:import("@naelao/agent-sdk").AssistantChannelTemplateDefaults},scope:{projectId?:string;projectDefaults?:boolean}={}) {return apiFetch<AssistantChannelSettings>(assistantChannelsPath(spaceId,scope),{session,method:"PATCH",body:JSON.stringify(body)});}

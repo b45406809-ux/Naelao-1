@@ -1022,6 +1022,8 @@ export interface ScriptEngineEnv {
   knowledgeWorker?: Fetcher;
   spacesWorker?: Fetcher;
   notificationsWorker?: Fetcher;
+  /** Host checks current template/user settings before assistant channel use. */
+  assistantChannelAllowed?: (channel: import("@naelao/agent-sdk").AssistantChannel) => Promise<boolean>;
   /** The agents worker's own self-binding (AGENTS_WORKER). Lets a prebuilt reach an internal
    *  route on this same worker that holds a secret the isolate must never see — currently the
    *  business-email prebuilt calling /internal/business-email/{provision,send} for the AgentMail

@@ -23,6 +23,7 @@ import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
 import { registerExtensionGadgetRoutes } from "./routes/extension-gadget.js";
 import { gadgetActorId } from "./do/MicroAppDO.js";
 import { registerDynamicPageRoutes } from "./routes/dynamic-pages.js";
+import { registerAssistantChannelRoutes } from "./routes/assistant-channels.js";
 import { registerWebsiteConnectionRoutes } from "./routes/website-connections.js";
 import { registerRecipeRoutes } from "./routes/recipes.js";
 import { registerMarketplaceRoutes } from "./routes/marketplace.js";
@@ -256,6 +257,7 @@ registerDeskDropRoutes(app, {
 });
 registerGraduationRoutes(app);
 registerWebsiteConnectionRoutes(app);
+registerAssistantChannelRoutes(app);
 
 // Extract caller identity from headers (set by router worker after JWT validation)
 function getCallerIdentity(c: { req: { header: (h: string) => string | undefined } }) {

@@ -669,6 +669,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
   /^\/spaces\/([^/]+)\/presence$/,
   /^\/spaces\/([^/]+)\/my-businesses$/,
+  /^\/spaces\/([^/]+)\/assistant-channels$/,
   /^\/spaces\/([^/]+)\/website-connections$/,
   /^\/spaces\/([^/]+)\/website-browser$/,
   /^\/spaces\/([^/]+)\/my-spaces$/,

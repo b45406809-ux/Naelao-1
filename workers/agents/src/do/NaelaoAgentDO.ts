@@ -2286,6 +2286,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(projectId ? { projectId } : {}),
       ...(workspaceBranch ? { workspaceBranch } : {}),
     };
+    env.assistantChannelAllowed = async channel => {
+      const query=new URLSearchParams({...userId?{actor_id:userId}:{},...projectId?{project_id:projectId}:{}});
+      const response=await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${encodeURIComponent(spaceId)}/assistant-channels?${query}`,{headers:{"x-naelao-tenant-id":tenantId,"x-naelao-internal-token":await mintInternalToken(this.env.PLATFORM_SECRET,tenantId)}}));
+      if(!response.ok) return false;
+      const policy=await response.json<{preferences:import("@naelao/agent-sdk").AssistantChannelPreferences}>();
+      return policy.preferences.enabled[channel]===true;
+    };
     // Workers AI's documented M2M100 model is a useful translation provider, but it remains a
     // cloud model. Never expose this closure to an air-gapped Space; that path fails closed and
     // cannot silently route translation outside the local machine.

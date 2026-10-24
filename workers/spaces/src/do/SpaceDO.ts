@@ -27,6 +27,7 @@ import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInte
 import type { MessageRole } from "@naelao/types";
 import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
+import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, type AssistantChannelPatch, type AssistantChannelTemplateDefaults } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { promoteCockpit } from "@naelao/agent-sdk";
 import { projectFactRelevance } from "@naelao/agent-sdk";
@@ -2982,6 +2983,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/customer-conversations") return this.recordCustomerConversation(request);
       if (method === "GET" && url.pathname === "/internal/customer-conversations/urgent") return this.listUrgentCustomerConversations(url.searchParams);
       if (method === "POST" && url.pathname === "/internal/customer-conversations/mark-alerted") return this.markCustomerConversationsAlerted(request);
+      if (url.pathname === "/assistant-channels" && (method === "GET" || method === "PATCH")) {
+        const userId = url.searchParams.get("user_id"), projectId = url.searchParams.get("project_id");
+        if (!userId) return Response.json({error_code:"user_required"},{status:400});
+        const key = projectId ? `channels:project:${projectId}` : url.searchParams.get("project_defaults") === "true" ? "channels:project-defaults" : `channels:user:${userId}`;
+        if (method === "PATCH") {
+          const body = await request.json<{preferences?:unknown;templateDefaults?:unknown}>();
+          try {
+            const writes: Record<string,unknown> = {};
+            if (body.preferences !== undefined) writes[key] = validateAssistantChannelPatch(body.preferences);
+            if (body.templateDefaults !== undefined) writes["channels:template"] = validateAssistantChannelDefaults(body.templateDefaults);
+            if(Object.keys(writes).length) await this.ctx.storage.put(writes);
+          } catch { return Response.json({error_code:"invalid_channel_settings"},{status:400}); }
+        }
+        const template = await this.ctx.storage.get<AssistantChannelTemplateDefaults>("channels:template") ?? {};
+        const overrides = await this.ctx.storage.get<AssistantChannelPatch>(key);
+        const projectTemplate = projectId ? await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${projectId}`) : undefined;
+        const projectDefaults = projectId ? await this.ctx.storage.get<AssistantChannelPatch>("channels:project-defaults") : undefined;
+        const isProject = !!projectId || url.searchParams.get("project_defaults") === "true";
+        return Response.json({preferences:resolveAssistantChannels(isProject?"project_assistant":"space_assistant",isProject?template.projectAssistants:template.spaceAssistant,projectTemplate,projectDefaults,overrides),overrides:overrides??{},templateDefaults:template});
+      }
       if (method === "POST" && url.pathname === "/blueprints/export") {
         const body = await request.json<{ space_id?: string; project_id?: string; required_extensions?: string[]; name?: string; description?: string; template_category?: string }>();
         if (!body.space_id) return Response.json({ error: "space_id is required" }, { status: 400 });
@@ -4039,7 +4060,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       `SELECT id, name, kind, template_mode, viewport_config, default_agent_id, execution_ceiling, channel_config, artifact_linter_policy FROM projects
        WHERE space_id = ? AND status != 'archived' ${options.projectId ? "AND id=?" : ""} ORDER BY created_at, id`,
       ...(options.projectId ? [spaceId, options.projectId] : [spaceId]));
-    const exportedProjects = projects.map((project) => {
+    const exportedProjects = await Promise.all(projects.map(async (project) => {
       const agent = project.default_agent_id ? queryOne<{ config_json: string }>(this.ctx.storage.sql as never,
         "SELECT config_json FROM agent_definitions WHERE id = ? AND space_id = ?", project.default_agent_id, spaceId) : null;
       const config = safeJsonParseObj(agent?.config_json ?? "{}");
@@ -4050,12 +4071,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return {
         id: project.id, name: project.name, kind: project.kind as ProjectKind, templateMode: project.template_mode,
         viewports: safeJsonParseObj(project.viewport_config),
-        configuration: { executionCeiling: project.execution_ceiling, channel: safeJsonParseObj(project.channel_config), artifactLinters: parseArtifactLinters(JSON.parse(project.artifact_linter_policy)) },
+        configuration: { ...(await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${project.id}`) ? { assistantChannels: await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${project.id}`) } : {}), executionCeiling: project.execution_ceiling, channel: safeJsonParseObj(project.channel_config), artifactLinters: parseArtifactLinters(JSON.parse(project.artifact_linter_policy)) },
         systemPrompt: typeof config.system_prompt === "string" ? config.system_prompt : "",
         initialTasks: tasks.map((task) => ({ id: task.id, title: task.title, status: task.status, dependencies: safeJsonParseArr(task.dependencies).filter((id): id is string => typeof id === "string"), ...(task.assigned_agent ? { assignedAgent: task.assigned_agent } : {}) })),
         starterFiles: files.map((file) => ({ path: `/workspace/${file.path.replace(/^\/+/, "")}`, content: file.content })),
       };
-    });
+    }));
     const installedExtensions = queryAll<{ extension_id: string }>(this.ctx.storage.sql as never, "SELECT extension_id FROM installed_extensions ORDER BY extension_id");
     const availableExtensions = new Set(installedExtensions.map(item => item.extension_id));
     const requestedExtensions = options.projectId ? (options.requiredExtensions ?? []) : (options.requiredExtensions ?? [...availableExtensions]);
@@ -4065,6 +4086,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         ...(options.name ? { name: options.name.trim() } : {}), ...(options.description ? { description: options.description.trim() } : {}) },
       templateCategory: options.templateCategory ?? (options.projectId ? "developer-tools" : "venture"), projects: exportedProjects,
       requiredExtensions: [...new Set(requestedExtensions)].sort(), requiredCredentials: [],
+      assistantChannels: await this.ctx.storage.get<AssistantChannelTemplateDefaults>("channels:template") ?? {},
     };
   }
 
@@ -4152,6 +4174,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           }
         }
       });
+      if (compiled.assistantChannels !== undefined) await this.ctx.storage.put("channels:template",compiled.assistantChannels);
+      for (const project of compiled.projects) if(project.configuration?.assistantChannels !== undefined) await this.ctx.storage.put(`channels:template-project:${ids.get(project.id ?? project.name)!}`,validateAssistantChannelPatch(project.configuration.assistantChannels));
       return { projectIds: [...ids.values()], taskCount, fileCount: preparedFiles.length };
     } catch (error) {
       if (this.env.SCRIPTS_R2 && stagedKeys.length) {

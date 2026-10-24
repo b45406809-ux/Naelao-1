@@ -49,6 +49,7 @@ async function dispatch(
   channel: string,
   payload: Record<string, unknown>
 ): Promise<unknown> {
+  if (["email","slack","discord","whatsapp","telegram"].includes(channel) && ctx.env.assistantChannelAllowed && !await ctx.env.assistantChannelAllowed(channel as import("@naelao/agent-sdk").AssistantChannel)) return {delivered:false,channel,reason:"assistant_channel_disabled"};
   if (!ctx.env.notificationsWorker) {
     return { delivered: false, reason: "notifications worker binding not configured", channel };
   }
