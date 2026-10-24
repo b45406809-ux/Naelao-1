@@ -1,8 +1,9 @@
 # Assistant voice and worker classes implementation
 
 Approved: OpenRouter-only new AI egress; one planner/worker runtime; separate heartbeat and voice
-sessions; optional metered custom voices enabled by an owner or template onboarding; extensions
-use scoped host SDK services. Voice cloning requires consent. No native provider bypass.
+sessions; host-approved prebuilt voice profiles. Custom voices require a separate consent and
+storage lifecycle before they can be enabled. Extensions use scoped host SDK services. No native
+provider bypass.
 
 ## Delivery checklist
 
@@ -14,12 +15,13 @@ use scoped host SDK services. Voice cloning requires consent. No native provider
 - [x] OpenRouter transcription/speech adapter with required host admission/usage callbacks, and
       restricted binary-safe vault streaming with a signed host-only audio purpose.
 - [x] Bounded continuous-PCM utterance collector with silence cutoff, 20-second request cap,
-      16kHz WAV framing and a single-queued-utterance memory bound.
+      16kHz WAV framing and a single-queued-utterance memory bound. The Credentials Worker permits
+      this exact transcription route to use a 900 KiB body cap (under its 1 MiB request ceiling).
 - [x] Bounded OpenRouter PCM TTS adapter matching the current 16kHz mono call transport.
 - [x] Durable subscription-token reservation, provider usage settlement and reconciliation helper.
-- [ ] Bind adapters to production host budget reservations, catalog selection and durable reconciliation.
-- [ ] Connect interactive cascade to both assistant transports and durable planner turns.
-- [ ] Voice model/endpoint discovery with codecs, billing units and custom voice compatibility.
+- [x] Bind adapters to production host budget reservations, approved catalog selection and durable reconciliation.
+- [x] Connect bounded STT/TTS to Space and Project assistant calls; transcripts still go through durable planner turns.
+- [x] Host-approved speech registry with model-specific voices, PCM rates, supported language hints and conservative per-model billing estimates.
 - [x] Voice settings UI for Space and Project scopes, including revisioned saves and configured call caps.
 - [ ] Template activation/onboarding for voice preferences and capability/entitlement explanation.
 - [ ] Scoped host extension bridge and Voice Studio dogfood extension.
@@ -32,46 +34,40 @@ The generic vault proxy continues to buffer ordinary responses. A new audio resp
 restricted to the exact OpenRouter speech POST endpoint, preserves signed scope and egress
 authorization, scans reflected credentials across chunk boundaries, and finalizes action receipts
 on completion. Interrupted streams become indeterminate and cannot be automatically replayed.
-The audio adapter requires host admission before egress. The new host admission helper reserves
-subscription token quota per provider request, journals request and settlement states in the voice
-Durable Object, retains unknown outcomes for up to 30 days, retries settlement, and can reconcile
-known speech generation IDs. It is not called by the active `OwnerVoiceAgent` transport yet; production
-budget/discovery binding and call integration remain open. Requests without a generation ID remain
-held as unresolved rather than being automatically released.
+The audio adapter requires host admission before egress. The active `OwnerVoiceAgent` now uses the
+bounded utterance collector and OpenRouter TTS through the Credentials Worker vault. The vault
+resolves `llm_byok_active::openrouter` internally, so provider key plaintext never enters the voice
+Durable Object. Every transcription and speech request reserves subscription token quota, journals
+its state, records provider cost and reconciles known generation IDs on reconnect, call end and DO
+alarm. Per-call USD admission counts settled spend plus pending estimated spend. Outcomes without a
+generation ID remain held for reconciliation/expiry, never auto-released. The call setting is read
+before transport start and rechecked for turns and speech; disabling voice prevents new speech/tasks.
+Space and Project calls share the same planner/worker runtime; the voice layer only transcribes,
+speaks and relays into durable planner turns.
 
-The SDK catalog previously recognized `audio` but dropped `speech` during normalization.
-Recognizing the modality is discovery only, not proof of streaming, cloning or key entitlement.
+The model/voice catalog is an explicit host-reviewed mapping and is served through the Space/Project
+settings API. It is not a live OpenRouter catalog refresh. OpenRouter availability and rates can
+change, so the catalog must be checked before deployment; unsupported or removed model/voice pairs
+fail closed. The SDK's `speech` modality is discovery only, not proof of cloning or key entitlement.
 
-Preference storage currently rejects non-null voice profile references until the host resource
-lifecycle is implemented. Saving preferences does not activate a new audio adapter. Existing
-voice transport remains unchanged until the OpenRouter path has metering and acceptance evidence.
-
-The shell now exposes the persisted Space/Project preferences and handles revision conflicts through
-the authenticated settings API. The enable switch currently saves policy only; it does not activate
-OpenRouter audio on live calls. Do not represent a call as using the selected model until the host
-audio adapter, cost reservation and durable usage reconciliation are bound to the call transport.
-The current `agents/voice` STT contract is a continuous PCM stream, while OpenRouter transcription
-accepts complete encoded audio requests. The new utterance adapter supplies bounded PCM collection,
-silence cutoff and WAV framing, but is not yet connected to live calls because model selection and
-plan-aware durable usage admission are still missing.
+The dashboard now shows only host-approved prebuilt model/voice profiles and the enable switch gates
+the live Space/Project call transport. Custom voice cloning remains unavailable; requests to enable
+it are rejected until the separate consent, storage, deletion and provider-entitlement lifecycle is
+implemented. Voice-provider fallback is also deliberately not offered as an active preference.
 
 Current OpenRouter docs confirm model discovery via `/models?output_modalities=transcription` and
-`/models?output_modalities=speech`; STT returns `usage.cost`, tokens and audio seconds. Model cards
-and prices change. Collection rank reflects recent usage, not benchmark quality. The implementation
-does not choose a model by slug or infer voice compatibility from a model name. See [OpenRouter model
-catalog documentation](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
+`/models?output_modalities=speech`; the catalog's Whisper Large V3 Turbo, Grok Voice TTS 1.0 and
+Microsoft MAI Voice 2.1 profiles are pinned to explicit model-specific voice IDs and PCM rates.
+Current model cards quote transcription per-second and TTS per-character billing; recorded usage
+reconciles against provider receipts. Prices and availability change. Collection rank reflects
+recent usage, not benchmark quality. See [OpenRouter model catalog documentation](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
 [transcription guide](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/), and
 [speech guide](https://openrouter.ai/blog/tutorials/text-to-speech/).
 
 ## Verification
 
-Combined full Spaces/Credentials source suites: 82 files / 315 tests passed. Focused SDK,
-preferences, gateway authorization, catalog, audio adapter, vault and owner-voice regressions:
-10 files / 48 tests passed. Signed audio-purpose/forgery, air-gap and proxy tests: 12 passed.
-Router source suite: 12 files / 73 tests passed. SDK, Spaces, Credentials, Agents and Router
-TypeScript checks passed before this UI addition; the shell TypeScript check and `git diff --check`
-passed after it. The utterance bridge and OpenRouter audio adapter suites passed (8 tests), and the
-Agents TypeScript check passed after that addition. No provider request, production voice
-activation or live telephone acceptance has been performed. Utterance, TTS, audio and durable
-admission suites passed (13 tests); Agents and Billing TypeScript checks passed; Billing quota
-reservation tests passed (2 tests).
+This integration's targeted suites passed: Agents voice (5 files / 22 tests), Spaces settings (1
+file / 4 tests), Credentials (5 files / 19 tests), and Agent SDK voice (1 file / 10 tests). Agents,
+Spaces, Credentials, Agent SDK and Shell TypeScript checks passed, as did `git diff --check`. No
+live OpenRouter request or live telephone/provider acceptance test was performed; deployment
+acceptance remains open.

@@ -24,6 +24,7 @@ export interface AssistantVoiceSettings {
   overrides: Partial<AssistantVoicePreferences>;
   revision: number;
   inherited: boolean;
+  voiceCatalog?: Array<{ id: string; name: string; modelClass: ModelClass; languages: string[] }>;
 }
 export const DEFAULT_ASSISTANT_VOICE: Readonly<AssistantVoicePreferences> = Object.freeze({
   schemaVersion: 1, enabled: false, voiceProfileId: null, language: "auto",

@@ -31,4 +31,12 @@ describe("revisioned voice preferences in SpaceDO", () => {
     expect((await call(undefined, { revision: 0, preferences: { speed: 100 } })).status).toBe(400);
     expect(await (await call()).json()).toMatchObject({ revision: 0 });
   });
+  it("lists only host-approved voices and accepts a model-matched preset", async () => {
+    const { call } = fixture();
+    const initial = await (await call()).json() as { voiceCatalog: Array<{ id: string; modelClass: string }> };
+    expect(initial.voiceCatalog.some((v) => v.id === "economy-eve" && v.modelClass === "economy")).toBe(true);
+    expect((await call(undefined, { revision: 0, preferences: { modelClass: "balanced", voiceProfileId: "balanced-harper" } })).status).toBe(200);
+    expect((await call(undefined, { revision: 1, preferences: { modelClass: "advanced" } })).status).toBe(409);
+    expect((await call(undefined, { revision: 1, preferences: { customVoicesEnabled: true } })).status).toBe(409);
+  });
 });

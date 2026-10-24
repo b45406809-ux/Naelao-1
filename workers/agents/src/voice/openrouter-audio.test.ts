@@ -14,6 +14,12 @@ describe("metered OpenRouter audio", () => {
     expect(f.settle).toHaveBeenCalledWith(0.001, undefined, 11);
     expect(f.fetchWithAuth.mock.calls[0]?.[0]).toBe("https://openrouter.ai/api/v1/audio/transcriptions");
   });
+  it("accepts the full bounded 20-second PCM utterance size", async () => {
+    const f = fixture(() => Response.json({ text: "ok", usage: { cost: 0.00006, total_tokens: 2000 } }));
+    const data = "A".repeat(853_392);
+    expect(await f.adapter.transcribe({ model: "openai/whisper-large-v3-turbo", requestId: "max-utterance", data, format: "wav" })).toBe("ok");
+    expect(f.authorize).toHaveBeenCalledWith(expect.objectContaining({ estimatedTokens: 2000, estimatedCostUsd: 0.00006 }));
+  });
   it("retains a reservation when provider usage is missing", async () => {
     const f = fixture(() => Response.json({ text: "Hello" }));
     await expect(f.adapter.transcribe({ model: "openai/whisper-1", requestId: "t", data: "YWJj", format: "wav" })).rejects.toThrow("audio_usage_unavailable");

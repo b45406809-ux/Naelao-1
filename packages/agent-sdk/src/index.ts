@@ -198,3 +198,5 @@ export * from "./package-inspection.js";
 
 export { DEFAULT_ASSISTANT_VOICE, validateAssistantVoicePatch, resolveAssistantVoice, createAssistantVoiceClient } from "./assistant-voice.js";
 export type { ModelClass, WorkerExecutionKind, WorkerExecutionPolicy, AssistantVoicePreferences, AssistantVoiceSettings, VoiceProfile, VoiceCapability } from "./assistant-voice.js";
+export { ASSISTANT_VOICE_CATALOG, approvedAssistantVoice, resolveAssistantVoiceProfile } from "./assistant-voice-catalog.js";
+export type { ApprovedAssistantVoice } from "./assistant-voice-catalog.js";

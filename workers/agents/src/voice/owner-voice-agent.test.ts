@@ -5,6 +5,7 @@ vi.mock("agents/voice", () => ({
   WorkersAIFluxSTT: class {},
 }));
 import { OwnerVoiceAgent } from "./owner-voice-agent.js";
+import { DEFAULT_ASSISTANT_VOICE, approvedAssistantVoice } from "@naelao/agent-sdk";
 const ticket = {
   tenantId: "tenant",
   spaceId: "space",
@@ -23,6 +24,9 @@ function setup() {
   Object.assign(agent, {
     ctx: { id: { name: "voice" } },
     allowed,
+    loadPreferences: vi.fn(async () => ({ ...DEFAULT_ASSISTANT_VOICE, enabled: true })),
+    activePreferences: { ...DEFAULT_ASSISTANT_VOICE, enabled: true },
+    activeProfile: approvedAssistantVoice(null, "economy"),
     env: {
       PLATFORM_DB: {
         prepare: vi.fn(() => ({
@@ -54,6 +58,13 @@ describe("live voice planner permission checks", () => {
       "voice_scope_unavailable"
     );
     expect(f.turn).not.toHaveBeenCalled();
+  });
+  it("blocks a live planner turn when the owner disables voice in settings", async () => {
+    const f = setup();
+    vi.mocked(f.agent.loadPreferences).mockResolvedValue(null);
+    await expect(f.agent.onTurn("Do something", f.context as never)).rejects.toThrow("voice_disabled_or_unavailable");
+    expect(f.turn).not.toHaveBeenCalled();
+    expect(f.context.connection.close).toHaveBeenCalledWith(1008, "voice_disabled_or_unavailable");
   });
   it("does not speak a result after permissions are revoked during the task", async () => {
     const f = setup();

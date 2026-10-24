@@ -1,4 +1,5 @@
 import { resolveAssistantVoice, validateAssistantVoicePatch, type AssistantVoicePreferences } from "@naelao/agent-sdk";
+import { ASSISTANT_VOICE_CATALOG } from "@naelao/agent-sdk";
 
 type Row = { preferences_json: string; revision: number };
 /** Internal DO handler. The gateway attests scope and authorizes the human before forwarding. */
@@ -19,24 +20,34 @@ export async function assistantVoiceSettings(storage: DurableObjectStorage, requ
       const body = await request.json<{ preferences: unknown; revision: number }>();
       if (!body || Object.keys(body).some(k => !["preferences", "revision"].includes(k)) || !Number.isSafeInteger(body.revision) || body.revision < 0) throw new Error("invalid_revision");
       patch = validateAssistantVoicePatch(body.preferences); revision = body.revision;
-      // Profiles must be created and authorized before references may be assigned.
-      if (patch.voiceProfileId !== undefined && patch.voiceProfileId !== null)
-        return Response.json({ error_code: "voice_profile_not_available" }, { status: 409 });
+      if (patch.customVoicesEnabled === true) return Response.json({ error_code: "custom_voice_lifecycle_unavailable" }, { status: 409 });
+      if (patch.voiceProfileId !== undefined && patch.voiceProfileId !== null) {
+        const profile = ASSISTANT_VOICE_CATALOG.find((voice) => voice.id === patch.voiceProfileId);
+        if (!profile) return Response.json({ error_code: "voice_profile_unavailable" }, { status: 409 });
+      }
     } catch { return Response.json({ error_code: "invalid_voice_preferences" }, { status: 400 }); }
     const result = storage.transactionSync(() => {
       const current = read(key), base = read("space");
       if ((current?.revision ?? 0) !== revision) return "revision";
       if (projectId && !resolveAssistantVoice(base ? JSON.parse(base.preferences_json) : {}).allowProjectOverrides) return "locked";
       const merged = { ...(current ? JSON.parse(current.preferences_json) : {}), ...patch };
+      if (merged.voiceProfileId != null) {
+        const profile = ASSISTANT_VOICE_CATALOG.find((voice) => voice.id === merged.voiceProfileId);
+        const effective = projectId
+          ? resolveAssistantVoice(base ? JSON.parse(base.preferences_json) : {}, merged)
+          : resolveAssistantVoice(merged);
+        if (!profile || profile.modelClass !== effective.modelClass) return "profile";
+      }
       sql.exec("INSERT INTO assistant_voice_preferences(space_id,scope_key,preferences_json,revision,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(space_id,scope_key) DO UPDATE SET preferences_json=excluded.preferences_json,revision=excluded.revision,updated_at=excluded.updated_at", spaceId, key, JSON.stringify(merged), revision + 1, new Date().toISOString());
       return "ok";
     });
-    if (result !== "ok") return Response.json({ error_code: result === "revision" ? "voice_revision_conflict" : "voice_project_overrides_disabled" }, { status: 409 });
+    if (result !== "ok") return Response.json({ error_code: result === "revision" ? "voice_revision_conflict" : result === "profile" ? "voice_profile_model_class_mismatch" : "voice_project_overrides_disabled" }, { status: 409 });
   }
   const current = read(key), base = projectId ? read("space") : current;
   const overrides = current ? JSON.parse(current.preferences_json) : {};
   return Response.json({
     preferences: resolveAssistantVoice(base ? JSON.parse(base.preferences_json) : {}, projectId ? overrides : undefined),
     overrides, revision: current?.revision ?? 0, inherited: !!projectId && !current,
+    voiceCatalog: ASSISTANT_VOICE_CATALOG.map(({ id, name, modelClass, languages }) => ({ id, name, modelClass, languages })),
   });
 }

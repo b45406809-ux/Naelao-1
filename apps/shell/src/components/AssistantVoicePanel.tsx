@@ -53,7 +53,8 @@ export function AssistantVoicePanel({ spaceId, session, canManage = false, onboa
         <input type="checkbox" checked={draft.enabled} onChange={e => update("enabled", e.target.checked)} /> Enable voice calls for this assistant
       </label>
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", marginTop: 14 }}>
-        <label>Voice model class<FormSelect value={draft.modelClass} onChange={e => update("modelClass", e.target.value as AssistantVoicePreferences["modelClass"])}><option value="economy">Economy</option><option value="balanced">Balanced</option><option value="advanced">Advanced</option></FormSelect></label>
+        <label>Voice model class<FormSelect value={draft.modelClass} onChange={e => { const modelClass = e.target.value as AssistantVoicePreferences["modelClass"]; update("modelClass", modelClass); if (settings.voiceCatalog?.some(v => v.id === draft.voiceProfileId && v.modelClass !== modelClass)) update("voiceProfileId", null); }}><option value="economy">Economy</option><option value="balanced">Balanced</option><option value="advanced">Advanced</option></FormSelect></label>
+        <label>Voice<FormSelect value={draft.voiceProfileId ?? ""} onChange={e => update("voiceProfileId", e.target.value || null)}><option value="">Default for model class</option>{(settings.voiceCatalog ?? []).filter(v => v.modelClass === draft.modelClass).map(voice => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</FormSelect></label>
         <label>Language (or auto)<input className="input" value={draft.language} maxLength={24} onChange={e => update("language", e.target.value)} /></label>
         <label>Speaking speed<input className="input" type="number" min={0.5} max={2} step={0.1} value={draft.speed} onChange={e => update("speed", Number(e.target.value))} /></label>
         <label>Call limit (minutes)<input className="input" type="number" min={1} max={240} step={1} value={draft.maxCallMinutes} onChange={e => update("maxCallMinutes", Number(e.target.value))} /></label>
@@ -62,11 +63,9 @@ export function AssistantVoicePanel({ spaceId, session, canManage = false, onboa
       <label style={{ display: "block", marginTop: 14 }}>Speaking style<textarea className="input" value={draft.deliveryInstructions} maxLength={1000} rows={3} onChange={e => update("deliveryInstructions", e.target.value)} placeholder="Optional guidance for concise spoken replies" /></label>
       {!projectId && <>
         <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}><input type="checkbox" checked={draft.allowProjectOverrides} onChange={e => update("allowProjectOverrides", e.target.checked)} /> Allow Project assistants to use tighter voice settings</label>
-        <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}><input type="checkbox" checked={draft.customVoicesEnabled} onChange={e => update("customVoicesEnabled", e.target.checked)} /> Allow eligible custom voices when voice profiles are available</label>
       </>}
-      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}><input type="checkbox" checked={draft.allowPrebuiltFallback} onChange={e => update("allowPrebuiltFallback", e.target.checked)} /> Allow a prebuilt voice if the selected voice is unavailable</label>
+      <p>Voice cloning and provider failover are unavailable until the host has consent, lifecycle and fallback controls. Calls fail closed if their selected model is unavailable.</p>
       {settings.inherited && <p>These settings inherit from the Space. Saving creates Project overrides; Space limits still apply.</p>}
-      {draft.voiceProfileId && <p>The selected voice profile is unavailable and must be cleared before saving.</p>}
       <button type="button" className="btn btn-primary" disabled={busy || !canManage && !projectId} onClick={() => void save()} style={{ marginTop: 14 }}>{busy ? "Saving…" : "Save voice settings"}</button>
     </>}
     {error && <p role="alert" style={{ color: "var(--danger, #c33)" }}>{error}</p>}

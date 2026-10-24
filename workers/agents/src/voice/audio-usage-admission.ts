@@ -8,13 +8,13 @@ export interface VoiceUsageJournal {
 }
 export interface VoiceUsageRecord {
   requestId: string; runId: string; model: string; operation: "transcription" | "speech";
-  estimatedTokens: number; generationId?: string; state: "reserving" | "held" | "pending" | "settle_retry" | "settled" | "released" | "denied";
+  estimatedTokens: number; estimatedCostUsd?: number; generationId?: string; state: "reserving" | "held" | "pending" | "settle_retry" | "settled" | "released" | "denied";
   actualTokens?: number; costUsd?: number; updatedAt: number;
 }
 export interface VoiceUsageScope {
-  tenantId: string; spaceId: string; callId: string; secret: string; billingWorker: Fetcher;
+  tenantId: string; spaceId: string; callId: string; secret: string; billingWorker: Fetcher; maxCostUsd: number;
   journal: VoiceUsageJournal; stillAllowed(): Promise<boolean>;
-  resolveGeneration?(id: string): Promise<{ costUsd: number; tokens: number }>;
+  resolveGeneration?(id: string, fallbackTokens: number): Promise<{ costUsd: number; tokens: number }>;
 }
 
 /** Couples audio requests to the account's subscription token reservation. Every upstream call
@@ -23,6 +23,8 @@ export function createVoiceAudioAdmission(scope: VoiceUsageScope): Pick<OpenRout
   reconcile(): Promise<{ settled: number; unresolved: number }>;
 } {
   const prefix = `voice-audio:${scope.callId}:`;
+  // Serialize the budget check and reservation across concurrent audio requests in this DO.
+  let admissionTail: Promise<void> = Promise.resolve();
   const send = async (path: string, body: Record<string, unknown>) => {
     const response = await scope.billingWorker.fetch(new Request(`http://billing-worker/internal/usage/llm-tokens/reservations/${path}`, {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId,
@@ -43,8 +45,13 @@ export function createVoiceAudioAdmission(scope: VoiceUsageScope): Pick<OpenRout
   };
   return {
     async authorize(input): Promise<AudioReservation> {
+      let release!: () => void;
+      const previous = admissionTail;
+      admissionTail = new Promise<void>((resolve) => { release = resolve; });
+      await previous;
+      try {
       if (!await scope.stillAllowed()) throw new Error("voice_access_revoked");
-      if (!/^[A-Za-z0-9._:-]{1,100}$/.test(input.requestId) || !Number.isSafeInteger(input.estimatedTokens) || input.estimatedTokens < 1 || input.estimatedTokens > 10_000_000)
+      if (!/^[A-Za-z0-9._:-]{1,100}$/.test(input.requestId) || !Number.isSafeInteger(input.estimatedTokens) || input.estimatedTokens < 1 || input.estimatedTokens > 10_000_000 || !Number.isFinite(input.estimatedCostUsd) || input.estimatedCostUsd < 0 || input.estimatedCostUsd > scope.maxCostUsd)
         throw new Error("voice_usage_admission_invalid");
       const key = prefix + input.requestId;
       const runId = key;
@@ -53,8 +60,16 @@ export function createVoiceAudioAdmission(scope: VoiceUsageScope): Pick<OpenRout
         throw new Error("voice_usage_request_id_conflict");
       if (record?.state === "denied" || record?.state === "released") throw new Error("voice_usage_request_not_admitted");
       if (!record) {
+        const all = await scope.journal.list<VoiceUsageRecord>({ prefix });
+        const committed = [...all.values()].reduce((sum, item) => {
+          if (item.state === "settled") return sum + (item.costUsd ?? 0);
+          if (item.state === "settle_retry") return sum + Math.max(item.estimatedCostUsd ?? 0, item.costUsd ?? 0);
+          if (["reserving", "held", "pending"].includes(item.state)) return sum + (item.estimatedCostUsd ?? 0);
+          return sum;
+        }, 0);
+        if (committed + input.estimatedCostUsd > scope.maxCostUsd + 1e-9) throw new Error("voice_call_cost_limit_reached");
         record = { requestId: input.requestId, runId, model: input.model, operation: input.operation,
-          estimatedTokens: input.estimatedTokens, state: "reserving", updatedAt: Date.now() };
+          estimatedTokens: input.estimatedTokens, estimatedCostUsd: input.estimatedCostUsd, state: "reserving", updatedAt: Date.now() };
         await scope.journal.put(key, record);
       }
       if (record.state === "reserving") {
@@ -81,6 +96,7 @@ export function createVoiceAudioAdmission(scope: VoiceUsageScope): Pick<OpenRout
           if (latest && latest.state !== "settled") await scope.journal.put(key, { ...latest, state: "pending", ...(generationId ? { generationId } : {}), updatedAt: Date.now() });
         },
       };
+      } finally { release(); }
     },
     async reconcile() {
       const entries = await scope.journal.list<VoiceUsageRecord>({ prefix });
@@ -103,7 +119,7 @@ export function createVoiceAudioAdmission(scope: VoiceUsageScope): Pick<OpenRout
         }
         if (record.state === "pending" && record.generationId && scope.resolveGeneration) {
           try {
-            const usage = await scope.resolveGeneration(record.generationId);
+            const usage = await scope.resolveGeneration(record.generationId, record.estimatedTokens);
             await persistSettlement(record, usage.costUsd, record.generationId, usage.tokens); settled++;
           } catch { unresolved++; }
           continue;

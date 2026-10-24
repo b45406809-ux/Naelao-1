@@ -1160,7 +1160,11 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   if (body.body !== undefined) {
     try { serializedBody = typeof body.body === "string" ? body.body : JSON.stringify(body.body); }
     catch { return c.json({ error_code: "egress_body_invalid", message: "The outbound body cannot be serialized" }, 400); }
-    if (new TextEncoder().encode(serializedBody ?? "").byteLength > 512 * 1024) {
+    const isBoundedOpenRouterTranscription = tokenCheck.purpose === "assistant-audio"
+      && body.method?.toUpperCase() === "POST"
+      && body.url === "https://openrouter.ai/api/v1/audio/transcriptions";
+    const maxOutboundBodyBytes = isBoundedOpenRouterTranscription ? 900 * 1024 : 512 * 1024;
+    if (new TextEncoder().encode(serializedBody ?? "").byteLength > maxOutboundBodyBytes) {
       return c.json({ error_code: "egress_body_too_large", message: "Outbound request bodies are limited to 512 KiB" }, 413);
     }
   }
@@ -1200,7 +1204,21 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   } catch {
     return c.json({ error_code: "egress_sensitive_payload", message: "The request contains data that space policy blocks from leaving" }, 403);
   }
-  const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, body.credentialName, body.onBehalfOfUserId ?? null, tokenCheck.projectId ?? null);
+  let credentialName = body.credentialName;
+  let resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credentialName, body.onBehalfOfUserId ?? null, tokenCheck.projectId ?? null);
+  // Host-only logical alias for audio transports. Resolve the selected OpenRouter BYOK key in
+  // the vault worker so the voice Durable Object never reads plaintext credentials.
+  if (credentialName === "llm_byok_active::openrouter" && resolved && !("notFoundReason" in resolved)) {
+    const pointerValue = await decrypt(resolved.row.encrypted_value, resolved.row.iv, c.env, c.env.PLATFORM_DB, resolved.row.tenant_id, resolved.row.space_id, resolved.row);
+    if (!/^llm_byok_openrouter(?:::[A-Za-z0-9_]{1,32})?$/.test(pointerValue)) throw forbidden("Active OpenRouter credential pointer is invalid");
+    credentialName = pointerValue;
+    resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credentialName, body.onBehalfOfUserId ?? null, tokenCheck.projectId ?? null);
+  }
+  if ((!resolved || "notFoundReason" in resolved) && credentialName === "llm_byok_active::openrouter") {
+    // A Space with the first-generation single-key name can use it without migrating the key.
+    credentialName = "llm_byok_openrouter";
+    resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credentialName, body.onBehalfOfUserId ?? null, tokenCheck.projectId ?? null);
+  }
   if (!resolved || "notFoundReason" in resolved) throw notFound("Credential");
   const secret = await decrypt(resolved.row.encrypted_value, resolved.row.iv, c.env, c.env.PLATFORM_DB, resolved.row.tenant_id, resolved.row.space_id, resolved.row);
 
@@ -1223,7 +1241,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
       ...(tokenCheck.taskId ? { taskId: tokenCheck.taskId } : {}), agentId: tokenCheck.agentId!,
       traceId: tokenCheck.traceId!, spanId: tokenCheck.spanId!, actionId, idempotencyKey: body.idempotencyKey!,
     };
-    inputHash = await sha256Hex(JSON.stringify([method, approvedUrl.toString(), body.credentialName, body.auth ?? { type: "bearer" }, body.body ?? null, [...supplied.entries()].filter(([name]) => !/^(authorization|idempotency-key)$/i.test(name)), ...(body.responseMode ? [body.responseMode] : [])]));
+    inputHash = await sha256Hex(JSON.stringify([method, approvedUrl.toString(), credentialName, body.auth ?? { type: "bearer" }, body.body ?? null, [...supplied.entries()].filter(([name]) => !/^(authorization|idempotency-key)$/i.test(name)), ...(body.responseMode ? [body.responseMode] : [])]));
     let pending;
     try {
       pending = await recordOutboundReceipt(c.env, receiptContext, "pending", inputHash, await sha256Hex("pending"), "Authorized external write; outcome pending");

@@ -1,8 +1,15 @@
 import { verifyInternalToken, readBoundedRequestText } from "@naelao/http";
 import { Agent } from "agents";
-import { synthesizeVoicePcm } from "./pcm-speech.js";
-import { WorkersAIFluxSTT, withVoice } from "agents/voice";
+import { withVoice } from "agents/voice";
 import type { AgentsEnv } from "../index.js";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
+import type { AssistantVoicePreferences, AssistantVoiceSettings, RuntimeVault } from "@naelao/agent-sdk";
+import { approvedAssistantVoice } from "@naelao/agent-sdk";
+import { createVaultProxy } from "../script-engine/vault-proxy.js";
+import { createOpenRouterAudio } from "./openrouter-audio.js";
+import { OpenRouterLiveTranscriber } from "./openrouter-live-transcriber.js";
+import { OpenRouterLiveTTS } from "./openrouter-live-tts.js";
+import { createVoiceAudioAdmission } from "./audio-usage-admission.js";
 import {
   verifyOwnerVoiceTicket,
   type OwnerVoiceTicket,
@@ -31,8 +38,12 @@ const VoiceAgent = withVoice(Agent, {
 /** Audio transport only. All reasoning, tools, approvals and durable work use the existing
  * Naelao planner/worker runtime, scoped to the app-authenticated human and session. */
 export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
-  transcriber = new WorkersAIFluxSTT(this.env.AI);
+  transcriber: import("agents/voice").Transcriber = { createSession: () => { throw new Error("voice_call_not_initialized"); } };
   private activeTicket: OwnerVoiceTicket | null = null;
+  private activePreferences: AssistantVoicePreferences | null = null;
+  private activeProfile: ReturnType<typeof approvedAssistantVoice> = null;
+  private audio: ReturnType<typeof createOpenRouterAudio> | null = null;
+  private admission: ReturnType<typeof createVoiceAudioAdmission> | null = null;
   private turns = new DurableVoiceTurns(
     this.ctx.storage,
     this.env.AGENTS_WORKER,
@@ -48,9 +59,18 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
     ): Promise<ArrayBuffer | null> => {
       if (!this.activeTicket || !(await this.allowed(this.activeTicket)))
         throw new Error("voice_access_revoked");
-      const audio = await synthesizeVoicePcm(this.env.AI, text, signal);
+      if (!(await this.loadPreferences(this.activeTicket))) throw new Error("voice_disabled_or_unavailable");
+      if (!this.audio || !this.activeProfile) throw new Error("voice_call_not_initialized");
+      const audio = await new OpenRouterLiveTTS({
+        audio: this.audio, model: this.activeProfile.speechModel, voice: this.activeProfile.speechVoice,
+        ...(this.activePreferences?.deliveryInstructions ? { instructions: this.activePreferences.deliveryInstructions } : {}),
+        priceUsdPerMillionCharacters: this.activeProfile.priceUsdPerMillionCharacters,
+        speed: this.activePreferences?.speed ?? 1, sampleRate: this.activeProfile.sampleRate,
+        requestId: () => crypto.randomUUID(),
+      }).synthesize(text, signal);
       if (!this.activeTicket || !(await this.allowed(this.activeTicket)))
         throw new Error("voice_access_revoked");
+      if (!(await this.loadPreferences(this.activeTicket))) throw new Error("voice_disabled_or_unavailable");
       return audio;
     },
   };
@@ -103,6 +123,82 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
       !(await isSpaceNetworkEgressDenied(this.env.PLATFORM_DB, ticket.spaceId))
     );
   }
+  private async loadPreferences(ticket: OwnerVoiceTicket): Promise<AssistantVoicePreferences | null> {
+    const query = new URLSearchParams(ticket.projectId ? { project_id: ticket.projectId } : {});
+    const url = `http://spaces/spaces/${encodeURIComponent(ticket.spaceId)}/assistant-voice${query.size ? `?${query}` : ""}`;
+    const response = await this.env.SPACES_WORKER.fetch(new Request(url, { headers: {
+      "x-naelao-tenant-id": ticket.tenantId, "x-naelao-user-id": ticket.userId,
+      "x-naelao-role": ticket.callerRole,
+      "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, ticket.tenantId),
+    } }));
+    if (!response.ok) return null;
+    const settings = await readBoundedResponseJson<AssistantVoiceSettings>(response, 64 * 1024);
+    const preferences = settings.preferences;
+    if (!preferences?.enabled) return null;
+    return preferences;
+  }
+  private async initializeAudio(ticket: OwnerVoiceTicket, preferences: AssistantVoicePreferences): Promise<void> {
+    if (!this.env.BILLING_WORKER) throw new Error("voice_billing_unavailable");
+    if (!this.env.CREDENTIALS_WORKER) throw new Error("voice_credentials_unavailable");
+    const profile = approvedAssistantVoice(preferences.voiceProfileId, preferences.modelClass);
+    if (!profile) throw new Error("voice_profile_unavailable");
+    const vault: RuntimeVault = createVaultProxy({
+      credentialsWorker: this.env.CREDENTIALS_WORKER!, platformSecret: this.env.PLATFORM_SECRET,
+      tenantId: ticket.tenantId, spaceId: ticket.spaceId, agentId: ticket.agentName,
+      userId: ticket.userId, ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
+      runId: `voice-${ticket.nonce}`, purpose: "assistant-audio",
+    });
+    const admission = createVoiceAudioAdmission({
+      tenantId: ticket.tenantId, spaceId: ticket.spaceId, callId: ticket.nonce,
+      secret: this.env.PLATFORM_SECRET, billingWorker: this.env.BILLING_WORKER,
+      journal: this.ctx.storage, maxCostUsd: preferences.maxCallCostUsd,
+      stillAllowed: async () => (await this.allowed(ticket)) && !!(await this.loadPreferences(ticket))?.enabled,
+      resolveGeneration: async (id, fallbackTokens) => {
+        if (!this.audio) throw new Error("voice_audio_unavailable");
+        return this.audio.resolveGeneration(id, fallbackTokens);
+      },
+    });
+    // Credentials worker resolves the active key pointer internally; no plaintext provider key
+    // crosses into this Durable Object.
+    const audio = createOpenRouterAudio({ vault, credentialName: "llm_byok_active::openrouter", authorize: admission.authorize });
+    this.activePreferences = preferences;
+    this.activeProfile = profile;
+    this.admission = admission;
+    this.audio = audio;
+    await this.ctx.storage.put("voice:preferences", preferences);
+    this.transcriber = new OpenRouterLiveTranscriber({
+      provider: { transcribe: ({ requestId, data, format }) => audio.transcribe({
+        model: profile.transcriptionModel, requestId, data, format,
+        ...(preferences.language !== "auto" ? { language: preferences.language } : {}),
+        priceUsdPerSecond: profile.transcriptionUsdPerSecond,
+      }) },
+      requestId: () => crypto.randomUUID(),
+    });
+    await admission.reconcile();
+  }
+  private async reconcileVoiceUsage(ticket: OwnerVoiceTicket): Promise<void> {
+    if (!this.env.BILLING_WORKER || !this.env.CREDENTIALS_WORKER) return;
+    const preferences = await this.ctx.storage.get<AssistantVoicePreferences>("voice:preferences");
+    const vault: RuntimeVault = createVaultProxy({
+      credentialsWorker: this.env.CREDENTIALS_WORKER, platformSecret: this.env.PLATFORM_SECRET,
+      tenantId: ticket.tenantId, spaceId: ticket.spaceId, agentId: ticket.agentName,
+      userId: ticket.userId, ...(ticket.projectId ? { projectId: ticket.projectId } : {}),
+      runId: `voice-${ticket.nonce}`, purpose: "assistant-audio",
+    });
+    const audio = createOpenRouterAudio({ vault, credentialName: "llm_byok_active::openrouter", authorize: async () => { throw new Error("voice_reconciliation_only"); } });
+    const admission = createVoiceAudioAdmission({
+      tenantId: ticket.tenantId, spaceId: ticket.spaceId, callId: ticket.nonce,
+      secret: this.env.PLATFORM_SECRET, billingWorker: this.env.BILLING_WORKER,
+      journal: this.ctx.storage, maxCostUsd: preferences?.maxCallCostUsd ?? 100,
+      stillAllowed: async () => false,
+      resolveGeneration: (id, fallbackTokens) => audio.resolveGeneration(id, fallbackTokens),
+    });
+    await admission.reconcile();
+  }
+  private async retryableUsageRemains(ticket: OwnerVoiceTicket): Promise<boolean> {
+    const entries = await this.ctx.storage.list<{ state: string; generationId?: string }>({ prefix: `voice-audio:${ticket.nonce}:` });
+    return [...entries.values()].some((record) => record.state === "settle_retry" || record.state === "pending" && !!record.generationId);
+  }
   override async onConnect(
     connection: Parameters<Agent<AgentsEnv>["onConnect"]>[0],
     context: Parameters<Agent<AgentsEnv>["onConnect"]>[1]
@@ -116,6 +212,12 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
       connection.close(1008, "voice_scope_unavailable");
       return;
     }
+    let preferences: AssistantVoicePreferences | null;
+    try { preferences = await this.loadPreferences(ticket); }
+    catch { preferences = null; }
+    if (!preferences) { connection.close(1008, "voice_disabled_or_unavailable"); return; }
+    try { await this.initializeAudio(ticket, preferences); }
+    catch { connection.close(1011, "voice_provider_unavailable"); return; }
     // One active audio stream per session; reconnects take over transport, not task ownership.
     for (const previous of this.getConnections())
       if (previous.id !== connection.id)
@@ -141,7 +243,7 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
     return (
       !!ticket &&
       ticket.agentName === this.ctx.id.name &&
-      (await this.allowed(ticket))
+      (await this.allowed(ticket)) && !!(await this.loadPreferences(ticket))?.enabled
     );
   }
   override async onCallStart(
@@ -150,6 +252,15 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
     const ticket = connection.state as OwnerVoiceTicket | null;
     if (!ticket || !(await this.allowed(ticket)))
       throw new Error("voice_scope_unavailable");
+    const preferences = await this.loadPreferences(ticket);
+    if (!preferences || !this.activeProfile) throw new Error("voice_disabled_or_unavailable");
+    let callDeadline = Date.now() + preferences.maxCallMinutes * 60_000;
+    if (ticket.phoneBindingId) {
+      const phoneCall = await this.env.PLATFORM_DB.prepare("SELECT deadline FROM assistant_live_calls WHERE id=? AND status='connected'")
+        .bind(ticket.nonce).first<{ deadline: number }>();
+      if (phoneCall) callDeadline = Math.min(callDeadline, phoneCall.deadline * 1000);
+    }
+    await this.ctx.storage.setAlarm(callDeadline);
     await this.env.PLATFORM_DB.prepare(
       "INSERT INTO assistant_active_voice_endpoints(tenant_id,space_id,project_key,user_id,agent_name,connection_id,expires_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,project_key,user_id) DO UPDATE SET agent_name=excluded.agent_name,connection_id=excluded.connection_id,expires_at=excluded.expires_at"
     )
@@ -216,7 +327,16 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
   ): Promise<void> {
     if (this.audioConnectionId === connection.id) {
       this.watcher?.abort();
+      if (this.admission) await this.admission.reconcile().catch(() => {});
+      else {
+        const ticket = connection.state as OwnerVoiceTicket | null;
+        if (ticket) await this.reconcileVoiceUsage(ticket).catch(() => {});
+      }
       this.activeTicket = null;
+      this.activePreferences = null;
+      this.activeProfile = null;
+      this.audio = null;
+      this.admission = null;
       const ticket = connection.state as OwnerVoiceTicket | null;
       if (ticket)
         await this.env.PLATFORM_DB.prepare(
@@ -230,6 +350,8 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
             connection.id
           )
           .run();
+      const endedTicket = connection.state as OwnerVoiceTicket | null;
+      if (endedTicket && await this.retryableUsageRemains(endedTicket)) await this.ctx.storage.setAlarm(Date.now() + 30_000);
     }
   }
   private watchCompletion(
@@ -282,6 +404,19 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
       context.connection.close(1008, "voice_scope_unavailable");
       throw new Error("voice_scope_unavailable");
     }
+    const currentPreferences = await this.loadPreferences(ticket);
+    if (!currentPreferences) {
+      context.connection.close(1008, "voice_disabled_or_unavailable");
+      throw new Error("voice_disabled_or_unavailable");
+    }
+    const configuredProfile = approvedAssistantVoice(currentPreferences.voiceProfileId, currentPreferences.modelClass);
+    if (!configuredProfile) throw new Error("voice_profile_unavailable");
+    if (!this.activeProfile || this.activeProfile.id !== configuredProfile.id
+      || this.activePreferences?.speed !== currentPreferences.speed
+      || this.activePreferences?.language !== currentPreferences.language
+      || this.activePreferences?.deliveryInstructions !== currentPreferences.deliveryInstructions) {
+      await this.initializeAudio(ticket, currentPreferences);
+    }
     this.activeTicket = ticket;
     await this.env.PLATFORM_DB.prepare("UPDATE assistant_active_voice_endpoints SET expires_at=? WHERE tenant_id=? AND space_id=? AND project_key=? AND user_id=? AND connection_id=?")
       .bind(Date.now()+900000,ticket.tenantId,ticket.spaceId,ticket.projectId??"",ticket.userId,context.connection.id).run();
@@ -303,10 +438,15 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
   }
   override async alarm(): Promise<void> {
     this.watcher?.abort();
+    const ticket = await this.ctx.storage.get<OwnerVoiceTicket>("voice:ticket");
+    if (this.admission) await this.admission.reconcile().catch(() => {});
+    else if (ticket) await this.reconcileVoiceUsage(ticket).catch(() => {});
     for (const connection of this.getConnections())
       connection.close(1000, "voice_call_ended");
-    const ticket = await this.ctx.storage.get<OwnerVoiceTicket>("voice:ticket");
-    if (!ticket?.phoneBindingId) return;
+    if (!ticket?.phoneBindingId) {
+      if (ticket && await this.retryableUsageRemains(ticket)) await this.ctx.storage.setAlarm(Date.now() + 30_000);
+      return;
+    }
     const binding = await this.env.PLATFORM_DB.prepare(
       "SELECT * FROM assistant_phone_bindings WHERE id=?"
     )
@@ -339,5 +479,6 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
     } catch {
       await this.ctx.storage.setAlarm(Date.now() + 30000);
     }
+    if (ticket && await this.retryableUsageRemains(ticket)) await this.ctx.storage.setAlarm(Date.now() + 30_000);
   }
 }

@@ -17,7 +17,7 @@ export interface VaultProxyOptions {
   purpose?: "assistant-audio";
 }
 
-async function credentialToken(secret: string, tenantId: string, spaceId: string, agentId: string, projectId: string | undefined, run?: { actorId: string; runId: string; taskId?: string; traceId: string; spanId: string }, purpose?: "assistant-audio"): Promise<string> {
+export async function credentialToken(secret: string, tenantId: string, spaceId: string, agentId: string, projectId: string | undefined, run?: { actorId: string; runId: string; taskId?: string; traceId: string; spanId: string }, purpose?: "assistant-audio"): Promise<string> {
   const timestamp = Math.floor(Date.now() / 1000);
   const values = [tenantId, spaceId, agentId, ...(projectId ? [projectId] : []), ...(run ? [run.actorId, run.runId, ...(run.taskId ? [run.taskId] : [])] : [])];
   if (!values.every((value) => /^[A-Za-z0-9._:-]{1,160}$/.test(value))) throw new Error("invalid_credential_token_scope");
