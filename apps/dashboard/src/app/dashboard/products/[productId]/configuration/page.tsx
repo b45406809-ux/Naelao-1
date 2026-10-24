@@ -171,26 +171,7 @@ export default function ProductConfigurationPage() {
           {workerCards.length === 0 && <p className="text-sm text-gray-500">Connect an OpenRouter key in Space settings to load live model cards.</p>}
         </div>
         {(form.workerModelPool?.modelIds.length ?? 0) > 0 && <p className="mt-3 text-xs text-gray-500">Allowed worker models: {form.workerModelPool?.modelIds.length}. An empty pool uses the existing runtime default.</p>}
-        {(form.pricingConfig?.plans?.length ?? 0) > 0 && <div className="mt-5 space-y-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Subscription plan access</h3>
-          <p className="text-xs text-gray-500">For business spaces with an active subscription, workers only receive models enabled for that plan. A plan with no checked models uses the runtime default.</p>
-          {form.pricingConfig?.plans?.map(plan => <details key={plan.id} className="rounded border border-gray-200 p-3">
-            <summary className="cursor-pointer text-sm font-medium">{plan.name}</summary>
-            <div className="mt-2 grid gap-1 sm:grid-cols-2">
-              {workerCards.filter(card => form.workerModelPool?.modelIds.includes(card.model)).map(card => {
-                const allowed = form.workerModelPool?.modelsByPlan?.[plan.id] ?? [];
-                return <label key={card.model} className="flex items-center gap-2 text-xs text-gray-700">
-                  <input type="checkbox" checked={allowed.includes(card.model)} onChange={e => setForm(f => {
-                    const pool = f.workerModelPool ?? { modelIds: [], selectionMode: "automatic" as const };
-                    const existing = pool.modelsByPlan?.[plan.id] ?? [];
-                    const modelsByPlan = { ...(pool.modelsByPlan ?? {}), [plan.id]: e.target.checked ? [...new Set([...existing, card.model])] : existing.filter(id => id !== card.model) };
-                    return { ...f, workerModelPool: { ...pool, modelsByPlan } };
-                  })} className="rounded border-gray-300 text-brand-600" />{card.name}
-                </label>;
-              })}
-            </div>
-          </details>)}
-        </div>}
+
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-5">

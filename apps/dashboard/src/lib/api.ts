@@ -372,73 +372,6 @@ export async function createSubSpace(
   });
 }
 
-// ── Commerce (Launchpad: products / orders / revenue) ────────────────────────
-
-export interface Product {
-  id: string;
-  name: string;
-  description: string;
-  price_cents: number;
-  currency: string;
-  kind: "one_time" | "subscription";
-  fulfillment_r2_key: string | null;
-  status: "draft" | "published" | "archived";
-  created_at: string;
-}
-
-export interface Order {
-  id: string;
-  product_id: string | null;
-  product_name?: string | null;
-  customer_email: string | null;
-  gross_cents: number;
-  fee_cents: number;
-  net_cents: number;
-  currency: string;
-  status: string;
-  created_at: string;
-}
-
-export interface RevenueSummary {
-  period: string;
-  currency: string;
-  gross_cents: number;
-  fee_cents: number;
-  net_cents: number;
-  order_count: number;
-}
-
-export async function listProducts(spaceId: string): Promise<{ data: Product[]; currency: string }> {
-  return apiFetch<{ data: Product[]; currency: string }>(`/spaces/${pathSegment(spaceId)}/products`);
-}
-
-export async function createProduct(
-  spaceId: string,
-  data: { name: string; description?: string; price_cents?: number; kind?: "one_time" | "subscription" }
-): Promise<Product> {
-  return apiFetch<Product>(`/spaces/${pathSegment(spaceId)}/products`, { method: "POST", body: JSON.stringify(data) });
-}
-
-export async function updateProduct(
-  spaceId: string,
-  productId: string,
-  data: Partial<{ name: string; description: string; price_cents: number; status: "draft" | "published" | "archived" }>
-): Promise<{ id: string }> {
-  return apiFetch(`/spaces/${pathSegment(spaceId)}/products/${pathSegment(productId)}`, { method: "PATCH", body: JSON.stringify(data) });
-}
-
-export async function deleteProduct(spaceId: string, productId: string): Promise<void> {
-  return apiFetch<void>(`/spaces/${pathSegment(spaceId)}/products/${pathSegment(productId)}`, { method: "DELETE" });
-}
-
-export async function listOrders(spaceId: string): Promise<{ data: Order[] }> {
-  return apiFetch<{ data: Order[] }>(`/spaces/${pathSegment(spaceId)}/orders`);
-}
-
-export async function getRevenue(spaceId: string): Promise<RevenueSummary> {
-  return apiFetch<RevenueSummary>(`/spaces/${pathSegment(spaceId)}/revenue`);
-}
-
 // ── Billing ──────────────────────────────────────────────────────────────────
 
 export async function createBillingCheckout(planTier: string): Promise<{ url: string }> {
@@ -539,38 +472,9 @@ export function getNaelaoLaunchpadDashboard(): Promise<NaelaoLaunchpadDashboard>
   return apiFetch<NaelaoLaunchpadDashboard>("/builder/launchpad");
 }
 
-export interface PricingPlan {
-  id: string;
-  name: string;
-  priceCents: number;
-  interval: "month" | "year";
-  creditAllowance?: number;
-  limits?: { maxThreadsPerUser?: number | null; maxCreditsPerMonth?: number | null };
-  lsVariantId?: string;
-}
-
-export interface CreditPack {
-  id: string;
-  name: string;
-  credits: number;
-  priceCents: number;
-  lsVariantId?: string;
-}
-
 export interface BuilderProductConfig {
   branding?: { brandColor?: string; logoUrl?: string; faviconUrl?: string; productDescription?: string; suppressNaelaoBranding?: boolean };
   authProvider?: { provider: "naelao-native" | "clerk" | "custom-oidc" | "saml-sso"; requireAdminApproval?: boolean; allowedEmailDomains?: string[] };
-  pricingConfig?: {
-    model: "free" | "credits" | "subscription" | "seats";
-    creditsIncludedPerMonth?: number;
-    overageCreditsPriceCents?: number;
-    pricePerSeatCents?: number;
-    includedSeats?: number;
-    trialDays?: number;
-    // Phase E (§A1.17) — subscription plans + credit packs a reseller/hybrid product offers.
-    plans?: PricingPlan[];
-    creditPacks?: CreditPack[];
-  };
   featureFlags?: Record<string, boolean>;
   // Phase D (§A1.17) — product mode, limits, and the template catalog. All three already exist
   // on the backend's SpaceTypeProductConfig (workers/spaces/src/do/SpaceTypeRegistryDO.ts); this
@@ -578,14 +482,6 @@ export interface BuilderProductConfig {
   membershipModel?: "team" | "tenant" | "hybrid";
   allowPublicSignup?: boolean;
   allowedChildSpaceTypes?: string[];
-  // WS-3 (§Polsia / G-AS34/G-AS35): the Naelao->builder wholesale-credit relationship for
-  // tenant/hybrid products. Team mode has no rates — Naelao bills the builder for all end-user
-  // usage, so this is only meaningful once membershipModel is tenant/hybrid.
-  billingRelationship?: "reseller" | "referral" | "platform";
-  resellerRates?: {
-    wholesaleCents?: number | null;
-    referralSharePct?: number;
-  };
   userPermissions?: {
     canCreateSpace?: boolean;
     canCreateSubSpaces?: boolean;
@@ -651,23 +547,6 @@ export async function getBuilderProduct(id: string): Promise<BuilderProductDetai
   return apiFetch<BuilderProductDetail>(`/builder/products/${pathSegment(id)}`);
 }
 
-// F-WALLET-6: the builder-facing wallet aggregate across a product + all its child businesses.
-export interface BuilderProductWallet {
-  product_id: string;
-  businesses: {
-    gross_cents: number;
-    naelao_cut_cents: number;
-    builder_cut_cents: number;
-    net_settled_cents: number;
-    order_count: number;
-  };
-  builder_revenue_share: Array<{ currency: string; earned_cents: number }>;
-}
-
-export async function getBuilderProductWallet(id: string): Promise<BuilderProductWallet> {
-  return apiFetch<BuilderProductWallet>(`/builder/products/${pathSegment(id)}/wallet`);
-}
-
 export async function createBuilderProduct(input: CreateBuilderProductInput): Promise<BuilderProductSummary> {
   return apiFetch<BuilderProductSummary>("/builder/products", {
     method: "POST",
@@ -680,31 +559,6 @@ export async function updateBuilderProduct(
   input: { name?: string; status?: string; product_config?: BuilderProductConfig; legal?: BuilderProductConfig["legal"] }
 ): Promise<{ ok: true }> {
   return apiFetch(`/builder/products/${pathSegment(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify(input),
-  });
-}
-
-// Phase E (§A1.17): PATCH /builder/products/:id/pricing provisions Lemon Squeezy variants for
-// any new plan/pack (once, on save — an already-provisioned item's lsVariantId is left alone)
-// and persists into product_config.pricingConfig.{plans,creditPacks}.
-export async function updateBuilderProductPricing(
-  id: string,
-  input: { plans?: PricingPlan[]; creditPacks?: CreditPack[] }
-): Promise<{ pricing_config: BuilderProductConfig["pricingConfig"] }> {
-  return apiFetch(`/builder/products/${pathSegment(id)}/pricing`, {
-    method: "PATCH",
-    body: JSON.stringify(input),
-  });
-}
-
-// WS-3: the missing write path for reseller economics — updates BOTH the config_json display
-// copy and the live reseller_accounts row (immediate effect for a tenant that already has one).
-export async function updateBuilderProductReseller(
-  id: string,
-  input: { billing_relationship?: "reseller" | "referral" | "platform"; wholesale_cents?: number | null; referral_share_pct?: number }
-): Promise<{ billing_relationship: string; reseller_rates: { wholesale_cents: number | null; referral_share_pct: number } }> {
-  return apiFetch(`/builder/products/${pathSegment(id)}/reseller`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });

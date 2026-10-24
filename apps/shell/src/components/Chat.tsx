@@ -35,12 +35,9 @@ import {
   type ChatUpload,
   getProject,
   listAgentDefinitions,
-  listAgentTemplates,
-  instantiateAgentTemplate,
   listBusinessMembers,
   getConnectorStatus,
   type AgentDefinitionSummary,
-  type AgentTemplateSummary,
   type BusinessMember,
   type ConnectorInfo,
   getShellManifest,
@@ -422,7 +419,7 @@ export function Chat({
   const canvasOptions: Array<{ id: string; label: string; view: CanvasView }> = project ? [
     { id: "deliverable", label: "Deliverable", view: "deliverable" },
     { id: "code", label: "Code Canvas", view: "code" },
-    ...(project.kind === "app_studio" || project.channel_config?.app_id ? [{ id: "micro-app", label: "Micro-App", view: "micro-app" as CanvasView }] : []),
+    ...(project.kind === "CanvasFirst" || project.channel_config?.app_id ? [{ id: "micro-app", label: "Micro-App", view: "micro-app" as CanvasView }] : []),
     ...(project.channel_config?.container_enabled ? [{ id: "terminal", label: "Terminal", view: "terminal" as CanvasView }, { id: "gui", label: "GUI Display", view: "gui" as CanvasView }] : []),
   ] : [];
   const workspaceTabLabel = React.useCallback((tab: WorkspaceTab): string => {
@@ -517,22 +514,9 @@ export function Chat({
     },
     [spaceId, selectedModel]
   );
-  // Naelao Agent Templates switcher — which agent handles the next message in THIS PROJECT
-  // thread. Meaningful only in a project thread (projectId set); an assistant session has no
-  // separate agent to switch to, so agentOptions stays empty and ComposerDock renders no button.
-  //
-  // Was gated on "2+ agents already bound to the project" — which meant it never showed at all
-  // for the overwhelmingly common case (a fresh project, 0 explicitly bound agents, everything
-  // implicitly answered by the Space Assistant). Reported live: "I don't see the switcher" in a
-  // brand-new project thread. Now it always shows in a project thread: a synthetic "Space
-  // Assistant (default)" entry stands in for "nothing explicitly bound" (id "" — ComposerDock's
-  // active-check and this component's onAgentChange both treat "" as "clear the override, use the
-  // default"), and the FULL template catalogue is offered inline so a user can go from "nothing
-  // bound" to "using Customer Support" without a separate trip to the Agents/Projects pages.
+  // A project can select among user-configured workers bound to that project.
   const [agentOptions, setAgentOptions] = React.useState<Array<{ id: string; name: string }>>([]);
   const [selectedAgentId, setSelectedAgentId] = React.useState<string | null>(null);
-  const [availableTemplates, setAvailableTemplates] = React.useState<AgentTemplateSummary[]>([]);
-  const [addingTemplateId, setAddingTemplateId] = React.useState<string | null>(null);
   // Transient feedback for the input bar's Upload button and the agent-template add action — not
   // an error, just a small "added/failed" confirmation that fades after a few seconds. Declared
   // here (rather than down by liveActivity, where it used to live) because handleAddAgentTemplate
@@ -561,46 +545,13 @@ export function Chat({
   }, [projectId, spaceId, session]);
 
   React.useEffect(() => {
-    if (!projectId) { setAgentOptions([]); setSelectedAgentId(null); setAvailableTemplates([]); return; }
+    if (!projectId) { setAgentOptions([]); setSelectedAgentId(null); return; }
     let cancelled = false;
-    (async () => {
-      try {
-        await refreshAgentBindings();
-      } catch {
-        if (!cancelled) { setAgentOptions([]); setSelectedAgentId(null); }
-      }
-      try {
-        const templates = await listAgentTemplates(spaceId, session);
-        if (!cancelled) setAvailableTemplates(templates);
-      } catch {
-        if (!cancelled) setAvailableTemplates([]);
-      }
-    })();
+    refreshAgentBindings().catch(() => {
+      if (!cancelled) { setAgentOptions([]); setSelectedAgentId(null); }
+    });
     return () => { cancelled = true; };
-  }, [projectId, spaceId, session, refreshAgentBindings]);
-
-  const handleAddAgentTemplate = React.useCallback(
-    async (templateId: string) => {
-      if (!projectId || addingTemplateId) return;
-      setAddingTemplateId(templateId);
-      const templateName = availableTemplates.find((t) => t.id === templateId)?.name ?? "Agent";
-      try {
-        const result = await instantiateAgentTemplate(spaceId, session, { template_id: templateId, project_id: projectId });
-        await refreshAgentBindings();
-        setSelectedAgentId(result.agent_id);
-        const msg = `${templateName} added — it will answer your next message.`;
-        setUploadNotice(msg);
-        window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 5000);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : `Couldn't add ${templateName}`;
-        setUploadNotice(msg);
-        window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 5000);
-      } finally {
-        setAddingTemplateId(null);
-      }
-    },
-    [projectId, spaceId, session, addingTemplateId, availableTemplates, refreshAgentBindings]
-  );
+  }, [projectId, refreshAgentBindings]);
   // The in-flight run's "currently doing X" trail (script-engine/loop.ts's TraceStep, live via
   // NaelaoAgentDO's in-memory progress map) — reset per send, attached to the completed message
   // once the run resolves so the tool-call/thinking summary stays visible under that turn.
@@ -2012,8 +1963,6 @@ export function Chat({
           )}
           {billingWall && (
             <UpgradeDialog
-              spaceId={spaceId}
-              session={session}
               errorCode={billingWall.code}
               message={billingWall.message}
               supportContact={supportContact}
@@ -2103,9 +2052,6 @@ export function Chat({
             agentOptions={agentOptions}
             selectedAgentId={selectedAgentId ?? ""}
             onAgentChange={(id) => setSelectedAgentId(id === "" ? null : id)}
-            availableTemplates={availableTemplates}
-            addingTemplateId={addingTemplateId}
-            onAddTemplate={handleAddAgentTemplate}
             onNotice={(msg) => {
               setUploadNotice(msg);
               window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 4000);

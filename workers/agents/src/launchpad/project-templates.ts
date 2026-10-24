@@ -1,7 +1,6 @@
 /**
- * Project templates — no-code presets a builder (or the Space Assistant) can stamp onto a
- * project in one call. "The builder/assistant configures a project ... a template is the
- * starting point so the builder only edits form fields, never writes code."
+ * Project-template compatibility surface. Product-specific project presets are distributed
+ * through FDE-authored Space Templates; the core runtime does not ship business personas.
  *
  * Distinct from Launchpad SpaceType templates (launchpad/spacetype.ts): a SpaceType template
  * configures an entire SPACE at provisioning time; a project template configures ONE generic
@@ -57,26 +56,6 @@ export interface ProjectTemplate {
 }
 
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
-  // ── Generic workspace templates — schedule/observation-driven ──
-  {
-    id: "community-member-monitoring",
-    name: "Community Member Monitoring",
-    description:
-      "A weekly check-in on your community: the support agent reviews activity and pings you " +
-      "with anything worth knowing. This workspace runs on a schedule, not in reaction to inbound messages.",
-    execution_ceiling: 2,
-    daily_spend_cap_credits: 1000,
-    default_agent_id: "launchpad-support-v1",
-    allowed_agent_ids: ["launchpad-support-v1", "naelao-agent"],
-    scheduled_jobs: [
-      {
-        name: "Weekly community digest",
-        cron_expression: "0 9 * * 1",
-        script_name: "notifications.notify",
-        params: { message: "Weekly community check-in: review activity and flag anything that needs attention." },
-      },
-    ],
-  },
 ];
 
 export function getProjectTemplate(id: string): ProjectTemplate | null {

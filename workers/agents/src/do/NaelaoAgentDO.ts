@@ -101,7 +101,7 @@ import {
 } from "../script-engine/conversation-context.js";
 import { loadTranscriptPages, TRANSCRIPT_PAGE_SIZE } from "../script-engine/transcript-loader.js";
 import { isChannelType, getAdapter, toNormalizedInboundMessage, type NormalizedInbound } from "../launchpad/channels.js";
-import type { BusinessContext } from "../launchpad/business-context.js";
+import type { SpaceContext } from "../launchpad/space-context.js";
 import type { TemplateMode, UniversalAgentManifest, UniversalAgentRole } from "@naelao/agent-sdk";
 import { composeUniversalPrompt } from "../script-engine/index.js";
 import { framePlannerFirstGoal } from "../script-engine/planner-first.js";
@@ -1237,7 +1237,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       env.documentProcessor = await this.createWorkflowDocumentProcessor({
         tenantId: identity.tenantId, spaceId: identity.spaceId, ...(identity.projectId ? { projectId: identity.projectId } : {}),
         userId: identity.actorId, callerRole: grant.role, hasSpendCap: gate.hasSpendCap,
-        ...(gate.walletProjectId ? { walletProjectId: gate.walletProjectId } : {}), runId: identity.runId,
+        runId: identity.runId,
       });
     }
     const tools = new ScriptToolSurface(env, config.scripts.prebuilt, { role: config.manifest?.role ?? "DEV_OPERATOR" });
@@ -1251,7 +1251,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * caller budget, and independent provider settlement as calls inside an interactive run. */
   private async createWorkflowDocumentProcessor(scope: {
     tenantId: string; spaceId: string; projectId?: string; userId: string; callerRole: string;
-    hasSpendCap: boolean; walletProjectId?: string; runId: string;
+    hasSpendCap: boolean; runId: string;
   }): Promise<DocumentProcessingGateway> {
     const policyResponse = await this.env.SPACES_WORKER.fetch(new Request(
       `http://spaces-worker/internal/spaces/${encodeURIComponent(scope.spaceId)}/model-policy`,
@@ -1296,7 +1296,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async runWorkflowDocumentOperation<K extends keyof DocumentProcessingGateway>(args: {
     tenantId: string; spaceId: string; projectId?: string; userId: string; callerRole: string;
-    hasSpendCap: boolean; walletProjectId?: string | null; runId: string; model: string;
+    hasSpendCap: boolean; runId: string; model: string;
     pricing: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion: string };
     contextLength?: number; credentials?: Partial<Pick<GatewayOpts, "openRouterApiKey">>; nativeApiKey?: string; cacheScope: string;
     input: Parameters<DocumentProcessingGateway[K]>[0];
@@ -1320,7 +1320,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (!allowed) throw new Error("document_processing_budget_exhausted");
       },
       recordUsage: async (usage) => this.settleRunBilling({ spaceId: args.spaceId, tenantId: args.tenantId, projectId: args.projectId,
-        userId: args.userId, callerRole: args.callerRole, hasSpendCap: args.hasSpendCap, walletProjectId: args.walletProjectId ?? null,
+        userId: args.userId, callerRole: args.callerRole, hasSpendCap: args.hasSpendCap,
         runId: processingRunId, model: args.model, modelPricing: args.pricing, tokensUsed: usage.inputTokens + (usage.outputTokens ?? 0),
         inputTokens: usage.inputTokens, outputTokens: usage.outputTokens ?? 0, notes: [], projectSpendReserved: Boolean(args.projectId && args.hasSpendCap && reserved),
         endUserCreditReserved: Boolean(!args.projectId && args.callerRole === "product_end_user" && reserved),
@@ -1341,7 +1341,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   /** Normalize every assistant/operator into the one kernel configuration used by this DO. */
-  assembleUniversalAgent(manifest: UniversalAgentManifest, businessContext?: BusinessContext) {
+  assembleUniversalAgent(manifest: UniversalAgentManifest, spaceContext?: SpaceContext) {
     const maxTier = Math.max(1, Math.min(6, Number(manifest.capabilities.maxTier ?? 1))) as ExecutionTier;
     const normalized: UniversalAgentManifest = {
       ...manifest,
@@ -1349,7 +1349,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       prompts: { ...manifest.prompts },
       autonomy: { ...manifest.autonomy, autoApprovedActions: [...manifest.autonomy.autoApprovedActions], requiresApprovalFor: [...manifest.autonomy.requiresApprovalFor] },
     };
-    return { manifest: normalized, systemPrompt: composeUniversalPrompt({ manifest: normalized, ...(businessContext ? { businessContext } : {}) }), maxTier };
+    return { manifest: normalized, systemPrompt: composeUniversalPrompt({ manifest: normalized, ...(spaceContext ? { spaceContext } : {}) }), maxTier };
   }
   private initialized = false;
 
@@ -4859,7 +4859,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     let hasSpendCap = false;
-    let walletProjectId: string | null = null;
     let projectSpendReserved = false;
     const runId = body.runId ?? `trigger:${crypto.randomUUID()}`;
     if (body.projectId) {
@@ -4873,9 +4872,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           if (current.capped) return Response.json({ error_code: "spend_capped" }, { status: 429 });
         }
       }
-      const wallet = await this.checkProjectWallet(body.spaceId, body.tenantId ?? "");
-      if (!wallet.ok) return Response.json({ error_code: "insufficient_credits", balance_cents: wallet.balance_cents }, { status: 402 });
-      walletProjectId = wallet.walletProjectId;
     }
 
     // Direct scripts do not enter the planner's inference-reservation callback. Reserve the
@@ -4902,7 +4898,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       throw error;
     }
     await this.settleRunBilling({ spaceId: body.spaceId, tenantId: body.tenantId ?? "", projectId: body.projectId,
-      hasSpendCap, walletProjectId, runId, tokensUsed: result.tokens_used, inputTokens: result.input_tokens ?? 0,
+      hasSpendCap, runId, tokensUsed: result.tokens_used, inputTokens: result.input_tokens ?? 0,
       outputTokens: result.output_tokens ?? 0, model: DEFAULT_WORKING_MODEL, notes: [], projectSpendReserved,
       tier: result.tier, durationMs: result.duration_ms, chargeInfraToProject: true });
     return Response.json({ result });
@@ -4990,7 +4986,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        *  the caller (index.ts) from the space row it already fetches — this DO has no PLATFORM_DB
        *  binding, so it cannot look the space up itself. Absent for a direct/internal caller that
        *  never resolved one, in which case the reasoner simply omits the field. */
-      businessContext?: BusinessContext;
+      spaceContext?: SpaceContext;
       airGappedOnly?: boolean;
       localMachineId?: string;
       manifest?: UniversalAgentManifest;
@@ -5186,21 +5182,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // when the business has NEVER successfully tracked (a business just turning this feature on
     // hasn't had a chance to connect Whop yet — only a PREVIOUSLY-connected-then-lapsed business
     // is gated, never a newly-enabled one with zero history).
-    const reportingLapsed = await this.checkRevenueReportingLapsed(spaceId, tenantId);
-    if (reportingLapsed) {
-      return this.finishScriptFailure(runId, "Whop revenue reporting has lapsed for this business — reconnect it to resume", 403, "revenue_reporting_lapsed");
-    }
-
     // Tier 2 metering follow-up: business_subscriptions (Phase E) was write-only — the Lemon
     // Squeezy webhook upserted a row on every subscription event but nothing ever read it to gate
     // access, so a business on a pricingConfig.model === "subscription" product could run its
     // agent indefinitely whether or not it ever actually subscribed. Fails CLOSED (deny) on any
     // lookup error — a network hiccup must not silently unblock a gated subscription run.
-    const subGate = await this.checkBusinessSubscriptionGate(spaceId, tenantId);
-    if (subGate.gated && !subGate.active) {
-      return this.finishScriptFailure(runId, "this business's subscription is not active — resubscribe to resume", 402, subGate.reason || "subscription_inactive");
-    }
-
     const engineEnv = await this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId, { goal: body.goal, taskId: runId, threadId: sessionId }, body.airGappedOnly === true, templateMode, body.workspaceBranch, callerRole);
     if (!engineEnv) {
       return this.finishScriptFailure(runId, "script engine unavailable: SCRIPTS_R2 not bound", 503, "script_engine_unavailable");
@@ -5250,7 +5236,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       sessionId, agentId, runId, sessionCreditCeiling: body.sessionCreditCeiling,
     });
     if (!gate.ok) return this.finishScriptFailureResponse(runId, gate.response);
-    const { hasSpendCap, walletProjectId } = gate;
+    const { hasSpendCap } = gate;
     if (gate.effectiveRole !== undefined) {
       // "viewer" makes the whole run read-only — enforced structurally in ScriptToolSurface
       // (script.create/update/delete, stored scripts, and non-read-safe prebuilt ops all
@@ -5306,7 +5292,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       capabilities: { enabledPrebuilts, maxTier: engineEnv.maxTier ?? 6 },
       autonomy: { approvalMode: projectId ? "gate_listed" : "gate_unless_listed", autoApprovedActions: [], requiresApprovalFor: config.requiresApprovalFor ?? [] },
     };
-    const assembled = this.assembleUniversalAgent(manifest, body.businessContext);
+    const assembled = this.assembleUniversalAgent(manifest, body.spaceContext);
     engineEnv.maxTier = Math.min(engineEnv.maxTier ?? 6, assembled.maxTier) as ExecutionTier;
 
     // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
@@ -5477,7 +5463,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             sequence: 1, modelPricing: pricing, onReserved: () => { reserved = true; } });
           if (!allowed) throw new Error("document_processing_budget_exhausted");
         }, recordUsage: async usage => {
-          await this.settleRunBilling({ spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId,
+          await this.settleRunBilling({ spaceId, tenantId, projectId, userId, callerRole, hasSpendCap,
             runId: processingRunId, model, modelPricing: pricing, tokensUsed: usage.inputTokens + (usage.outputTokens ?? 0),
             inputTokens: usage.inputTokens, outputTokens: usage.outputTokens ?? 0, notes: [],
             projectSpendReserved: Boolean(projectId && hasSpendCap && reserved),
@@ -5517,7 +5503,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(config.agentsMd ? { founderDirectives: config.agentsMd } : {}),
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
-      ...(body.businessContext ? { businessContext: body.businessContext } : {}),
+      ...(body.spaceContext ? { spaceContext: body.spaceContext } : {}),
       ...(normalizePreferredLanguage(request.headers.get("x-naelao-preferred-language"))
         ? { preferredLanguage: normalizePreferredLanguage(request.headers.get("x-naelao-preferred-language"))! }
         : {}),
@@ -5828,7 +5814,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // doc for why both runtimes must settle billing identically rather than each carrying
       // their own copy (the divergence that let handleRun run completely unmetered).
       await this.settleRunBilling({
-        spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, runId,
+        spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, runId,
         tokensUsed: result.result?.tokens_used ?? 0,
         inputTokens: result.result?.input_tokens ?? 0,
         outputTokens: result.result?.output_tokens ?? 0,
@@ -6106,7 +6092,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       documentProcessor = await this.createWorkflowDocumentProcessor({ tenantId, spaceId,
         ...(body.projectId ? { projectId: body.projectId } : {}), userId: body.userId, callerRole: body.callerRole,
-        hasSpendCap: gate.hasSpendCap, ...(gate.walletProjectId ? { walletProjectId: gate.walletProjectId } : {}), runId });
+        hasSpendCap: gate.hasSpendCap, runId });
     } catch {
       // Provider or model policy may be unavailable. The existing deterministic local summary
       // remains available; missing specialist configuration never blocks compaction.
@@ -7746,7 +7732,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
      *  this DO has no PLATFORM_DB binding). Unset/<=0 disables the guard entirely. */
     sessionId?: string | undefined; agentId?: string | undefined; runId?: string | undefined; sessionCreditCeiling?: number | undefined;
   }): Promise<
-    | { ok: true; hasSpendCap: boolean; walletProjectId: string | null; effectiveRole?: AssistantEffectiveRole | undefined; maxTier?: ExecutionTier | undefined }
+    | { ok: true; hasSpendCap: boolean; effectiveRole?: AssistantEffectiveRole | undefined; maxTier?: ExecutionTier | undefined }
     | { ok: false; response: Response }
   > {
     const { spaceId, tenantId, projectId, userId, callerRole, sessionId, agentId, runId, sessionCreditCeiling } = opts;
@@ -7758,7 +7744,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (sessionResponse.ok && (await readBoundedResponseJson<{ private_scratchpad?: boolean }>(sessionResponse, 2 * 1024 * 1024)).private_scratchpad) return { ok: false, response: Response.json({ error_code: "private_scratchpad_client_only", error: "Private scratchpad keys stay in the browser; server-side agent execution is unavailable for this session." }, { status: 403 }) };
     }
     let hasSpendCap = false;
-    let walletProjectId: string | null = null;
     let effectiveRole: AssistantEffectiveRole | undefined;
     let maxTier: ExecutionTier | undefined;
 
@@ -7845,21 +7830,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       // status === "not_found": no project config row — permissive by design, unchanged.
 
-      // Wallet gate — fails OPEN only when the lookup/balance check itself errors (network/worker
-      // outage, or no wallet ever provisioned e.g. a space created before this fix shipped),
-      // matching the end-user credit gate's posture. A CONFIRMED zero/negative wallet balance
-      // always blocks the run.
-      const walletCheck = await this.checkProjectWallet(spaceId, tenantId);
-      if (!walletCheck.ok) {
-        return {
-          ok: false,
-          response: Response.json(
-            { error: "this business's wallet is empty — top up to keep this agent running", error_code: "insufficient_credits", balance_cents: walletCheck.balance_cents },
-            { status: 402 }
-          ),
-        };
-      }
-      walletProjectId = walletCheck.walletProjectId;
     } else if (callerRole === "product_end_user" && userId) {
       // Metering enforcement pass: a non-project (Space Assistant / Home chat) run by a signed-in
       // product end user used to debit their ProductUserDO balance ONLY after the run completed
@@ -7963,7 +7933,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
     }
 
-    return { ok: true, hasSpendCap, walletProjectId, effectiveRole, maxTier };
+    return { ok: true, hasSpendCap, effectiveRole, maxTier };
   }
 
   /**
@@ -8098,7 +8068,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async settleRunBilling(params: {
     spaceId: string; tenantId: string; projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
-    hasSpendCap: boolean; walletProjectId: string | null;
+    hasSpendCap: boolean;
     tokensUsed: number; inputTokens: number; outputTokens: number;
     model?: string | undefined; notes: string[]; runId: string;
     modelPricing?: { inputUsdPerToken: number; outputUsdPerToken: number; rateCardVersion?: string } | undefined;
@@ -8109,14 +8079,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
      *  only — the legacy ReAct path has no equivalent concept and omits these). */
     tier?: number | string | undefined; durationMs?: number | undefined;
     /** Direct event/scheduled scripts have no inference reservation callback, so their bounded
-     *  infrastructure charge is reserved and settled against the owning project's cap/wallet. */
+     *  infrastructure charge is reserved and settled against the owning project's spend cap. */
     chargeInfraToProject?: boolean | undefined;
     /** §A1 Harness Excellence Phase HX2: the session-budget guard's post-run counterpart to
      *  enforceRunGates' pre-run check. Only posts the increment when a ceiling is actually
      *  configured — a space that never opted in pays zero extra round-trip cost per run. */
     sessionId?: string | undefined; sessionCreditCeiling?: number | undefined;
   }): Promise<void> {
-    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, modelPricing, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling, projectSpendReserved, endUserCreditReserved, llmQuotaReserved, chargeInfraToProject } = params;
+    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, tokensUsed, inputTokens, outputTokens, model, modelPricing, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling, projectSpendReserved, endUserCreditReserved, llmQuotaReserved, chargeInfraToProject } = params;
 
     // §A1.26: infra-credit usage is recorded independent of whether this run used any LLM
     // tokens at all (a pure script execution — e.g. a scheduled workflow.run with no reasoning
@@ -8134,7 +8104,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             cost_credits: infraCredits, rate_card_version: BILLING_CORE_RATE_CARD_VERSION,
             space_id: spaceId, ...(projectId ? { project_id: projectId } : {}), run_id: runId,
             runtime_tier: typeof tier === "number" ? tier : undefined,
-            payer_kind: chargeInfraToProject && walletProjectId ? "space_wallet" : "platform",
+            payer_kind: "platform",
             decision: "charged", idempotency_key: `run:${runId}:infra`,
           });
           if (this.env.ANALYTICS) {
@@ -8208,15 +8178,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         await this.recordCanonicalUsageEvent(tenantId, projectLlmUsageEvent({
           spaceId, projectId, runId, modelId, tokens: tokensUsed, costCredits: tokenCredits,
           rateCardVersion: modelPricing?.rateCardVersion ?? BILLING_CORE_RATE_CARD_VERSION,
-          payer: walletProjectId ? "space_wallet" : "unknown",
+          payer: "platform",
         }));
       }
-      // Metering enforcement follow-up: debit the space's own wallet for this run's real cost.
-      // credits and wallet cents are the SAME unit by construction (packages/billing-core's
-      // CREDITS_PER_USD = 100, i.e. 1 credit == 1 cent) — no conversion needed. Best-effort,
-      // same "never fail an already-completed run over a billing-side hiccup" posture as the
-      // end-user debit below.
-      if (walletProjectId) await this.debitProjectWallet(spaceId, tenantId, walletProjectId, projectCredits, notes, runId);
     } else if (callerRole === "product_end_user" && userId) {
       // §A1.17 Phase I: a non-project run (Space Assistant / Home chat) by a signed-in product
       // end user debits THEIR OWN ProductUserDO balance, not a project cap — mutually exclusive
@@ -8412,123 +8376,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
-  /** Days of no new tracked-revenue snapshot before a previously-reporting business is gated. */
-  private static readonly REVENUE_REPORTING_LAPSE_DAYS = 45;
-
-  /**
-   * Go-live monetization pass: real technical enforcement (not just a ToS clause) that a business
-   * on revenue-cut billing keeps its Whop revenue reporting connected. Two round trips (pricing
-   * config, then tracked-revenue history) only when the product has this feature enabled at all —
-   * the common case (not enabled) short-circuits after the first. Fails OPEN on any lookup error,
-   * when the feature isn't enabled for this product, or when the business has NEVER successfully
-   * tracked (only a PREVIOUSLY-connected-then-lapsed business is gated).
-   */
-  private async checkRevenueReportingLapsed(spaceId: string, tenantId: string): Promise<boolean> {
-    if (!this.env.SPACES_WORKER) return false;
-    try {
-      const catalogRes = await this.env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(spaceId)}`,
-        { headers: await this.internalHeaders(tenantId) }
-      ));
-      if (!catalogRes.ok) return false;
-      const catalog = await readBoundedResponseJson<{ external_revenue_cut: { enabled: boolean } | null }>(catalogRes, 2 * 1024 * 1024);
-      if (!catalog.external_revenue_cut?.enabled) return false;
-
-      const revenueRes = await this.env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/spaces/${spaceId}/revenue-tracking`,
-        { headers: await this.internalHeaders(tenantId) }
-      ));
-      if (!revenueRes.ok) return false;
-      const revenue = await readBoundedResponseJson<{ last_tracked_at: string | null }>(revenueRes, 2 * 1024 * 1024);
-      if (!revenue.last_tracked_at) return false; // never tracked yet — not lapsed, just new
-
-      const daysSinceTracked = (Date.now() - new Date(revenue.last_tracked_at).getTime()) / 86_400_000;
-      return daysSinceTracked > NaelaoAgentDO.REVENUE_REPORTING_LAPSE_DAYS;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Tier 2 metering follow-up: business_subscriptions was write-only (a Lemon Squeezy webhook
-   * upserted it, nothing read it). One round trip to SPACES_WORKER, which resolves whether this
-   * space is even a subscription-gated business at all (not the product root, product's
-   * pricingConfig.model === "subscription") before checking for an active row — the common case
-   * (not a subscription-model business) short-circuits there. Fails OPEN (gated: false) on any
-   * lookup error, matching checkRevenueReportingLapsed's posture — a transient SPACES_WORKER
-   * outage must never brick a legitimate business's agent.
-   */
-  private async checkBusinessSubscriptionGate(spaceId: string, tenantId: string): Promise<{ gated: boolean; active: boolean; reason: string }> {
-    if (!this.env.SPACES_WORKER) return { gated: false, active: true, reason: "" };
-    // Fail CLOSED on lookup errors when the product uses the subscription model — consistent with
-    // fetchAssistantPolicy, checkReplayPrevention, and the pre-auth rate limiter's own posture.
-    // "not a subscription-gated space" (gated: false) is the only safe short-circuit from the
-    // spaces worker itself; a network/5xx error is not a signal of non-gatedness, so treat it the
-    // same as "gated but not active" rather than silently allowing the run through.
-    const FAIL_CLOSED: { gated: boolean; active: boolean; reason: string } = { gated: true, active: false, reason: "subscription check unavailable — please retry" };
-    try {
-      const res = await this.env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/internal/business-subscription-status?space_id=${encodeURIComponent(spaceId)}`,
-        { headers: await this.internalHeaders(tenantId) }
-      ));
-      if (!res.ok) return FAIL_CLOSED;
-      return await readBoundedResponseJson<{ gated: boolean; active: boolean; reason: string }>(res, 2 * 1024 * 1024);
-    } catch {
-      return FAIL_CLOSED;
-    }
-  }
-
-  /**
-   * P0-2: the space's own auto-provisioned wallet (see the provisioner's seedWallet step) is the
-   * payer of last resort for a project-scoped run, independent of whether daily_spend_cap_credits
-   * is configured — shared by handleScriptRun (a direct /script/run call against a project) and
-   * handleChannelHeartbeat (the actual customer-bot workload: WhatsApp/Slack/Discord/email
-   * messages). Extracted here so both call sites resolve one wallet balance per space rather than
-   * duplicating the fetch/parse logic. Fails OPEN only when the lookup/balance check itself errors
-   * (network/worker outage, or no wallet ever provisioned — e.g. a space created before this fix
-   * shipped) — a CONFIRMED zero/negative balance always blocks.
-   */
-  private async checkProjectWallet(
-    spaceId: string, tenantId: string
-  ): Promise<{ ok: true; walletProjectId: string | null } | { ok: false; balance_cents: number }> {
-    try {
-      const wpRes = await this.env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/spaces/${spaceId}/wallet-project`,
-        { headers: await this.internalHeaders(tenantId) }
-      ));
-      if (wpRes.ok) {
-        const { project_id } = await readBoundedResponseJson<{ project_id: string | null }>(wpRes, 2 * 1024 * 1024);
-        if (project_id) {
-          const balRes = await this.env.SPACES_WORKER.fetch(new Request(
-            `http://spaces-worker/spaces/${spaceId}/projects/${project_id}/wallet/balance`,
-            { headers: await this.internalHeaders(tenantId) }
-          ));
-          if (balRes.ok) {
-            const { balance_cents, credited_cents } = await readBoundedResponseJson<{ balance_cents: number; credited_cents?: number }>(balRes, 2 * 1024 * 1024);
-            // A wallet that has NEVER been funded is not a wallet that ran out.
-            //
-            // Every business auto-provisions an empty wallet project at creation, so blocking on
-            // a zero balance alone refused all project-agent work on a brand-new business, before
-            // its owner had done anything — reproduced live, with the message "this business's
-            // wallet is empty — top up to keep this agent running" as the first thing a new owner
-            // saw from their own agent. It also contradicts the whole point of the wallet: taking a
-            // business from $0 to real revenue with no owner money in.
-            //
-            // `credited_cents` is the evidence of real depletion: money went in and is now spent.
-            // Absent (an older spaces worker mid-rolling-deploy) falls back to the previous
-            // balance-only behaviour rather than silently opening the gate for everyone.
-            const everFunded = credited_cents === undefined ? true : credited_cents > 0;
-            if (balance_cents <= 0 && everFunded) return { ok: false, balance_cents };
-          }
-          return { ok: true, walletProjectId: project_id };
-        }
-      }
-    } catch {
-      // Wallet service unreachable — do not block the run over a transient outage.
-    }
-    return { ok: true, walletProjectId: null };
-  }
-
   /** §A1.17 Phase I: debit a signed-in product end user's OWN ProductUserDO balance for a
    *  non-project run's real LLM usage. Best-effort — a billing-side failure never crashes an
    *  already-completed run, but is surfaced in `notes` so it isn't silently swallowed (same
@@ -8589,33 +8436,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/llm-tokens/reservations/release", {
       method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }), body: JSON.stringify({ run_id: runId }),
     })).catch(() => undefined);
-  }
-
-  /** Metering enforcement follow-up: debit a project-scoped run's real LLM usage from the space's
-   *  own wallet (kind='wallet' project, auto-provisioned by the provisioner's seedWallet step).
-   *  Best-effort, same posture as debitEndUserCredits above — a billing-side failure never
-   *  crashes an already-completed run. idempotency_key namespaced "run:" mirrors that method's
-   *  own convention (never collides with wallet-topup/starter-grant keys on the same index). */
-  private async debitProjectWallet(
-    spaceId: string, tenantId: string, walletProjectId: string, credits: number, notes: string[], runId?: string
-  ): Promise<void> {
-    try {
-      const resp = await this.env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/spaces/${spaceId}/projects/${walletProjectId}/wallet/debit`,
-        {
-          method: "POST",
-          headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-          body: JSON.stringify({ cents: credits, reason: "agent_run", ...(runId ? { idempotency_key: `run:${runId}` } : {}) }),
-        }
-      ));
-      if (resp.status === 402) {
-        notes.push(`Billing: this business's wallet had insufficient balance to cover this run's ${credits} credit(s) — balance was not debited.`);
-      } else if (!resp.ok) {
-        notes.push(`Billing: failed to debit ${credits} credit(s) from the wallet for this run (${resp.status}) — see logs.`);
-      }
-    } catch (err) {
-      notes.push(`Billing: failed to debit ${credits} credit(s) from the wallet for this run (${(err as Error).message}).`);
-    }
   }
 
   private async fetchProjectConfig(spaceId: string, tenantId: string, projectId: string): Promise<ProjectConfigResult> {
@@ -8801,8 +8621,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async handleChannelHeartbeat(request: Request): Promise<Response> {
     this.ensureInit();
-    // businessContext is resolved by the caller (index.ts's heartbeat dispatch).
-    type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; channel?: string; max?: number; businessContext?: BusinessContext; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
+    // spaceContext is resolved by the caller (index.ts's heartbeat dispatch).
+    type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; channel?: string; max?: number; spaceContext?: SpaceContext; openRouterCapabilityEvidence?: OpenRouterModelCandidate };
     const body = await request.json<HeartbeatBody>().catch(() => ({}) as HeartbeatBody);
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
@@ -8928,7 +8748,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
       // WHICH business this run is for. Resolved by index.ts from the space row it already
       // fetches; omitted entirely when the caller never resolved one.
-      ...(body.businessContext ? { businessContext: body.businessContext } : {}),
+      ...(body.spaceContext ? { spaceContext: body.spaceContext } : {}),
     });
 
     // Resolve config + rules once per distinct project among this batch (not per message).
@@ -8946,14 +8766,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       projectConfigs.set(pid, cfg);
       projectRules.set(pid, rules);
     }
-
-    // P0-2: the wallet is space-scoped (one wallet per space, shared by every project in it), so
-    // resolve it once for the whole batch rather than per project — only when at least one
-    // pending message is project-scoped, since a customer-bot project is the only thing this gate
-    // applies to (same scoping handleScriptRun's own wallet gate uses). Before this, the ONLY
-    // metering on this drain was the OPTIONAL daily_spend_cap_credits — a customer-bot project
-    // with no cap configured (the common case) ran its actual workload completely unmetered.
-    const walletCheck = projectIds.length > 0 ? await this.checkProjectWallet(spaceId, tenantId) : null;
 
     let answered = 0;
     let escalated = 0;
@@ -9111,19 +8923,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         projectCfg.daily_spend_cap_credits > 0 &&
         (await this.checkAndDebitProjectSpend(spaceId, tenantId, msg.project_id!, 0)).capped
       ) {
-        spendCapped++;
-        continue;
-      }
-
-      // 2b. Wallet gate (P0-2) — applies to every project-scoped message REGARDLESS of whether
-      // a spend cap is configured, closing the gap where a customer-bot project with no cap set
-      // (the common case) ran this drain's actual reasoning-loop LLM cost completely unmetered.
-      // Deliberately placed after no-code rules (step 1) so STOP/opt-out replies and
-      // human_takeover routing never depend on the business having money — only the paid
-      // reasoning-loop path below is gated. Bucketed into the same spend_capped counter as the
-      // spend cap above: "can't afford to run the paid loop right now," same externally-visible
-      // outcome (left for a human/retry, not silently dropped).
-      if (msg.project_id && walletCheck && !walletCheck.ok) {
         spendCapped++;
         continue;
       }
@@ -9294,10 +9093,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 settle: settledCredits => this.settleProjectSpendReservation(spaceId, tenantId, msg.project_id!, channelReservation.runId, settledCredits),
                 markSettled: () => { channelReservation.reserved = false; } });
             }
-            if (walletCheck?.ok && walletCheck.walletProjectId) {
-              const billingNotes: string[] = [];
-              await this.debitProjectWallet(spaceId, tenantId, walletCheck.walletProjectId, credits, billingNotes, channelReservation.runId);
-            }
             const subjectHash = await opaqueExternalSubject(this.env.PLATFORM_SECRET,
               [tenantId, spaceId, msg.project_id, msg.channel, msg.channel_user_id]);
             const tokenQuantity = answer.usage
@@ -9312,7 +9107,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                   : model.includes("/") ? model.split("/")[0] ?? "unknown" : "unknown",
               model_id: model, connector_provider: msg.channel, subject_hash: subjectHash,
               cost_credits: credits, rate_card_version: channelModelPricing?.rateCardVersion ?? BILLING_CORE_RATE_CARD_VERSION,
-              payer_kind: walletCheck?.ok && walletCheck.walletProjectId ? "space_wallet" : "unknown",
+              payer_kind: "platform",
               decision: "allowed",
             });
           }
@@ -9711,7 +9506,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       await this.settleRunBilling({
         spaceId: body.spaceId, tenantId: body.tenantId, projectId: body.projectId,
         userId: body.userId, callerRole: body.callerRole,
-        hasSpendCap: gate.hasSpendCap, walletProjectId: gate.walletProjectId,
+        hasSpendCap: gate.hasSpendCap,
         tokensUsed: loopResult.tokensUsed, inputTokens: loopResult.inputTokens, outputTokens: loopResult.outputTokens,
         model: body.model, notes: billingNotes, runId,
         modelPricing: legacyModelPricing, projectSpendReserved: legacyProjectReserved, endUserCreditReserved: legacyUserReserved,

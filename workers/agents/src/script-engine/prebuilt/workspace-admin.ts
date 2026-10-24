@@ -75,7 +75,7 @@ async function createFromTemplate(ctx: PrebuiltOpContext, templateId: string, na
 
   // 2. Configure the generic workspace's execution policy, spend cap, thread cap and channel.
   await spacesCall(ctx, "PATCH", `/spaces/${spaceId}/projects/${project.id}`, {
-    kind: "workspace",
+    kind: "DualPane",
     ...(template.external_channel_profile !== undefined
       ? { external_channel_profile: template.external_channel_profile }
       : {}),

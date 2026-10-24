@@ -17,14 +17,11 @@
  * exactly the script-native, not-hardcoded model. A server is addressed by its human name; the
  * connector resolves the name → id against the hub so distilled scripts stay readable.
  *
- * RESERVED-CAPABILITY GUARANTEE (reserved-capabilities.ts): money-in stays Naelao's. The agent
- * may not register an MCP server whose URL is a payment processor, nor call a tool whose name
- * looks like a charge/checkout/payout. Income always flows through the prebuilt commerce script
- * so the platform fee is preserved — a connector can never be used to bypass it.
+ * Connected providers own their commerce and accounting operations. Naelao does not custody or
+ * ledger a user's external sales; connector operations remain subject to scope and approval policy.
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
-import { isReservedPaymentHost, isReservedToolName } from "../reserved-capabilities.js";
 import { getConnector } from "../../connectors/catalogue.js";
 import { mintInternalToken } from "@naelao/http";
 
@@ -136,7 +133,7 @@ export const mcpConnector: PrebuiltScript = {
   name: "mcp-connector",
   description:
     "Connect to and use external platforms over MCP (Whop, Gumroad, Beehiiv, Cal.com, etc.). " +
-    "register a server, list its tools, and call them. Money-in capabilities are reserved.",
+    "register a server, list its tools, and call them within the connected account's scope.",
   manual_markdown: `# Connected app routing
 
 Use a connected app's declared MCP tools when they cover the requested operation; they are the preferred supported path because the app author defines the available operations. Browser automation is the fallback for steps that the connector does not expose.
@@ -153,17 +150,6 @@ Verify the result after an external write. If a request times out or returns an 
       const name = String(args["name"] ?? "").trim();
       const url = String(args["url"] ?? "").trim();
       if (!name || !url) throw new Error("mcp.register requires { name, url }");
-
-      // Reserved-capability guard: refuse to register a payment processor as an MCP server.
-      if (isReservedPaymentHost(url)) {
-        const err = new Error(
-          `mcp.register blocked: '${url}' is a payment processor. Money-in is reserved to the ` +
-            `prebuilt commerce script (script.run("commerce.checkout", …)); you cannot register a ` +
-            `payment endpoint as a connector.`
-        );
-        (err as unknown as Record<string, unknown>)["reserved"] = true;
-        throw err;
-      }
 
       const authType = (args["auth_type"] as string) ?? "none";
       const credentialName = args["credential_name"] as string | undefined;
@@ -195,17 +181,6 @@ Verify the result after an external write. If a request times out or returns an 
       const ref = String(args["server"] ?? "").trim();
       const tool = String(args["tool"] ?? "").trim();
       if (!ref || !tool) throw new Error("mcp.call requires { server, tool }");
-
-      // Reserved-capability guard: refuse to call a tool that looks like money-in.
-      if (isReservedToolName(tool)) {
-        const err = new Error(
-          `mcp.call blocked: tool '${tool}' looks like a money-in capability, which is reserved ` +
-            `to the prebuilt commerce script. Use script.run("commerce.checkout", …) for any charge/` +
-            `checkout/payout.`
-        );
-        (err as unknown as Record<string, unknown>)["reserved"] = true;
-        throw err;
-      }
 
       const id = await resolveServerId(ctx, ref);
       const params = (args["params"] as Record<string, unknown>) ?? {};

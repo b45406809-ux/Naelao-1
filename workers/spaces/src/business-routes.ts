@@ -8,11 +8,11 @@
 import type { Hono } from "hono";
 import { verifyInternalToken } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
-import { createBusinessForEndUser, resolvePersonalPlanTier, loadEffectiveProductConfig, type BusinessCreateEnv } from "./business-create.js";
-import { canPersonalPlanInvite } from "@naelao/billing-core";
 import { resolveEndUserBusinessRole } from "./business-auth.js";
 
-export interface BusinessRoutesEnv extends BusinessCreateEnv {
+export interface BusinessRoutesEnv {
+  PLATFORM_DB: D1Database;
+  PLATFORM_SECRET: string;
   SPACE_DO: DurableObjectNamespace;
   /** F-15: best-effort invite emails (same binding the product-end-user routes use). */
   NOTIFICATIONS_WORKER?: Fetcher;
@@ -102,59 +102,6 @@ async function authorizeProductUser(
 }
 
 export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable-line @typescript-eslint/no-explicit-any
-  // POST /spaces/:productSpaceId/businesses — product-scoped wrapper over createBusinessForEndUser
-  // (the same logic POST /reseller/spaces uses). Being product-scoped (a path spaceId) is what
-  // lets the router's product_end_user allowlist capture it safely — the bare /reseller/spaces
-  // route has no path spaceId to key a membership check off of. Dual-writes business_memberships
-  // for the owner (Phase B's flat "member" floor becomes a real role once this row exists) and
-  // best-effort mirrors into the business's own SpaceDO space_members (matches seedOwnerMember's
-  // precedent — the provisioner does this too once the space finishes provisioning, so this call
-  // is a head start, not a replacement).
-  app.post("/spaces/:productSpaceId/businesses", async (c) => {
-    const env = c.env as BusinessRoutesEnv;
-    const productSpaceId = c.req.param("productSpaceId");
-    const { tenantId, userId, role } = callerIdentity(c);
-    if (!tenantId || !userId || role !== "product_end_user" || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, env.PLATFORM_SECRET)) {
-      return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
-    }
-    const productTenant = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status = 'active'")
-      .bind(productSpaceId).first<{ tenant_id: string }>();
-    if (!productTenant || productTenant.tenant_id !== tenantId) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-
-    const body = await c.req.json<{
-      name: string;
-      spacetype_id: string;
-      template_id?: string;
-      template_ids?: string[];
-      config_overrides?: Record<string, unknown>;
-    }>().catch(() => null);
-    if (!body?.name || !body.spacetype_id) {
-      return c.json({ error_code: "bad_request", message: "name and spacetype_id are required" }, 400);
-    }
-
-    const result = await createBusinessForEndUser(env, {
-      resellerProductSpaceId: productSpaceId,
-      userId,
-      name: body.name,
-      spacetypeId: body.spacetype_id,
-      ...(body.template_ids ? { templateIds: body.template_ids } : {}),
-      ...(body.template_id ? { templateId: body.template_id } : {}),
-      ...(body.config_overrides ? { configOverrides: body.config_overrides } : {}),
-    });
-    if (!result.ok) {
-      return c.json({ error_code: result.error_code, message: result.message }, result.status);
-    }
-
-    // The shared create service commits this membership before enqueueing provisioning, so a
-    // response retry cannot leave a visible business without its owner index row.
-    await seedSpaceDoMember(env, result.spaceId, result.tenantId, userId, "owner");
-
-    return c.json(
-      { tenant_id: result.tenantId, space_id: result.spaceId, status: result.status, parent_tenant_id: result.parentTenantId },
-      201
-    );
-  });
-
   // GET /spaces/:productSpaceId/my-businesses — the space switcher's list: every business (under
   // this product) the calling end user belongs to, from the business_memberships index (never
   // opens each business's own SpaceDO — that's exactly what this index exists to avoid at scale).
@@ -182,34 +129,6 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
         ORDER BY m.joined_at ASC`
     ).bind(productSpaceId, userId).all();
 
-    return c.json({ data: results, count: results.length });
-  });
-
-  // Step 18: GET /spaces/:productSpaceId/directory — a public-within-the-product directory of
-  // ALL active businesses under this product (not just the caller's own), so a signed-in end user
-  // can DISCOVER what others have built, but only NAVIGATE into their own. Deliberately scoped to
-  // the product (businesses share one product root), NOT platform-wide — that would be a much
-  // larger cross-product privacy decision (item 102's boundary). Safe projection only: id, name,
-  // template_id, created_at — never owner identity, revenue, or any private metric. `is_mine` is
-  // computed from the caller's own business_memberships so the shell can gate navigation.
-  app.get("/spaces/:productSpaceId/directory", async (c) => {
-    const env = c.env as BusinessRoutesEnv;
-    const productSpaceId = c.req.param("productSpaceId");
-    const identity = await authorizeProductUser(env, c, productSpaceId);
-    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
-    const { userId } = identity;
-    const { results } = await env.PLATFORM_DB.prepare(
-      `SELECT s.id, s.name,
-              json_extract(s.config_json, '$.template_id') AS template_id,
-              s.created_at,
-              CASE WHEN m.end_user_id IS NOT NULL THEN 1 ELSE 0 END AS is_mine
-         FROM spaces s
-         LEFT JOIN business_memberships m
-           ON m.business_space_id = s.id AND m.end_user_id = ? AND m.status = 'active'
-        WHERE s.parent_space_id = ? AND s.status NOT IN ('deleted', 'error')
-        ORDER BY s.created_at DESC
-        LIMIT 200`
-    ).bind(userId, productSpaceId).all();
     return c.json({ data: results, count: results.length });
   });
 
@@ -249,34 +168,6 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     const history = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM business_invites WHERE business_space_id = ?")
       .bind(businessSpaceId).first<{ count: number }>();
     if ((history?.count ?? 0) >= 500) return c.json({ error_code: "invite_history_limit_reached", message: "This business has reached its invite history limit" }, 429);
-
-    // Phase 4 (money): "a personal plan gates ... whether others may join" — the CALLER's own
-    // personal-plan tier (the person issuing the invite, already confirmed owner/admin above)
-    // must allow inviting at all.
-    //
-    // DELIBERATELY ONLY ENFORCED when the product actually has a real personalPlans checkout
-    // configured (pc.pricingConfig.personalPlans non-empty) — this feature is brand new and no
-    // existing end user has ever purchased a personal plan, so gating invites unconditionally
-    // would instantly break every currently-working invite flow on every live business with no
-    // way for anyone to fix it (there'd be nothing to upgrade TO). Matches this codebase's own
-    // "never gate on a monetization control nobody can actually satisfy" precedent
-    // (free_tier_eligible's own template-catalog gate has the identical shape).
-    const productRoot = await env.PLATFORM_DB.prepare(
-        "SELECT tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
-      ).bind(business.parent_space_id).first<{ tenant_id: string; spacetype_id: string; config_json: string | null }>();
-    if (productRoot) {
-      const pc = await loadEffectiveProductConfig(env, productRoot.spacetype_id, productRoot.config_json);
-      const hasRealUpgradePath = ((pc as { pricingConfig?: { personalPlans?: unknown[] } })?.pricingConfig?.personalPlans?.length ?? 0) > 0;
-      if (hasRealUpgradePath) {
-        const tier = await resolvePersonalPlanTier(env, business.parent_space_id, userId, productRoot.tenant_id);
-        if (!canPersonalPlanInvite(tier)) {
-          return c.json(
-            { error_code: "personal_plan_invite_not_allowed", message: "Your personal plan doesn't allow inviting others yet — upgrade to invite collaborators." },
-            403
-          );
-        }
-      }
-    }
 
     const id = crypto.randomUUID();
     const token = randomToken();

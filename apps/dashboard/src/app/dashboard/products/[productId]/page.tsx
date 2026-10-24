@@ -72,7 +72,6 @@ export default function ProductOverviewPage() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
           {[
             { label: "Knowledge Base", segment: "kb" },
-            { label: "Commerce", segment: "commerce" },
             { label: "Connectors", segment: "connectors" },
             { label: "Credentials", segment: "credentials" },
             { label: "Evaluations", segment: "eval" },

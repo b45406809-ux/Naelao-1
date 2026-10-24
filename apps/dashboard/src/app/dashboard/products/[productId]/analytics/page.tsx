@@ -4,16 +4,8 @@ export const runtime = "edge";
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { getBuilderProductAnalytics, getBuilderProductRevenue } from "@/lib/api";
-import type { BuilderProductAnalytics, BuilderProductRevenue } from "@/lib/api";
-
-function centsToDisplay(cents: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  }).format(cents / 100);
-}
+import { getBuilderProductAnalytics } from "@/lib/api";
+import type { BuilderProductAnalytics } from "@/lib/api";
 
 function StatCard({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
   return (
@@ -27,7 +19,6 @@ function StatCard({ label, value, muted }: { label: string; value: string; muted
 export default function ProductAnalyticsPage() {
   const params = useParams<{ productId: string }>();
   const [analytics, setAnalytics] = useState<BuilderProductAnalytics | null>(null);
-  const [revenue, setRevenue] = useState<BuilderProductRevenue | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,12 +26,8 @@ export default function ProductAnalyticsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [a, r] = await Promise.all([
-        getBuilderProductAnalytics(params.productId),
-        getBuilderProductRevenue(params.productId),
-      ]);
+      const a = await getBuilderProductAnalytics(params.productId);
       setAnalytics(a);
-      setRevenue(r);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load analytics");
     } finally {
@@ -79,17 +66,7 @@ export default function ProductAnalyticsPage() {
         )}
       </div>
 
-      <div>
-        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
-          {revenue?.period} · Revenue
-        </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <StatCard label="Gross revenue" value={centsToDisplay(revenue?.gross_revenue_cents ?? 0)} />
-          <StatCard label="Naelao fee" value={centsToDisplay(revenue?.naelao_fee_cents ?? 0)} muted />
-          <StatCard label="Net revenue" value={centsToDisplay(revenue?.net_revenue_cents ?? 0)} />
-          <StatCard label="Orders" value={String(revenue?.order_count ?? 0)} muted />
-        </div>
-      </div>
+
     </div>
   );
 }

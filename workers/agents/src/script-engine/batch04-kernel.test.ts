@@ -18,7 +18,7 @@ const manifest: UniversalAgentManifest = {
 
 describe("Batch 04 universal kernel", () => {
   it("compiles exactly four prompt layers in deterministic order", () => {
-    const prompt = composeUniversalPrompt({ manifest, businessContext: { name: "Acme", kind: "store", offering: "Widgets", pricing: "$10", setup_status: "complete" } });
+    const prompt = composeUniversalPrompt({ manifest, spaceContext: { name: "Acme", kind: "store", offering: "Widgets", pricing: "$10", setup_status: "complete" } });
     const tags = ["universal_operating_kernel", "living_business_identity", "agent_archetype", "founder_custom_directives"];
     expect(tags.map((tag) => prompt.indexOf(`<${tag}>`))).toEqual([...tags.map((tag) => prompt.indexOf(`<${tag}>`))].sort((a, b) => a - b));
     expect(prompt).toContain("Never promise refunds.");

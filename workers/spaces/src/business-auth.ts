@@ -110,51 +110,6 @@ async function resolveEndUserBusinessRoleCached(
   return role;
 }
 
-/** Wallet-specific variant of resolveEndUserBusinessRole. The product ROOT space's wallet project
- *  (seeded by seedWallet, kind='wallet') is the BUILDER's own platform-cost ledger — unlike every
- *  other root-scoped resource, a verified end-user product session implies NO legitimate access to
- *  it, so the generic root-is-"member" shortcut must NOT apply here. A business (child) space's
- *  wallet is that business's own money, so it keeps the normal per-business membership lookup. */
-export async function resolveWalletAccessRole(
-  db: D1Database,
-  spaceId: string,
-  endUserId: string
-): Promise<BusinessRole | null> {
-  if (!spaceId || !endUserId) return null;
-  try {
-    const space = await db.prepare("SELECT parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'")
-      .bind(spaceId).first<{ parent_space_id: string | null }>();
-    if (!space) return null;
-    if (!space.parent_space_id) return null; // product root: builder-only, never a product_end_user
-    const membership = await db.prepare(
-      "SELECT role FROM business_memberships WHERE business_space_id = ? AND end_user_id = ? AND status = 'active'"
-    ).bind(spaceId, endUserId).first<{ role: string }>();
-    if (!membership) return null;
-    return parseBusinessRole(membership.role);
-  } catch {
-    return null;
-  }
-}
-
-const walletRoleCache = new Map<string, { role: BusinessRole | null; expiresAt: number }>();
-
-async function resolveWalletAccessRoleCached(
-  db: D1Database,
-  tenantId: string,
-  spaceId: string,
-  endUserId: string
-): Promise<BusinessRole | null> {
-  const cacheKey = `${tenantId}:${spaceId}:${endUserId}`;
-  const cached = walletRoleCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) return cached.role;
-  const role = await resolveWalletAccessRole(db, spaceId, endUserId);
-  if (walletRoleCache.size >= BUSINESS_ROLE_CACHE_MAX) {
-    walletRoleCache.delete(walletRoleCache.keys().next().value!);
-  }
-  walletRoleCache.set(cacheKey, { role, expiresAt: Date.now() + BUSINESS_ROLE_CACHE_TTL_MS });
-  return role;
-}
-
 /** Returns a Hono middleware that, ONLY for `x-naelao-role: product_end_user` callers, requires
  *  at least `methodMinRole[method]` (default: "admin", fail closed for methods not listed) on the
  *  space named by the `spaceId` route param. Every other role passes through untouched. */
@@ -170,33 +125,6 @@ export function requireBusinessMembership(methodMinRole: Partial<Record<string, 
     const callerRole = await resolveEndUserBusinessRoleCached(env.PLATFORM_DB, tenantId, spaceId, endUserId);
     if (!callerRole) {
       return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
-    }
-    const minRole = methodMinRole[c.req.method] ?? "admin";
-    if (ROLE_RANK[callerRole] < ROLE_RANK[minRole]) {
-      return c.json({ error_code: "forbidden", message: "Insufficient role for this action" }, 403);
-    }
-    return next();
-  });
-}
-
-/** Wallet-only variant of requireBusinessMembership: uses resolveWalletAccessRole instead of
- *  resolveEndUserBusinessRole, so a product_end_user is refused OUTRIGHT on the product ROOT
- *  space's wallet (the builder's own platform-cost ledger) instead of passing at the generic
- *  root-implies-"member" floor. Business (child) space wallets are unaffected — same real
- *  business_memberships lookup as every other business-scoped route. Every non-product_end_user
- *  caller (builder JWT roles) passes through untouched, as with requireBusinessMembership. */
-export function requireBusinessMembershipForWallet(methodMinRole: Partial<Record<string, BusinessRole>>) {
-  return createMiddleware(async (c, next) => {
-    const role = c.req.header("x-naelao-role") ?? "";
-    if (role !== "product_end_user") return next();
-
-    const spaceId = c.req.param("spaceId") ?? "";
-    const endUserId = c.req.header("x-naelao-user-id") ?? "";
-    const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-    const env = c.env as BusinessAuthEnv;
-    const callerRole = await resolveWalletAccessRoleCached(env.PLATFORM_DB, tenantId, spaceId, endUserId);
-    if (!callerRole) {
-      return c.json({ error_code: "forbidden", message: "Wallet is not accessible to end users on this space" }, 403);
     }
     const minRole = methodMinRole[c.req.method] ?? "admin";
     if (ROLE_RANK[callerRole] < ROLE_RANK[minRole]) {

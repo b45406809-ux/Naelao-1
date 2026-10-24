@@ -14,7 +14,7 @@ import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:work
 import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 import type { Env } from "../env.js";
 import { reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
-import type { BusinessContext } from "../launchpad/business-context.js";
+import type { SpaceContext } from "../launchpad/space-context.js";
 import type { OpenRouterModelCandidate } from "../shared/openrouter-model-catalog.js";
 import { checkpointAgentTask } from "./agent-task-checkpoints.js";
 import { workflowRunStub } from "./workflow-host.js";
@@ -62,7 +62,7 @@ export interface AgentTaskParams {
    *  /agent/run route from the space row. Carried so a durable/async run is told exactly as much
    *  about the business as a synchronous one; without it the default dispatch path would be the
    *  one that stayed generic. See launchpad/business-context.ts. */
-  businessContext?: BusinessContext;
+  spaceContext?: SpaceContext;
   /** Model switcher capability config (a chosen reasoning-effort/thinking level) — already
    *  validated by the /agent/run route against whichever model this task actually runs. */
   reasoningEffort?: string;
@@ -211,7 +211,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
               businessRole: p.businessRole,
               sessionCreditCeiling: p.sessionCreditCeiling,
               workerTokenBudget: p.workerTokenBudget,
-              businessContext: p.businessContext,
+              spaceContext: p.spaceContext,
               reasoningEffort: p.reasoningEffort,
               effort: p.effort,
               progressiveToolDisclosure: p.progressiveToolDisclosure,

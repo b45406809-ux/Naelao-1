@@ -23,7 +23,7 @@ import { searchTwilioLocalNumbers } from "./voice/twilio-number-search.js";
 import { fetchTwilioLocalMonthlyPrice, fetchTwilioNumberPrice } from "./voice/twilio-number-pricing.js";
 import { reconcileStaleCustomerVoiceCalls } from "./voice/call-reconciliation.js";
 import { recommendOpenRouterModels } from "./shared/openrouter-model-recommendations.js";
-import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
+import { parseMentions, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
@@ -33,7 +33,7 @@ import { namedTunnelStub } from "./tunnels/host.js";
 export { CodeRpcBroker } from "./script-engine/code-rpc-broker.js";
 export { PackageEgress } from "./script-engine/package-egress.js";
 import { LAUNCHPAD_TEMPLATES, LAUNCHPAD_CORE_AGENTS, getLaunchpadTemplate } from "./launchpad/spacetype.js";
-import { resolveBusinessContext, parseSpaceConfigForContext, loadBusinessContext, type BusinessContext } from "./launchpad/business-context.js";
+import { resolveSpaceContext, parseSpaceConfigForContext, loadSpaceContext, type SpaceContext } from "./launchpad/space-context.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { deployedContainerCatalogue, deployedDynamicImages } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
@@ -97,7 +97,7 @@ import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templ
 import { seedTemplateProjects, seedGeneralProject } from "./launchpad/bootstrap.js";
 import { applyOnboardingAutonomyPolicy } from "./launchpad/autonomy-policy.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
-import { findAgentTemplate, agentTemplateSummaries, agentTemplateToConfig, customAgentToConfig } from "./agent-templates.js";
+import { customAgentToConfig } from "./agent-templates.js";
 import { ARCHETYPE_PRESETS, isKnownArchetype, clampScriptsToArchetype } from "./script-engine/agent-archetypes.js";
 import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/agent-config.js";
 import { actorAddress, type ThreadTier } from "@naelao/agent-sdk";
@@ -1378,7 +1378,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // role but never the business, and a live run proved the consequence: asked how to win a first
   // customer, the assistant gave generic advice naming its own internal components, because the
   // business was the one thing it had no way to talk about. See launchpad/business-context.ts.
-  let businessContext: BusinessContext | undefined;
+  let spaceContext: SpaceContext | undefined;
   try {
     const cfg = JSON.parse(spaceRow.config_json || "{}") as {
       productConfig?: { modelConfig?: { model?: string; effort?: string; progressiveToolDisclosure?: boolean }; limits?: { sessionCreditCeiling?: number } };
@@ -1389,13 +1389,13 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     modelConfig = {};
   }
   try {
-    businessContext = resolveBusinessContext({
+    spaceContext = resolveSpaceContext({
       spaceName: spaceRow.name,
       config: parseSpaceConfigForContext(spaceRow.config_json),
     });
   } catch {
     // Describing the business must never be what stops it from being run.
-    businessContext = undefined;
+    spaceContext = undefined;
   }
 
   // A model switcher's capability-aware config card only offers levels the CHOSEN model actually
@@ -1586,7 +1586,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         workerTokenBudget,
         // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
         // so a durable/async run knows exactly as much about the business as a sync one.
-        businessContext,
+        spaceContext,
         airGappedOnly,
         // Model switcher capability config — already validated above against whichever model
         // actually runs, so this is passed through as-is rather than re-checked at the DO.
@@ -1666,7 +1666,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         context: { worker_token_budget: workerTokenBudget },
         // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
         // so a durable/async run knows exactly as much about the business as a sync one.
-        businessContext,
+        spaceContext,
         airGappedOnly,
         // Model switcher capability config — already validated above against whichever model
         // actually runs.
@@ -2086,7 +2086,7 @@ async function buildWakeUpBrief(env: AgentsEnv, spaceId: string, tenantId: strin
     // failures has nothing to say about a healthy business that simply is not selling anything
     // yet — which is the state most new businesses are in, and the one where doing the next
     // useful thing matters most.
-    const business = await loadBusinessContext(env.PLATFORM_DB, spaceId, tenantId);
+    const business = await loadSpaceContext(env.PLATFORM_DB, spaceId, tenantId);
     if (business?.setup_note) {
       // Unfinished setup outranks everything else: none of the work below can run until it is
       // done, so spending a wake-up on marketing plans for a business that cannot take payment
@@ -2179,7 +2179,7 @@ async function resolveWakeContext(
   spaceId: string,
   tenantId: string,
   channel?: string,
-): Promise<{ model: string; businessContext?: BusinessContext; airGappedOnly: boolean; openRouterCapabilityEvidence?: OpenRouterModelCandidate }> {
+): Promise<{ model: string; spaceContext?: SpaceContext; airGappedOnly: boolean; openRouterCapabilityEvidence?: OpenRouterModelCandidate }> {
   try {
     const row = await env.PLATFORM_DB.prepare(
       "SELECT name, config_json FROM spaces WHERE id = ? AND tenant_id = ?"
@@ -2223,7 +2223,7 @@ async function resolveWakeContext(
       }
       return {
         model: selectedModel,
-        businessContext: resolveBusinessContext({ spaceName: row.name, config: cfg }),
+        spaceContext: resolveSpaceContext({ spaceName: row.name, config: cfg }),
         airGappedOnly,
         ...(openRouterCapabilityEvidence ? { openRouterCapabilityEvidence } : {}),
       };
@@ -2350,7 +2350,7 @@ async function dispatchChannelSessionMessage(env: AgentsEnv, message: ChannelSes
       apiKey: env.ANTHROPIC_API_KEY ?? "", model: wake.model,
       ...(wake.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wake.openRouterCapabilityEvidence } : {}),
       ...(wake.airGappedOnly ? { airGappedOnly: true } : {}),
-      ...(wake.businessContext ? { businessContext: wake.businessContext } : {}),
+      ...(wake.spaceContext ? { spaceContext: wake.spaceContext } : {}),
     }),
   }));
   if (!response.ok) throw new Error(`channel_agent_dispatch_failed:${response.status}`);
@@ -2419,7 +2419,7 @@ async function wakeAgentGoal(
         model: wake.model,
         ...(wake.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wake.openRouterCapabilityEvidence } : {}),
         ...(params.airGappedOnly || wake.airGappedOnly ? { airGappedOnly: true } : {}),
-        ...(wake.businessContext ? { businessContext: wake.businessContext } : {}),
+        ...(wake.spaceContext ? { spaceContext: wake.spaceContext } : {}),
       }),
     })
   );
@@ -3331,7 +3331,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     workerTokenBudget?: number;
     /** WHICH business this run is for — carried from /agent/run through the Workflow so the
      *  async path is no less informed than the sync one. */
-    businessContext?: BusinessContext;
+    spaceContext?: SpaceContext;
     reasoningEffort?: string;
     effort?: string;
     /** Phase 2 item 13 — carried from AgentTaskWorkflow's own params, resolved by /agent/run. */
@@ -3373,7 +3373,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           projectId: body.projectId,
           sessionCreditCeiling: body.sessionCreditCeiling,
           context: { worker_token_budget: body.workerTokenBudget, long_running: true },
-          businessContext: body.businessContext,
+          spaceContext: body.spaceContext,
           reasoningEffort: body.reasoningEffort,
           effort: body.effort,
           progressiveToolDisclosure: body.progressiveToolDisclosure,
@@ -5582,23 +5582,8 @@ app.post("/channels/:channel/connect", async (c) => {
   return c.json({ connected: true, channel, project_id: body.project_id ?? null, webhook_path: `/v1/channels/${channel}/inbound/${body.space_id}` }, 201);
 });
 
-// GET /project-templates — no-code channel/workflow presets PLUS
-// the Business Feature Projects registry (F-35), the two catalogues a "create project" picker
-// draws from. Feature kinds are ROLE-FILTERED server-side (not just UI-hidden) by the caller's
-// verified space role — a non-admin member never sees "Create Wallet" as an option at all,
-// matching the identity-vs-authorization split used everywhere else. `?role=` carries the caller's
-// resolved space role from the router; absent → treated as the lowest (editor) so nothing
-// admin-only leaks to an unauthenticated/unknown caller.
-app.get("/project-templates", (c) => {
-  const role = c.req.query("role") ?? c.req.header("x-naelao-role") ?? "editor";
-  const featureKinds = creatableFeatureKindsForRole(role);
-  return c.json({
-    data: PROJECT_TEMPLATES,
-    count: PROJECT_TEMPLATES.length,
-    feature_kinds: featureKinds,
-    feature_kinds_count: featureKinds.length,
-  });
-});
+// GET /project-templates — generic project templates published by the Space Template catalog.
+app.get("/project-templates", (c) => c.json({ data: PROJECT_TEMPLATES, count: PROJECT_TEMPLATES.length }));
 
 // POST /spaces/:spaceId/projects/from-template — creates a fully configured project in one
 // call, from any entry in the project-templates catalogue:
@@ -5673,7 +5658,7 @@ async function applyProjectTemplate(
     method: "PATCH",
     headers,
     body: JSON.stringify({
-      kind: "workspace",
+      kind: "DualPane",
       ...(template.external_channel_profile !== undefined
         ? { external_channel_profile: template.external_channel_profile }
         : {}),
@@ -5725,20 +5710,12 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   return c.json({
     project_id: result.projectId,
     template_id: template.id,
-    kind: "workspace",
+      kind: "DualPane",
     ...(template.suggested_channel ? { suggested_channel: template.suggested_channel } : {}),
     ...(template.suggested_channel
       ? { next_step: `POST /channels/${template.suggested_channel}/connect { space_id, secret, project_id: "${result.projectId}" }` }
       : {}),
   }, 201);
-});
-
-// ── Naelao Agent Templates ────────────────────────────────────────────────────
-// GET /agent-templates — the browsable catalogue (safe projection, no system_prompt/instructions
-// text, same precedent as GET /catalog/shell's agent_catalog). Global, not space-scoped.
-app.get("/agent-templates", async (c) => {
-  await requireVerifiedTenant(c);
-  return c.json({ templates: agentTemplateSummaries() });
 });
 
 // GET /archetypes — AVOS plan step 5: the capability-firewall presets a custom agent can opt
@@ -5766,34 +5743,6 @@ function agentTemplateHeaders(internalToken: string, tenantId: string, callerUse
   };
 }
 
-/**
- * Has this template already been instantiated in this space? Registration stamps `template_id`
- * into the definition's own config, so the roster is the record — no extra table needed.
- * Best-effort: if the lookup fails we fall through to creating one, which is the prior behaviour.
- */
-async function findExistingTemplateInstance(
-  env: AgentsEnv,
-  spaceId: string,
-  tenantId: string,
-  templateId: string,
-  callerUserId?: string
-): Promise<{ agentId: string; agentDefinitionId: string } | null> {
-  try {
-    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
-    const resp = await env.SPACES_WORKER.fetch(
-      new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions?space_id=${encodeURIComponent(spaceId)}`, {
-        headers: agentTemplateHeaders(token, tenantId, callerUserId),
-      })
-    );
-    if (!resp.ok) return null;
-    const body = await resp.json<{ data?: Array<{ id: string; config?: { agent_id?: string; template_id?: string } }> }>();
-    const hit = (body.data ?? []).find((d) => d.config?.template_id === templateId && d.config?.agent_id);
-    return hit ? { agentId: hit.config!.agent_id!, agentDefinitionId: hit.id } : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Add an agent to a project's allowed roster. Convenience, never load-bearing — the agent exists
  *  either way, so a failure here is swallowed exactly as it always was. */
 async function bindAgentToProject(
@@ -5819,74 +5768,6 @@ async function bindAgentToProject(
       method: "PATCH", headers, body: JSON.stringify({ allowed_agent_ids: [...allowed] }),
     }));
   } catch { /* binding to a project is a convenience, not load-bearing */ }
-}
-
-async function applyAgentTemplate(
-  env: AgentsEnv,
-  spaceId: string,
-  tenantId: string,
-  templateId: string,
-  name?: string,
-  projectId?: string,
-  callerUserId?: string
-): Promise<{ agentId: string; agentDefinitionId: string } | { error: string; status: number }> {
-  const template = findAgentTemplate(templateId);
-  if (!template) return { error: "unknown agent template", status: 404 };
-  if (!env.SCRIPTS_R2) return { error: "Agent config storage is not bound", status: 503 };
-
-  // Adding the same template twice used to mint a second agent with a fresh random id, an
-  // identical name, and its own separate policy — so a project's agent switcher would list
-  // "Customer Support" three times with no way to tell them apart, and picking the wrong one got
-  // whichever policy that copy happened to carry. Instantiating a template is meant to be
-  // idempotent per space, so return the one that already exists instead.
-  const existing = await findExistingTemplateInstance(env, spaceId, tenantId, template.id, callerUserId);
-  if (existing) {
-    // Still (re)bind it to the project — the same template can legitimately be added to a project
-    // it isn't in yet, which is a real request even when the agent itself already exists.
-    if (projectId) await bindAgentToProject(env, spaceId, tenantId, projectId, existing.agentId, callerUserId);
-    return existing;
-  }
-
-  const agentId = `${template.id}-${crypto.randomUUID().slice(0, 8)}`;
-  await writeAgentConfig(env.SCRIPTS_R2, spaceId, agentId, agentTemplateToConfig(template), {
-    ...(env.CONCURRENCY_DO
-      ? { lockGateway: createAgentConfigLockGateway(env.CONCURRENCY_DO, spaceId), holderId: crypto.randomUUID() }
-      : {}),
-  });
-
-  const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
-  const headers = {
-    "content-type": "application/json",
-    "x-naelao-tenant-id": tenantId,
-    "x-naelao-internal-token": internalToken,
-    ...(callerUserId ? { "x-naelao-user-id": callerUserId } : {}),
-  };
-
-  const registerResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      id: `${spaceId}:${agentId}`,
-      space_id: spaceId,
-      name: name?.trim() || template.name,
-      description: template.description,
-      config: { agent_id: agentId, config_path: `spaces/${spaceId}/agents/${agentId}/`, template_id: template.id },
-    }),
-  }));
-  if (!registerResp.ok) return { error: await registerResp.text(), status: 502 };
-
-  // Best-effort: an agent that fails to get its own seeded policy just inherits the space-wide
-  // assistant_policy default (the existing fallback every per-agent policy read already has),
-  // never a reason to fail the whole instantiation.
-  await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/agents/${agentId}/policy`, {
-    method: "PATCH",
-    headers,
-    body: JSON.stringify({ approval_mode: template.approval_mode, auto_approved_actions: template.auto_approved_actions }),
-  })).catch(() => {});
-
-  if (projectId) await bindAgentToProject(env, spaceId, tenantId, projectId, agentId, callerUserId);
-
-  return { agentId, agentDefinitionId: `${spaceId}:${agentId}` };
 }
 
 // Step 17: create a CUSTOM agent from user-supplied config (instructions, tool list, autonomy).
@@ -6003,29 +5884,6 @@ app.post("/agents/custom", async (c) => {
     agent_id: result.agentId, agent_definition_id: result.agentDefinitionId, custom: true,
     ...(result.rejected_scripts ? { rejected_scripts: result.rejected_scripts } : {}),
   }, 201);
-});
-
-// POST /agent-templates/instantiate  { space_id, template_id, name?, project_id? }
-// A dedicated create action rather than a REST-y /agent-templates/:id/instantiate — a dynamic
-// segment followed by a static suffix is the shape that has repeatedly corrupted this codebase's
-// Hono route tables (see the record-install route's own writeup); a POST with the id in the body
-// carries zero risk of that. Trusts the tenant only — real end-user authorization (admin of the
-// business) happens at the spaces-worker wrapper that calls this, same as connectors/:platform/
-// connect above.
-app.post("/agent-templates/instantiate", async (c) => {
-  const tenantId = await requireVerifiedTenant(c);
-  const { userId } = getCallerIdentity(c);
-  const body = await c.req
-    .json<{ space_id?: string; template_id?: string; name?: string; project_id?: string }>()
-    .catch(() => ({}) as { space_id?: string; template_id?: string; name?: string; project_id?: string });
-  if (!body.space_id) throw badRequest("space_id is required");
-  if (!body.template_id) throw badRequest("template_id is required");
-
-  const result = await applyAgentTemplate(c.env, body.space_id, tenantId, body.template_id, body.name, body.project_id, userId || undefined);
-  if ("error" in result) {
-    return c.json({ error_code: "agent_template_failed", message: result.error }, result.status as 404 | 502 | 503);
-  }
-  return c.json({ agent_id: result.agentId, agent_definition_id: result.agentDefinitionId, template_id: body.template_id }, 201);
 });
 
 // ── Scan-to-connect: one Naelao app per channel, paired with a QR ─────────────────────────────
@@ -6830,195 +6688,17 @@ app.post("/channels/telegram/extensions/:spaceId/:installationId/:connectionId",
   return c.json({ ok: true });
 });
 
-// ── Hosted AgentMail mailbox integration ────────────────────────────────────
-// AgentMail hosts the receiving domain itself, so a business gets a REAL send+receive address
-// with no Naelao-owned DNS zone (the exact blocker the prior pass deferred on). The API key lives
-// ONLY on this worker (AGENTMAIL_API_KEY secret); the agent never sees the key. When unset, hosted
-// inbox provisioning is unavailable; outbound may still use the Cloudflare Email Service binding
-// or the notifications worker's Resend fallback.
-//
-// The Svix webhook secret is vaulted under its OWN credential name (distinct from the generic
-// channel gateway's Mailgun-style EMAIL_SIGNING_SECRET) so a business could in principle run both
-// a BYO Mailgun inbound-parse AND an AgentMail inbox without the two verification schemes
-// colliding on one credential.
-const AGENTMAIL_WEBHOOK_SECRET_CRED = "AGENTMAIL_WEBHOOK_SECRET";
+// Email providers are connected through generic connectors. The host no longer provisions
+// business mailboxes or exposes business-specific email APIs.
 
-/** Resolve a space's provisioned AgentMail service record (email + inbox id) from
- *  business_services via the spaces worker. Null when not provisioned or on any error. */
-async function resolveBusinessEmailService(
-  env: AgentsEnv, spaceId: string, tenantId: string
-): Promise<{ email: string; inboxId: string } | null> {
-  if (!env.SPACES_WORKER) return null;
-  try {
-    const resp = await env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/internal/business-services?space_id=${encodeURIComponent(spaceId)}&kind=business_email`,
-      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) } }
-    ));
-    if (!resp.ok) return null;
-    const row = await resp.json<{ naelao_handle?: string; config_json?: string } | null>();
-    if (!row?.naelao_handle) return null;
-    let inboxId = "";
-    try { inboxId = (JSON.parse(row.config_json ?? "{}") as { agentmail_inbox_id?: string }).agentmail_inbox_id ?? ""; } catch { /* no id */ }
-    if (!inboxId) return null;
-    return { email: row.naelao_handle, inboxId };
-  } catch {
-    return null;
+function bytesToBase64(bytes: Uint8Array): string {
+  let output = "";
+  for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
+    output += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.byteLength)));
   }
+  return btoa(output);
 }
 
-// POST /internal/business-email/provision — create or reuse the Space's AgentMail inbox, or return
-// its stable Cloudflare Email Service sender alias when only outbound sending is configured.
-// HMAC-gated and tenant-matched; the two provider modes remain explicitly distinguishable.
-app.post("/internal/business-email/provision", async (c) => {
-  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
-  if (!headerTenantId || !valid) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; projectId?: string; slug?: string; displayName?: string }>().catch(() => null);
-  if (!body?.spaceId || !body.tenantId) return c.json({ error_code: "bad_request", message: "spaceId and tenantId are required" }, 400);
-  if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
-  if (!await isActiveTenantSpace(c.env, body.spaceId, body.tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
-  const activeSpace = await c.env.PLATFORM_DB.prepare("SELECT status, config_json FROM spaces WHERE id = ? AND tenant_id = ?")
-    .bind(body.spaceId, body.tenantId).first<{ status: string; config_json: string | null }>();
-  if (!activeSpace || activeSpace.status !== "active") return c.json({ error_code: "space_not_found" }, 404);
-  if (airGappedOnlyFromConfig(activeSpace.config_json)) {
-    return c.json({ error_code: "air_gap_email_denied", message: "Cloud email provisioning is disabled for this air-gapped Space" }, 403);
-  }
-  if (body.projectId !== undefined && (typeof body.projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.projectId))) {
-    return c.json({ error_code: "invalid_project_scope" }, 400);
-  }
-
-  // Native Cloudflare Email Routing provides an address per space or project assistant.
-  // Inbound routing is keyed to both assistant and project so messages cannot fall into a
-  // Space-wide or different project's conversation. Migration 0124 adds the project-scoped map.
-  const ingressDomain = normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN);
-  if (body.agentId && ingressDomain) {
-    const email = await createAgentEmailAddress({ domain: ingressDomain, tenantId: body.tenantId, spaceId: body.spaceId, agentId: body.agentId, ...(body.projectId ? { projectId: body.projectId } : {}), secret: c.env.PLATFORM_SECRET });
-    const addressHash = await hashEmailAddress(email);
-    if (body.projectId) {
-      await c.env.PLATFORM_DB.prepare(
-        `INSERT INTO project_agent_email_addresses (address_hash, tenant_id, space_id, agent_id, project_id, status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?)
-         ON CONFLICT(tenant_id, space_id, agent_id, project_id) DO UPDATE SET address_hash = excluded.address_hash, status = 'active'`
-      ).bind(addressHash, body.tenantId, body.spaceId, body.agentId, body.projectId, new Date().toISOString()).run();
-    } else {
-      await c.env.PLATFORM_DB.prepare(
-        `INSERT INTO agent_email_addresses (address_hash, tenant_id, space_id, agent_id, status, created_at)
-         VALUES (?, ?, ?, ?, 'active', ?)
-         ON CONFLICT(tenant_id, space_id, agent_id) DO UPDATE SET address_hash = excluded.address_hash, status = 'active'`
-      ).bind(addressHash, body.tenantId, body.spaceId, body.agentId, new Date().toISOString()).run();
-    }
-    return c.json({ ok: true, configured: true, provider: "cloudflare_email_routing", email, inbound_wired: true });
-  }
-
-  // A project assistant cannot safely share the Space AgentMail inbox or a send-only alias.
-  if (body.projectId) return c.json({ ok: false, configured: false, error_code: "project_email_ingress_not_configured" }, 409);
-
-  if (!agentMailConfigured(c.env)) {
-    const domain = normalizeEmailSendingDomain(c.env.EMAIL_SENDING_DOMAIN);
-    if (!c.env.EMAIL || !domain) {
-      return c.json({ ok: false, configured: false, message: "No hosted inbox provider is configured" });
-    }
-    const email = await cloudflareSpaceSenderAddress(body.tenantId, body.spaceId, domain);
-    // This is a stable outbound sender alias, not a hosted inbox. Persist it in the existing
-    // business_services row so email.status reports the same address that email.send uses.
-    if (c.env.SPACES_WORKER) {
-      await c.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/business-services", {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, body.tenantId) },
-        body: JSON.stringify({ space_id: body.spaceId, kind: "business_email", handle: email }),
-      })).catch(() => undefined);
-    }
-    return c.json({ ok: true, configured: true, provider: "cloudflare_email", email, inbound_wired: false });
-  }
-  // Idempotent: already provisioned → return the existing record, never mint a second inbox.
-  const existing = await resolveBusinessEmailService(c.env, body.spaceId, body.tenantId);
-  if (existing) return c.json({ ok: true, configured: true, email: existing.email, inbox_id: existing.inboxId, already: true });
-
-  const inbox = await createInbox(c.env, {
-    spaceId: body.spaceId,
-    username: uniqueInboxUsername(body.slug ?? "team", body.spaceId),
-    ...(body.displayName ? { displayName: body.displayName } : {}),
-  });
-  if (!inbox.ok || !inbox.email || !inbox.inboxId) {
-    return c.json({ ok: false, configured: true, error: inbox.error ?? "inbox creation failed" }, 502);
-  }
-
-  // Register the inbound webhook at our own public, Svix-verified ingress. Best-effort: a failure
-  // here still leaves a working SEND-capable inbox; inbound just won't flow until re-provisioned.
-  let webhookSecret: string | undefined;
-  if (c.env.PUBLIC_AGENTS_URL && c.env.CREDENTIALS_WORKER) {
-    const webhookUrl = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/channels/email/agentmail-inbound/${encodeURIComponent(body.spaceId)}`;
-    const wh = await createInboundWebhook(c.env, inbox.inboxId, webhookUrl);
-    if (wh.ok && wh.secret) {
-      webhookSecret = wh.secret;
-      // Vault the Svix secret so the public inbound route can verify deliveries (same vault the
-      // channel gateway resolves its own signing secrets from).
-      await storeConnectorCredential(c.env, {
-        tenantId: body.tenantId, spaceId: body.spaceId, userId: "agentmail-system",
-        name: AGENTMAIL_WEBHOOK_SECRET_CRED, value: wh.secret,
-        description: "AgentMail inbound webhook signing secret (Svix)",
-      }).catch(() => undefined);
-    }
-  }
-
-  // Persist the address + inbox id (business_services, via the spaces worker — config_json holds
-  // the inbox id, no schema change).
-  if (c.env.SPACES_WORKER) {
-    await c.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/business-services", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, body.tenantId) },
-      body: JSON.stringify({ space_id: body.spaceId, kind: "business_email", handle: inbox.email, agentmail_inbox_id: inbox.inboxId }),
-    })).catch(() => undefined);
-  }
-
-  return c.json({ ok: true, configured: true, email: inbox.email, inbox_id: inbox.inboxId, inbound_wired: Boolean(webhookSecret) });
-});
-
-// POST /internal/business-email/reply-address — mint a stable per-run Reply-To alias.
-// Only the currently executing task can obtain its own alias; this route is HMAC-only and
-// callers cannot select another task's id.
-app.post("/internal/business-email/reply-address", async (c) => {
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
-    return c.json({ error_code: "forbidden" }, 403);
-  }
-  const body = await c.req.json<{ tenantId?: string; spaceId?: string; taskId?: string; agentId?: string; projectId?: string }>().catch(() => null);
-  if (!body?.spaceId || !body.taskId || !body.agentId || body.tenantId !== tenantId) {
-    return c.json({ error_code: "bad_request", message: "spaceId, taskId, agentId and matching tenantId are required" }, 400);
-  }
-  const domain = normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN);
-  if (!domain) return c.json({ error_code: "email_ingress_not_configured" }, 409);
-  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
-
-  const address = await createReplyAddress({ domain, tenantId, spaceId: body.spaceId, taskId: body.taskId, secret: c.env.PLATFORM_SECRET });
-  const addressHash = await hashEmailAddress(address);
-  const now = new Date();
-  const expires = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  await c.env.PLATFORM_DB.prepare("DELETE FROM email_reply_routes WHERE expires_at <= ? OR status = 'revoked'").bind(now.toISOString()).run();
-  const active = await c.env.PLATFORM_DB.prepare(
-    "SELECT address_hash, agent_id, project_id, expires_at FROM email_reply_routes WHERE tenant_id = ? AND space_id = ? AND task_id = ? AND status = 'active' AND expires_at > ?"
-  ).bind(tenantId, body.spaceId, body.taskId, now.toISOString()).first<{ address_hash: string; agent_id: string; project_id: string | null; expires_at: string }>();
-  if (active && active.address_hash !== addressHash) return c.json({ error_code: "reply_route_conflict" }, 409);
-  if (active && (active.agent_id !== body.agentId || active.project_id !== (body.projectId ?? null))) {
-    return c.json({ error_code: "reply_route_scope_conflict" }, 409);
-  }
-
-  if (!active) {
-    const count = await c.env.PLATFORM_DB.prepare(
-      "SELECT COUNT(*) AS count FROM email_reply_routes WHERE tenant_id = ? AND space_id = ? AND status = 'active' AND expires_at > ?"
-    ).bind(tenantId, body.spaceId, now.toISOString()).first<{ count: number }>();
-    if ((count?.count ?? 0) >= 100) return c.json({ error_code: "reply_route_limit_reached" }, 429);
-    await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO email_reply_routes (address_hash, tenant_id, space_id, task_id, agent_id, project_id, status, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
-       ON CONFLICT(address_hash) DO UPDATE SET agent_id = excluded.agent_id, project_id = excluded.project_id, status = 'active', expires_at = excluded.expires_at`
-    ).bind(addressHash, tenantId, body.spaceId, body.taskId, body.agentId, body.projectId ?? null, now.toISOString(), expires).run();
-  }
-  return c.json({ address, expires_at: active?.expires_at ?? expires, already: Boolean(active) });
-});
-
-// List only metadata for attachments received by this exact active task. Storage keys never leave
-// the worker; callers receive opaque ids which are re-authorized for every read.
 app.post("/internal/attachments/list", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
@@ -7254,9 +6934,11 @@ app.post("/internal/attachments/copy", async (c) => {
   }
 });
 
-// POST /internal/business-email/attachment/read-text — expose bounded text/PDF extraction only to
+// Task-scoped attachment text extraction and OCR use opaque task handles; they are general
+// Naelao attachment operations and do not provision or send email.
+// POST /internal/attachments/read-text — expose bounded text/PDF extraction only to
 // the same task that received the attachment. D1 ownership is checked before touching R2.
-app.post("/internal/business-email/attachment/read-text", async (c) => {
+app.post("/internal/attachments/read-text", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
     return c.json({ error_code: "forbidden" }, 403);
@@ -7338,7 +7020,7 @@ app.post("/internal/business-email/attachment/read-text", async (c) => {
 
 // OCR is a separate hosted-AI operation. A Space owner must enable it explicitly, and the exact
 // attachment must still belong to the task before R2 bytes are read or sent to Workers AI.
-app.post("/internal/business-email/attachment/ocr", async (c) => {
+app.post("/internal/attachments/ocr", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
     return c.json({ error_code: "forbidden" }, 403);
@@ -7450,214 +7132,10 @@ app.post("/internal/business-email/attachment/ocr", async (c) => {
   }
 });
 
-// POST /internal/business-email/send — use the Space's AgentMail inbox when provisioned, then the
-// optional Cloudflare Email Service binding, else return configured:false so the business-email
-// prebuilt can use the existing Resend/notifications fallback.
-app.post("/internal/business-email/send", async (c) => {
-  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
-  if (!headerTenantId || !valid) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  const body = await c.req.json<{ spaceId?: string; tenantId?: string; agentId?: string; projectId?: string; taskId?: string; to?: string | string[]; subject?: string; text?: string; html?: string; replyTo?: string }>().catch(() => null);
-  if (!body?.spaceId || !body.tenantId || !body.to) return c.json({ error_code: "bad_request", message: "spaceId, tenantId, to are required" }, 400);
-  if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
-  if (!await isActiveTenantSpace(c.env, body.spaceId, body.tenantId)) {
-    return c.json({ ok: false, configured: true, error_code: "tenant_suspended" }, 403);
-  }
-  // All email providers, including the task-correlated reply fallback, perform network egress.
-  // Apply Space policy before branching to any provider.
-  if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.spaceId)) {
-    return c.json({ ok: false, configured: true, error_code: "air_gap_egress_denied" }, 403);
-  }
 
-  if (body.replyTo) {
-    if (!body.taskId || !c.env.EMAIL_INGRESS_DOMAIN || !normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN)) {
-      return c.json({ error_code: "invalid_reply_route" }, 400);
-    }
-    const routeHash = await hashEmailAddress(body.replyTo);
-    const route = await c.env.PLATFORM_DB.prepare(
-      "SELECT address_hash FROM email_reply_routes WHERE address_hash = ? AND tenant_id = ? AND space_id = ? AND task_id = ? AND project_id IS ? AND status = 'active' AND expires_at > ?"
-    ).bind(routeHash, body.tenantId, body.spaceId, body.taskId, body.projectId ?? null, new Date().toISOString()).first<{ address_hash: string }>();
-    if (!route) return c.json({ error_code: "reply_route_not_owned_by_task" }, 403);
-    // The AgentMail send contract does not document reply-to support. Use the existing Resend
-    // path, which has an explicit reply_to field, rather than silently dropping task correlation.
-    if (!c.env.NOTIFICATIONS_WORKER) return c.json({ error_code: "reply_route_sender_unavailable" }, 503);
-    const response = await c.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId },
-      body: JSON.stringify({ channel: "email", space_id: body.spaceId, to: body.to, subject: body.subject, body: body.text, html: body.html, reply_to: body.replyTo }),
-    }));
-    const result = await response.json<{ delivered?: boolean; from?: string }>().catch(() => ({} as { delivered?: boolean; from?: string }));
-    return c.json({ ok: response.ok && result.delivered === true, configured: true, provider: "resend", from: result.from, reply_to: body.replyTo }, response.ok && result.delivered === true ? 200 : 502);
-  }
 
-  // Prefer native Cloudflare Email Service whenever configured. AgentMail remains an opt-in
-  // provider for Spaces without the Cloudflare binding/domain, rather than a product requirement.
-  const domain = normalizeEmailSendingDomain(c.env.EMAIL_SENDING_DOMAIN);
-  if (c.env.EMAIL && domain) {
-    try {
-      const from = await cloudflareSpaceSenderAddress(body.tenantId, body.spaceId, domain);
-      const agentReplyTo = body.agentId && normalizeIngressDomain(c.env.EMAIL_INGRESS_DOMAIN)
-        ? await resolveAgentEmailAddress(c.env, body.tenantId, body.spaceId, body.agentId, body.projectId)
-        : null;
-      const result = await c.env.EMAIL.send({
-        from,
-        to: body.to,
-        subject: body.subject || "(no subject)",
-        ...(body.text ? { text: body.text } : {}),
-        ...(body.html ? { html: body.html } : {}),
-        ...(body.replyTo ? { replyTo: body.replyTo } : agentReplyTo ? { replyTo: agentReplyTo } : {}),
-      });
-      return c.json({ ok: true, configured: true, provider: "cloudflare_email", messageId: result.messageId, from, ...(agentReplyTo && !body.replyTo ? { replyTo: agentReplyTo } : {}) });
-    } catch (error) {
-      return c.json({ ok: false, configured: true, provider: "cloudflare_email", error: error instanceof Error ? error.message.slice(0, 300) : "Cloudflare Email Service send failed" }, 502);
-    }
-  }
+// AgentMail inbound mailbox webhooks were removed with business mailbox provisioning.
 
-  if (agentMailConfigured(c.env)) {
-    const svc = await resolveBusinessEmailService(c.env, body.spaceId, body.tenantId);
-    if (svc) {
-      const result = await sendFromInbox(c.env, svc.inboxId, {
-        to: body.to,
-        ...(body.subject ? { subject: body.subject } : {}),
-        ...(body.text ? { text: body.text } : {}),
-        ...(body.html ? { html: body.html } : {}),
-      });
-      return c.json({ ...result, provider: "agentmail" }, result.ok ? 200 : 502);
-    }
-  }
-
-  return c.json({ ok: false, configured: false, reason: "no_outbound_email_provider" });
-});
-
-async function resolveAgentEmailAddress(env: AgentsEnv, tenantId: string, spaceId: string, agentId: string, projectId?: string): Promise<string | null> {
-  const domain = normalizeIngressDomain(env.EMAIL_INGRESS_DOMAIN);
-  if (!domain) return null;
-  const email = await createAgentEmailAddress({ domain, tenantId, spaceId, agentId, ...(projectId ? { projectId } : {}), secret: env.PLATFORM_SECRET });
-  const hash = await hashEmailAddress(email);
-  const table = projectId ? "project_agent_email_addresses" : "agent_email_addresses";
-  const row = await env.PLATFORM_DB.prepare(
-    `SELECT address_hash FROM ${table} WHERE address_hash = ? AND tenant_id = ? AND space_id = ? AND agent_id = ?${projectId ? " AND project_id = ?" : ""} AND status = 'active'`
-  ).bind(hash, tenantId, spaceId, agentId, ...(projectId ? [projectId] : [])).first<{ address_hash: string }>();
-  return row ? email : null;
-}
-
-app.post("/internal/business-email/status", async (c) => {
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  if (!tenantId || !(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
-    return c.json({ error_code: "forbidden" }, 403);
-  }
-  const body = await c.req.json<{ tenantId?: string; spaceId?: string; agentId?: string; projectId?: string }>().catch(() => null);
-  if (!body?.spaceId || !body.agentId || body.tenantId !== tenantId
-    || (body.projectId !== undefined && (typeof body.projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.projectId)))) {
-    return c.json({ error_code: "bad_request" }, 400);
-  }
-  if (!await isActiveTenantSpace(c.env, body.spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
-  const address = await resolveAgentEmailAddress(c.env, tenantId, body.spaceId, body.agentId, body.projectId);
-  return c.json(address
-    ? { ok: true, configured: true, address, inbound: true, provider: "cloudflare_email_routing", project_id: body.projectId ?? null }
-    : { ok: false, configured: false, inbound: false, provider: "cloudflare_email_routing", project_id: body.projectId ?? null });
-});
-
-function normalizeEmailSendingDomain(value: string | undefined): string | null {
-  const domain = value?.trim().toLowerCase().replace(/\.$/, "");
-  if (!domain || domain.length > 253 || !domain.includes(".")) return null;
-  const labels = domain.split(".");
-  if (labels.some((label) => !label || label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))) return null;
-  return domain;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let output = "";
-  for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
-    output += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.byteLength)));
-  }
-  return btoa(output);
-}
-
-async function cloudflareSpaceSenderAddress(tenantId: string, spaceId: string, domain: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${tenantId}\0${spaceId}`));
-  const localPart = [...new Uint8Array(digest).slice(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `space-${localPart}@${domain}`;
-}
-
-// POST /channels/email/agentmail-inbound/:spaceId — public inbound webhook for AgentMail
-// deliveries. UNAUTHENTICATED at the HTTP layer (like the generic channel gateway) — the Svix
-// signature IS the auth. Verifies against the vaulted webhook secret, parses the message.received
-// event, and forwards it to the same NaelaoAgentDO channel inbox every other channel uses, so a
-// business_email project's AI-triaged inbox is fed identically to Slack/Discord/WhatsApp.
-app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
-  const spaceId = c.req.param("spaceId");
-  const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT s.tenant_id, s.status FROM spaces s JOIN orgs o ON o.id=s.tenant_id AND o.status='active' WHERE s.id = ?"
-  ).bind(spaceId).first<{ tenant_id: string; status: string }>();
-  if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
-  const wakeContext = await resolveWakeContext(c.env, spaceId, space.tenant_id);
-  if (wakeContext.airGappedOnly) return c.json({ ok: true, skipped: "air_gapped" });
-
-  let rawBody: string;
-  try { rawBody = await readBoundedRequestText(c.req.raw, 1024 * 1024); }
-  catch { return c.json({ error_code: "payload_too_large" }, 413); }
-  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable" }, 503);
-
-  // Resolve the vaulted Svix secret (written at provision time).
-  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, space.tenant_id, spaceId, "naelao-agent");
-  const secretResp = await c.env.CREDENTIALS_WORKER.fetch(new Request(
-    `http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(AGENTMAIL_WEBHOOK_SECRET_CRED)}/plaintext`,
-    { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken } }
-  ));
-  if (!secretResp.ok) return c.json({ error_code: "no_webhook_secret", message: "AgentMail inbound not configured for this space" }, 400);
-  const { value: secret } = await secretResp.json<{ value: string }>();
-
-  const headers: Record<string, string> = {};
-  c.req.raw.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
-  const valid = await verifySvixSignature({ headers, rawBody, secret });
-  if (!valid) return c.json({ error_code: "invalid_signature" }, 401);
-
-  let payload: unknown = null;
-  try { payload = JSON.parse(rawBody); } catch { return c.json({ ok: true, skipped: "unparseable" }); }
-  const parsed = parseInboundMessageReceived(payload);
-  // A non-message event, or a spam/blocked variant, parses to null — ack-ignore so Svix doesn't
-  // retry it forever. (A spam-flagged message is deliberately NOT auto-fed to the agent.)
-  if (!parsed) return c.json({ ok: true, skipped: "not_actionable" });
-
-  // Resolve which project (if any) the email channel is bound to — same customer-bot scoping as
-  // the generic gateway.
-  const link = await c.env.PLATFORM_DB.prepare(
-    "SELECT project_id,extension_instance_id,extension_script_sha256 FROM channel_links WHERE space_id = ? AND channel = 'email' AND enabled=1"
-  ).bind(spaceId).first<{ project_id: string | null; extension_instance_id: string | null; extension_script_sha256: string | null }>();
-
-  try {
-    const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
-    const response = await stub.fetch(new Request("http://agent-do/channels/email/inbound", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        // Shape matches emailAdapter.normalizeInbound's expected raw fields (from/text/message_id).
-        raw: { from: parsed.from, text: parsed.text, message_id: parsed.messageId, subject: parsed.subject },
-        projectId: link?.project_id ?? undefined,
-        extensionInstanceId: link?.extension_instance_id ?? undefined,
-        extensionScriptSha256: link?.extension_script_sha256 ?? undefined,
-        spaceId,
-        tenantId: space.tenant_id,
-        model: wakeContext.model,
-        ...(wakeContext.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakeContext.openRouterCapabilityEvidence } : {}),
-        apiKey: "",
-      }),
-    }));
-    if (!response.ok) {
-      console.error(`[agentmail] inbound forward failed space=${spaceId}: status=${response.status}`);
-      return c.json({ error_code: "inbound_dispatch_failed" }, 503);
-    }
-  } catch (err) {
-    console.error(`[agentmail] inbound forward failed space=${spaceId}:`, (err as Error).message);
-    return c.json({ error_code: "inbound_dispatch_failed" }, 503);
-  }
-  return c.json({ ok: true });
-});
-
-// Customer-bot observability + admin control — "all you do is see what the customers are
-// doing" (the whole point of a customer-bot project's UI surface, vs. a workspace you chat
-// in). Proxies straight to the space's agent DO.
 app.get("/spaces/:spaceId/channels/sessions", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
@@ -9112,22 +8590,7 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   // every business genuinely passes through, templated or not.
   await seedGeneralProject(bootstrapDeps, spaceId);
 
-  // Every script-enabled space gets one local-access worker. The template installer is
-  // idempotent per space, so retries and older spaces completing onboarding cannot create
-  // duplicates. Keep this best-effort: a missing local tunnel must not strand onboarding.
-  try {
-    await applyAgentTemplate(
-      c.env,
-      spaceId,
-      tenantId,
-      "local-access",
-      undefined,
-      undefined,
-      bootstrapCallerUserId || undefined
-    );
-  } catch (err) {
-    console.warn(`[bootstrap] local-access worker seed failed for ${spaceId}:`, (err as Error).message);
-  }
+  // User-configured workers are created explicitly. Space bootstrap installs no fixed personas.
 
   // 1b. Stamp the template's project-template presets (an external-channel preset arrives with its own
   //     execution ceiling, spend cap and STOP/human-takeover rules already wired — exactly what an
@@ -9939,7 +9402,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const links = await env.PLATFORM_DB.prepare(
         "SELECT channel, model_override FROM channel_links WHERE space_id=? AND tenant_id=? AND enabled=1 ORDER BY channel"
       ).bind(msg.spaceId, msg.tenantId).all<{ channel: string; model_override: string | null }>();
-      const businessContext = await loadBusinessContext(env.PLATFORM_DB, msg.spaceId, msg.tenantId);
+      const spaceContext = await loadSpaceContext(env.PLATFORM_DB, msg.spaceId, msg.tenantId);
       // Drain each connected channel independently so its model override cannot leak across
       // conversations. Messages without an override continue to use the Space model.
       for (const link of links.results ?? []) {
@@ -9954,7 +9417,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
           body: JSON.stringify({ spaceId: msg.spaceId, agentId: "naelao-agent", tenantId: msg.tenantId, apiKey: env.ANTHROPIC_API_KEY ?? "",
             model, channel: link.channel,
             ...(model === wakePolicy.model && wakePolicy.openRouterCapabilityEvidence ? { openRouterCapabilityEvidence: wakePolicy.openRouterCapabilityEvidence } : {}),
-            businessContext }),
+            spaceContext }),
         }));
         if (!beat.ok) {
           const detail = await beat.text().catch(() => `HTTP ${beat.status}`);
@@ -10243,16 +9706,7 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
     `SELECT tenant_id, space_id, task_id, agent_id, project_id FROM email_reply_routes
      WHERE address_hash = ? AND status = 'active' AND expires_at > ? LIMIT 1`
   ).bind(addressHash, now).first<{ tenant_id: string; space_id: string; task_id: string; agent_id: string; project_id: string | null }>();
-  const projectMailboxRoute = replyRoute ? null : await env.PLATFORM_DB.prepare(
-    `SELECT tenant_id, space_id, agent_id, project_id FROM project_agent_email_addresses
-     WHERE address_hash = ? AND status = 'active' LIMIT 1`
-  ).bind(addressHash).first<{ tenant_id: string; space_id: string; agent_id: string; project_id: string }>();
-  const mailboxRoute = replyRoute || projectMailboxRoute ? null : await env.PLATFORM_DB.prepare(
-    `SELECT tenant_id, space_id, agent_id FROM agent_email_addresses
-     WHERE address_hash = ? AND status = 'active' LIMIT 1`
-  ).bind(addressHash).first<{ tenant_id: string; space_id: string; agent_id: string }>();
-  const route = replyRoute ?? (projectMailboxRoute ? { ...projectMailboxRoute, task_id: null } : null) ?? (mailboxRoute ? { ...mailboxRoute, task_id: null, project_id: null } : null);
-  const isMailboxRoute = Boolean(projectMailboxRoute || mailboxRoute);
+  const route = replyRoute;
   if (!route) {
     message.setReject("Unknown or expired Naelao reply address");
     return;
@@ -10276,10 +9730,6 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
   // dispatching the inbound turn so a suspension during parsing cannot admit new tenant data.
   if (!await isActiveTenantSpace(env, route.space_id, route.tenant_id)) {
     message.setReject("Naelao workspace is unavailable");
-    return;
-  }
-  if (mailboxRoute && parsed.attachments.length) {
-    message.setReject("Agent mailboxes currently accept text-only messages; send attachments to a task-scoped reply address");
     return;
   }
   const taskId = route.task_id;
@@ -10337,9 +9787,7 @@ export async function handleCloudflareEmail(message: ForwardableEmailMessage, en
     return;
   }
   const stub = await getAgentDOForSpace(env, route.tenant_id, route.space_id, route.agent_id);
-  const inboundText = isMailboxRoute
-    ? `[Untrusted inbound email]\nSubject: ${parsed.subject}\n\n${parsed.text}`
-    : emailReplyBody({ taskId: route.task_id!, subject: parsed.subject, text: parsed.text, attachments: stored });
+  const inboundText = emailReplyBody({ taskId: route.task_id!, subject: parsed.subject, text: parsed.text, attachments: stored });
   const response = await stub.fetch(new Request("http://agent-do/channels/email/inbound", {
     method: "POST",
     headers: { "content-type": "application/json" },

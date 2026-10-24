@@ -7,36 +7,8 @@ import { useProduct } from "../productContext";
 import { getAssistantPolicy, updateAssistantPolicy } from "@/lib/api";
 import type { AssistantPolicy } from "@/lib/api";
 
-// Read-only view of the SpaceType's core agents (Phase D, §A1.17 plan). Hardcoded to match
-// workers/agents/src/launchpad/spacetype.ts's LAUNCHPAD_CORE_AGENTS — same simplification
-// precedent as the Configuration tab's template catalogue: no builder-reachable read route for
-// this exists yet, and per-product enable/disable would require threading a new productConfig
-// field through the provisioner's agent-install step (workers/provisioner/src/index.ts), which
-// this pass deliberately does not do — flagged here as a real follow-up, not silently dropped.
-const CORE_AGENTS = [
-  {
-    id: "launchpad-fulfillment-v1",
-    name: "Fulfillment Agent",
-    description: "Handles order processing, product delivery, and customer receipts automatically.",
-    trigger: "Webhook: order.completed",
-    requiresApprovalFor: ["customer_email_send", "refund_issue"],
-  },
-  {
-    id: "launchpad-support-v1",
-    name: "Support Assistant",
-    description: "Answers customer questions and escalates issues that need a human.",
-    trigger: "Webhook: message.received",
-    requiresApprovalFor: ["refund_issue", "policy_exception"],
-  },
-  {
-    id: "launchpad-content-v1",
-    name: "Content & Marketing Agent",
-    description: "Drafts and schedules marketing content on a daily cadence.",
-    trigger: "Schedule: 9:00 AM daily",
-    requiresApprovalFor: ["content_publish", "broadcast_send"],
-  },
-];
-
+/** The product uses Naelao's shared agent runtime. Workers are configured in the shell's
+ * worker-creation flow; this page only controls the space assistant's approval policy. */
 export default function ProductAgentsPage() {
   const { product, loading } = useProduct();
   const [policy, setPolicy] = useState<AssistantPolicy | null>(null);
@@ -56,93 +28,41 @@ export default function ProductAgentsPage() {
     if (!product) return;
     setSaving(true);
     try {
-      const next = await updateAssistantPolicy(product.id, { approval_mode: autonomous ? "yolo" : "always_ask" });
-      setPolicy(next);
+      setPolicy(await updateAssistantPolicy(product.id, { approval_mode: autonomous ? "yolo" : "always_ask" }));
     } finally {
       setSaving(false);
     }
   }
 
   if (loading || !product) return <div className="text-center py-12 text-gray-400">Loading…</div>;
-
   const isAutonomous = policy?.approval_mode === "yolo";
 
   return (
     <div className="space-y-4">
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
+      <div className="rounded-xl border border-gray-200 bg-white p-5">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="font-semibold text-gray-900">Naelao Agent — Space Assistant</h3>
-            <p className="text-sm text-gray-600 mt-1">
-              Helps the owner design, launch, and run the business — proposes ideas, scaffolds
-              projects, and reports back on what's working.
+            <h3 className="font-semibold text-gray-900">Naelao Space Assistant</h3>
+            <p className="mt-1 text-sm text-gray-600">Plans and coordinates work through configurable Naelao workers.</p>
+          </div>
+          <span className="rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-700">Naelao runtime</span>
+        </div>
+        <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-4">
+          <div>
+            <div className="text-sm font-medium text-gray-700">Approval policy</div>
+            <p className="mt-0.5 text-xs text-gray-500">
+              {isAutonomous ? "Autonomous — the assistant can act without asking first." : "Guided — the assistant asks before consequential actions."}
             </p>
           </div>
-          <span className="text-xs px-2.5 py-0.5 rounded-full font-medium bg-brand-50 text-brand-700">
-            Continuous
-          </span>
-        </div>
-        <div className="mt-4 pt-4 border-t border-gray-100">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-medium text-gray-700">Autonomy</div>
-              <p className="text-xs text-gray-500 mt-0.5">
-                {isAutonomous
-                  ? "Autonomous — the assistant acts without asking first."
-                  : "Guided (default) — the assistant asks before scaffolding a project or spending anything; it can still look around freely."}
-              </p>
+          {!policyLoading && (
+            <div className="flex gap-2">
+              <button type="button" onClick={() => void setAutonomy(false)} disabled={saving || !isAutonomous} className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${!isAutonomous ? "border-brand-500 bg-brand-50 text-brand-800" : "border-gray-200 text-gray-600 hover:border-gray-300"}`}>Guided</button>
+              <button type="button" onClick={() => void setAutonomy(true)} disabled={saving || isAutonomous} className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${isAutonomous ? "border-brand-500 bg-brand-50 text-brand-800" : "border-gray-200 text-gray-600 hover:border-gray-300"}`}>Autonomous</button>
             </div>
-            {!policyLoading && (
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => void setAutonomy(false)}
-                  disabled={saving || !isAutonomous}
-                  className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
-                    !isAutonomous ? "border-brand-500 bg-brand-50 text-brand-800" : "border-gray-200 text-gray-600 hover:border-gray-300"
-                  }`}
-                >
-                  Guided
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void setAutonomy(true)}
-                  disabled={saving || isAutonomous}
-                  className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
-                    isAutonomous ? "border-brand-500 bg-brand-50 text-brand-800" : "border-gray-200 text-gray-600 hover:border-gray-300"
-                  }`}
-                >
-                  Autonomous
-                </button>
-              </div>
-            )}
-          </div>
+          )}
         </div>
       </div>
-
-      <p className="text-sm text-gray-500">
-        The core agents every Launchpad business is provisioned with. Per-agent enable/disable is
-        not yet configurable from here — contact support if you need to remove one for this
-        product.
-      </p>
-      {CORE_AGENTS.map((agent) => (
-        <div key={agent.id} className="bg-white rounded-xl border border-gray-200 p-5">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-gray-900">{agent.name}</h3>
-            <span className="text-xs px-2.5 py-0.5 rounded-full font-medium bg-brand-50 text-brand-700">
-              {agent.trigger}
-            </span>
-          </div>
-          <p className="text-sm text-gray-600 mt-2">{agent.description}</p>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {agent.requiresApprovalFor.map((action) => (
-              <span key={action} className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                requires approval: {action}
-              </span>
-            ))}
-          </div>
-        </div>
-      ))}
+      <p className="text-sm text-gray-500">Create or configure workers from the workspace. Choose their task instructions, tools, skills, knowledge sources, model, and permissions there.</p>
     </div>
   );
 }

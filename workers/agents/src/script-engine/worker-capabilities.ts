@@ -15,7 +15,7 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
   {
     capability: "attachment_review",
     description: "Inspect, read, OCR, or transcribe task-scoped attachments.",
-    tools: ["attachments", "customer-attachments", "document-processing"],
+    tools: ["attachments", "document-processing"],
     skills: ["attachment-readers"],
     match:
       /attachment|file attached|uploaded|pdf|image|audio|transcri|ocr|extract text/i,
@@ -63,33 +63,19 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
   {
     capability: "external_integrations",
     description:
-      "Use configured MCP connectors and business email integrations.",
-    tools: ["mcp-connector", "business-email"],
+      "Use configured MCP connectors and their authorized tools.",
+    tools: ["mcp-connector"],
     skills: [],
     match:
       /extension|connector|mcp|third.party|external service|integration|email|inbox|send mail/i,
   },
   {
-    capability: "business_communications",
+    capability: "notifications",
     description:
-      "Send user-approved notifications and manage customer communications.",
-    tools: ["notifications", "customer-bot"],
+      "Send user-approved notifications and status updates.",
+    tools: ["notifications"],
     skills: [],
-    match: /notify|notification|customer|reply|message|campaign|support/i,
-  },
-  {
-    capability: "commerce_and_finance",
-    description:
-      "Use business commerce, wallet, payout, and revenue operations.",
-    tools: [
-      "commerce",
-      "storefront",
-      "wallet",
-      "revenue-tracker",
-    ],
-    skills: [],
-    match:
-      /payment|checkout|storefront|product|order|refund|wallet|payout|revenue|merchant|billing/i,
+    match: /notify|notification|reply|message|status update/i,
   },
   {
     capability: "automation_and_scheduling",
@@ -130,20 +116,6 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
     match: /approval|approve|permission|policy|authorization/i,
   },
   {
-    capability: "business_insights",
-    description: "Review business diagnostics and external revenue records.",
-    tools: ["business-diagnostics", "revenue-tracker"],
-    skills: [],
-    match: /business health|diagnostic|revenue|sales report|business metrics/i,
-  },
-  {
-    capability: "customer_intake",
-    description: "Review and organize customer or Foundry intake submissions.",
-    tools: ["foundry-inbox"],
-    skills: [],
-    match: /foundry|intake|submission|lead form|customer inquiry/i,
-  },
-  {
     capability: "skill_library",
     description: "Inspect and maintain the agent's installed skills.",
     tools: ["skill-manager"],
@@ -156,13 +128,6 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
     tools: ["local-machine"],
     skills: [],
     match: /local machine|my computer|local device/i,
-  },
-  {
-    capability: "customer_support",
-    description: "Manage customer support responses and customer records.",
-    tools: ["customer-bot"],
-    skills: [],
-    match: /customer support|support reply|customer bot|support ticket/i,
   },
 ] as const;
 

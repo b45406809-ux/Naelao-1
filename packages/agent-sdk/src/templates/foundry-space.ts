@@ -22,7 +22,7 @@ export const FOUNDRY_SPACE_TEMPLATE = Object.freeze({
   projects: Object.freeze([Object.freeze({
     id: "template-studio",
     name: "Template Studio",
-    kind: "product_dev",
+    kind: "TerminalFirst",
     templateMode: "cowork_studio",
     viewports: Object.freeze({ primary: "assistant", secondary: "code", canvas: "deliverable" }),
     systemPrompt: [

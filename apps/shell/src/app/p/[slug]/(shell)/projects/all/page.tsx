@@ -1,9 +1,7 @@
 "use client";
 
-// The full project list (moved off /projects, which now redirects straight into the business's
-// default General project — see /projects/page.tsx). "New Project" opens a template grid first,
-// matching how creating a business already works: pick a real preset (kind, execution ceiling,
-// spend cap, agent binding and starter rules all set up in one call) or start blank.
+// Projects are generic workspaces. The four kernel kinds select interaction layout; installed
+// Space Templates/extensions supply domain behavior and project-specific setup.
 
 import * as React from "react";
 import Link from "next/link";
@@ -11,15 +9,13 @@ import { Button, Card, CardTitle, CardDesc, CardMeta, Modal, FormInput, FormText
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
+import { PROJECT_KINDS, type ProjectKind } from "@naelao/agent-sdk";
 import {
   listProjects,
   createProject,
   createProjectFromTemplate,
   getShellManifest,
-  getFeatureKinds,
-  ApiError,
   type Project,
-  type FeatureKind,
 } from "@/lib/api";
 
 interface ProjectTemplate {
@@ -36,20 +32,15 @@ export default function ProjectsAllPage() {
   const { toast, show } = useToast();
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [templates, setTemplates] = React.useState<ProjectTemplate[]>([]);
-  // The "plugins directory" — native business-feature projects (Wallet, CRM, Business Email, …)
-  // this business could add, already role-filtered server-side by the caller's real business
-  // role. A singleton kind already present as an active project is filtered out client-side too
-  // (not just left to the server's own 409) so the grid never offers a doomed create attempt.
-  const [featureKinds, setFeatureKinds] = React.useState<FeatureKind[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
 
   // Two-step dialog: pick a template/plugin (or "Blank") first, then — only for Blank — name it.
   const [modalOpen, setModalOpen] = React.useState(false);
   const [pickedTemplate, setPickedTemplate] = React.useState<ProjectTemplate | "blank" | null>(null);
-  const [pickedKind, setPickedKind] = React.useState<FeatureKind | null>(null);
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
+  const [projectKind, setProjectKind] = React.useState<ProjectKind>("DualPane");
   const [creating, setCreating] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
@@ -59,10 +50,9 @@ export default function ProjectsAllPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [projectResult, manifestResult, kindsResult] = await Promise.allSettled([
+      const [projectResult, manifestResult] = await Promise.allSettled([
         listProjects(activeSpaceId, creds),
         getShellManifest(activeSpaceId, creds),
-        getFeatureKinds(activeSpaceId, creds),
       ]);
 
       // A product end-user can open the shell before joining a business. The catalog is still
@@ -76,10 +66,7 @@ export default function ProjectsAllPage() {
       const manifest = manifestResult.status === "fulfilled" ? manifestResult.value : null;
       const catalog = manifest?.project_template_catalog ?? [];
       setTemplates(catalog);
-      const kinds = kindsResult.status === "fulfilled" ? kindsResult.value : [];
-      const currentProjects = projectResult.status === "fulfilled" ? projectResult.value : [];
-      const activeSingletonKinds = new Set(currentProjects.filter((p) => p.status !== "archived").map((p) => p.kind));
-      setFeatureKinds(kinds.filter((k) => !k.singleton || !activeSingletonKinds.has(k.kind)));
+
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Couldn't load projects");
     } finally {
@@ -94,9 +81,9 @@ export default function ProjectsAllPage() {
 
   function openModal() {
     setPickedTemplate(null);
-    setPickedKind(null);
     setName("");
     setDescription("");
+    setProjectKind("DualPane");
     setModalOpen(true);
   }
 
@@ -115,23 +102,13 @@ export default function ProjectsAllPage() {
     }
   }
 
-  function pickKind(k: FeatureKind) {
-    setPickedKind(k);
-    setPickedTemplate(null);
-    setName(k.label);
-    setDescription(k.description);
-  }
-
-  // Handles both the "Blank project" step and a picked plugin/feature-kind step — both just need
-  // a name (and, for a feature kind, that kind on the create call).
   async function handleCreateNamed(e: React.FormEvent) {
     e.preventDefault();
     if (!creds || !name.trim()) return;
     setCreating(true);
     try {
-      await createProject(activeSpaceId, creds, name.trim(), description.trim() || undefined, pickedKind?.kind);
+      await createProject(activeSpaceId, creds, name.trim(), description.trim() || undefined, projectKind);
       setModalOpen(false);
-      if (pickedKind) show(`"${name.trim()}" added.`);
       await refresh();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to create project");
@@ -174,11 +151,11 @@ export default function ProjectsAllPage() {
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         width={760}
-        title={pickedTemplate === "blank" ? "Blank project" : pickedKind ? pickedKind.label : "New Project"}
+        title={pickedTemplate === "blank" ? "Blank project" : "New Project"}
         footer={
-          pickedTemplate === "blank" || pickedKind ? (
+          pickedTemplate === "blank" ? (
             <>
-              <Button variant="secondary" type="button" onClick={() => { setPickedTemplate(null); setPickedKind(null); }}>
+              <Button variant="secondary" type="button" onClick={() => setPickedTemplate(null)}>
                 Back
               </Button>
               <Button onClick={handleCreateNamed} disabled={creating || !name.trim()}>
@@ -192,10 +169,16 @@ export default function ProjectsAllPage() {
           )
         }
       >
-        {pickedTemplate === "blank" || pickedKind ? (
+        {pickedTemplate === "blank" ? (
           <form onSubmit={handleCreateNamed} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <FormInput aria-label="Project name" placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
             <FormTextarea placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
+            <label style={{ display: "grid", gap: 6, fontSize: 12, color: "var(--text2)" }}>
+              Project layout
+              <select aria-label="Project layout" value={projectKind} onChange={(e) => setProjectKind(e.target.value as ProjectKind)}>
+                {PROJECT_KINDS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+              </select>
+            </label>
           </form>
         ) : (
           <div>
@@ -235,32 +218,7 @@ export default function ProjectsAllPage() {
               </button>
             </div>
 
-            {featureKinds.length > 0 && (
-              <>
-                <p style={{ fontSize: 12.5, color: "var(--text3)", margin: "16px 0 12px" }}>
-                  Plugins — native business infrastructure (a wallet, a CRM, a shared inbox…) as its
-                  own project, with its own thread and access control.
-                </p>
-                <div className="app-grid project-template-grid">
-                  {featureKinds.map((k) => (
-                    <button
-                      key={k.kind}
-                      type="button"
-                      className="card app-card"
-                      disabled={creating}
-                      onClick={() => pickKind(k)}
-                      style={{ textAlign: "left", cursor: creating ? "default" : "pointer", font: "inherit" }}
-                    >
-                      <div className="app-card-header">
-                        <div className="app-card-initial">{k.label.slice(0, 1)}</div>
-                        <CardTitle>{k.label}</CardTitle>
-                      </div>
-                      <div className="app-card-desc card-desc">{k.description}</div>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
+
           </div>
         )}
       </Modal>

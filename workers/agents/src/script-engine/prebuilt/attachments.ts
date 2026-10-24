@@ -30,12 +30,12 @@ const inspect = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) =>
 const read = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) => {
   const id = typeof args.id === "string" ? args.id.trim() : "";
   if (!id) throw new Error("usage: attachment read <id>");
-  return call(ctx, "/internal/business-email/attachment/read-text", { id });
+  return call(ctx, "/internal/attachments/read-text", { id });
 };
 const ocr = async (args: Record<string, unknown>, ctx: PrebuiltOpContext) => {
   const id = typeof args.id === "string" ? args.id.trim() : "";
   if (!id) throw new Error("usage: attachment ocr <id>");
-  return call(ctx, "/internal/business-email/attachment/ocr", {
+  return call(ctx, "/internal/attachments/ocr", {
     id, agentId: ctx.env.agentId,
     ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
   });

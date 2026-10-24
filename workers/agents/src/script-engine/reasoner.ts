@@ -13,7 +13,7 @@ import { preparePerception } from "./perception.js";
 
 import { renderConversationForReasoner } from "./conversation-context.js";
 import { renderStepsForReasoner } from "./step-context.js";
-import type { BusinessContext } from "../launchpad/business-context.js";
+import type { SpaceContext } from "../launchpad/space-context.js";
 import type { UniversalAgentManifest } from "@naelao/agent-sdk";
 import { composeUniversalPrompt } from "./prompt-assembly.js";
 import type { PlannerQuestion, Reasoner, ReasonDecision, ReasonerUsage } from "./loop.js";
@@ -110,7 +110,7 @@ export interface ReasonerDeps {
    * whose owner has not finished setup. Absent for a run with no resolvable space row, in which
    * case nothing is sent rather than a hollow placeholder. See launchpad/business-context.ts.
    */
-  businessContext?: BusinessContext;
+  spaceContext?: SpaceContext;
   manifest?: UniversalAgentManifest;
   /** A strict egress policy resolved by the central router, never from request input. */
   airGappedOnly?: boolean;
@@ -168,53 +168,16 @@ const MAX_AGENT_PROMPT_CHARS = 10_000;
  * stated as a sentence in its instructions. Kept to a few lines so it cannot crowd out the
  * profile it sits beside.
  */
-function renderBusinessBrief(business: BusinessContext): string {
-  // Deliberately no `kind`: it is an internal template slug ("whop-webdev-agency") and a live run
-  // repeated it straight back to the owner as though it were a description. `offering` says the
-  // same thing in words a business owner actually uses.
-  const lines = [`THE BUSINESS YOU RUN: ${business.name}.`];
-  if (business.offering) lines.push(`What it sells: ${business.offering}`);
-  if (business.pricing) {
-    lines.push(
-      `Its published prices: ${business.pricing}. These are this business's real price list — ` +
-        "quote from them when asked what to charge, rather than giving generic pricing advice. " +
-        "Where a tier is a range, quote within it and say what you are still unsure of."
-    );
-  }
-  if (business.setup_note) {
-    lines.push(`Setup status: ${business.setup_status} — ${business.setup_note}`);
-  }
-  lines.push(
-    "Talk about this business by name, in the owner's own words. Do not answer as though you did " +
-      "not know which business this is, and do not give generic business advice when advice " +
-      "specific to what it actually sells is what was asked for."
-  );
+function renderSpaceBrief(space: SpaceContext): string {
+  const lines = [`YOU ARE WORKING IN THE NAELAO SPACE: ${space.name}.`];
+  if (space.setup_note) lines.push(`Setup status: ${space.setup_status} — ${space.setup_note}`);
+  lines.push("Use the Space's authorized tools and project context for details; do not assume it is a business.");
   return lines.join("\n");
 }
 
-/**
- * The business as the MODEL should see it — everything except `kind`.
- *
- * `kind` is the internal template slug ("whop-webdev-agency"). It was removed from the system
- * prompt after a live answer read "Pixel Forge Studio, a Whop-webdev-agency", and the very next
- * live answer proved that was not enough: the model was reading it straight out of the payload
- * instead and saying the same thing. It stays on `BusinessContext` because it is genuinely useful
- * to code (it is how the offering and price list were resolved in the first place) — it just must
- * never reach the model, which has no way to tell an internal identifier from a description.
- */
-function projectBusinessForModel(business: BusinessContext): Omit<BusinessContext, "kind"> {
-  const { kind: _internalSlug, ...visible } = business;
-  return visible;
-}
+function projectSpaceForModel(space: SpaceContext): SpaceContext { return space; }
 
-/**
- * The system message: who this agent is, then how to reply.
- *
- * Order is deliberate. Identity first so it frames everything; the decision protocol LAST because
- * it is the part that must be obeyed structurally, and recency helps format compliance on the
- * small open-weight models this platform runs on.
- */
-export function composeSystemPrompt(agentPrompt: string | undefined, business?: BusinessContext, founderDirectives?: string, activeCatalog?: string): string {
+export function composeSystemPrompt(agentPrompt: string | undefined, business?: SpaceContext, founderDirectives?: string, activeCatalog?: string): string {
   const own = (agentPrompt ?? "").trim();
   // The business belongs in the system message, not only in the payload.
   //
@@ -224,7 +187,7 @@ export function composeSystemPrompt(agentPrompt: string | undefined, business?: 
   // sitting in the request. One field among a dozen, behind a 4kB action protocol and five tool
   // schemas, is not somewhere a 70B model reliably looks. It is carried in BOTH places for the
   // same reason the profile is: payload for completeness, system prompt for attention.
-  const brief = business ? renderBusinessBrief(business) : "";
+  const brief = business ? renderSpaceBrief(business) : "";
   const catalog = activeCatalog?.trim() ? `# AVAILABLE COMMANDS & SKILLS\n${activeCatalog.trim()}\n\nSignatures and descriptions only. Load implementation source only when executing a command.` : "";
   if (!own && !founderDirectives) return [DECISION_INSTRUCTIONS, brief, catalog].filter(Boolean).join("\n\n---\n\n");
   const bounded = own.length > MAX_AGENT_PROMPT_CHARS ? `${own.slice(0, MAX_AGENT_PROMPT_CHARS)}…` : own;
@@ -918,7 +881,7 @@ export class GatewayReasoner implements Reasoner {
       // questions — "what am I" and "what am I running" — and a model that has just read its role
       // is exactly where it should learn the specific business that role applies to. Cheap enough
       // to send every turn: name, kind, one line of offering, setup status.
-      ...(this.deps.businessContext ? { business_context: projectBusinessForModel(this.deps.businessContext) } : {}),
+      ...(this.deps.spaceContext ? { space_context: projectSpaceForModel(this.deps.spaceContext) } : {}),
       ...(preferredLanguageContext(this.deps.preferredLanguage) ?? {}),
       goal: input.goal,
       // The thread's own history. Absent for a first message or a non-conversational wake
@@ -1010,8 +973,8 @@ export class GatewayReasoner implements Reasoner {
 
     const queryModel = this.deps.model ?? this.deps.ctx.model ?? "claude-haiku-4-5-20251001";
     const systemPrompt = this.deps.manifest
-      ? composeUniversalPrompt({ manifest: this.deps.manifest, ...(this.deps.businessContext ? { businessContext: this.deps.businessContext } : {}), protocol: DECISION_INSTRUCTIONS, ...(input.activeCatalog ? { activeCatalog: input.activeCatalog } : {}) })
-      : composeSystemPrompt(this.deps.agentPrompt, this.deps.businessContext, this.deps.founderDirectives, input.activeCatalog);
+      ? composeUniversalPrompt({ manifest: this.deps.manifest, ...(this.deps.spaceContext ? { spaceContext: this.deps.spaceContext } : {}), protocol: DECISION_INSTRUCTIONS, ...(input.activeCatalog ? { activeCatalog: input.activeCatalog } : {}) })
+      : composeSystemPrompt(this.deps.agentPrompt, this.deps.spaceContext, this.deps.founderDirectives, input.activeCatalog);
     const tools = decisionTools(queryModel, input.availableOperations);
     const boundedContext = boundReasonerRequestContext(
       systemPrompt,

@@ -9,11 +9,6 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
-# Storefront buy/join buttons initiate the reserved money-in checkout via the billing worker.
-[[services]]
-binding = "BILLING_WORKER"
-service = "naelao-billing"
-
 [vars]
 ENVIRONMENT = "development"
 PORTAL_ORIGIN = "https://portal.naelao.app"
@@ -21,23 +16,13 @@ PORTAL_ORIGIN = "https://portal.naelao.app"
 [env.staging]
 vars = { ENVIRONMENT = "staging", PORTAL_ORIGIN = "https://portal.staging.naelao.app" }
 
-[[env.staging.services]]
-binding = "BILLING_WORKER"
-service = "naelao-billing"
-
 [env.production]
 vars = { ENVIRONMENT = "production", PORTAL_ORIGIN = "https://portal.naelao.app" }
-
-[[env.production.services]]
-binding = "BILLING_WORKER"
-service = "naelao-billing"
 
 [[env.staging.d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
-
-# Storefront buy/join buttons initiate the reserved money-in checkout via the billing worker.
 
 [[env.production.d1_databases]]
 binding = "PLATFORM_DB"

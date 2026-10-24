@@ -1,4 +1,5 @@
 import { ApiError, requestJson } from "./request";
+import type { ProjectKind } from "@naelao/agent-sdk";
 // Product Shell API client — a signed-in product end user talks to the platform via a
 // product-scoped nps_... session token (ProductUserDO-backed), never the builder's platform JWT.
 // Ported from apps/portal/src/lib/api.ts's proven hybrid-auth pattern (Three-Tier Platform
@@ -1034,8 +1035,8 @@ export interface Project {
   allowed_agent_ids: string[] | null;
   created_at: string;
   last_activity_at?: string | null;
-  // Generic project shape plus independently configured business features.
-  kind?: string;
+  // Project kinds select interaction layout; domain capabilities come from templates/extensions.
+  kind?: ProjectKind;
   external_channel_profile?: number | boolean;
   viewport_config?: { component?: string; resourceId?: string; canvasPrimary?: boolean; copilotPlacement?: string; mount?: string; tab?: string };
   execution_ceiling?: number;
@@ -1130,38 +1131,19 @@ export async function detachProjectDepartment(spaceId: string, projectId: string
   await apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/sub-spaces/${encodeURIComponent(departmentId)}`, { method: "DELETE", session });
 }
 
-/** kind, when given, creates a Business Feature project (Wallet, CRM, Business Email, …) instead
- *  of a plain workspace project — SpaceDO validates it against BUSINESS_FEATURE_KIND_REGISTRY and
- *  role-gates/singleton-gates it server-side; a rejection here is real, not just UI-hidden. */
+/** Create a generic project. Domain-specific capabilities arrive through installed extensions. */
 export async function createProject(
   spaceId: string,
   session: SessionCredentials,
   name: string,
   description?: string,
-  kind?: string
+  kind: ProjectKind = "DualPane"
 ): Promise<Project> {
   return apiFetch(`/v1/spaces/${spaceId}/projects`, {
     method: "POST",
     body: JSON.stringify({ name, ...(description ? { description } : {}), ...(kind ? { kind } : {}) }),
     session,
   });
-}
-
-// ── Plugins directory (BUSINESS_FEATURE_KIND_REGISTRY, browsable+role-filtered) ────────────────
-
-export interface FeatureKind {
-  kind: string;
-  label: string;
-  description: string;
-  singleton: boolean;
-  minCreationRole: "owner" | "admin" | "editor";
-  autoProvisionable: boolean;
-  uiPanel?: string;
-}
-
-export async function getFeatureKinds(spaceId: string, session: SessionCredentials): Promise<FeatureKind[]> {
-  const res = await apiFetch<{ feature_kinds: FeatureKind[] }>(`/v1/spaces/${spaceId}/feature-kinds`, { session });
-  return res.feature_kinds;
 }
 
 /** One call, fully configured — the project row (kind, execution ceiling, spend cap, agent
@@ -1510,36 +1492,6 @@ export async function listAgentDefinitions(spaceId: string, session: SessionCred
   return Array.isArray(res) ? res : res.data ?? [];
 }
 
-export interface AgentTemplateSummary {
-  id: string;
-  name: string;
-  description: string;
-  icon: string;
-  category: string;
-  prebuilt_scripts: string[];
-  approval_mode: string;
-}
-
-/** The browsable Naelao Agent Templates catalogue — real, distinct configurations (tool list,
- *  autonomy default, vertical instructions), not a cosmetic label on the same generic agent. */
-export async function listAgentTemplates(spaceId: string, session: SessionCredentials): Promise<AgentTemplateSummary[]> {
-  const res = await apiFetch<{ templates: AgentTemplateSummary[] }>(`/v1/spaces/${spaceId}/agent-templates`, { session });
-  return res.templates ?? [];
-}
-
-/** Instantiate a template as a real agent_definition — writes its own config, seeds its own
- *  approval policy, and (when project_id is given) binds it into that project's
- *  allowed_agent_ids so it shows up in the project's own agent switcher immediately. */
-export async function instantiateAgentTemplate(
-  spaceId: string,
-  session: SessionCredentials,
-  params: { template_id: string; name?: string; project_id?: string }
-): Promise<{ agent_id: string; agent_definition_id: string; template_id: string }> {
-  return apiFetch(`/v1/spaces/${spaceId}/agent-templates`, { method: "POST", body: JSON.stringify(params), session });
-}
-
-/** Step 17: create a fully custom agent — its own instructions, tool (prebuilt-script) list, and
- *  autonomy. Goes through the same /agent-templates route with a `custom` payload. */
 export async function createCustomAgent(
   spaceId: string,
   session: SessionCredentials,
@@ -1553,7 +1505,7 @@ export async function createCustomAgent(
     archetype?: string;
   }
 ): Promise<{ agent_id: string; agent_definition_id: string; custom: boolean; rejected_scripts?: string[] }> {
-  return apiFetch(`/v1/spaces/${spaceId}/agent-templates`, { method: "POST", body: JSON.stringify({ custom }), session });
+  return apiFetch(`/v1/spaces/${spaceId}/agents/custom`, { method: "POST", body: JSON.stringify(custom), session });
 }
 
 export interface CrossSpaceGrant {
@@ -2341,46 +2293,7 @@ export async function listMyBusinesses(productSpaceId: string, session: SessionC
   return res.data;
 }
 
-/** A safe-projection entry in the product's public business directory (step 18). */
-export interface DirectoryBusiness {
-  id: string;
-  name: string;
-  template_id?: string | null;
-  created_at?: string | null;
-  /** 1 when the signed-in user is a member of this business (so the UI can gate navigation). */
-  is_mine: number;
-}
-
-/**
- * GET /v1/spaces/:productSpaceId/directory — every active business under this product (step 18).
- * DISCOVER what others have built; NAVIGATE only into your own (is_mine). Never leaks owner
- * identity, revenue, or any private metric — safe projection only.
- */
-export async function getBusinessDirectory(
-  productSpaceId: string,
-  session: SessionCredentials,
-): Promise<DirectoryBusiness[]> {
-  const res = await apiFetch<{ data: DirectoryBusiness[]; count: number }>(
-    `/v1/spaces/${productSpaceId}/directory`,
-    { session },
-  );
-  return res.data;
-}
-
-export interface TemplateActivity {
-  template_id: string;
-  active_count: number;
-  created_last_30d: number;
-}
-
-/** Discover's "what other businesses are doing" showcase — aggregate counts only, no names, no
- *  revenue, cross-tenant. See the route's own header on the spaces worker for why this is safe. */
-export async function getTemplateActivity(productSpaceId: string, session: SessionCredentials): Promise<TemplateActivity[]> {
-  const res = await apiFetch<{ data: TemplateActivity[] }>(`/v1/spaces/${productSpaceId}/template-activity`, { session });
-  return res.data ?? [];
-}
-
-export interface BusinessAnalytics {
+export interface SpaceAnalytics {
   window_days: number;
   runs: { total: number; completed: number; failed: number; success_rate: number | null; vs_prior_period: number | null };
   autonomy: { tracked_runs: number; approval_interrupted_runs: number; completed_with_approval: number; completed_without_approval: number; completion_without_approval_rate: number | null; approval_requests: number };
@@ -2393,23 +2306,11 @@ export interface BusinessAnalytics {
   structure: { projects: number; threads: number };
 }
 
-/** Analytics page — pure aggregate rollups of agent_activity_log, safe for any business member
+/** Analytics page — pure aggregate rollups of agent_activity_log, safe for any Space member
  *  (see the route's own header on the spaces worker for why this differs from the builder-only
  *  agent-activity/agent-diagnostics endpoints it shares a table with). */
-export async function getBusinessAnalytics(spaceId: string, session: SessionCredentials, window: "7d" | "30d" | "90d" = "7d"): Promise<BusinessAnalytics> {
-  return apiFetch(`/v1/spaces/${spaceId}/business-analytics?window=${window}`, { session });
-}
-
-/** POST /v1/spaces/:productSpaceId/businesses — create a new business under this product.
- *  Only reachable when the product's membershipModel allows it (shell/manifest surfaces this via
- *  allow_public_signup + auth_provider today; a dedicated membershipModel field is a small
- *  follow-up if the create-business entry point needs to hide itself for "team" mode products). */
-export async function createBusiness(
-  productSpaceId: string,
-  session: SessionCredentials,
-  opts: { name: string; spacetype_id: string; template_ids?: string[] }
-): Promise<{ tenant_id: string; space_id: string; status: string }> {
-  return apiFetch(`/v1/spaces/${productSpaceId}/businesses`, { method: "POST", body: JSON.stringify(opts), session });
+export async function getSpaceAnalytics(spaceId: string, session: SessionCredentials, window: "7d" | "30d" | "90d" = "7d"): Promise<SpaceAnalytics> {
+  return apiFetch(`/v1/spaces/${spaceId}/agent-analytics?window=${window}`, { session });
 }
 
 export interface BusinessMember {
@@ -2444,123 +2345,8 @@ export async function acceptBusinessInvite(
   return apiFetch(`/v1/spaces/${businessSpaceId}/invites/${encodeURIComponent(token)}/accept`, { method: "POST", session });
 }
 
-// ── Pricing + checkout (Phase E — subscription plans + credit packs) ───────────────────────
-// A business subscribes to a plan as a whole; a credit pack tops up the buyer's OWN balance.
-// Both checkout calls redirect the browser to the returned checkout_url (Lemon Squeezy).
-
-export interface PricingPlan {
-  id: string;
-  name: string;
-  price_cents: number;
-  interval: "month" | "year";
-  credit_allowance: number | null;
-}
-
-export interface CreditPack {
-  id: string;
-  name: string;
-  credits: number;
-  price_cents: number;
-}
-
-export async function getPricing(spaceId: string, session: SessionCredentials): Promise<{ plans: PricingPlan[]; credit_packs: CreditPack[] }> {
-  return apiFetch(`/v1/spaces/${spaceId}/pricing`, { session });
-}
-
-export async function checkoutBusinessSubscription(
-  spaceId: string,
-  session: SessionCredentials,
-  planId: string
-): Promise<{ checkout_url: string; dev?: boolean }> {
-  return apiFetch(`/v1/spaces/${spaceId}/business-subscription/checkout`, {
-    method: "POST",
-    body: JSON.stringify({ plan_id: planId }),
-    session,
-  });
-}
-
-export async function checkoutCreditPack(
-  spaceId: string,
-  session: SessionCredentials,
-  packId: string
-): Promise<{ checkout_url: string; dev?: boolean }> {
-  return apiFetch(`/v1/spaces/${spaceId}/credit-packs/checkout`, {
-    method: "POST",
-    body: JSON.stringify({ pack_id: packId }),
-    session,
-  });
-}
-
-// ── Business operations (Phase N — manifest-driven operator shell) ─────────────────────────
-// The Revenue/Orders/Products views a business owner sees when operating their OWN Launchpad
-// business, sourced from the SAME commerce backend the builder dashboard's legacy commerce page
-// uses. Only reachable on a business whose SpaceType manifest offers `commerce` (shell/manifest's
-// `ui.sidebar_items` includes "products"/"orders"/"revenue" — the page checks this before calling).
-
-export interface LaunchpadProduct {
-  id: string;
-  name: string;
-  description: string;
-  price_cents: number;
-  currency: string;
-  kind: "one_time" | "subscription";
-  status: "draft" | "published" | "archived";
-  ls_variant_id: string | null;
-  created_at: string;
-}
-
-export interface LaunchpadOrder {
-  id: string;
-  product_id: string | null;
-  product_name: string | null;
-  customer_email: string | null;
-  gross_cents: number;
-  fee_cents: number;
-  net_cents: number;
-  currency: string;
-  status: "paid" | "fulfilling" | "fulfilled" | "refunded" | "failed";
-  created_at: string;
-}
-
-export interface RevenueSummary {
-  period: string;
-  currency: string;
-  gross_cents: number;
-  fee_cents: number;
-  net_cents: number;
-  /** The server's own field name (workers/spaces/src/index.ts). This was typed as `orders` here,
-   *  which never existed on the wire — the dashboard rendered a literal "undefined orders". */
-  order_count: number;
-}
-
-// F-WALLET-7: the consolidated per-business wallet view (available balance + lifetime cut summary
-// + recent transactions).
-export interface WalletTransaction {
-  id: string;
-  delta_cents: number;
-  currency: string;
-  reason: string;
-  balance_after_cents: number;
-  created_at: string;
-}
-export interface BusinessWallet {
-  space_id: string;
-  project_id: string | null;
-  available_balance_cents: number;
-  currency: string;
-  lifetime: {
-    gross_cents: number;
-    naelao_cut_cents: number;
-    builder_cut_cents: number;
-    net_settled_cents: number;
-    order_count: number;
-  };
-  transactions: WalletTransaction[];
-}
-
-export async function getBusinessWallet(spaceId: string, session: SessionCredentials): Promise<BusinessWallet> {
-  return apiFetch(`/v1/spaces/${spaceId}/wallet`, { session });
-}
+// Legacy business-plan and credit-pack checkout APIs were removed. Platform subscriptions
+// remain available through the Naelao billing API; FDE template purchases use the marketplace API.
 
 // F-39: read-only workspace file viewer for a project.
 export interface WorkspaceFile { path: string; size: number; uploaded: string }
@@ -2579,37 +2365,6 @@ export async function updateDocumentNodeLease(
   return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/document-nodes/${encodeURIComponent(nodeId)}/lease`, {
     method: "POST", body: JSON.stringify({ operation }), session,
   });
-}
-
-export async function listBusinessProducts(spaceId: string, session: SessionCredentials): Promise<LaunchpadProduct[]> {
-  const res = await apiFetch<{ data: LaunchpadProduct[] }>(`/v1/spaces/${spaceId}/products`, { session });
-  return res.data;
-}
-
-export async function createBusinessProduct(
-  spaceId: string,
-  session: SessionCredentials,
-  input: { name: string; description?: string; price_cents?: number; kind?: "one_time" | "subscription" }
-): Promise<{ id: string }> {
-  return apiFetch(`/v1/spaces/${spaceId}/products`, { method: "POST", body: JSON.stringify(input), session });
-}
-
-export async function updateBusinessProduct(
-  spaceId: string,
-  productId: string,
-  session: SessionCredentials,
-  patch: { status?: "draft" | "published" | "archived" }
-): Promise<{ id: string }> {
-  return apiFetch(`/v1/spaces/${spaceId}/products/${productId}`, { method: "PATCH", body: JSON.stringify(patch), session });
-}
-
-export async function listBusinessOrders(spaceId: string, session: SessionCredentials): Promise<LaunchpadOrder[]> {
-  const res = await apiFetch<{ data: LaunchpadOrder[] }>(`/v1/spaces/${spaceId}/orders`, { session });
-  return res.data;
-}
-
-export async function getBusinessRevenue(spaceId: string, session: SessionCredentials): Promise<RevenueSummary> {
-  return apiFetch(`/v1/spaces/${spaceId}/revenue`, { session });
 }
 
 // §A1.17 Phase S: local-machine-as-container grants — a business member opting THEIR OWN
@@ -3132,35 +2887,4 @@ export async function resolveInterruptedRun(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/interrupted`,
     { method: "POST", body: JSON.stringify({ run_id: runId, action }), session }
   );
-}
-
-export interface MarketRadarOpportunity {
-  id: string;
-  name: string;
-  search_surge_pct: number;
-  saturation_index: number;
-  saturation_label: string;
-  arr_low_cents: number;
-  arr_high_cents: number;
-  source_url: string;
-  observed_at: string;
-  score: number;
-  preconfigured_stack: string[];
-  blueprint: { id: string };
-}
-
-export async function getMarketRadar(productSpaceId: string, session: SessionCredentials): Promise<MarketRadarOpportunity[]> {
-  const result = await apiFetch<{ data: MarketRadarOpportunity[] }>(`/v1/spaces/${encodeURIComponent(productSpaceId)}/market-radar/top-trends`, { session });
-  return result.data;
-}
-
-export async function launchMarketRadarOpportunity(
-  opportunityId: string,
-  productSpaceId: string,
-  input: { name?: string; spacetype_id: string },
-  session: SessionCredentials
-): Promise<{ space_id: string; opportunity_id: string; blueprint_id: string }> {
-  return apiFetch(`/v1/spaces/${encodeURIComponent(productSpaceId)}/market-radar/${encodeURIComponent(opportunityId)}/launch`, {
-    method: "POST", body: JSON.stringify(input), session,
-  });
 }

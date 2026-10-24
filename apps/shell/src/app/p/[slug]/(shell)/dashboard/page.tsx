@@ -42,11 +42,9 @@ import {
   listMyBusinesses,
   getShellManifest,
   listBusinessMembers,
-  getBusinessRevenue,
-  listBusinessOrders,
   getConnectorStatus,
   listApprovals,
-  getBusinessAnalytics,
+  getSpaceAnalytics,
   type AssistantPolicy,
   type MemoryFact,
   type AssistantCapabilities,
@@ -57,11 +55,9 @@ import {
   type AgentDefinitionSummary,
   type ProductUserMe,
   type Business,
-  type RevenueSummary,
-  type LaunchpadOrder,
   type ConnectorInfo,
   type PendingApproval,
-  type BusinessAnalytics,
+  type SpaceAnalytics,
 } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
 import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
@@ -95,9 +91,7 @@ const MODEL_LABELS: Record<string, string> = {
   "google-ai-studio/gemini-pro-latest": "Gemini Pro — needs a Google AI Studio key",
 };
 
-function centsToDisplay(cents: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
-}
+
 
 function pctChange(n: number | null): string {
   if (n === null) return "";
@@ -211,20 +205,17 @@ export default function DashboardPage() {
   // Business dashboard state — only fetched/rendered when the active space is a real business.
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
   const [business, setBusiness] = React.useState<Business | null>(null);
-  const [hasCommerce, setHasCommerce] = React.useState(false);
-  const [revenue, setRevenue] = React.useState<RevenueSummary | null>(null);
-  const [orders, setOrders] = React.useState<LaunchpadOrder[]>([]);
   const [members, setMembers] = React.useState<{ end_user_id: string; role: string }[]>([]);
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [approvals, setApprovals] = React.useState<PendingApproval[]>([]);
   const [currentModel, setCurrentModel] = React.useState<string | null>(null);
   const [currentEffort, setCurrentEffort] = React.useState<string | null>(null);
 
-  // Analytics — the same real GET /business-analytics rollup the dedicated /analytics page reads,
+  // Analytics — the same real GET /agent-analytics rollup the dedicated /analytics page reads,
   // embedded here so the headline numbers don't need a navigation away from the overview. Fetched
   // on its own effect (keyed on the window toggle too) so switching 7d/30d/90d doesn't re-trigger
   // the whole page's "Loading…" flag or re-fetch every other panel.
-  const [analytics, setAnalytics] = React.useState<BusinessAnalytics | null>(null);
+  const [analytics, setAnalytics] = React.useState<SpaceAnalytics | null>(null);
   const [analyticsWindow, setAnalyticsWindow] = React.useState<AnalyticsWindow>("7d");
   const [analyticsLoading, setAnalyticsLoading] = React.useState(true);
   const [analyticsError, setAnalyticsError] = React.useState(false);
@@ -265,13 +256,6 @@ export default function DashboardPage() {
           if (cancelled) return;
           setCurrentModel(m.model ?? null);
           setCurrentEffort(m.effort ?? null);
-          const commerce = m.ui.sidebar_items.some((item) => item.id === "revenue");
-          setHasCommerce(commerce);
-          if (!commerce || !isBusinessSpace) return;
-          return Promise.all([
-            settle(getBusinessRevenue(activeSpaceId, creds), setRevenue),
-            settle(listBusinessOrders(activeSpaceId, creds), setOrders),
-          ]).then(() => undefined);
         })
         .catch(() => {}),
     ];
@@ -287,9 +271,6 @@ export default function DashboardPage() {
       );
     } else {
       setBusiness(null);
-      setHasCommerce(false);
-      setRevenue(null);
-      setOrders([]);
       setMembers([]);
       setConnectors([]);
     }
@@ -306,7 +287,7 @@ export default function DashboardPage() {
     let cancelled = false;
     setAnalyticsLoading(true);
     setAnalyticsError(false);
-    getBusinessAnalytics(activeSpaceId, creds, analyticsWindow)
+    getSpaceAnalytics(activeSpaceId, creds, analyticsWindow)
       .then((v) => { if (!cancelled) setAnalytics(v); })
       .catch(() => { if (!cancelled) setAnalyticsError(true); })
       .finally(() => { if (!cancelled) setAnalyticsLoading(false); });
@@ -439,13 +420,7 @@ export default function DashboardPage() {
       {/* KPI row — the numbers worth seeing at a glance. */}
       <div style={{ ...panelGrid, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", marginBottom: 8 }}>
         <Stat label="Your credits" value={me ? String(me.credits_balance) : "…"} />
-        {isBusinessSpace && hasCommerce && (
-          <Stat
-            label={`Revenue (${revenue?.period ?? "this month"})`}
-            value={revenue ? centsToDisplay(revenue.net_cents, revenue.currency) : "…"}
-            sub={revenue ? `${revenue.order_count} order${revenue.order_count === 1 ? "" : "s"}` : undefined}
-          />
-        )}
+
         {isBusinessSpace && (
           <Stat label="Members" value={String(members.length)} href={`/p/${product.slug}/spaces/${activeSpaceId}`} />
         )}
@@ -465,7 +440,7 @@ export default function DashboardPage() {
         />
       </div>
 
-      {/* Analytics — the same real GET /business-analytics rollup the dedicated /analytics page
+      {/* Analytics — the same real GET /agent-analytics rollup the dedicated /analytics page
           renders, embedded here so credit usage, run success, and background activity are visible
           without leaving the overview. */}
       <SectionHeading
@@ -655,29 +630,6 @@ export default function DashboardPage() {
             Business
           </SectionHeading>
           <div style={panelGrid}>
-            {hasCommerce && (
-              <Panel title="Recent orders" count={orders.length}>
-                {orders.length === 0 ? (
-                  <Empty>No orders yet.</Empty>
-                ) : (
-                  orders.slice(0, 6).map((o) => (
-                    <Row
-                      key={o.id}
-                      left={o.product_name ?? "Unknown product"}
-                      right={
-                        <>
-                          {centsToDisplay(o.net_cents, o.currency)}{" "}
-                          <Badge color={o.status === "fulfilled" || o.status === "paid" ? "green" : o.status === "refunded" || o.status === "failed" ? "red" : "amber"}>
-                            {o.status}
-                          </Badge>
-                        </>
-                      }
-                    />
-                  ))
-                )}
-              </Panel>
-            )}
-
             {/* Count the apps actually CONNECTED, which is what the title claims. This used to be
                 connectors.length — the whole catalogue, coming-soon entries included — so a business
                 with nothing connected read "Connected apps 33", and it disagreed with the KPI tile

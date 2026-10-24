@@ -1349,11 +1349,6 @@ $ _<span style="animation:typingBounce 1s infinite;display:inline-block">|</span
               <div class="card-title">Developer</div>
               <div class="card-desc">Code, review, testing, and deployment</div>
             </div>
-            <div class="card" onclick="showToast('Launchpad — for startups')">
-              <div style="font-size:20px;margin-bottom:8px">🚀</div>
-              <div class="card-title">Launchpad</div>
-              <div class="card-desc">Fundraising, product, and growth agents</div>
-            </div>
             <div class="card" onclick="showToast('Enterprise — compliance & SSO')">
               <div style="font-size:20px;margin-bottom:8px">🏢</div>
               <div class="card-title">Enterprise</div>
@@ -1644,15 +1639,10 @@ $ _<span style="animation:typingBounce 1s infinite;display:inline-block">|</span
           <div class="card" onclick="showToast('Learn more: Team workspace')"><div class="card-icon"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke="var(--accent)"><path d="M10 6C10 7.1 9.1 8 8 8S6 7.1 6 6 6.9 4 8 4 10 4.9 10 6Z"/><path d="M3 12C3 10.3 5.2 9 8 9S13 10.3 13 12"/></svg></div><div class="card-title">Team</div><div class="card-desc">Collaborate with your team. Shared agents, knowledge, and workflows.</div></div>
           <div class="card" onclick="showToast('Learn more: Research space')"><div class="card-icon"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke="var(--accent)"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14"/></svg></div><div class="card-title">Research Lab</div><div class="card-desc">Deep research and analysis workflows with document processing.</div></div>
           <div class="card" onclick="showToast('Learn more: Dev space')"><div class="card-icon"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke="var(--accent)"><polyline points="4,6 2,8 4,10"/><polyline points="12,6 14,8 12,10"/><line x1="9" y1="4" x2="7" y2="12"/></svg></div><div class="card-title">Developer</div><div class="card-desc">Code generation, review, testing, and deployment automation.</div></div>
-          <div class="card" onclick="showToast('Learn more: Startup space')"><div class="card-icon"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke="var(--accent)"><path d="M8 1L10.5 5H14L11 8L12.5 13L8 10L3.5 13L5 8L2 5H5.5L8 1Z"/></svg></div><div class="card-title">Launchpad</div><div class="card-desc">For startups — fundraising, planning, product, and growth agents.</div></div>
           <div class="card" onclick="showToast('Learn more: Enterprise')"><div class="card-icon"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke="var(--accent)"><rect x="2" y="7" width="12" height="7" rx="1"/><path d="M5 7V5C5 3.3 6.3 2 8 2S11 3.3 11 5V7"/></svg></div><div class="card-title">Enterprise</div><div class="card-desc">Compliance, BYOK credentials, SSO, audit logs, and advanced controls.</div></div>
         </div>
         <div class="section-label">Space Templates</div>
-        <div class="grid-3">
-          <div class="card" onclick="showToast('Creating from template: Blog Writer')"><div style="font-size:18px;margin-bottom:8px">✍️</div><div class="card-title">Blog Writer</div><div class="card-desc">Pre-configured with writing, research, and SEO agents.</div></div>
-          <div class="card" onclick="showToast('Creating from template: SaaS Builder')"><div style="font-size:18px;margin-bottom:8px">⚡</div><div class="card-title">SaaS Builder</div><div class="card-desc">Code reviewer, product planner, and analytics agents.</div></div>
-          <div class="card" onclick="showToast('Creating from template: Research Lab')"><div style="font-size:18px;margin-bottom:8px">📚</div><div class="card-title">Research Lab</div><div class="card-desc">AutoResearch, citation finder, and synthesis workflows.</div></div>
-        </div>
+        <div class="card" onclick="showToast('Browse Space Templates in the FDE Marketplace')"><div class="card-title">FDE Marketplace</div><div class="card-desc">Install Space Templates published by Naelao and its FDEs. Each template defines its own projects, extensions, and setup.</div></div>
         <div class="section-label">Getting Started</div>
         <div style="display:flex;flex-direction:column;gap:8px">
           <div class="card" style="display:flex;align-items:center;gap:12px" onclick="showPage('spaces')"><div style="width:28px;height:28px;border-radius:7px;background:var(--accent-dim);display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke="var(--accent)" width="14" height="14"><rect x="2" y="2" width="5.5" height="5.5" rx="1.5"/><rect x="8.5" y="2" width="5.5" height="5.5" rx="1.5"/><rect x="2" y="8.5" width="5.5" height="5.5" rx="1.5"/><rect x="8.5" y="8.5" width="5.5" height="5.5" rx="1.5"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500;color:var(--text)">Create your first Space</div><div style="font-size:12px;color:var(--text2)">Set up a workspace for your team or project</div></div><svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke="var(--text3)" width="14" height="14"><polyline points="6,4 10,8 6,12"/></svg></div>
@@ -1891,7 +1881,7 @@ $ _<span style="animation:typingBounce 1s infinite;display:inline-block">|</span
           <!-- Settings -->
           <div id="sd-settings" style="display:none">
             <div style="margin-bottom:16px"><div style="font-size:13px;font-weight:500;color:var(--text);margin-bottom:2px">Space Name</div><input class="form-input" value="Personal" style="margin-top:6px"></div>
-            <div style="margin-bottom:16px"><div style="font-size:13px;font-weight:500;color:var(--text);margin-bottom:2px">Space Type</div><select class="form-input" style="margin-top:6px"><option>Personal</option><option>Team</option><option>Research Lab</option><option>Developer</option><option>Launchpad</option><option>Enterprise</option></select></div>
+            <div style="margin-bottom:16px"><div style="font-size:13px;font-weight:500;color:var(--text);margin-bottom:2px">Space Type</div><select class="form-input" style="margin-top:6px"><option>Personal</option><option>Team</option><option>Research Lab</option><option>Developer</option><option>Enterprise</option></select></div>
             <div style="margin-bottom:16px"><div style="font-size:13px;font-weight:500;color:var(--text);margin-bottom:2px">Visibility</div><select class="form-input" style="margin-top:6px"><option>Private</option><option>Team</option><option>Public</option></select></div>
             <button class="btn btn-primary" onclick="showToast('Space settings saved');closeSpaceDialog()">Save Changes</button>
           </div>
@@ -1904,7 +1894,7 @@ $ _<span style="animation:typingBounce 1s infinite;display:inline-block">|</span
                 <div class="card" style="padding:12px;text-align:center" onclick="selectSpaceType(this)"><div style="font-size:20px;margin-bottom:4px">👥</div><div style="font-size:12px;font-weight:500;color:var(--text)">Team</div></div>
                 <div class="card" style="padding:12px;text-align:center" onclick="selectSpaceType(this)"><div style="font-size:20px;margin-bottom:4px">🔬</div><div style="font-size:12px;font-weight:500;color:var(--text)">Research</div></div>
                 <div class="card" style="padding:12px;text-align:center" onclick="selectSpaceType(this)"><div style="font-size:20px;margin-bottom:4px">💻</div><div style="font-size:12px;font-weight:500;color:var(--text)">Developer</div></div>
-                <div class="card" style="padding:12px;text-align:center" onclick="selectSpaceType(this)"><div style="font-size:20px;margin-bottom:4px">🚀</div><div style="font-size:12px;font-weight:500;color:var(--text)">Launchpad</div></div>
+
                 <div class="card" style="padding:12px;text-align:center" onclick="selectSpaceType(this)"><div style="font-size:20px;margin-bottom:4px">🏢</div><div style="font-size:12px;font-weight:500;color:var(--text)">Enterprise</div></div>
               </div>
             </div>

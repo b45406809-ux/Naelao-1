@@ -1,5 +1,5 @@
 import type { UniversalAgentManifest, UniversalAgentRole } from "@naelao/agent-sdk";
-import type { BusinessContext } from "../launchpad/business-context.js";
+import type { SpaceContext } from "../launchpad/space-context.js";
 import { PLANNER_FIRST_PROTOCOL } from "./planner-first.js";
 
 export const UNIVERSAL_OPERATING_KERNEL = `Use the available CLI-style tools rather than pretending work completed.
@@ -11,19 +11,14 @@ ${PLANNER_FIRST_PROTOCOL}`;
 
 const escapeXml = (value: string): string => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-function renderBusiness(business?: BusinessContext): string {
-  if (!business) return "No business profile was supplied for this turn.";
-  return [
-    `Name: ${business.name}`,
-    business.offering ? `Offering: ${business.offering}` : "",
-    business.pricing ? `Pricing: ${business.pricing}` : "",
-    `Setup: ${business.setup_status}${business.setup_note ? ` — ${business.setup_note}` : ""}`,
-  ].filter(Boolean).join("\n");
+function renderSpace(space?: SpaceContext): string {
+  if (!space) return "No additional Space context was supplied for this turn.";
+  return [`Name: ${space.name}`, `Setup: ${space.setup_status}${space.setup_note ? ` — ${space.setup_note}` : ""}`].join("\n");
 }
 
 export interface UniversalPromptOptions {
   manifest: UniversalAgentManifest;
-  businessContext?: BusinessContext;
+  spaceContext?: SpaceContext;
   protocol?: string;
   activeCatalog?: string;
 }
@@ -33,7 +28,7 @@ export function composeUniversalPrompt(options: UniversalPromptOptions): string 
   const { manifest } = options;
   const layers = [
     ["universal_operating_kernel", [UNIVERSAL_OPERATING_KERNEL, options.protocol].filter(Boolean).join("\n\n")],
-    ["living_business_identity", renderBusiness(options.businessContext)],
+    ["space_identity", renderSpace(options.spaceContext)],
     ["agent_archetype", `Role: ${manifest.role}\n${manifest.prompts.systemPrompt}\n${manifest.prompts.instructions}`],
     ["founder_custom_directives", manifest.prompts.userCustomInstructions?.trim() || "No founder overrides."],
   ] as const;

@@ -2,7 +2,6 @@ import type { PrebuiltScript } from "./index.js";
 
 export const CABINET_WORKERS = [
   "project_manager_worker",
-  "treasury_worker",
   "identity_worker",
   "comms_worker",
 ] as const;
@@ -12,7 +11,6 @@ export type CabinetWorkerId = typeof CABINET_WORKERS[number];
 /** Exact operation grants. Prefix matching is deliberately forbidden. */
 export const CABINET_CAPABILITIES: Readonly<Record<CabinetWorkerId, ReadonlySet<string>>> = Object.freeze({
   project_manager_worker: new Set(["project.create", "project.archive", "project.create_from_template"]),
-  treasury_worker: new Set(["wallet.get_balance", "wallet.request_payout", "billing.audit"]),
   identity_worker: new Set(["member.invite", "role.set_rank", "gatekeeper.issue_capability_token"]),
   comms_worker: new Set(["notify.email", "notify.slack", "notify.discord", "notify.whatsapp", "notify.telegram", "notify.apns", "notify.fcm", "announcement.publish"]),
 });
@@ -26,7 +24,7 @@ export class CabinetCapabilityViolationError extends Error {
 
 function workerId(value: unknown): CabinetWorkerId {
   if (typeof value === "string" && (CABINET_WORKERS as readonly string[]).includes(value)) return value as CabinetWorkerId;
-  throw new Error("Unknown executive cabinet worker; use Bash `naelao worker <worker_id> <operation> --params <json>` with one of project_manager_worker, treasury_worker, identity_worker, or comms_worker");
+  throw new Error("Unknown executive cabinet worker; use Bash `naelao worker <worker_id> <operation> --params <json>` with one of project_manager_worker, identity_worker, or comms_worker");
 }
 
 function task(value: unknown): { operation: string; params: Record<string, unknown> } {

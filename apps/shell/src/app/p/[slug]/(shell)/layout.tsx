@@ -59,10 +59,6 @@ const DEFAULT_MORE_NAV: SidebarNavEntry[] = [
   { key: "extensions", icon: "marketplace", label: "Extensions" },
   { key: "analytics", icon: "analytics", label: "Analytics" },
   { key: "knowledge", icon: "knowledge", label: "Knowledge" },
-  // Step 20: the Plugins directory — native business-feature "plugins" (Wallet, CRM, Business
-  // Email, …) a business can install as projects. Browse the whole surface (installed + available
-  // + which come by default) in one place, not just inline in the New Project dialog.
-  { key: "plugins", icon: "projects", label: "Plugins" },
   // Real third-party apps (Composio/Pipedream-routed + bespoke OAuth/manual-key) the assistant
   // and project agents can reach over MCP — see connectors/page.tsx.
   { key: "connectors", icon: "marketplace", label: "Connectors" },

@@ -30,7 +30,6 @@ import {
   type ChatUpload,
   type BusinessMember,
   type SessionCredentials,
-  type AgentTemplateSummary,
   transcribeVoice,
 } from "@/lib/api";
 import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey } from "@/lib/connectorActions";
@@ -112,9 +111,6 @@ export function ComposerDock({
   agentOptions,
   selectedAgentId,
   onAgentChange,
-  availableTemplates,
-  addingTemplateId,
-  onAddTemplate,
   threadMode = false,
   ideas,
   children,
@@ -154,14 +150,6 @@ export function ComposerDock({
   agentOptions?: Array<{ id: string; name: string }>;
   selectedAgentId?: string | null;
   onAgentChange?: (agentId: string) => void;
-  /** The full Naelao Agent Templates catalogue, offered to ADD to this project directly from the
-   *  panel — without this, a project with nothing bound yet had no path from "the switcher" to
-   *  actually having something to switch to except a separate trip to the Agents/Projects pages. */
-  availableTemplates?: AgentTemplateSummary[];
-  /** The template currently being instantiated, if any — disables its own row's button and shows
-   *  "Adding…" rather than letting a slow request look like a dead click. */
-  addingTemplateId?: string | null;
-  onAddTemplate?: (templateId: string) => void;
   /** Compact conversation mode moves model, agent, connector, ideas, and member controls into the workspace panel. */
   threadMode?: boolean;
   /** Optional empty-thread idea chips shown only while the message composer is open. */
@@ -516,11 +504,11 @@ export function ComposerDock({
       {panel === "agent" && (
         <div className="dock-panel">
           <div className="dock-panel-head">
-            <span className="dock-panel-title">Naelao Agent Templates — this project</span>
+            <span className="dock-panel-title">Workers — this project</span>
             <span className="dock-panel-note">who answers your next message</span>
           </div>
           <div className="dock-panel-body">
-            {(!agentOptions || agentOptions.length === 0) && (!availableTemplates || availableTemplates.length === 0) ? (
+            {!agentOptions || agentOptions.length === 0 ? (
               <p style={{ padding: "8px 12px", fontSize: 12.5, color: "var(--text3)" }}>Loading…</p>
             ) : (
               <>
@@ -545,36 +533,7 @@ export function ComposerDock({
                   );
                 })}
 
-                {availableTemplates && availableTemplates.length > 0 && (
-                  <>
-                    <div className="dock-panel-head" style={{ marginTop: agentOptions && agentOptions.length > 0 ? 6 : 0 }}>
-                      <span className="dock-panel-title" style={{ fontSize: 11.5 }}>Add a template to this project</span>
-                      <span className="dock-panel-note">its own tools, autonomy, and instructions</span>
-                    </div>
-                    {availableTemplates.map((t) => {
-                      const isAdding = addingTemplateId === t.id;
-                      return (
-                        <div key={t.id} className="dock-row">
-                          <div className="dock-row-icon"><Icon path={ICONS.agent} size={15} /></div>
-                          <div className="dock-row-main">
-                            <div className="dock-row-title">{t.name}</div>
-                            <div className="dock-row-desc">{t.description}</div>
-                          </div>
-                          <div className="dock-row-action">
-                            <button
-                              type="button"
-                              className="dock-pill"
-                              disabled={!!addingTemplateId}
-                              onClick={() => onAddTemplate?.(t.id)}
-                            >
-                              {isAdding ? "Adding…" : "Add & use"}
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </>
-                )}
+
               </>
             )}
           </div>

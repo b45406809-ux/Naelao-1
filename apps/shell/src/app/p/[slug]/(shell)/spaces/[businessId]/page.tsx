@@ -11,16 +11,6 @@ import {
   removeBusinessMember,
   inviteToBusiness,
   listMyBusinesses,
-  getPricing,
-  checkoutBusinessSubscription,
-  checkoutCreditPack,
-  getShellManifest,
-  listBusinessProducts,
-  createBusinessProduct,
-  updateBusinessProduct,
-  listBusinessOrders,
-  getBusinessRevenue,
-  getBusinessWallet,
   listLocalGrants,
   createLocalGrant,
   deleteLocalGrant,
@@ -31,12 +21,6 @@ import {
   startProviderConnect,
   type BusinessMember,
   type Business,
-  type PricingPlan,
-  type CreditPack,
-  type LaunchpadProduct,
-  type LaunchpadOrder,
-  type RevenueSummary,
-  type BusinessWallet,
   type LocalGrant,
   getOnboarding,
   type OnboardingState,
@@ -44,10 +28,6 @@ import {
 } from "@/lib/api";
 
 const GRANT_TYPES = ["read", "write", "readwrite", "exec"] as const;
-
-function centsToDisplay(cents: number): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(cents / 100);
-}
 
 export default function BusinessDetailPage() {
   const params = useParams<{ slug: string; businessId: string }>();
@@ -63,20 +43,6 @@ export default function BusinessDetailPage() {
   const [inviteRole, setInviteRole] = React.useState<"member" | "admin">("member");
   const [inviting, setInviting] = React.useState(false);
   const [lastInviteToken, setLastInviteToken] = React.useState<string | null>(null);
-  const [plans, setPlans] = React.useState<PricingPlan[]>([]);
-  const [creditPacks, setCreditPacks] = React.useState<CreditPack[]>([]);
-  const [checkingOut, setCheckingOut] = React.useState<string | null>(null);
-  // Phase N: the manifest-driven operator shell (Revenue/Orders/Products) — only offered when
-  // this business's own SpaceType manifest actually advertises commerce sidebar items, so a
-  // non-Launchpad (future) SpaceType's business doesn't show an irrelevant, empty section.
-  const [hasCommerce, setHasCommerce] = React.useState(false);
-  const [revenue, setRevenue] = React.useState<RevenueSummary | null>(null);
-  const [wallet, setWallet] = React.useState<BusinessWallet | null>(null);
-  const [orders, setOrders] = React.useState<LaunchpadOrder[]>([]);
-  const [products, setProducts] = React.useState<LaunchpadProduct[]>([]);
-  const [newProductName, setNewProductName] = React.useState("");
-  const [newProductPrice, setNewProductPrice] = React.useState("");
-  const [creatingProduct, setCreatingProduct] = React.useState(false);
   const [localGrants, setLocalGrants] = React.useState<LocalGrant[]>([]);
   const [grantType, setGrantType] = React.useState<(typeof GRANT_TYPES)[number]>("read");
   const [grantDirectory, setGrantDirectory] = React.useState("");
@@ -118,37 +84,19 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, pricing, manifest, grants, wal, conns, onboard] = await Promise.all([
+      const [mine, mem, grants, conns, onboard] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
-        getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
-        getShellManifest(params.businessId, creds).catch(() => null),
         listLocalGrants(params.businessId, creds).catch(() => []),
-        getBusinessWallet(params.businessId, creds).catch(() => null),
         getConnectorStatus(params.businessId, creds).catch(() => []),
         // Member-level read; a 403 here just means the caller lost membership mid-load.
         getOnboarding(params.businessId, creds).catch(() => null),
       ]);
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
-      setPlans(pricing.plans);
-      setCreditPacks(pricing.credit_packs);
       setLocalGrants(grants);
-      setWallet(wal);
       setConnectors(conns);
       setOnboarding(onboard);
-      const commerce = manifest?.ui.sidebar_items.some((item) => item.id === "revenue") ?? false;
-      setHasCommerce(commerce);
-      if (commerce) {
-        const [rev, ord, prod] = await Promise.all([
-          getBusinessRevenue(params.businessId, creds).catch(() => null),
-          listBusinessOrders(params.businessId, creds).catch(() => []),
-          listBusinessProducts(params.businessId, creds).catch(() => []),
-        ]);
-        setRevenue(rev);
-        setOrders(ord);
-        setProducts(prod);
-      }
     } catch {
       show("Couldn't load this business — you may not be a member");
     } finally {
@@ -294,63 +242,6 @@ export default function BusinessDetailPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectors.length]);
-
-  async function handleCreateProduct(e: React.FormEvent) {
-    e.preventDefault();
-    if (!creds || !newProductName.trim()) return;
-    setCreatingProduct(true);
-    try {
-      const priceCents = Math.round(parseFloat(newProductPrice || "0") * 100) || 0;
-      await createBusinessProduct(params.businessId, creds, { name: newProductName.trim(), price_cents: priceCents });
-      setNewProductName("");
-      setNewProductPrice("");
-      await refresh();
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Failed to create product");
-    } finally {
-      setCreatingProduct(false);
-    }
-  }
-
-  async function handleTogglePublish(prod: LaunchpadProduct) {
-    if (!creds) return;
-    try {
-      await updateBusinessProduct(params.businessId, prod.id, creds, {
-        status: prod.status === "published" ? "archived" : "published",
-      });
-      await refresh();
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Failed to update product");
-    }
-  }
-
-  async function handleSubscribe(planId: string) {
-    if (!creds) return;
-    setCheckingOut(`plan:${planId}`);
-    try {
-      const { checkout_url, dev } = await checkoutBusinessSubscription(params.businessId, creds, planId);
-      if (dev) show(`Dev mode — no Lemon Squeezy credentials configured (${checkout_url})`);
-      else window.location.href = checkout_url;
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Failed to start checkout");
-    } finally {
-      setCheckingOut(null);
-    }
-  }
-
-  async function handleBuyCredits(packId: string) {
-    if (!creds) return;
-    setCheckingOut(`pack:${packId}`);
-    try {
-      const { checkout_url, dev } = await checkoutCreditPack(params.businessId, creds, packId);
-      if (dev) show(`Dev mode — no Lemon Squeezy credentials configured (${checkout_url})`);
-      else window.location.href = checkout_url;
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Failed to start checkout");
-    } finally {
-      setCheckingOut(null);
-    }
-  }
 
   const myRole = business?.role;
   const canManage = myRole === "owner" || myRole === "admin";
@@ -615,181 +506,6 @@ export default function BusinessDetailPage() {
           </>
         );
       })()}
-
-      {/* F-WALLET-7: the transparency section — "your AI only spends money this business earned". */}
-      {wallet && (wallet.project_id || wallet.lifetime.order_count > 0) && (
-        <>
-          <div className="section-label">Wallet</div>
-          <div className="settings-block">
-            <div className="settings-row">
-              <div>
-                <div className="settings-row-label">Available to grow the business</div>
-                <div className="settings-row-sub">Your AI only spends money this business has earned.</div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div className="settings-row-label">{centsToDisplay(wallet.available_balance_cents)}</div>
-                <div className="settings-row-sub">{wallet.currency}</div>
-              </div>
-            </div>
-            <div className="settings-row">
-              <div>
-                <div className="settings-row-label">Total earned</div>
-                <div className="settings-row-sub">{wallet.lifetime.order_count} settled order(s)</div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div className="settings-row-label">{centsToDisplay(wallet.lifetime.gross_cents)} gross</div>
-                <div className="settings-row-sub">
-                  {centsToDisplay(wallet.lifetime.naelao_cut_cents)} Naelao cut
-                  {wallet.lifetime.builder_cut_cents > 0 ? ` · ${centsToDisplay(wallet.lifetime.builder_cut_cents)} builder cut` : ""}
-                </div>
-              </div>
-            </div>
-            {wallet.transactions.slice(0, 8).map((t) => (
-              <div className="settings-row" key={t.id}>
-                <div>
-                  <div className="settings-row-label">{t.reason.replace(/_/g, " ")}</div>
-                  <div className="settings-row-sub">{new Date(t.created_at).toLocaleString()}</div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div className="settings-row-label" style={{ color: t.delta_cents >= 0 ? "var(--green, #16a34a)" : "inherit" }}>
-                    {t.delta_cents >= 0 ? "+" : ""}{centsToDisplay(t.delta_cents)}
-                  </div>
-                  <div className="settings-row-sub">bal {centsToDisplay(t.balance_after_cents)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {hasCommerce && (
-        <>
-          <div className="section-label">Revenue</div>
-          <div className="settings-block">
-            <div className="settings-row">
-              <div>
-                <div className="settings-row-label">This month ({revenue?.period ?? "—"})</div>
-                <div className="settings-row-sub">{revenue?.order_count ?? 0} orders</div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div className="settings-row-label">{revenue ? centsToDisplay(revenue.net_cents) : "—"} net</div>
-                <div className="settings-row-sub">
-                  {revenue ? `${centsToDisplay(revenue.gross_cents)} gross · ${centsToDisplay(revenue.fee_cents)} platform fee` : ""}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="section-label">Products</div>
-          <div className="settings-block">
-            {products.length === 0 && <div className="settings-row-sub" style={{ padding: 12 }}>No products yet.</div>}
-            {products.map((p) => (
-              <div className="settings-row" key={p.id}>
-                <div>
-                  <div className="settings-row-label">{p.name}</div>
-                  <div className="settings-row-sub">
-                    {centsToDisplay(p.price_cents)} · {p.kind} · <Badge color={p.status === "published" ? "green" : p.status === "archived" ? "blue" : "amber"}>{p.status}</Badge>
-                  </div>
-                </div>
-                {canManage && p.status !== "archived" && (
-                  <button className="btn btn-secondary" type="button" onClick={() => handleTogglePublish(p)}>
-                    {p.status === "published" ? "Unpublish" : "Publish"}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-          {canManage && (
-            <form onSubmit={handleCreateProduct} style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-              <FormInput placeholder="Product name" value={newProductName} onChange={(e) => setNewProductName(e.target.value)} required />
-              <FormInput
-                placeholder="Price (USD)"
-                type="number"
-                min="0"
-                step="0.01"
-                value={newProductPrice}
-                onChange={(e) => setNewProductPrice(e.target.value)}
-                style={{ maxWidth: 140 }}
-              />
-              <Button type="submit" disabled={creatingProduct || !newProductName.trim()}>
-                {creatingProduct ? "Adding…" : "Add product"}
-              </Button>
-            </form>
-          )}
-
-          <div className="section-label">Orders</div>
-          <div className="settings-block">
-            {orders.length === 0 && <div className="settings-row-sub" style={{ padding: 12 }}>No orders yet.</div>}
-            {orders.map((o) => (
-              <div className="settings-row" key={o.id}>
-                <div>
-                  <div className="settings-row-label">{o.product_name ?? "Unknown product"}</div>
-                  <div className="settings-row-sub">
-                    {o.customer_email ?? "unknown customer"} · {new Date(o.created_at).toLocaleDateString()}
-                  </div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div className="settings-row-label">{centsToDisplay(o.net_cents)}</div>
-                  <Badge color={o.status === "fulfilled" || o.status === "paid" ? "green" : o.status === "refunded" || o.status === "failed" ? "red" : "amber"}>
-                    {o.status}
-                  </Badge>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {plans.length > 0 && (
-        <>
-          <div className="section-label">Subscription Plans</div>
-          <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
-            {business.name} subscribes to one of these plans as a whole.
-          </p>
-          <div className="settings-block">
-            {plans.map((plan) => (
-              <div className="settings-row" key={plan.id}>
-                <div>
-                  <div className="settings-row-label">{plan.name}</div>
-                  <div className="settings-row-sub">
-                    {centsToDisplay(plan.price_cents)}/{plan.interval}
-                    {plan.credit_allowance ? ` · ${plan.credit_allowance} credits/mo` : ""}
-                  </div>
-                </div>
-                {canManage && (
-                  <Button onClick={() => handleSubscribe(plan.id)} disabled={checkingOut === `plan:${plan.id}`}>
-                    {checkingOut === `plan:${plan.id}` ? "Starting…" : "Subscribe"}
-                  </Button>
-                )}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {creditPacks.length > 0 && (
-        <>
-          <div className="section-label">Credit Packs</div>
-          <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
-            One-time purchases added to YOUR OWN credit balance, not the business&rsquo;s.
-          </p>
-          <div className="settings-block">
-            {creditPacks.map((pack) => (
-              <div className="settings-row" key={pack.id}>
-                <div>
-                  <div className="settings-row-label">{pack.name}</div>
-                  <div className="settings-row-sub">
-                    {pack.credits} credits — {centsToDisplay(pack.price_cents)}
-                  </div>
-                </div>
-                <Button onClick={() => handleBuyCredits(pack.id)} disabled={checkingOut === `pack:${pack.id}`}>
-                  {checkingOut === `pack:${pack.id}` ? "Starting…" : "Buy"}
-                </Button>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
 
       <Modal
         open={inviteOpen}

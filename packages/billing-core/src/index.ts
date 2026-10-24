@@ -6,7 +6,6 @@ import { readBoundedResponseJson } from "@naelao/http";
 // Stripe is a future addition. See ./providers. The Stripe helpers below remain for
 // usage-metering until the Stripe BillingProvider lands.
 export * from "./providers/index.js";
-export * from "./reseller.js";
 export * from "./price-floor.js";
 // model-benchmarks.ts and effort.ts import ALLOWED_MODELS back from THIS file (a deliberate
 // circular re-export, not a mistake) — they must be re-exported only AFTER everything they

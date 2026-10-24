@@ -32,11 +32,11 @@ describe("Spaces Worker request boundary", () => {
     expect(response.status).toBe(403);
   });
 
-  it("rejects unsigned calls to the legacy reseller business-create route", async () => {
+  it("does not expose the retired reseller business-create route", async () => {
     const response = await worker.fetch(new Request("https://spaces.test/reseller/spaces", {
       method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "user-a", "x-naelao-role": "product_end_user" },
       body: JSON.stringify({ reseller_product_space_id: "product-a", name: "Business", spacetype_id: "launchpad" }),
     }), { PLATFORM_SECRET: "test-secret" } as never, {} as never);
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
   });
 });

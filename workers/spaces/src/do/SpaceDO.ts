@@ -27,7 +27,7 @@ import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInte
 import type { MessageRole } from "@naelao/types";
 import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
-import type { DisplayMode, ExtensionManifest, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
+import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
 import { promoteCockpit } from "@naelao/agent-sdk";
 import { projectFactRelevance } from "@naelao/agent-sdk";
 import { consumeEphemeralActionGrant, issueCapabilityToken, mintEphemeralActionGrant, type EphemeralActionGrant, verifyCapabilityToken } from "@naelao/security";
@@ -2172,6 +2172,15 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX IF NOT EXISTS idx_extension_shared_filesystem_grants_instance
       ON extension_shared_filesystem_grants(instance_id);`,
   },
+  {
+    version: 97,
+    description: "canonical project interaction kinds; legacy financial records remain inert",
+    up: `UPDATE projects
+      SET kind = CASE WHEN kind IN ('DualPane','CanvasFirst','HeadlessPipeline','TerminalFirst') THEN kind ELSE 'DualPane' END,
+          is_singleton_kind = 0;
+      -- Old wallet/revenue rows are preserved for data retention; all host APIs and workers that
+      -- could read or mutate them have been removed.`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3340,71 +3349,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && activateThreadMatch?.[1]) {
         return this.activateProjectThread(activateThreadMatch[1], request);
       }
-      // ── Launchpad Wallet (kind='wallet' projects only) ─────────────────────────
-      const walletBalanceMatch = url.pathname.match(
-        /^\/projects\/([^/]+)\/wallet\/balance$/
-      );
-      if (method === "GET" && walletBalanceMatch?.[1]) {
-        return this.getWalletBalance(walletBalanceMatch[1]);
-      }
-      const walletCreditMatch = url.pathname.match(
-        /^\/projects\/([^/]+)\/wallet\/credit$/
-      );
-      if (method === "POST" && walletCreditMatch?.[1]) {
-        return this.creditWallet(walletCreditMatch[1], request);
-      }
-      const walletDebitMatch = url.pathname.match(
-        /^\/projects\/([^/]+)\/wallet\/debit$/
-      );
-      if (method === "POST" && walletDebitMatch?.[1]) {
-        return this.debitWallet(walletDebitMatch[1], request);
-      }
-      const walletHistoryMatch = url.pathname.match(
-        /^\/projects\/([^/]+)\/wallet\/history$/
-      );
-      if (method === "GET" && walletHistoryMatch?.[1]) {
-        return this.listWalletHistory(walletHistoryMatch[1], url.searchParams);
-      }
-      // GET /wallet-project?space_id=... — metering enforcement follow-up: NaelaoAgentDO looks
-      // this up to find the space's own wallet project (auto-provisioned at space-creation time,
-      // see the provisioner's seedWallet step) before gating/debiting a project-scoped run's
-      // real LLM cost against it.
-      if (method === "GET" && url.pathname === "/wallet-project") {
-        return this.findWalletProject(url.searchParams.get("space_id") ?? "");
-      }
-      // External revenue tracker (Whop-native business cut) — the revenue-tracker prebuilt
-      // POSTs a period's observed gross revenue here; the billing worker reads it back to
-      // compute a builder-configured cut surcharge.
-      if (method === "POST" && url.pathname === "/revenue-tracking") {
-        return this.recordExternalRevenue(request);
-      }
-      if (method === "GET" && url.pathname === "/revenue-tracking") {
-        return this.getExternalRevenue(url.searchParams);
-      }
-      if (
-        method === "POST" &&
-        url.pathname === "/revenue-tracking/mark-billed"
-      ) {
-        return this.markRevenueBilled(request);
-      }
-      if (
-        method === "POST" &&
-        url.pathname === "/revenue-tracking/unmark-billed"
-      ) {
-        return this.markRevenueUnbilled(request);
-      }
-      if (
-        method === "POST" &&
-        url.pathname === "/revenue-tracking/mark-pending"
-      ) {
-        return this.markRevenuePending(request);
-      }
-      if (
-        method === "POST" &&
-        url.pathname === "/revenue-tracking/release-pending"
-      ) {
-        return this.releaseRevenuePending(request);
-      }
+      // Legacy wallet and external-revenue accounting routes have been removed.
       // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
       const projFactsMatch = url.pathname.match(
         /^\/projects\/([^/]+)\/memory\/facts$/
@@ -3528,14 +3473,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/agent-diagnostics") {
         return this.computeAgentDiagnostics(url.searchParams);
       }
-      // GET /business-analytics?window=7d|30d|90d — the end-user-facing Analytics page's data.
+      // GET /agent-analytics?window=7d|30d|90d — the end-user-facing Analytics page's data.
       // Unlike agent-activity/agent-diagnostics (builder-only: individual summaries and session
       // ids that could surface one member's escalation to another), this is PURE AGGREGATE —
       // counts, sums, and per-day/per-agent rollups with no session/thread/summary text attached
-      // — so it's safe for any business member to read, not just an admin. Same "aggregate is
-      // safe, raw rows aren't" precedent as /template-activity.
-      if (method === "GET" && url.pathname === "/business-analytics") {
-        return this.computeBusinessAnalytics(url.searchParams);
+      // — so it's safe for any Space member to read, not just an admin.
+      if (method === "GET" && url.pathname === "/agent-analytics") {
+        return this.computeAgentAnalytics(url.searchParams);
       }
       // POST /signal-events — internal only (NaelaoAgentDO posts one row per detected implicit
       // signal — user frustration / agent-forgot markers). Same await-not-bare-return rationale
@@ -4104,7 +4048,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const files = queryAll<{ path: string; content: string }>(this.ctx.storage.sql as never,
         "SELECT path, content FROM workspace_files WHERE project_id = ? ORDER BY path", project.id);
       return {
-        id: project.id, name: project.name, kind: project.kind, templateMode: project.template_mode,
+        id: project.id, name: project.name, kind: project.kind as ProjectKind, templateMode: project.template_mode,
         viewports: safeJsonParseObj(project.viewport_config),
         configuration: { executionCeiling: project.execution_ceiling, channel: safeJsonParseObj(project.channel_config), artifactLinters: parseArtifactLinters(JSON.parse(project.artifact_linter_policy)) },
         systemPrompt: typeof config.system_prompt === "string" ? config.system_prompt : "",
@@ -4492,7 +4436,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // scoped `WHERE end_user_id = <them>` — which NULL never matches, so every heartbeat session was
     // filtered out. They are business-level system artifacts (the assistant's own wake-up work, not
     // a private per-user conversation), and reaching this SpaceDO at all already required verified
-    // business membership (router hybrid-auth + product-session verify), so a heartbeat listing is
+    // Space membership (router hybrid-auth + product-session verify), so a heartbeat listing is
     // deliberately NOT scoped by end_user_id. Only the heartbeat branch drops the scope; ordinary
     // recents stay per-user exactly as before.
     const rows =
@@ -5716,7 +5660,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     // F-33/F-35: `kind` support (default 'workspace', unchanged for existing callers). Validate
     // against the Business Feature Projects registry; role-gate feature kinds; stamp
     // is_singleton_kind so the DB partial unique index (F-32) is the real singleton guarantee.
-    const kind = body.kind ?? "workspace";
+    const kind = body.kind ?? "DualPane";
     if (!isKnownProjectKind(kind)) {
       return Response.json(
         {
@@ -7792,7 +7736,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // ── Notifications inbox ─────────────────────────────────────────────────────
   // POST /notifications — either a CREATE (kind/title present, called internal-only by
   // NaelaoAgentDO — see its createSpaceNotification helper) or a mark-read ACTION
-  // ({action:"mark_read", notification_id}, reachable by any business member for their own
+  // ({action:"mark_read", notification_id}, reachable by any Space member for their own
   // space's notifications). The spaces-worker route restricts a caller without an internal HMAC
   // token to ONLY the mark_read shape (see index.ts) — this method still checks defensively so a
   // bug at that layer can't turn into a forged notification.
@@ -8246,10 +8190,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     });
   }
 
-  // GET /business-analytics?window=7d|30d|90d — the Analytics page's data (apps/shell's Settings-
+  // GET /agent-analytics?window=7d|30d|90d — the Analytics page's data (apps/shell's Settings-
   // adjacent business dashboard, mirroring the mockup's Analytics view). Pure aggregate — counts,
   // sums, and per-day/per-agent rollups, never a raw row with a session id, thread id, or summary
-  // text attached — which is what makes this safe for ANY business member, unlike the
+  // text attached — which is what makes this safe for ANY Space member, unlike the
   // builder-only agent-activity/agent-diagnostics endpoints this shares its table with.
   //
   // "Heartbeat pass/fail": only FAILURES are ever logged for an idle heartbeat tick (see
@@ -8258,7 +8202,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // signal). So "passes" here honestly means "wake-ups that did real work and it completed", not
   // "every tick that happened to run" — there is no record of a silent, work-free tick succeeding,
   // and this deliberately does not invent one.
-  private computeBusinessAnalytics(params: URLSearchParams): Response {
+  private computeAgentAnalytics(params: URLSearchParams): Response {
     const windowDays =
       params.get("window") === "30d"
         ? 30
@@ -8617,634 +8561,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ ok: true, envelope });
   }
 
-  // ── Launchpad Wallet (user-directed feature) ────────────────────────────────
-  // A project flagged kind='wallet' carries a stored-value balance in wallet_ledger — an
-  // append-only ledger (balance is SUM(delta_cents), never a cached column), same
-  // never-double-credit-on-replay shape as ProductUserDO's credit_ledger. Every op below 404s
-  // for a project that isn't actually kind='wallet' — deliberately strict, since these are
-  // money-adjacent ops and a workspace/customer_bot project should never accumulate a balance
-  // by accident. See wallet.ts (script-engine prebuilt) for the agent-facing surface and the
-  // full custody-boundary writeup this feature keeps to.
-  private requireWalletProject(projectId: string): { space_id: string } | null {
-    const row = queryOne<{ space_id: string; kind: string }>(
-      this.ctx.storage.sql as never,
-      "SELECT space_id, kind FROM projects WHERE id = ?",
-      projectId
-    );
-    if (!row || row.kind !== "wallet") return null;
-    return { space_id: row.space_id };
-  }
-
-  private walletBalance(projectId: string): number {
-    const row = queryOne<{ bal: number | null }>(
-      this.ctx.storage.sql as never,
-      "SELECT SUM(delta_cents) AS bal FROM wallet_ledger WHERE project_id = ?",
-      projectId
-    );
-    return row?.bal ?? 0;
-  }
-
-  private findWalletProject(spaceId: string): Response {
-    if (!spaceId) return Response.json({ project_id: null });
-    const row = queryOne<{ id: string }>(
-      this.ctx.storage.sql as never,
-      "SELECT id FROM projects WHERE space_id = ? AND kind = 'wallet' AND status != 'archived' ORDER BY created_at ASC LIMIT 1",
-      spaceId
-    );
-    return Response.json({ project_id: row?.id ?? null });
-  }
-
-  // External revenue tracker (Whop-native business cut): the revenue-tracker prebuilt reports
-  // a period's observed gross revenue here (upsert — re-tracking the same period overwrites the
-  // prior observation, since more of a period's payments can complete between checks).
-  // F-27: a correction NO LONGER reverts billed→0 and re-bills the full figure. `billed_cents`
-  // (what was actually charged) persists across corrections; the checkout bills only
-  // max(0, cut(new_revenue) − billed_cents), so correcting 100k→120k bills the 20k×cut delta, not
-  // the full 120k×cut on top of what was already collected. We only update revenue_cents/tracked_at
-  // here — billed/billed_cents are owned by the mark-billed/unmark-billed payment webhooks.
-  private async recordExternalRevenue(request: Request): Promise<Response> {
-    const body = await request
-      .json<{
-        space_id?: string;
-        period?: string;
-        provider?: string;
-        revenue_cents?: number;
-      }>()
-      .catch(() => ({}) as Record<string, never>);
-    const spaceId = body.space_id ?? "";
-    const period = body.period ?? "";
-    const provider = body.provider ?? "whop";
-    const revenueCents = Number.isFinite(body.revenue_cents)
-      ? Math.max(0, Math.round(body.revenue_cents!))
-      : Number.NaN;
-    if (
-      !spaceId ||
-      !/^\d{4}-\d{2}$/.test(period) ||
-      !Number.isFinite(revenueCents)
-    ) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message:
-            "space_id, period ('YYYY-MM'), and revenue_cents are required",
-        },
-        { status: 400 }
-      );
-    }
-
-    execute(
-      this.ctx.storage.sql as never,
-      // On a first observation, billed/billed_cents default to 0/0 (fully billable). On a re-track
-      // (correction), ONLY revenue_cents + tracked_at change — the accumulated billed_cents stays,
-      // which is exactly what makes the checkout's delta computation correct.
-      `INSERT INTO external_revenue_snapshots (id, space_id, period, provider, revenue_cents, billed, tracked_at)
-       VALUES (?, ?, ?, ?, ?, 0, datetime('now'))
-       ON CONFLICT(space_id, period, provider) DO UPDATE SET
-         revenue_cents = excluded.revenue_cents, tracked_at = excluded.tracked_at`,
-      crypto.randomUUID(),
-      spaceId,
-      period,
-      provider,
-      revenueCents
-    );
-    const row = queryOne<{ billed: number; billed_cents: number }>(
-      this.ctx.storage.sql as never,
-      "SELECT billed, billed_cents FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
-      spaceId,
-      period,
-      provider
-    );
-    return Response.json(
-      {
-        space_id: spaceId,
-        period,
-        provider,
-        revenue_cents: revenueCents,
-        billed: row?.billed === 1,
-        billed_cents: row?.billed_cents ?? 0,
-      },
-      { status: 201 }
-    );
-  }
-
-  private getExternalRevenue(params: URLSearchParams): Response {
-    const spaceId = params.get("space_id") ?? "";
-    if (!spaceId)
-      return Response.json(
-        { error_code: "bad_request", message: "space_id is required" },
-        { status: 400 }
-      );
-    const provider = params.get("provider") ?? "whop";
-    const period = params.get("period");
-
-    if (period) {
-      const row = queryOne<{
-        revenue_cents: number;
-        billed: number;
-        billed_cents: number;
-        pending_checkout_at: string | null;
-        pending_checkout_id: string | null;
-        tracked_at: string;
-      }>(
-        this.ctx.storage.sql as never,
-        "SELECT revenue_cents, billed, billed_cents, pending_checkout_at, pending_checkout_id, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
-        spaceId,
-        period,
-        provider
-      );
-      if (!row)
-        return Response.json({
-          space_id: spaceId,
-          period,
-          provider,
-          revenue_cents: 0,
-          billed: false,
-          billed_cents: 0,
-          pending_checkout_at: null,
-          pending_checkout_id: null,
-          tracked_at: null,
-        });
-      return Response.json({
-        space_id: spaceId,
-        period,
-        provider,
-        revenue_cents: row.revenue_cents,
-        billed: row.billed === 1,
-        billed_cents: row.billed_cents,
-        pending_checkout_at: row.pending_checkout_at,
-        pending_checkout_id: row.pending_checkout_id,
-        tracked_at: row.tracked_at,
-      });
-    }
-
-    const rows = queryAll<{
-      period: string;
-      revenue_cents: number;
-      billed: number;
-      billed_cents: number;
-      pending_checkout_at: string | null;
-      pending_checkout_id: string | null;
-      tracked_at: string;
-    }>(
-      this.ctx.storage.sql as never,
-      "SELECT period, revenue_cents, billed, billed_cents, pending_checkout_at, pending_checkout_id, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND provider = ? ORDER BY period DESC LIMIT 24",
-      spaceId,
-      provider
-    );
-    return Response.json({
-      space_id: spaceId,
-      provider,
-      snapshots: rows.map((r) => ({
-        period: r.period,
-        revenue_cents: r.revenue_cents,
-        billed: r.billed === 1,
-        billed_cents: r.billed_cents,
-        pending_checkout_at: r.pending_checkout_at,
-        pending_checkout_id: r.pending_checkout_id,
-        tracked_at: r.tracked_at,
-      })),
-      last_tracked_at: rows[0]?.tracked_at ?? null,
-    });
-  }
-
-  // Marks specific periods billed after a successful revenue-cut surcharge payment (the billing
-  // worker's webhook handler calls this, never the tracker) — distinct from recordExternalRevenue
-  // (which upserts a REVENUE OBSERVATION) since this only ever flips the billed flag, never
-  // touches revenue_cents. Idempotent: an already-billed period is a no-op.
-  private async markRevenueBilled(request: Request): Promise<Response> {
-    const body = await request
-      .json<{
-        space_id?: string;
-        periods?: string[];
-        charges?: number[];
-        provider?: string;
-      }>()
-      .catch(() => ({}) as Record<string, never>);
-    const spaceId = body.space_id ?? "";
-    const provider = body.provider ?? "whop";
-    const periods = Array.isArray(body.periods)
-      ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p))
-      : [];
-    if (!spaceId || periods.length === 0) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message: "space_id and at least one valid period are required",
-        },
-        { status: 400 }
-      );
-    }
-    // F-27: `charges` (parallel to periods) is the delta actually charged for each period — ADDED
-    // to billed_cents so a later correction bills only the new delta. A caller that omits charges
-    // (legacy) falls back to marking the period fully billed (billed_cents = revenue_cents, a
-    // ceiling that's never re-billed). F-31: clear pending_checkout_at now that it's paid.
-    const charges = Array.isArray(body.charges) ? body.charges : [];
-    periods.forEach((period, i) => {
-      const charge = Number.isFinite(charges[i])
-        ? Math.max(0, Math.round(charges[i]!))
-        : null;
-      if (charge !== null) {
-        execute(
-          this.ctx.storage.sql as never,
-          "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = billed_cents + ?, pending_checkout_at = NULL, pending_checkout_id = NULL WHERE space_id = ? AND period = ? AND provider = ?",
-          charge,
-          spaceId,
-          period,
-          provider
-        );
-      } else {
-        execute(
-          this.ctx.storage.sql as never,
-          "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = revenue_cents, pending_checkout_at = NULL, pending_checkout_id = NULL WHERE space_id = ? AND period = ? AND provider = ?",
-          spaceId,
-          period,
-          provider
-        );
-      }
-    });
-    return Response.json({
-      space_id: spaceId,
-      provider,
-      billed_periods: periods,
-    });
-  }
-
-  // F-29: the inverse of markRevenueBilled — the billing worker calls this when a revenue-cut
-  // surcharge payment is refunded, so the periods it covered revert to unbilled and become
-  // re-billable on the next checkout. Idempotent: an already-unbilled period is a no-op.
-  private async markRevenueUnbilled(request: Request): Promise<Response> {
-    const body = await request
-      .json<{
-        space_id?: string;
-        periods?: string[];
-        charges?: number[];
-        provider?: string;
-      }>()
-      .catch(() => ({}) as Record<string, never>);
-    const spaceId = body.space_id ?? "";
-    const provider = body.provider ?? "whop";
-    const periods = Array.isArray(body.periods)
-      ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p))
-      : [];
-    if (!spaceId || periods.length === 0) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message: "space_id and at least one valid period are required",
-        },
-        { status: 400 }
-      );
-    }
-    // F-27: reverse exactly the charge that was collected (billed_cents -= charge), so a refunded
-    // surcharge re-opens only that much for re-billing — not the whole period from scratch. Legacy
-    // callers (no charges) zero billed_cents. billed flips to 0 once nothing is left charged.
-    const charges = Array.isArray(body.charges) ? body.charges : [];
-    periods.forEach((period, i) => {
-      const charge = Number.isFinite(charges[i])
-        ? Math.max(0, Math.round(charges[i]!))
-        : null;
-      if (charge !== null) {
-        execute(
-          this.ctx.storage.sql as never,
-        "UPDATE external_revenue_snapshots SET billed_cents = MAX(0, billed_cents - ?), pending_checkout_at = NULL, pending_checkout_id = NULL WHERE space_id = ? AND period = ? AND provider = ?",
-          charge,
-          spaceId,
-          period,
-          provider
-        );
-      } else {
-        execute(
-          this.ctx.storage.sql as never,
-        "UPDATE external_revenue_snapshots SET billed_cents = 0, pending_checkout_at = NULL, pending_checkout_id = NULL WHERE space_id = ? AND period = ? AND provider = ?",
-          spaceId,
-          period,
-          provider
-        );
-      }
-      execute(
-        this.ctx.storage.sql as never,
-        "UPDATE external_revenue_snapshots SET billed = CASE WHEN billed_cents > 0 THEN 1 ELSE 0 END WHERE space_id = ? AND period = ? AND provider = ?",
-        spaceId,
-        period,
-        provider
-      );
-    });
-    return Response.json({
-      space_id: spaceId,
-      provider,
-      unbilled_periods: periods,
-    });
-  }
-
-  // F-31: atomically claim periods before minting a surcharge checkout. The checkout id makes
-  // retries idempotent and lets a failed provider call release only its own claim. Stale claims
-  // (>24h) are reclaimable after abandoned checkouts.
-  private async markRevenuePending(request: Request): Promise<Response> {
-    const body = await request
-      .json<{ space_id?: string; periods?: string[]; provider?: string; checkout_id?: string }>()
-      .catch(() => ({}) as Record<string, never>);
-    const spaceId = body.space_id ?? "";
-    const provider = body.provider ?? "whop";
-    const periods = Array.isArray(body.periods) ? body.periods : [];
-    const checkoutId = body.checkout_id ?? "";
-    if (!spaceId || spaceId.length > 128 || !/^[a-z][a-z0-9_-]{0,31}$/.test(provider) ||
-        !checkoutId || checkoutId.length > 128 || periods.length < 1 || periods.length > 24 ||
-        periods.some((p) => typeof p !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(p)) ||
-        new Set(periods).size !== periods.length) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message: "space_id, checkout_id, and up to 24 unique valid periods are required",
-        },
-        { status: 400 }
-      );
-    }
-    const sql = this.ctx.storage.sql as never;
-    const claim = this.ctx.storage.transactionSync(() => {
-      const rows = periods.map((period) => queryOne<{ pending_checkout_id: string | null; pending_checkout_at: string | null }>(
-        sql,
-        "SELECT pending_checkout_id, pending_checkout_at FROM external_revenue_snapshots WHERE space_id=? AND period=? AND provider=?",
-        spaceId, period, provider,
-      ));
-      if (rows.some((row) => !row || (row.pending_checkout_id !== checkoutId && row.pending_checkout_at !== null &&
-          row.pending_checkout_at > new Date(Date.now() - 24 * 60 * 60_000).toISOString().slice(0, 19).replace("T", " ")))) {
-        return false;
-      }
-      for (const period of periods) execute(sql,
-        "UPDATE external_revenue_snapshots SET pending_checkout_at=datetime('now'), pending_checkout_id=? WHERE space_id=? AND period=? AND provider=?",
-        checkoutId, spaceId, period, provider,
-      );
-      return true;
-    });
-    if (!claim) {
-      return Response.json({ error_code: "revenue_period_already_reserved" }, { status: 409 });
-    }
-    return Response.json({
-      space_id: spaceId,
-      provider,
-      checkout_id: checkoutId,
-      claimed: true,
-      pending_periods: periods,
-    });
-  }
-
-  private async releaseRevenuePending(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id?: string; periods?: string[]; provider?: string; checkout_id?: string }>()
-      .catch(() => ({}) as Record<string, never>);
-    const spaceId = body.space_id ?? "", provider = body.provider ?? "whop", checkoutId = body.checkout_id ?? "";
-    const periods = Array.isArray(body.periods) ? body.periods : [];
-    if (!spaceId || spaceId.length > 128 || !checkoutId || checkoutId.length > 128 ||
-        !/^[a-z][a-z0-9_-]{0,31}$/.test(provider) || periods.length < 1 || periods.length > 24 ||
-        periods.some((p) => typeof p !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(p)) || new Set(periods).size !== periods.length) {
-      return Response.json({ error_code: "bad_request" }, { status: 400 });
-    }
-    this.ctx.storage.transactionSync(() => {
-      for (const period of periods) execute(this.ctx.storage.sql as never,
-        "UPDATE external_revenue_snapshots SET pending_checkout_at=NULL, pending_checkout_id=NULL WHERE space_id=? AND period=? AND provider=? AND pending_checkout_id=?",
-        spaceId, period, provider, checkoutId,
-      );
-    });
-    return Response.json({ released: true, checkout_id: checkoutId });
-  }
-
-  private getWalletBalance(projectId: string): Response {
-    const project = this.requireWalletProject(projectId);
-    if (!project)
-      return Response.json(
-        { error_code: "not_found", message: "Not a wallet project" },
-        { status: 404 }
-      );
-    // `credited_cents` is what makes a NEVER-FUNDED wallet distinguishable from a DEPLETED one.
-    // Both are a zero balance, and the run gate used to block on the balance alone — so a business
-    // created five seconds ago, whose wallet is auto-provisioned empty by design, was refused all
-    // project-agent work with "top up to keep this agent running" before its owner had done
-    // anything. Reproduced live on a real business. See checkProjectWallet in NaelaoAgentDO.
-    const credited = queryOne<{ total: number | null }>(
-      this.ctx.storage.sql as never,
-      "SELECT SUM(delta_cents) AS total FROM wallet_ledger WHERE project_id = ? AND delta_cents > 0",
-      projectId
-    );
-    return Response.json({
-      project_id: projectId,
-      balance_cents: this.walletBalance(projectId),
-      credited_cents: credited?.total ?? 0,
-      currency: "USD",
-    });
-  }
-
-  private async creditWallet(
-    projectId: string,
-    request: Request
-  ): Promise<Response> {
-    const project = this.requireWalletProject(projectId);
-    if (!project)
-      return Response.json(
-        { error_code: "not_found", message: "Not a wallet project" },
-        { status: 404 }
-      );
-    const tenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
-    const body = await request
-      .json<{
-        cents?: number;
-        reason?: string;
-        idempotency_key?: string;
-        currency?: string;
-      }>()
-      .catch(() => ({}) as Record<string, never>);
-    if (!Number.isFinite(body.cents) || (body.cents ?? 0) <= 0) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message: "cents must be a positive number",
-        },
-        { status: 400 }
-      );
-    }
-    // walletBalance/getWalletBalance sum delta_cents across the whole ledger with no currency
-    // filter — a single-currency ledger (USD only) is the only thing that's actually correct
-    // today. Rather than silently accept a non-USD row that a currency-blind SUM would then
-    // conflate with USD balances (cf. the builder-payout multi-currency bug, item 39), reject it
-    // outright with a clear error until multi-currency wallets are actually built (which would
-    // need per-currency balances/gates, not just a per-row column).
-    if (body.currency && body.currency !== "USD") {
-      return Response.json(
-        {
-          error_code: "unsupported_currency",
-          message: "Wallet ledger is single-currency (USD) only",
-        },
-        { status: 400 }
-      );
-    }
-    if (body.idempotency_key) {
-      const existing = queryOne<{ balance_after_cents: number }>(
-        this.ctx.storage.sql as never,
-        "SELECT balance_after_cents FROM wallet_ledger WHERE project_id = ? AND idempotency_key = ?",
-        projectId,
-        body.idempotency_key
-      );
-      if (existing)
-        return Response.json({
-          balance_cents: existing.balance_after_cents,
-          deduplicated: true,
-        });
-    }
-    const credit = Math.floor(body.cents!);
-    const balanceAfter = this.walletBalance(projectId) + credit;
-    execute(
-      this.ctx.storage.sql as never,
-      `INSERT INTO wallet_ledger (id, project_id, space_id, delta_cents, currency, reason, balance_after_cents, idempotency_key)
-       VALUES (?, ?, ?, ?, 'USD', ?, ?, ?)`,
-      crypto.randomUUID(),
-      projectId,
-      project.space_id,
-      credit,
-      body.reason ?? "top_up",
-      balanceAfter,
-      body.idempotency_key ?? null
-    );
-    await this.fireMatchingTriggers(
-      {
-        type: "wallet.credited",
-        space_id: project.space_id,
-        project_id: projectId,
-        occurred_at: Date.now(),
-        payload: { cents: credit, balance_cents: balanceAfter },
-      },
-      tenantId
-    );
-    await broadcastSpaceEvent(
-      this.env,
-      tenantId,
-      project.space_id,
-      "wallet.credited",
-      { project_id: projectId, balance_cents: balanceAfter }
-    );
-    return Response.json({ balance_cents: balanceAfter }, { status: 201 });
-  }
-
-  // Fails CLOSED: an over-draw is rejected (402), never silently allowed to go negative — same
-  // contract as ProductUserDO's /credits/deduct.
-  private async debitWallet(
-    projectId: string,
-    request: Request
-  ): Promise<Response> {
-    const project = this.requireWalletProject(projectId);
-    if (!project)
-      return Response.json(
-        { error_code: "not_found", message: "Not a wallet project" },
-        { status: 404 }
-      );
-    const tenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
-    const body = await request
-      .json<{ cents?: number; reason?: string; idempotency_key?: string }>()
-      .catch(() => ({}) as Record<string, never>);
-    if (!Number.isFinite(body.cents) || (body.cents ?? 0) <= 0) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message: "cents must be a positive number",
-        },
-        { status: 400 }
-      );
-    }
-    if (body.idempotency_key) {
-      const existing = queryOne<{ balance_after_cents: number }>(
-        this.ctx.storage.sql as never,
-        "SELECT balance_after_cents FROM wallet_ledger WHERE project_id = ? AND idempotency_key = ?",
-        projectId,
-        body.idempotency_key
-      );
-      if (existing)
-        return Response.json({
-          balance_cents: existing.balance_after_cents,
-          deduplicated: true,
-        });
-    }
-    const debit = Math.ceil(body.cents!);
-    const balance = this.walletBalance(projectId);
-    if (debit > balance) {
-      return Response.json(
-        { error_code: "insufficient_balance", balance_cents: balance },
-        { status: 402 }
-      );
-    }
-    const balanceAfter = balance - debit;
-    execute(
-      this.ctx.storage.sql as never,
-      `INSERT INTO wallet_ledger (id, project_id, space_id, delta_cents, currency, reason, balance_after_cents, idempotency_key)
-       VALUES (?, ?, ?, ?, 'USD', ?, ?, ?)`,
-      crypto.randomUUID(),
-      projectId,
-      project.space_id,
-      -debit,
-      body.reason ?? "wallet_charge",
-      balanceAfter,
-      body.idempotency_key ?? null
-    );
-    await this.fireMatchingTriggers(
-      {
-        type: "wallet.debited",
-        space_id: project.space_id,
-        project_id: projectId,
-        occurred_at: Date.now(),
-        payload: {
-          cents: debit,
-          balance_cents: balanceAfter,
-          reason: body.reason ?? null,
-        },
-      },
-      tenantId
-    );
-    await broadcastSpaceEvent(
-      this.env,
-      tenantId,
-      project.space_id,
-      "wallet.debited",
-      { project_id: projectId, balance_cents: balanceAfter }
-    );
-    // Low-balance signal (fixed $5 threshold) — lets a builder wire a no-code trigger to prompt
-    // a top-up before the wallet actually runs dry and starts rejecting debits.
-    if (balanceAfter < 500) {
-      await this.fireMatchingTriggers(
-        {
-          type: "wallet.low_balance",
-          space_id: project.space_id,
-          project_id: projectId,
-          occurred_at: Date.now(),
-          payload: { balance_cents: balanceAfter },
-        },
-        tenantId
-      );
-    }
-    return Response.json({ balance_cents: balanceAfter }, { status: 200 });
-  }
-
-  private listWalletHistory(
-    projectId: string,
-    params: URLSearchParams
-  ): Response {
-    const project = this.requireWalletProject(projectId);
-    if (!project)
-      return Response.json(
-        { error_code: "not_found", message: "Not a wallet project" },
-        { status: 404 }
-      );
-    const limit = parseBoundedInteger(params.get("limit"), 50, 1, 200);
-    const rows = queryAll<{
-      id: string;
-      delta_cents: number;
-      currency: string;
-      reason: string;
-      balance_after_cents: number;
-      created_at: string;
-    }>(
-      this.ctx.storage.sql as never,
-      "SELECT id, delta_cents, currency, reason, balance_after_cents, created_at FROM wallet_ledger WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
-      projectId,
-      limit
-    );
-    return Response.json({ data: rows });
-  }
+  // Stored-value wallet and external-revenue ledger operations were removed from the host API.
 
   // ── project_rules — no-code "after the customer says X, this happens" triggers ─────────
   private listProjectRules(projectId: string): Response {

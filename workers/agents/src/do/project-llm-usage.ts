@@ -1,4 +1,4 @@
-export type ProjectLlmPayer = "space_wallet" | "unknown";
+export type ProjectLlmPayer = "platform" | "unknown";
 export type ConsumerLlmPayer = "consumer_credits";
 
 function llmUsageEvent(eventType: "project_llm_tokens" | "llm_tokens", input: {

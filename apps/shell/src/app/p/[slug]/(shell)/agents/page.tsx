@@ -22,8 +22,6 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import { useToast, Toast } from "@naelao/ui";
 import {
   listAgentDefinitions,
-  listAgentTemplates,
-  instantiateAgentTemplate,
   createCustomAgent,
   getAssistantCapabilities,
   listProjects,
@@ -32,7 +30,6 @@ import {
   getConnectorStatus,
   type Project,
   type AgentDefinitionSummary,
-  type AgentTemplateSummary,
   type AssistantCapabilities,
   type ArchetypePreset,
   type DirectorySkill,
@@ -48,12 +45,6 @@ export default function AgentsPage() {
   const [loading, setLoading] = React.useState(true);
   const [failed, setFailed] = React.useState(false);
 
-  const [templatePickerOpen, setTemplatePickerOpen] = React.useState(false);
-  const [templates, setTemplates] = React.useState<AgentTemplateSummary[]>([]);
-  const [templatesLoading, setTemplatesLoading] = React.useState(false);
-  const [instantiating, setInstantiating] = React.useState(false);
-  // Step 16: after a template is chosen, pick which project to add it to before instantiating.
-  const [pendingTemplate, setPendingTemplate] = React.useState<AgentTemplateSummary | null>(null);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(false);
   // Step 17: custom agent builder.
@@ -96,35 +87,6 @@ export default function AgentsPage() {
   }, [activeSpaceId, session]);
 
   React.useEffect(() => { refresh(); }, [refresh]);
-
-  async function openTemplatePicker() {
-    setTemplatePickerOpen(true);
-    if (templates.length > 0 || !creds) return;
-    setTemplatesLoading(true);
-    try {
-      setTemplates(await listAgentTemplates(activeSpaceId, creds));
-    } catch {
-      show("Couldn't load agent templates");
-    } finally {
-      setTemplatesLoading(false);
-    }
-  }
-
-  // Step 16: choosing a template no longer instantiates immediately — it opens a project picker
-  // so the agent is added to a project the user chooses (or the assistant/space-wide).
-  async function handleAddFromTemplate(t: AgentTemplateSummary) {
-    if (!creds || instantiating) return;
-    setPendingTemplate(t);
-    setTemplatePickerOpen(false);
-    setProjectsLoading(true);
-    try {
-      setProjects(await listProjects(activeSpaceId, creds));
-    } catch {
-      setProjects([]);
-    } finally {
-      setProjectsLoading(false);
-    }
-  }
 
   async function openCustomBuilder(guided = false) {
     if (!creds) return;
@@ -196,25 +158,6 @@ export default function AgentsPage() {
     }
   }
 
-  async function confirmAddToProject(projectId?: string) {
-    if (!creds || !pendingTemplate || instantiating) return;
-    const t = pendingTemplate;
-    setInstantiating(true);
-    try {
-      await instantiateAgentTemplate(activeSpaceId, creds, {
-        template_id: t.id,
-        ...(projectId ? { project_id: projectId } : {}),
-      });
-      setPendingTemplate(null);
-      show(projectId ? `${t.name} added to that project` : `${t.name} added`);
-      refresh();
-    } catch (err) {
-      show(err instanceof Error ? err.message : "Couldn't add this agent");
-    } finally {
-      setInstantiating(false);
-    }
-  }
-
   return (
     <div className="page-view">
       <div className="page-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
@@ -228,7 +171,6 @@ export default function AgentsPage() {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Button variant="secondary" onClick={() => void openCustomBuilder(true)}>Create domain worker</Button>
           <Button variant="secondary" onClick={() => void openCustomBuilder()}>+ Create custom worker</Button>
-          <Button onClick={() => void openTemplatePicker()}>+ Add worker</Button>
         </div>
       </div>
 
@@ -243,8 +185,7 @@ export default function AgentsPage() {
         </p>
       ) : agents.length === 0 ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>
-          No specialist workers here yet. Add one from the worker directory above, or they arrive
-          with the templates you add to a business — your assistant works on its own until then.
+          No workers here yet. Your Space Assistant can delegate work; create a reusable worker here when you need one.
         </p>
       ) : (
         <div className="grid-3">
@@ -260,67 +201,8 @@ export default function AgentsPage() {
         </div>
       )}
 
-      <Modal open={templatePickerOpen} onClose={() => setTemplatePickerOpen(false)} title="Worker directory">
-        <p style={{ fontSize: 12.5, color: "var(--text3)", margin: "0 0 12px" }}>
-          Each template is a real, distinct configuration — its own tool list, autonomy default,
-          and vertical instructions — not a label on the same generic agent.
-        </p>
-        {templatesLoading ? (
-          <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</p>
-        ) : (
-          <div className="app-grid">
-            {templates.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className="card app-card"
-                disabled={instantiating}
-                onClick={() => void handleAddFromTemplate(t)}
-                style={{ textAlign: "left", cursor: instantiating ? "default" : "pointer", font: "inherit" }}
-              >
-                <CardTitle>{t.name}</CardTitle>
-                <CardDesc>{t.description}</CardDesc>
-                <span className="app-card-tag">{t.category}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </Modal>
-      {/* Step 16: pick which project to add the chosen template agent to. */}
-      <Modal open={pendingTemplate !== null} onClose={() => setPendingTemplate(null)} title={pendingTemplate ? `Add "${pendingTemplate.name}" to…` : "Add to project"}>
-        <p style={{ fontSize: 12.5, color: "var(--text3)", margin: "0 0 12px" }}>
-          Choose which project this agent works in. It gets that project&apos;s workspace, journal and threads.
-        </p>
-        {projectsLoading ? (
-          <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading projects…</p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {projects.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                className="settings-row"
-                disabled={instantiating}
-                onClick={() => void confirmAddToProject(p.id)}
-                style={{ textAlign: "left", cursor: instantiating ? "default" : "pointer", font: "inherit", border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", background: "transparent" }}
-              >
-                {p.name}
-              </button>
-            ))}
-            <button
-              type="button"
-              className="settings-row"
-              disabled={instantiating}
-              onClick={() => void confirmAddToProject(undefined)}
-              style={{ textAlign: "left", cursor: instantiating ? "default" : "pointer", font: "inherit", border: "1px dashed var(--border)", borderRadius: 8, padding: "10px 12px", background: "transparent", color: "var(--text3)" }}
-            >
-              Add without a project (space-wide / assistant)
-            </button>
-          </div>
-        )}
-      </Modal>
       {/* Step 17: custom agent builder — instructions, tool list, autonomy, project. */}
-      <Modal open={customOpen} onClose={() => setCustomOpen(false)} title={guidedDomainMode ? "Create a domain worker" : "Create a custom worker"}>
+      <Modal open={customOpen} onClose={() => setCustomOpen(false)} title={guidedDomainMode ? "Create a domain worker" : "Create a worker"}>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ fontSize: 12.5 }}>
             <div style={{ color: "var(--text3)", marginBottom: 4 }}>Name</div>

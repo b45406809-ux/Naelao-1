@@ -1,4 +1,4 @@
-import type { ViewportConfiguration } from "./types.js";
+import type { ProjectKind, ViewportConfiguration } from "./types.js";
 
 /** The two first-party shells are deliberately layout contracts, not vertical products. */
 export const CANVAS_LAYOUTS = ["DualPane.Document", "DualPane.DataGrid"] as const;
@@ -15,23 +15,34 @@ export const CANVAS_LAYOUT_MANIFESTS: Readonly<Record<CanvasLayout, CanvasLayout
   "DualPane.DataGrid": { layout: "DualPane.DataGrid", viewportComponent: "SpreadsheetFormulaGrid", viewport: "spreadsheet_formula_grid" },
 });
 
-/** Kept as a source-compatible alias; this is no longer a domain ProjectKind registry. */
-export const PROJECT_KINDS = CANVAS_LAYOUTS;
-export type ProjectKind = CanvasLayout;
-export type ProjectKindManifest = CanvasLayoutManifest;
-export const PROJECT_KIND_MANIFESTS = CANVAS_LAYOUT_MANIFESTS;
+/** Core project kinds choose interaction layout; Space Templates provide domain behavior. */
+export const PROJECT_KINDS = ["DualPane", "CanvasFirst", "HeadlessPipeline", "TerminalFirst"] as const;
+
+export interface ProjectKindManifest {
+  kind: ProjectKind;
+  interaction: "chat_canvas" | "canvas" | "pipeline" | "terminal";
+  canvasPrimary: boolean;
+  chatAvailable: boolean;
+}
+
+export const PROJECT_KIND_MANIFESTS: Readonly<Record<ProjectKind, ProjectKindManifest>> = Object.freeze({
+  DualPane: { kind: "DualPane", interaction: "chat_canvas", canvasPrimary: true, chatAvailable: true },
+  CanvasFirst: { kind: "CanvasFirst", interaction: "canvas", canvasPrimary: true, chatAvailable: true },
+  HeadlessPipeline: { kind: "HeadlessPipeline", interaction: "pipeline", canvasPrimary: false, chatAvailable: false },
+  TerminalFirst: { kind: "TerminalFirst", interaction: "terminal", canvasPrimary: true, chatAvailable: true },
+});
 
 export function getCanvasLayout(layout: string): CanvasLayoutManifest | undefined {
   return CANVAS_LAYOUT_MANIFESTS[layout as CanvasLayout];
 }
 
-/** Deprecated compatibility helper. Domain project kinds now use their template viewport. */
+/** Look up a kernel-owned interaction primitive. */
 export function getProjectKindManifest(kind: string): ProjectKindManifest | undefined {
-  return getCanvasLayout(kind);
+  return PROJECT_KIND_MANIFESTS[kind as ProjectKind];
 }
 
-export function defaultViewportFor(layout: CanvasLayout): ViewportConfiguration {
-  return { component: CANVAS_LAYOUT_MANIFESTS[layout].viewportComponent, copilotPlacement: "docked", canvasPrimary: true };
+export function defaultViewportFor(kind: ProjectKind): ViewportConfiguration {
+  return { component: "WorkspaceViewport", copilotPlacement: kind === "CanvasFirst" ? "side_panel" : "docked", canvasPrimary: PROJECT_KIND_MANIFESTS[kind].canvasPrimary };
 }
 
 export const CANVAS_VIEWPORTS = [

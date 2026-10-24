@@ -1,15 +1,13 @@
 "use client";
 
 
-// Settings — reorganized around the mockup's `.settings-nav` sidebar (apps/launchpad/src/index.html
-// #settings-view): General / Members / Billing / Connected Apps / AI & Models, plus a Personal tab
+// Settings — space identity, members, connected apps, AI controls, and personal preferences.
 // that's always there regardless of role. Scoped to whichever space is currently active
 // (useActiveSpace) — a business's own settings when one is selected, the product root's own
 // (much smaller) settings otherwise.
 //
-// Deliberately NOT a rebuild of /spaces/:businessId (the deeper business-operations page — revenue,
-// orders, products, local machine grants). This is the identity/access/config surface the mockup's
-// Settings view covers; that page stays the place for running the business day to day.
+// Billing and commerce are managed by platform subscriptions and user-installed extensions, not
+// by a hardcoded business billing surface here.
 //
 // Role gating follows canManageSpaceSettings exactly (the same helper the Dashboard tab uses,
 // itself written after a real bug where an exact "admin" string match locked out a business's own
@@ -40,9 +38,6 @@ import {
   listBusinessMembers,
   inviteToBusiness,
   removeBusinessMember,
-  getPricing,
-  checkoutBusinessSubscription,
-  checkoutCreditPack,
   getAssistantPolicy,
   updateAssistantPolicy,
   updateModelConfig,
@@ -55,8 +50,6 @@ import {
   type Business,
   type ShellManifest,
   type BusinessMember,
-  type PricingPlan,
-  type CreditPack,
   type AssistantPolicy,
   type ConnectorInfo,
   type ByokProviderStatus,
@@ -84,11 +77,7 @@ const MODEL_LABELS: Record<string, string> = {
   "groq/llama-3.1-8b-instant": "Groq Llama 3.1 8B — needs a Groq key",
 };
 
-type TabId = "general" | "members" | "billing" | "apps" | "ai" | "personal";
-
-function centsToDisplay(cents: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
-}
+type TabId = "general" | "members" | "apps" | "ai" | "personal";
 
 const TAB_ICONS: Record<TabId, React.ReactNode> = {
   general: (
@@ -96,9 +85,6 @@ const TAB_ICONS: Record<TabId, React.ReactNode> = {
   ),
   members: (
     <svg viewBox="0 0 16 16" fill="none" strokeWidth="1.5" stroke="currentColor"><circle cx="8" cy="5" r="3" /><path d="M2 14C2 11.2 4.7 9 8 9S14 11.2 14 14" /></svg>
-  ),
-  billing: (
-    <svg viewBox="0 0 16 16" fill="none" strokeWidth="1.5" stroke="currentColor"><rect x="2" y="4" width="12" height="9" rx="1" /><line x1="2" y1="8" x2="14" y2="8" /><line x1="5" y1="11" x2="7" y2="11" /></svg>
   ),
   apps: (
     <svg viewBox="0 0 16 16" fill="none" strokeWidth="1.5" stroke="currentColor"><rect x="3" y="7" width="10" height="7" rx="1" /><path d="M5 7V5C5 3.3 6.3 2 8 2S11 3.3 11 5V7" /></svg>
@@ -123,8 +109,6 @@ export default function SettingsPage() {
   const [business, setBusiness] = React.useState<Business | null>(null);
   const [manifest, setManifest] = React.useState<ShellManifest | null>(null);
   const [members, setMembers] = React.useState<BusinessMember[]>([]);
-  const [plans, setPlans] = React.useState<PricingPlan[]>([]);
-  const [packs, setPacks] = React.useState<CreditPack[]>([]);
   const [policy, setPolicy] = React.useState<AssistantPolicy | null>(null);
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -146,9 +130,6 @@ export default function SettingsPage() {
           )
         : Promise.resolve(),
       isBusinessSpace ? settle(listBusinessMembers(activeSpaceId, creds), setMembers) : Promise.resolve(),
-      isBusinessSpace
-        ? settle(getPricing(activeSpaceId, creds), (r) => { setPlans(r.plans); setPacks(r.credit_packs); })
-        : Promise.resolve(),
       isBusinessSpace ? settle(getConnectorStatus(activeSpaceId, creds), setConnectors) : Promise.resolve(),
     ]).finally(() => setLoading(false));
   }, [creds, product.space_id, activeSpaceId, isBusinessSpace]);
@@ -158,7 +139,7 @@ export default function SettingsPage() {
   const canManage = canManageSpaceSettings(isBusinessSpace, business?.role);
 
   const tabs: TabId[] = isBusinessSpace
-    ? ["general", "members", "billing", "apps", "ai", "personal"]
+    ? ["general", "members", "apps", "ai", "personal"]
     : ["general", "ai", "personal"];
 
   return (
@@ -173,7 +154,6 @@ export default function SettingsPage() {
             {TAB_ICONS[t]}
             {t === "general" && "General"}
             {t === "members" && "Members"}
-            {t === "billing" && "Billing"}
             {t === "apps" && "Connected Apps"}
             {t === "ai" && "AI & Models"}
             {t === "personal" && "Personal"}
@@ -205,16 +185,6 @@ export default function SettingsPage() {
           />
         )}
 
-        {tab === "billing" && isBusinessSpace && (
-          <BillingTab
-            spaceId={activeSpaceId}
-            creds={creds}
-            plans={plans}
-            packs={packs}
-            canManage={canManage}
-            me={me}
-          />
-        )}
 
         {tab === "apps" && isBusinessSpace && (
           <AppsTab spaceId={activeSpaceId} connectors={connectors} slug={product.slug} />
@@ -486,120 +456,6 @@ function MembersTab({
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ── Billing ─────────────────────────────────────────────────────────────────
-
-function BillingTab({
-  spaceId,
-  creds,
-  plans,
-  packs,
-  canManage,
-  me,
-}: {
-  spaceId: string;
-  creds: { sessionToken: string; endUserId: string } | null;
-  plans: PricingPlan[];
-  packs: CreditPack[];
-  canManage: boolean;
-  me: ProductUserMe | null;
-}) {
-  const [busyId, setBusyId] = React.useState<string | null>(null);
-  const [checkoutNotice, setCheckoutNotice] = React.useState<string | null>(null);
-
-  async function subscribe(planId: string) {
-    if (!creds) return;
-    setBusyId(planId);
-    setCheckoutNotice(null);
-    try {
-      const { checkout_url, dev } = await checkoutBusinessSubscription(spaceId, creds, planId);
-      // dev:true means no real Lemon Squeezy/Whop credentials are configured — checkout_url is a
-      // deterministic placeholder (checkout.naelao.com) that doesn't resolve to anything.
-      // Navigating there was the literal dead link; say so instead.
-      if (dev) setCheckoutNotice("Payments aren't configured for this business yet.");
-      else if (checkout_url) window.location.href = checkout_url;
-    } catch { setCheckoutNotice("Couldn't start checkout — try again in a moment."); } finally { setBusyId(null); }
-  }
-
-  async function buyPack(packId: string) {
-    if (!creds) return;
-    setBusyId(packId);
-    setCheckoutNotice(null);
-    try {
-      const { checkout_url, dev } = await checkoutCreditPack(spaceId, creds, packId);
-      if (dev) setCheckoutNotice("Payments aren't configured for this business yet.");
-      else if (checkout_url) window.location.href = checkout_url;
-    } catch { setCheckoutNotice("Couldn't start checkout — try again in a moment."); } finally { setBusyId(null); }
-  }
-
-  return (
-    <div>
-      <div className="settings-section-title">Billing</div>
-      <div className="settings-section-sub">This business's plan and credits.</div>
-
-      <div className="settings-block">
-        {me && (
-          <div className="settings-row">
-            <div><div className="settings-row-label">Your credits</div><div className="settings-row-sub">Personal balance, this product.</div></div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{me.credits_balance}</div>
-          </div>
-        )}
-      </div>
-
-      {checkoutNotice && (
-        <p style={{ fontSize: 12, color: "var(--warning, #f5a623)", padding: "0 2px 8px" }}>{checkoutNotice}</p>
-      )}
-
-      {plans.length > 0 && (
-        <div className="settings-block">
-          <div className="settings-row" style={{ borderBottom: "1px solid var(--border)" }}>
-            <div className="settings-row-label">Plans</div>
-          </div>
-          {plans.map((p) => (
-            <div key={p.id} className="settings-row">
-              <div>
-                <div className="settings-row-label">{p.name}</div>
-                <div className="settings-row-sub">{centsToDisplay(p.price_cents)}/{p.interval}{p.credit_allowance ? ` — ${p.credit_allowance} credits` : ""}</div>
-              </div>
-              {canManage ? (
-                <Button onClick={() => subscribe(p.id)} disabled={busyId === p.id}>{busyId === p.id ? "…" : "Subscribe"}</Button>
-              ) : (
-                <span style={{ fontSize: 11.5, color: "var(--text3)" }}>Admin only</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {packs.length > 0 && (
-        <div className="settings-block">
-          <div className="settings-row" style={{ borderBottom: "1px solid var(--border)" }}>
-            <div className="settings-row-label">Credit packs</div>
-          </div>
-          {packs.map((p) => (
-            <div key={p.id} className="settings-row">
-              <div>
-                <div className="settings-row-label">{p.name}</div>
-                <div className="settings-row-sub">{p.credits} credits for {centsToDisplay(p.price_cents)}</div>
-              </div>
-              {canManage ? (
-                <Button onClick={() => buyPack(p.id)} disabled={busyId === p.id}>{busyId === p.id ? "…" : "Buy"}</Button>
-              ) : (
-                <span style={{ fontSize: 11.5, color: "var(--text3)" }}>Admin only</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="settings-block" style={{ padding: "12px 16px" }}>
-        <span style={{ fontSize: 12.5, color: "var(--text3)" }}>
-          Payout destinations, order history, and revenue live on the business's own management page.
-        </span>
-      </div>
     </div>
   );
 }

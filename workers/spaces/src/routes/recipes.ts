@@ -77,7 +77,7 @@ export function registerRecipeRoutes<T extends RecipeEnv>(
       // Recipes configure a generic project. External-channel recipes receive a conservative
       // execution ceiling and runtime profile; no customer-service project kind is created.
       const patch = {
-        kind: "workspace",
+        kind: "DualPane",
         ...(recipe.runtimeContext === "CustomerBotContext"
           ? {
               external_channel_profile: true,

@@ -3,69 +3,13 @@
 import * as React from "react";
 import { Button } from "@naelao/ui";
 import {
-  getBusinessWallet, listWorkspaceFiles, readWorkspaceFile,
-  type Project, type BusinessWallet, type WorkspaceFile, type WorkspaceFileContent,
+  listWorkspaceFiles, readWorkspaceFile,
+  type Project, type WorkspaceFile, type WorkspaceFileContent,
 } from "@/lib/api";
 import { FileViewer } from "@/components/FileViewer";
 import { CanvasContainer } from "@/components/CanvasContainer";
 
 type Creds = { sessionToken: string; endUserId: string };
-
-function money(cents: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
-}
-
-// F-40: WalletLedgerPanel — the natively-built panel for kind='wallet'. Looks like a bank-account
-// ledger (balance + lifetime cuts + transactions), NOT a generic registry-driven component.
-function WalletLedgerPanel({ spaceId, creds }: { spaceId: string; creds: Creds }) {
-  const [wallet, setWallet] = React.useState<BusinessWallet | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  React.useEffect(() => {
-    getBusinessWallet(spaceId, creds).then(setWallet).catch(() => setWallet(null)).finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId]);
-  if (loading) return <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading wallet…</p>;
-  if (!wallet) return <p style={{ color: "var(--text3)", fontSize: 13 }}>Wallet unavailable.</p>;
-  return (
-    <div className="settings-block">
-      <div className="settings-row">
-        <div>
-          <div className="settings-row-label">Available to grow the business</div>
-          <div className="settings-row-sub">Your AI only spends money this business has earned.</div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div className="settings-row-label">{money(wallet.available_balance_cents, wallet.currency)}</div>
-          <div className="settings-row-sub">{wallet.currency}</div>
-        </div>
-      </div>
-      <div className="settings-row">
-        <div>
-          <div className="settings-row-label">Lifetime earned</div>
-          <div className="settings-row-sub">{wallet.lifetime.order_count} settled order(s)</div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div className="settings-row-label">{money(wallet.lifetime.gross_cents)} gross</div>
-          <div className="settings-row-sub">
-            {money(wallet.lifetime.naelao_cut_cents)} Naelao cut
-            {wallet.lifetime.builder_cut_cents > 0 ? ` · ${money(wallet.lifetime.builder_cut_cents)} builder cut` : ""}
-          </div>
-        </div>
-      </div>
-      {wallet.transactions.slice(0, 10).map((t) => (
-        <div className="settings-row" key={t.id}>
-          <div>
-            <div className="settings-row-label">{t.reason.replace(/_/g, " ")}</div>
-            <div className="settings-row-sub">{new Date(t.created_at).toLocaleString()}</div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div className="settings-row-label">{t.delta_cents >= 0 ? "+" : ""}{money(t.delta_cents)}</div>
-            <div className="settings-row-sub">bal {money(t.balance_after_cents)}</div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // F-39 UI: read-only workspace file viewer — lists a project's R2 artifacts; clicking an .html file
 // previews it in a sandboxed iframe, other text shows inline.
@@ -113,23 +57,15 @@ function WorkspaceFilesPanel({ spaceId, projectId, creds }: { spaceId: string; p
 }
 
 /**
- * F-40: the mount point for specialized built-in workspaces —
- * each kind's panel is its own purpose-built component. A kind with no panel yet renders nothing
- * (the shared project shell alone), which is the expected incremental-build path. The Files viewer
- * (F-39) is shown for every kind since every project has a workspace.
+ * The mount point for the kernel's four layout primitives. Domain-specific canvases are selected
+ * by the installed Space Template or extension, never by a hardcoded project kind.
  */
 export function ProjectKindPanel({ project, spaceId, creds }: { project: Project; spaceId: string; creds: Creds }) {
-  const canvasKind = ["product_dev", "doc_studio", "finance_grid", "quant_desk", "voice_agent", "model_studio", "growth_engine", "app_studio"].includes(project.kind ?? "");
+  const canvasKind = ["DualPane", "CanvasFirst", "HeadlessPipeline", "TerminalFirst"].includes(project.kind ?? "");
   return (
     <>
       {canvasKind && <CanvasContainer project={project} spaceId={spaceId} creds={creds} />}
-      {project.kind === "wallet" && (
-        <>
-          <div className="section-label">Wallet</div>
-          <WalletLedgerPanel spaceId={spaceId} creds={creds} />
-        </>
-      )}
-      {/* Additional kind panels (storefront, crm, ...) mount here one at a time — see F-40. */}
+      {/* Domain-specific views are supplied by installed project extensions. */}
 
       {!canvasKind && <><div className="section-label" style={{ marginTop: 24 }}>Files</div><WorkspaceFilesPanel spaceId={spaceId} projectId={project.id} creds={creds} /></>}
     </>

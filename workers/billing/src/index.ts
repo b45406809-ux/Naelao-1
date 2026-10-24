@@ -8,7 +8,6 @@ import {
   readBoundedRequestBytes,
   readBoundedResponseJson,
   RequestBodyTooLargeError,
-  mintInternalToken,
   requireInternalHmac,
 } from "@naelao/http";
 // G-D05: Billing worker — Lemon Squeezy webhooks, checkout, subscription sync.
@@ -17,13 +16,11 @@ import {
 // every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
 import { checkQuota, checkWindowedQuota, recordUsageEvent, getUsageSummary, PLAN_LIMITS, llmReservationAdmission } from "./quota.js";
-import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription, grantPersonalPlanPurchase } from "./lemon-squeezy.js";
-import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
+import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription } from "./lemon-squeezy.js";
 import { normalizePlanTier, PLANS, BILLING_CORE_RATE_CARD_VERSION } from "@naelao/billing-core";
 import { registerPartnerPortalRoutes } from "./partner-portal.js";
 import { reconcileDeveloperPayouts } from "./payout-reconciliation.js";
 import { registerMarketplaceLicenseRoutes } from "./marketplace-licenses.js";
-import { normalizeFeeBps } from "./fee-policy.js";
 export { settleTemplateSubscriptionPayment } from "./settlement.js";
 
 export interface BillingEnv {
@@ -42,15 +39,9 @@ export interface BillingEnv {
   LEMON_SQUEEZY_STORE_ID?: string;
   /** LS subscription variant ids for the builder's own platform plans (created once in the
    *  Naelao LS store, like STRIPE_*_PRICE_ID used to be). Optional — /billing/checkout degrades
-   *  to the same dev-placeholder flow as /internal/commerce/checkout when unset. */
+   *  to the same dev-placeholder flow when its platform-plan variant is unset. */
   LEMON_SQUEEZY_GROWTH_VARIANT_ID?: string;
   LEMON_SQUEEZY_BUSINESS_VARIANT_ID?: string;
-  /** Platform fee on customer product sales, basis points. Default 500 (5%). */
-  LAUNCHPAD_FEE_BPS?: string;
-  // Service binding to agents worker — billing events wake the Space Assistant agent
-  AGENTS_WORKER?: Fetcher;
-  // Service binding to spaces worker — seat purchases activate the member in SpaceDO
-  SPACES_WORKER?: Fetcher;
   // Whop is retained only as an optional provider for Naelao platform plans.
   /** Naelao's own Whop company API key (a normal seller key, like any Whop creator has — no
    *  invite needed). Optional — /billing/checkout falls through to Lemon Squeezy, then the dev
@@ -62,40 +53,6 @@ export interface BillingEnv {
   WHOP_BUSINESS_PLAN_ID?: string;
   /** Naelao's own company's webhook signing secret. */
   WHOP_PLATFORM_PLAN_WEBHOOK_SECRET?: string;
-}
-
-/**
- * ARCH-REVENUE-6: resolve the builder's revenue-share bps for a selling space at CHECKOUT time,
- * by asking the spaces worker (which resolves it from the builder's parent reseller product's
- * effective productConfig.commerce.builderFeeBps). Best-effort: any failure (unbound worker, no
- * parent, lookup error) returns 0 — a builder share is never silently applied on an error, only
- * when explicitly configured. Never throws — a checkout must not fail over the builder-share lookup.
- */
-async function resolveBuilderFeeBps(env: BillingEnv, spaceId: string): Promise<number> {
-  if (!env.SPACES_WORKER) return 0;
-  try {
-    const spaceRow = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-      .bind(spaceId).first<{ tenant_id: string }>();
-    if (!spaceRow) return 0;
-    const resp = await env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/internal/builder-fee-bps?space_id=${encodeURIComponent(spaceId)}`,
-      { headers: { "x-naelao-tenant-id": spaceRow.tenant_id, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, spaceRow.tenant_id) } }
-    ));
-    if (!resp.ok) return 0;
-    const { builder_fee_bps } = await resp.json<{ builder_fee_bps: number }>();
-    return Number.isFinite(builder_fee_bps) && builder_fee_bps > 0 ? Math.floor(builder_fee_bps) : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Internal HMAC authenticates a tenant header, but it does not bind arbitrary body space IDs.
- * Require the requested space to belong to that signed tenant before creating any checkout. */
-async function spaceBelongsToTenant(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
-  if (!spaceId || !tenantId) return false;
-  const row = await db.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(spaceId).first<{ tenant_id: string }>();
-  return row?.tenant_id === tenantId;
 }
 
 // G-A11: Validate required secrets at startup. Vendor cutover: the STRIPE_* requirement is gone
@@ -246,8 +203,7 @@ app.post("/billing/checkout", async (c) => {
   }
 
   // Without LS credentials or a provisioned plan variant (local/dev) return a deterministic
-  // placeholder so the flow is testable end-to-end — the exact convention every other checkout
-  // route in this file follows (/internal/commerce/checkout etc.).
+  // placeholder so the flow is testable end-to-end — the exact convention used by Naelao platform-plan checkout.
   if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !variantId) {
     return c.json({
       checkout_url: `https://checkout.naelao.com/dev/platform-plan/${body.plan}`,
@@ -366,7 +322,7 @@ app.post("/billing/usage", async (c) => {
     runtime_tier?: number;
     /** Opaque irreversible digest only; never send provider contact IDs to this ledger. */
     subject_hash?: string;
-    payer_kind?: "space_wallet" | "consumer_credits" | "plan_quota" | "platform" | "unknown";
+    payer_kind?: "consumer_credits" | "plan_quota" | "platform" | "unknown";
     decision?: "allowed" | "denied" | "charged" | "released" | "failed" | "not_billable";
     // G-AN09: Caller may supply an idempotency key; if absent, one is computed
     idempotency_key?: string;
@@ -734,7 +690,7 @@ async function resolveAllowOverage(db: D1Database, orgId: string): Promise<boole
 // ── GET /internal/usage/llm-tokens/check ─────────────────────────────────────
 // P0-3: NaelaoAgentDO's pre-run gate for a builder (owner/admin/editor/viewer) chatting with
 // their own Space Assistant (never a project-scoped run, never a signed-in product end user —
-// those have their own separate wallet/credit gates). Internal-only, HMAC-gated like every
+// those have their own separate credit gates). Internal-only, HMAC-gated like every
 // sibling /internal/* route in this file; the org to check is the verified x-naelao-tenant-id
 // header, same posture as /billing/usage above.
 // Phase 4 (money): now checks day/week ceilings too (checkWindowedQuota), not just the monthly
@@ -759,7 +715,7 @@ app.get("/internal/usage/llm-tokens/check", async (c) => {
 // ── GET /internal/usage/infra-credits/check ──────────────────────────────────
 // §A1.26: the infra-usage counterpart to /internal/usage/llm-tokens/check above — same scoping
 // (a builder chatting with their own Space Assistant; project/end-user runs have their own
-// separate wallet/spend-cap gates), same HMAC gate, same shape.
+// separate credit and spend-cap gates), same HMAC gate, same shape.
 app.use("/internal/usage/infra-credits/check", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.get("/internal/usage/infra-credits/check", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
@@ -828,594 +784,6 @@ app.get("/internal/usage/project-summary", async (c) => {
   });
 });
 
-// ── POST /internal/commerce/checkout ─────────────────────────────────────────
-// Called by the reserved `commerce` prebuilt script. The ONLY money-in path: creates a Lemon
-// Squeezy checkout on Naelao's store for a product, carrying space_id + product_id + fee_bps in
-// custom data so the webhook attributes the sale and captures the platform fee. A builder can
-// never reach this with their own processor.
-// F20 / A1.16.8: this used to be a static `x-naelao-internal: "commerce-script"` header check —
-// forgeable by anyone reaching this worker directly, since workers_dev was also never set to
-// false here (see wrangler.toml). A1.16.8 replaced this exact pattern with requireInternalHmac
-// everywhere else; billing was missed. Same gate as workers/spaces/src/index.ts's /internal/*
-// routes.
-app.use("/internal/commerce/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
-app.post("/internal/commerce/checkout", async (c) => {
-  const body = await c.req.json<{ space_id: string; product_id: string; customer_email?: string }>();
-  if (!body.space_id || !body.product_id) {
-    return c.json({ error_code: "bad_request", message: "space_id and product_id are required" }, 400);
-  }
-  if (!await spaceBelongsToTenant(c.env.PLATFORM_DB, body.space_id, c.req.header("x-naelao-tenant-id") ?? "")) {
-    return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-  }
-
-  const product = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, name, price_cents, currency, kind, ls_variant_id, status FROM launchpad_products WHERE id = ? AND space_id = ?"
-  ).bind(body.product_id, body.space_id).first<{
-    id: string; name: string; price_cents: number; currency: string; kind: "one_time" | "subscription"; ls_variant_id: string | null; status: string;
-  }>();
-  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-  if (product.status !== "published") {
-    return c.json({ error_code: "not_purchasable", message: "Product is not published" }, 409);
-  }
-
-  const feeBps = normalizeFeeBps(c.env.LAUNCHPAD_FEE_BPS);
-  // ARCH-REVENUE-6: stamp the builder's revenue-share bps AT CHECKOUT (resolved from the builder's
-  // reseller product's config via the spaces worker) so a later config change can't re-price this
-  // order. Zero for a top-level space with no parent builder.
-  const builderFeeBps = await resolveBuilderFeeBps(c.env, body.space_id);
-
-  // Without LS credentials (local/dev) return a deterministic placeholder so the flow is
-  // testable end-to-end; production carries real store creds in Workers Secrets.
-  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !product.ls_variant_id) {
-    return c.json({
-      checkout_url: `https://checkout.${"naelao.com"}/dev/${product.id}`,
-      product: { id: product.id, name: product.name, price_cents: product.price_cents, currency: product.currency },
-      fee_bps: feeBps, builder_fee_bps: builderFeeBps,
-      dev: true,
-    });
-  }
-
-  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
-  const provider = new LemonSqueezyProvider({
-    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
-    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
-  });
-  const { url } = await provider.createCheckout({
-    spaceId: body.space_id,
-    variantOrPriceId: product.ls_variant_id,
-    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-    metadata: { product_id: product.id, fee_bps: String(feeBps), ...(builderFeeBps > 0 ? { builder_fee_bps: String(builderFeeBps) } : {}) },
-  });
-  return c.json({
-    checkout_url: url,
-    product: { id: product.id, name: product.name, price_cents: product.price_cents, currency: product.currency },
-    fee_bps: feeBps,
-  });
-});
-
-// ── POST /internal/seats/checkout ────────────────────────────────────────────
-// The third money-in payer class: a builder charges someone to join their space (a seat).
-// Like product checkout, it runs through Naelao's Lemon Squeezy store so the platform fee
-// applies — a builder can't collect seat fees outside Naelao. Called today by the
-// commerce.seat_checkout op; a future portal "join" flow calls this the same way (mint its own
-// token) — there is no special-cased caller identity string, requireInternalHmac only cares
-// that the caller holds PLATFORM_SECRET.
-// F20 / A1.16.8: replaces the static `x-naelao-internal in {"commerce-script","portal"}` header
-// check (forgeable) with the same requireInternalHmac gate every other worker's /internal/*
-// routes use.
-app.use("/internal/seats/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
-app.post("/internal/seats/checkout", async (c) => {
-  const body = await c.req.json<{ space_id: string; user_id?: string; customer_email?: string }>();
-  if (typeof body.space_id !== "string" || !body.space_id || body.space_id.length > 128 ||
-      typeof body.user_id !== "string" || !body.user_id || body.user_id.length > 128) {
-    return c.json({ error_code: "bad_request", message: "space_id and a Naelao user_id are required for seat activation" }, 400);
-  }
-
-  // Resolve the space's seat pricing from its effective productConfig (via spaces worker).
-  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
-  const seatSpaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(body.space_id).first<{ tenant_id: string }>();
-  if (!seatSpaceRow || seatSpaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  const cfgResp = await c.env.SPACES_WORKER.fetch(
-    new Request(`http://spaces-worker/internal/member-billing?space_id=${encodeURIComponent(body.space_id)}`, {
-      headers: {
-        "x-naelao-tenant-id": seatSpaceRow.tenant_id,
-        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, seatSpaceRow.tenant_id),
-      },
-    })
-  );
-  if (!cfgResp.ok) return c.json({ error_code: "not_configured", message: "Member billing is not enabled for this space" }, 409);
-  const cfg = await cfgResp.json<{ seatPriceCents: number; currency: string; lsVariantId?: string }>();
-
-  const feeBps = normalizeFeeBps(c.env.LAUNCHPAD_FEE_BPS);
-  const builderFeeBps = await resolveBuilderFeeBps(c.env, body.space_id); // ARCH-REVENUE-6
-
-  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !cfg.lsVariantId) {
-    return c.json({
-      checkout_url: `https://checkout.naelao.com/dev/seat/${body.space_id}`,
-      seat_price_cents: cfg.seatPriceCents, currency: cfg.currency, fee_bps: feeBps, builder_fee_bps: builderFeeBps, dev: true,
-    });
-  }
-
-  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
-  const provider = new LemonSqueezyProvider({
-    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
-    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
-  });
-  const { url } = await provider.createCheckout({
-    spaceId: body.space_id,
-    variantOrPriceId: cfg.lsVariantId,
-    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-    metadata: { kind: "seat", fee_bps: String(feeBps), ...(builderFeeBps > 0 ? { builder_fee_bps: String(builderFeeBps) } : {}), ...(body.user_id ? { user_id: body.user_id } : {}) },
-  });
-  return c.json({ checkout_url: url, seat_price_cents: cfg.seatPriceCents, currency: cfg.currency, fee_bps: feeBps, builder_fee_bps: builderFeeBps });
-});
-
-// ── POST /internal/products/ls-variant ───────────────────────────────────────
-// Called by the spaces worker when a product (or a member-billing seat) is published for the
-// first time and ls_variant_id is not yet set. Creates a Lemon Squeezy product + default
-// variant in Naelao's store so the builder's storefront can immediately accept payments.
-// Dev path: returns a placeholder when LS creds are absent.
-// F20 / A1.16.8: replaces the static `x-naelao-internal !== "publish"` header check (forgeable)
-// with requireInternalHmac.
-app.use("/internal/products/ls-variant", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
-app.post("/internal/products/ls-variant", async (c) => {
-  const body = await c.req.json<{
-    name: string;
-    description?: string;
-    price_cents: number;
-    currency?: string;
-    kind: "one_time" | "subscription";
-  }>();
-  if (!body.name || body.price_cents === undefined || !body.kind) {
-    return c.json({ error_code: "bad_request", message: "name, price_cents, and kind are required" }, 400);
-  }
-
-  const cfg = lsProductsConfig(c.env);
-  if (!cfg) {
-    // Dev path — no LS creds; return deterministic placeholders so publish is testable.
-    return c.json({
-      ls_product_id: `dev-product-${Date.now()}`,
-      ls_variant_id: `dev-variant-${Date.now()}`,
-      dev: true,
-    });
-  }
-
-  try {
-    const result = await createLsProductVariant(cfg, {
-      name: body.name,
-      ...(body.description ? { description: body.description } : {}),
-      price_cents: body.price_cents,
-      kind: body.kind,
-    });
-    return c.json({ ls_product_id: result.lsProductId, ls_variant_id: result.lsVariantId });
-  } catch (err) {
-    console.error("[billing/ls-products] auto-create failed:", (err as Error).message);
-    return c.json({ error_code: "ls_api_failed", message: (err as Error).message }, 502);
-  }
-});
-
-// ── POST /internal/business-subscriptions/checkout ───────────────────────────
-// Phase E (§A1.17): a business subscribes to one of its product's builder-defined plans
-// (productConfig.pricingConfig.plans, authored via PATCH /builder/products/:id/pricing). The
-// catalog lives on the product ROOT, not the business itself, so resolution goes through the
-// spaces worker's /internal/pricing-catalog (same parent-walk /internal/product-sessions/verify
-// already established) rather than reading D1 directly here — this worker doesn't know the
-// business/product space hierarchy rules, spaces worker does.
-app.use("/internal/business-subscriptions/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
-app.post("/internal/business-subscriptions/checkout", async (c) => {
-  const body = await c.req.json<{ business_space_id: string; plan_id: string; customer_email?: string }>();
-  if (!body.business_space_id || !body.plan_id) {
-    return c.json({ error_code: "bad_request", message: "business_space_id and plan_id are required" }, 400);
-  }
-  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
-
-  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-
-  const catalogResp = await c.env.SPACES_WORKER.fetch(
-    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
-      headers: {
-        "x-naelao-tenant-id": spaceRow.tenant_id,
-        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
-      },
-    })
-  );
-  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  const catalog = await catalogResp.json<{ product_space_id: string; plans: Array<{ id: string; name: string; priceCents: number; interval: string; lsVariantId?: string }> }>();
-  const plan = catalog.plans.find((p) => p.id === body.plan_id);
-  if (!plan) return c.json({ error_code: "not_found", message: "Plan not found" }, 404);
-
-  const feeBps = normalizeFeeBps(c.env.LAUNCHPAD_FEE_BPS);
-
-  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !plan.lsVariantId) {
-    return c.json({
-      checkout_url: `https://checkout.naelao.com/dev/business-subscription/${body.business_space_id}/${plan.id}`,
-      plan: { id: plan.id, name: plan.name, price_cents: plan.priceCents, interval: plan.interval },
-      fee_bps: feeBps,
-      dev: true,
-    });
-  }
-
-  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
-  const provider = new LemonSqueezyProvider({
-    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
-    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
-  });
-  const { url } = await provider.createCheckout({
-    spaceId: body.business_space_id,
-    variantOrPriceId: plan.lsVariantId,
-    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-    metadata: {
-      kind: "business_subscription",
-      plan_id: plan.id,
-      product_space_id: catalog.product_space_id,
-      fee_bps: String(feeBps),
-    },
-  });
-  return c.json({
-    checkout_url: url,
-    plan: { id: plan.id, name: plan.name, price_cents: plan.priceCents, interval: plan.interval },
-    fee_bps: feeBps,
-  });
-});
-
-// ── POST /internal/credit-packs/checkout ──────────────────────────────────────
-// Phase E: an end user buys a one-time credit pack for their OWN ProductUserDO balance (distinct
-// from business-subscriptions above — the pack's catalog still lives on the product root, but the
-// credits land on the buyer's individual balance, not the business).
-app.use("/internal/credit-packs/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
-app.post("/internal/credit-packs/checkout", async (c) => {
-  const body = await c.req.json<{ business_space_id: string; pack_id: string; end_user_id: string; customer_email?: string }>();
-  if (!body.business_space_id || !body.pack_id || !body.end_user_id) {
-    return c.json({ error_code: "bad_request", message: "business_space_id, pack_id, and end_user_id are required" }, 400);
-  }
-  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
-
-  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-
-  const catalogResp = await c.env.SPACES_WORKER.fetch(
-    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
-      headers: {
-        "x-naelao-tenant-id": spaceRow.tenant_id,
-        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
-      },
-    })
-  );
-  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  const catalog = await catalogResp.json<{ product_space_id: string; credit_packs: Array<{ id: string; name: string; credits: number; priceCents: number; lsVariantId?: string }> }>();
-  const pack = catalog.credit_packs.find((p) => p.id === body.pack_id);
-  if (!pack) return c.json({ error_code: "not_found", message: "Credit pack not found" }, 404);
-
-  const feeBps = normalizeFeeBps(c.env.LAUNCHPAD_FEE_BPS);
-
-  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !pack.lsVariantId) {
-    return c.json({
-      checkout_url: `https://checkout.naelao.com/dev/credit-pack/${body.business_space_id}/${pack.id}`,
-      pack: { id: pack.id, name: pack.name, credits: pack.credits, price_cents: pack.priceCents },
-      fee_bps: feeBps,
-      dev: true,
-    });
-  }
-
-  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
-  const provider = new LemonSqueezyProvider({
-    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
-    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
-  });
-  const { url } = await provider.createCheckout({
-    spaceId: body.business_space_id,
-    variantOrPriceId: pack.lsVariantId,
-    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-    metadata: {
-      kind: "credit_pack",
-      pack_id: pack.id,
-      credits: String(pack.credits),
-      end_user_id: body.end_user_id,
-      product_space_id: catalog.product_space_id,
-      fee_bps: String(feeBps),
-    },
-  });
-  return c.json({
-    checkout_url: url,
-    pack: { id: pack.id, name: pack.name, credits: pack.credits, price_cents: pack.priceCents },
-    fee_bps: feeBps,
-  });
-});
-
-// ── POST /internal/personal-plan/checkout ─────────────────────────────────────
-// Phase 4 (money): an end user upgrades their OWN personal-plan tier (widens their slice of
-// maxBusinessesPerEndUser + unlocks inviting others — see @naelao/billing-core's
-// resolveEffectiveBusinessLimit/canPersonalPlanInvite).
-//
-// Rail order: Naelao's OWN Whop seller account first, then Lemon Squeezy, then the dev
-// placeholder — the same order /billing/checkout already uses for builder platform plans. This
-// is deliberately NOT the business's-own-connected-Whop branch that credit-packs and
-// wallet-topups take: those are a business's revenue, whereas a personal plan is Naelao selling
-// to an individual, which is the platform-plan shape.
-app.use("/internal/personal-plan/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
-app.post("/internal/personal-plan/checkout", async (c) => {
-  const body = await c.req.json<{ business_space_id: string; plan_id: string; end_user_id: string; customer_email?: string }>();
-  if (!body.business_space_id || !body.plan_id || !body.end_user_id) {
-    return c.json({ error_code: "bad_request", message: "business_space_id, plan_id, and end_user_id are required" }, 400);
-  }
-  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
-
-  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-
-  const catalogResp = await c.env.SPACES_WORKER.fetch(
-    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
-      headers: {
-        "x-naelao-tenant-id": spaceRow.tenant_id,
-        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
-      },
-    })
-  );
-  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  const catalog = await catalogResp.json<{ product_space_id: string; personal_plans: Array<{ id: string; name: string; tier: string; priceCents: number; interval: string; whopPlanId?: string; lsVariantId?: string }> }>();
-  const plan = catalog.personal_plans.find((p) => p.id === body.plan_id);
-  if (!plan) return c.json({ error_code: "not_found", message: "Personal plan not found" }, 404);
-
-  // Whop first — Naelao's own seller account, same rail as builder platform plans. Falls through
-  // to LS (then the dev placeholder) when no Whop plan id is configured for this tier, so an
-  // existing LS-provisioned deployment keeps working unchanged.
-  if (c.env.WHOP_API_KEY && plan.whopPlanId) {
-    const { createWhopPlatformPlanCheckout } = await import("@naelao/billing-core");
-    try {
-      const { checkout_url } = await createWhopPlatformPlanCheckout(c.env.WHOP_API_KEY, {
-        planId: plan.whopPlanId,
-        ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-        // Same metadata contract the LS branch below uses, so one webhook handler serves both.
-        metadata: {
-          kind: "personal_plan",
-          plan_id: plan.id,
-          tier: plan.tier,
-          interval: plan.interval,
-          end_user_id: body.end_user_id,
-          product_space_id: catalog.product_space_id,
-        },
-      });
-      return c.json({
-        checkout_url,
-        plan: { id: plan.id, name: plan.name, tier: plan.tier, price_cents: plan.priceCents, interval: plan.interval },
-        provider: "whop",
-      });
-    } catch (err) {
-      console.warn(`[billing/personal-plan] Whop checkout failed, falling back to LS: ${(err as Error).message}`);
-    }
-  }
-
-  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !plan.lsVariantId) {
-    return c.json({
-      checkout_url: `https://checkout.naelao.com/dev/personal-plan/${body.business_space_id}/${plan.id}`,
-      plan: { id: plan.id, name: plan.name, tier: plan.tier, price_cents: plan.priceCents, interval: plan.interval },
-      dev: true,
-    });
-  }
-
-  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
-  const provider = new LemonSqueezyProvider({
-    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
-    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
-  });
-  const { url } = await provider.createCheckout({
-    spaceId: body.business_space_id,
-    variantOrPriceId: plan.lsVariantId,
-    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-    metadata: {
-      kind: "personal_plan",
-      plan_id: plan.id,
-      tier: plan.tier,
-      interval: plan.interval,
-      end_user_id: body.end_user_id,
-      product_space_id: catalog.product_space_id,
-    },
-  });
-  return c.json({
-    checkout_url: url,
-    plan: { id: plan.id, name: plan.name, tier: plan.tier, price_cents: plan.priceCents, interval: plan.interval },
-  });
-});
-
-// ── POST /internal/wallet-topups/checkout ─────────────────────────────────────
-// Launchpad Wallet (user-directed feature): a business tops up its OWN wallet_ledger balance
-// (a project flagged kind='wallet' under the business space) via a fixed-price Lemon Squeezy
-// checkout — same "pick a pre-configured pack, no arbitrary custom amount" shape as
-// credit-packs/checkout above. Scope note (see workers/agents/src/script-engine/prebuilt/
-// wallet.ts's header for the full writeup): this funds an INTERNAL, Naelao-held stored-value
-// balance a business draws down for Naelao's own metered platform costs — it does not, and is
-// not intended to, pay a third party (Whop/Shopify/Stripe) on the business's behalf. Lemon
-// Squeezy itself has no API for that; building it for real would be a money-transmission /
-// PCI-scope undertaking well beyond a checkout-and-webhook wiring pass.
-app.use("/internal/wallet-topups/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
-app.post("/internal/wallet-topups/checkout", async (c) => {
-  const body = await c.req.json<{ business_space_id: string; project_id: string; topup_id: string; customer_email?: string }>();
-  if (!body.business_space_id || !body.project_id || !body.topup_id) {
-    return c.json({ error_code: "bad_request", message: "business_space_id, project_id, and topup_id are required" }, 400);
-  }
-  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
-
-  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-
-  const catalogResp = await c.env.SPACES_WORKER.fetch(
-    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
-      headers: {
-        "x-naelao-tenant-id": spaceRow.tenant_id,
-        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
-      },
-    })
-  );
-  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  const catalog = await catalogResp.json<{ product_space_id: string; wallet_topups: Array<{ id: string; name: string; priceCents: number; lsVariantId?: string }> }>();
-  const topup = catalog.wallet_topups.find((p) => p.id === body.topup_id);
-  if (!topup) return c.json({ error_code: "not_found", message: "Wallet top-up pack not found" }, 404);
-
-  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !topup.lsVariantId) {
-    return c.json({
-      checkout_url: `https://checkout.naelao.com/dev/wallet-topup/${body.business_space_id}/${topup.id}`,
-      topup: { id: topup.id, name: topup.name, price_cents: topup.priceCents },
-      dev: true,
-    });
-  }
-
-  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
-  const provider = new LemonSqueezyProvider({
-    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
-    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
-  });
-  const { url } = await provider.createCheckout({
-    spaceId: body.business_space_id,
-    variantOrPriceId: topup.lsVariantId,
-    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-    metadata: {
-      kind: "wallet_topup",
-      topup_id: topup.id,
-      cents: String(topup.priceCents),
-      project_id: body.project_id,
-      product_space_id: catalog.product_space_id,
-    },
-  });
-  return c.json({
-    checkout_url: url,
-    topup: { id: topup.id, name: topup.name, price_cents: topup.priceCents },
-  });
-});
-
-// ── POST /internal/revenue-cut-surcharge/checkout ─────────────────────────────
-// Go-live monetization pass: bills a builder-configured cut % of a business's TRACKED external
-// revenue (external_revenue_snapshots, SpaceDO — see the revenue-tracker prebuilt) as a periodic
-// surcharge, since that revenue never flows through Naelao's own Lemon Squeezy custody the way a
-// storefront sale does. Sums every UNBILLED period's tracked revenue (a business that hasn't paid
-// in N periods gets billed for all of them at once, not just the latest) and creates a checkout
-// with a CUSTOM PRICE override — the variant provisioned by PATCH /builder/products/:id/pricing is
-// a $1 placeholder; this is what actually sets the real amount. Once paid, the SAME reseller_ledger
-// attribution every other payment.success event already gets (recordResellerAttribution,
-// unconditional in handleLemonSqueezyWebhook) computes the builder's cut of it automatically — no
-// new attribution code needed. The webhook side (recordRevenueCutSurchargePayment, lemon-squeezy.ts)
-// marks the billed periods so they're never charged twice.
-app.use("/internal/revenue-cut-surcharge/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
-app.post("/internal/revenue-cut-surcharge/checkout", async (c) => {
-  const body = await c.req.json<{ business_space_id: string; customer_email?: string }>();
-  if (!body.business_space_id) {
-    return c.json({ error_code: "bad_request", message: "business_space_id is required" }, 400);
-  }
-  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
-
-  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
-    .bind(body.business_space_id).first<{ tenant_id: string }>();
-  if (!spaceRow || spaceRow.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  const internalHeaders = {
-    "x-naelao-tenant-id": spaceRow.tenant_id,
-    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
-  };
-
-  const catalogResp = await c.env.SPACES_WORKER.fetch(
-    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, { headers: internalHeaders })
-  );
-  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
-  const catalog = await catalogResp.json<{ product_space_id: string; external_revenue_cut: { enabled: boolean; cutBps: number; lsVariantId?: string } | null }>();
-  const cut = catalog.external_revenue_cut;
-  if (!cut || !cut.enabled) {
-    return c.json({ error_code: "not_found", message: "Revenue-cut billing is not enabled for this product" }, 404);
-  }
-
-  const revenueResp = await c.env.SPACES_WORKER.fetch(
-    new Request(`http://spaces-worker/spaces/${body.business_space_id}/revenue-tracking`, { headers: internalHeaders })
-  );
-  if (!revenueResp.ok) return c.json({ error_code: "unavailable", message: "Could not read tracked revenue" }, 502);
-  const revenue = await revenueResp.json<{ snapshots: Array<{ period: string; revenue_cents: number; billed: boolean; billed_cents?: number; pending_checkout_at?: string | null }> }>();
-
-  // F-27: bill only the DELTA — max(0, cut(revenue) − already-charged) per period — never the full
-  // corrected figure on top of what was already collected. F-31: skip a period whose checkout was
-  // minted in the last 24h (an in-flight checkout not yet paid), so two checkouts don't both bill it.
-  const PENDING_WINDOW_MS = 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  const billable = revenue.snapshots
-    .map((s) => {
-      const owed = Math.round((s.revenue_cents * cut.cutBps) / 10_000);
-      const delta = Math.max(0, owed - (s.billed_cents ?? 0));
-      // SQLite datetime('now') is "YYYY-MM-DD HH:MM:SS" (space, UTC) — normalize to an ISO instant.
-      const pendingMs = s.pending_checkout_at ? Date.parse(`${s.pending_checkout_at.replace(" ", "T")}Z`) : NaN;
-      const isPending = Number.isFinite(pendingMs) && now - pendingMs < PENDING_WINDOW_MS;
-      return { period: s.period, delta, isPending };
-    })
-    .filter((s) => s.delta > 0 && !s.isPending);
-
-  if (billable.length === 0) {
-    return c.json({ error_code: "nothing_to_bill", message: "No unbilled tracked revenue for this business" }, 404);
-  }
-
-  const surchargeCents = billable.reduce((sum, s) => sum + s.delta, 0);
-  if (surchargeCents <= 0) {
-    return c.json({ error_code: "nothing_to_bill", message: "Computed surcharge is zero" }, 404);
-  }
-  const periods = billable.map((s) => s.period);
-  const charges = billable.map((s) => s.delta);
-
-  // F-31: claim periods atomically BEFORE creating a payable checkout. A concurrent request
-  // receives 409 instead of minting a second checkout for the same revenue.
-  const checkoutId = crypto.randomUUID();
-  const claimResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(body.business_space_id)}/revenue-tracking/mark-pending`, {
-    method: "POST", headers: { "content-type": "application/json", ...internalHeaders },
-    body: JSON.stringify({ periods, checkout_id: checkoutId }),
-  }));
-  if (claimResp.status === 409) return c.json({ error_code: "revenue_period_already_reserved" }, 409);
-  if (!claimResp.ok) return c.json({ error_code: "revenue_period_claim_failed" }, 503);
-  const releasePending = async () => {
-    try {
-      await c.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(body.business_space_id)}/revenue-tracking/release-pending`, {
-        method: "POST", headers: { "content-type": "application/json", ...internalHeaders },
-        body: JSON.stringify({ periods, checkout_id: checkoutId }),
-      }));
-    } catch { /* the exact checkout claim expires after 24 hours */ }
-  };
-
-  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !cut.lsVariantId) {
-    return c.json({
-      checkout_url: `https://checkout.naelao.com/dev/revenue-cut-surcharge/${body.business_space_id}`,
-      surcharge_cents: surchargeCents,
-      periods,
-      dev: true,
-    });
-  }
-
-  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
-  const provider = new LemonSqueezyProvider({
-    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
-    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
-  });
-  try {
-    const { url } = await provider.createCheckout({
-      spaceId: body.business_space_id,
-      variantOrPriceId: cut.lsVariantId,
-      customPriceCents: surchargeCents,
-      ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-      metadata: {
-        kind: "revenue_cut_surcharge",
-        periods: periods.join(","),
-        // F-27: exact period deltas let payment/refund handlers adjust billed_cents precisely.
-        period_charges: charges.join(","),
-        product_space_id: catalog.product_space_id,
-      },
-    });
-    return c.json({ checkout_url: url, surcharge_cents: surchargeCents, periods });
-  } catch (error) {
-    // Release only when the provider explicitly rejected the request (4xx). A timeout, 5xx, or
-    // malformed response may happen after the provider created a checkout; retaining the claim
-    // avoids a second live payment URL during that uncertain outcome.
-    if (/failed: 4\d\d\b/.test((error as Error).message)) await releasePending();
-    console.error("[billing/revenue-cut-surcharge] checkout creation failed:", (error as Error).message);
-    return c.json({ error_code: "checkout_creation_failed" }, 502);
-  }
-});
-
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────
 // Primary billing provider (spec Appendix H). Unauthenticated — LS calls this directly.
 // On payment/subscription events, wakes the Space Assistant agent via NaelaoAgentDO.
@@ -1424,9 +792,6 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
     ...(c.env.LEMON_SQUEEZY_WEBHOOK_SECRET ? { LEMON_SQUEEZY_WEBHOOK_SECRET: c.env.LEMON_SQUEEZY_WEBHOOK_SECRET } : {}),
     ...(c.env.LEMON_SQUEEZY_API_KEY ? { LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY } : {}),
     ...(c.env.LEMON_SQUEEZY_STORE_ID ? { LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID } : {}),
-    ...(c.env.LAUNCHPAD_FEE_BPS ? { LAUNCHPAD_FEE_BPS: c.env.LAUNCHPAD_FEE_BPS } : {}),
-    ...(c.env.AGENTS_WORKER ? { AGENTS_WORKER: c.env.AGENTS_WORKER } : {}),
-    ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
     PLATFORM_DB: c.env.PLATFORM_DB,
     PLATFORM_SECRET: c.env.PLATFORM_SECRET,
     // Platform-plan upserts invalidate the org's quota cache so a paid upgrade unlocks
@@ -1454,25 +819,9 @@ app.post("/webhooks/whop-platform-plan", async (c) => {
     console.warn(`[billing/whop-platform-plan] failed to parse event body: ${(err as Error).message}`);
     return c.json({ ok: true, skipped: true, reason: "unparseable body" });
   }
-  // Naelao's own Whop company now sells TWO things: builder platform plans (org-level) and end
-  // users' personal plans. Both arrive here, distinguished by checkout metadata.kind, so route on
-  // that rather than assuming every event on this endpoint is a platform plan.
-  const custom = (event.metadata ?? {}) as Record<string, unknown>;
-  if (custom["kind"] === "personal_plan") {
-    const handledPersonal = await grantPersonalPlanPurchase(event, {
-      PLATFORM_DB: c.env.PLATFORM_DB,
-      PLATFORM_SECRET: c.env.PLATFORM_SECRET,
-      ...(c.env.AGENTS_WORKER ? { AGENTS_WORKER: c.env.AGENTS_WORKER } : {}),
-      ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
-    } as Parameters<typeof grantPersonalPlanPurchase>[1]);
-    return c.json({ ok: true, handled: handledPersonal });
-  }
-
   const handled = await recordPlatformPlanSubscription(event, {
     PLATFORM_DB: c.env.PLATFORM_DB,
     PLATFORM_SECRET: c.env.PLATFORM_SECRET,
-    ...(c.env.AGENTS_WORKER ? { AGENTS_WORKER: c.env.AGENTS_WORKER } : {}),
-    ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
     QUOTA_CACHE: c.env.QUOTA_CACHE,
   });
   return c.json({ ok: true, handled });

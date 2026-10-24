@@ -181,34 +181,6 @@ export interface SpaceTypeProductConfig {
    */
   allowedChildSpaceTypes?: string[];
 
-  /**
-   * Billing relationship for tenant/hybrid child businesses:
-   *  - "reseller":  Naelao bills the builder wholesale; builder sets retail and
-   *                 keeps the margin + owns invoicing (spec G-AS35).
-   *  - "referral":  Naelao bills each customer directly; builder takes a rev-share.
-   *  - "platform":  no resale — child tenants are billed exactly like any builder.
-   */
-  billingRelationship?: "reseller" | "referral" | "platform";
-
-  /**
-   * WS-3: the actual wholesale-credit rates a "reseller"/"referral" billingRelationship needs —
-   * previously billingRelationship existed with no companion rate fields anywhere in
-   * productConfig, so business-create.ts hardcoded wholesale_cents=NULL/referral_share_pct=0.0
-   * literals and there was no builder-facing way to set a non-zero cut through any shipped
-   * surface (the READ half of reseller economics — GET /reseller/statement — was built while the
-   * WRITE half didn't exist). Written via PATCH /builder/products/:id/reseller, which ALSO
-   * updates the live reseller_accounts row directly (the missing UPDATE) — this config_json copy
-   * is the display/source-of-truth a business-create-time upsert seeds a NEW child tenant's row
-   * from, not the only place the rate lives.
-   */
-  resellerRates?: {
-    /** reseller mode: fixed wholesale cost (cents) Naelao charges per child subscription
-     *  period. null = pass-through of the retail amount (zero margin). */
-    wholesaleCents?: number | null;
-    /** referral mode: percent (0-100) of retail revenue Naelao pays back to the reseller. */
-    referralSharePct?: number;
-  };
-
   /** Per-member capability flags (spec `productConfig.userPermissions`). */
   userPermissions?: {
     canCreateSpace?: boolean; // hybrid: members may provision their own businesses
@@ -216,56 +188,6 @@ export interface SpaceTypeProductConfig {
     canCreateProjects?: boolean;
     maxThreadsPerUser?: number | null;
     maxCreditsPerMonth?: number | null;
-  };
-
-  /**
-   * Commerce — opt-in (manifest-gated, never hardcoded). When enabled, the SpaceType gets
-   * the product/order primitive and the prebuilt commerce script. Money-in always flows
-   * through Naelao's Lemon Squeezy store so the platform fee (naelaoFeeBps, basis points)
-   * is captured on every sale — see reserved-capabilities.ts.
-   */
-  commerce?: {
-    enabled: boolean;
-    defaultCurrency?: string;          // ISO 4217, default "USD"
-    /** Platform fee in basis points captured per customer order (e.g. 500 = 5%). */
-    naelaoFeeBps?: number;
-    /**
-     * ARCH-REVENUE-6: builder's revenue share in basis points, taken on a CHILD business's
-     * storefront/seat sales (the reseller model — a builder's end-user businesses earn money from
-     * THEIR customers, and the builder takes a configured slice). Only applies when the selling
-     * space is a child business under this builder's reseller product; a top-level builder selling
-     * directly has no separate "builder" to pay, so it's ignored there. Capped by BUILDER_FEE_BPS_CEILING
-     * and combined with naelaoFeeBps can never exceed the gross (both clamped at settlement).
-     * The builder's slice is recorded as a reseller_ledger row (kind='builder_revenue_share').
-     */
-    builderFeeBps?: number;
-    /** Allow the owner to attach their own custom domain to the storefront (opt-in). */
-    allowCustomDomain?: boolean;
-  };
-
-  /**
-   * Business services the SpaceType offers as Naelao-provided, multitenant prebuilt scripts
-   * (so the agent never has to shop for third-party tools). Each reflects on billing.
-   */
-  businessServices?: {
-    storefront?: boolean;     // {slug}.naelao.com multitenant storefront (CF Pages + Worker)
-    businessEmail?: boolean;  // send/receive from a Naelao business address
-  };
-
-  /**
-   * Member/seat billing — the third Lemon Squeezy payer class. When enabled, a builder
-   * charges people to join their space (a seat). Seat checkouts run through Naelao's store
-   * exactly like product checkouts (reserved money-in → platform fee applies), so the
-   * builder can never collect seat fees outside Naelao.
-   */
-  memberBilling?: {
-    enabled: boolean;
-    seatPriceCents: number;
-    currency?: string;
-    /** Lemon Squeezy variant for the seat subscription/one-time charge in Naelao's store. */
-    lsVariantId?: string;
-    /** "subscription" (recurring seat) or "one_time" (lifetime seat). */
-    interval?: "subscription" | "one_time";
   };
 
   // ── Three-Tier Platform Model (spec "How Builders Use Naelao") — Phase 1 additions ──
@@ -293,93 +215,10 @@ export interface SpaceTypeProductConfig {
     ssoConfig?: { issuerUrl?: string; clientId?: string; acsUrl?: string };
   };
 
-  /** Builder-defined pricing shown to end users (wizard "Pricing" step; distinct from the
-   *  Naelao->builder wholesale relationship, which is billingRelationship above). */
+  /** Legacy signup quota seed. Payments and business commerce are not kernel features. */
   pricingConfig?: {
-    model: "free" | "credits" | "subscription" | "seats";
+    model: "free";
     creditsIncludedPerMonth?: number;
-    overageCreditsPriceCents?: number;
-    pricePerSeatCents?: number;
-    includedSeats?: number;
-    trialDays?: number;
-
-    /** Phase E (§A1.17): subscription plans a builder defines for a reseller/hybrid product's
-     *  BUSINESSES (not individual end users — a business as a whole subscribes, mirroring
-     *  memberBilling's "the whole space pays" shape rather than a per-user charge). Each plan is
-     *  provisioned as its own Lemon Squeezy variant (lsVariantId, filled in once by the same
-     *  provision-on-save pattern memberBilling already uses) — money always flows through
-     *  Naelao's store, never a builder's own Stripe/LS account. `limits` overrides a subset of
-     *  `userPermissions` while the plan is active; unset fields fall back to the product's base
-     *  userPermissions. */
-    plans?: Array<{
-      id: string;
-      name: string;
-      priceCents: number;
-      interval: "month" | "year";
-      creditAllowance?: number;
-      limits?: { maxThreadsPerUser?: number | null; maxCreditsPerMonth?: number | null };
-      lsVariantId?: string;
-    }>;
-
-    /** One-time credit packs an end user can buy for their OWN ProductUserDO balance (distinct
-     *  from `plans`, which are recurring and business-scoped). Each pack is its own LS variant,
-     *  kind="one_time". */
-    creditPacks?: Array<{
-      id: string;
-      name: string;
-      credits: number;
-      priceCents: number;
-      lsVariantId?: string;
-    }>;
-
-    /** Phase 4 (money): a real checkout for the end user's OWN personal-plan tier (widens
-     *  maxBusinessesPerEndUser's per-user slice and unlocks inviting others — see
-     *  @naelao/billing-core's PERSONAL_PLAN_LIMITS/resolveEffectiveBusinessLimit). Recurring, one
-     *  LS variant per plan, same provision-on-save pattern as `plans` above — but sets the
-     *  caller's OWN ProductUserDO.plan_tier via /internal/personal-plan/grant rather than funding
-     *  a business. `tier` is which PersonalPlanTier this purchase grants (only "plus" makes sense
-     *  to sell — "free" is the default with no checkout). */
-    personalPlans?: Array<{
-      id: string;
-      name: string;
-      tier: "plus";
-      priceCents: number;
-      interval: "month" | "year";
-      /** Naelao's own Whop plan id — the PRIMARY rail, tried before Lemon Squeezy, matching how
-       *  builder platform plans are already sold (whop-platform-plan.ts). A personal plan is a
-       *  purchase Naelao makes to an individual, so it belongs on Naelao's own seller account,
-       *  not on any one business's revenue rail. */
-      whopPlanId?: string;
-      /** Fallback rail, kept because a store may already be provisioned there. */
-      lsVariantId?: string;
-    }>;
-
-    /** Launchpad Wallet (user-directed feature): fixed-price top-up packs for a business's own
-     *  wallet_ledger balance (SpaceDO, projects.kind='wallet') — same "checkout for a
-     *  pre-configured LS variant, no arbitrary custom amount" shape as creditPacks, but the
-     *  proceeds fund the BUSINESS's stored-value balance (cents, 1:1 with priceCents) rather
-     *  than an individual end user's LLM-usage credits. */
-    walletTopups?: Array<{
-      id: string;
-      name: string;
-      priceCents: number;
-      lsVariantId?: string;
-    }>;
-
-    /** Go-live monetization pass: a business's real sales often happen on a platform Naelao never
-     *  custodies money through (Whop, most commonly) — the P0-5 wallet-settlement mechanism can
-     *  only apply to sales that flow through Naelao's own Lemon Squeezy store. This is the builder's
-     *  cut of that EXTERNAL revenue, billed as a periodic surcharge against the tracked figure
-     *  (external_revenue_snapshots, SpaceDO) rather than skimmed from a transaction Naelao never
-     *  sees. `lsVariantId` must reference an LS variant configured for "pay what you want"/custom
-     *  pricing in the builder's store — the surcharge amount varies by tracked revenue, so a fixed-
-     *  price variant (like plans/creditPacks/walletTopups above) can't represent it. */
-    externalRevenueCut?: {
-      enabled: boolean;
-      /** Basis points of tracked external revenue billed as a surcharge (e.g. 500 = 5%). */
-      cutBps: number;
-      lsVariantId?: string;
-    };
   };
 
   /** Tier 2/3 follow-up: a proactive daily digest email (agent activity summary — runs,

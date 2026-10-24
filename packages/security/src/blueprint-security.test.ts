@@ -4,7 +4,7 @@ import { sanitizeAndScrubBlueprint } from "./blueprint-scrubber.js";
 
 const blueprint = (overrides: Record<string, unknown> = {}) => ({
   id: "bp_test", schemaVersion: "2.0", metadata: {}, templateCategory: "venture",
-  requiredExtensions: [], requiredCredentials: [], projects: [{ name: "Support", kind: "workspace", templateMode: "cowork_studio", viewports: {}, systemPrompt: "Help customers safely.", initialTasks: [], starterFiles: [], ...overrides }],
+  requiredExtensions: [], requiredCredentials: [], projects: [{ name: "Support", kind: "DualPane", templateMode: "cowork_studio", viewports: {}, systemPrompt: "Help customers safely.", initialTasks: [], starterFiles: [], ...overrides }],
 });
 
 describe("blueprint scrubber", () => {

@@ -36,6 +36,7 @@ export interface ProvisionMessage {
 }
 
 export interface CreateSpaceEnv {
+  PLATFORM_SECRET?: string;
   PLATFORM_DB: D1Database;
   ENVIRONMENT?: string;
   PROVISION_QUEUE?: Queue<ProvisionMessage>;

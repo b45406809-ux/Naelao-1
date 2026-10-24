@@ -155,6 +155,9 @@ export interface VoiceAgentManifest {
 
 export type ProjectMode = "solo_cockpit" | "multiplayer_office";
 
+/** Kernel-owned interaction layouts. Domain behavior belongs to Space Templates/extensions. */
+export type ProjectKind = "DualPane" | "CanvasFirst" | "HeadlessPipeline" | "TerminalFirst";
+
 /** User-facing complexity level. Business mode deliberately receives a redacted projection. */
 export type DisplayMode = "business" | "developer";
 
@@ -178,7 +181,7 @@ export interface UserInterfacePreferences {
 export interface ViewportConfiguration {
   component: string;
   copilotPlacement: "docked" | "side_panel";
-  canvasPrimary: true;
+  canvasPrimary: boolean;
   mount?: "right_sidebar";
   tab?: "Canvases";
 }
@@ -206,7 +209,7 @@ export interface BlueprintStarterFile {
 export interface BlueprintProject {
   id?: string;
   name: string;
-  kind: string;
+  kind: ProjectKind;
   templateMode: TemplateMode;
   viewports: Record<string, unknown>;
   systemPrompt: string;

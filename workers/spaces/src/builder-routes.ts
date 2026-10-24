@@ -72,60 +72,6 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "undefined";
 }
 
-function validatePricingPatch(value: unknown): string | null {
-  if (!isRecord(value)) return "pricing configuration must be an object";
-  const allowed = new Set(["plans", "creditPacks", "walletTopups", "externalRevenueCut"]);
-  if (Object.keys(value).some((key) => !allowed.has(key))) return "pricing configuration contains an unsupported field";
-  const validId = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id);
-  const validName = (name: unknown): name is string => typeof name === "string" && name.trim().length > 0 && name.length <= 120;
-  const validMoney = (money: unknown): money is number => Number.isSafeInteger(money) && (money as number) > 0;
-  const validOptionalVariant = (id: unknown): boolean => id === undefined || (typeof id === "string" && id.length > 0 && id.length <= 256);
-
-  for (const key of ["plans", "creditPacks", "walletTopups"] as const) {
-    const items = value[key];
-    if (items === undefined) continue;
-    if (!Array.isArray(items) || items.length > 100) return `${key} must be an array with at most 100 entries`;
-    const ids = new Set<string>();
-    for (const item of items) {
-      if (!isRecord(item) || !validId(item.id) || !validName(item.name) || !validMoney(item.priceCents) || !validOptionalVariant(item.lsVariantId)) {
-        return `${key} entries require a valid id, name, positive safe-integer price, and optional bounded variant ID`;
-      }
-      const allowedItemKeys = key === "plans"
-        ? new Set(["id", "name", "priceCents", "interval", "creditAllowance", "limits", "lsVariantId"])
-        : key === "creditPacks"
-          ? new Set(["id", "name", "credits", "priceCents", "lsVariantId"])
-          : new Set(["id", "name", "priceCents", "lsVariantId"]);
-      if (Object.keys(item).some((field) => !allowedItemKeys.has(field))) return `${key} entries contain an unsupported field`;
-      if (ids.has(item.id)) return `${key} entry IDs must be unique`;
-      ids.add(item.id);
-      if (key === "plans") {
-        const limits = item.limits;
-        const validLimits = limits === undefined || (isRecord(limits)
-          && Object.keys(limits).every((field) => field === "maxThreadsPerUser" || field === "maxCreditsPerMonth")
-          && ["maxThreadsPerUser", "maxCreditsPerMonth"].every((limit) => {
-            const n = limits[limit];
-            return n === undefined || n === null || (typeof n === "number" && Number.isSafeInteger(n) && n >= 0);
-          }));
-        if ((item.interval !== "month" && item.interval !== "year")
-          || (item.creditAllowance !== undefined && !validMoney(item.creditAllowance))
-          || !validLimits) return "plans entries contain invalid interval, allowance, or limits";
-      } else if (key === "creditPacks" && !validMoney(item.credits)) {
-        return "creditPacks entries require a positive safe-integer credit amount";
-      }
-    }
-  }
-  if (value.externalRevenueCut !== undefined) {
-    const cut = value.externalRevenueCut;
-    if (!isRecord(cut) || typeof cut.enabled !== "boolean"
-      || !Number.isInteger(cut.cutBps) || (cut.cutBps as number) < 0 || (cut.cutBps as number) > 10_000
-      || !validOptionalVariant(cut.lsVariantId)
-      || Object.keys(cut).some((field) => !["enabled", "cutBps", "lsVariantId"].includes(field))) {
-      return "externalRevenueCut requires a boolean enabled flag and cutBps from 0 to 10000";
-    }
-  }
-  return null;
-}
-
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -137,7 +83,7 @@ function builderScopeFor(path: string, method: string): string {
   if (path === "/builder/api-keys" || /^\/builder\/api-keys\//.test(path)) return "spaces:write";
   if (/\/analytics(?:\/|$)/.test(path)) return "analytics:read";
   if (/\/users\/[^/]+\/conversations$/.test(path)) return "sessions:read";
-  if (/\/wallet$/.test(path) || path === "/builder/billing" || path.startsWith("/builder/billing/")) return "billing:read";
+  if (path === "/builder/billing" || path.startsWith("/builder/billing/")) return "billing:read";
   return method === "GET" ? "spaces:read" : "spaces:write";
 }
 
@@ -535,7 +481,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const config = parseProductConfig(product.config_json);
     if (body.product_config?.pricingConfig !== undefined
       && canonicalJson(body.product_config.pricingConfig) !== canonicalJson(config.productConfig?.pricingConfig)) {
-      return c.json({ error_code: "bad_request", message: "pricingConfig changes must use the validated pricing endpoint" }, 400);
+      return c.json({ error_code: "bad_request", message: "native business billing configuration is disabled" }, 400);
     }
     if (body.product_config) {
       config.productConfig = { ...(config.productConfig ?? {}), ...body.product_config };
@@ -556,208 +502,9 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     return c.json({ ok: true });
   });
 
-  // PATCH /builder/products/:id/pricing — define/update the subscription plans + credit packs a
-  // reseller/hybrid product offers. Provisions each new plan/pack's Lemon Squeezy variant exactly
-  // once (the same provision-on-save pattern PATCH /spaces/:id/member-billing already uses for
-  // seats) — a plan/pack that already has an lsVariantId is left untouched even if its price
-  // changes here (changing an existing LS variant's price out from under active subscribers is a
-  // separate, deliberate operation, not an implicit side effect of an unrelated field edit).
-  app.patch("/builder/products/:id/pricing", async (c) => {
-    const env = c.env as BuilderRoutesEnv;
-    const auth = await builderAuthFor(env, c);
-    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
-    const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
-    if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  // Business product pricing, wallet top-ups, and revenue-cut configuration were removed.
 
-    let bodyValue: unknown;
-    try {
-      const bytes = await readBoundedRequestBytes(c.req.raw, 64 * 1024);
-      bodyValue = JSON.parse(new TextDecoder().decode(bytes));
-    } catch (err) {
-      if (err instanceof RequestBodyTooLargeError) return c.json({ error_code: "request_too_large" }, 413);
-      return c.json({ error_code: "invalid_request_body" }, 400);
-    }
-    const validationError = validatePricingPatch(bodyValue);
-    if (validationError) return c.json({ error_code: "bad_request", message: validationError }, 400);
-    const body = bodyValue as {
-      plans?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"];
-      creditPacks?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"];
-      walletTopups?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["walletTopups"];
-      externalRevenueCut?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["externalRevenueCut"];
-    };
-
-    const tenantId = auth.tenantId;
-    const productId = product.id;
-    const productName = product.name;
-    const config = parseProductConfig(product.config_json);
-    const currentPricing = config.productConfig?.pricingConfig ?? { model: "credits" as const };
-
-    async function provisionVariant(
-      name: string,
-      priceCents: number,
-      kind: "one_time" | "subscription"
-    ): Promise<string | undefined> {
-      if (!env.BILLING_WORKER) return undefined;
-      try {
-        const resp = await env.BILLING_WORKER.fetch(
-          new Request("http://billing-worker/internal/products/ls-variant", {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "x-naelao-tenant-id": tenantId,
-              "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
-            },
-            body: JSON.stringify({ name, price_cents: priceCents, kind }),
-          })
-        );
-        if (!resp.ok) {
-          console.error(`[builder-routes/pricing] variant create failed product=${productId}: ${await resp.text()}`);
-          return undefined;
-        }
-        return (await resp.json<{ ls_variant_id: string }>()).ls_variant_id;
-      } catch (err) {
-        console.error(`[builder-routes/pricing] variant create error product=${productId}:`, (err as Error).message);
-        return undefined;
-      }
-    }
-
-    let plans = currentPricing.plans;
-    if (body.plans) {
-      plans = await Promise.all(
-        body.plans.map(async (plan) => {
-          if (plan.lsVariantId) return plan;
-          const lsVariantId = await provisionVariant(`${productName} — ${plan.name}`, plan.priceCents, "subscription");
-          return lsVariantId ? { ...plan, lsVariantId } : plan;
-        })
-      );
-    }
-
-    let creditPacks = currentPricing.creditPacks;
-    if (body.creditPacks) {
-      creditPacks = await Promise.all(
-        body.creditPacks.map(async (pack) => {
-          if (pack.lsVariantId) return pack;
-          const lsVariantId = await provisionVariant(`${productName} — ${pack.name}`, pack.priceCents, "one_time");
-          return lsVariantId ? { ...pack, lsVariantId } : pack;
-        })
-      );
-    }
-
-    // Launchpad Wallet (user-directed feature): a business's own wallet top-up packs — same
-    // provision-once-per-item shape as creditPacks above (one_time LS variants).
-    let walletTopups = currentPricing.walletTopups;
-    if (body.walletTopups) {
-      walletTopups = await Promise.all(
-        body.walletTopups.map(async (topup) => {
-          if (topup.lsVariantId) return topup;
-          const lsVariantId = await provisionVariant(`${productName} — Wallet ${topup.name}`, topup.priceCents, "one_time");
-          return lsVariantId ? { ...topup, lsVariantId } : topup;
-        })
-      );
-    }
-
-    // Go-live monetization pass: the revenue-cut surcharge amount VARIES by tracked external
-    // revenue, unlike plans/creditPacks/walletTopups' fixed prices — the provisioned variant here
-    // is a nominal $1 placeholder; the actual charge is set per-checkout via a custom-price
-    // override (POST /internal/revenue-cut-surcharge/checkout, billing worker). This requires the
-    // builder's own LS store to have this variant configured for "pay what you want"/custom
-    // pricing — verify against live Lemon Squeezy behavior before relying on this for real billing,
-    // same "verify before production" precedent as connector-whop's own header comment.
-    let externalRevenueCut = currentPricing.externalRevenueCut;
-    if (body.externalRevenueCut) {
-      externalRevenueCut = body.externalRevenueCut;
-      if (!externalRevenueCut.lsVariantId) {
-        const lsVariantId = await provisionVariant(`${productName} — Revenue Cut Surcharge`, 100, "one_time");
-        if (lsVariantId) externalRevenueCut = { ...externalRevenueCut, lsVariantId };
-      }
-    }
-
-    config.productConfig = {
-      ...(config.productConfig ?? {}),
-      pricingConfig: {
-        ...currentPricing,
-        ...(plans ? { plans } : {}),
-        ...(creditPacks ? { creditPacks } : {}),
-        ...(walletTopups ? { walletTopups } : {}),
-        ...(externalRevenueCut ? { externalRevenueCut } : {}),
-      },
-    };
-    const now = new Date().toISOString();
-    await env.PLATFORM_DB.prepare(
-      "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
-    ).bind(JSON.stringify(config), now, productId, tenantId).run();
-
-    return c.json({ pricing_config: config.productConfig!.pricingConfig });
-  });
-
-  // PATCH /builder/products/:id/reseller — WS-3: the missing write path for the
-  // Naelao->builder wholesale-credit relationship (spec §Polsia / G-AS34/G-AS35). Reseller mode:
-  // Naelao bills the builder wholesale, the builder sets retail and keeps the margin. Referral
-  // mode: Naelao bills the customer directly, the builder takes a revenue share. Team mode has
-  // no rates at all — Naelao bills the builder for all end-user usage. Updates BOTH the
-  // config_json display copy (what a NEW child tenant's reseller_accounts row seeds from) AND
-  // the LIVE reseller_accounts row for this tenant directly, so the change takes effect
-  // immediately for businesses that already exist — this second write is the actual gap the
-  // audit found (business-create.ts's own upsert never refreshed the rates on conflict).
-  app.patch("/builder/products/:id/reseller", async (c) => {
-    const env = c.env as BuilderRoutesEnv;
-    const auth = await builderAuthFor(env, c);
-    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
-    const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
-    if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-    if (auth.tenantId === env.NAELAO_DASHBOARD_TENANT_ID && product.spacetype_id === "launchpad") {
-      return c.json({ error_code: "unsupported_operation", message: "Reseller configuration is not part of the Naelao dashboard" }, 403);
-    }
-
-    const body = await c.req.json<{
-      billing_relationship?: "reseller" | "referral" | "platform";
-      wholesale_cents?: number | null;
-      referral_share_pct?: number;
-    }>();
-
-    if (body.billing_relationship && !["reseller", "referral", "platform"].includes(body.billing_relationship)) {
-      return c.json({ error_code: "bad_request", message: "billing_relationship must be reseller, referral, or platform" }, 400);
-    }
-    if (body.referral_share_pct !== undefined && (body.referral_share_pct < 0 || body.referral_share_pct > 100)) {
-      return c.json({ error_code: "bad_request", message: "referral_share_pct must be between 0 and 100" }, 400);
-    }
-    if (body.wholesale_cents !== undefined && body.wholesale_cents !== null && body.wholesale_cents < 0) {
-      return c.json({ error_code: "bad_request", message: "wholesale_cents must be non-negative" }, 400);
-    }
-
-    const config = parseProductConfig(product.config_json);
-    const currentRates = config.productConfig?.resellerRates ?? {};
-    const resolvedRelationship = body.billing_relationship ?? config.productConfig?.billingRelationship ?? "platform";
-    const resolvedWholesale = body.wholesale_cents !== undefined ? body.wholesale_cents : (currentRates.wholesaleCents ?? null);
-    const resolvedReferralPct = body.referral_share_pct !== undefined ? body.referral_share_pct : (currentRates.referralSharePct ?? 0.0);
-
-    config.productConfig = {
-      ...(config.productConfig ?? {}),
-      billingRelationship: resolvedRelationship,
-      resellerRates: { wholesaleCents: resolvedWholesale, referralSharePct: resolvedReferralPct },
-    };
-    const now = new Date().toISOString();
-    await env.PLATFORM_DB.prepare(
-      "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
-    ).bind(JSON.stringify(config), now, product.id, auth.tenantId).run();
-
-    // The actual money-path fix: refresh the LIVE reseller_accounts row this tenant already has
-    // (or create one if this is the first time rates are set before any business exists yet).
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(tenant_id) DO UPDATE SET
-         billing_relationship = excluded.billing_relationship,
-         wholesale_cents = excluded.wholesale_cents,
-         referral_share_pct = excluded.referral_share_pct,
-         updated_at = excluded.updated_at`
-    ).bind(auth.tenantId, product.id, resolvedRelationship, resolvedWholesale, resolvedReferralPct, now).run();
-
-    return c.json({
-      billing_relationship: resolvedRelationship,
-      reseller_rates: { wholesale_cents: resolvedWholesale, referral_share_pct: resolvedReferralPct },
-    });
-  });
+  // Reseller billing configuration has been removed; FDE marketplace royalties use their own ledger.
 
   app.delete("/builder/products/:id", async (c) => {
     const env = c.env as BuilderRoutesEnv;
@@ -804,50 +551,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
   });
 
-  // ── /builder/products/:id/wallet — F-WALLET-6: the builder-facing wallet aggregate across the
-  // product AND all its child businesses. Sums launchpad_orders (gross / Naelao cut / builder cut /
-  // net settled to the businesses' wallets) plus the builder's OWN earned revenue share from
-  // reseller_ledger (kind='builder_revenue_share', this builder's tenant). Read-only; payout
-  // routes stay on /builder/payouts. ──────────────────────────────────────────────────────────────
-  app.get("/builder/products/:id/wallet", async (c) => {
-    const env = c.env as BuilderRoutesEnv;
-    const auth = await builderAuthFor(env, c);
-    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
-    const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
-    if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-
-    // Orders across the product space itself + every child business under it (parent_space_id).
-    const orders = await env.PLATFORM_DB.prepare(
-      `SELECT
-         COALESCE(SUM(CASE WHEN status != 'refunded' THEN gross_cents ELSE 0 END), 0)       AS gross_cents,
-         COALESCE(SUM(CASE WHEN status != 'refunded' THEN fee_cents ELSE 0 END), 0)         AS naelao_cut_cents,
-         COALESCE(SUM(CASE WHEN status != 'refunded' THEN builder_fee_cents ELSE 0 END), 0) AS builder_cut_cents,
-         COALESCE(SUM(CASE WHEN status != 'refunded' THEN net_cents ELSE 0 END), 0)         AS net_settled_cents,
-         COUNT(CASE WHEN status != 'refunded' THEN 1 END)                                   AS order_count
-       FROM launchpad_orders
-       WHERE space_id = ? OR space_id IN (SELECT id FROM spaces WHERE parent_space_id = ?)`
-    ).bind(product.id, product.id).first<{ gross_cents: number; naelao_cut_cents: number; builder_cut_cents: number; net_settled_cents: number; order_count: number }>();
-
-    // The builder's OWN earned revenue share (net of refund reversals), by currency.
-    const shareRows = await env.PLATFORM_DB.prepare(
-      `SELECT currency, COALESCE(SUM(margin_cents), 0) AS earned_cents
-         FROM reseller_ledger
-        WHERE parent_tenant_id = ? AND kind = 'builder_revenue_share'
-        GROUP BY currency`
-    ).bind(auth.tenantId).all<{ currency: string; earned_cents: number }>();
-
-    return c.json({
-      product_id: product.id,
-      businesses: {
-        gross_cents: orders?.gross_cents ?? 0,
-        naelao_cut_cents: orders?.naelao_cut_cents ?? 0,
-        builder_cut_cents: orders?.builder_cut_cents ?? 0,
-        net_settled_cents: orders?.net_settled_cents ?? 0,
-        order_count: orders?.order_count ?? 0,
-      },
-      builder_revenue_share: (shareRows.results ?? []).map((r) => ({ currency: r.currency, earned_cents: r.earned_cents })),
-    });
-  });
+  // Legacy builder wallet aggregates were removed; marketplace royalties are separate.
 
   // ── /builder/products/:id/domain — the missing builder-facing wrapper the CF-for-SaaS custom
   // domain flow never had (only reachable via /internal/business-services, HMAC-gated) ──────────
@@ -1057,34 +761,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     });
   });
 
-  app.get("/builder/products/:id/analytics/revenue", async (c) => {
-    const env = c.env as BuilderRoutesEnv;
-    const auth = await builderAuthFor(env, c);
-    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
-    const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
-    if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-
-    const period = new Date().toISOString().slice(0, 7);
-    const revenue = await env.PLATFORM_DB.prepare(
-      `SELECT COALESCE(SUM(gross_cents),0) AS gross, COALESCE(SUM(fee_cents),0) AS fees,
-              COALESCE(SUM(net_cents),0) AS net, COUNT(*) AS orders
-         FROM launchpad_orders
-        WHERE space_id = ? AND status IN ('paid','fulfilling','fulfilled') AND substr(created_at,1,7) = ?`
-    ).bind(product.id, period).first<{ gross: number; fees: number; net: number; orders: number }>();
-    const wholesale = await env.PLATFORM_DB.prepare(
-      `SELECT COALESCE(SUM(wholesale_cents),0) AS wholesale
-         FROM reseller_ledger WHERE parent_tenant_id = ? AND period = ?`
-    ).bind(auth.tenantId, period).first<{ wholesale: number }>();
-
-    return c.json({
-      period,
-      gross_revenue_cents: revenue?.gross ?? 0,
-      naelao_fee_cents: revenue?.fees ?? 0,
-      net_revenue_cents: revenue?.net ?? 0,
-      order_count: revenue?.orders ?? 0,
-      naelao_wholesale_cost_cents: wholesale?.wholesale ?? 0,
-    });
-  });
+  // Business revenue and order analytics were removed with Launchpad commerce.
 
   // ── /builder/products/:id/feature-flags — no KV to invalidate: config_json overrides are read
   // live on every call (loadEffectiveProductConfig), never cached per-space. This just merges
@@ -1137,135 +814,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     return c.json({ data: results.map((r) => ({ id: r.id, url: r.url, event_types: JSON.parse(r.event_types_json) as string[], created_at: r.created_at })) });
   });
 
-  // ── /builder/billing — wraps the same reseller_ledger rollup /reseller/statement already uses,
-  // scoped by builder tenant rather than reseller parent — a builder's own wholesale bill. ───────
-  app.get("/builder/billing", async (c) => {
-    const env = c.env as BuilderRoutesEnv;
-    const auth = await builderAuthFor(env, c);
-    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
-    const period = c.req.query("period") ?? new Date().toISOString().slice(0, 7);
-    if (!/^\d{4}-\d{2}$/.test(period)) return c.json({ error_code: "bad_request", message: "period must be YYYY-MM" }, 400);
-    const row = await env.PLATFORM_DB.prepare(
-      // kind='attribution' only — the wholesale/referral statement. builder_revenue_share (a
-      // builder's cut of child storefront sales) is a different stream shown in the product wallet.
-      `SELECT COALESCE(SUM(retail_cents),0) AS retail, COALESCE(SUM(wholesale_cents),0) AS wholesale,
-              COALESCE(SUM(margin_cents),0) AS margin, COUNT(*) AS events
-         FROM reseller_ledger WHERE parent_tenant_id = ? AND period = ? AND kind = 'attribution'`
-    ).bind(auth.tenantId, period).first<{ retail: number; wholesale: number; margin: number; events: number }>();
-    return c.json({ period, ...(row ?? { retail: 0, wholesale: 0, margin: 0, events: 0 }) });
-  });
+  // Builder reseller billing and manual payout requests were removed. FDE marketplace
+  // royalties are calculated and settled by the marketplace billing subsystem.
 
-  app.get("/builder/billing/history", async (c) => {
-    const env = c.env as BuilderRoutesEnv;
-    const auth = await builderAuthFor(env, c);
-    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
-    const { results } = await env.PLATFORM_DB.prepare(
-      `SELECT period, COALESCE(SUM(retail_cents),0) AS retail, COALESCE(SUM(wholesale_cents),0) AS wholesale,
-              COALESCE(SUM(margin_cents),0) AS margin, COUNT(*) AS events
-         FROM reseller_ledger WHERE parent_tenant_id = ? AND kind = 'attribution' GROUP BY period ORDER BY period DESC LIMIT 24`
-    ).bind(auth.tenantId).all();
-    return c.json({ data: results });
-  });
-
-  // ── /builder/payouts — draw a builder's accumulated reseller_ledger cut (business
-  // subscriptions, product orders, seat activations, revenue-cut surcharges — every payer class
-  // already attributed there) out as a real payout request. v1 is manual-fulfillment BY DESIGN:
-  // Lemon Squeezy is a merchant-of-record with single-account custody and no Stripe-Connect-style
-  // split-payment primitive, so there is no automated payout API to wire yet — see migration
-  // 0053's own header for the full reasoning. reseller_ledger itself stays a pure append-only
-  // revenue record; payout_requests is a separate withdrawal-request ledger drawn against it.
-  // Security audit follow-up: this used to GROUP BY currency then take only the single largest
-  // bucket (ORDER BY cents DESC LIMIT 1) — a builder earning in more than one currency (buyers on
-  // Lemon Squeezy pay in their own currency; reseller_ledger already stores it per-event) could
-  // only ever see and withdraw whichever currency happened to be largest; every other currency's
-  // earnings were invisible and permanently unwithdrawable through this endpoint. Returns a
-  // balance PER currency now instead of collapsing to one row.
-  async function computeAvailableBalances(env: BuilderRoutesEnv, tenantId: string): Promise<Array<{ cents: number; currency: string }>> {
-    const earned = await env.PLATFORM_DB.prepare(
-      "SELECT COALESCE(SUM(margin_cents), 0) AS cents, currency FROM reseller_ledger WHERE parent_tenant_id = ? GROUP BY currency"
-    ).bind(tenantId).all<{ cents: number; currency: string }>();
-    const balances: Array<{ cents: number; currency: string }> = [];
-    for (const row of earned.results) {
-      // Every non-rejected request (pending OR already paid) reduces what's still available to
-      // request again — a rejected request frees its amount back up.
-      const requested = await env.PLATFORM_DB.prepare(
-        "SELECT COALESCE(SUM(amount_cents), 0) AS cents FROM payout_requests WHERE tenant_id = ? AND currency = ? AND status != 'rejected'"
-      ).bind(tenantId, row.currency).first<{ cents: number }>();
-      balances.push({ cents: Math.max(0, row.cents - (requested?.cents ?? 0)), currency: row.currency });
-    }
-    return balances;
-  }
-
-  app.get("/builder/payouts/balance", async (c) => {
-    const env = c.env as BuilderRoutesEnv;
-    const auth = await builderAuthFor(env, c);
-    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
-    const balances = await computeAvailableBalances(env, auth.tenantId);
-    return c.json({ balances });
-  });
-
-  app.post("/builder/payouts/request", async (c) => {
-    const env = c.env as BuilderRoutesEnv;
-    const auth = await builderAuthFor(env, c);
-    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
-
-    // A builder earning in multiple currencies must say which one they're drawing down — there's
-    // no meaningful single "the" balance to default to across currencies.
-    const body = await c.req.json<{ currency?: string }>().catch(() => ({}) as { currency?: string });
-    if (body.currency !== undefined && (typeof body.currency !== "string" || !/^[A-Z]{3}$/.test(body.currency))) {
-      return c.json({ error_code: "bad_request", message: "currency must be a three-letter uppercase currency code" }, 400);
-    }
-    const balances = await computeAvailableBalances(env, auth.tenantId);
-    const target = body.currency
-      ? balances.find((b) => b.currency === body.currency)
-      : balances.length === 1 ? balances[0] : undefined;
-    if (!target) {
-      return c.json(
-        balances.length > 1
-          ? { error_code: "currency_required", message: "Multiple currencies have a balance — specify which one to request a payout for", balances }
-          : { error_code: "nothing_to_withdraw", message: "No available balance to request a payout for" },
-        400
-      );
-    }
-    if (target.cents <= 0) {
-      return c.json({ error_code: "nothing_to_withdraw", message: "No available balance to request a payout for" }, 400);
-    }
-
-    const id = crypto.randomUUID();
-    const requestedBy = c.req.header("x-naelao-user-id") ?? null;
-    // Reserve the currently available amount in one atomic INSERT ... SELECT. A read-then-insert
-    // sequence allows two concurrent requests to observe the same balance and both reserve it.
-    // D1 serializes writes, so this predicate is re-evaluated against the latest committed ledger
-    // and payout rows when each insert executes.
-    const reservation = await env.PLATFORM_DB.prepare(
-      `INSERT INTO payout_requests (id, tenant_id, requested_by, amount_cents, currency, status)
-       SELECT ?, ?, ?, earned.cents - COALESCE(reserved.cents, 0), earned.currency, 'pending'
-       FROM (
-         SELECT currency, SUM(margin_cents) AS cents FROM reseller_ledger
-         WHERE parent_tenant_id = ? AND currency = ? GROUP BY currency
-       ) AS earned
-       LEFT JOIN (
-         SELECT currency, SUM(amount_cents) AS cents FROM payout_requests
-         WHERE tenant_id = ? AND status != 'rejected' GROUP BY currency
-       ) AS reserved ON reserved.currency = earned.currency
-       WHERE earned.cents - COALESCE(reserved.cents, 0) > 0
-       RETURNING id, amount_cents, currency, status`
-    ).bind(id, auth.tenantId, requestedBy, auth.tenantId, target.currency, auth.tenantId)
-      .first<{ id: string; amount_cents: number; currency: string; status: string }>();
-    if (!reservation) {
-      return c.json({ error_code: "balance_changed", message: "Available balance changed before the payout could be reserved. Refresh and try again." }, 409);
-    }
-
-    return c.json({ id: reservation.id, tenant_id: auth.tenantId, amount_cents: reservation.amount_cents, currency: reservation.currency, status: reservation.status }, 201);
-  });
-
-  app.get("/builder/payouts", async (c) => {
-    const env = c.env as BuilderRoutesEnv;
-    const auth = await builderAuthFor(env, c);
-    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
-    const { results } = await env.PLATFORM_DB.prepare(
-      "SELECT id, amount_cents, currency, status, requested_at, fulfilled_at, notes FROM payout_requests WHERE tenant_id = ? ORDER BY requested_at DESC LIMIT 100"
-    ).bind(auth.tenantId).all();
-    return c.json({ data: results });
-  });
 }

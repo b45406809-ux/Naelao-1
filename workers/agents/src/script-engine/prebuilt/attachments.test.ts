@@ -25,10 +25,10 @@ describe("task-scoped attachment CLI operations", () => {
   it("uses opaque ids for reads and OCR; the host owns exact-id authorization", async () => {
     const state = context({ response: { text: "untrusted" } });
     await attachments.operations["attachment.read"]!({ id: "opaque-1" }, state.ctx);
-    expect(state.calls[0]?.url).toBe("http://agents-worker/internal/business-email/attachment/read-text");
+    expect(state.calls[0]?.url).toBe("http://agents-worker/internal/attachments/read-text");
     expect(await state.calls[0]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-1" });
     await attachments.operations["attachment.ocr"]!({ id: "opaque-2" }, state.ctx);
-    expect(state.calls[1]?.url).toBe("http://agents-worker/internal/business-email/attachment/ocr");
+    expect(state.calls[1]?.url).toBe("http://agents-worker/internal/attachments/ocr");
     expect(await state.calls[1]!.json()).toMatchObject({ taskId: "task-a", id: "opaque-2" });
     await attachments.operations["attachment.read"]!({ id: "unrecognized-handle" }, state.ctx);
     const rejectedIdBody = await state.calls[2]!.json() as Record<string, unknown>;

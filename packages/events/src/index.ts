@@ -30,15 +30,6 @@ export type NaelaoEventType =
   // fireMatchingTriggers path too, so a builder CAN additionally hook their own automation.
   | "approval.requested"
   | "approval.resolved"
-  // Launchpad Wallet (user-directed feature, workers/agents/src/script-engine/prebuilt/wallet.ts):
-  // a business's stored-value balance, funded via Lemon Squeezy checkout, drawn down for
-  // Naelao's own metered platform costs. wallet.bypass_detected fires when a business has its
-  // own credential for a known third-party payment provider instead of using the wallet — the
-  // signal a builder/assistant can wire a no-code trigger to (e.g. surface a soft upsell prompt).
-  | "wallet.credited"
-  | "wallet.debited"
-  | "wallet.low_balance"
-  | "wallet.bypass_detected"
   // A file in a project's workspace was written or removed by an agent. This is what makes a
   // handoff between projects possible without inventing a second mechanism: one project's agent
   // records what it found (a lead, a spec, a finished build) as an ordinary file, that write

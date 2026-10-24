@@ -3,5 +3,11 @@ packages:
   - "workers/*"
   - "apps/*"
   - "tests"
+allowBuilds:
+  '@biomejs/biome': set this to true or false
+  core-js-pure: set this to true or false
+  esbuild: set this to true or false
+  sharp: set this to true or false
+  workerd: set this to true or false
 patchedDependencies:
   "@eshaz/web-worker@1.2.2": "patches/@eshaz__web-worker@1.2.2.patch"

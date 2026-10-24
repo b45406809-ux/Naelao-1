@@ -7,7 +7,7 @@
  * in R2) — the agent's distilled scripts compose them.
  *
  * Catalogue: r2-workspace, web-search, file-manager, knowledge-base, notifications,
- *   sub-agent, dynamic-workflow, commerce, storefront, business-email, mcp-connector,
+ *   sub-agent, dynamic-workflow, mcp-connector,
  *   browser-use (Tier 4), code-exec (Tier 2/5), memory (episodic/semantic Memory OS).
  * Deferred: vision-delegate (Workers AI vision model wiring — needs a multimodal model
  * binding decision, tracked separately from the Tier 2-5 execution substrate).
@@ -23,9 +23,6 @@ import { approvals } from "./approvals.js";
 import { notifications } from "./notifications.js";
 import { subAgent } from "./sub-agent.js";
 import { dynamicWorkflow } from "./dynamic-workflow.js";
-import { commerce } from "./commerce.js";
-import { storefront } from "./storefront.js";
-import { businessEmail } from "./business-email.js";
 import { mcpConnector } from "./mcp-connector.js";
 import { browserUse } from "./browser-use.js";
 import { computerUse } from "./computer-use.js";
@@ -38,26 +35,20 @@ import { conversation } from "./conversation.js";
 import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
 import { projectCoordination } from "./project-coordination.js";
-import { businessDiagnostics } from "./business-diagnostics.js";
 import { skillManager } from "./skill-manager.js";
 import { localMachine } from "./local-machine.js";
 import { workspace } from "./workspace.js";
-import { wallet } from "./wallet.js";
-import { revenueTracker } from "./revenue-tracker.js";
 import { schedule } from "./schedule.js";
 import { tasks } from "./tasks.js";
 import { plan } from "./plan.js";
 import { goalPlanner } from "./goal-planner.js";
-import { customerBot } from "./customer-bot.js";
 import { executiveCabinet } from "./executive-cabinet.js";
 import { modelRaceScript } from "./model-race-script.js";
-import { foundryInbox } from "./foundry-inbox.js";
 import { runtimeDiscovery } from "./runtime-discovery.js";
 import { languageDetection } from "./language-detection.js";
 import { languageGlossary } from "./language-glossary.js";
 import { languageTranslation } from "./language-translation.js";
 import { attachments } from "./attachments.js";
-import { customerAttachments } from "./customer-attachments.js";
 import { documentProcessing } from "./document-processing.js";
 
 /** Context handed to every prebuilt operation. */
@@ -107,9 +98,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [languageGlossary.name]: languageGlossary,
   [languageTranslation.name]: languageTranslation,
   [attachments.name]: attachments,
-  [customerAttachments.name]: customerAttachments,
   [runtimeDiscovery.name]: runtimeDiscovery,
-  [foundryInbox.name]: foundryInbox,
   [r2Workspace.name]: r2Workspace,
   [fileManager.name]: fileManager,
   [webSearch.name]: webSearch,
@@ -119,10 +108,6 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [notifications.name]: notifications,
   [subAgent.name]: subAgent,
   [dynamicWorkflow.name]: dynamicWorkflow,
-  // Business primitives (spec §11): the only money-in path + Naelao-hosted storefront/email.
-  [commerce.name]: commerce,
-  [storefront.name]: storefront,
-  [businessEmail.name]: businessEmail,
   // Connector layer: reach any external platform over MCP (Whop, Gumroad, Beehiiv, …).
   [mcpConnector.name]: mcpConnector,
   // Execution ladder Tiers 2/4/5: real browser + sandboxed code execution.
@@ -152,7 +137,6 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // own header for why this is a separate script from workspace-admin (general, not Launchpad-
   // specific business scaffolding).
   [projectCoordination.name]: projectCoordination,
-  [businessDiagnostics.name]: businessDiagnostics,
   // The agent's own skill library: what is working, what is broken and why, and what to do
   // about it (skill-health.ts derives the verdict; this is where the agent acts on it).
   [skillManager.name]: skillManager,
@@ -162,13 +146,6 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Explicit R2 <-> container copy/move/list (§A1.17 Phase R) — replaces the old implicit
   // full-sync-every-/exec-call behavior; see workspace.ts.
   [workspace.name]: workspace,
-  // Launchpad Wallet (user-directed feature) — a business's own Naelao-held stored-value
-  // balance; see wallet.ts's header for the money-transmission scope boundary this keeps to.
-  [wallet.name]: wallet,
-  // External revenue tracker (go-live monetization pass) — tracks a business's own reported
-  // revenue on platforms Naelao never custodies money through (Whop), so a builder-configured
-  // revenue-cut % can be billed as a surcharge; see revenue-tracker.ts's header.
-  [revenueTracker.name]: revenueTracker,
   [schedule.name]: schedule,
   // A per-project task DAG (AVOS plan step 4) — distinct from project_journal's own loose
   // todos; see tasks.ts's own header for why this exists as a separate script.
@@ -177,7 +154,6 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // can't stop with open steps. Distinct from `tasks` (durable, cross-agent) — see plan.ts.
   [plan.name]: plan,
   [goalPlanner.name]: goalPlanner,
-  [customerBot.name]: customerBot,
   [executiveCabinet.name]: executiveCabinet,
   [modelRaceScript.name]: modelRaceScript,
 };
@@ -210,9 +186,6 @@ export {
   notifications,
   subAgent,
   dynamicWorkflow,
-  commerce,
-  storefront,
-  businessEmail,
   browserUse,
   codeExec,
   memory,
@@ -224,11 +197,8 @@ export {
   workspaceAdmin,
   projectCoordination,
   modelRaceScript,
-  businessDiagnostics,
   localMachine,
   schedule,
   tasks,
   plan,
-  customerBot,
-  customerAttachments,
 };

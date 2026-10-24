@@ -445,7 +445,14 @@ app.all("/v1/webhooks/lemon-squeezy", async (c) => {
 // DIFFERENT Whop company/secret than /v1/webhooks/whop above (that one is the per-business
 // sub-merchant wallet webhook). Was missing entirely until now — the billing worker's own
 // /webhooks/whop-platform-plan route existed with no router path ever proxying to it.
-app.all("/v1/webhooks/whop-platform-plan", proxyBillingWebhook);
+app.all("/v1/webhooks/whop-platform-plan", async (c) => {
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable", message: "Billing worker not configured" }, 503);
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.BILLING_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit)
+  );
+});
 
 // Security audit follow-up: the authenticated `api` group's rate limiter (G-AX12, below) only
 // covers routes registered AFTER it — every route in this unauthenticated block runs before
@@ -639,17 +646,6 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // /members(\/[^/]+)? above, not the corrupting dynamic-then-static shape). /spend stays OFF this
   // allowlist deliberately — it's server-to-server agent accounting, never an operator surface.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/rules(\/[^/]+)?$/,
-  // Launchpad Wallet (user-directed feature): balance/history are a business owner's own read
-  // surface, gated the same way as the routes above (identity here, requireBusinessMembership on
-  // the spaces worker). Explicitly capped to those two sub-paths so /wallet/credit and
-  // /wallet/debit — money-moving, internal-only (billing worker webhook + the wallet prebuilt) —
-  // never match this allowlist, matching /rules and /spend's existing precedent.
-  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/wallet\/(balance|history)$/,
-  // Phase 4 (money): "deposit my personal credits into this business" — the caller's OWN personal
-  // balance moving into a project wallet at their own request. Additionally gated by
-  // requireBusinessMembership (member) on the spaces worker exactly like balance/history above;
-  // still deliberately excludes /wallet/credit and /wallet/debit, which stay internal-only.
-  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/wallet\/deposit-personal-credits$/,
   // F-39: read-only workspace file viewer — a project member browses/views the artifacts their
   // agent wrote to R2. Identity here, real per-project ACL (requireBusinessMembership) on the
   // spaces worker. Read-only GET only; the write side is the agent's, never end-user-reachable.
@@ -669,53 +665,27 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions\/([^/]+)(?:\/(?:session-state|inbox(?:\/(?:sla|notes|assign|takeover|delete-conversation|reply|export))?))?$/,
   /^\/spaces\/([^/]+)\/assistant\/channel-extensions$/,
-  // F-WALLET-7: the consolidated per-business wallet view (balance + lifetime cut summary +
-  // recent transactions) the shell's business Wallet section reads. Gated by
-  // requireBusinessMembership (member GET) on the spaces worker — identity here, authorization there.
-  /^\/spaces\/([^/]+)\/wallet$/,
   /^\/spaces\/([^/]+)\/threads(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
   /^\/spaces\/([^/]+)\/presence$/,
-  /^\/spaces\/([^/]+)\/businesses$/,
   /^\/spaces\/([^/]+)\/my-businesses$/,
   // Step 18: the public-within-the-product business directory (all active businesses under this
   // product; safe projection only + an is_mine flag). Identity here (which product's session to
   // verify), authorization there (the route computes is_mine from the caller's own memberships and
   // never leaks owner identity/revenue). A single dynamic leaf segment, not the corrupting shape.
-  /^\/spaces\/([^/]+)\/directory$/,
   // Discover's "what other businesses are doing" showcase — cross-tenant AGGREGATE COUNTS only
   // (see the route's own header on the spaces worker). No requireBusinessMembership needed: the
   // productSpaceId in the path only identifies which product's session to verify, the query
   // itself carries no tenant filter to authorize against.
-  /^\/spaces\/([^/]+)\/template-activity$/,
   // Live Market Radar is product-scoped for session verification; the spaces worker creates the
   // launched venture as a child of this product and applies the same authenticated identity.
-  /^\/spaces\/([^/]+)\/market-radar\/top-trends$/,
-  /^\/spaces\/([^/]+)\/market-radar\/[^/]+\/launch$/,
   /^\/spaces\/([^/]+)\/invites(\/|$)/,
   /^\/spaces\/([^/]+)\/business-members(\/|$)/,
   // Phase E (§A1.17): pricing display + checkout initiation. All three are additionally gated by
-  // requireBusinessMembership on the spaces worker (member+) — this allowlist only proves the
-  // caller is a valid product end user, never that they belong to the specific business in the
-  // URL (same "identity, not authorization" split every other entry above documents).
-  /^\/spaces\/([^/]+)\/pricing$/,
-  /^\/spaces\/([^/]+)\/business-subscription\/checkout$/,
-  /^\/spaces\/([^/]+)\/credit-packs\/checkout$/,
-  // Phase 4 (money): the end user's OWN personal-plan tier (gates how many businesses they may
-  // own + whether they may invite others) — same identity-here/authorization-there split as the
-  // pricing/checkout routes immediately above; a single dynamic leaf segment each, not the
-  // dynamic-then-static-suffix shape this file's own history warns against.
-  /^\/spaces\/([^/]+)\/personal-plan$/,
-  /^\/spaces\/([^/]+)\/personal-plan\/checkout$/,
-  // Analytics page: pure aggregate rollups (see SpaceDO.computeBusinessAnalytics's own header) —
-  // same member-floor gating pattern as pricing above (identity here, authorization there).
-  /^\/spaces\/([^/]+)\/business-analytics$/,
-  // Phase N (§A1.17): the manifest-driven operator-shell view (Revenue/Orders/Products) for a
-  // business owner operating their OWN Launchpad business — additionally gated by
-  // requireBusinessMembership on the spaces worker exactly like the pricing routes above.
-  /^\/spaces\/([^/]+)\/products(\/[^/]+)?$/,
-  /^\/spaces\/([^/]+)\/orders$/,
-  /^\/spaces\/([^/]+)\/revenue$/,
+  // Storefront pricing, business subscriptions, revenue, orders, and personal billing routes
+  // were retired with Launchpad's business-commerce surface. Naelao plan billing and FDE
+  // marketplace settlement use their dedicated platform endpoints.
+  /^\/spaces\/([^/]+)\/agent-analytics$/,
   // Phase S (§A1.17): a business member granting the assistant access to their OWN machine —
   // additionally gated by requireBusinessMembership on the spaces worker exactly like the
   // pricing/products routes above (identity here, authorization there).
@@ -1405,10 +1375,6 @@ api.all("/spaces/:spaceId/assistant/*", async (c) =>
 api.all("/me/preferences", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/spaces/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
-
-// Reseller / partner endpoints → spaces worker (G-AS34/G-AS35)
-api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
-api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 // F-1: Builder Dashboard API (/builder/products*, /builder/api-keys*, /builder/space-types,
 // /builder/billing, /builder/payouts, …) → spaces worker (registerBuilderRoutes). Authenticated

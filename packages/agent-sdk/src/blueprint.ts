@@ -1,4 +1,5 @@
 import type { SpaceBlueprint } from "./types.js";
+import { PROJECT_KINDS } from "./canvas-runtime.js";
 
 /** Validate and detach a blueprint before it crosses a trust boundary. */
 export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: string): SpaceBlueprint {
@@ -7,7 +8,9 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
   if (!blueprint.id || !Array.isArray(blueprint.projects)) throw new Error("Invalid blueprint");
   const copy = structuredClone(blueprint);
   for (const project of copy.projects) {
-    if (!project.name.trim() || !project.kind.trim()) throw new Error("Every project requires name and kind");
+    if (!project.name.trim() || !(PROJECT_KINDS as readonly string[]).includes(project.kind)) {
+      throw new Error("Every project requires a name and one of the supported project kinds");
+    }
     for (const file of project.starterFiles) {
       if(file.path.startsWith("/") && !file.path.startsWith("/workspace/")) throw new Error(`Unsafe starter file path: ${file.path}`);
       file.path = file.path.replace(/^\/workspace\//, "").replace(/^\/+/, "");

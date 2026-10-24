@@ -36,8 +36,6 @@ import {
   listAssistantChannels,
   listSubAgents,
   listAgentDefinitions,
-  listAgentTemplates,
-  instantiateAgentTemplate,
   listAssistantFiles,
   listWorkspaceFiles,
   readAssistantFile,
@@ -54,7 +52,7 @@ import {
   createLocalGrant,
   deleteLocalGrant,
   listMyBusinesses,
-  getBusinessAnalytics,
+  getSpaceAnalytics,
   listSessions,
   type SessionCredentials,
   type AssistantPolicy,
@@ -65,13 +63,12 @@ import {
   type ChannelLink,
   type SubAgentSummary,
   type AgentDefinitionSummary,
-  type AgentTemplateSummary,
   type WorkspaceFile,
   type ArtifactSummary,
   type ArtifactContent,
   type AssistantCapabilities,
   type AppNotification,
-  type BusinessAnalytics,
+  type SpaceAnalytics,
   type SessionSummary,
   type LocalGrant,
   type DirectorySkill,
@@ -947,18 +944,10 @@ function WorkersPanel({
   projectId?: string | null | undefined;
   projectAgentIds?: string[] | null | undefined;
 }) {
+  const product = useProduct();
   const [subAgents, setSubAgents] = React.useState<SubAgentSummary[] | null>(null);
   const [failed, setFailed] = React.useState(false);
   const [definitions, setDefinitions] = React.useState<AgentDefinitionSummary[] | null>(null);
-  const [templates, setTemplates] = React.useState<AgentTemplateSummary[] | null>(null);
-  const [directoryOpen, setDirectoryOpen] = React.useState(false);
-  const [portalRoot, setPortalRoot] = React.useState<HTMLElement | null>(null);
-  const [addingTemplateId, setAddingTemplateId] = React.useState<string | null>(null);
-  const [directoryNotice, setDirectoryNotice] = React.useState<string | null>(null);
-  const [recentlyAddedAgentIds, setRecentlyAddedAgentIds] = React.useState<string[]>([]);
-  React.useEffect(() => {
-    setPortalRoot(document.body);
-  }, []);
   React.useEffect(() => {
     let cancelled = false;
     setFailed(false);
@@ -978,15 +967,13 @@ function WorkersPanel({
 
   React.useEffect(() => {
     let cancelled = false;
-    Promise.allSettled([listAgentDefinitions(spaceId, session), listAgentTemplates(spaceId, session)]).then(([defs, catalog]) => {
-      if (cancelled) return;
-      if (defs.status === "fulfilled") setDefinitions(defs.value);
-      if (catalog.status === "fulfilled") setTemplates(catalog.value);
-    });
+    listAgentDefinitions(spaceId, session).then((defs) => {
+      if (!cancelled) setDefinitions(defs);
+    }).catch(() => { if (!cancelled) setDefinitions([]); });
     return () => { cancelled = true; };
   }, [spaceId, session]);
 
-  const projectIds = React.useMemo(() => new Set([...(projectAgentIds ?? []), ...recentlyAddedAgentIds]), [projectAgentIds, recentlyAddedAgentIds]);
+  const projectIds = React.useMemo(() => new Set(projectAgentIds ?? []), [projectAgentIds]);
   const configuredWorkers = (definitions ?? []).filter((definition) => {
     if (!projectId || projectIds.size === 0) return true;
     const shortId = definition.id.includes(":") ? definition.id.slice(definition.id.indexOf(":") + 1) : definition.id;
@@ -1002,27 +989,11 @@ function WorkersPanel({
     }
     return rows;
   }, [configuredWorkers, projectId]);
-  const addTemplate = async (template: AgentTemplateSummary) => {
-    if (addingTemplateId) return;
-    setAddingTemplateId(template.id);
-    setDirectoryNotice(null);
-    try {
-      const created = await instantiateAgentTemplate(spaceId, session, { template_id: template.id, ...(projectId ? { project_id: projectId } : {}) });
-      setRecentlyAddedAgentIds((current) => Array.from(new Set([...current, created.agent_id, created.agent_definition_id])));
-      const refreshed = await listAgentDefinitions(spaceId, session);
-      setDefinitions(refreshed);
-      setDirectoryNotice(`${template.name} added to ${projectId ? "this project" : "the assistant"}.`);
-    } catch (err) {
-      setDirectoryNotice(err instanceof Error ? err.message : `Couldn't add ${template.name}.`);
-    } finally {
-      setAddingTemplateId(null);
-    }
-  };
   return (
     <>
       <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span>Workers</span>
-        <button type="button" className="tp-header-btn" aria-label="Add worker" title="Add worker" onClick={() => setDirectoryOpen(true)}>+</button>
+        <Link href={`/p/${product.slug}/agents`} className="tp-header-btn" aria-label="Manage workers" title="Manage workers">↗</Link>
       </div>
       {subAgents === null ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
@@ -1071,26 +1042,6 @@ function WorkersPanel({
           </div>
         ))}
       </div>
-      {directoryNotice && <div style={{ padding: "0 14px 8px", fontSize: 11, color: "var(--text3)" }}>{directoryNotice}</div>}
-      {directoryOpen && portalRoot && createPortal(
-        <div role="dialog" aria-label="Worker directory" style={{ position: "fixed", inset: 0, zIndex: 1000, display: "grid", placeItems: "center", background: "#0008", padding: 16 }} onClick={() => setDirectoryOpen(false)}>
-          <div style={{ width: "min(860px, calc(100vw - 32px))", maxHeight: "min(760px, calc(100vh - 32px))", overflow: "auto", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14, padding: "clamp(16px, 3vw, 28px)", boxShadow: "0 24px 80px #0008" }} onClick={(event) => event.stopPropagation()}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
-              <strong style={{ color: "var(--text)" }}>Worker directory</strong>
-              <button type="button" className="tp-header-btn" aria-label="Close worker directory" onClick={() => setDirectoryOpen(false)}>×</button>
-            </div>
-            <p style={{ margin: "0 0 12px", fontSize: 11.5, color: "var(--text3)" }}>Add a specialist worker {projectId ? "to this project" : "to the assistant"}.</p>
-            {templates === null ? <div style={{ fontSize: 12, color: "var(--text3)" }}>Loading worker directory…</div> : templates.length === 0 ? <div style={{ fontSize: 12, color: "var(--text3)" }}>No installable workers are available.</div> : templates.map((template) => (
-              <div key={template.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderTop: "1px solid var(--border)" }}>
-                <span style={{ fontSize: 20 }}>{template.icon || "◇"}</span>
-                <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{template.name}</div><div style={{ fontSize: 11, color: "var(--text3)" }}>{template.description}</div></div>
-                <button type="button" className="btn btn-primary btn-sm" disabled={addingTemplateId === template.id} onClick={() => void addTemplate(template)}>{addingTemplateId === template.id ? "Adding…" : "Add"}</button>
-              </div>
-            ))}
-          </div>
-        </div>,
-        portalRoot
-      )}
     </>
   );
 }
@@ -1419,6 +1370,8 @@ function ArtifactsPanel({ spaceId, session }: { spaceId: string; session: Sessio
 function SkillsPanel({ spaceId, session, projectId }: { spaceId: string; session: SessionCredentials; projectId?: string | null | undefined }) {
   const [caps, setCaps] = React.useState<AssistantCapabilities | null>(null);
   const [showAllPrebuilts, setShowAllPrebuilts] = React.useState(false);
+  const [directoryOpen, setDirectoryOpen] = React.useState(false);
+  const [portalRoot, setPortalRoot] = React.useState<HTMLElement | null>(null);
   // The shared, fleet-learned template library — what OTHER spaces on the same template have
   // already proven out, browsable and addable one skill at a time. undefined = still loading;
   // null = genuinely nothing to show (no template, or the directory itself failed to load —
@@ -1426,8 +1379,7 @@ function SkillsPanel({ spaceId, session, projectId }: { spaceId: string; session
   const [dir, setDir] = React.useState<{ template_id: string; skills: DirectorySkill[] } | null | undefined>(undefined);
   const [dirFailed, setDirFailed] = React.useState(false);
   const [addingName, setAddingName] = React.useState<string | null>(null);
-  const [directoryOpen, setDirectoryOpen] = React.useState(false);
-  const [portalRoot, setPortalRoot] = React.useState<HTMLElement | null>(null);
+  React.useEffect(() => { setPortalRoot(document.body); }, []);
   React.useEffect(() => { setPortalRoot(document.body); }, []);
 
   const loadDirectory = React.useCallback(() => {
@@ -1566,11 +1518,11 @@ function NotificationsPanel({ spaceId, session, projectId }: { spaceId: string; 
 }
 
 /** Assistant-view-only: the wake-up cadence — heartbeats/crons that actually did work vs failed,
- *  broken down by trigger. Reuses the already-built business-analytics rollup (same data the
+ *  broken down by trigger. Reuses the already-built agent-analytics rollup (same data the
  *  Dashboard's own Analytics section renders) rather than a new endpoint. */
 function HeartbeatsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
   const product = useProduct();
-  const [data, setData] = React.useState<BusinessAnalytics | null>(null);
+  const [data, setData] = React.useState<SpaceAnalytics | null>(null);
   const [loadError, setLoadError] = React.useState(false);
   // Actual heartbeat/cron-wake sessions — one of the ONLY two places these are meant to surface
   // (the Sessions page's own filter tab is the other). Deliberately a SEPARATE fetch/failure state
@@ -1580,7 +1532,7 @@ function HeartbeatsPanel({ spaceId, session }: { spaceId: string; session: Sessi
   const [sessionsError, setSessionsError] = React.useState(false);
   React.useEffect(() => {
     let cancelled = false;
-    getBusinessAnalytics(spaceId, session, "7d")
+    getSpaceAnalytics(spaceId, session, "7d")
       .then((d) => { if (!cancelled) setData(d); })
       .catch(() => { if (!cancelled) setLoadError(true); });
     listSessions(spaceId, session, 20, "heartbeat")

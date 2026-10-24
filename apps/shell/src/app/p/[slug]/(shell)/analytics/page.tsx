@@ -5,14 +5,14 @@
 // piece the mockup doesn't have at all: heartbeat/scheduled wake-up activity, since the assistant
 // can do real work while nobody's looking and that was previously invisible anywhere in the shell.
 //
-// Every number here comes from GET /business-analytics, a pure-aggregate rollup safe for any
+// Every number here comes from GET /agent-analytics, a pure-aggregate rollup safe for any
 // business member to read (see that route's own header on the spaces worker) — never a raw run,
 // session id, or summary text, unlike the builder-only agent-activity/agent-diagnostics views.
 
 import * as React from "react";
 import { useSessionCredentials } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { getBusinessAnalytics, type BusinessAnalytics } from "@/lib/api";
+import { getSpaceAnalytics, type SpaceAnalytics } from "@/lib/api";
 import { usePresentationProfile } from "@/lib/presentation-profile";
 
 type Window = "7d" | "30d" | "90d";
@@ -28,7 +28,7 @@ export default function AnalyticsPage() {
   const { activeSpaceId } = useActiveSpace();
   const presentation = usePresentationProfile();
   const [win, setWin] = React.useState<Window>("7d");
-  const [data, setData] = React.useState<BusinessAnalytics | null>(null);
+  const [data, setData] = React.useState<SpaceAnalytics | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(false);
 
@@ -36,7 +36,7 @@ export default function AnalyticsPage() {
     if (!creds) return;
     setLoading(true);
     setError(false);
-    getBusinessAnalytics(activeSpaceId, creds, win)
+    getSpaceAnalytics(activeSpaceId, creds, win)
       .then(setData)
       .catch(() => setError(true))
       .finally(() => setLoading(false));

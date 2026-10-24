@@ -88,13 +88,6 @@ export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   "workflow.extensions",
   "project.list",
   "agent.list",
-  "wallet.balance",
-  "wallet.history",
-  "wallet.check_bypass",
-  "commerce.list_products",
-  "commerce.get_order",
-  "email.status",
-  "storefront.status",
   "local.status",
   // tools.search/tools.describe (ScriptToolSurface, progressive tool disclosure) — pure metadata
   // lookups over whatever is already enabled, no side effect of any kind.

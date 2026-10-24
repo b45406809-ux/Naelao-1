@@ -352,7 +352,7 @@ export default function AssistantSettingsPage() {
       </SettingsSection>
 
       <SettingsSection title="What it can do" desc="Built-in abilities, plus skills it has written for itself while working.">
-        <SettingsRow label="Built-in scripts" sub="Shipped with the platform — email, commerce, web search, the wallet, and more.">
+        <SettingsRow label="Built-in scripts" sub="Shipped with the platform — web search and other general assistant capabilities.">
           <span style={{ fontSize: 13, color: "var(--text2)" }}>{capabilities?.prebuilt_count ?? "…"}</span>
         </SettingsRow>
         <SettingsRow label="Learned skills" sub="Written by the assistant itself as it solves things. These build up with use.">
