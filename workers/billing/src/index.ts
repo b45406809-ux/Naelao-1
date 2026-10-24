@@ -460,9 +460,11 @@ app.use("/internal/workflows/budget/*", requireInternalHmac((c) => (c as unknown
 app.use("/internal/usage/llm-tokens/reservations/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.post("/internal/usage/llm-tokens/reservations/reserve", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
-  const body = await c.req.json<{ reservation_id?: string; run_id?: string; space_id?: string; estimated_tokens?: number }>().catch(() => null);
+  const body = await c.req.json<{ reservation_id?: string; run_id?: string; space_id?: string; estimated_tokens?: number; expires_in_seconds?: number }>().catch(() => null);
   const id = body?.reservation_id ?? "", runId = body?.run_id ?? "", spaceId = body?.space_id ?? "", tokens = body?.estimated_tokens ?? 0;
-  if (!orgId || !id || id.length > 200 || !runId || runId.length > 128 || !spaceId || !Number.isSafeInteger(tokens) || tokens <= 0 || tokens > 10_000_000) return c.json({ error_code: "bad_request" }, 400);
+  const expiresInSeconds = body?.expires_in_seconds ?? 15 * 60;
+  if (!orgId || !id || id.length > 200 || !runId || runId.length > 128 || !spaceId || !Number.isSafeInteger(tokens) || tokens <= 0 || tokens > 10_000_000
+    || !Number.isSafeInteger(expiresInSeconds) || expiresInSeconds < 60 || expiresInSeconds > 30 * 86400) return c.json({ error_code: "bad_request" }, 400);
   const existing = await c.env.PLATFORM_DB.prepare("SELECT run_id,estimated_tokens,status FROM llm_token_reservations WHERE id=? AND org_id=?").bind(id, orgId).first<{ run_id: string; estimated_tokens: number; status: string }>();
   if (existing) return existing.run_id === runId && existing.estimated_tokens === tokens && existing.status === "held"
     ? c.json({ reserved: true, deduplicated: true, reservation_id: id })
@@ -471,7 +473,7 @@ app.post("/internal/usage/llm-tokens/reservations/reserve", async (c) => {
   const allowOverage = await resolveAllowOverage(c.env.PLATFORM_DB, orgId);
   const limits = PLAN_LIMITS[planTier] ?? PLAN_LIMITS.free!;
   const admission = llmReservationAdmission(orgId, tokens, limits, allowOverage);
-  const binds: unknown[] = [id, orgId, spaceId, runId, tokens, new Date(Date.now() + 15 * 60_000).toISOString()];
+  const binds: unknown[] = [id, orgId, spaceId, runId, tokens, new Date(Date.now() + expiresInSeconds * 1000).toISOString()];
   binds.push(...admission.bindings);
   const result = await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO llm_token_reservations(id,org_id,space_id,run_id,estimated_tokens,status,expires_at,created_at,updated_at)
     SELECT ?,?,?,?,?, 'held', ?,datetime('now'),datetime('now') WHERE ${admission.predicate}`).bind(...binds).run();

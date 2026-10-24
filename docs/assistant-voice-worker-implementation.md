@@ -16,6 +16,7 @@ use scoped host SDK services. Voice cloning requires consent. No native provider
 - [x] Bounded continuous-PCM utterance collector with silence cutoff, 20-second request cap,
       16kHz WAV framing and a single-queued-utterance memory bound.
 - [x] Bounded OpenRouter PCM TTS adapter matching the current 16kHz mono call transport.
+- [x] Durable subscription-token reservation, provider usage settlement and reconciliation helper.
 - [ ] Bind adapters to production host budget reservations, catalog selection and durable reconciliation.
 - [ ] Connect interactive cascade to both assistant transports and durable planner turns.
 - [ ] Voice model/endpoint discovery with codecs, billing units and custom voice compatibility.
@@ -31,8 +32,12 @@ The generic vault proxy continues to buffer ordinary responses. A new audio resp
 restricted to the exact OpenRouter speech POST endpoint, preserves signed scope and egress
 authorization, scans reflected credentials across chunk boundaries, and finalizes action receipts
 on completion. Interrupted streams become indeterminate and cannot be automatically replayed.
-The audio adapter requires host admission before egress and retains unresolved usage reservations
-for reconciliation. Production budget/discovery binding and call transport integration remain open.
+The audio adapter requires host admission before egress. The new host admission helper reserves
+subscription token quota per provider request, journals request and settlement states in the voice
+Durable Object, retains unknown outcomes for up to 30 days, retries settlement, and can reconcile
+known speech generation IDs. It is not called by the active `OwnerVoiceAgent` transport yet; production
+budget/discovery binding and call integration remain open. Requests without a generation ID remain
+held as unresolved rather than being automatically released.
 
 The SDK catalog previously recognized `audio` but dropped `speech` during normalization.
 Recognizing the modality is discovery only, not proof of streaming, cloning or key entitlement.
@@ -53,7 +58,10 @@ plan-aware durable usage admission are still missing.
 Current OpenRouter docs confirm model discovery via `/models?output_modalities=transcription` and
 `/models?output_modalities=speech`; STT returns `usage.cost`, tokens and audio seconds. Model cards
 and prices change. Collection rank reflects recent usage, not benchmark quality. The implementation
-does not choose a model by slug or infer voice compatibility from a model name.
+does not choose a model by slug or infer voice compatibility from a model name. See [OpenRouter model
+catalog documentation](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
+[transcription guide](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/), and
+[speech guide](https://openrouter.ai/blog/tutorials/text-to-speech/).
 
 ## Verification
 
@@ -64,5 +72,6 @@ Router source suite: 12 files / 73 tests passed. SDK, Spaces, Credentials, Agent
 TypeScript checks passed before this UI addition; the shell TypeScript check and `git diff --check`
 passed after it. The utterance bridge and OpenRouter audio adapter suites passed (8 tests), and the
 Agents TypeScript check passed after that addition. No provider request, production voice
-activation or live telephone acceptance has been performed. The latest utterance, TTS and audio
-adapter suites passed (10 tests) and the Agents TypeScript check passed.
+activation or live telephone acceptance has been performed. Utterance, TTS, audio and durable
+admission suites passed (13 tests); Agents and Billing TypeScript checks passed; Billing quota
+reservation tests passed (2 tests).

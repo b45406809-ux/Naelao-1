@@ -1,7 +1,7 @@
 import type { RuntimeVault } from "@naelao/agent-sdk";
 import { readBoundedResponseJson } from "@naelao/http";
 export interface AudioReservation {
-  settle(costUsd: number, generationId?: string): Promise<void>;
+  settle(costUsd: number, generationId?: string, actualTokens?: number): Promise<void>;
   /** Persist the reservation for reconciliation; do not release an unknown provider charge. */
   pending(generationId?: string): Promise<void>;
 }
@@ -9,7 +9,7 @@ export interface OpenRouterAudioOptions {
   vault: RuntimeVault;
   credentialName: string;
   /** Host-owned admission validates current scope, catalog capabilities, limits and entitlement. */
-  authorize(input: { model: string; operation: "transcription" | "speech"; inputBytes: number; inputCharacters?: number; requestId: string }): Promise<AudioReservation>;
+  authorize(input: { model: string; operation: "transcription" | "speech"; inputBytes: number; inputCharacters?: number; estimatedTokens: number; requestId: string }): Promise<AudioReservation>;
 }
 const BASE = "https://openrouter.ai/api/v1";
 function modelId(model: string): string {
@@ -23,10 +23,13 @@ function cost(value: unknown): number {
   return value;
 }
 export function createOpenRouterAudio(options: OpenRouterAudioOptions) {
-  async function generationCost(id: string): Promise<number> {
+  async function generationUsage(id: string): Promise<{ costUsd: number; tokens: number }> {
     const response = await options.vault.fetchWithAuth(`${BASE}/generation?id=${encodeURIComponent(id)}`, { credentialName: options.credentialName, method: "GET" });
-    const result = await readBoundedResponseJson<{ data?: { total_cost?: unknown } }>(response, 64 * 1024);
-    return cost(result.data?.total_cost);
+    const result = await readBoundedResponseJson<{ data?: { total_cost?: unknown; total_tokens?: unknown; tokens_prompt?: unknown; tokens_completion?: unknown } }>(response, 64 * 1024);
+    const prompt = result.data?.tokens_prompt, completion = result.data?.tokens_completion;
+    const tokens = result.data?.total_tokens ?? (typeof prompt === "number" && typeof completion === "number" ? prompt + completion : undefined);
+    if (!Number.isSafeInteger(tokens) || (tokens as number) < 0 || (tokens as number) > 10_000_000) throw new Error("audio_usage_unavailable");
+    return { costUsd: cost(result.data?.total_cost), tokens: tokens as number };
   }
   return {
     async transcribe(input: { model: string; requestId: string; data: string; format: "wav" | "mp3" | "ogg" | "webm"; language?: string }): Promise<string> {
@@ -36,13 +39,16 @@ export function createOpenRouterAudio(options: OpenRouterAudioOptions) {
       if (!["wav", "mp3", "ogg", "webm"].includes(input.format)) throw new Error("invalid_audio_format");
       if (input.language !== undefined && !/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})?$/.test(input.language)) throw new Error("invalid_audio_language");
       const body = { model, input_audio: { data: input.data, format: input.format }, ...(input.language ? { language: input.language } : {}) };
-      const reservation = await options.authorize({ model, operation: "transcription", inputBytes: new TextEncoder().encode(JSON.stringify(body)).length, requestId: input.requestId });
+      const reservation = await options.authorize({ model, operation: "transcription", inputBytes: new TextEncoder().encode(JSON.stringify(body)).length, estimatedTokens: 10_000, requestId: input.requestId });
       let settled = false;
       try {
         const response = await options.vault.fetchWithAuth(`${BASE}/audio/transcriptions`, { credentialName: options.credentialName, method: "POST", headers: { "content-type": "application/json" }, body, idempotencyKey: input.requestId });
-        const result = await readBoundedResponseJson<{ text?: unknown; usage?: { cost?: unknown } }>(response, 128 * 1024);
+        const result = await readBoundedResponseJson<{ text?: unknown; usage?: { cost?: unknown; total_tokens?: unknown; input_tokens?: unknown; output_tokens?: unknown } }>(response, 128 * 1024);
         // Account for a valid receipt even when the provider's text is malformed.
-        await reservation.settle(cost(result.usage?.cost)); settled = true;
+        const usage = result.usage;
+        const tokens = usage?.total_tokens ?? (typeof usage?.input_tokens === "number" && typeof usage?.output_tokens === "number" ? usage.input_tokens + usage.output_tokens : undefined);
+        if (!Number.isSafeInteger(tokens) || (tokens as number) < 0 || (tokens as number) > 10_000_000) throw new Error("audio_usage_unavailable");
+        await reservation.settle(cost(usage?.cost), undefined, tokens as number); settled = true;
         if (typeof result.text !== "string" || result.text.length > 32_000) throw new Error("invalid_audio_transcript");
         return result.text;
       } catch (error) { if (!settled) await reservation.pending(); throw error; }
@@ -60,7 +66,7 @@ export function createOpenRouterAudio(options: OpenRouterAudioOptions) {
       const body = { model, input: input.text, response_format: "pcm", ...(input.voice ? { voice: input.voice } : {}), ...(input.instructions ? { instructions: input.instructions } : {}), ...(input.speed !== undefined ? { speed: input.speed } : {}), ...(input.rate ? { rate: input.rate } : {}), ...(input.channels ? { channels: input.channels } : {}), ...(input.references ? { input_references: input.references.flatMap(r => [
         { type: "input_audio", input_audio: { data: r.data } }, ...(r.transcript ? [{ type: "text", text: r.transcript }] : []),
       ]) } : {}) };
-      const reservation = await options.authorize({ model, operation: "speech", inputBytes: new TextEncoder().encode(JSON.stringify(body)).length, inputCharacters: input.text.length, requestId: input.requestId });
+      const reservation = await options.authorize({ model, operation: "speech", inputBytes: new TextEncoder().encode(JSON.stringify(body)).length, inputCharacters: input.text.length, estimatedTokens: Math.min(10_000, Math.max(256, Math.ceil(input.text.length * 2))), requestId: input.requestId });
       let response: Response;
       try { response = await options.vault.fetchWithAuth(`${BASE}/audio/speech`, { credentialName: options.credentialName, responseMode: "audio", method: "POST", headers: { "content-type": "application/json" }, body, idempotencyKey: input.requestId }); }
       catch (error) { await reservation.pending(); throw error; }
@@ -75,7 +81,7 @@ export function createOpenRouterAudio(options: OpenRouterAudioOptions) {
           try {
             const { done, value } = await reader.read();
             if (!done) { controller.enqueue(value); return; }
-            try { const amount = await generationCost(id); await reservation.settle(amount, id); finished = true; }
+            try { const usage = await generationUsage(id); await reservation.settle(usage.costUsd, id, usage.tokens); finished = true; }
             catch { await pending(); }
             controller.close(); reader.releaseLock();
           } catch (error) { await pending(); controller.error(error); }
