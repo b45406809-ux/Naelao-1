@@ -2695,6 +2695,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       pythonEnabled: this.env.DYNAMIC_PYTHON_ENABLED === "true",
       ...(loopbacks?.CodeRpcBroker ? { createRpcBinding: async (options, deadline) => bindCodeRpc(loopbacks.CodeRpcBroker!, options, deadline) } : {}),
       authorizeCodeCapability: async (scope, capability) => env.codeAuthorize ? env.codeAuthorize(scope, capability) : false,
+      listWebsiteConnections: async () => {
+        if (!userId || airGappedOnly) return [];
+        const response = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/website-connections`, { headers: {
+          "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId),
+        } }));
+        if (!response.ok) throw new Error("browser_connection_authorization_unavailable");
+        const body = await response.json<{data: Array<{id: string; name: string; start_url: string; origins: string[]; agent_ids: string[]; project_id: string|null}>}>();
+        return body.data.filter(item=>(item.project_id??undefined)===projectId && (!item.agent_ids.length||item.agent_ids.includes(agentId)));
+      },
       browserDecisionGateway: () => env.fastDecision,
       authorizeBrowser: async (scope, operation) => {
         if (airGappedOnly || scope.tenantId !== tenantId || scope.spaceId !== spaceId || scope.agentId !== agentId || scope.projectId !== projectId || scope.actorId !== userId) return false;

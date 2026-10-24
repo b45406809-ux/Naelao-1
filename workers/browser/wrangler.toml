@@ -56,3 +56,19 @@ bucket_name = "naelao-browser-artifacts"
 [[env.production.services]]
 binding = "SPACES_WORKER"
 service = "naelao-spaces-production"
+
+[[durable_objects.bindings]]
+name = "WEBSITE_PROFILE_DO"
+class_name = "WebsiteProfileDO"
+
+[[migrations]]
+tag = "v2-website-profiles"
+new_sqlite_classes = ["WebsiteProfileDO"]
+
+[[env.staging.durable_objects.bindings]]
+name = "WEBSITE_PROFILE_DO"
+class_name = "WebsiteProfileDO"
+
+[[env.production.durable_objects.bindings]]
+name = "WEBSITE_PROFILE_DO"
+class_name = "WebsiteProfileDO"

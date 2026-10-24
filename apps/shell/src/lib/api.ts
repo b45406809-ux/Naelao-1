@@ -2927,3 +2927,17 @@ export async function resolveInterruptedRun(
     { method: "POST", body: JSON.stringify({ run_id: runId, action }), session }
   );
 }
+
+export interface WebsiteConnection { id: string; name: string; project_id: string | null; start_url: string; origins: string[]; agent_ids: string[] }
+export async function listWebsiteConnections(spaceId: string, session: SessionCredentials) {
+  return (await apiFetch<{data:WebsiteConnection[]}>(`/v1/spaces/${encodeURIComponent(spaceId)}/website-connections`,{session})).data;
+}
+export async function createWebsiteConnection(spaceId: string, session: SessionCredentials, input: {name:string;start_url:string;project_id?:string;origins:string[];agent_ids:string[]}) {
+  return apiFetch<{id:string}>(`/v1/spaces/${encodeURIComponent(spaceId)}/website-connections`,{session,method:"POST",body:JSON.stringify(input)});
+}
+export async function disconnectWebsite(spaceId: string, session: SessionCredentials, id: string) {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/website-connections?id=${encodeURIComponent(id)}`,{session,method:"DELETE"});
+}
+export async function websiteBrowser(spaceId: string, session: SessionCredentials, input: {id:string;session_id:string;operation:string;action?:unknown}) {
+  return apiFetch<{result?: import("@naelao/agent-sdk").BrowserObservation;image_base64?:string}>(`/v1/spaces/${encodeURIComponent(spaceId)}/website-browser`,{session,method:"POST",body:JSON.stringify(input)});
+}

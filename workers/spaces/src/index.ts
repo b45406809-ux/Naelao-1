@@ -23,6 +23,7 @@ import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
 import { registerExtensionGadgetRoutes } from "./routes/extension-gadget.js";
 import { gadgetActorId } from "./do/MicroAppDO.js";
 import { registerDynamicPageRoutes } from "./routes/dynamic-pages.js";
+import { registerWebsiteConnectionRoutes } from "./routes/website-connections.js";
 import { registerRecipeRoutes } from "./routes/recipes.js";
 import { registerMarketplaceRoutes } from "./routes/marketplace.js";
 import { registerDeskDropRoutes } from "./routes/desk-drop.js";
@@ -37,6 +38,7 @@ import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectSteward
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
 import { reportExtensionArtifactWrite } from "./extension-storage-usage.js";
+import { eraseWebsiteConnections } from "./website-connection-erasure.js";
 import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 import { eraseBusinessServiceProviders } from "./business-erasure.js";
 import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "./erasure-request-state.js";
@@ -90,6 +92,7 @@ export interface Env {
   BILLING_WORKER?: Fetcher;
   /** Agents worker — SpaceDO fires event_triggers by calling its internal script.run route. */
   AGENTS_WORKER?: Fetcher;
+  BROWSER_WORKER?: Fetcher;
   /** Notifications worker — password-reset emails (product-end-user-routes.ts). */
   NOTIFICATIONS_WORKER?: Fetcher;
   /** Knowledge Worker — Foundry source-reference checks and grant-authorized document reads. */
@@ -192,6 +195,7 @@ app.delete("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", asy
   const tenantId = c.req.param("tenantId");
   const spaceId = c.req.param("spaceId");
   if (c.req.header("x-naelao-tenant-id") !== tenantId) return c.json({ error_code: "tenant_scope_mismatch" }, 403);
+  await eraseWebsiteConnections(c.env, tenantId, { spaceId });
   const usersErased = await eraseProductUsersForSpace(c.env.PLATFORM_DB, tenantId, spaceId, async (productSpaceId, userId) => {
     const stub = await productUserDoStub(c.env, productSpaceId, userId, tenantId);
     const response = await stub.fetch(new Request("http://product-user/erase", { method: "DELETE" }));
@@ -251,6 +255,7 @@ registerDeskDropRoutes(app, {
   },
 });
 registerGraduationRoutes(app);
+registerWebsiteConnectionRoutes(app);
 
 // Extract caller identity from headers (set by router worker after JWT validation)
 function getCallerIdentity(c: { req: { header: (h: string) => string | undefined } }) {
@@ -5172,6 +5177,7 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   ).bind(root.id, userId).first<{ deleted_at: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
 
+  await eraseWebsiteConnections(c.env, tenantId, { userId, productSpaceId: root.id });
   const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
   const eraseRes = await stub.fetch(new Request("http://do/erase", { method: "DELETE" }));
   const erased = await eraseRes.json<{ erased_at: string; sessions_deleted: number; conversations_deleted: number }>();

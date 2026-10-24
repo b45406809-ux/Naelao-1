@@ -99,7 +99,7 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
     description: "Browse websites and use authorized visual computer controls.",
     tools: ["browser-use", "computer-use"],
     skills: [],
-    match: /browser|website|web page|click|navigate|computer|screen|visual/i,
+    match: /browser|website|web page|click|navigate|computer|screen|visual|sign.?in|log.?in|website account/i,
   },
   {
     capability: "language_services",

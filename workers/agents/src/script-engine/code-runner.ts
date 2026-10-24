@@ -67,6 +67,7 @@ export interface CodeRunnerOptions {
   browserWorker?: Fetcher;
   /** Live host grant check; page/model text can never grant a browser operation. */
   authorizeBrowser?: (scope: BrowserRuntimeScope, operation: string) => Promise<boolean>;
+  listWebsiteConnections?: () => Promise<Array<{id: string; name: string; start_url: string; origins: string[]; agent_ids: string[]; project_id: string | null}>>;
   browserDecisionGateway?: () => import("@naelao/agent-sdk").FastDecisionGateway | undefined;
   /** naelao-mcp-hub service binding — powers Tiers 2-4's ctx.mcp (§A1.17 Phase I). */
   mcpHubWorker?: Fetcher;
@@ -127,12 +128,22 @@ async function runBrowser(
   const key = JSON.stringify([params.tenantId, params.spaceId, params.projectId, params.userId, params.runId, sessionId]);
   const saved = sessions.get(key);
   try {
-    const rawUrl = typeof params.args["url"] === "string" ? params.args["url"] : saved?.authorizedOrigins[0];
+    const connectionId = typeof params.args["connection_id"] === "string" ? params.args["connection_id"] : saved?.connectionId;
+    const connections = operation === "connections" || connectionId ? await opts.listWebsiteConnections?.() ?? [] : [];
+    if (operation === "connections") {
+      const candidate = { tenantId: params.tenantId, spaceId: params.spaceId, agentId: params.agentId, actorId: params.userId, runId: params.runId, sessionId, ...(params.projectId ? { projectId: params.projectId } : {}), expiresAt: Date.now()+60000, authorizedOrigins: [], authorizedActions: [], maxTier: Math.min(maxTier,6) as 4|5|6 };
+      if (!await opts.authorizeBrowser(candidate,"browser.connections")) return fail("browser_operation_not_authorized");
+      return {ok:true,output:{connections},tier:4,actual_tier:4,engine,duration_ms:Date.now()-started,tokens_used:0};
+    }
+    const connection = connectionId ? connections.find(item=>item.id===connectionId) : undefined;
+    if (connectionId && !connection) return fail("browser_connection_not_authorized");
+    const rawUrl = typeof params.args["url"] === "string" ? params.args["url"] : saved?.authorizedOrigins[0] ?? connection?.start_url;
     if (!rawUrl) return fail("browser_url_and_session_required");
     const origin = new URL(rawUrl).origin;
     scope = { tenantId: params.tenantId, spaceId: params.spaceId, actorId: params.userId, agentId: params.agentId,
       runId: params.runId, sessionId, ...(params.projectId ? { projectId: params.projectId } : {}),
-      expiresAt: saved?.expiresAt ?? Date.now() + 600_000, authorizedOrigins: saved?.authorizedOrigins ?? [origin],
+      expiresAt: saved?.expiresAt ?? Date.now() + 600_000, authorizedOrigins: saved?.authorizedOrigins ?? connection?.origins ?? [origin],
+      ...(connectionId ? { connectionId } : {}),
       authorizedActions: [], maxTier: Math.min(maxTier, 6) as 4 | 5 | 6 };
     validateBrowserScope(scope);
     assertBrowserUrl(scope, rawUrl);
@@ -144,7 +155,7 @@ async function runBrowser(
     const chosen = browserEngineFor(scope, {
       visual: requestedEngine === "chromium" || operation === "screenshot" || operation === "see" || Boolean(params.args["needsScreenshot"] || params.args["take_screenshot"]),
       webgl: Boolean(params.args["needsWebGL"] || params.args["needsCanvas"]),
-      persistentLogin: Boolean(params.args["interactive"]),
+      persistentLogin: Boolean(connectionId || params.args["interactive"]),
     });
     engine = chosen.engine; fallbackReason = chosen.reason;
     // Grant and identity come only from the host. Model arguments cannot replace scope.

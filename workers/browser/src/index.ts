@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { errorResponse, readBoundedRequestText, requestId, verifyInternalToken } from "@naelao/http";
 import { validateBrowserScope } from "@naelao/agent-sdk";
 import type { BrowserEnv, BrowserRequest } from "./BrowserSessionDO.js";
+export { WebsiteProfileDO } from "./WebsiteProfileDO.js";
 export { BrowserSessionDO } from "./BrowserSessionDO.js";
 
 const app = new Hono<{ Bindings: BrowserEnv }>();
@@ -14,6 +15,23 @@ app.use("/v1/*", async (c, next) => {
   }
   await next();
   return;
+});
+app.post("/v1/website-profile/revoke", async c => {
+  const scope = await c.req.json<import("@naelao/agent-sdk").BrowserRuntimeScope>();
+  validateBrowserScope(scope);
+  if (scope.tenantId !== c.req.header("x-naelao-tenant-id") || !scope.connectionId || !c.env.WEBSITE_PROFILE_DO) return c.json({ error_code: "forbidden" }, 403);
+  const { profileOwner } = await import("./website-profile.js");
+  const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(profileOwner(scope))))].map(x => x.toString(16).padStart(2, "0")).join("");
+  const revoked = await c.env.WEBSITE_PROFILE_DO.get(c.env.WEBSITE_PROFILE_DO.idFromName(digest)).fetch(new Request("http://profile/revoke", { method: "POST", body: JSON.stringify({ scope }) }));
+  if (!revoked.ok) return revoked;
+  const { activeScope } = await revoked.json<{activeScope?: import("@naelao/agent-sdk").BrowserRuntimeScope}>();
+  if (activeScope && c.env.BROWSER_SESSION_DO) {
+    const owner = [activeScope.tenantId, activeScope.spaceId, activeScope.projectId ?? "", activeScope.actorId, activeScope.agentId, activeScope.runId, activeScope.sessionId];
+    const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(owner))))].map(x => x.toString(16).padStart(2,"0")).join("");
+    // Cancellation erases the live page; the revoked profile rejects any late save.
+    await c.env.BROWSER_SESSION_DO.get(c.env.BROWSER_SESSION_DO.idFromName("browser:"+hash)).fetch(new Request("http://browser-session/cancel",{method:"POST",body:JSON.stringify({scope:{...activeScope,expiresAt:Date.now()+60000}})}));
+  }
+  return c.json({ok:true});
 });
 app.post("/v1/browser/:operation", async c => {
   const operation = c.req.param("operation");

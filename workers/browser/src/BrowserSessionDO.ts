@@ -7,14 +7,18 @@ import { assertBrowserAction, assertBrowserUrl, browserEngineFor, validateBrowse
   type BrowserObservation, type BrowserRuntimeScope, type BrowserScopedAction } from "@naelao/agent-sdk";
 import { BrowserActionJournal, discardScreenshotWithCleanupIntent, sameBrowserOwner,
   uploadScreenshotWithCleanupIntent, type BrowserSessionRecord } from "./browser-session-state.js";
+import { profileOwner, type WebsiteState } from "./website-profile.js";
 import { boundedValues, collectBoundedFrameIds } from "./browser-observation-bounds.js";
 
 export interface BrowserEnv {
   ENVIRONMENT: string; PLATFORM_SECRET: string; BROWSER?: Fetcher;
+  WEBSITE_PROFILE_DO?: DurableObjectNamespace;
   BROWSER_SESSION_DO?: DurableObjectNamespace; SPACES_WORKER?: Fetcher; BROWSER_ARTIFACTS?: R2Bucket;
 }
 export interface BrowserRequest {
   scope: BrowserRuntimeScope; url?: string; action?: BrowserScopedAction;
+  /** Set only by the authenticated user sign-in route, never forwarded from model arguments. */
+  humanLogin?: boolean;
   interactive?: boolean; visual?: boolean; pixelAccurate?: boolean; webgl?: boolean; path?: string;
 }
 interface AXNode { backendDOMNodeId?: number; frameId?: string; role?: { value?: string }; name?: { value?: string }; properties?: Array<{ name: string; value?: { value?: unknown } }> }
@@ -52,7 +56,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     this.pending = new Promise<void>(resolve => { unlock = resolve; });
     await before;
     try {
-      await this.authorize(body.scope, method === "act");
+      await this.authorize(body.scope, method === "act", body.humanLogin);
       const existing = await this.ctx.storage.get<BrowserSessionRecord>(RECORD);
       if (existing && (!sameBrowserOwner(existing.scope, body.scope) || existing.status !== "open" || existing.scope.expiresAt <= Date.now())) throw new Error("browser_session_closed");
       if (existing) {
@@ -79,8 +83,17 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     } finally { unlock(); }
   }
 
-  private async authorize(scope: BrowserRuntimeScope, mutation: boolean): Promise<void> {
+  private async authorize(scope: BrowserRuntimeScope, mutation: boolean, humanLogin = false): Promise<void> {
     validateBrowserScope(scope);
+    if (scope.connectionId) {
+      if (!this.env.SPACES_WORKER) throw new Error("browser_authorization_unavailable");
+      const checked = await this.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/website-connection-authorize", {
+        method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId,
+          "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, scope.tenantId),
+          "x-naelao-browser-human-login": humanLogin ? "true" : "false" }, body: JSON.stringify(scope),
+      }));
+      if (!checked.ok) throw new Error("browser_connection_revoked");
+    }
     if (this.cancelled) throw new Error("browser_session_closed");
     if (!this.env.SPACES_WORKER) throw new Error("browser_authorization_unavailable");
     const headers = { "x-naelao-tenant-id": scope.tenantId, "x-naelao-user-id": scope.actorId,
@@ -101,6 +114,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     if (!this.env.BROWSER) throw new Error("browser_provider_unavailable");
     if (!["navigate", "observe", "act"].includes(method)) throw new Error("browser_operation_invalid");
     if (method === "act" && (!existing?.observation || !body.action)) throw new Error("browser_observation_required");
+    if (body.scope.connectionId) body.interactive = true;
     const visual = body.visual || body.pixelAccurate;
     const selected = browserEngineFor(body.scope, {
       ...(visual !== undefined ? { visual } : {}),
@@ -137,6 +151,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     let pendingScreenshotPath: string | undefined;
     const changingEngine = record.engine !== engine;
     try {
+      const profile = body.scope.connectionId ? await this.profile(body.scope, "/load") : undefined;
       if (record.providerSessionId && record.engine === "chromium") {
         try { browser = await puppeteer.connect(this.env.BROWSER, record.providerSessionId); }
         catch { throw new Error("browser_provider_session_lost"); }
@@ -173,11 +188,27 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
           else { denied = true; await request.abort("blockedbyclient"); }
         })().catch(() => { denied = true; void request.abort("blockedbyclient").catch(() => undefined); });
       });
+      let restoreScriptId: string | undefined;
+      if (!reconnecting && profile) {
+        const allowedCookies = profile.cookies.filter((cookie) => !!cookie && typeof cookie === "object" && body.scope.authorizedOrigins.some(origin => {
+          const host = new URL(origin).hostname, domain = String((cookie as {domain?:unknown}).domain ?? "").replace(/^\./, "");
+          return domain && (host === domain || host.endsWith("." + domain));
+        }));
+        if (allowedCookies.length) await page.setCookie(...allowedCookies as Parameters<Page["setCookie"]>);
+        restoreScriptId = (await page.evaluateOnNewDocument((saved: Record<string, Array<[string,string]>>) => {
+          const env = globalThis as unknown as {location: {origin: string}; localStorage: {setItem(key:string,value:string):void}};
+          const entries = saved[env.location.origin];
+          if (entries) for (const [key, value] of entries) env.localStorage.setItem(key, value);
+        }, profile.localStorage)).identifier;
+      }
       if (changingEngine && record.cookies?.length) await page.setCookie(...record.cookies as Parameters<Page["setCookie"]>);
-      if (!reconnecting || method === "navigate" || changingEngine) await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      try {
+        if (!reconnecting || method === "navigate" || changingEngine) await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      } finally { if (restoreScriptId) await page.removeScriptToEvaluateOnNewDocument(restoreScriptId); }
       assertBrowserUrl(body.scope, page.url());
       if (method === "act") {
-        await this.authorize(body.scope, true);
+        await this.authorize(body.scope, true, body.humanLogin);
+        if (body.scope.connectionId) await this.profile(body.scope, "/load");
         const action = body.action!;
         assertBrowserAction(body.scope, record.observation!, action);
         if (action.type === "scroll") await page.evaluate("window.scrollBy(" + JSON.stringify(action.x ?? 0) + "," + JSON.stringify(action.y ?? 0) + ")");
@@ -201,7 +232,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
         }
       }
       if (denied) throw new Error("browser_network_policy_denied");
-      await this.authorize(body.scope, false);
+      await this.authorize(body.scope, false, body.humanLogin);
       const latest = await this.ctx.storage.get<BrowserSessionRecord>(RECORD);
       if (this.cancelled || latest?.status !== "open") throw new Error("browser_session_closed");
       const revision = crypto.randomUUID();
@@ -233,7 +264,11 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
       }
       observation.elements = elements;
       if (body.visual) {
-        if (record.screenshots.length >= 8) throw new Error("browser_screenshot_limit");
+        if (record.screenshots.length >= 8 && this.env.BROWSER_ARTIFACTS) {
+          const old = record.screenshots[0]!;
+          await discardScreenshotWithCleanupIntent(this.ctx.storage, old, () => this.env.BROWSER_ARTIFACTS!.delete(old));
+          record.screenshots = record.screenshots.filter(path => path !== old);
+        }
         if (!this.env.BROWSER_ARTIFACTS) throw new Error("browser_artifact_storage_unavailable");
         const bytes = await page.screenshot({ type: "png", fullPage: false });
         if (bytes.byteLength > 4 * 1024 * 1024) throw new Error("browser_screenshot_limit");
@@ -244,6 +279,13 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
           () => this.env.BROWSER_ARTIFACTS!.put(path, bytes, { httpMetadata: { contentType: "image/png" } }),
           () => this.env.BROWSER_ARTIFACTS!.delete(path));
         observation.screenshot = { path, mimeType: "image/png", bytes: bytes.byteLength, sha256: hash };
+      }
+      if (body.scope.connectionId) {
+        const cookies = (await client.send("Network.getAllCookies")).cookies;
+        const localStorage = { ...(profile?.localStorage ?? {}) };
+        const currentOrigin = new URL(page.url()).origin;
+        localStorage[currentOrigin] = await page.evaluate(() => Object.entries((globalThis as unknown as {localStorage: Record<string,string>}).localStorage));
+        await this.profile(body.scope, "/save", { cookies, localStorage });
       }
       if (record.observation) {
         await this.ctx.storage.delete(record.observation.elements.map(element => "element:" + record.observation!.revision + ":" + element.handle));
@@ -271,6 +313,15 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
         else await browser.close().catch(() => undefined);
       }
     }
+  }
+
+  private async profile(scope: BrowserRuntimeScope, operation: string, state?: WebsiteState): Promise<WebsiteState | undefined> {
+    if (!this.env.WEBSITE_PROFILE_DO) throw new Error("browser_profile_unavailable");
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(profileOwner(scope))))].map(x => x.toString(16).padStart(2, "0")).join("");
+    const stub = this.env.WEBSITE_PROFILE_DO.get(this.env.WEBSITE_PROFILE_DO.idFromName(digest));
+    const response = await stub.fetch(new Request("http://profile" + operation, { method: "POST", body: JSON.stringify({ scope, state }) }));
+    if (!response.ok) { const error = await response.json<{error_code: string}>(); throw new Error(error.error_code); }
+    return (await response.json<{ state?: WebsiteState }>()).state;
   }
 
   private async storeOpen(record: BrowserSessionRecord): Promise<void> {
@@ -309,6 +360,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     }
     if (record.screenshots.length && this.env.BROWSER_ARTIFACTS) await this.env.BROWSER_ARTIFACTS.delete(record.screenshots);
     if (record.observation) await this.ctx.storage.delete(record.observation.elements.map(element => "element:" + record.observation!.revision + ":" + element.handle));
+    if (record.scope.connectionId) await this.profile(record.scope, "/release").catch(() => undefined);
     await this.ctx.storage.deleteAlarm();
   }
   override async alarm(): Promise<void> {

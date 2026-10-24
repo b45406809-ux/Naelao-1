@@ -5,6 +5,8 @@ export interface BrowserRuntimeScope {
   tenantId: string; spaceId: string; projectId?: string; actorId: string; agentId: string;
   runId: string; sessionId: string; expiresAt: number;
   authorizedOrigins: readonly string[]; authorizedActions: readonly BrowserActionKind[];
+  /** Host-authorized reusable website account; never an ambient Space credential. */
+  connectionId?: string;
   maxTier: 4 | 5 | 6;
 }
 export interface BrowserObservedElement {
@@ -25,6 +27,7 @@ export interface BrowserScopedAction {
 export function validateBrowserScope(scope: BrowserRuntimeScope, now = Date.now()): void {
   const token = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
   if (!scope || ![scope.tenantId, scope.spaceId, scope.actorId, scope.agentId, scope.runId, scope.sessionId, ...(scope.projectId ? [scope.projectId] : [])].every((id) => typeof id === "string" && token.test(id))) throw new Error("browser_scope_invalid");
+  if (scope.connectionId !== undefined && !token.test(scope.connectionId)) throw new Error("browser_connection_invalid");
   if (scope.actorId === "system" || !Number.isSafeInteger(scope.expiresAt) || scope.expiresAt <= now || scope.expiresAt > now + 3600_000) throw new Error("browser_scope_expired");
   if (![4, 5, 6].includes(scope.maxTier) || !Array.isArray(scope.authorizedOrigins) || scope.authorizedOrigins.length < 1 || scope.authorizedOrigins.length > 16) throw new Error("browser_grant_invalid");
   for (const origin of scope.authorizedOrigins) { const url = new URL(origin); if (!["https:", "http:"].includes(url.protocol) || url.origin !== origin || url.username || url.password) throw new Error("browser_origin_invalid"); }

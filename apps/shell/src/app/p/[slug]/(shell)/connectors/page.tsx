@@ -32,6 +32,7 @@ import {
   consumeConnectorReturnMarker,
 } from "@/lib/connectorActions";
 import { AppCard, type AppCardModel } from "@/components/AppCard";
+import { WebsiteConnections } from "@/components/WebsiteConnections";
 import { ConnectorAliases } from "@/components/ConnectorAliases";
 
 type Tab = "popular" | "connected" | "az";
@@ -288,6 +289,8 @@ export default function ConnectorsPage() {
           app&apos;s own page — there is no API key to hunt down.
         </div>
       </div>
+
+      {creds && <WebsiteConnections spaceId={activeSpaceId} session={creds} />}
 
       {creds && <ConnectorAliases spaceId={activeSpaceId} session={creds} connectors={connectors} onError={show} />}
 

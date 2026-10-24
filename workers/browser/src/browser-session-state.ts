@@ -60,7 +60,7 @@ export async function discardScreenshotWithCleanupIntent(
 }
 
 export function sameBrowserOwner(a: BrowserRuntimeScope, b: BrowserRuntimeScope): boolean {
-  return ["tenantId", "spaceId", "projectId", "actorId", "agentId", "runId", "sessionId"].every(key => a[key as keyof BrowserRuntimeScope] === b[key as keyof BrowserRuntimeScope]);
+  return ["tenantId", "spaceId", "projectId", "actorId", "agentId", "runId", "sessionId", "connectionId"].every(key => a[key as keyof BrowserRuntimeScope] === b[key as keyof BrowserRuntimeScope]);
 }
 /** Prepared mutations never replay blindly after a lost response or runtime restart. */
 export class BrowserActionJournal {

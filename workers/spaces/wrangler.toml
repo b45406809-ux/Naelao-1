@@ -467,3 +467,15 @@ binding = "WS_GATEWAY"
 service = "naelao-ws-gateway"
 
 # Security audit follow-up — password-reset emails (product-end-user-routes.ts).
+
+[[services]]
+binding = "BROWSER_WORKER"
+service = "naelao-browser"
+
+[[env.staging.services]]
+binding = "BROWSER_WORKER"
+service = "naelao-browser-staging"
+
+[[env.production.services]]
+binding = "BROWSER_WORKER"
+service = "naelao-browser-production"

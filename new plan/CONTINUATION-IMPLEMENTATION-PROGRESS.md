@@ -1806,3 +1806,17 @@ Task 21 is partial: role-filtered skill index/search/read, tool help, query-rank
 **Broader audit continuation — space provisioning outbox (2026-10-23):** Traced dashboard product/space and customer-business creation through D1 persistence, Queue delivery, provisioner leases, and scheduled recovery. Added migration `0126_space_provisioning_outbox.sql`; both `createSpaceRecord` and `createBusinessForEndUser` atomically commit queue intent with their space records (business hierarchy and membership included), then attempt immediate delivery and retain failures for bounded-backoff retries on the existing cron. Duplicate sends remain guarded by per-Space leases and state checks. Added the root creation suites to the Spaces worker's regular test include list. Evidence: Spaces suite 69 files / 276 tests before the final addition; focused creation suites 54 / 54 after the addition; Spaces TypeScript check and `git diff --check`. Remaining: caller-level idempotency/status reconciliation for non-singleton spaces and live D1/Queue deployment verification. Full audit remains open.
 
 **Broader audit continuation — private model-routing egress (2026-10-23):** Model-pool setup could call OpenRouter's catalog during air-gapped/local runs even though the later selector would retain the private route. Gated catalog discovery and reject remote model IDs before credential/pricing lookups on private/local routes. Evidence: worker-model-routing 9/9 and Agents typecheck passed. This does not close DNS rebinding or verify runtime egress policies in a deployed environment.
+
+## Current user request: persistent website sign-in for Space and Project assistants
+
+Implemented private website connections on the Apps screen, scoped account discovery for
+workers, encrypted cookies/local-storage profiles, exclusive task leases, user sign-in
+controls, reconnection instructions, revocation, and account/Space erasure. The latest user
+request authorizes this work independently of the historical transcript pair sequence; no
+source transcript was edited or marked newly reviewed. See `docs/website-connections.md`
+for the implemented boundaries and rollout. Focused browser, agent, and authorization tests
+and affected-package type checks were run; production browser bundling was checked.
+Remaining deployment validation: apply migration 0129, deploy the matching workers/shell,
+and test authorized real website sign-in/MFA/reconnect flows with Cloudflare credentials.
+Full browser disk profiles and native passkey/pop-up interaction remain backend gaps;
+this change provides cookies/local-storage persistence and DOM-based sign-in controls.
