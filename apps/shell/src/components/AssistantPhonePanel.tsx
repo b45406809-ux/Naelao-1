@@ -57,6 +57,8 @@ export function AssistantPhonePanel({
     [content, setContent] = React.useState(""),
     [transfer, setTransfer] = React.useState("");
   const [receipt, setReceipt] = React.useState("");
+  const [handlerInstallation, setHandlerInstallation] = React.useState(""),
+    [handlerDigest, setHandlerDigest] = React.useState("");
   const generation = React.useRef(0);
   const call = React.useCallback(
     <T,>(action: string, args: Record<string, unknown> = {}, write = false) =>
@@ -346,8 +348,66 @@ export function AssistantPhonePanel({
               </fieldset>
               <fieldset disabled={busy || !state.enabled}>
                 <legend>Inbound calls</legend>
-                <p>No inbound greeting is supplied by the kernel. Configure the greeting for your workflow before accepting calls. The current transport menu uses 1 for enabled voicemail and 2 for an enabled transfer destination.</p>
-                <label>Workflow greeting <textarea key={state.phone.id+state.phone.policy.greeting} defaultValue={state.phone.policy.greeting} maxLength={1000} onBlur={e=>{if(e.target.value!==state.phone!.policy.greeting)void act('phone-policy',{policy:{...state.phone!.policy,greeting:e.target.value}});}} /></label>
+                <fieldset disabled={!projectId || busy}>
+                  <legend>Installed voice extension</legend>
+                  <p>
+                    Bind a signed project channel extension declaring provider
+                    phone. Its handler replies through ctx.channel.reply with
+                    JSON actions (say, gather, hangup). The host validates the
+                    installation and exact source digest before activation.
+                  </p>
+                  <label>
+                    Installation ID{" "}
+                    <input
+                      value={handlerInstallation}
+                      onChange={(e) => setHandlerInstallation(e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    Handler SHA-256{" "}
+                    <input
+                      value={handlerDigest}
+                      onChange={(e) => setHandlerDigest(e.target.value)}
+                      maxLength={64}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void act("phone-handler", {
+                        installation_id: handlerInstallation,
+                        handler_sha256: handlerDigest,
+                        confirm: true,
+                      })
+                    }
+                  >
+                    Validate and bind extension
+                  </button>
+                </fieldset>
+
+                <p>
+                  Legacy greeting settings do not define extension behavior.
+                  Configure the greeting for your workflow before accepting
+                  calls. The current transport menu uses 1 for enabled voicemail
+                  and 2 for an enabled transfer destination.
+                </p>
+                <label>
+                  Workflow greeting{" "}
+                  <textarea
+                    key={state.phone.id + state.phone.policy.greeting}
+                    defaultValue={state.phone.policy.greeting}
+                    maxLength={1000}
+                    onBlur={(e) => {
+                      if (e.target.value !== state.phone!.policy.greeting)
+                        void act("phone-policy", {
+                          policy: {
+                            ...state.phone!.policy,
+                            greeting: e.target.value,
+                          },
+                        });
+                    }}
+                  />
+                </label>
                 <label>
                   <input
                     type="checkbox"

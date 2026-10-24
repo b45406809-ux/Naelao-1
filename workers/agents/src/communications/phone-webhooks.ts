@@ -1,5 +1,9 @@
 import type { Hono } from "hono";
-import { readBoundedRequestText } from "@naelao/http";
+import {
+  mintInternalToken,
+  readBoundedResponseJson,
+  readBoundedRequestText,
+} from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import type { AgentsEnv } from "../index.js";
 import { validateTwilioFormWebhook } from "../voice/customer-telephony.js";
@@ -181,35 +185,109 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
     )
       return reject();
     const root = `${phonePublicOrigin(c.env)}/assistant-phone/twilio/${binding.id}`;
-    const menu = () => !policy.greeting.trim() ? response("<Reject/>") :
-      response(
-        `<Gather input="dtmf" numDigits="1" timeout="10" action="${xml(root + "/menu")}" method="POST"><Say>${xml(policy.greeting)}</Say></Gather><Hangup/>`
-      );
-    if (event === "menu") {
+    const configuredHandler = await c.env.PLATFORM_DB.prepare(
+      "SELECT binding_id FROM assistant_phone_extension_handlers WHERE binding_id=? AND status='active'"
+    )
+      .bind(binding.id)
+      .first();
+    // Compatibility during staged migration: only unbound existing numbers use their saved
+    // presentation. Binding a validated extension switches this number to the restricted executor.
+    if (!configuredHandler && (event === "answer" || event === "menu")) {
+      const menu = () =>
+        !policy.greeting.trim()
+          ? response("<Reject/>")
+          : response(
+              `<Gather input="dtmf" numDigits="1" timeout="10" action="${xml(root + "/menu")}" method="POST"><Say>${xml(policy.greeting)}</Say></Gather><Hangup/>`
+            );
+      if (event === "menu") {
+        const admitted = await c.env.PLATFORM_DB.prepare(
+          "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=? AND kind='call' AND sender=?"
+        )
+          .bind(sid, binding.id, from)
+          .first();
+        if (!admitted) return reject();
+        if (form.get("Digits") === "2" && policy.transferTo)
+          return response(
+            `<Dial callerId="${xml(binding.phone_number!)}" timeLimit="${policy.maxCallSeconds}" timeout="20"><Number>${xml(policy.transferTo)}</Number></Dial><Hangup/>`
+          );
+        if (form.get("Digits") === "1" && policy.voicemail)
+          return response(
+            `<Say>This message will be recorded and transcribed for the assistant owner. Please leave your message after the tone.</Say><Record maxLength="${Math.min(120, policy.maxCallSeconds)}" playBeep="true" action="${xml(root + "/voicemail")}" method="POST" recordingStatusCallback="${xml(root + "/voicemail")}" recordingStatusCallbackMethod="POST" transcribe="true" transcribeCallback="${xml(root + "/transcript")}"/><Hangup/>`
+          );
+        return response(
+          "<Say>No destination is configured for that option.</Say><Hangup/>"
+        );
+      }
+      const prior=await c.env.PLATFORM_DB.prepare('SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=?').bind(sid,binding.id).first();
+      if(!prior){const quota=await c.env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?").bind(binding.id,policy.maxDailyInboundCalls).run();if(!quota.meta.changes)return reject();await c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status) VALUES(?,?,'call',?,'received')").bind(sid,binding.id,from).run();}
+      return menu();
+    }
+    if (event === "answer" || event === "menu") {
       const admitted = await c.env.PLATFORM_DB.prepare(
-        "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=? AND kind='call' AND sender=?"
+        "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=? AND sender=? AND kind='call'"
       )
         .bind(sid, binding.id, from)
         .first();
-      if (!admitted) return reject();
-      if (form.get("Digits") === "2" && policy.transferTo)
-        return response(
-          `<Dial callerId="${xml(binding.phone_number!)}" timeLimit="${policy.maxCallSeconds}" timeout="20"><Number>${xml(policy.transferTo)}</Number></Dial><Hangup/>`
-        );
-      if (form.get("Digits") === "1" && policy.voicemail)
-        return response(
-          `<Say>This message will be recorded and transcribed for the assistant owner. Please leave your message after the tone.</Say><Record maxLength="${Math.min(120, policy.maxCallSeconds)}" playBeep="true" action="${xml(root + "/voicemail")}" method="POST" recordingStatusCallback="${xml(root + "/voicemail")}" recordingStatusCallbackMethod="POST" transcribe="true" transcribeCallback="${xml(root + "/transcript")}"/><Hangup/>`
-        );
-      return response(
-        "<Say>No destination is configured for that option.</Say><Hangup/>"
+      if (event === "menu" && !admitted) return reject();
+      if (event === "answer" && !admitted) {
+        const quota = await c.env.PLATFORM_DB.prepare(
+          "INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?"
+        )
+          .bind(binding.id, policy.maxDailyInboundCalls)
+          .run();
+        if (!quota.meta.changes) return reject();
+        await c.env.PLATFORM_DB.prepare(
+          "INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status) VALUES(?,?,'call',?,'received')"
+        )
+          .bind(sid, binding.id, from)
+          .run();
+      }
+      const digits = form.get("Digits") ?? "";
+      if (event === "menu" && !/^[0-9]{1,8}$/.test(digits)) return reject();
+      const dispatched = await c.env.AGENTS_WORKER.fetch(
+        new Request("http://agents/internal/phone-extension-dispatch", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-naelao-tenant-id": identity.tenant_id,
+            "x-naelao-internal-token": await mintInternalToken(
+              c.env.PLATFORM_SECRET,
+              identity.tenant_id
+            ),
+          },
+          body: JSON.stringify({
+            spaceId: identity.space_id,
+            bindingId: binding.id,
+            event: {
+              id: sid + (digits ? ":" + digits : ""),
+              type: event === "answer" ? "call.received" : "call.digits",
+              payload: { caller: from, ...(digits ? { digits } : {}) },
+            },
+          }),
+        })
       );
+      if (!dispatched.ok) return reject();
+      try {
+        const result = await readBoundedResponseJson<{ response: unknown }>(
+          dispatched,
+          8192
+        );
+        return response(
+          (await import("./voice-response.js")).renderExtensionVoiceResponse(
+            result.response,
+            root + "/menu"
+          )
+        );
+      } catch {
+        return reject();
+      }
     }
     const existing = await c.env.PLATFORM_DB.prepare(
       "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=?"
     )
       .bind(sid, binding.id)
       .first();
-    if (existing) return event === "answer" ? menu() : response("");
+    if (existing) return response("");
     const daily = event === "sms" ? "messages" : "calls",
       limit =
         event === "sms"
@@ -221,14 +299,6 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       .bind(binding.id, limit)
       .run();
     if (!admitted.meta.changes) return response('<Reject reason="busy"/>', 429);
-    if (event === "answer") {
-      await c.env.PLATFORM_DB.prepare(
-        "INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status) VALUES(?,?,'call',?,'received')"
-      )
-        .bind(sid, binding.id, from)
-        .run();
-      return menu();
-    }
     const count = Number(form.get("NumMedia") ?? "0");
     if (!Number.isSafeInteger(count) || count < 0 || count > 10)
       return response("", 400);

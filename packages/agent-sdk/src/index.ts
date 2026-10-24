@@ -191,3 +191,5 @@ export * from "./fast-decision.js";
 export * from "./templates/foundry-space.js";
 export * from "./tunnel-protocol.js";
 export { parseArtifactLinters, lintArtifact, type ArtifactLinterSpec, type ArtifactDiagnostic } from "./artifact-linters.js";
+
+export type { VoiceChannelAction, VoiceChannelResponse, VoiceChannelEventPayload } from "./voice-channel.js";

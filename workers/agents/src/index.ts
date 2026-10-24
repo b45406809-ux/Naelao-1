@@ -455,6 +455,14 @@ const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 registerCommunicationRoutes(app);
+app.post('/internal/phone-extension-dispatch',async c=>{
+ const tenant=c.req.header('x-naelao-tenant-id')??'';
+ if(!tenant||!await verifyInternalToken(c.req.header('x-naelao-internal-token'),tenant,c.env.PLATFORM_SECRET))return c.json({error_code:'forbidden'},403);
+ const body=JSON.parse(await readBoundedRequestText(c.req.raw,16384));
+ const stub=await getAgentDOForSpace(c.env,tenant,String(body.spaceId),'naelao-agent');
+ return stub.fetch(new Request('http://agent/phone-extension',{method:'POST',headers:{'content-type':'application/json','x-naelao-tenant-id':tenant,'x-naelao-internal-token':await mintInternalToken(c.env.PLATFORM_SECRET,tenant)},body:JSON.stringify(body)}));
+});
+
 registerPhoneWebhooks(app);
 
 // Product sessions authorize a person, not access to every conversation in a product. Apply
@@ -7592,6 +7600,10 @@ app.post("/internal/channel-extension-binding/verify", async c => {
   const body = await c.req.json<{ spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string; providerConnectionId?: string }>()
     .catch(() => ({} as { spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string; providerConnectionId?: string }));
   if (!body.spaceId || !body.projectId || !body.channel || !body.instanceId || !body.scriptSha256) return c.json({ valid: false });
+  if(body.channel==='phone'){
+    const row=await c.env.PLATFORM_DB.prepare("SELECT h.binding_id FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.status='active' AND b.status='active' AND h.installation_id=? AND h.handler_sha256=?").bind(tenantId,body.spaceId,body.projectId,body.instanceId,body.scriptSha256).first();
+    return c.json({valid:!!row});
+  }
   if (body.providerConnectionId) {
     const connection = await c.env.PLATFORM_DB.prepare(`SELECT project_id,installation_id,provider,handler_sha256 FROM extension_provider_connections
       WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status='active'`)

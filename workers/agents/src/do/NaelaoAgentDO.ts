@@ -1843,6 +1843,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     try {
+      if(method==='POST'&&url.pathname==='/phone-extension')return this.handlePhoneExtension(request);
       // POST /warm — pre-warm DO (creates tables, returns status)
       if (method === "POST" && url.pathname === "/warm") {
         return Response.json({ status: "warm", ts: Date.now() });
@@ -8585,6 +8586,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       crypto.randomUUID(), sessionId, text, Date.now()
     );
     this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 1 WHERE id = ?`, messageId);
+  }
+
+  private async handlePhoneExtension(request:Request):Promise<Response>{
+    const tenant=request.headers.get('x-naelao-tenant-id')??'';
+    if(!tenant||!await verifyInternalToken(request.headers.get('x-naelao-internal-token')??undefined,tenant,this.env.PLATFORM_SECRET))return Response.json({error_code:'forbidden'},{status:403});
+    const body=await readBoundedResponseJson<{bindingId:string;spaceId:string;validateOnly?:boolean;event?:{id:string;type:string;payload:Record<string,unknown>}}>(new Response(request.body),16384);
+    if(!this.env.PLATFORM_DB)return Response.json({error_code:'database_unavailable'},{status:503});
+    const row=await this.env.PLATFORM_DB.prepare("SELECT h.installation_id,h.handler_sha256,h.status,i.project_id,i.owner_user_id FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'").bind(body.bindingId,tenant,body.spaceId).first<{installation_id:string;handler_sha256:string;status:string;project_id:string|null;owner_user_id:string}>();
+    if(!row?.project_id||await this.tenantSpaceSuspended(tenant,body.spaceId))return Response.json({error_code:'phone_handler_unavailable'},{status:403});
+    const handler=await this.loadActiveChannelHandler({spaceId:body.spaceId,tenantId:tenant,projectId:row.project_id,channel:'phone',messageId:body.event?.id??'validation',instanceId:row.installation_id,scriptSha256:row.handler_sha256});
+    if(!handler||handler.knowledgeCollections.length||handler.session)return Response.json({error_code:'phone_handler_invalid'},{status:409});
+    if(body.validateOnly)return Response.json({valid:true});
+    if(row.status!=='active'||!body.event||!['call.received','call.digits'].includes(body.event.type)||!/^CA[a-fA-F0-9]{32}(?::[0-9]{1,8})?$/.test(body.event.id))return Response.json({error_code:'phone_event_invalid'},{status:400});
+    const env=await this.buildScriptEngineEnv(body.spaceId,'naelao-agent',tenant,undefined,row.project_id);
+    if(!env?.codeRunner?.runChannel)return Response.json({error_code:'channel_runtime_unavailable'},{status:503});
+    const result=await env.codeRunner.runChannel({name:handler.name,code:handler.code,args:{},tenantId:tenant,spaceId:body.spaceId,agentId:'naelao-agent',installationId:row.installation_id,maxConcurrency:handler.maxConcurrency,limits:handler.limits,channel:{provider:'phone',event:{id:body.event.id,type:'message.received',occurredAt:new Date().toISOString(),payload:{voice_event:body.event.type,...body.event.payload}},conversation:{id:body.event.id.split(':')[0]!}}});
+    if(!result.ok||result.channel_replies?.length!==1||result.channel_answers?.length)return Response.json({error_code:'phone_handler_failed'},{status:409});
+    try{return Response.json({response:JSON.parse(result.channel_replies[0]!)});}catch{return Response.json({error_code:'phone_response_invalid'},{status:409});}
   }
 
   private async loadActiveChannelHandler(input: {

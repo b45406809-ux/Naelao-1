@@ -572,6 +572,80 @@ export async function handlePhoneAction(
   }
   if (!binding || !binding.provider_number_sid)
     throw new Error("assistant_phone_not_connected");
+  if (action === "phone-handler") {
+    if (!manager || agent || !scope.projectId || body.confirm !== true)
+      throw new Error("phone_handler_owner_confirmation_required");
+    const installation = String(body.installation_id ?? ""),
+      digest = String(body.handler_sha256 ?? "");
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(installation) ||
+      !/^[a-f0-9]{64}$/.test(digest)
+    )
+      throw new Error("invalid_phone_handler_reference");
+    const previous = await env.PLATFORM_DB.prepare(
+      "SELECT * FROM assistant_phone_extension_handlers WHERE binding_id=?"
+    )
+      .bind(binding.id)
+      .first<{
+        installation_id: string;
+        handler_sha256: string;
+        status: string;
+      }>();
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO assistant_phone_extension_handlers(binding_id,installation_id,handler_sha256,status) VALUES(?,?,?,'pending') ON CONFLICT(binding_id) DO UPDATE SET installation_id=excluded.installation_id,handler_sha256=excluded.handler_sha256,status='pending'"
+    )
+      .bind(binding.id, installation, digest)
+      .run();
+    try {
+      const r = await env.AGENTS_WORKER.fetch(
+        new Request("http://agents/internal/phone-extension-dispatch", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-naelao-tenant-id": scope.tenantId,
+            "x-naelao-internal-token": await mintInternalToken(
+              env.PLATFORM_SECRET,
+              scope.tenantId
+            ),
+          },
+          body: JSON.stringify({
+            bindingId: binding.id,
+            spaceId: scope.spaceId,
+            validateOnly: true,
+          }),
+        })
+      );
+      if (!r.ok || (await r.json<{ valid?: boolean }>()).valid !== true)
+        throw new Error("phone_extension_validation_failed");
+      await env.PLATFORM_DB.prepare(
+        "UPDATE assistant_phone_extension_handlers SET status='active' WHERE binding_id=? AND installation_id=? AND handler_sha256=?"
+      )
+        .bind(binding.id, installation, digest)
+        .run();
+      return { bound: true };
+    } catch (e) {
+      if (previous)
+        await env.PLATFORM_DB.prepare(
+          "UPDATE assistant_phone_extension_handlers SET installation_id=?,handler_sha256=?,status=? WHERE binding_id=? AND installation_id=? AND handler_sha256=?"
+        )
+          .bind(
+            previous.installation_id,
+            previous.handler_sha256,
+            previous.status,
+            binding.id,
+            installation,
+            digest
+          )
+          .run();
+      else
+        await env.PLATFORM_DB.prepare(
+          "DELETE FROM assistant_phone_extension_handlers WHERE binding_id=? AND installation_id=? AND handler_sha256=?"
+        )
+          .bind(binding.id, installation, digest)
+          .run();
+      throw e;
+    }
+  }
   if (action === "phone-policy") {
     const policy = validatePhonePolicy(body.policy);
     if (policy.transferTo === binding.phone_number)

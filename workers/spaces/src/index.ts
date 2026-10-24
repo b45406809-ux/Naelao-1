@@ -1737,7 +1737,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
     manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["channel.invoke"] });
     const bundle = manifest.bundle;
     const channels = manifest.channels ?? [];
-    const supportedProviders = new Set(["whatsapp", "telegram", "slack", "discord", "email"]);
+    const supportedProviders = new Set(["whatsapp", "telegram", "slack", "discord", "email", "phone"]);
     if (!bundle || !channels.length || channels.length > 8
       || bundle.primitives.some(primitive => primitive.kind !== "channel")
       || (bundle.workerRoles?.length ?? 0) > 0
@@ -1895,7 +1895,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     const workflowIds = new Set(bundle.primitives.filter(item => item.kind === "workflow").map(item => item.id));
     if ((bundle.workerRoles ?? []).some(role => role.principal !== "project_member" || role.execution !== "worker" || !["workflow_step", "tool"].includes(role.invocation)
       || role.primitiveIds.some(id => !workflowIds.has(id)))) throw new Error("extension_worker_role_runtime_not_supported");
-    const providerAllowlist = new Set(["whatsapp", "telegram", "slack", "discord", "email"]);
+    const providerAllowlist = new Set(["whatsapp", "telegram", "slack", "discord", "email", "phone"]);
     const channels = bundle.primitives.filter(item => item.kind === "channel");
     const requirements = bundle.connections ?? [];
     if (channels.some(item => !providerAllowlist.has(item.provider) || !item.connectionId || !requirements.some(connection => connection.id === item.connectionId && connection.provider === item.provider && connection.required))

@@ -185,3 +185,21 @@ Existing configured greetings are preserved. Phone tests (14) and Agents/Shell t
 This is only a boundary correction: the fixed menu and legacy customer voice runtime still need
 migration to extension handlers. Managed billing, interactive voice/MMS, production video analysis,
 scheduling, remaining integrations and live acceptance remain unfinished and are not certified.
+
+## Telephony extension executor implementation
+
+Added migration 0133 for per-number extension-handler references. The owner-confirmed
+phone-handler action validates an immutable installed project channel artifact through the
+existing installation, signature, hash and binding checks before activating it; failed validation
+restores the previous reference. Phone is accepted by the project extension installer alongside
+WhatsApp, which already has its own connection and dispatch implementation. Calls and digit events
+can now reach the same quarantined channel executor used by messaging extensions. Handler replies
+are bounded typed JSON (say/gather/hangup), not raw TwiML, arbitrary URLs, transfer permissions or
+member/planner tools. Callback URLs remain host-owned. No number is repurchased or its provider
+SID changed by selecting an extension handler. Project scope is currently required; Space-shared
+voice handlers, full dialogue/session state, dial/record capabilities and legacy-customer-runtime
+retirement remain open. Unbound existing numbers retain their saved legacy presentation during staged migration; binding a validated extension switches that number to the restricted executor. Legacy code is retained until all bindings are migrated.
+This is an implemented restricted dispatch path, not a production certification or a claim that
+all legacy bindings have already been migrated. Focused communications tests passed (27).
+
+Agents, Spaces and Shell type checks and the production Agents Worker dry-run passed for this checkpoint. No live callback or deployment migration was performed.

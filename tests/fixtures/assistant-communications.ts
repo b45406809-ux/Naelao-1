@@ -16,6 +16,7 @@ export function fixture() {
   ]);
   db.db.exec(readFileSync(new URL("../../infra/migrations/0131_assistant_phones.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0132_assistant_sms_verification.sql", import.meta.url), "utf8"));
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0133_phone_extension_handlers.sql",import.meta.url),"utf8"));
   const objects = new Map<string, string>();
   const fetch = vi.fn(async (req: Request) =>
     req.url.includes("assistant-access")
