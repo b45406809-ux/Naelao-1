@@ -15,6 +15,7 @@ use scoped host SDK services. Voice cloning requires consent. No native provider
       restricted binary-safe vault streaming with a signed host-only audio purpose.
 - [x] Bounded continuous-PCM utterance collector with silence cutoff, 20-second request cap,
       16kHz WAV framing and a single-queued-utterance memory bound.
+- [x] Bounded OpenRouter PCM TTS adapter matching the current 16kHz mono call transport.
 - [ ] Bind adapters to production host budget reservations, catalog selection and durable reconciliation.
 - [ ] Connect interactive cascade to both assistant transports and durable planner turns.
 - [ ] Voice model/endpoint discovery with codecs, billing units and custom voice compatibility.
@@ -63,4 +64,5 @@ Router source suite: 12 files / 73 tests passed. SDK, Spaces, Credentials, Agent
 TypeScript checks passed before this UI addition; the shell TypeScript check and `git diff --check`
 passed after it. The utterance bridge and OpenRouter audio adapter suites passed (8 tests), and the
 Agents TypeScript check passed after that addition. No provider request, production voice
-activation or live telephone acceptance has been performed.
+activation or live telephone acceptance has been performed. The latest utterance, TTS and audio
+adapter suites passed (10 tests) and the Agents TypeScript check passed.

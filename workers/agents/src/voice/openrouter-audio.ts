@@ -47,14 +47,17 @@ export function createOpenRouterAudio(options: OpenRouterAudioOptions) {
         return result.text;
       } catch (error) { if (!settled) await reservation.pending(); throw error; }
     },
-    async speak(input: { model: string; requestId: string; text: string; voice?: string; instructions?: string; references?: { data: string; transcript?: string }[] }): Promise<{ stream: ReadableStream<Uint8Array>; generationId: string; contentType: string }> {
+    async speak(input: { model: string; requestId: string; text: string; voice?: string; instructions?: string; speed?: number; rate?: 8000 | 16000 | 24000 | 48000; channels?: 1 | 2; references?: { data: string; transcript?: string }[] }): Promise<{ stream: ReadableStream<Uint8Array>; generationId: string; contentType: string }> {
       requestId(input.requestId);
       const model = modelId(input.model);
       if (typeof input.text !== "string" || !input.text.trim() || input.text.length > 2000) throw new Error("invalid_speech_text");
       if (input.voice !== undefined && !/^[A-Za-z0-9._:-]{1,200}$/.test(input.voice)) throw new Error("invalid_speech_voice");
       if (input.instructions !== undefined && (typeof input.instructions !== "string" || input.instructions.length > 1000)) throw new Error("invalid_speech_instructions");
+      if (input.speed !== undefined && (!Number.isFinite(input.speed) || input.speed < 0.5 || input.speed > 2)) throw new Error("invalid_speech_speed");
+      if (input.rate !== undefined && ![8000, 16000, 24000, 48000].includes(input.rate)) throw new Error("invalid_speech_rate");
+      if (input.channels !== undefined && input.channels !== 1 && input.channels !== 2) throw new Error("invalid_speech_channels");
       if (input.references && (input.references.length !== 1 || !input.references.every(r => typeof r.data === "string" && r.data.length > 0 && r.data.length <= 200_000 && r.data.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(r.data) && (r.transcript === undefined || typeof r.transcript === "string" && r.transcript.length <= 2000)))) throw new Error("invalid_speech_reference");
-      const body = { model, input: input.text, response_format: "pcm", ...(input.voice ? { voice: input.voice } : {}), ...(input.instructions ? { instructions: input.instructions } : {}), ...(input.references ? { input_references: input.references.flatMap(r => [
+      const body = { model, input: input.text, response_format: "pcm", ...(input.voice ? { voice: input.voice } : {}), ...(input.instructions ? { instructions: input.instructions } : {}), ...(input.speed !== undefined ? { speed: input.speed } : {}), ...(input.rate ? { rate: input.rate } : {}), ...(input.channels ? { channels: input.channels } : {}), ...(input.references ? { input_references: input.references.flatMap(r => [
         { type: "input_audio", input_audio: { data: r.data } }, ...(r.transcript ? [{ type: "text", text: r.transcript }] : []),
       ]) } : {}) };
       const reservation = await options.authorize({ model, operation: "speech", inputBytes: new TextEncoder().encode(JSON.stringify(body)).length, inputCharacters: input.text.length, requestId: input.requestId });
