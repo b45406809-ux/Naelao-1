@@ -13,6 +13,8 @@ use scoped host SDK services. Voice cloning requires consent. No native provider
 - [ ] Host voice profile lifecycle, private consent/sample storage and erasure.
 - [x] OpenRouter transcription/speech adapter with required host admission/usage callbacks, and
       restricted binary-safe vault streaming with a signed host-only audio purpose.
+- [x] Bounded continuous-PCM utterance collector with silence cutoff, 20-second request cap,
+      16kHz WAV framing and a single-queued-utterance memory bound.
 - [ ] Bind adapters to production host budget reservations, catalog selection and durable reconciliation.
 - [ ] Connect interactive cascade to both assistant transports and durable planner turns.
 - [ ] Voice model/endpoint discovery with codecs, billing units and custom voice compatibility.
@@ -43,9 +45,14 @@ the authenticated settings API. The enable switch currently saves policy only; i
 OpenRouter audio on live calls. Do not represent a call as using the selected model until the host
 audio adapter, cost reservation and durable usage reconciliation are bound to the call transport.
 The current `agents/voice` STT contract is a continuous PCM stream, while OpenRouter transcription
-accepts complete encoded audio requests. A production bridge therefore needs bounded utterance/VAD
-collection and WAV framing (or a verified streaming transcription endpoint) before replacing the
-existing transport provider. The current call path cannot simply swap in the existing one-shot adapter.
+accepts complete encoded audio requests. The new utterance adapter supplies bounded PCM collection,
+silence cutoff and WAV framing, but is not yet connected to live calls because model selection and
+plan-aware durable usage admission are still missing.
+
+Current OpenRouter docs confirm model discovery via `/models?output_modalities=transcription` and
+`/models?output_modalities=speech`; STT returns `usage.cost`, tokens and audio seconds. Model cards
+and prices change. Collection rank reflects recent usage, not benchmark quality. The implementation
+does not choose a model by slug or infer voice compatibility from a model name.
 
 ## Verification
 
@@ -54,5 +61,6 @@ preferences, gateway authorization, catalog, audio adapter, vault and owner-voic
 10 files / 48 tests passed. Signed audio-purpose/forgery, air-gap and proxy tests: 12 passed.
 Router source suite: 12 files / 73 tests passed. SDK, Spaces, Credentials, Agents and Router
 TypeScript checks passed before this UI addition; the shell TypeScript check and `git diff --check`
-passed after it. No provider request, production voice
+passed after it. The utterance bridge and OpenRouter audio adapter suites passed (8 tests), and the
+Agents TypeScript check passed after that addition. No provider request, production voice
 activation or live telephone acceptance has been performed.
