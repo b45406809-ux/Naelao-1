@@ -1,27 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { agentTemplateSummaries, agentTemplateToConfig, findAgentTemplate } from "./agent-templates.js";
+import { customAgentToConfig } from "./agent-templates.js";
 
-describe("curated worker templates", () => {
-  it("publishes the default local access worker in the directory", () => {
-    const summary = agentTemplateSummaries().find((template) => template.id === "local-access");
-    expect(summary).toMatchObject({
-      id: "local-access",
-      name: "Local Access Worker",
-      prebuilt_scripts: expect.arrayContaining(["local-machine", "code-exec"]),
+describe("generic worker configuration", () => {
+  it("accepts task-specific instructions, tools, skills, and connector scope", () => {
+    const config = customAgentToConfig({
+      name: "Project researcher",
+      instructions: "Compare the supplied sources and cite each claim.",
+      prebuilt_scripts: ["web-search"],
+      skills: ["source-review"],
+      connectors: ["drive"],
     });
+    expect(config.agentsMd).toContain("Compare the supplied sources");
+    expect(config.agentsMd).toContain("drive");
+    expect(config.scripts.prebuilt).toContain("web-search");
+    expect(config.skills.skills).toEqual([{ name: "source-review", tier: "space" }]);
   });
 
-  it("gives the local access worker the tunnel tool and universal durable baseline", () => {
-    const template = findAgentTemplate("local-access");
-    expect(template).toBeDefined();
-    const config = agentTemplateToConfig(template!);
-    expect(config.scripts.prebuilt).toEqual(expect.arrayContaining([
-      "local-machine",
-      "code-exec",
-      "r2-workspace",
-      "memory",
-      "notifications",
-    ]));
-    expect(config.agentsMd).toContain("active grants");
+  it("always retains the safe runtime baseline without duplicate entries", () => {
+    const config = customAgentToConfig({
+      name: "Helper", instructions: "Help with the delegated task.",
+      prebuilt_scripts: ["r2-workspace", "memory", "notifications"],
+    });
+    for (const capability of ["r2-workspace", "memory", "notifications"]) {
+      expect(config.scripts.prebuilt.filter((entry) => entry === capability)).toHaveLength(1);
+    }
   });
 });

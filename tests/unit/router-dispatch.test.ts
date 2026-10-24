@@ -282,7 +282,6 @@ describe("router — frontend route-parity (F-STRUCT)", () => {
     const REQUIRED_PREFIXES: Array<[label: string, needle: RegExp]> = [
       ["/builder (dashboard)", /["'`]\/builder\/\*["'`]/],
       ["/spaces (both)", /["'`]\/spaces\/\*["'`]/],
-      ["/reseller (dashboard)", /["'`]\/reseller\/\*["'`]/],
       ["/connectors (dashboard)", /["'`]\/connectors\/\*["'`]/],
       ["/templates (wizard)", /["'`]\/templates\/\*["'`]/],
       ["/products/by-slug (shell)", /\/v1\/products\/by-slug/],

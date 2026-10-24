@@ -30,25 +30,25 @@ async function call(doInstance: SpaceDO, path: string, method: string, body?: un
   return { status: resp.status, json };
 }
 
-describe("SpaceDO — customer-bot project config", () => {
+describe("SpaceDO — generic project layout config", () => {
   let spaceDO: SpaceDO;
 
   beforeEach(() => {
     spaceDO = makeSpaceDO();
   });
 
-  it("a freshly created project defaults to kind=workspace, execution_ceiling=5 (unrestricted)", async () => {
+  it("a freshly created project defaults to a canonical layout kind", async () => {
     const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Support" });
     expect(created.status).toBe(201);
 
     const got = await call(spaceDO, `/projects/${created.json.id}`, "GET");
-    expect(got.json.kind).toBe("workspace");
+    expect(got.json.kind).toBe("DualPane");
     expect(got.json.execution_ceiling).toBe(5);
     expect(got.json.external_daily_message_cap).toBe(0);
     expect(got.json.channel_config).toEqual({});
   });
 
-  it("PATCH configures a project as a restricted customer-facing bot", async () => {
+  it("rejects the retired customer_bot project kind without changing the generic project", async () => {
     const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "WhatsApp Bot" });
     const patched = await call(spaceDO, `/projects/${created.json.id}`, "PATCH", {
       kind: "customer_bot",
@@ -57,14 +57,10 @@ describe("SpaceDO — customer-bot project config", () => {
       external_daily_message_cap: 25,
       channel_config: { whatsapp: { connected: true } },
     });
-    expect(patched.status).toBe(200);
-    expect(patched.json).toMatchObject({
-      kind: "customer_bot",
-      execution_ceiling: 2,
-      daily_spend_cap_credits: 500,
-      external_daily_message_cap: 25,
-      channel_config: { whatsapp: { connected: true } },
-    });
+    expect(patched.status).toBe(400);
+    const unchanged = await call(spaceDO, `/projects/${created.json.id}`, "GET");
+    expect(unchanged.json.kind).toBe("DualPane");
+    expect(unchanged.json.channel_config).toEqual({});
   });
 
   it("rejects an execution_ceiling outside 1-5 (no escape hatch to an invalid tier)", async () => {

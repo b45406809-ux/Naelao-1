@@ -56,7 +56,7 @@ describe("SpaceDO — /projects/:id/spend (F9 authoritative per-project daily sp
   it("two separate 'threads' (independent debit calls) against the same project share ONE authoritative tally", async () => {
     const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Support Bot" });
     const projectId = created.json.id;
-    await call(spaceDO, `/projects/${projectId}`, "PATCH", { kind: "customer_bot", daily_spend_cap_credits: 100 });
+    await call(spaceDO, `/projects/${projectId}`, "PATCH", { kind: "DualPane", daily_spend_cap_credits: 100 });
 
     // Thread A debits 60 credits after its run.
     const afterA = await call(spaceDO, `/projects/${projectId}/spend`, "POST", { credits: 60 });

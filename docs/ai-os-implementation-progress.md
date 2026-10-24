@@ -143,15 +143,24 @@ marketplace activation or a deployed fresh-Space install.
       was removed from the test graph. This is local worker evidence, not a deployed marketplace
       settlement or customer-tenant acceptance test.
 - [ ] Reconcile the monorepo test graph against the approved kernel, Space Template, extension and
-      platform-subscription boundaries. Last complete root run: 2,101 suites discovered, 213 failed;
-      5,673 tests total, 387 failed. Most failures are stale tests for deleted business/wallet,
-      reseller, persona and fixed project-template behavior; there are also current test-mock/config
-      failures that still need triage. The Spaces worker suite remains green independently.
+      platform-subscription boundaries. Latest complete root run before the last fixture repair:
+      2,095 suites discovered, 178 failed; 5,652 tests total, 331 failed (report:
+      `/tmp/naelao-root-audit-refreshed.json`). Most failures
+      are stale tests for deleted business/wallet, reseller, persona and fixed project-template
+      behavior. The approval-policy and Whop hosted-connect tests were reconciled with the current
+      configurable worker and generic Composio flow and pass in a focused run (17 tests total across
+      those two suites). The project-spend suite also had a retired `customer_bot` kind in its
+      fixture; it now uses `DualPane` and passes independently. The root graph remains red and each
+      remaining failure still needs classification or correction; the Spaces worker suite remains
+      green independently.
 
 ## Verification
 
 Latest checkpoint: full Spaces suite (81 files, 351 tests); focused activation, dependency-aware
 extension removal, tenant-scoped certificate lookup, project lifecycle, fresh-target installation,
 erasure and graduation tests (64); conformance durable replay tests (3); Spaces and Workflows
-typechecks. No deployment, marketplace publication, external provider request or tenant-owned
-production certificate was performed.
+typechecks. Agents TypeScript check also passed for the current source changes. Full root Vitest
+completed with 1,917/2,095 suites and 5,321/5,652 tests passing; 178 suites and 331 tests remained
+failed at that point. The later focused project-spend fixture run passed 5/5. No deployment,
+marketplace publication, external provider request or tenant-owned production certificate was
+performed.

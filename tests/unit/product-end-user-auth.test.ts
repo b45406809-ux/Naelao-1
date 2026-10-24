@@ -33,9 +33,11 @@ const EMAIL_VERIFICATION_MIGRATION = readFileSync(join(__dirname, "../../infra/m
 const DELETED_AT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0058_product_end_users_deleted_at.sql"), "utf8");
 const PRODUCT_END_USER_LANGUAGE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0096_product_end_user_language.sql"), "utf8");
 const WHATSAPP_AUTH_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0080_whatsapp_passwordless_auth.sql"), "utf8");
+const WEBSITE_CONNECTIONS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0129_website_connections.sql"), "utf8");
+const ASSISTANT_COMMUNICATIONS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0130_assistant_communications.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION, WHATSAPP_AUTH_MIGRATION]);
+  const fakeDb = createFakeD1([USERS_MIGRATION, SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION, PRODUCT_END_USER_LANGUAGE_MIGRATION, WHATSAPP_AUTH_MIGRATION, WEBSITE_CONNECTIONS_MIGRATION, ASSISTANT_COMMUNICATIONS_MIGRATION]);
   const notifyCalls: Array<{ to: string; subject: string; body: string }> = [];
   return {
     PLATFORM_SECRET: "test-platform-secret",
@@ -44,6 +46,10 @@ function makeEnv() {
     BUILDER_ACCOUNT_DO: makeStatefulDoNamespace(BuilderAccountDO),
     PRODUCT_USER_DO: makeStatefulDoNamespace(ProductUserDO),
     SPACE_TYPE_REGISTRY_DO: makeStatefulDoNamespace(SpaceTypeRegistryDO),
+    // Account erasure calls the same internal services as production to revoke assistant
+    // communication identities and website-login profiles before anonymizing the roster row.
+    AGENTS_WORKER: { fetch: async () => Response.json({ erased: true }) },
+    BROWSER_WORKER: { fetch: async () => Response.json({ revoked: true }) },
     NAELAO_CONFIG_KV: { get: async () => null, put: async () => {} },
     // Fake service binding standing in for the notifications worker — captures the reset email
     // instead of actually sending it, so the test can pull the token out.

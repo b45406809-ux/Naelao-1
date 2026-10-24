@@ -101,7 +101,6 @@ import { seedTemplateProjects, seedGeneralProject } from "./launchpad/bootstrap.
 import { applyOnboardingAutonomyPolicy } from "./launchpad/autonomy-policy.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 import { customAgentToConfig } from "./agent-templates.js";
-import { ARCHETYPE_PRESETS, isKnownArchetype, clampScriptsToArchetype } from "./script-engine/agent-archetypes.js";
 import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/agent-config.js";
 import { actorAddress, type ThreadTier } from "@naelao/agent-sdk";
 import { applyDurableObjectJurisdiction, isSpaceNetworkEgressDenied } from "@naelao/security";
@@ -2012,11 +2011,8 @@ async function fireScriptDirectly(
 /**
  * What a proactive wake-up is FOR.
  *
- * The seeded recurring goal asks the assistant to review revenue and report. Reviewing is not
- * running a business: a competitor whose whole pitch is "it evaluates the state of the business,
- * prioritises, and executes" beats an assistant that reliably reports and never moves, however
- * honest the report. So every proactive wake now closes with a standing instruction to actually
- * advance the business by one real step.
+ * A recurring wake is an execution session, not an owner-facing chat turn. It reviews current
+ * work, resumes safely, and chooses one useful next action within the Space's configured policy.
  *
  * The approval policy is what keeps that safe, and is the thing worth being better at rather than
  * skipping: an autonomous runner that silently spends an owner's money is not more advanced than
@@ -2028,12 +2024,11 @@ async function fireScriptDirectly(
  * a few dozen runs a day, so it earns its tokens by being three sentences rather than a doctrine.
  */
 const ADVANCE_DIRECTIVE = [
-  "This is a recurring wake-up, not a question from the owner — nobody is waiting on a reply.",
-  "So do not stop at a summary: decide the single most valuable thing this business needs next,",
-  "and actually do it. If your approval policy already allows that action, take it now. If it",
-  "needs the owner's permission, open ONE approval with a concrete proposal (exactly what you",
-  "would do, and what it costs) rather than a vague suggestion. If the most valuable thing is",
-  "genuinely blocked, say precisely what is blocking it. Log what you did to the project journal.",
+  "This is a recurring background session, not a live owner chat.",
+  "Review the assigned work and its current state, then choose one useful next step.",
+  "Continue only within the assistant's configured tools, permissions, budget, and approval policy.",
+  "Request approval with a concrete proposal when required; otherwise report the exact blocker.",
+  "Record progress and preserve enough state for the next background session to resume safely.",
 ].join(" ");
 
 /**
@@ -2113,25 +2108,6 @@ async function buildWakeUpBrief(env: AgentsEnv, spaceId: string, tenantId: strin
     for (const s of stalled) {
       lines.push(`- '${s.project_name}' stopped (${s.failure_kind}): ${s.summary.slice(0, 120)}`);
     }
-    // Where the business actually stands, not just what broke. An assistant told only about
-    // failures has nothing to say about a healthy business that simply is not selling anything
-    // yet — which is the state most new businesses are in, and the one where doing the next
-    // useful thing matters most.
-    const business = await loadSpaceContext(env.PLATFORM_DB, spaceId, tenantId);
-    if (business?.setup_note) {
-      // Unfinished setup outranks everything else: none of the work below can run until it is
-      // done, so spending a wake-up on marketing plans for a business that cannot take payment
-      // would be busywork. The owner is the only one who can unblock it.
-      lines.unshift(
-        `- Setup for ${business.name} is still unfinished, so it cannot trade yet. That is the ` +
-        // Same rule as the seeded cron goal: name the real op, not the prebuilt's phrase — a
-        // model reproduces the wording it is handed, and "the notifications prebuilt" is not a
-        // script name (that prebuilt's ops are prefixed `notify.`).
-        "single most valuable thing to resolve — nudge the owner with exactly what is missing " +
-        "(notify.email), and do not plan work that depends on setup being done."
-      );
-    }
-
     const situation = lines.length
       ? [
           "Since your last wake-up:",
@@ -2144,13 +2120,11 @@ async function buildWakeUpBrief(env: AgentsEnv, spaceId: string, tenantId: strin
       : [];
 
     // The directive rides on EVERY proactive wake, including the quiet ones. Returning null on a
-    // healthy business — the previous behaviour — is exactly when the assistant most needed
-    // telling to go and do something, since there was no failure to react to and the seeded goal
-    // only ever asked it to review.
+    // healthy Space — no failures should not suppress its standing background instruction.
     return [...situation, "", ADVANCE_DIRECTIVE, ""].join("\n");
   } catch {
     // A diagnostics lookup failing must never stop the scheduled work — but the standing
-    // instruction to actually advance the business needs no lookup, so it still applies.
+    // instruction to make safe progress needs no lookup, so it still applies.
     return `\n${ADVANCE_DIRECTIVE}\n`;
   }
 }
@@ -5783,22 +5757,7 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   }, 201);
 });
 
-// GET /archetypes — AVOS plan step 5: the capability-firewall presets a custom agent can opt
-// into (see agent-archetypes.ts's own header). Browsable so the custom-agent-creation UI can
-// offer them; global, not space-scoped, same posture as /agent-templates above.
-app.get("/archetypes", async (c) => {
-  await requireVerifiedTenant(c);
-  return c.json({ archetypes: Object.values(ARCHETYPE_PRESETS) });
-});
-
-/**
- * Instantiate one AGENT_TEMPLATES entry as a real, standalone agent_definition in a space:
- * writes its 4 R2 config files (agents.md/system-prompt.md/scripts.json/skills.json), registers
- * it in SpaceDO's agent_definitions index, seeds its own per-agent approval policy from the
- * template's default, and — when a project id is given — binds it into that project's
- * allowed_agent_ids so it shows up as a real choice in the project's own agent switcher.
- * Mirrors applyProjectTemplate's own shape/sequencing exactly.
- */
+/** Internal request headers for worker configuration writes. */
 function agentTemplateHeaders(internalToken: string, tenantId: string, callerUserId?: string): Record<string, string> {
   return {
     "content-type": "application/json",
@@ -5847,12 +5806,6 @@ interface CustomAgentCreate {
   approval_mode?: "always_ask" | "gate_unless_listed" | "yolo";
   auto_approved_actions?: string[];
   project_id?: string;
-  // AVOS plan step 5 — optional capability-firewall archetype. Absent = unchanged, unrestricted
-  // legacy behavior (prebuilt_scripts passed through verbatim); given, the requested script list
-  // is clamped to that archetype's allowlist and whatever was dropped is reported back rather
-  // than silently narrowed. See agent-archetypes.ts's own header for why this is opt-in
-  // validation at CREATION time, not a runtime override of every agent's config.
-  archetype?: string;
   skills?: string[];
   connectors?: string[];
 }
@@ -5862,21 +5815,12 @@ async function createCustomAgent(
   tenantId: string,
   input: CustomAgentCreate,
   callerUserId?: string
-): Promise<{ agentId: string; agentDefinitionId: string; rejected_scripts?: string[] } | { error: string; status: number }> {
+): Promise<{ agentId: string; agentDefinitionId: string } | { error: string; status: number }> {
   if (!env.SCRIPTS_R2) return { error: "Agent config storage is not bound", status: 503 };
   if (!input.name?.trim()) return { error: "name is required", status: 400 };
   if (!input.instructions?.trim()) return { error: "instructions are required", status: 400 };
 
-  let scriptsToGrant = input.prebuilt_scripts ?? [];
-  let rejectedScripts: string[] | undefined;
-  if (input.archetype !== undefined) {
-    if (!isKnownArchetype(input.archetype)) {
-      return { error: `unknown archetype '${input.archetype}'. Must be one of: ${Object.keys(ARCHETYPE_PRESETS).join(", ")}`, status: 400 };
-    }
-    const clamped = clampScriptsToArchetype(input.archetype, scriptsToGrant);
-    scriptsToGrant = clamped.allowed;
-    if (clamped.rejected.length > 0) rejectedScripts = clamped.rejected;
-  }
+  const scriptsToGrant = input.prebuilt_scripts ?? [];
 
   const agentId = `custom-${crypto.randomUUID().slice(0, 12)}`;
   await writeAgentConfig(
@@ -5932,7 +5876,7 @@ async function createCustomAgent(
 
   if (input.project_id) await bindAgentToProject(env, spaceId, tenantId, input.project_id, agentId, callerUserId);
 
-  return { agentId, agentDefinitionId: `${spaceId}:${agentId}`, ...(rejectedScripts ? { rejected_scripts: rejectedScripts } : {}) };
+  return { agentId, agentDefinitionId: `${spaceId}:${agentId}` };
 }
 
 // POST /agents/custom  { space_id, name, description?, instructions, prebuilt_scripts, ... }
@@ -5947,7 +5891,6 @@ app.post("/agents/custom", async (c) => {
   }
   return c.json({
     agent_id: result.agentId, agent_definition_id: result.agentDefinitionId, custom: true,
-    ...(result.rejected_scripts ? { rejected_scripts: result.rejected_scripts } : {}),
   }, 201);
 });
 

@@ -22,14 +22,14 @@ describe("Batch 09 foundations", () => {
     );
   });
 
-  it("declares only the maintained Document and DataGrid shells", () => {
+  it("declares four canonical interactions without embedding vertical-specific canvas shells", () => {
     const manifests = Object.values(PROJECT_KIND_MANIFESTS);
-    expect(manifests).toHaveLength(2);
-    expect(new Set(manifests.map((item) => item.viewportComponent)).size).toBe(2);
+    expect(manifests).toHaveLength(4);
+    expect(new Set(manifests.map((item) => item.interaction)).size).toBe(4);
     for (const manifest of manifests) {
-      expect(defaultViewportFor(manifest.layout)).toMatchObject({
-        component: manifest.viewportComponent,
-        canvasPrimary: true,
+      expect(defaultViewportFor(manifest.kind)).toMatchObject({
+        component: "WorkspaceViewport",
+        canvasPrimary: manifest.canvasPrimary,
       });
     }
   });

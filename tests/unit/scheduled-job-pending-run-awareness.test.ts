@@ -75,7 +75,10 @@ function makeEnv(opts: {
     PLATFORM_SECRET: "test-secret",
     PLATFORM_DB: db,
     NAELAO_AGENT_DO: { idFromName: (n: string) => ({ toString: () => n }), get: () => agentDoStub },
-    SPACES_WORKER: { async fetch() { return new Response("{}", { status: 200 }); } },
+    SPACES_WORKER: { async fetch(req: Request) {
+      if (new URL(req.url).pathname.endsWith("/sessions")) return Response.json({ id: "heartbeat-1" }, { status: 201 });
+      return new Response("{}", { status: 200 });
+    } },
     AGENT_CACHE: { async get() { return null; }, async put() {} },
     ANALYTICS: { writeDataPoint() {} },
   } as unknown as AgentsEnv;

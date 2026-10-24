@@ -141,7 +141,7 @@ function makeOcrEnv(options: { matchingTask?: boolean; enabled?: boolean; airGap
 
 async function readAttachment(env: never, overrides: Partial<typeof owned> = {}) {
   const tenantId = overrides.tenant ?? owned.tenant;
-  return app.request("/internal/business-email/attachment/read-text", {
+  return app.request("/internal/attachments/read-text", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -159,7 +159,7 @@ async function readAttachment(env: never, overrides: Partial<typeof owned> = {})
 
 async function ocrAttachment(env: never, overrides: Partial<typeof owned> = {}) {
   const tenantId = overrides.tenant ?? owned.tenant;
-  return app.request("/internal/business-email/attachment/ocr", {
+  return app.request("/internal/attachments/ocr", {
     method: "POST",
     headers: {
       "content-type": "application/json",

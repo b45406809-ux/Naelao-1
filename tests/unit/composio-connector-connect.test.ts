@@ -5,9 +5,7 @@ import { mintInternalToken } from "@naelao/http";
 import { mcpConnector } from "../../workers/agents/src/script-engine/prebuilt/mcp-connector.js";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
 
-// Composio "click Install" hosted-connect flow (growth layer G-1/G-3) — the mechanism behind a
-// real click-to-Install connector experience for Twitter/LinkedIn/Instagram/TikTok/etc, distinct
-// from Whop's bespoke OAuth2+PKCE app (whop-oauth-connect.test.ts). Safety invariants under test:
+// Composio "click Install" hosted-connect flow. Safety invariants under test:
 //   1. The start route only builds a real connect_url when the platform key + auth config are
 //      configured, never fabricates one — and never proceeds without them.
 //   2. The callback's `ticket` is single-use — an unknown/expired ticket is rejected cleanly.
@@ -161,11 +159,12 @@ describe("POST /connectors/:platform/provider-connect/start", () => {
     expect((await res.json<{ error_code: string; message: string }>()).error_code).toBe("provider_connect_unavailable");
   });
 
-  it("rejects a connector with no composio spec at all (e.g. Whop, which uses its own OAuth app)", async () => {
+  it("uses the curated hosted-connect spec for Whop through the generic Composio flow", async () => {
     const env = makeEnv();
+    mockComposio({ expectAuthConfigId: "ac_managed_1" });
     const res = await startReq(env, "whop");
-    expect(res.status).toBe(400);
-    expect((await res.json<{ error_code: string }>()).error_code).toBe("provider_connect_not_supported");
+    expect(res.status).toBe(200);
+    expect((await res.json<{ connect_url: string }>()).connect_url).toBe("https://backend.composio.dev/consent/xyz");
   });
 
   it("surfaces a clear error when Composio's link call itself fails", async () => {

@@ -13,9 +13,9 @@ import {
 import { WORKFLOW_CLASS_POLICIES } from "../../packages/agent-sdk/src/workflow-taxonomy";
 
 describe("configuration-driven canvas and extension security", () => {
-  it("defines only the two maintained first-party canvas shells", () => {
+  it("defines the four canonical project layout primitives", () => {
     expect(Object.keys(PROJECT_KIND_MANIFESTS)).toEqual(PROJECT_KINDS);
-    expect(PROJECT_KINDS).toEqual(["DualPane.Document", "DualPane.DataGrid"]);
+    expect(PROJECT_KINDS).toEqual(["DualPane", "CanvasFirst", "HeadlessPipeline", "TerminalFirst"]);
   });
   it("validates iframe origin and schema and refuses executable generated widgets", () => {
     expect(() =>

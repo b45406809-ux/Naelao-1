@@ -12,7 +12,14 @@ async function requestTicket(configJson: string, role = "owner", tenantActive = 
     PLATFORM_SECRET: SECRET,
     PLATFORM_DB: { prepare: (sql: string) => ({ bind: () => ({ first: async () => sql.includes("SELECT s.id FROM spaces s WHERE")
       ? tenantActive ? { id: "space-1" } : null
-      : { status: "active", config_json: configJson } }) }) },
+      : sql.includes("SELECT * FROM assistant_communication_identities")
+        ? { id: "aci-test", tenant_id: TENANT, space_id: "space-1", project_id: null, scope_key: "user:user-1", owner_user_id: "user-1", email_address: null, address_hash: null, email_provider: "none", email_status: "pending", status: "active", autonomy_json: "{}" }
+        : sql.includes("SELECT status, config_json FROM spaces") || sql.includes("SELECT status, config_json FROM spaces WHERE")
+          ? { status: "active", config_json: configJson }
+          : null,
+      run: async () => ({ meta: { changes: 1 } }),
+      all: async () => ({ results: [] }),
+    }) }) },
     SPACES_WORKER: { fetch: async () => { sessionChecks++; return Response.json({ id: "session-1" }); } },
   } as unknown as AgentsEnv;
   const response = await app.fetch(new Request("https://agents.naelao.test/spaces/space-1/sessions/session-1/voice-ticket", {
@@ -33,7 +40,9 @@ describe("owner voice ticket route", () => {
   it("issues a short-lived ticket only after session scope is checked", async () => {
     const { response, sessionChecks } = await requestTicket("{}");
     expect(response.status).toBe(200);
-    expect(sessionChecks).toBe(1);
+    // The route checks the requested session and the voice/communication helpers recheck its
+    // scope before issuing a ticket. Both checks must complete before the ticket is returned.
+    expect(sessionChecks).toBeGreaterThanOrEqual(2);
     const body = await response.json() as { agent: string; name: string; ticket: string; expires_at: number; session_id: string };
     expect(body).toMatchObject({ agent: "OWNER_VOICE_AGENT", session_id: "session-1" });
     expect(body.name).toBeTruthy();
