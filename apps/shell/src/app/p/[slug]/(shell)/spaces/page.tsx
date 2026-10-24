@@ -2,10 +2,10 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Button, Badge, Card, CardTitle, CardDesc, FormInput } from "@naelao/ui";
+import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { listMyBusinesses, getSpaceAnalytics, type Business } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { modelLabel } from "@/components/ModelSelector";
 
@@ -17,7 +17,7 @@ const AXIS_LABEL: Record<string, string> = {
 };
 
 interface SpaceActivity {
-  space: Business;
+  space: SpaceSummary;
   runs: number;
   credits: number;
   successRate: number | null;
@@ -27,27 +27,85 @@ interface SpaceActivity {
 export default function SpacesPage() {
   const product = useProduct();
   const { session } = useProductAuth();
-  const [spaces, setSpaces] = React.useState<Business[]>([]);
+  const { toast, show } = useToast();
+  const [spaces, setSpaces] = React.useState<SpaceSummary[]>([]);
+  const [templates, setTemplates] = React.useState<SpaceTemplateListing[]>([]);
   const [activities, setActivities] = React.useState<SpaceActivity[] | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [listFailed, setListFailed] = React.useState(false);
   const [activityLoading, setActivityLoading] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [showAllModels, setShowAllModels] = React.useState(false);
-  const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [newSpaceName, setNewSpaceName] = React.useState("");
+  const [templateId, setTemplateId] = React.useState("");
+  const [creating, setCreating] = React.useState(false);
+  const [createError, setCreateError] = React.useState<string | null>(null);
+  const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
+  const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
     setLoading(true);
     try {
-      setSpaces(await listMyBusinesses(product.space_id, creds));
-      setListFailed(false);
+      const [listed, availableTemplates] = await Promise.allSettled([
+        listMySpaces(product.space_id, creds),
+        listSpaceTemplates(creds),
+      ]);
+      if (listed.status === "fulfilled") {
+        setSpaces(listed.value);
+        setListFailed(false);
+      } else {
+        setListFailed(true);
+      }
+      if (availableTemplates.status === "fulfilled") setTemplates(availableTemplates.value);
     } catch {
       setListFailed(true);
     } finally {
       setLoading(false);
     }
   }, [creds, product.space_id]);
+
+  async function handleCreate(event?: React.FormEvent) {
+    event?.preventDefault();
+    if (!creds || !newSpaceName.trim() || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const listing = templateId ? templates.find((item) => item.id === templateId) : undefined;
+      if (templateId && !listing) throw new Error("That Space Template is no longer available.");
+      const fork = listing ? await forkSpaceTemplate(listing.id, creds) : null;
+      const created = await createSpace(product.space_id, creds, {
+        name: newSpaceName.trim(),
+        ...(listing ? { template_listing_id: listing.id } : {}),
+      });
+      setNewSpaceName("");
+      // Production spaces install the blueprint at the end of background provisioning. Local
+      // spaces have no queue, so activate it now that the owner membership is committed.
+      if (fork && created.status === "active") {
+        try {
+          await activateSpaceTemplate(created.id, fork.space_type_id, creds);
+        } catch (error) {
+          setCreatedSpaceId(created.id);
+          setCreateError(`Space created, but the template was not installed: ${error instanceof Error ? error.message : "installation failed"}`);
+          await refresh();
+          return;
+        }
+      }
+      setCreateOpen(false);
+      setTemplateId("");
+      setCreatedSpaceId(null);
+      await refresh();
+      if (created.status === "active") window.location.assign(`/p/${product.slug}/spaces/${created.id}`);
+      else show("Space created and provisioning in the background.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not create Space.";
+      setCreateError(message);
+      show(message);
+    } finally {
+      setCreating(false);
+    }
+  }
 
   React.useEffect(() => { void refresh(); }, [refresh]);
 
@@ -79,8 +137,11 @@ export default function SpacesPage() {
   return (
     <div className="page-view">
       <div className="page-header">
-        <div className="page-title">Spaces</div>
-        <div className="page-subtitle">Your connected Naelao workspaces.</div>
+        <div>
+          <div className="page-title">Spaces</div>
+          <div className="page-subtitle">Your Naelao workspaces.</div>
+        </div>
+        <Button onClick={() => { setCreateError(null); setCreatedSpaceId(null); setCreateOpen(true); }}>New Space</Button>
       </div>
 
       {!loading && !listFailed && spaces.length > 0 && (
@@ -174,6 +235,21 @@ export default function SpacesPage() {
         ))}
       </div>
       {!showAllModels && listModelBenchmarks().length > 6 && <Button variant="secondary" onClick={() => setShowAllModels(true)} style={{ marginTop: 10 }}>Show all {listModelBenchmarks().length} models</Button>}
+
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Create a Space" footer={createdSpaceId ? <Button onClick={() => window.location.assign(`/p/${product.slug}/spaces/${createdSpaceId}`)}>Open Space</Button> : <><Button variant="secondary" type="button" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={() => void handleCreate()} disabled={creating || !newSpaceName.trim()}>{creating ? "Creating…" : "Create Space"}</Button></>}>
+        <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <label style={{ fontSize: 12 }}>Name<FormInput autoFocus maxLength={100} placeholder="What is this Space for?" value={newSpaceName} onChange={(event) => setNewSpaceName(event.target.value)} required /></label>
+          {templates.some((template) => template.price_cents === 0) && (
+            <label style={{ fontSize: 12 }}>Space Template (optional)<FormSelect value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
+              <option value="">Start with a blank Space</option>
+              {templates.filter((template) => template.price_cents === 0).map((template) => <option key={template.id} value={template.id}>{template.name} · by {template.author_name}</option>)}
+            </FormSelect></label>
+          )}
+          <p style={{ margin: 0, fontSize: 12, color: "var(--text3)" }}>You can install extensions and configure the Space after it is created.</p>
+          {createError && <p role="alert" style={{ margin: 0, fontSize: 12, color: "#dc2626" }}>{createError}</p>}
+        </form>
+      </Modal>
+      <Toast toast={toast} />
     </div>
   );
 }

@@ -30,6 +30,8 @@ export interface ProvisionMessage {
   spaceTypeId: string;
   spaceName: string;
   templateId?: string;
+  /** Certified FDE marketplace blueprint to activate after this Space is provisioned. */
+  blueprintId?: string;
   templateIds?: string[];
   requestedAt: string;
   userId?: string;
@@ -165,16 +167,20 @@ export interface CreateSpaceParams {
   depth?: number;
   /** For Launchpad: the selected product template (e.g. "creator-store"). */
   templateId?: string;
+  /** Certified FDE marketplace blueprint to activate after this Space is provisioned. */
+  blueprintId?: string;
   /** Three-Tier Platform Model: the platform-subdomain identity (migration 0044, unique). */
   productSlug?: string;
   configOverrides?: Record<string, unknown>;
+  /** Initial owner index, committed atomically with the Space and its provisioning outbox. */
+  initialMembership?: { productSpaceId: string; endUserId: string; role?: "owner" | "admin" | "member" };
 }
 
 export interface CreateSpaceResult {
   id: string;
   status: string;
   created_at: string;
-  product_slug: string;
+  product_slug: string | null;
 }
 
 
@@ -316,9 +322,8 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   // anywhere lets a builder set the slug after creation, so a blank one produced a product that
   // provisioned successfully, reported `active`, and could never be opened by its owner or by a
   // single customer. Derived from the name instead, which is always present.
-  // Both callers of this function (POST /spaces and POST /builder/products) create top-level
-  // products; a child business goes through createBusinessForEndUser and has no slug of its own.
-  if (!params.productSlug) {
+  // Child Spaces live inside their product URL and do not receive their own subdomain.
+  if (!params.parentSpaceId && !params.productSlug) {
     const derived = await deriveAvailableSlug(env.PLATFORM_DB, params.name);
     if (!derived) {
       throw new SpaceCreationError(400, "product_slug_required", "Choose a product address with at least two letters or numbers.");
@@ -370,6 +375,7 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     spaceTypeId: params.spacetypeId,
     spaceName: params.name,
     ...(params.templateId ? { templateId: params.templateId } : {}),
+    ...(params.blueprintId ? { blueprintId: params.blueprintId } : {}),
     ...(params.userId ? { userId: params.userId } : {}),
     requestedAt: now,
   };
@@ -379,20 +385,27 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(id, params.tenantId, params.spacetypeId, params.name.trim(), initialStatus, configJson, params.productSlug ?? null,
       params.parentSpaceId ?? null, derivedDepth, now, now, params.userId ?? null);
+    const writes = [spaceInsert];
+    if (params.initialMembership) {
+      writes.push(env.PLATFORM_DB.prepare(
+        `INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status, joined_at)
+         VALUES (?, ?, ?, ?, 'active', datetime('now')) ON CONFLICT(business_space_id, end_user_id) DO NOTHING`
+      ).bind(id, params.initialMembership.productSpaceId, params.initialMembership.endUserId, params.initialMembership.role ?? "owner"));
+    }
     if (useProvisioningQueue) {
-      await env.PLATFORM_DB.batch([
-        spaceInsert,
-        env.PLATFORM_DB.prepare(
+      writes.push(env.PLATFORM_DB.prepare(
           `INSERT INTO space_provisioning_outbox (space_id, tenant_id, payload_json)
            SELECT ?, ?, ? WHERE changes() = 1`,
-        ).bind(id, params.tenantId, JSON.stringify(provisionMessage)),
-      ]);
+        ).bind(id, params.tenantId, JSON.stringify(provisionMessage)));
+    }
+    if (useProvisioningQueue || params.initialMembership) {
+      await env.PLATFORM_DB.batch(writes);
     } else {
       await spaceInsert.run();
     }
   };
   const checkQuotaAndInsert = async (): Promise<void> => {
-    await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
+    if (!params.parentSpaceId) await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
     try {
       await insertSpace();
     } catch (err) {
@@ -440,5 +453,5 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     await deliverProvisioningOutboxEntry(env.PLATFORM_DB, env.PROVISION_QUEUE, id);
   }
 
-  return { id, status: initialStatus, created_at: now, product_slug: params.productSlug! };
+  return { id, status: initialStatus, created_at: now, product_slug: params.productSlug ?? null };
 }

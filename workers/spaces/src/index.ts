@@ -294,7 +294,8 @@ async function canExportBlueprint(c: { env: Env; req: { header(h: string): strin
 
 // ── GET /spaces — list spaces for tenant ────────────────────────────────────
 app.get("/spaces", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const identity = getCallerIdentity(c);
+  const tenantId = identity.tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
   const { results } = await c.env.PLATFORM_DB.prepare(
@@ -470,9 +471,15 @@ app.post("/internal/spaces/:spaceId/artifact-validation/:action", async c => {
 });
 
 app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const identity = getCallerIdentity(c);
+  const tenantId = identity.tenantId;
   const spaceId = c.req.param("spaceId");
-  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) {
+    return c.json({ error_code: "forbidden", message: "A verified Naelao session is required" }, 403);
+  }
+  // Provisioner calls are service-authenticated by the internal token and have no user identity.
+  // Interactive requests must come from this Space's owner or an admin.
+  if (identity.userId && !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
   const stored = await c.env.SCRIPTS_R2?.get(`blueprints/${c.req.param("blueprintId")}.json`);

@@ -9,11 +9,19 @@ import type { Hono } from "hono";
 import { verifyInternalToken } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
 import { resolveEndUserBusinessRole } from "./business-auth.js";
+import { createSpaceRecord, SpaceCreationError, type ProvisionMessage } from "./create-space.js";
+import { PERSONAL_PLAN_LIMITS, isPersonalPlanTier } from "@naelao/billing-core";
 
 export interface BusinessRoutesEnv {
   PLATFORM_DB: D1Database;
   PLATFORM_SECRET: string;
   SPACE_DO: DurableObjectNamespace;
+  PRODUCT_USER_DO?: DurableObjectNamespace;
+  LOCK_DO?: DurableObjectNamespace;
+  PROVISION_QUEUE?: Queue<ProvisionMessage>;
+  ENVIRONMENT?: string;
+  NAELAO_CONFIG_KV?: KVNamespace;
+  AGENTS_WORKER?: Fetcher;
   /** F-15: best-effort invite emails (same binding the product-end-user routes use). */
   NOTIFICATIONS_WORKER?: Fetcher;
   /** F-15: base URL for building a clickable accept link in the invite email. */
@@ -102,22 +110,11 @@ async function authorizeProductUser(
 }
 
 export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable-line @typescript-eslint/no-explicit-any
-  // GET /spaces/:productSpaceId/my-businesses — the space switcher's list: every business (under
-  // this product) the calling end user belongs to, from the business_memberships index (never
-  // opens each business's own SpaceDO — that's exactly what this index exists to avoid at scale).
-  app.get("/spaces/:productSpaceId/my-businesses", async (c) => {
+  const listSpaces = async (c: any) => {
     const env = c.env as BusinessRoutesEnv;
     const productSpaceId = c.req.param("productSpaceId");
     const identity = await authorizeProductUser(env, c, productSpaceId);
-    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product end-user identity required" }, 403);
-    const { userId } = identity;
-
-    // onboarding_status/template_id ride along from the space's own config_json rather than
-    // costing a second round trip per business: Discover's most important call to action is
-    // "finish setting this one up", and a business that was created but never configured does
-    // nothing at all (its assistant has no account to read and no way to reach its owner). Both
-    // are NULL for a business created before templates existed, which the UI reads as "nothing
-    // left to do" — the honest default, since there is no checklist to point at.
+    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product user identity required" }, 403);
     const { results } = await env.PLATFORM_DB.prepare(
       `SELECT m.business_space_id AS id, m.role, m.status AS membership_status, m.joined_at,
               s.name, s.status AS space_status,
@@ -127,9 +124,101 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
          JOIN spaces s ON s.id = m.business_space_id
         WHERE m.product_space_id = ? AND m.end_user_id = ? AND m.status = 'active' AND s.status != 'deleted'
         ORDER BY m.joined_at ASC`
-    ).bind(productSpaceId, userId).all();
-
+    ).bind(productSpaceId, identity.userId).all();
     return c.json({ data: results, count: results.length });
+  };
+
+  // Generic Space directory. The old route remains as a compatibility alias for existing clients.
+  app.get("/spaces/:productSpaceId/my-spaces", listSpaces);
+  app.get("/spaces/:productSpaceId/my-businesses", listSpaces);
+
+  // A signed-in product user can create an isolated Space under the product root. Membership is
+  // committed atomically with the Space row and provisioning outbox by createSpaceRecord.
+  app.post("/spaces/:productSpaceId/spaces", async (c) => {
+    const env = c.env as BusinessRoutesEnv;
+    const productSpaceId = c.req.param("productSpaceId");
+    const identity = await authorizeProductUser(env, c, productSpaceId);
+    if (!identity) return c.json({ error_code: "forbidden", message: "Signed product user identity required" }, 403);
+    const product = await env.PLATFORM_DB.prepare(
+      "SELECT tenant_id, spacetype_id, status, parent_space_id FROM spaces WHERE id = ? AND status = 'active'"
+    ).bind(productSpaceId).first<{ tenant_id: string; spacetype_id: string; status: string; parent_space_id: string | null }>();
+    if (!product || product.parent_space_id) return c.json({ error_code: "not_found", message: "Product Space not found" }, 404);
+
+    const body = await c.req.json<{ name?: string; template_listing_id?: string }>().catch(() => null);
+    if (!body || typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(body.name)) {
+      return c.json({ error_code: "bad_request", message: "Space name must contain 1–100 printable characters" }, 400);
+    }
+    let blueprintId: string | undefined;
+    if (body.template_listing_id !== undefined) {
+      if (typeof body.template_listing_id !== "string" || body.template_listing_id.length > 128) {
+        return c.json({ error_code: "bad_request", message: "Invalid Space Template listing id" }, 400);
+      }
+      const licensed = await env.PLATFORM_DB.prepare(
+        `SELECT f.blueprint_id FROM marketplace_forks f JOIN marketplace_listings l ON l.id = f.listing_id
+          WHERE f.tenant_id = ? AND f.listing_id = ? AND l.status = 'published'`
+      ).bind(identity.tenantId, body.template_listing_id).first<{ blueprint_id: string }>();
+      if (!licensed) return c.json({ error_code: "template_license_required", message: "Install or license this Space Template from the marketplace first." }, 402);
+      blueprintId = licensed.blueprint_id;
+    }
+
+    // Personal plan entitlements are product-user scoped. Missing/unavailable plan state uses
+    // the free allowance; paid periods and expirations remain authoritative in ProductUserDO.
+    let planTier: "free" | "plus" = "free";
+    if (env.PRODUCT_USER_DO) {
+      try {
+        const name = await getDOName("produser", `${productSpaceId}:${identity.userId}`, identity.tenantId, env.PLATFORM_SECRET);
+        const stub = env.PRODUCT_USER_DO.get(env.PRODUCT_USER_DO.idFromName(name));
+        const plan = await stub.fetch(new Request("http://produser/plan-tier"));
+        const value = plan.ok ? (await plan.json<{ plan_tier?: unknown }>()).plan_tier : undefined;
+        if (isPersonalPlanTier(value)) planTier = value;
+      } catch { /* fail closed to the free Space allowance */ }
+    }
+    const maxSpaces = PERSONAL_PLAN_LIMITS[planTier].maxBusinessesOwned;
+
+    // A per-user lock keeps concurrent requests from bypassing the personal Space limit. The
+    // shared creator has a separate tenant-level lock for root product provisioning.
+    if (!env.LOCK_DO) return c.json({ error_code: "space_creation_unavailable" }, 503);
+    let lockStub: DurableObjectStub | undefined;
+    const lockCaller = `user-space-create:${crypto.randomUUID()}`;
+    let lockAcquired = false;
+    const lockName = await getDOName("user-space-create", `${productSpaceId}:${identity.userId}`, identity.tenantId, env.PLATFORM_SECRET);
+    lockStub = env.LOCK_DO.get(env.LOCK_DO.idFromName(lockName));
+    const locked = await lockStub.fetch(new Request("http://lock/acquire", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ caller_id: lockCaller, ttl_ms: 30_000 }),
+    }));
+    if (!locked.ok) return c.json({ error_code: "space_creation_unavailable" }, 503);
+    lockAcquired = (await locked.json<{ acquired: boolean }>()).acquired;
+    if (!lockAcquired) return c.json({ error_code: "space_creation_busy", message: "Another Space is being created. Retry shortly." }, 429);
+
+    try {
+      const existing = await env.PLATFORM_DB.prepare(
+        "SELECT COUNT(*) AS count FROM spaces WHERE parent_space_id = ? AND created_by = ? AND status != 'deleted'"
+      ).bind(productSpaceId, identity.userId).first<{ count: number }>();
+      if ((existing?.count ?? 0) >= maxSpaces) {
+        return c.json({ error_code: "space_limit_reached", message: `You have reached your plan limit of ${maxSpaces} Spaces.` }, 429);
+      }
+      const result = await createSpaceRecord(env, {
+        tenantId: identity.tenantId,
+        userId: identity.userId,
+        name: body.name.trim(),
+        spacetypeId: product.spacetype_id,
+        parentSpaceId: productSpaceId,
+        depth: 1,
+        ...(blueprintId ? { blueprintId } : {}),
+        initialMembership: { productSpaceId, endUserId: identity.userId, role: "owner" },
+      });
+      return c.json({ id: result.id, space_id: result.id, name: body.name.trim(), status: result.status }, 201);
+    } catch (error) {
+      if (error instanceof SpaceCreationError) return c.json({ error_code: error.error_code, message: error.message }, error.status as 400 | 402 | 404 | 409 | 429 | 503);
+      throw error;
+    } finally {
+      if (lockAcquired && lockStub) {
+        await lockStub.fetch(new Request("http://lock/release", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ caller_id: lockCaller }),
+        })).catch(() => undefined);
+      }
+    }
   });
 
   // POST /spaces/:businessSpaceId/invites — owner/admin of the BUSINESS invites a collaborator by

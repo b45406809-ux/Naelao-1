@@ -6,6 +6,7 @@ export interface ProvisionMessage {
   spaceName: string;
   templateId?: string;
   templateIds?: string[];
+  blueprintId?: string;
   requestedAt: string;
   userId?: string;
 }
@@ -36,6 +37,7 @@ export function isProvisionMessage(value: unknown): value is ProvisionMessage {
   if (message.userId !== undefined && !safeHeaderText(message.userId)) return false;
   if (message.type === "space_deprovision") return true;
   if (message.templateId !== undefined && !boundedText(message.templateId)) return false;
+  if (message.blueprintId !== undefined && !safeIdentifier(message.blueprintId)) return false;
   if (message.templateIds !== undefined && (
     !Array.isArray(message.templateIds) ||
     message.templateIds.length > TEMPLATE_MAX ||

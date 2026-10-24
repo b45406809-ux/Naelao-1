@@ -128,6 +128,54 @@ export async function installLaunchpadAgents(
 
 }
 
+async function registerAgentIndex(
+  spaceId: string,
+  tenantId: string,
+  agentId: string,
+  name: string,
+  description: string,
+  templateId: string | null,
+  spaceTypeId: string,
+  env: Env,
+): Promise<void> {
+  const response = await env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/agent-definitions`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({
+        id: `${spaceId}:${agentId}`,
+        space_id: spaceId,
+        name,
+        description,
+        config: { agent_id: agentId, config_path: `spaces/${spaceId}/agents/${agentId}/`, spacetype_id: spaceTypeId, template_id: templateId },
+      }),
+    },
+  ));
+  if (!response.ok) throw new Error(`agent_index_registration_failed:${await responseErrorDetail(response)}`);
+}
+
+async function seedOwnerMember(env: Env, spaceId: string, tenantId: string, userId: string): Promise<boolean> {
+  const response = await env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/members`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({ space_id: spaceId, user_id: userId, role: "owner" }),
+    },
+  ));
+  if (!response.ok) console.warn(`[provisioner] owner member seed failed for ${spaceId}: ${await responseErrorDetail(response)}`);
+  return response.ok;
+}
+
 /**
  * §A1.17 Phase G, revised per explicit user direction: seed a FULLY AUTONOMOUS ("yolo")
  * assistant_policy default for a new Launchpad space — the business-builder assistant is meant
@@ -371,6 +419,19 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       { expirationTtl: 86400 }
     );
     provisioned.push("active");
+
+    // Optional certified marketplace template install happens only after base provisioning has
+    // completed, so its SpaceDO mutations cannot race the initial project/member setup. A failed
+    // template activation does not roll back a usable Space; the activation endpoint remains
+    // callable for a retry from the Space UI.
+    if (msg.blueprintId) {
+      const activation = await env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(msg.blueprintId)}/activate`,
+        { method: "POST", headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) } },
+      ));
+      if (!activation.ok) console.warn(`[provisioner] Marketplace template activation failed for ${spaceId}: ${await responseErrorDetail(activation)}`);
+      else provisioned.push("marketplace_template");
+    }
 
     console.log(`[provisioner] Space ${spaceId} (${spaceTypeId}) provisioned successfully`);
   } catch (err) {

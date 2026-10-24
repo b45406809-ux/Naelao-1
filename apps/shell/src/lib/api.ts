@@ -2274,7 +2274,7 @@ export async function inheritSkills(
 // ── Businesses (Phase C — reseller-mode end users create/switch/invite into their own
 // businesses) ─────────────────────────────────────────────────────────────────
 
-export interface Business {
+export interface SpaceSummary {
   id: string;
   name: string;
   role: "member" | "admin" | "owner";
@@ -2287,10 +2287,49 @@ export interface Business {
   template_id?: string | null;
 }
 
-/** GET /v1/spaces/:productSpaceId/my-businesses — the space switcher's list. */
-export async function listMyBusinesses(productSpaceId: string, session: SessionCredentials): Promise<Business[]> {
-  const res = await apiFetch<{ data: Business[]; count: number }>(`/v1/spaces/${productSpaceId}/my-businesses`, { session });
+/** @deprecated Transitional type alias for callers not yet migrated from the old route naming. */
+export type Business = SpaceSummary;
+
+/** List Spaces owned or joined by the signed-in user inside this product. */
+export async function listMySpaces(productSpaceId: string, session: SessionCredentials): Promise<SpaceSummary[]> {
+  const res = await apiFetch<{ data: SpaceSummary[]; count: number }>(`/v1/spaces/${productSpaceId}/my-spaces`, { session });
   return res.data;
+}
+
+/** @deprecated Use listMySpaces. */
+export const listMyBusinesses = listMySpaces;
+
+/** Create a user-owned Space in the current product. A selected template is optional. */
+export async function createSpace(
+  productSpaceId: string,
+  session: SessionCredentials,
+  input: { name: string; template_listing_id?: string }
+): Promise<{ id: string; name: string; status: string; template_id?: string | null }> {
+  return apiFetch(`/v1/spaces/${productSpaceId}/spaces`, { method: "POST", body: JSON.stringify(input), session });
+}
+
+export interface SpaceTemplateListing {
+  id: string;
+  space_type_id: string;
+  name: string;
+  description: string;
+  author_name: string;
+  price_cents: number;
+  pricing_model: string;
+}
+
+/** Published, FDE-authored Space Templates from the Naelao marketplace. */
+export async function listSpaceTemplates(session: SessionCredentials): Promise<SpaceTemplateListing[]> {
+  const result = await apiFetch<{ data: SpaceTemplateListing[] }>("/v1/marketplace?category=vertical-saas&per_page=100", { session });
+  return result.data ?? [];
+}
+
+export async function forkSpaceTemplate(listingId: string, session: SessionCredentials): Promise<{ space_type_id: string }> {
+  return apiFetch(`/v1/marketplace/${encodeURIComponent(listingId)}/fork`, { method: "POST", session });
+}
+
+export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials): Promise<unknown> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, { method: "POST", session });
 }
 
 export interface SpaceAnalytics {
