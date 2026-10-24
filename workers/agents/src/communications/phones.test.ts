@@ -581,4 +581,17 @@ describe("assistant telephone safety and lifecycle", () => {
       "123456"
     );
   });
+ it('prunes old private phone drafts while retaining uncertain carrier operations',async()=>{
+  const f=await phoneFixture();
+  const old=await f.act('phone-draft',{kind:'sms',to:other,text:'old'}) as {id:string};
+  const held=await f.act('phone-draft',{kind:'sms',to:other,text:'held'}) as {id:string};
+  await f.db.prepare("UPDATE assistant_phone_actions SET created_at=datetime('now','-31 days')").run();
+  await f.db.prepare("UPDATE assistant_phone_actions SET status='indeterminate' WHERE id=?").bind(held.id).run();
+  const remove=vi.fn(async()=>undefined);Object.assign(f.env.SCRIPTS_R2!,{delete:remove});
+  const {sweepAssistantPhoneHistory}=await import('./phone-lifecycle.js');await sweepAssistantPhoneHistory(f.env);
+  expect(await f.db.prepare('SELECT id FROM assistant_phone_actions WHERE id=?').bind(old.id).first()).toBeNull();
+  expect(await f.db.prepare('SELECT id FROM assistant_phone_actions WHERE id=?').bind(held.id).first()).not.toBeNull();
+  expect(remove).toHaveBeenCalledTimes(1);
+ });
+
 });

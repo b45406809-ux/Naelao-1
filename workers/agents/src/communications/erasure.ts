@@ -82,6 +82,7 @@ export async function eraseCommunicationIdentities(
       .run();
 }
 export async function sweepAssistantCommunications(env: AgentsEnv) {
+  await (await import("./phone-lifecycle.js")).sweepAssistantPhoneHistory(env);
   await env.PLATFORM_DB.prepare(
     "DELETE FROM assistant_mail_ingress_usage WHERE day<date('now','-35 days')"
   ).run();

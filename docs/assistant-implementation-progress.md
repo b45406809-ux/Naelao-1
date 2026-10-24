@@ -167,3 +167,12 @@ Different inputs in one task no longer reuse an unrelated completion; the same i
 under a new run attempt cannot blindly repeat an interrupted replay. Focused phone/learning tests
 passed (20) after this correction. Early negative carrier reconciliation is held for two minutes
 to avoid racing an in-flight provider request; a positive receipt is verified against the account.
+
+## Phone history retention follow-up
+
+Added bounded 30-day private phone event/draft cleanup and 35-day ingress-counter cleanup to
+scheduled communication maintenance. Uncertain carrier actions and pending purchase outcomes
+are retained for reconciliation. Shared command-inbox bodies retain their existing retention
+owner. Every deleted object key is checked against the exact assistant namespace. The focused
+phone regression suite and Agents type check passed. The larger implementation list above is
+still open; this change does not activate managed telephony or live provider acceptance.
