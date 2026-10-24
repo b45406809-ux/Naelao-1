@@ -20,3 +20,21 @@ onboarding controls and a live host gate before assistant notification dispatch.
 Verified SDK/blueprint tests (6), Spaces/Agents/Shell type checks and whitespace checks.
 Next: persistent generic assistant identities, email inbox/drafts/sending, then verification.
 Existing external channel ingress still needs integration with effective channel settings.
+
+## Step 2 — mailbox and verification implementation (validation in progress)
+
+Added migration 0130 for canonical Space-user / shared Project assistant identities, encrypted
+inboxes and attachments, pagination, drafts, recipient-scoped standing send policy, verified
+profile controller pairing and app-issued single-use command tokens. Matching From addresses
+alone produce pending commands, never autonomous runs. Legacy hashed agent aliases migrate
+lazily without changing valid addresses. Provisioning hooks seed identities on Space/project
+creation when the email channel is enabled; missing domains report pending/configured status.
+
+Added per-task verification waits and stable per-website aliases. Codes and confirmation links
+are encrypted and redeemed only by the matching browser host/run/actor/connection. Worker
+views redact account mail; authenticated owners can review their own originals. Secret-filling
+browser sessions withhold screenshots until reopened; DOM receipts redact supplied values.
+Added Space/private-user erasure and retention, byte/message ingress bounds and uncertain-send
+reconciliation. Focused regression tests passed (41); Agents/Browser/Spaces/Provisioner/Shell type checks passed. Production Agents worker dry-run passed with unchanged container builds disabled (`--containers-rollout none`); the normal container rebuild ran out of Docker disk space, and only unused build cache was pruned. No live provider test was possible.
+Next: commit this validated checkpoint, then implement optional BYO/managed calls/SMS/MMS,
+browser/video demonstration skill lifecycle, and capability-aware current-model selection.

@@ -6,6 +6,7 @@ export interface BrowserActionRecord {
 export interface BrowserSessionRecord {
   scope: BrowserRuntimeScope; status: "open" | "closed"; providerSessionId?: string;
   engine: "kitesurf" | "chromium"; url: string; observation?: BrowserObservation;
+  sensitiveNavigation?: boolean;
   cookies?: unknown[]; actions: number; screenshots: string[]; lastUsedAt: number;
 }
 export interface BrowserStateStorage {

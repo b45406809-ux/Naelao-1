@@ -32,6 +32,7 @@ import {
   consumeConnectorReturnMarker,
 } from "@/lib/connectorActions";
 import { AppCard, type AppCardModel } from "@/components/AppCard";
+import { AssistantMailboxPanel } from "@/components/AssistantMailboxPanel";
 import { WebsiteConnections } from "@/components/WebsiteConnections";
 import { ConnectorAliases } from "@/components/ConnectorAliases";
 
@@ -290,6 +291,7 @@ export default function ConnectorsPage() {
         </div>
       </div>
 
+      {creds && <AssistantMailboxPanel spaceId={activeSpaceId} session={creds} />}
       {creds && <WebsiteConnections spaceId={activeSpaceId} session={creds} />}
 
       {creds && <ConnectorAliases spaceId={activeSpaceId} session={creds} connectors={connectors} onError={show} />}

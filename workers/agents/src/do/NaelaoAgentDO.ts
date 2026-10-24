@@ -2702,6 +2702,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       pythonEnabled: this.env.DYNAMIC_PYTHON_ENABLED === "true",
       ...(loopbacks?.CodeRpcBroker ? { createRpcBinding: async (options, deadline) => bindCodeRpc(loopbacks.CodeRpcBroker!, options, deadline) } : {}),
       authorizeCodeCapability: async (scope, capability) => env.codeAuthorize ? env.codeAuthorize(scope, capability) : false,
+      resolveBrowserVerification: async (scope,id,actionId,kind) => {
+        if(!this.env.AGENTS_WORKER||scope.tenantId!==tenantId||scope.spaceId!==spaceId||scope.actorId!==userId||scope.projectId!==projectId||!env.codeGrantIsActive||!await env.codeGrantIsActive({tenantId,spaceId,agentId,projectId,userId,runId:scope.runId}))throw new Error("browser_verification_scope_required");
+        const response=await this.env.AGENTS_WORKER.fetch(new Request("http://agents/internal/assistant-verification/consume",{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-role":env.callerRole??"product_end_user","x-naelao-internal-token":await mintInternalToken(this.env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({scope,id,action_id:actionId,kind})}));
+        if(!response.ok)throw new Error("browser_verification_not_ready");return(await response.json<{value:string}>()).value;
+      },
       listWebsiteConnections: async () => {
         if (!userId || airGappedOnly) return [];
         const response = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/website-connections`, { headers: {

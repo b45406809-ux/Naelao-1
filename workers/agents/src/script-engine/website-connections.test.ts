@@ -98,3 +98,57 @@ describe("assistant website accounts", () => {
     ).toContain("not_authorized");
   });
 });
+
+it("fills verification values through the host without modifying model arguments or receipts", async () => {
+  const seen: unknown[] = [];
+  const browserWorker = {
+    fetch: async (req: Request) => {
+      seen.push(await req.json());
+      return Response.json({
+        ok: true,
+        result: {
+          schema: 1,
+          sessionId: "session",
+          revision: "revision",
+          url: "https://example.com",
+          text: "Signed in",
+          elements: [],
+          engine: "chromium",
+          features: { persistentLogin: true },
+          untrusted: true,
+          capturedAt: Date.now(),
+          expiresAt: Date.now() + 30000,
+        },
+        engine_used: "chromium",
+      });
+    },
+  } as unknown as Fetcher;
+  const resolveBrowserVerification = vi.fn(async () => "123456");
+  const runner = buildCodeRunner({
+    platformSecret: "secret",
+    browserWorker,
+    authorizeBrowser: async () => true,
+    listWebsiteConnections: async () => connections,
+    resolveBrowserVerification,
+  });
+  const params = {
+    ...input,
+    name: "browser-use.type",
+    args: {
+      connection_id: "connection",
+      session_id: "session",
+      verification_id: "wait",
+      action_id: "action",
+      observation_revision: "revision",
+      handle: "e1",
+    },
+  };
+  const result = await runner.run(params);
+  expect(result.ok).toBe(true);
+  expect(seen[0]).toMatchObject({
+    secretValueUsed: true,
+    action: { text: "123456" },
+  });
+  expect(JSON.stringify(result.output)).not.toContain("123456");
+  expect(JSON.stringify(params)).not.toContain("123456");
+});

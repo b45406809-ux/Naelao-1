@@ -433,6 +433,10 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       else provisioned.push("marketplace_template");
     }
 
+    if(msg.userId&&env.AGENTS_WORKER){
+      try { await env.AGENTS_WORKER.fetch(new Request(`http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":msg.userId,"x-naelao-role":"owner","x-naelao-internal-token":await mintInternalToken(env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({action:"identity"})})); }
+      catch { console.warn("[provisioner] Assistant email setup deferred until first use"); }
+    }
     console.log(`[provisioner] Space ${spaceId} (${spaceTypeId}) provisioned successfully`);
   } catch (err) {
     console.error(`[provisioner] Provisioning failed at: ${provisioned[provisioned.length - 1] ?? "startup"}`, err);

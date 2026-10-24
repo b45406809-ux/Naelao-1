@@ -48,6 +48,7 @@ import { runtimeDiscovery } from "./runtime-discovery.js";
 import { languageDetection } from "./language-detection.js";
 import { languageGlossary } from "./language-glossary.js";
 import { languageTranslation } from "./language-translation.js";
+import { assistantMail } from "./assistant-mail.js";
 import { attachments } from "./attachments.js";
 import { documentProcessing } from "./document-processing.js";
 
@@ -93,6 +94,7 @@ export interface PrebuiltScript {
 
 /** The full catalogue shipped in this build, keyed by prebuilt script name. */
 export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
+  [assistantMail.name]: assistantMail,
   [documentProcessing.name]: documentProcessing,
   [languageDetection.name]: languageDetection,
   [languageGlossary.name]: languageGlossary,

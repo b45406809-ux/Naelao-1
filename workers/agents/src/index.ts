@@ -1,3 +1,5 @@
+import { receiveAssistantEmail } from "./communications/inbound.js";
+import { registerCommunicationRoutes } from "./communications/routes.js";
 import { DynamicSandboxDO } from "./do/DynamicSandboxDO.js";
 export { DynamicSandboxDO };
 // ── Agents Worker Entry Point ─────────────────────────────────────────────────
@@ -451,6 +453,7 @@ function validateEnv(env: AgentsEnv): void {
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+registerCommunicationRoutes(app);
 
 // Product sessions authorize a person, not access to every conversation in a product. Apply
 // ownership before every session-scoped Agents route (runs, status/stream, approvals, context,
@@ -9682,6 +9685,7 @@ export default {
     // enqueueAgentTicks/handleAgentTicksQueue above for why this is a queue fan-out rather than a
     // serial in-invocation loop. (The old daily "0 2 * * *" trigger drove the retired BusinessDO/
     // ProductDO nightly Whop cycle — removed from wrangler.toml's crons alongside this.)
+    _ctx.waitUntil((await import("./communications/erasure.js")).sweepAssistantCommunications(env).catch(()=>{console.warn("Assistant communication retention deferred; retry on next sweep");}));
     await enqueueAgentTicks(env);
   },
   queue: handleWorkerQueue as unknown as ExportedHandlerQueueHandler<AgentsEnv>,
@@ -9690,6 +9694,7 @@ export default {
 /** Cloudflare Email Routing entry point for task-scoped reply aliases. Configure an Email Routing
  * Worker action for EMAIL_INGRESS_DOMAIN to deliver messages to this Worker. */
 export async function handleCloudflareEmail(message: ForwardableEmailMessage, env: AgentsEnv): Promise<void> {
+  if (await receiveAssistantEmail(message,env)) return;
   if (message.rawSize > MAX_INBOUND_EMAIL_BYTES) {
     message.setReject("Message exceeds Naelao's inbound email size limit");
     return;

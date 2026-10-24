@@ -10,6 +10,7 @@ export interface ParsedCloudflareEmail {
   subject: string;
   messageId: string;
   text: string;
+  links?: string[];
   attachments: Array<{ filename: string; mimeType: string; bytes: Uint8Array }>;
 }
 
@@ -51,7 +52,8 @@ export async function parseCloudflareEmail(raw: ReadableStream<Uint8Array>): Pro
     const mimeType = /^[\w.+-]+\/[\w.+-]+$/.test(attachment.mimeType) ? attachment.mimeType : "application/octet-stream";
     return { filename, mimeType, bytes };
   });
-  return { from, subject, messageId, text, attachments };
+  const links = [...new Set([...String(parsed.html??"").matchAll(/href\s*=\s*["'](https:\/\/[^"']+)["']/gi)].slice(0,32).map(match=>match[1]!.replaceAll("&amp;","&")))];
+  return { from, subject, messageId, text, attachments, ...(links.length?{links}:{}) };
 }
 
 export function normalizeIngressDomain(value: string | undefined): string | null {

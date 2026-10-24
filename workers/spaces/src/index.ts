@@ -39,6 +39,7 @@ import { rankProjectStewardReviews, type ProjectStewardFact, type ProjectSteward
 import { isProjectStewardDecisionAction, projectStewardReviewKey } from "./project-steward-decisions.js";
 import { PROJECT_STEWARD_EXTENSION_MANIFEST } from "./project-steward-extension.js";
 import { reportExtensionArtifactWrite } from "./extension-storage-usage.js";
+import { eraseAssistantCommunications } from "./assistant-communication-erasure.js";
 import { eraseWebsiteConnections } from "./website-connection-erasure.js";
 import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 import { eraseBusinessServiceProviders } from "./business-erasure.js";
@@ -196,6 +197,7 @@ app.delete("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", asy
   const tenantId = c.req.param("tenantId");
   const spaceId = c.req.param("spaceId");
   if (c.req.header("x-naelao-tenant-id") !== tenantId) return c.json({ error_code: "tenant_scope_mismatch" }, 403);
+  await eraseAssistantCommunications(c.env,tenantId,spaceId);
   await eraseWebsiteConnections(c.env, tenantId, { spaceId });
   const usersErased = await eraseProductUsersForSpace(c.env.PLATFORM_DB, tenantId, spaceId, async (productSpaceId, userId) => {
     const stub = await productUserDoStub(c.env, productSpaceId, userId, tenantId);
@@ -2198,6 +2200,10 @@ app.post("/spaces/:spaceId/projects", async (c) => {
     stub, "/projects", "POST",
     JSON.stringify({ ...body, space_id: spaceId, tenant_id: tenantId, created_by: identity.userId || undefined, system_caller: !identity.userId })
   );
+  if(res.ok&&identity.userId&&c.env.AGENTS_WORKER){
+    const created=await res.clone().json<{id:string}>();
+    c.executionCtx.waitUntil(c.env.AGENTS_WORKER.fetch(new Request(`http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications?project_id=${encodeURIComponent(created.id)}`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":identity.userId,"x-naelao-role":identity.role,"x-naelao-internal-token":await mintInternalToken(c.env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({action:"identity"})})).then(()=>undefined).catch(()=>{console.warn("Project assistant identity provisioning deferred");}));
+  }
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -5179,6 +5185,7 @@ app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   ).bind(root.id, userId).first<{ deleted_at: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
 
+  await eraseAssistantCommunications(c.env,tenantId,root.id,userId,true);
   await eraseWebsiteConnections(c.env, tenantId, { userId, productSpaceId: root.id });
   const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
   const eraseRes = await stub.fetch(new Request("http://do/erase", { method: "DELETE" }));

@@ -131,6 +131,7 @@ const CORE_OPERATIONS = new Set<string>([
   "knowledge.search",     // knowledge-base.ts
   "memory.recall",        // memory.ts
   "project_journal.read", // project-journal.ts
+  "mail.identity",
   "notify.email",         // notifications.ts
   "conversation.search",  // conversation.ts
   "conversation.research", // conversation.ts — bounded excerpt + specialist chain

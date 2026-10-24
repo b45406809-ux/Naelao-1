@@ -669,6 +669,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
   /^\/spaces\/([^/]+)\/presence$/,
   /^\/spaces\/([^/]+)\/my-businesses$/,
+  /^\/spaces\/([^/]+)\/assistant-communications$/,
   /^\/spaces\/([^/]+)\/assistant-channels$/,
   /^\/spaces\/([^/]+)\/website-connections$/,
   /^\/spaces\/([^/]+)\/website-browser$/,
@@ -1348,6 +1349,7 @@ api.all("/spaces/:spaceId/channels/*", async (c) =>
 
 // Customer PSTN number credentials, policy, and lifecycle are owned by the Agents worker.
 // Keep this specific route before the general /spaces/* proxy below.
+api.all("/spaces/:spaceId/assistant-communications", async c => proxyTo(c.env.AGENTS_WORKER,c.get("claims"),c.req.raw,c.env.PLATFORM_SECRET));
 api.all("/spaces/:spaceId/customer-voice/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );

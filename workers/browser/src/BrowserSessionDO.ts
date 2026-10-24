@@ -7,7 +7,7 @@ import { assertBrowserAction, assertBrowserUrl, browserEngineFor, validateBrowse
   type BrowserObservation, type BrowserRuntimeScope, type BrowserScopedAction } from "@naelao/agent-sdk";
 import { BrowserActionJournal, discardScreenshotWithCleanupIntent, sameBrowserOwner,
   uploadScreenshotWithCleanupIntent, type BrowserSessionRecord } from "./browser-session-state.js";
-import { profileOwner, type WebsiteState } from "./website-profile.js";
+import { profileOwner, sealProfile, openProfile, type WebsiteState } from "./website-profile.js";
 import { boundedValues, collectBoundedFrameIds } from "./browser-observation-bounds.js";
 
 export interface BrowserEnv {
@@ -19,6 +19,7 @@ export interface BrowserRequest {
   scope: BrowserRuntimeScope; url?: string; action?: BrowserScopedAction;
   /** Set only by the authenticated user sign-in route, never forwarded from model arguments. */
   humanLogin?: boolean;
+  sensitiveNavigation?: boolean; secretValueUsed?: boolean;
   interactive?: boolean; visual?: boolean; pixelAccurate?: boolean; webgl?: boolean; path?: string;
 }
 interface AXNode { backendDOMNodeId?: number; frameId?: string; role?: { value?: string }; name?: { value?: string }; properties?: Array<{ name: string; value?: { value?: unknown } }> }
@@ -235,9 +236,19 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
       await this.authorize(body.scope, false, body.humanLogin);
       const latest = await this.ctx.storage.get<BrowserSessionRecord>(RECORD);
       if (this.cancelled || latest?.status !== "open") throw new Error("browser_session_closed");
+      const redactionOwner = profileOwner(body.scope)+":"+body.scope.sessionId;
+      const sealedRedactions = await this.ctx.storage.get<Awaited<ReturnType<typeof sealProfile>>>("secret-redactions");
+      const redactions = sealedRedactions ? (await openProfile(this.env.PLATFORM_SECRET,redactionOwner,sealedRedactions)).cookies.filter((x):x is string=>typeof x==="string") : [];
+      const usedSecret=body.secretValueUsed ? body.sensitiveNavigation?body.url:body.action?.text : undefined;
+      if(usedSecret&&!redactions.includes(usedSecret)) {
+        if(redactions.length>=16)throw new Error("browser_secret_redaction_limit");
+        redactions.push(usedSecret);
+        await this.ctx.storage.put("secret-redactions",await sealProfile(this.env.PLATFORM_SECRET,redactionOwner,{cookies:redactions,localStorage:{}}));
+      }
+      const scrub=(value:string)=>redactions.reduce((text,secret)=>text.replaceAll(secret,"[private verification]"),value);
       const revision = crypto.randomUUID();
       const observation: BrowserObservation = { schema: 1, sessionId: body.scope.sessionId, revision, engine,
-        url: page.url(), title: await page.title(), text: String(await page.evaluate("document.body?.innerText || ''")).slice(0, 1200),
+        url: body.sensitiveNavigation || record.sensitiveNavigation ? new URL(page.url()).origin+new URL(page.url()).pathname : scrub(page.url()), title: scrub(await page.title()), text: scrub(String(await page.evaluate("document.body?.innerText || ''"))).slice(0, 1200),
         elements: [], untrusted: true, capturedAt: Date.now(), expiresAt: Math.min(body.scope.expiresAt, Date.now() + 30_000),
         features: { interactive: engine === "chromium", pixelAccurate: engine === "chromium", persistentLogin: engine === "chromium" } };
       const tree = await client.send("Page.getFrameTree");
@@ -253,17 +264,19 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
           visitedAccessibilityNodes++;
           if (elements.length >= 80) break;
           if (!node.backendDOMNodeId) continue;
-          const role = String(node.role?.value ?? ""), name = String(node.name?.value ?? "").slice(0, 256);
+          const role = String(node.role?.value ?? ""), name = scrub(String(node.name?.value ?? "")).slice(0, 256);
           const kinds: Array<"click" | "type" | "select"> = role === "textbox" || role === "searchbox" ? ["type"] : role === "combobox" ? ["select"] : ["button", "link", "checkbox", "radio", "menuitem"].includes(role) ? ["click"] : [];
           if (!kinds.length) continue;
           const handle = "e" + elements.length;
           elements.push({ handle, role, name, frameId, enabled: !node.properties?.some(item => item.name === "disabled" && item.value?.value === true), permittedActions: kinds.filter(kind => body.scope.authorizedActions.includes(kind)) });
-          await this.ctx.storage.put("element:" + revision + ":" + handle, { backendNodeId: node.backendDOMNodeId, frameId, role, name } satisfies ElementReference);
+          await this.ctx.storage.put("element:" + revision + ":" + handle, { backendNodeId: node.backendDOMNodeId, frameId, role, name: String(node.name?.value ?? "").slice(0,256) } satisfies ElementReference);
         }
         if (elements.length >= 80 || visitedAccessibilityNodes >= 8192) break;
       }
       observation.elements = elements;
-      if (body.visual) {
+      // Secret-filling sessions use redacted DOM observations. Reopen the saved account
+      // after verification to resume screenshots without exposing a visible OTP field.
+      if (body.visual && redactions.length === 0) {
         if (record.screenshots.length >= 8 && this.env.BROWSER_ARTIFACTS) {
           const old = record.screenshots[0]!;
           await discardScreenshotWithCleanupIntent(this.ctx.storage, old, () => this.env.BROWSER_ARTIFACTS!.delete(old));
@@ -290,7 +303,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
       if (record.observation) {
         await this.ctx.storage.delete(record.observation.elements.map(element => "element:" + record.observation!.revision + ":" + element.handle));
       }
-      record = { ...record, engine, observation, url: observation.url, cookies: engine === "kitesurf" ? await page.cookies() : [],
+      record = { ...record, ...(body.sensitiveNavigation?{sensitiveNavigation:true}:{}), engine, observation, url: observation.url, cookies: engine === "kitesurf" ? await page.cookies() : [],
         ...(engine === "chromium" ? { providerSessionId: browser.sessionId() } : {}), lastUsedAt: Date.now() };
       await this.storeOpen(record);
       pendingScreenshotPath = undefined;
@@ -361,6 +374,7 @@ export class BrowserSessionDO extends DurableObject<BrowserEnv> {
     if (record.screenshots.length && this.env.BROWSER_ARTIFACTS) await this.env.BROWSER_ARTIFACTS.delete(record.screenshots);
     if (record.observation) await this.ctx.storage.delete(record.observation.elements.map(element => "element:" + record.observation!.revision + ":" + element.handle));
     if (record.scope.connectionId) await this.profile(record.scope, "/release").catch(() => undefined);
+    await this.ctx.storage.delete("secret-redactions");
     await this.ctx.storage.deleteAlarm();
   }
   override async alarm(): Promise<void> {

@@ -67,6 +67,7 @@ export interface CodeRunnerOptions {
   browserWorker?: Fetcher;
   /** Live host grant check; page/model text can never grant a browser operation. */
   authorizeBrowser?: (scope: BrowserRuntimeScope, operation: string) => Promise<boolean>;
+  resolveBrowserVerification?: (scope: BrowserRuntimeScope,id:string,actionId:string,kind:"code"|"link") => Promise<string>;
   listWebsiteConnections?: () => Promise<Array<{id: string; name: string; start_url: string; origins: string[]; agent_ids: string[]; project_id: string | null}>>;
   browserDecisionGateway?: () => import("@naelao/agent-sdk").FastDecisionGateway | undefined;
   /** naelao-mcp-hub service binding — powers Tiers 2-4's ctx.mcp (§A1.17 Phase I). */
@@ -160,14 +161,21 @@ async function runBrowser(
     engine = chosen.engine; fallbackReason = chosen.reason;
     // Grant and identity come only from the host. Model arguments cannot replace scope.
     const body: Record<string, unknown> = { scope,
-      ...(typeof params.args["url"] === "string" ? { url: params.args["url"] } : {}),
+      ...(typeof params.args["url"] === "string" ? { url: params.args["url"] } : operation === "navigate" ? {url:rawUrl} : {}),
       interactive: Boolean(params.args["interactive"]), pixelAccurate: engine === "chromium", visual: operation === "screenshot" || Boolean(params.args["take_screenshot"]),
       webgl: Boolean(params.args["needsWebGL"] || params.args["needsCanvas"]),
       ...(operation === "see" ? { path: String(params.args["path"] ?? "latest") } : {}) };
+    let verificationValue: string | undefined;
+    if(typeof params.args["verification_id"] === "string") {
+      if(!["type","navigate"].includes(operation)||!scope.connectionId||!opts.resolveBrowserVerification||typeof params.args["action_id"]!=="string")return fail("browser_verification_scope_required");
+      verificationValue=await opts.resolveBrowserVerification(scope,params.args["verification_id"],params.args["action_id"],operation==="navigate"?"link":"code");
+      if(operation==="navigate"){assertBrowserUrl(scope,verificationValue);body.url=verificationValue;body.sensitiveNavigation=true;}
+      body.secretValueUsed=true;
+    }
     if (mutation) body["action"] = operation === "act" ? params.args["action"] : {
       type: operation, actionId: String(params.args["action_id"] ?? ""),
       observationRevision: String(params.args["observation_revision"] ?? ""), handle: params.args["handle"],
-      ...(operation === "type" ? { text: params.args["text"] } : {}),
+      ...(operation === "type" ? { text: verificationValue ?? params.args["text"] } : {}),
       ...(operation === "select" ? { value: params.args["value"] } : {}),
       ...(operation === "scroll" ? { x: params.args["x"], y: params.args["y"] } : {}),
     };
