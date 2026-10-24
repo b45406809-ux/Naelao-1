@@ -195,3 +195,6 @@ export { parseArtifactLinters, lintArtifact, type ArtifactLinterSpec, type Artif
 export type { VoiceChannelAction, VoiceChannelResponse, VoiceChannelEventPayload } from "./voice-channel.js";
 export * from "./templates/reference-spaces.js";
 export * from "./package-inspection.js";
+
+export { DEFAULT_ASSISTANT_VOICE, validateAssistantVoicePatch, resolveAssistantVoice, createAssistantVoiceClient } from "./assistant-voice.js";
+export type { ModelClass, WorkerExecutionKind, WorkerExecutionPolicy, AssistantVoicePreferences, AssistantVoiceSettings, VoiceProfile, VoiceCapability } from "./assistant-voice.js";

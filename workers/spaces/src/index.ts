@@ -1,3 +1,4 @@
+import { registerAssistantVoiceRoutes } from "./routes/assistant-voice.js";
 import { Hono, type Context } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestBytes, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
@@ -262,6 +263,7 @@ registerDeskDropRoutes(app, {
 registerGraduationRoutes(app);
 registerWebsiteConnectionRoutes(app);
 registerAssistantChannelRoutes(app);
+registerAssistantVoiceRoutes(app);
 
 // Extract caller identity from headers (set by router worker after JWT validation)
 function getCallerIdentity(c: { req: { header: (h: string) => string | undefined } }) {

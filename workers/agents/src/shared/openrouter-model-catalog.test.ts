@@ -4,6 +4,13 @@ import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, normalizeOpenRout
 describe("OpenRouter model catalog", () => {
   beforeEach(() => { vi.restoreAllMocks(); openRouterCatalogForTest.reset(); });
 
+  it("preserves speech discovery without inferring tool or streaming support", () => {
+    const cap = normalizeOpenRouterCapabilities({ id: "vendor/tts", model: "openrouter/vendor/tts", name: "TTS", outputModalities: ["speech"], inputModalities: ["text"] });
+    expect(cap.output.has("speech")).toBe(true);
+    expect(cap.tools).toBeNull();
+    expect(cap.fresh).toBe(false);
+  });
+
   it("validates the key and parses only bounded catalog metadata", async () => {
     const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);

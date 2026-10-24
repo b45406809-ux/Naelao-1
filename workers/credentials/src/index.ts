@@ -1,3 +1,4 @@
+import { checkedAudioStream, isOpenRouterSpeechStream } from "./audio-stream.js";
 // G-C01: Credentials worker — encrypted per-Space credential storage.
 //
 // Credential hierarchy: a credential is resolved for an acting user and signed project context;
@@ -401,7 +402,7 @@ export async function generateCredentialToken(
   agentId: string,
   projectId?: string,
   tenantId?: string,
-  context?: { actorId?: string; runId?: string; taskId?: string; traceId?: string; spanId?: string },
+  context?: { actorId?: string; runId?: string; taskId?: string; traceId?: string; spanId?: string; purpose?: "assistant-audio" },
 ): Promise<string> {
   const contextValues = context ? Object.values(context).filter((value): value is string => Boolean(value)) : [];
   if (![spaceId, agentId, ...(projectId ? [projectId] : []), ...(tenantId ? [tenantId] : []), ...contextValues].every((value) => /^[A-Za-z0-9._:-]{1,160}$/.test(value))) {
@@ -423,21 +424,21 @@ export async function generateCredentialToken(
     false,
     ["sign"]
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput));
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput + (context?.purpose ? `:${context.purpose}` : "")));
   const hexSig = Array.from(new Uint8Array(sig))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  if (tenantId && hasRunContext) return `t=${timestamp},aid=${agentId},tid=${tenantId}${projectId ? `,pid=${projectId}` : ""}${context?.actorId ? `,uid=${context.actorId}` : ""}${context?.runId ? `,rid=${context.runId}` : ""}${context?.taskId ? `,task=${context.taskId}` : ""}${context?.traceId ? `,tr=${context.traceId}` : ""}${context?.spanId ? `,sp=${context.spanId}` : ""},v4=${hexSig}`;
+  if (tenantId && hasRunContext) return `t=${timestamp},aid=${agentId},tid=${tenantId}${projectId ? `,pid=${projectId}` : ""}${context?.actorId ? `,uid=${context.actorId}` : ""}${context?.runId ? `,rid=${context.runId}` : ""}${context?.taskId ? `,task=${context.taskId}` : ""}${context?.traceId ? `,tr=${context.traceId}` : ""}${context?.spanId ? `,sp=${context.spanId}` : ""}${context?.purpose ? `,purpose=${context.purpose},v5=${hexSig}` : `,v4=${hexSig}`}`;
   if (tenantId) return `t=${timestamp},aid=${agentId},tid=${tenantId}${projectId ? `,pid=${projectId}` : ""},v3=${hexSig}`;
   return projectId ? `t=${timestamp},aid=${agentId},pid=${projectId},v2=${hexSig}` : `t=${timestamp},aid=${agentId},v1=${hexSig}`;
 }
 
-async function verifyCredentialToken(
+export async function verifyCredentialToken(
   token: string,
   platformSecret: string,
   expectedSpaceId: string,
   expectedTenantId: string,
-): Promise<{ ok: boolean; reason?: string; projectId?: string; tenantId?: string; agentId?: string; actorId?: string; runId?: string; taskId?: string; traceId?: string; spanId?: string }> {
+): Promise<{ ok: boolean; reason?: string; projectId?: string; tenantId?: string; agentId?: string; actorId?: string; runId?: string; taskId?: string; traceId?: string; spanId?: string; purpose?: "assistant-audio" }> {
   const TOKEN_MAX_AGE_SECONDS = 60;
   if (token.length > 2048) return { ok: false, reason: "Malformed credential token" };
   const parts: Record<string, string> = {};
@@ -459,9 +460,11 @@ async function verifyCredentialToken(
   const traceId = parts["tr"] || undefined;
   const spanId = parts["sp"] || undefined;
   const hasRunContext = Boolean(actorId || runId || taskId || traceId || spanId);
-  const signatureKey = hasRunContext ? "v4" : tenantId ? "v3" : projectId ? "v2" : "v1";
+  const purpose = parts["purpose"];
+  if (purpose !== undefined && (purpose !== "assistant-audio" || !hasRunContext || !tenantId)) return { ok: false, reason: "Invalid credential purpose" };
+  const signatureKey = purpose ? "v5" : hasRunContext ? "v4" : tenantId ? "v3" : projectId ? "v2" : "v1";
   const versionKeys = Object.keys(parts).filter((key) => /^v\d+$/.test(key));
-  const allowedKeys = new Set(["t", "aid", "pid", "tid", "uid", "rid", "task", "tr", "sp", signatureKey]);
+  const allowedKeys = new Set(["t", "aid", "pid", "tid", "uid", "rid", "task", "tr", "sp", ...(purpose ? ["purpose"] : []), signatureKey]);
   const receivedHex = parts[signatureKey] ?? "";
 
   if (Object.keys(parts).some((key) => !allowedKeys.has(key)) || versionKeys.length !== 1 || versionKeys[0] !== signatureKey || !agentId || !/^[a-f0-9]{64}$/i.test(receivedHex)) return { ok: false, reason: "Malformed credential token" };
@@ -494,10 +497,10 @@ async function verifyCredentialToken(
     "HMAC",
     key,
     expectedSigBytes,
-    new TextEncoder().encode(signingInput)
+    new TextEncoder().encode(signingInput + (purpose ? `:${purpose}` : ""))
   );
   if (!valid) return { ok: false, reason: "Invalid credential token signature" };
-  return { ok: true, agentId, ...(projectId ? { projectId } : {}), ...(tenantId ? { tenantId } : {}), ...(actorId ? { actorId } : {}), ...(runId ? { runId } : {}), ...(taskId ? { taskId } : {}), ...(traceId ? { traceId } : {}), ...(spanId ? { spanId } : {}) };
+  return { ok: true, agentId, ...(purpose ? { purpose: purpose as "assistant-audio" } : {}), ...(projectId ? { projectId } : {}), ...(tenantId ? { tenantId } : {}), ...(actorId ? { actorId } : {}), ...(runId ? { runId } : {}), ...(taskId ? { taskId } : {}), ...(traceId ? { traceId } : {}), ...(spanId ? { spanId } : {}) };
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -1113,7 +1116,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   }
 
   let body: {
-    url: string; credentialName: string; method?: string; idempotencyKey?: string; body?: unknown;
+    url: string; credentialName: string; method?: string; idempotencyKey?: string; body?: unknown; responseMode?: "audio";
     headers?: Record<string, string>; auth?: { type: "basic"; username: string }; onBehalfOfUserId?: string; projectId?: string;
   };
   try {
@@ -1171,6 +1174,8 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   if ((method === "GET" || method === "HEAD") && serializedBody !== undefined) {
     return c.json({ error_code: "egress_body_method_invalid", message: "GET and HEAD requests cannot include a body" }, 400);
   }
+  if (body.responseMode !== undefined && (tokenCheck.purpose !== "assistant-audio" || !isOpenRouterSpeechStream(body.url, method, body.responseMode)))
+    return c.json({ error_code: "egress_audio_destination_denied" }, 403);
   const isWrite = method !== "GET" && method !== "HEAD";
   if (isWrite && (typeof body.idempotencyKey !== "string" || !/^[A-Za-z0-9._:-]{1,120}$/.test(body.idempotencyKey))) {
     return c.json({ error_code: "egress_idempotency_required", message: "A valid idempotency key is required for external changes" }, 400);
@@ -1218,7 +1223,7 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
       ...(tokenCheck.taskId ? { taskId: tokenCheck.taskId } : {}), agentId: tokenCheck.agentId!,
       traceId: tokenCheck.traceId!, spanId: tokenCheck.spanId!, actionId, idempotencyKey: body.idempotencyKey!,
     };
-    inputHash = await sha256Hex(JSON.stringify([method, approvedUrl.toString(), body.credentialName, body.auth ?? { type: "bearer" }, body.body ?? null, [...supplied.entries()].filter(([name]) => !/^(authorization|idempotency-key)$/i.test(name))]));
+    inputHash = await sha256Hex(JSON.stringify([method, approvedUrl.toString(), body.credentialName, body.auth ?? { type: "bearer" }, body.body ?? null, [...supplied.entries()].filter(([name]) => !/^(authorization|idempotency-key)$/i.test(name)), ...(body.responseMode ? [body.responseMode] : [])]));
     let pending;
     try {
       pending = await recordOutboundReceipt(c.env, receiptContext, "pending", inputHash, await sha256Hex("pending"), "Authorized external write; outcome pending");
@@ -1272,6 +1277,27 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
     response = undefined;
   }
   if (!response) throw forbidden("Outbound redirect limit exceeded");
+
+  if (body.responseMode === "audio" && response.ok) {
+    const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    if (!response.body || !["audio/pcm", "audio/mpeg", "audio/wav", "audio/x-wav", "audio/L16".toLowerCase(), "application/octet-stream"].includes(contentType ?? "")) {
+      await response.body?.cancel().catch(() => {});
+      if (receiptContext) await recordOutboundReceipt(c.env, receiptContext, "unknown", inputHash, await sha256Hex("audio format rejected"), "Speech returned an unsupported format").catch(() => {});
+      return c.json({ error_code: "egress_audio_format_invalid" }, 502);
+    }
+    const stream = checkedAudioStream({ source: response.body, secrets: [secret, authorization],
+      completed: async bytes => {
+        if (receiptContext) await recordOutboundReceipt(c.env, receiptContext, "succeeded", inputHash, await sha256Hex(bytes), "Speech stream completed");
+      },
+      interrupted: async () => {
+        if (receiptContext) await recordOutboundReceipt(c.env, receiptContext, "unknown", inputHash, await sha256Hex("audio interrupted"), "Speech stream interrupted; automatic replay blocked");
+      },
+    });
+    const headers = new Headers({ "content-type": contentType!, "cache-control": "no-store" });
+    const generation = response.headers.get("x-generation-id");
+    if (generation && !generation.includes(secret) && !generation.includes(authorization) && /^[a-zA-Z0-9_-]{1,200}$/.test(generation)) headers.set("x-generation-id", generation);
+    return new Response(stream, { status: 200, headers });
+  }
 
   let bytes: Uint8Array;
   try { bytes = redactOutboundSecrets(await readBoundedResponse(response), [secret, authorization]); }

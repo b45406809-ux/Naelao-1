@@ -19,7 +19,7 @@ export interface OpenRouterModelCandidate {
   catalogObservedAt?: string;
 }
 
-export type ModelModality = "text" | "image" | "audio" | "video";
+export type ModelModality = "text" | "image" | "audio" | "video" | "speech";
 export interface NormalizedModelCapabilities {
   source: "openrouter_public_catalog";
   observedAt: string | null;
@@ -36,7 +36,7 @@ export interface NormalizedModelCapabilities {
  * unknown; this adapter never infers media/tool support from the model name. */
 export function normalizeOpenRouterCapabilities(candidate: OpenRouterModelCandidate, now = Date.now()): NormalizedModelCapabilities {
   const observed = candidate.catalogObservedAt ? Date.parse(candidate.catalogObservedAt) : Number.NaN;
-  const allowed = new Set<ModelModality>(["text", "image", "audio", "video"]);
+  const allowed = new Set<ModelModality>(["text", "image", "audio", "video", "speech"]);
   const normalized = (items: string[] | undefined) => new Set((items ?? []).filter((item): item is ModelModality => allowed.has(item as ModelModality)));
   return {
     source: "openrouter_public_catalog",

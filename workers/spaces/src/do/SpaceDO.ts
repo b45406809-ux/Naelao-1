@@ -1,3 +1,4 @@
+import { assistantVoiceSettings } from "../assistant-voice-settings.js";
 import { parseScratchpadCiphertext } from "@naelao/agent-sdk";
 import { parseArtifactLinters, lintArtifact } from "@naelao/agent-sdk";
 import { normalizeWorkspacePath } from "../../../agents/src/script-engine/workspace-paths.js";
@@ -2227,6 +2228,10 @@ const MIGRATIONS: Migration[] = [
     description: "track active Space Template extension dependencies",
     up: `ALTER TABLE space_blueprint_installations ADD COLUMN required_extensions_json TEXT NOT NULL DEFAULT '[]';`,
   },
+  { version: 101, description: "revisioned assistant voice preferences", up: `CREATE TABLE assistant_voice_preferences (
+    space_id TEXT NOT NULL, scope_key TEXT NOT NULL, preferences_json TEXT NOT NULL,
+    revision INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(space_id,scope_key)
+  );` },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3063,6 +3068,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/internal/customer-conversations") return this.recordCustomerConversation(request);
       if (method === "GET" && url.pathname === "/internal/customer-conversations/urgent") return this.listUrgentCustomerConversations(url.searchParams);
       if (method === "POST" && url.pathname === "/internal/customer-conversations/mark-alerted") return this.markCustomerConversationsAlerted(request);
+      if (url.pathname === "/assistant-voice" && (method === "GET" || method === "PATCH")) return assistantVoiceSettings(this.ctx.storage, request);
       if (url.pathname === "/assistant-channels" && (method === "GET" || method === "PATCH")) {
         const userId = url.searchParams.get("user_id"), projectId = url.searchParams.get("project_id");
         if (!userId) return Response.json({error_code:"user_required"},{status:400});

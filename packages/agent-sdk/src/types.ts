@@ -366,6 +366,8 @@ export interface RuntimeSpace {
 }
 
 export interface VaultFetchOptions {
+  /** Restricted binary streaming: only the fixed OpenRouter speech endpoint is supported. */
+  responseMode?: "audio";
   credentialName: string;
   /** Optional provider auth shape. Basic auth uses the vaulted secret as the password. */
   auth?: { type: "basic"; username: string };

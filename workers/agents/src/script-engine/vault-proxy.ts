@@ -13,9 +13,11 @@ export interface VaultProxyOptions {
   projectId?: string;
   runId?: string;
   taskId?: string;
+  /** Host-only authority, never copied from worker/extension configuration. */
+  purpose?: "assistant-audio";
 }
 
-async function credentialToken(secret: string, tenantId: string, spaceId: string, agentId: string, projectId: string | undefined, run?: { actorId: string; runId: string; taskId?: string; traceId: string; spanId: string }): Promise<string> {
+async function credentialToken(secret: string, tenantId: string, spaceId: string, agentId: string, projectId: string | undefined, run?: { actorId: string; runId: string; taskId?: string; traceId: string; spanId: string }, purpose?: "assistant-audio"): Promise<string> {
   const timestamp = Math.floor(Date.now() / 1000);
   const values = [tenantId, spaceId, agentId, ...(projectId ? [projectId] : []), ...(run ? [run.actorId, run.runId, ...(run.taskId ? [run.taskId] : [])] : [])];
   if (!values.every((value) => /^[A-Za-z0-9._:-]{1,160}$/.test(value))) throw new Error("invalid_credential_token_scope");
@@ -23,10 +25,10 @@ async function credentialToken(secret: string, tenantId: string, spaceId: string
     ? `${tenantId}:${spaceId}:${agentId}:${projectId ?? ""}:${run.actorId}:${run.runId}:${run.taskId ?? ""}:${run.traceId}:${run.spanId}:${timestamp}`
     : `${tenantId}:${spaceId}:${agentId}:${projectId ?? ""}:${timestamp}`;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)));
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload + (purpose ? `:${purpose}` : ""))));
   const hex = [...signature].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return run
-    ? `t=${timestamp},aid=${agentId},tid=${tenantId}${projectId ? `,pid=${projectId}` : ""},uid=${run.actorId},rid=${run.runId}${run.taskId ? `,task=${run.taskId}` : ""},tr=${run.traceId},sp=${run.spanId},v4=${hex}`
+    ? `t=${timestamp},aid=${agentId},tid=${tenantId}${projectId ? `,pid=${projectId}` : ""},uid=${run.actorId},rid=${run.runId}${run.taskId ? `,task=${run.taskId}` : ""},tr=${run.traceId},sp=${run.spanId}${purpose ? `,purpose=${purpose},v5=${hex}` : `,v4=${hex}`}`
     : `t=${timestamp},aid=${agentId},tid=${tenantId}${projectId ? `,pid=${projectId}` : ""},v3=${hex}`;
 }
 
@@ -35,6 +37,7 @@ export function createVaultProxy(options: VaultProxyOptions) {
   const traceId = generateTraceId();
   return Object.freeze({
     async fetchWithAuth(url: string, init: VaultFetchOptions): Promise<Response> {
+      if (init?.responseMode === "audio" && options.purpose !== "assistant-audio") throw new Error("audio_stream_requires_host_adapter");
       if (!init || typeof init.credentialName !== "string" || !init.credentialName) throw new Error("credentialName is required");
       const dlp = scanAndScrubEgress(init, "block");
       if (dlp.findings.length) console.warn("[vault-proxy] outbound payload blocked by DLP rules", dlp.audit);
@@ -46,6 +49,7 @@ export function createVaultProxy(options: VaultProxyOptions) {
         traceId,
         spanId,
       } : undefined;
+      if (options.purpose && !runContext) throw new Error("audio_stream_requires_run_context");
       const response = await options.credentialsWorker.fetch(new Request(
         `http://credentials/v1/internal/spaces/${encodeURIComponent(options.spaceId)}/outbound`,
         {
@@ -53,7 +57,7 @@ export function createVaultProxy(options: VaultProxyOptions) {
           headers: {
             "content-type": "application/json",
             "x-naelao-tenant-id": options.tenantId,
-            "x-naelao-credential-token": await credentialToken(options.platformSecret, options.tenantId, options.spaceId, options.agentId, options.projectId, runContext),
+            "x-naelao-credential-token": await credentialToken(options.platformSecret, options.tenantId, options.spaceId, options.agentId, options.projectId, runContext, options.purpose),
             "traceparent": formatTraceparent(traceId, spanId),
           },
           body: JSON.stringify({ url, ...dlp.payload, ...(options.userId ? { onBehalfOfUserId: options.userId } : {}), ...(options.projectId ? { projectId: options.projectId } : {}) }),
