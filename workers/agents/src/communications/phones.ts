@@ -572,8 +572,22 @@ export async function handlePhoneAction(
   }
   if (!binding || !binding.provider_number_sid)
     throw new Error("assistant_phone_not_connected");
+  if (action === "phone-live") {
+    if (!manager || agent || body.confirm !== true) throw new Error("human_control_required");
+    const { armLiveCall } = await import("./live-calls.js");
+    return armLiveCall(env, scope, binding, body.session_id);
+  }
+  if (action === "phone-live-end") {
+    if (!manager || agent || body.confirm !== true) throw new Error("human_control_required");
+    const live=await env.PLATFORM_DB.prepare("SELECT call_sid FROM assistant_live_calls WHERE binding_id=? AND user_id=? AND status='connected'").bind(binding.id,scope.userId).all<{call_sid:string}>();
+    await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND user_id=? AND status IN ('armed','connected')").bind(binding.id,scope.userId).run();
+    const credentials=await resolvePhoneCredentials(env,identity,binding.payer);
+    if(live.results.length && !credentials)throw new Error("phone_access_revoked_carrier_hangup_unconfirmed");
+    for(const call of live.results)await phoneProvider(credentials!,`Calls/${call.call_sid}.json`,"POST",new URLSearchParams({Status:"completed"}));
+    return {revoked:true};
+  }
   if (action === "phone-handler") {
-    if (!manager || agent || !scope.projectId || body.confirm !== true)
+    if (!manager || agent || body.confirm !== true)
       throw new Error("phone_handler_owner_confirmation_required");
     const installation = String(body.installation_id ?? ""),
       digest = String(body.handler_sha256 ?? "");
@@ -617,11 +631,12 @@ export async function handlePhoneAction(
       );
       if (!r.ok || (await r.json<{ valid?: boolean }>()).valid !== true)
         throw new Error("phone_extension_validation_failed");
-      await env.PLATFORM_DB.prepare(
+      const activated = await env.PLATFORM_DB.prepare(
         "UPDATE assistant_phone_extension_handlers SET status='active' WHERE binding_id=? AND installation_id=? AND handler_sha256=?"
       )
         .bind(binding.id, installation, digest)
         .run();
+      if (activated.meta.changes !== 1) throw new Error("phone_handler_changed_during_validation");
       return { bound: true };
     } catch (e) {
       if (previous)

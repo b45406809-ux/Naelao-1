@@ -110,6 +110,7 @@ describe("project channel-only extension install route", () => {
     };
     const env = {
       PLATFORM_SECRET: secret,
+      PLATFORM_DB: {prepare:()=>({bind:()=>({first:async()=>({id:"space-a"})})})},
       SCRIPTS_R2: bucket,
       AGENTS_WORKER: agents,
       BILLING_WORKER: billing,
@@ -122,12 +123,13 @@ describe("project channel-only extension install route", () => {
     env: unknown,
     role: string,
     manifest: unknown,
-    extra: Record<string, unknown> = {}
+    extra: Record<string, unknown> = {},
+    path = "https://spaces.test/spaces/space-a/projects/project-a/channel-extensions"
   ) {
     const token = await mintInternalToken(secret, "tenant-a");
     return spacesWorker.fetch(
       new Request(
-        "https://spaces.test/spaces/space-a/projects/project-a/channel-extensions",
+        path,
         {
           method: "POST",
           headers: {
@@ -148,6 +150,26 @@ describe("project channel-only extension install route", () => {
       env as never
     );
   }
+
+  it("installs Space-shared phone handlers through the same restricted installer", async () => {
+    const h=setup("owner");
+    const manifest=packageManifest();
+    manifest.bundle.primitives[0]!.provider="phone";
+    manifest.bundle.connections[0]!.provider="phone";
+    const response=await post(h.env,"owner",manifest,{scope:"SPACE_SHARED"},"https://spaces.test/spaces/space-a/channel-extensions");
+    expect(response.status).toBe(201);
+    const request=h.forwarded.find(r=>new URL(r.url).pathname==="/extensions")!;
+    const body=await request.json() as Record<string,unknown>;
+    expect(body.scope).toBe("SPACE_SHARED");
+    expect(body.projectId).toBeUndefined();
+    expect(body.gatekeeperCapabilities).toEqual(["channel.invoke"]);
+  });
+  it("rejects project-only messaging providers and mismatched scopes on Space phone installs", async () => {
+    const h=setup("owner");
+    expect((await post(h.env,"owner",packageManifest(),{scope:"SPACE_SHARED"},"https://spaces.test/spaces/space-a/channel-extensions")).status).toBe(400);
+    expect((await post(h.env,"owner",packageManifest(),{scope:"PROJECT_BOUND"},"https://spaces.test/spaces/space-a/channel-extensions")).status).toBe(400);
+    expect((await post(h.env,"member",packageManifest(),{scope:"SPACE_SHARED"},"https://spaces.test/spaces/space-a/channel-extensions")).status).toBe(403);
+  });
 
   it("installs only channel primitives with server-derived identity and the channel-only grant", async () => {
     const h = setup("owner");

@@ -595,4 +595,31 @@ describe("assistant telephone safety and lifecycle", () => {
   expect(remove).toHaveBeenCalledTimes(1);
  });
 
+ it("requires the app-issued code before connecting a live call to the planner transport",async()=>{
+  const f=await phoneFixture();
+  const original=f.fetch.getMockImplementation()!;
+  f.fetch.mockImplementation(async(r:Request)=>r.url.includes("/sessions/")?Response.json({id:"session"}):original(r));
+  await expect(f.act("phone-live",{confirm:true,session_id:"session"},true,true)).rejects.toThrow("human_control_required");
+  const armed=await f.act("phone-live",{confirm:true,session_id:"session"}) as {code:string};
+  const app=new Hono<{Bindings:AgentsEnv}>();registerPhoneWebhooks(app);
+  const sid="CA"+"d".repeat(32);
+  const invoke=async(event:string,digits?:string,signature=true)=>{
+    const path=`/assistant-phone/twilio/${f.binding.id}/${event}`;
+    const params={AccountSid:account,CallSid:sid,From:other,To:number,...digits?{Digits:digits}:{}};
+    return app.request(path,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded","x-twilio-signature":signature?getExpectedTwilioSignature(token,"https://phone.example.com"+path,params):"wrong"},body:new URLSearchParams(params).toString()},f.env);
+  };
+  expect((await invoke("answer",undefined,false)).status).toBe(403);
+  expect(await (await invoke("answer")).text()).toContain("one-time call code");
+  expect((await invoke("live-code","not-code")).status).toBe(403);
+  const joined=await invoke("live-code",armed.code);
+  expect(joined.status).toBe(200);
+  expect(await joined.text()).toContain('<Connect><Stream url="wss://phone.example.com/assistant-phone/live-stream/phone-');
+  expect((await invoke("live-code",armed.code)).status).toBe(200);
+  const rows=await f.db.prepare("SELECT * FROM assistant_live_calls").all();
+  expect(rows.results).toHaveLength(1);
+  expect(rows.results[0]).toMatchObject({status:"connected",call_sid:sid,session_id:"session"});
+  await f.act("phone-live-end",{confirm:true});
+  expect((await invoke("live-code",armed.code)).status).toBe(403);
+ });
+
 });

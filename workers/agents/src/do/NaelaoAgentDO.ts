@@ -8594,12 +8594,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const body=await readBoundedResponseJson<{bindingId:string;spaceId:string;validateOnly?:boolean;event?:{id:string;type:string;payload:Record<string,unknown>}}>(new Response(request.body),16384);
     if(!this.env.PLATFORM_DB)return Response.json({error_code:'database_unavailable'},{status:503});
     const row=await this.env.PLATFORM_DB.prepare("SELECT h.installation_id,h.handler_sha256,h.status,i.project_id,i.owner_user_id FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'").bind(body.bindingId,tenant,body.spaceId).first<{installation_id:string;handler_sha256:string;status:string;project_id:string|null;owner_user_id:string}>();
-    if(!row?.project_id||await this.tenantSpaceSuspended(tenant,body.spaceId))return Response.json({error_code:'phone_handler_unavailable'},{status:403});
-    const handler=await this.loadActiveChannelHandler({spaceId:body.spaceId,tenantId:tenant,projectId:row.project_id,channel:'phone',messageId:body.event?.id??'validation',instanceId:row.installation_id,scriptSha256:row.handler_sha256});
+    if(!row||await this.tenantSpaceSuspended(tenant,body.spaceId))return Response.json({error_code:'phone_handler_unavailable'},{status:403});
+    const handler=await this.loadActiveChannelHandler({spaceId:body.spaceId,tenantId:tenant,...(row.project_id ? {projectId:row.project_id} : {}),channel:'phone',messageId:body.event?.id??'validation',instanceId:row.installation_id,scriptSha256:row.handler_sha256});
     if(!handler||handler.knowledgeCollections.length||handler.session)return Response.json({error_code:'phone_handler_invalid'},{status:409});
     if(body.validateOnly)return Response.json({valid:true});
     if(row.status!=='active'||!body.event||!['call.received','call.digits'].includes(body.event.type)||!/^CA[a-fA-F0-9]{32}(?::[0-9]{1,8})?$/.test(body.event.id))return Response.json({error_code:'phone_event_invalid'},{status:400});
-    const env=await this.buildScriptEngineEnv(body.spaceId,'naelao-agent',tenant,undefined,row.project_id);
+    const env=await this.buildScriptEngineEnv(body.spaceId,'naelao-agent',tenant,undefined,row.project_id ?? undefined);
     if(!env?.codeRunner?.runChannel)return Response.json({error_code:'channel_runtime_unavailable'},{status:503});
     const result=await env.codeRunner.runChannel({name:handler.name,code:handler.code,args:{},tenantId:tenant,spaceId:body.spaceId,agentId:'naelao-agent',installationId:row.installation_id,maxConcurrency:handler.maxConcurrency,limits:handler.limits,channel:{provider:'phone',event:{id:body.event.id,type:'message.received',occurredAt:new Date().toISOString(),payload:{voice_event:body.event.type,...body.event.payload}},conversation:{id:body.event.id.split(':')[0]!}}});
     if(!result.ok||result.channel_replies?.length!==1||result.channel_answers?.length)return Response.json({error_code:'phone_handler_failed'},{status:409});
@@ -8607,7 +8607,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   private async loadActiveChannelHandler(input: {
-    spaceId: string; tenantId: string; projectId: string; channel: string; messageId: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null;
+    spaceId: string; tenantId: string; projectId?: string; channel: string; messageId: string; instanceId: string; scriptSha256: string; providerConnectionId?: string | null;
   }): Promise<{ name: string; code: string; maxConcurrency: number; knowledgeCollections: string[]; session?: { maxBytes: number; ttlDays: number }; limits: { cpuMs: number; wallMs: number; inputBytes: number; outputBytes: number } } | null> {
     if (!this.env.SPACES_WORKER || !this.env.AGENTS_WORKER || !this.env.SCRIPTS_R2 || !/^[a-f0-9]{64}$/.test(input.scriptSha256)) return null;
     const verifyBinding = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/channel-extension-binding/verify", {
@@ -8628,8 +8628,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }>(installationResponse, 2 * 1024 * 1024).catch(() => null);
     const instance = installation?.instance;
     if (!installation || !instance || instance.status !== "active" || instance.instance_id !== input.instanceId
-      || instance.tenant_id !== input.tenantId || instance.space_id !== input.spaceId || instance.project_id !== input.projectId
-      || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(instance.scope ?? "")) return null;
+      || instance.tenant_id !== input.tenantId || instance.space_id !== input.spaceId || (instance.project_id ?? null) !== (input.projectId ?? null)
+      || !(input.projectId ? ["PROJECT_BOUND", "PROJECT_SHARED"] : input.channel === "phone" ? ["SPACE_SHARED"] : []).includes(instance.scope ?? "")) return null;
     const declaration = installation.manifest.channels?.find(item => item.kind === "channel" && item.provider === input.channel && item.context === "channel_only");
     if (!declaration || !declaration.inboundEvents?.includes("message.received") || !declaration.outboundEvents?.includes("message.reply")
       || (declaration.permissions?.length ?? 0) !== 0 || (declaration.capabilityRequirements?.length ?? 0) !== 0) return null;

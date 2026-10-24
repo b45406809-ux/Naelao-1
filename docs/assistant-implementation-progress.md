@@ -203,3 +203,56 @@ This is an implemented restricted dispatch path, not a production certification 
 all legacy bindings have already been migrated. Focused communications tests passed (27).
 
 Agents, Spaces and Shell type checks and the production Agents Worker dry-run passed for this checkpoint. No live callback or deployment migration was performed.
+
+## Space voice handlers and authenticated interactive calling (2026-10-24)
+
+Implemented Space-shared phone-only channel packages through the existing restricted installer
+(`POST /spaces/:spaceId/channel-extensions`). Host validation now accepts the exact Space-shared
+installation for a Space assistant, or the exact project installation for a Project assistant.
+It still checks tenant, Space, installation, immutable source digest and channel-only permissions;
+no public caller receives an owner's principal or tools. Handler validation activation checks the
+write receipt. Pending validation fails closed instead of reverting to legacy menus.
+
+Added migration 0134 and human-only `phone-live` / `phone-live-end` actions. Apps can arm a
+three-minute, one-use eight-digit code; the caller dials the existing assistant number and enters
+it. Only its hash is retained. Codes bind the authenticated acting user, number and accessible
+conversation, have attempt limits, and claim exactly one carrier CallSid. Retries preserve the
+original deadline. New phone conversations provision ordinary sessions/project task threads;
+later calls reuse the saved conversation. Private call authentication is host transport behavior,
+not a business menu and not a customer-agent persona. Public extension-bound calls remain scoped
+to the restricted channel executor.
+
+Authenticated phone audio uses the existing Twilio Media Streams adapter and OwnerVoiceAgent
+transport. Browser and phone audio now use explicit bounded 16 kHz raw PCM from Aura-1, with Flux
+transcription. Both invoke the existing Naelao planner/worker task route, its configured model,
+subscription limits, scoped tools and approvals. No new reasoning runtime or fixed voice LLM
+was added. Voice dispatch requires the existing durable Workflow/TaskDO bindings and bypasses the
+semantic response cache. Caller turns are saved into the ordinary conversation. Pending task
+receipts and duplicate-result guards survive transport reconnects; an uncertain dispatch is held,
+never automatically repeated. Interrupting audio stops playback/polling without claiming a tool
+operation was rolled back. Existing app approval cards remain authoritative; voice cannot silently
+answer them. A bounded watcher can announce task completion while the call remains connected.
+
+Voice session IDs are stable across reconnects and subsequent phone authorizations for the same
+user/conversation. Each turn and synthesis rechecks current session/project access, membership,
+channel policy and network egress. Signed WebSocket admission checks carrier credentials and the
+exact live binding. One active stream takes over transport on reconnect. Duration alarms close
+streams and terminate the carrier call; owner revocation disables authorization and requests hangup.
+Expired codes/attempts and terminal call records have bounded maintenance retention.
+
+Deployment order: apply D1 migration 0134 before deploying the Agents/Spaces/Router changes and
+Shell. Existing provider credentials and number SIDs are preserved. The configured public Agents
+origin, Workers AI speech access, durable execution bindings and carrier WebSocket reachability
+must be present. No live deployment or telephone test was run: this environment has no configured
+Cloudflare/carrier credentials. Offline results do not establish production voice latency or
+Grokbot parity. Existing outbound approved calls still speak a supplied message; conversational
+calls to third parties require a separate, explicitly scoped delegated call policy. The legacy
+customer voice class/number records remain for staged migration, not as the architecture for the
+new authenticated calling path. Public extension handlers currently support typed prompts/keypad
+responses, not unrestricted planner conversations.
+
+Verification for this checkpoint: 92 focused Agents communications/voice/phone-scope tests passed,
+including 100-way concurrent call claims and utterance dispatch; 14 Spaces installer/storage tests
+and 28 Router path tests passed (134 total). Agents, Spaces, Router and Shell TypeScript checks
+passed. The production Agents Worker bundle dry-run passed with unchanged container builds skipped.
+These are offline checks; they do not replace live carrier, speech-provider and deployment acceptance.

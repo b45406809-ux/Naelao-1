@@ -1718,20 +1718,28 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/lsp-indexer", async (c
 // those need their own host installers and grant review before they can be composed here.
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireBusinessMembership({ POST: "admin" }));
-app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
-  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId");
-  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
-  if (denied) return denied;
+app.use("/spaces/:spaceId/channel-extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/channel-extensions", requireBusinessMembership({ POST: "admin" }));
+const installChannelExtension = async (c: Context<{Bindings:Env}>) => {
+  const spaceId = c.req.param("spaceId")!, projectId = c.req.param("projectId") || undefined;
+  if (projectId) {
+    const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+    if (denied) return denied;
+  }
   const identity = getCallerIdentity(c);
   const role = identity.role === "product_end_user" && identity.userId
     ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
     : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  if (!projectId) {
+    const active=await c.env.PLATFORM_DB.prepare("SELECT s.id FROM spaces s JOIN orgs o ON o.id=s.tenant_id WHERE s.id=? AND s.tenant_id=? AND s.status='active' AND o.status='active'").bind(spaceId,identity.tenantId).first();
+    if(!active)return c.json({error_code:"space_unavailable"},403);
+  }
   const body = await c.req.json<{ manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean }>().catch(() => ({} as { manifest?: unknown; scope?: unknown; handlerSources?: unknown; instanceKey?: string; upgrade?: boolean }));
   const instanceKey = body.instanceKey ?? "default";
   if (!/^[a-z][a-z0-9_-]{1,31}$/.test(instanceKey)) return c.json({ error_code: "extension_instance_key_invalid" }, 400);
   if (body.upgrade !== undefined && body.upgrade !== true) return c.json({ error_code: "extension_upgrade_confirmation_invalid" }, 400);
-  if (body.scope !== undefined && !["PROJECT_BOUND", "PROJECT_SHARED"].includes(String(body.scope))) return c.json({ error_code: "channel_install_scope_invalid" }, 400);
+  if (body.scope !== undefined && !(projectId ? ["PROJECT_BOUND", "PROJECT_SHARED"] : ["SPACE_SHARED"]).includes(String(body.scope))) return c.json({ error_code: "channel_install_scope_invalid" }, 400);
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try {
     manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["channel.invoke"] });
@@ -1745,7 +1753,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
       || manifest.capabilityRequirements.length !== 1 || manifest.capabilityRequirements[0] !== "channel.invoke"
       || manifest.gadgets.length > 0 || manifest.daemons.length > 0 || manifest.commands.length > 0
       || (manifest.containers?.length ?? 0) > 0
-      || channels.some(channel => !supportedProviders.has(channel.provider) || !channel.connectionId)
+      || channels.some(channel => !supportedProviders.has(channel.provider) || !channel.connectionId || (!projectId && channel.provider !== "phone"))
       || (bundle.connections ?? []).some(connection => !supportedProviders.has(connection.provider))) {
       throw new Error("channel_package_must_be_restricted_and_have_host_connections");
     }
@@ -1802,7 +1810,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
       const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${filename}`;
       if (!await c.env.SCRIPTS_R2.head(key)) {
         await c.env.SCRIPTS_R2.put(key, code, { httpMetadata: { contentType: path.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/typescript; charset=utf-8" } });
-        await reportExtensionArtifactWrite(c.env, { tenantId: identity.tenantId, spaceId, projectId, bundleId: bundle.id, version: bundle.version,
+        await reportExtensionArtifactWrite(c.env, { tenantId: identity.tenantId, spaceId, ...(projectId ? {projectId} : {}), bundleId: bundle.id, version: bundle.version,
           path, bytes: new TextEncoder().encode(code).byteLength });
       }
     }
@@ -1810,7 +1818,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
   const artifactPayload = JSON.stringify(sourceEntries.sort(([a], [b]) => a.localeCompare(b)));
   const artifactDigestBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(artifactPayload));
   const artifactSha256 = [...new Uint8Array(artifactDigestBytes)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-  const scope = body.scope === "PROJECT_SHARED" ? "PROJECT_SHARED" : "PROJECT_BOUND";
+  const scope = !projectId ? "SPACE_SHARED" : body.scope === "PROJECT_SHARED" ? "PROJECT_SHARED" : "PROJECT_BOUND";
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const response = await stub.fetch(new Request("http://space-do/extensions", {
     method: "POST", headers: { "content-type": "application/json" },
@@ -1818,7 +1826,9 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", async c => {
       gatekeeperCapabilities: ["channel.invoke"], artifactSha256, instanceKey, ...(body.upgrade === true ? { upgrade: true } : {}) }),
   }));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
-});
+};
+app.post("/spaces/:spaceId/projects/:projectId/channel-extensions", installChannelExtension);
+app.post("/spaces/:spaceId/channel-extensions", installChannelExtension);
 
 // Publisher trust is configured independently from package uploads so a package cannot trust its own key.
 app.use("/spaces/:spaceId/extension-publishers", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

@@ -9,6 +9,8 @@ export interface OwnerVoiceTicket {
   callerRole: string;
   agentName: string;
   projectId?: string;
+  phoneBindingId?: string;
+  callSid?: string;
   expiresAt: number;
   nonce: string;
 }
@@ -57,9 +59,12 @@ export async function verifyOwnerVoiceTicket(
       || (parsed.role !== "owner" && parsed.role !== "admin")
       || (parsed.callerRole !== "owner" && parsed.callerRole !== "admin" && parsed.callerRole !== "product_end_user")
       || parsed.agentName !== expectedAgentName
-      || !Number.isSafeInteger(parsed.expiresAt) || parsed.expiresAt! <= now || parsed.expiresAt! > now + 5 * 60
+      || !Number.isSafeInteger(parsed.expiresAt) || parsed.expiresAt! <= now || parsed.expiresAt! > now + (parsed.phoneBindingId ? 15 * 60 : 5 * 60)
       || typeof parsed.nonce !== "string" || !/^[a-f0-9-]{36}$/.test(parsed.nonce)) return null;
     if (parsed.projectId !== undefined && (typeof parsed.projectId !== "string" || !parsed.projectId)) return null;
+    if ((parsed.phoneBindingId !== undefined || parsed.callSid !== undefined) &&
+      (typeof parsed.phoneBindingId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(parsed.phoneBindingId) ||
+       typeof parsed.callSid !== "string" || !/^CA[a-fA-F0-9]{32}$/.test(parsed.callSid))) return null;
     return parsed as OwnerVoiceTicket;
   } catch {
     return null;

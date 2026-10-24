@@ -662,6 +662,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Composed provider connections are installation scoped and re-authorized by Agents.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions\/([^/]+)\/connections\/([^/]+)(?:\/(?:oauth\/slack\/start|telegram\/connect|whatsapp\/connect|routes(?:\/available)?))?$/,
   // Extension channel installation and operations queue; the downstream worker owns role checks.
+  /^\/spaces\/([^/]+)\/channel-extensions$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/channel-extensions\/([^/]+)(?:\/(?:session-state|inbox(?:\/(?:sla|notes|assign|takeover|delete-conversation|reply|export))?))?$/,
   /^\/spaces\/([^/]+)\/assistant\/channel-extensions$/,

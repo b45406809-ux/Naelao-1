@@ -59,6 +59,15 @@ export function AssistantPhonePanel({
   const [receipt, setReceipt] = React.useState("");
   const [handlerInstallation, setHandlerInstallation] = React.useState(""),
     [handlerDigest, setHandlerDigest] = React.useState("");
+  const [liveCall, setLiveCall] = React.useState<{
+    code: string;
+    expires_at: number;
+    session_id: string;
+    phone_number: string;
+  } | null>(null);
+  const [liveSessionId, setLiveSessionId] = React.useState<
+    string | undefined
+  >();
   const generation = React.useRef(0);
   const call = React.useCallback(
     <T,>(action: string, args: Record<string, unknown> = {}, write = false) =>
@@ -98,6 +107,10 @@ export function AssistantPhonePanel({
     setQuote(null);
     setSecret("");
     setReceipt("");
+    setHandlerInstallation("");
+    setHandlerDigest("");
+    setLiveCall(null);
+    setLiveSessionId(undefined);
     setAccount("");
     setSid("");
     setTo("");
@@ -128,6 +141,18 @@ export function AssistantPhonePanel({
         );
       if (action === "phone-event")
         setContent(JSON.stringify(result.body, null, 2));
+      if (action === "phone-live") {
+        setLiveCall(
+          result as unknown as {
+            code: string;
+            expires_at: number;
+            session_id: string;
+            phone_number: string;
+          }
+        );
+        setLiveSessionId(String(result.session_id));
+      }
+      if (action === "phone-live-end") setLiveCall(null);
       if (action === "phone-credentials") setSecret("");
       await refresh();
     } catch (e) {
@@ -348,13 +373,53 @@ export function AssistantPhonePanel({
               </fieldset>
               <fieldset disabled={busy || !state.enabled}>
                 <legend>Inbound calls</legend>
-                <fieldset disabled={!projectId || busy}>
+                <fieldset disabled={busy}>
+                  <legend>Talk to your assistant by phone</legend>
+                  <p>
+                    Create a private call code, call this number, and enter the
+                    code. Your assistant uses its normal tools and saves the
+                    task. Approvals stay in Naelao. Carrier charges apply.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void act("phone-live", {
+                        confirm: true,
+                        ...(liveSessionId ? { session_id: liveSessionId } : {}),
+                      })
+                    }
+                  >
+                    Get one-time call code
+                  </button>
+                  {liveCall && (
+                    <div role="status">
+                      <p>
+                        Call {liveCall.phone_number}. Enter{" "}
+                        <strong>{liveCall.code}</strong>. The code expires at{" "}
+                        {new Date(
+                          liveCall.expires_at * 1000
+                        ).toLocaleTimeString()}
+                        . Keep it private.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void act("phone-live-end", { confirm: true })
+                        }
+                      >
+                        End and revoke phone access
+                      </button>
+                    </div>
+                  )}
+                </fieldset>
+                <fieldset disabled={busy}>
                   <legend>Installed voice extension</legend>
                   <p>
-                    Bind a signed project channel extension declaring provider
-                    phone. Its handler replies through ctx.channel.reply with
-                    JSON actions (say, gather, hangup). The host validates the
-                    installation and exact source digest before activation.
+                    Bind a signed channel extension installed in this
+                    assistant’s Space or project, declaring provider phone. Its
+                    handler replies through ctx.channel.reply with JSON actions
+                    (say, gather, hangup). The host validates the installation
+                    and exact source digest before activation.
                   </p>
                   <label>
                     Installation ID{" "}

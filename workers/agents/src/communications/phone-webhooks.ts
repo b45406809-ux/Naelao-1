@@ -1,4 +1,14 @@
 import type { Hono } from "hono";
+import { TwilioAdapter } from "@cloudflare/voice-twilio";
+import { validateTwilioMediaStream } from "../voice/customer-telephony.js";
+import { verifyOwnerVoiceTicket } from "../voice/voice-ticket.js";
+import {
+  claimLiveCall,
+  liveCallAllowed,
+  liveCallTicket,
+  liveCodeHash,
+  type LiveCall,
+} from "./live-calls.js";
 import {
   mintInternalToken,
   readBoundedResponseJson,
@@ -34,14 +44,103 @@ const response = (body: string, status = 200) =>
 const reject = () => response("<Reject/>", 403);
 const callId = /^CA[a-fA-F0-9]{32}$/;
 const messageId = /^(?:SM|MM)[a-fA-F0-9]{32}$/;
+async function liveStreamResponse(
+  env: AgentsEnv,
+  live: LiveCall
+): Promise<Response> {
+  const ticket = await liveCallTicket(env, live);
+  const agentName =
+    "phone-" +
+    (await liveCodeHash(
+      live.binding_id,
+      JSON.stringify([live.tenant_id, live.user_id, live.session_id])
+    ));
+  const stream = new URL(
+    `/assistant-phone/live-stream/${agentName}/${encodeURIComponent(ticket)}`,
+    phonePublicOrigin(env)
+  );
+  stream.protocol = "wss:";
+  return response(
+    `<Connect><Stream url="${xml(stream.toString())}"/></Connect><Hangup/>`
+  );
+}
 const caller = (s: string) => /^[+a-zA-Z0-9][+a-zA-Z0-9 ._-]{0,63}$/.test(s);
 export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
+  app.get("/assistant-phone/live-stream/:id/:ticket", async (c) => {
+    const token = c.req.param("ticket"),
+      id = c.req.param("id");
+    const ticket = await verifyOwnerVoiceTicket(
+      token,
+      c.env.PLATFORM_SECRET,
+      id
+    );
+    if (!ticket?.phoneBindingId || !ticket.callSid || new URL(c.req.url).search)
+      return reject();
+    const live = await c.env.PLATFORM_DB.prepare(
+      "SELECT * FROM assistant_live_calls WHERE id=? AND binding_id=? AND call_sid=? AND tenant_id=? AND user_id=? AND status='connected' AND deadline>?"
+    )
+      .bind(
+        ticket.nonce,
+        ticket.phoneBindingId,
+        ticket.callSid,
+        ticket.tenantId,
+        ticket.userId,
+        Math.floor(Date.now() / 1000)
+      )
+      .first<LiveCall>();
+    const binding = await c.env.PLATFORM_DB.prepare(
+      "SELECT * FROM assistant_phone_bindings WHERE id=? AND status='active'"
+    )
+      .bind(ticket.phoneBindingId)
+      .first<AssistantPhoneBinding>();
+    const identity = binding
+      ? await c.env.PLATFORM_DB.prepare(
+          "SELECT * FROM assistant_communication_identities WHERE id=? AND status='active'"
+        )
+          .bind(binding.identity_id)
+          .first<CommunicationIdentity>()
+      : null;
+    const credentials =
+      identity && binding
+        ? await resolvePhoneCredentials(c.env, identity, binding.payer)
+        : null;
+    const canonical = new URL(c.req.url);
+    canonical.protocol = "wss:";
+    canonical.host = new URL(phonePublicOrigin(c.env)).host;
+    if (
+      !live ||
+      !identity ||
+      !credentials ||
+      credentials.accountSid !== binding?.provider_account_sid ||
+      !(await liveCallAllowed(c.env, live)) ||
+      !validateTwilioMediaStream({
+        authToken: credentials.authToken,
+        signature: c.req.header("x-twilio-signature") ?? null,
+        canonicalUrl: canonical.toString(),
+      })
+    )
+      return reject();
+    const internal = new URL(c.req.url);
+    internal.searchParams.set("ticket", token);
+    return TwilioAdapter.handleRequest(
+      new Request(internal, c.req.raw),
+      c.env as unknown as Record<string, unknown>,
+      "OWNER_VOICE_AGENT",
+      { instanceName: id }
+    );
+  });
   app.post("/assistant-phone/twilio/:bindingId/:event", async (c) => {
     const event = c.req.param("event");
     if (
-      !["sms", "answer", "menu", "voicemail", "transcript", "status"].includes(
-        event
-      )
+      ![
+        "sms",
+        "answer",
+        "menu",
+        "live-code",
+        "voicemail",
+        "transcript",
+        "status",
+      ].includes(event)
     )
       return reject();
     const binding = await c.env.PLATFORM_DB.prepare(
@@ -100,6 +199,12 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
         ].includes(status)
       )
         return response("");
+      if (callId.test(sid))
+        await c.env.PLATFORM_DB.prepare(
+          "UPDATE assistant_live_calls SET status='ended' WHERE binding_id=? AND call_sid=? AND status='connected'"
+        )
+          .bind(binding.id, sid)
+          .run();
       const row = await c.env.PLATFORM_DB.prepare(
         "SELECT id FROM assistant_phone_actions WHERE binding_id=? AND provider_sid=?"
       )
@@ -185,8 +290,63 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
     )
       return reject();
     const root = `${phonePublicOrigin(c.env)}/assistant-phone/twilio/${binding.id}`;
+    if (event === "answer") {
+      const resumed = await c.env.PLATFORM_DB.prepare(
+        "SELECT l.* FROM assistant_live_calls l JOIN assistant_phone_events e ON e.id=l.call_sid AND e.binding_id=l.binding_id WHERE l.binding_id=? AND l.call_sid=? AND e.sender=? AND l.status='connected' AND l.deadline>?"
+      )
+        .bind(binding.id, sid, from, Math.floor(Date.now() / 1000))
+        .first<LiveCall>();
+      if (resumed)
+        return (await liveCallAllowed(c.env, resumed))
+          ? liveStreamResponse(c.env, resumed)
+          : reject();
+    }
+    // A short-lived, app-authorized live session takes precedence only while armed.
+    // Public caller IDs never become an owner credential.
+    const armed =
+      event === "answer"
+        ? await c.env.PLATFORM_DB.prepare(
+            "SELECT id FROM assistant_live_calls WHERE binding_id=? AND status='armed' AND expires_at>?"
+          )
+            .bind(binding.id, Math.floor(Date.now() / 1000))
+            .first()
+        : null;
+    if (armed || event === "live-code") {
+      const admitted = await c.env.PLATFORM_DB.prepare(
+        "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=? AND sender=? AND kind='call'"
+      )
+        .bind(sid, binding.id, from)
+        .first();
+      if (!admitted && event === "live-code") return reject();
+      if (!admitted) {
+        const quota = await c.env.PLATFORM_DB.prepare(
+          "INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?"
+        )
+          .bind(binding.id, policy.maxDailyInboundCalls)
+          .run();
+        if (!quota.meta.changes) return reject();
+        await c.env.PLATFORM_DB.prepare(
+          "INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status) VALUES(?,?,'call',?,'received')"
+        )
+          .bind(sid, binding.id, from)
+          .run();
+      }
+      if (event === "answer")
+        return response(
+          `<Gather input="dtmf" numDigits="8" timeout="15" action="${xml(root + "/live-code")}" method="POST"><Say>Enter the one-time call code shown in Naelao.</Say></Gather><Hangup/>`
+        );
+      const live = await claimLiveCall(
+        c.env,
+        binding,
+        sid,
+        form.get("Digits") ?? "",
+        policy.maxCallSeconds
+      );
+      if (!live || !(await liveCallAllowed(c.env, live))) return reject();
+      return liveStreamResponse(c.env, live);
+    }
     const configuredHandler = await c.env.PLATFORM_DB.prepare(
-      "SELECT binding_id FROM assistant_phone_extension_handlers WHERE binding_id=? AND status='active'"
+      "SELECT binding_id FROM assistant_phone_extension_handlers WHERE binding_id=?"
     )
       .bind(binding.id)
       .first();
@@ -218,8 +378,24 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
           "<Say>No destination is configured for that option.</Say><Hangup/>"
         );
       }
-      const prior=await c.env.PLATFORM_DB.prepare('SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=?').bind(sid,binding.id).first();
-      if(!prior){const quota=await c.env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?").bind(binding.id,policy.maxDailyInboundCalls).run();if(!quota.meta.changes)return reject();await c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status) VALUES(?,?,'call',?,'received')").bind(sid,binding.id,from).run();}
+      const prior = await c.env.PLATFORM_DB.prepare(
+        "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=?"
+      )
+        .bind(sid, binding.id)
+        .first();
+      if (!prior) {
+        const quota = await c.env.PLATFORM_DB.prepare(
+          "INSERT INTO assistant_phone_ingress_usage(binding_id,day,calls) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET calls=calls+1 WHERE calls<?"
+        )
+          .bind(binding.id, policy.maxDailyInboundCalls)
+          .run();
+        if (!quota.meta.changes) return reject();
+        await c.env.PLATFORM_DB.prepare(
+          "INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status) VALUES(?,?,'call',?,'received')"
+        )
+          .bind(sid, binding.id, from)
+          .run();
+      }
       return menu();
     }
     if (event === "answer" || event === "menu") {

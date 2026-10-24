@@ -98,6 +98,9 @@ export async function sweepAssistantPhoneHistory(env: AgentsEnv) {
       await env.PLATFORM_DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(row.id).run();
     }
   }
+  await env.PLATFORM_DB.prepare("DELETE FROM assistant_live_call_attempts WHERE created_at < ?").bind(Math.floor(Date.now()/1000)-86400*2).run();
+  await env.PLATFORM_DB.prepare("UPDATE assistant_live_calls SET status='revoked' WHERE status='armed' AND expires_at<=?").bind(Math.floor(Date.now()/1000)).run();
+  await env.PLATFORM_DB.prepare("DELETE FROM assistant_live_calls WHERE status IN ('ended','revoked') AND created_at<?").bind(Math.floor(Date.now()/1000)-86400*30).run();
   await env.PLATFORM_DB.prepare("DELETE FROM assistant_phone_ingress_usage WHERE day<date('now','-35 days')").run();
   await env.PLATFORM_DB.prepare("DELETE FROM assistant_phone_quotes WHERE created_at<datetime('now','-30 days') AND status IN ('quoted','completed','failed')").run();
 }

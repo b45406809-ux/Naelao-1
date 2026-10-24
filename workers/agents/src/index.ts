@@ -1030,7 +1030,12 @@ app.post("/spaces/:spaceId/sessions/:sessionId/voice-ticket", async (c) => {
     ));
     if (!projectResponse.ok) return c.json({ error_code: "project_unavailable", message: "This project is not accessible" }, 404);
   }
-  const agentName = crypto.randomUUID();
+  try {
+    await (await import("./voice/session-scope.js")).verifyVoiceSession(c.env.SPACES_WORKER,c.env.PLATFORM_SECRET,
+      {tenantId,spaceId,userId,role:callerRole,...body.project_id?{projectId:body.project_id}:{}},sessionId);
+  } catch { return c.json({error_code:"voice_session_scope_mismatch"},403); }
+  const voiceIdentity = new TextEncoder().encode(JSON.stringify([tenantId,spaceId,userId,sessionId,body.project_id??null]));
+  const agentName = "voice-"+Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",voiceIdentity)),b=>b.toString(16).padStart(2,"0")).join("");
   const expiresAt = Math.floor(Date.now() / 1000) + 180;
   const ticket = await mintOwnerVoiceTicket({
     tenantId, spaceId, sessionId, userId, role, callerRole, agentName, expiresAt, nonce: crypto.randomUUID(),
@@ -1502,8 +1507,12 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     // Best-effort — don't block runs if quota check fails
   }
 
+  const durableVoice = c.req.header("x-naelao-durable-voice") === "1";
+  if (durableVoice && (!c.env.AGENT_TASK_WORKFLOW || !c.env.TASK_DO)) return c.json({error_code:"durable_voice_unavailable"},503);
+  // A voice action must use its own task receipt, never a semantic-cache response.
   // G-AZ19: Semantic response cache check — skip for async tasks (checked per-request only)
   try {
+    if (durableVoice) throw new Error("voice_cache_bypass");
     const cacheResp = await c.env.KNOWLEDGE_WORKER.fetch(
       new Request("http://knowledge-worker/internal/semantic-cache/lookup", {
         method: "POST",
@@ -7599,9 +7608,9 @@ app.post("/internal/channel-extension-binding/verify", async c => {
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   const body = await c.req.json<{ spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string; providerConnectionId?: string }>()
     .catch(() => ({} as { spaceId?: string; projectId?: string; channel?: string; instanceId?: string; scriptSha256?: string; providerConnectionId?: string }));
-  if (!body.spaceId || !body.projectId || !body.channel || !body.instanceId || !body.scriptSha256) return c.json({ valid: false });
+  if (!body.spaceId || (!body.projectId && body.channel !== "phone") || !body.channel || !body.instanceId || !body.scriptSha256) return c.json({ valid: false });
   if(body.channel==='phone'){
-    const row=await c.env.PLATFORM_DB.prepare("SELECT h.binding_id FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.status='active' AND b.status='active' AND h.installation_id=? AND h.handler_sha256=?").bind(tenantId,body.spaceId,body.projectId,body.instanceId,body.scriptSha256).first();
+    const row=await c.env.PLATFORM_DB.prepare("SELECT h.binding_id FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE i.tenant_id=? AND i.space_id=? AND i.project_id IS ? AND i.status='active' AND b.status='active' AND h.installation_id=? AND h.handler_sha256=?").bind(tenantId,body.spaceId,body.projectId ?? null,body.instanceId,body.scriptSha256).first();
     return c.json({valid:!!row});
   }
   if (body.providerConnectionId) {

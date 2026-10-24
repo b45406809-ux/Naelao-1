@@ -8,7 +8,7 @@ export interface ExtensionStorageUsageEnv {
 /** Record bytes actually added to immutable extension artifact storage. Pricing remains unknown. */
 export async function reportExtensionArtifactWrite(
   env: ExtensionStorageUsageEnv,
-  input: { tenantId: string; spaceId: string; projectId: string; bundleId: string; version: string; path: string; bytes: number },
+  input: { tenantId: string; spaceId: string; projectId?: string; bundleId: string; version: string; path: string; bytes: number },
 ): Promise<void> {
   if (!env.BILLING_WORKER || !Number.isSafeInteger(input.bytes) || input.bytes <= 0) return;
   try {
