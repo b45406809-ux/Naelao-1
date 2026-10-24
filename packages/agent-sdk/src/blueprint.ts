@@ -8,6 +8,20 @@ export function instantiateBlueprint(blueprint: SpaceBlueprint, targetSpaceId: s
   if (blueprint.schemaVersion !== "2.0") throw new Error("Unsupported blueprint schemaVersion");
   if (!blueprint.id || !Array.isArray(blueprint.projects)) throw new Error("Invalid blueprint");
   const copy = structuredClone(blueprint);
+  if (copy.requiredExtensionVersions !== undefined) {
+    if (!copy.requiredExtensionVersions || typeof copy.requiredExtensionVersions !== "object" || Array.isArray(copy.requiredExtensionVersions)) throw new Error("Invalid required extension versions");
+    const dependencies = new Set(copy.requiredExtensions ?? []);
+    for (const [extensionId, version] of Object.entries(copy.requiredExtensionVersions)) {
+      if (!dependencies.has(extensionId) || typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error(`Invalid required extension version: ${extensionId}`);
+    }
+  }
+  if (copy.requiredExtensionDigests !== undefined) {
+    if (!copy.requiredExtensionDigests || typeof copy.requiredExtensionDigests !== "object" || Array.isArray(copy.requiredExtensionDigests)) throw new Error("Invalid required extension digests");
+    const dependencies = new Set(copy.requiredExtensions ?? []);
+    for (const [extensionId, digest] of Object.entries(copy.requiredExtensionDigests)) {
+      if (!dependencies.has(extensionId) || typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)) throw new Error(`Invalid required extension digest: ${extensionId}`);
+    }
+  }
   if (copy.assistantChannels !== undefined) copy.assistantChannels = validateAssistantChannelDefaults(copy.assistantChannels);
   for (const project of copy.projects) {
     if (project.configuration?.assistantChannels !== undefined) project.configuration.assistantChannels = validateAssistantChannelPatch(project.configuration.assistantChannels);

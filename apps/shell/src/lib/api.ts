@@ -1548,7 +1548,7 @@ export async function revokeCrossSpaceGrant(spaceId: string, grantId: string, se
 }
 
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
-export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; installed_at: string; scope: "SPACE_SHARED"; capabilities: string[]; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
+export interface SpaceSharedExtensionApp { extension_id: string; installation_id: string; instance_key: string; app_id: string; name: string; installed_at: string; scope: "SPACE_SHARED"; status: "active" | "disabled"; capabilities: string[]; requested_shared_filesystem: SharedFilesystemGrant[]; approved_shared_filesystem: SharedFilesystemGrant[] }
 export interface SpaceSharedExtensionCatalogEntry { id: string; name: string; requested_shared_filesystem: SharedFilesystemGrant[] }
 export function listSpaceSharedExtensionApps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ apps: SpaceSharedExtensionApp[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-apps`, { session, cache: "no-store" });
@@ -1564,6 +1564,9 @@ export function updateSpaceSharedExtensionFilesystemGrants(spaceId: string, inst
 }
 export function removeSpaceSharedExtension(spaceId: string, installationId: string, session: SessionCredentials) {
   return apiFetch<{ removed: true; instance_id: string }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}`, { method: "DELETE", session });
+}
+export function setSpaceSharedExtensionEnabled(spaceId: string, installationId: string, session: SessionCredentials, enabled: boolean) {
+  return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
 }
 export type SpaceExtensionHostCapability = "blueprint.export" | "blueprint.status" | "marketplace.graduate";
 export function callSpaceSharedExtensionOperation(spaceId: string, session: SessionCredentials, capability: SpaceExtensionHostCapability, input: unknown) {
@@ -2288,6 +2291,8 @@ export interface SpaceSummary {
    *  a business created without a template — there is no checklist, so nothing is outstanding. */
   onboarding_status?: "pending" | "awaiting_setup" | "complete" | null;
   template_id?: string | null;
+  /** Certified template awaiting explicit owner/admin activation after provisioning. */
+  pending_blueprint_id?: string | null;
 }
 
 /** @deprecated Transitional type alias for callers not yet migrated from the old route naming. */
@@ -2337,7 +2342,7 @@ export async function activateSpaceTemplate(spaceId: string, blueprintId: string
 
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
-  dependencies: Array<{ extension_id: string; status: "installed" | "installable" | "unavailable" }>;
+  dependencies: Array<{ extension_id: string; status: "installed" | "disabled" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string }>;
   setup_credentials: Array<{ name: string; description: string; required: boolean }>;
   blockers: string[]; requires_human_activation: true; installs_or_grants_applied: false;
   security: { publishable: boolean; blockers?: string[] };

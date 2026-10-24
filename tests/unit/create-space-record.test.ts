@@ -248,6 +248,18 @@ describe("createSpaceRecord — provisioning", () => {
     }));
   });
 
+  it("keeps a certified template pending for owner review in queued Spaces", async () => {
+    const fakeDb = makeDb();
+    const send = vi.fn(async (_message: unknown) => {});
+    const result = await createSpaceRecord(
+      { PLATFORM_DB: fakeDb, ENVIRONMENT: "production", PROVISION_QUEUE: { send } as never },
+      { tenantId: "tenant-a", userId: "owner-a", name: "Fresh Space", spacetypeId: "launchpad", blueprintId: "tpl_certified" },
+    );
+    const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
+    expect(JSON.parse(row!.config_json)).toMatchObject({ pending_blueprint_id: "tpl_certified" });
+    expect(send.mock.calls[0]?.[0]).not.toHaveProperty("blueprintId");
+  });
+
   it("persists template_id into config_json so the space record is self-describing", async () => {
     const fakeDb = makeDb();
     const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", templateId: "creator-store" });

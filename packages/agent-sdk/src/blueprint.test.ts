@@ -12,4 +12,9 @@ describe("blueprint compiler", () => {
     expect(compiled.projects[0]?.starterFiles[0]?.path).toBe("src/index.ts");
   });
   it("rejects traversal", () => expect(() => instantiateBlueprint({ ...valid, projects: [{ ...valid.projects[0]!, starterFiles: [{ path: "../secret", content: "" }] }] }, "space")).toThrow("Unsafe"));
+  it("requires dependency pins to name declared dependencies with valid release versions", () => {
+    expect(() => instantiateBlueprint({ ...valid, requiredExtensionVersions: { ext_undeclared: "1.0.0" } }, "space")).toThrow("Invalid required extension version");
+    expect(() => instantiateBlueprint({ ...valid, requiredExtensions: ["ext_demo"], requiredExtensionVersions: { ext_demo: "latest" } }, "space")).toThrow("Invalid required extension version");
+    expect(instantiateBlueprint({ ...valid, requiredExtensions: ["ext_demo"], requiredExtensionVersions: { ext_demo: "1.2.3" } }, "space").requiredExtensionVersions).toEqual({ ext_demo: "1.2.3" });
+  });
 });

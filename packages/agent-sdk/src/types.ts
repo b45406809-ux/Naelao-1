@@ -230,6 +230,10 @@ export interface SpaceBlueprint {
   templateCategory: string;
   projects: BlueprintProject[];
   requiredExtensions: string[];
+  /** Optional immutable extension release pins. Entries must correspond to requiredExtensions. */
+  requiredExtensionVersions?: Record<string, string>;
+  /** Optional SHA-256 digest pins over each canonical installed extension manifest. */
+  requiredExtensionDigests?: Record<string, string>;
   requiredCredentials: BlueprintCredential[];
 }
 

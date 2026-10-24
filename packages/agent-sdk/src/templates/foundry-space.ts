@@ -18,6 +18,8 @@ export const FOUNDRY_SPACE_TEMPLATE = Object.freeze({
   }),
   templateCategory: "developer-tools",
   requiredExtensions: Object.freeze(["ext_foundry_catalog"]),
+  requiredExtensionVersions: Object.freeze({ ext_foundry_catalog: "1.0.0" }),
+  requiredExtensionDigests: Object.freeze({ ext_foundry_catalog: "827fb795dad136bf05038420e4c4fc35b8838a56a344afad9ec6dc1c21a28ab1" }),
   requiredCredentials: Object.freeze([]),
   projects: Object.freeze([Object.freeze({
     id: "template-studio",

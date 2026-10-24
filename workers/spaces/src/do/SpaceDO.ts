@@ -25,7 +25,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, type AssistantChannelPatch, type AssistantChannelTemplateDefaults } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -2182,6 +2182,46 @@ const MIGRATIONS: Migration[] = [
       -- Old wallet/revenue rows are preserved for data retention; all host APIs and workers that
       -- could read or mutate them have been removed.`,
   },
+  {
+    version: 98,
+    description: "idempotent Space Template installation claims and receipts",
+    up: `CREATE TABLE space_blueprint_installations (
+      space_id TEXT NOT NULL,
+      blueprint_id TEXT NOT NULL,
+      artifact_sha256 TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('installing','installed','failed')),
+      result_json TEXT,
+      error_code TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(space_id,blueprint_id)
+    );`,
+  },
+  {
+    version: 99,
+    description: "reversible extension pause lifecycle state",
+    up: `
+      DROP INDEX IF EXISTS idx_extension_instances_owner;
+      DROP INDEX IF EXISTS idx_extension_instances_project;
+      DROP INDEX IF EXISTS idx_extension_instances_named;
+      ALTER TABLE extension_instances RENAME TO extension_instances_v98;
+      CREATE TABLE extension_instances (
+        instance_id TEXT PRIMARY KEY, extension_id TEXT NOT NULL, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+        project_id TEXT, user_id TEXT,
+        scope TEXT NOT NULL CHECK (scope IN ('SPACE_SHARED','SPACE_ASSISTANT','SPACE_USER','PROJECT_BOUND','PROJECT_SHARED','PROJECT_USER')),
+        instance_key TEXT NOT NULL DEFAULT 'default', owner_key TEXT NOT NULL, installed_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled','removed','expired')),
+        installed_at TEXT NOT NULL, removed_at TEXT,
+        UNIQUE(extension_id, tenant_id, space_id, project_id, user_id, scope, instance_key)
+      );
+      INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at)
+        SELECT instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at FROM extension_instances_v98;
+      DROP TABLE extension_instances_v98;
+      CREATE INDEX idx_extension_instances_owner ON extension_instances(tenant_id, space_id, status, scope);
+      CREATE INDEX idx_extension_instances_project ON extension_instances(space_id, project_id, status);
+      CREATE INDEX idx_extension_instances_named ON extension_instances(extension_id,tenant_id,space_id,project_id,instance_key,status);
+    `,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2835,6 +2875,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
       if (url.pathname === "/space-shared-extensions" && method === "GET") return this.listSpaceSharedExtensions(url.searchParams);
       if (url.pathname === "/extension-shared-filesystem-grants" && method === "POST") return this.updateSharedFilesystemGrants(request);
+      if (url.pathname === "/space-shared-extension-lifecycle" && method === "PATCH") return this.updateSpaceSharedExtensionLifecycle(request);
       if (url.pathname === "/project-steward-facts" && method === "GET") return this.projectStewardFacts(url.searchParams);
       if (url.pathname === "/project-lifecycle" && method === "GET") return this.projectLifecycle(url.searchParams);
       if (url.pathname === "/machine-authority" && method === "POST") return this.machineAuthority(request);
@@ -2847,11 +2888,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/extension-installations" && method === "GET") {
         const extensionId = url.searchParams.get("extension_id") ?? "";
-        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; status: string; installed_at: string }>(this.ctx.storage.sql as never,
-          extensionId === "__all__" ? "SELECT instance_id,extension_id,project_id,scope,status,installed_at FROM extension_instances WHERE tenant_id=? AND space_id=? AND status='active' ORDER BY installed_at"
-            : "SELECT instance_id,extension_id,project_id,scope,status,installed_at FROM extension_instances WHERE tenant_id=? AND space_id=? AND extension_id=? AND status='active' ORDER BY installed_at",
+        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; status: string; installed_at: string; manifest_json: string }>(this.ctx.storage.sql as never,
+          extensionId === "__all__" ? "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled') ORDER BY i.installed_at"
+            : "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled') ORDER BY i.installed_at",
           ...(extensionId === "__all__" ? [url.searchParams.get("tenant_id"), url.searchParams.get("space_id")] : [url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), extensionId]));
-        return Response.json({ installations: rows });
+        const installations = await Promise.all(rows.map(async ({ manifest_json, ...row }) => {
+          try {
+            const manifest = JSON.parse(manifest_json) as { releaseVersion?: string; version?: string; bundle?: { version?: string } };
+            return { ...row, release_version: manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version ?? null, manifest_sha256: await digestExtensionManifest(JSON.parse(manifest_json) as ExtensionManifest) };
+          } catch { return { ...row, release_version: null, manifest_sha256: null }; }
+        }));
+        return Response.json({ installations });
       }
       if (url.pathname === "/project-extension-runtime" && method === "GET") {
         const tenantId = url.searchParams.get("tenant_id") ?? "";
@@ -2919,8 +2966,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const projectId = url.searchParams.get("project_id") ?? "";
         if (!instanceId || !tenantId || !spaceId) return Response.json({ error_code: "extension_installation_scope_required" }, { status: 400 });
         const result = projectId
-          ? this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status='active'`, instanceId, tenantId, spaceId, projectId)
-          : this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status='active'`, instanceId, tenantId, spaceId);
+          ? this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status IN ('active','disabled')`, instanceId, tenantId, spaceId, projectId)
+          : this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status IN ('active','disabled')`, instanceId, tenantId, spaceId);
         if (result.rowsWritten === 1) execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
         return result.rowsWritten === 1
           ? Response.json({ removed: true, instance_id: instanceId })
@@ -3015,8 +3062,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         }));
       }
       if (method === "POST" && url.pathname === "/blueprints/instantiate") {
-        const body = await request.json<{ blueprint?: SpaceBlueprint; target_space_id?: string }>();
+        const body = await request.json<{ blueprint?: SpaceBlueprint; target_space_id?: string; activation_key?: string }>();
         if (!body.blueprint || !body.target_space_id) return Response.json({ error: "blueprint and target_space_id are required" }, { status: 400 });
+        if (body.activation_key) {
+          if (body.activation_key !== body.blueprint.id) return Response.json({ error_code: "blueprint_activation_key_mismatch" }, { status: 400 });
+          try {
+            const result = await this.instantiateBlueprintOnce(body.blueprint, body.target_space_id);
+            return Response.json(result, { status: result.alreadyInstalled ? 200 : 201 });
+          } catch (error) {
+            const code = error instanceof Error ? error.message : "blueprint_install_failed";
+            return Response.json({ error_code: code }, { status: code === "blueprint_activation_artifact_changed" ? 409 : code === "blueprint_install_in_progress" ? 409 : 503 });
+          }
+        }
         return Response.json(await this.instantiateBlueprint(body.blueprint, body.target_space_id), { status: 201 });
       }
       if (method === "POST" && url.pathname === "/artifact-validation/check") return this.checkArtifactValidation(request);
@@ -4079,17 +4136,79 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         starterFiles: files.map((file) => ({ path: `/workspace/${file.path.replace(/^\/+/, "")}`, content: file.content })),
       };
     }));
-    const installedExtensions = queryAll<{ extension_id: string }>(this.ctx.storage.sql as never, "SELECT extension_id FROM installed_extensions ORDER BY extension_id");
+    const installedExtensions = queryAll<{ extension_id: string; manifest_json: string }>(this.ctx.storage.sql as never, "SELECT extension_id,manifest_json FROM installed_extensions ORDER BY extension_id");
     const availableExtensions = new Set(installedExtensions.map(item => item.extension_id));
+    const extensionVersions = new Map(installedExtensions.flatMap(item => {
+      try {
+        const manifest = JSON.parse(item.manifest_json) as { releaseVersion?: string; version?: string; bundle?: { version?: string } };
+        const version = manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version;
+        return version ? [[item.extension_id, version] as const] : [];
+      } catch { return []; }
+    }));
+    const extensionDigests = new Map<string, string>();
+    for (const item of installedExtensions) {
+      try { extensionDigests.set(item.extension_id, await digestExtensionManifest(JSON.parse(item.manifest_json) as ExtensionManifest)); }
+      catch { /* malformed legacy rows are not promoted into a pin */ }
+    }
     const requestedExtensions = options.projectId ? (options.requiredExtensions ?? []) : (options.requiredExtensions ?? [...availableExtensions]);
     if (requestedExtensions.some(id => !availableExtensions.has(id))) throw new Error("required_extension_not_installed");
     return {
       id: crypto.randomUUID(), schemaVersion: "2.0", metadata: { exportedAt: new Date().toISOString(), sourceSpaceId: spaceId,
         ...(options.name ? { name: options.name.trim() } : {}), ...(options.description ? { description: options.description.trim() } : {}) },
       templateCategory: options.templateCategory ?? (options.projectId ? "developer-tools" : "venture"), projects: exportedProjects,
-      requiredExtensions: [...new Set(requestedExtensions)].sort(), requiredCredentials: [],
+      requiredExtensions: [...new Set(requestedExtensions)].sort(),
+      ...(requestedExtensions.some(id => extensionVersions.has(id)) ? { requiredExtensionVersions: Object.fromEntries(requestedExtensions.flatMap(id => extensionVersions.has(id) ? [[id, extensionVersions.get(id)!]] : [])) } : {}),
+      ...(requestedExtensions.some(id => extensionDigests.has(id)) ? { requiredExtensionDigests: Object.fromEntries(requestedExtensions.flatMap(id => extensionDigests.has(id) ? [[id, extensionDigests.get(id)!]] : [])) } : {}),
+      requiredCredentials: [],
       assistantChannels: await this.ctx.storage.get<AssistantChannelTemplateDefaults>("channels:template") ?? {},
     };
+  }
+
+  /** Serialize host activation retries per target Space and exact blueprint artifact. */
+  private async instantiateBlueprintOnce(blueprint: SpaceBlueprint, targetSpaceId: string): Promise<{ projectIds: string[]; taskCount: number; fileCount: number; alreadyInstalled?: boolean }> {
+    const artifactHash = await sha256Hex(JSON.stringify(blueprint));
+    const existing = queryOne<{ artifact_sha256: string; status: string; result_json: string | null; error_code: string | null }>(this.ctx.storage.sql as never,
+      "SELECT artifact_sha256,status,result_json,error_code FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
+    if (existing) {
+      if (existing.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
+      if (existing.status === "installed" && existing.result_json) return { ...(JSON.parse(existing.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+      if (existing.status === "failed") throw new Error(existing.error_code ?? "blueprint_install_previous_attempt_failed");
+      throw new Error("blueprint_install_in_progress");
+    }
+    const now = new Date().toISOString();
+    let acquired = false;
+    this.ctx.storage.transactionSync(() => {
+      acquired = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO space_blueprint_installations(space_id,blueprint_id,artifact_sha256,status,created_at,updated_at)
+        VALUES(?,?,?,'installing',?,?)`, targetSpaceId, blueprint.id, artifactHash, now, now).rowsWritten === 1;
+    });
+    if (!acquired) {
+      const concurrent = queryOne<{ artifact_sha256: string; status: string; result_json: string | null }>(this.ctx.storage.sql as never,
+        "SELECT artifact_sha256,status,result_json FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
+      if (concurrent?.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
+      if (concurrent?.status === "installed" && concurrent.result_json) return { ...(JSON.parse(concurrent.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+      throw new Error("blueprint_install_in_progress");
+    }
+    const claim = queryOne<{ artifact_sha256: string; status: string; result_json: string | null; error_code: string | null }>(this.ctx.storage.sql as never,
+      "SELECT artifact_sha256,status,result_json,error_code FROM space_blueprint_installations WHERE space_id=? AND blueprint_id=?", targetSpaceId, blueprint.id);
+    if (!claim || claim.artifact_sha256 !== artifactHash) throw new Error("blueprint_activation_artifact_changed");
+    if (claim.status !== "installing" || claim.result_json) {
+      if (claim.status === "installed" && claim.result_json) return { ...(JSON.parse(claim.result_json) as { projectIds: string[]; taskCount: number; fileCount: number }), alreadyInstalled: true };
+      throw new Error("blueprint_install_in_progress");
+    }
+    // The insert winner owns the activation. Competing requests return above without writing.
+    try {
+      const result = await this.instantiateBlueprint(blueprint, targetSpaceId);
+      this.ctx.storage.transactionSync(() => execute(this.ctx.storage.sql as never,
+        "UPDATE space_blueprint_installations SET status='installed',result_json=?,error_code=NULL,updated_at=? WHERE space_id=? AND blueprint_id=? AND status='installing' AND artifact_sha256=?",
+        JSON.stringify(result), new Date().toISOString(), targetSpaceId, blueprint.id, artifactHash));
+      return result;
+    } catch (error) {
+      const code = (error instanceof Error ? error.message : "blueprint_install_failed").slice(0, 120);
+      this.ctx.storage.transactionSync(() => execute(this.ctx.storage.sql as never,
+        "UPDATE space_blueprint_installations SET status='failed',error_code=?,updated_at=? WHERE space_id=? AND blueprint_id=? AND status='installing'",
+        code, new Date().toISOString(), targetSpaceId, blueprint.id));
+      throw error;
+    }
   }
 
   /** Install a validated blueprint locally; hashing and writes complete before returning. */
@@ -11323,11 +11442,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listSpaceSharedExtensions(params: URLSearchParams): Response {
     const tenantId = params.get("tenant_id") ?? "", spaceId = params.get("space_id") ?? "";
     if (!tenantId || !spaceId) return Response.json({ error_code: "extension_scope_required" }, { status: 400 });
-    const rows = queryAll<{ extension_id: string; instance_id: string; instance_key: string | null; manifest_json: string; installed_at: string }>(
+    const rows = queryAll<{ extension_id: string; instance_id: string; instance_key: string | null; manifest_json: string; installed_at: string; status: string }>(
       this.ctx.storage.sql as never,
-      `SELECT i.extension_id,i.instance_id,i.instance_key,i.installed_at,e.manifest_json
+      `SELECT i.extension_id,i.instance_id,i.instance_key,i.installed_at,i.status,e.manifest_json
        FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
-       WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status='active'
+       WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status IN ('active','disabled')
        ORDER BY i.installed_at,i.extension_id`, tenantId, spaceId,
     );
     const apps = rows.flatMap(row => {
@@ -11337,13 +11456,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const candidates = [...gadgets.map(gadget => ({ id: gadget.id, name: gadget.name })), ...canvases.map(canvas => ({ id: canvas.id, name: canvas.id }))];
       return candidates.map(item => ({ extension_id: row.extension_id, installation_id: row.instance_id, instance_key: row.instance_key ?? "default",
         app_id: row.instance_key && row.instance_key !== "default" ? `${row.instance_key}_${item.id}` : item.id,
-        name: item.name, installed_at: row.installed_at, scope: "SPACE_SHARED" as const,
+        name: item.name, installed_at: row.installed_at, scope: "SPACE_SHARED" as const, status: row.status,
         // Filesystem grants are worker-only and must never flow into the iframe's host API list.
         capabilities: Array.isArray(manifest.capabilityRequirements) ? manifest.capabilityRequirements.filter(capability => !capability.startsWith("space.shared.")) : [],
         requested_shared_filesystem: manifest.shared_filesystem ?? [],
         approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }));
     });
     return Response.json({ apps });
+  }
+
+  private async updateSpaceSharedExtensionLifecycle(request: Request): Promise<Response> {
+    const body = await request.json<{ tenantId?: string; spaceId?: string; instanceId?: string; action?: string }>()
+      .catch((): { tenantId?: string; spaceId?: string; instanceId?: string; action?: string } => ({}));
+    if (!body.tenantId || !body.spaceId || !body.instanceId || !["disable", "enable"].includes(body.action ?? "")
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const status = body.action === "disable" ? "disabled" : "active";
+    const result = this.ctx.storage.sql.exec(
+      `UPDATE extension_instances SET status=? WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status IN ('active','disabled')`,
+      status, body.instanceId, body.tenantId, body.spaceId,
+    );
+    return result.rowsWritten === 1
+      ? Response.json({ instance_id: body.instanceId, status })
+      : Response.json({ error_code: "extension_installation_not_found" }, { status: 404 });
   }
 
   private listApprovedSharedFilesystemGrants(instanceId: string): Array<{ path: string; access: "READ" | "READ_WRITE" }> {

@@ -220,6 +220,14 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     ).bind(spaceId, tenantId).first<{ status: string }>();
     if (!claimedSpace || !mayStartProvisioning(claimedSpace.status)) return;
 
+    // Preserve an owner-reviewable template marker for queue messages produced by older releases.
+    // New producers persist this marker in config_json and no longer put a blueprint on the queue.
+    if (msg.blueprintId) {
+      await env.PLATFORM_DB.prepare(`UPDATE spaces
+        SET config_json=json_set(CASE WHEN json_valid(config_json) THEN config_json ELSE '{}' END,'$.pending_blueprint_id',?)
+        WHERE id=? AND tenant_id=?`).bind(msg.blueprintId, spaceId, tenantId).run();
+    }
+
     // Step 1: Mark DB as provisioning + write KV config cache
     const begin = await env.PLATFORM_DB.prepare(
       "UPDATE spaces SET status = 'provisioning', updated_at = ? WHERE id = ? AND tenant_id = ? AND status IN ('provisioning', 'error')"
@@ -420,18 +428,9 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     );
     provisioned.push("active");
 
-    // Optional certified marketplace template install happens only after base provisioning has
-    // completed, so its SpaceDO mutations cannot race the initial project/member setup. A failed
-    // template activation does not roll back a usable Space; the activation endpoint remains
-    // callable for a retry from the Space UI.
-    if (msg.blueprintId) {
-      const activation = await env.SPACES_WORKER.fetch(new Request(
-        `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(msg.blueprintId)}/activate`,
-        { method: "POST", headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) } },
-      ));
-      if (!activation.ok) console.warn(`[provisioner] Marketplace template activation failed for ${spaceId}: ${await responseErrorDetail(activation)}`);
-      else provisioned.push("marketplace_template");
-    }
+    // Certified Space Templates stay pending until the Space owner reviews the dependency preview
+    // and explicitly approves activation from the Shell. A queued Space provision must never grant
+    // extension access or create template projects on the owner's behalf.
 
     if(msg.userId&&env.AGENTS_WORKER){
       try { await env.AGENTS_WORKER.fetch(new Request(`http://agents/spaces/${encodeURIComponent(spaceId)}/assistant-communications`,{method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":tenantId,"x-naelao-user-id":msg.userId,"x-naelao-role":"owner","x-naelao-internal-token":await mintInternalToken(env.PLATFORM_SECRET,tenantId)},body:JSON.stringify({action:"identity"})})); }

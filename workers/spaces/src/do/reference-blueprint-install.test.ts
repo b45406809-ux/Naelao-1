@@ -22,21 +22,21 @@ describe("reference Space Templates on fresh Space scopes", () => {
       PERSONAL_ASSISTANT_SPACE_TEMPLATE,
       SOFTWARE_DEVELOPMENT_SPACE_TEMPLATE,
     ];
+    const install = (blueprint: (typeof templates)[number], spaceIndex: number) => space.fetch(
+      new Request("http://space/blueprints/instantiate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ blueprint, target_space_id: `fresh-space-${spaceIndex}`, activation_key: blueprint.id }),
+      })
+    );
     const results = await Promise.all(
       templates.map((blueprint, index) =>
-        space.fetch(
-          new Request("http://space/blueprints/instantiate", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              blueprint,
-              target_space_id: `fresh-space-${index}`,
-            }),
-          })
-        )
+        install(blueprint, index)
       )
     );
     expect(results.map((result) => result.status)).toEqual([201, 201, 201]);
+    const retries = await Promise.all(templates.map((blueprint, index) => install(blueprint, index)));
+    expect(retries.map(result => result.status)).toEqual([200, 200, 200]);
     const projects = storage.sql
       .exec(
         "SELECT id,space_id,name,kind,template_mode FROM projects WHERE space_id IN ('fresh-space-0','fresh-space-1','fresh-space-2') ORDER BY space_id"
@@ -81,5 +81,21 @@ describe("reference Space Templates on fresh Space scopes", () => {
         )
         .toArray()[0]?.total
     ).toBe(0);
+    const changed = structuredClone(PERSONAL_ASSISTANT_SPACE_TEMPLATE);
+    changed.projects[0]!.systemPrompt += " Changed artifact";
+    expect((await install(changed, 1)).status).toBe(409);
+    expect(storage.sql.exec("SELECT COUNT(*) AS total FROM projects WHERE space_id='fresh-space-1'").toArray()[0]?.total).toBe(1);
+  });
+
+  it("allows only one concurrent activation claim for a target Space and blueprint", async () => {
+    const storage = createDOStorage(), space = new SpaceDO({ storage } as never, {} as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=template-test&user_id=owner&project_id="));
+    const install = () => space.fetch(new Request("http://space/blueprints/instantiate", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ blueprint: PERSONAL_ASSISTANT_SPACE_TEMPLATE, target_space_id: "fresh-space", activation_key: PERSONAL_ASSISTANT_SPACE_TEMPLATE.id }),
+    }));
+    const results = await Promise.all([install(), install()]);
+    expect(results.map(result => result.status).sort()).toEqual([201, 409]);
+    expect(storage.sql.exec("SELECT COUNT(*) AS total FROM projects WHERE space_id='fresh-space'").toArray()[0]?.total).toBe(1);
   });
 });

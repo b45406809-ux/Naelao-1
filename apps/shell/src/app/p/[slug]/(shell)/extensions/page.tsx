@@ -5,7 +5,7 @@ import { Button, Card, CardDesc, CardTitle } from "@naelao/ui";
 import { MicroAppCanvas } from "@/components/viewports/MicroAppCanvas";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, removeSpaceSharedExtension, updateSpaceSharedExtensionFilesystemGrants, type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry } from "@/lib/api";
+import { installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, removeSpaceSharedExtension, setSpaceSharedExtensionEnabled, updateSpaceSharedExtensionFilesystemGrants, type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry } from "@/lib/api";
 
 /** Generic mount point for every installed Space-shared extension canvas. Product-specific
  * features belong in extension artifacts; the shell only discovers and mounts them. */
@@ -36,6 +36,7 @@ export default function ExtensionsPage() {
   const [editingGrants, setEditingGrants] = React.useState<string | null>(null);
   const [savingGrants, setSavingGrants] = React.useState<string | null>(null);
   const [removing, setRemoving] = React.useState<string | null>(null);
+  const [changingLifecycle, setChangingLifecycle] = React.useState<string | null>(null);
   React.useEffect(() => setSelectedGrants(current => {
     const next = { ...current };
     for (const entry of catalog) if (!(entry.id in next)) next[entry.id] = [];
@@ -71,6 +72,15 @@ export default function ExtensionsPage() {
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not remove extension."); }
     finally { setRemoving(null); }
   }
+  async function changeLifecycle(app: SpaceSharedExtensionApp) {
+    if (!credentials || changingLifecycle) return;
+    const enabled = app.status !== "active";
+    if (!enabled && !window.confirm(`Pause ${app.name}? New invocations will stop. Running jobs may finish; data and access grants will be retained.`)) return;
+    setChangingLifecycle(app.installation_id); setError(null);
+    try { await setSpaceSharedExtensionEnabled(activeSpaceId, app.installation_id, credentials, enabled); await refresh(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update extension status."); }
+    finally { setChangingLifecycle(null); }
+  }
   function grantsEditor(key: string, requested: SharedFilesystemGrant[], current: SharedFilesystemGrant[], allowSave = false) {
     if (!requested.length) return <p style={{ color: "var(--text3)", fontSize: 12 }}>This extension requests no shared-drive access.</p>;
     const selected = selectedGrants[key] ?? current;
@@ -98,11 +108,13 @@ export default function ExtensionsPage() {
       <MicroAppCanvas spaceId={activeSpaceId} appId={active.app_id} projectId={active.app_id} projectScoped={false} session={credentials} capabilities={active.capabilities} onAction={() => {}} />
     </> : loading ? <p role="status">Loading installed extensions…</p> : error ? <div role="alert">{error} <Button variant="secondary" onClick={() => void refresh()}>Retry</Button></div> : apps.length ? <div className="grid-3">{apps.map(app => <Card key={`${app.installation_id}:${app.app_id}`}>
       <CardTitle>{app.name}</CardTitle><CardDesc>{app.extension_id}</CardDesc>
-      <p style={{ color: "var(--text3)", fontSize: 12 }}>Shared across this Space · installed {new Date(app.installed_at).toLocaleDateString()}</p>
+      <p style={{ color: "var(--text3)", fontSize: 12 }}>Shared across this Space · {app.status === "active" ? "Enabled" : "Paused"} · installed {new Date(app.installed_at).toLocaleDateString()}</p>
+      {app.status === "disabled" && <p role="status" style={{ color: "var(--text3)", fontSize: 12 }}>New invocations are blocked. Existing runs may finish; saved data and grants are retained.</p>}
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Approved folders: {app.approved_shared_filesystem.length ? app.approved_shared_filesystem.map(item => `${item.path} (${item.access})`).join(", ") : "none"}</p>
       {editingGrants === app.installation_id ? grantsEditor(app.installation_id, app.requested_shared_filesystem, app.approved_shared_filesystem, true) : <Button variant="secondary" onClick={() => { setSelectedGrants(current => ({ ...current, [app.installation_id]: app.approved_shared_filesystem })); setEditingGrants(app.installation_id); }}>Manage access</Button>}
+      <Button variant="secondary" disabled={changingLifecycle !== null || removing !== null} onClick={() => void changeLifecycle(app)}>{changingLifecycle === app.installation_id ? "Updating…" : app.status === "active" ? "Pause extension" : "Resume extension"}</Button>
       <Button variant="secondary" disabled={removing !== null} onClick={() => void remove(app)}>{removing === app.installation_id ? "Removing…" : "Remove extension"}</Button>
-      <Button onClick={() => setActive(app)}>Open extension</Button>
+      <Button disabled={app.status !== "active"} onClick={() => setActive(app)}>Open extension</Button>
       </Card>)}</div> : null}
     {!active && !loading && catalog.some(entry => !installedIds.has(entry.id)) ? <section style={{ marginTop: 24 }}><h2>Available Space extensions</h2><div className="grid-3">{catalog.filter(entry => !installedIds.has(entry.id)).map(entry => <Card key={entry.id}>
       <CardTitle>{entry.name}</CardTitle><CardDesc>Install this first-party Space-shared extension. Its app and storage are isolated to the active Space.</CardDesc>

@@ -360,6 +360,7 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   const configJson = JSON.stringify({
     ...mergedConfigOverrides,
     ...(params.templateId ? { template_id: params.templateId } : {}),
+    ...(params.blueprintId ? { pending_blueprint_id: params.blueprintId } : {}),
   });
   // Independent Wrangler dev processes do not share the local queue persistence directory,
   // so a local producer would leave products permanently stuck in `provisioning`. The local
@@ -375,7 +376,6 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     spaceTypeId: params.spacetypeId,
     spaceName: params.name,
     ...(params.templateId ? { templateId: params.templateId } : {}),
-    ...(params.blueprintId ? { blueprintId: params.blueprintId } : {}),
     ...(params.userId ? { userId: params.userId } : {}),
     requestedAt: now,
   };

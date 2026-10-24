@@ -32,6 +32,8 @@ export interface LegacyExtensionManifest {
 /** A userspace package. It intentionally has no prompt, kernel, or guard configuration. */
 export interface ExtensionManifest {
   id: ExtensionId;
+  /** Release identity for a modular package (legacy `version` is reserved for the old contract). */
+  releaseVersion?: string;
   type: "extension";
   declaredPermissions: string[];
   /** Gatekeeper capabilities that must be present when this package is installed. */
@@ -47,6 +49,13 @@ export interface ExtensionManifest {
   containers?: readonly ContainerContract[];
   /** Opt-in access to the common Space drive. Paths are directory prefixes below /space/shared/. */
   shared_filesystem?: readonly SharedFilesystemGrant[];
+}
+
+/** Stable content pin for the canonical modular extension manifest stored by the host. */
+export async function digestExtensionManifest(manifest: ExtensionManifest): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(manifest));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
 const ID = /^[a-z][a-z0-9_-]{1,63}$/;
@@ -105,11 +114,12 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     return validateLegacyManifest(raw);
   }
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem"]);
+  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
   assert(raw.type === "extension", "invalid_type");
+  assert(raw.releaseVersion === undefined || (typeof raw.releaseVersion === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(raw.releaseVersion)), "invalid_release_version");
   assert(Array.isArray(raw.declaredPermissions) && raw.declaredPermissions.length <= 128 && raw.declaredPermissions.every((p) => typeof p === "string" && PERMISSION.test(p)), "invalid_permissions");
   assert(Array.isArray(raw.capabilityRequirements) && raw.capabilityRequirements.length > 0 && raw.capabilityRequirements.length <= 128 && raw.capabilityRequirements.every((p) => typeof p === "string" && PERMISSION.test(p)), "capability_requirements_required");
   if (context) {

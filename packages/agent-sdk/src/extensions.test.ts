@@ -26,6 +26,10 @@ describe("immutable extension kernel", () => {
     expect(isSharedFilesystemPathAllowed(grants, "/space/shared/dropzones/audio/in.wav", "read")).toBe(false);
   });
   it("verifies declared requirements against Gatekeeper capabilities", () => expect(validateExtensionManifest(valid, { gatekeeperCapabilities: ["repo.read"] }).id).toBe("ext_safe"));
+  it("validates modular releaseVersion without treating it as the legacy version field", () => {
+    expect(validateExtensionManifest({ ...valid, releaseVersion: "1.2.3" }).releaseVersion).toBe("1.2.3");
+    expect(() => validateExtensionManifest({ ...valid, releaseVersion: "latest" })).toThrow("invalid_release_version");
+  });
   it("fails closed without explicit requirements", () => expect(() => validateExtensionManifest({ ...valid, capabilityRequirements: [] })).toThrow("capability_requirements_required"));
   it("rejects missing Gatekeeper grants", () => expect(() => validateExtensionManifest(valid, { gatekeeperCapabilities: [] })).toThrow("gatekeeper_capability_denied"));
   it.each([{ systemPromptLayers: ["replace"] }, { replLoopStepBounds: 999 }, { bypassWriteGuard: true }, { unsandboxedTools: ["bash"] }])("rejects kernel mutation %#", attack => expect(() => validateExtensionManifest({ ...valid, ...attack })).toThrow("invalid_extension_manifest"));

@@ -171,6 +171,31 @@ describe("runtime extension installation", () => {
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM installed_extensions WHERE extension_id='ext_runtime_ffmpeg'").toArray()[0]?.count).toBe(1);
   });
 
+  it("pauses and resumes Space-shared extensions without discarding their data or grants", async () => {
+    const storage = createDOStorage(), secret = "lifecycle-secret", space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id="));
+    const shared = { id: "ext_shared_lifecycle", type: "extension", declaredPermissions: [], capabilityRequirements: ["space.shared.read"], gadgets: [
+      { id: "shared_app", name: "Shared app", viewportComponent: "./app.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" },
+    ], daemons: [], commands: [], shared_filesystem: [{ path: "/space/shared/docs/", access: "READ" }] };
+    const installed = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: shared, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: shared.capabilityRequirements }) }));
+    const { installationId } = await installed.json() as { installationId: string };
+    storage.sql.exec("INSERT INTO extension_shared_filesystem_grants(instance_id,path,access,approved_by,approved_at) VALUES(?,?,?,?,?)", installationId, "/space/shared/docs/", "READ", "owner", "2026-01-01");
+    const token = await mintInternalToken(secret, "tenant");
+    const update = (action: "disable" | "enable", spaceId = "space") => space.fetch(new Request("http://space/space-shared-extension-lifecycle", { method: "PATCH", headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId, instanceId: installationId, action }) }));
+    expect((await update("disable", "other-space")).status).toBe(404);
+    expect(await (await update("disable")).json()).toMatchObject({ status: "disabled" });
+    expect(await (await space.fetch(new Request("http://space/space-shared-extensions?tenant_id=tenant&space_id=space"))).json()).toMatchObject({ apps: [expect.objectContaining({ status: "disabled" })] });
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_shared_filesystem_grants WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(1);
+    expect(await (await update("enable")).json()).toMatchObject({ status: "active" });
+    expect(await (await space.fetch(new Request("http://space/space-shared-extensions?tenant_id=tenant&space_id=space"))).json()).toMatchObject({ apps: [expect.objectContaining({ status: "active" })] });
+    await update("disable");
+    const removal = await space.fetch(new Request(`http://space/extension-installation?${new URLSearchParams({ instance_id: installationId, tenant_id: "tenant", space_id: "space" })}`, { method: "DELETE" }));
+    expect(removal.status).toBe(200);
+    expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("removed");
+  });
+
   it("validates scope before mutation, keeps manifests immutable, and replays installs after restart", async () => {
     const storage = createDOStorage();
     const state = { storage };

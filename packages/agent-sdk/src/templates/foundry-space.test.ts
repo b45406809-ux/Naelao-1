@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FOUNDRY_SPACE_TEMPLATE } from "./foundry-space.js";
-import { DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, validateExtensionManifest } from "../index.js";
+import { DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, validateExtensionManifest } from "../index.js";
 
 describe("Foundry dogfood Space Template", () => {
   it("is a portable Launchpad Space blueprint with an isolated Template Studio project", () => {
@@ -16,9 +16,11 @@ describe("Foundry dogfood Space Template", () => {
     expect(JSON.stringify(FOUNDRY_SPACE_TEMPLATE)).not.toMatch(/(?:sk_live_|ghp_|whsec_|xox[baprs]-)/);
   });
 
-  it("declares its catalog as a least-privilege Space-shared extension", () => {
+  it("declares its catalog as a least-privilege Space-shared extension", async () => {
     const manifest = DOGFOOD_EXTENSION_BY_ID.ext_foundry_catalog;
     expect(manifest).toBeDefined();
+    expect(manifest?.releaseVersion).toBe(FOUNDRY_SPACE_TEMPLATE.requiredExtensionVersions?.ext_foundry_catalog);
+    expect(await digestExtensionManifest(manifest!)).toBe(FOUNDRY_SPACE_TEMPLATE.requiredExtensionDigests?.ext_foundry_catalog);
     expect(validateExtensionManifest(manifest, { gatekeeperCapabilities: manifest!.capabilityRequirements })).toEqual(manifest);
     expect(manifest!.gadgets).toEqual(expect.arrayContaining([
       expect.objectContaining({ scope: "SPACE_SHARED", gadgetTier: 3 }),

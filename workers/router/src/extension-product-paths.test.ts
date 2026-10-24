@@ -56,6 +56,7 @@ describe("Space Template activation and shared-extension lifecycle routing", () 
     "/spaces/s/blueprints/tpl_demo/activation-preview",
     "/spaces/s/shared-extension-installations/instance-a",
     "/spaces/s/shared-extension-installations/instance-a/filesystem-grants",
+    "/spaces/s/shared-extension-installations/instance-a/lifecycle",
   ])("resolves product session identity for %s", path => {
     expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test(path))).toBe(true);
   });

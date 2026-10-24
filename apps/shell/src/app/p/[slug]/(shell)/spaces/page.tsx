@@ -44,6 +44,8 @@ export default function SpacesPage() {
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
   const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview } | null>(null);
   const [activatingTemplate, setActivatingTemplate] = React.useState(false);
+  const [refreshingPreview, setRefreshingPreview] = React.useState(false);
+  const pendingPreviewed = React.useRef(new Set<string>());
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
 
   const refresh = React.useCallback(async () => {
@@ -125,7 +127,37 @@ export default function SpacesPage() {
     finally { setActivatingTemplate(false); }
   }
 
+  async function recheckTemplateActivation() {
+    if (!creds || !activationReview || refreshingPreview) return;
+    setRefreshingPreview(true); setCreateError(null);
+    try {
+      const preview = await previewSpaceTemplateActivation(activationReview.spaceId, activationReview.blueprintId, creds);
+      setActivationReview({ ...activationReview, preview });
+      setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
+    } catch (error) { setCreateError(`Could not refresh dependency status: ${error instanceof Error ? error.message : "preview failed"}`); }
+    finally { setRefreshingPreview(false); }
+  }
+
   React.useEffect(() => { void refresh(); }, [refresh]);
+
+  React.useEffect(() => {
+    if (!creds || createOpen || activationReview) return;
+    const pending = spaces.find(space => space.space_status === "active" && space.pending_blueprint_id
+      && (space.role === "owner" || space.role === "admin"));
+    if (!pending?.pending_blueprint_id) return;
+    const key = `${pending.id}:${pending.pending_blueprint_id}`;
+    if (pendingPreviewed.current.has(key)) return;
+    pendingPreviewed.current.add(key);
+    void previewSpaceTemplateActivation(pending.id, pending.pending_blueprint_id, creds).then(preview => {
+      setActivationReview({ spaceId: pending.id, blueprintId: pending.pending_blueprint_id!, preview });
+      setCreatedSpaceId(pending.id);
+      setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
+      setCreateOpen(true);
+    }).catch(error => {
+      setCreateError(`Template preview is unavailable: ${error instanceof Error ? error.message : "retry the preview"}`);
+      show("A Space Template is waiting for review. Refresh this page to retry its preview.");
+    });
+  }, [spaces, creds, createOpen, activationReview, show]);
 
   React.useEffect(() => {
     if (!creds) return;
@@ -269,10 +301,10 @@ export default function SpacesPage() {
             <strong>{activationReview.preview.ready ? "Ready for your approval" : "Cannot install yet"}</strong>
             <p>This preview made no changes and granted no access.</p>
             <strong>Extensions</strong>
-            {activationReview.preview.dependencies.length ? <ul>{activationReview.preview.dependencies.map(item => <li key={item.extension_id}>{item.extension_id}: {item.status}</li>)}</ul> : <p>None required</p>}
+            {activationReview.preview.dependencies.length ? <ul>{activationReview.preview.dependencies.map(item => <li key={item.extension_id}>{item.extension_id}: {item.status}{item.required_version ? ` (requires ${item.required_version}${item.available_version ? `; available ${item.available_version}` : ""})` : ""}{item.required_digest ? ` · SHA-256 ${item.required_digest.slice(0, 12)}${item.available_digest && item.available_digest !== item.required_digest ? ` (available ${item.available_digest.slice(0, 12)})` : ""}` : ""}</li>)}</ul> : <p>None required</p>}
             <strong>Connections to set up</strong>
             {activationReview.preview.setup_credentials.length ? <ul>{activationReview.preview.setup_credentials.map(item => <li key={item.name}>{item.name}{item.required ? " (required)" : " (optional)"}: {item.description}</li>)}</ul> : <p>None required</p>}
-            {!activationReview.preview.ready && <p role="alert">{activationReview.preview.blockers.join(", ")}</p>}
+            {!activationReview.preview.ready && <><p role="alert">{activationReview.preview.blockers.join(", ")}</p><Button variant="secondary" disabled={refreshingPreview} onClick={() => void recheckTemplateActivation()}>{refreshingPreview ? "Checking…" : "Recheck dependencies"}</Button></>}
           </div>}
         </form>
       </Modal>

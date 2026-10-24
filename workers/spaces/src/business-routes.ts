@@ -119,7 +119,8 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
       `SELECT m.business_space_id AS id, m.role, m.status AS membership_status, m.joined_at,
               s.name, s.status AS space_status,
               json_extract(s.config_json, '$.onboarding.status') AS onboarding_status,
-              json_extract(s.config_json, '$.template_id') AS template_id
+              json_extract(s.config_json, '$.template_id') AS template_id,
+              json_extract(s.config_json, '$.pending_blueprint_id') AS pending_blueprint_id
          FROM business_memberships m
          JOIN spaces s ON s.id = m.business_space_id
         WHERE m.product_space_id = ? AND m.end_user_id = ? AND m.status = 'active' AND s.status != 'deleted'

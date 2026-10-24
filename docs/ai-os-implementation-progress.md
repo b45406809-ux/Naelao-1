@@ -46,6 +46,39 @@ revokes shared-drive grants and leaves package data retained for recovery. Exist
 lifecycle controls remain separate; broader disable, dependency-aware removal and deletion policies
 are still open.
 
+Certified host activation now claims each blueprint ID for the target Space and records the exact
+artifact digest and install result. Identical retries return the existing result; changed artifacts
+or concurrent attempts are rejected instead of duplicating project rows. Required first-party
+extensions are installed before the projects are instantiated, so a dependency install failure no
+longer leaves a seemingly complete template project behind.
+
+Modular extensions now declare an optional validated `releaseVersion`; first-party packages default
+to an explicit `1.0.0` release. Space Blueprints can pin versions and SHA-256 digests over canonical
+manifests. Exports inherit these pins from the selected installed packages, and activation
+preview/server checks compare them with the active Space-shared installation or host-supported
+release. Foundry dogfood pins its catalog extension. Unpinned older blueprints retain ID-only
+compatibility while the public certification policy for requiring pins remains open.
+
+Space-shared extensions now have a reversible pause/resume lifecycle action. Pausing blocks new
+runtime discovery and extension UI invocation while retaining package data and grants; already
+running work may finish. Template activation preview rejects disabled required dependencies. Migration
+99 expands the installation status constraint without changing existing rows. The first lifecycle test
+caught the old CHECK constraint rejecting `disabled`; the migration was added and the test now passes.
+
+The conformance workflow's compile check now uses the same pure SDK blueprint compiler as activation
+instead of instantiating into a synthetic production `SpaceDO` ID. This removes persistent project,
+task and file side effects from certification dry-runs. The conformance sandbox remains the execution
+boundary for fixture tests.
+
+Production Space creation previously queued the blueprint ID and the provisioner activated it as soon
+as base provisioning finished, bypassing the owner review shown by the local flow. New queued Spaces
+now store `pending_blueprint_id` on their Space record, and the provisioner does not install it. The
+Space list exposes that pending review to owners/admins, who receive the same dependency preview and
+explicit approval flow once the Space is active. Host activation now rejects service-only requests
+without a human identity and clears the pending marker after successful activation. The provisioner
+also backfills pending state from older queued messages so deploys do not strand pre-change template
+choices.
+
 Added SpaceDO integration coverage that instantiates Foundry, Personal Assistant and Software
 Development into three independent target Space IDs and checks their project/task/starter-file state.
 This validates blueprint instantiation in the local host harness; it does not perform a certified
@@ -53,14 +86,19 @@ marketplace activation or a deployed fresh-Space install.
 
 ## Remaining work (keep this list open until evidenced)
 
-- [ ] Add host-route tests for activation preview/activation: owner vs member denial, invalid or stale
-      certification, license mismatch, unavailable dependency, target-scope dependency matching,
-      and no partial project creation on a blocker.
-- [ ] Define and enforce immutable dependency identity/version/digest pins and host runtime compatibility;
-      the current blueprint only lists extension IDs and first-party availability.
+- [x] Cover activation preview/activation owner/member checks, stale certificates, unavailable and
+      wrong-scope dependencies, read-only previews, blocker rejection without instantiation, and a
+      fresh-target host activation in worker tests; queued template creation retains pending state for
+      explicit user approval.
+- [ ] Add cross-tenant fork/license-mismatch route coverage and deployed activation acceptance.
+- [x] Make certified Space Template installation retry-safe per target Space and artifact digest;
+      cover concurrent claims, duplicate retry, changed artifact and fresh-target cases.
+- [ ] Define and enforce runtime-compatibility attestations; extension IDs, versions and content
+      digests are now checked, while container/runtime host constraints remain open.
 - [ ] Finish extension lifecycle controls across project and Space scopes: disable/re-enable,
       dependency-aware uninstall, active-run handling, connection revocation, data export/delete choices,
-      and safe schema migrations/rollback. Existing release rollback is versioned but not full lifecycle.
+      and safe schema migrations/rollback. Space-shared pause/resume is now implemented; project-scoped
+      lifecycle, dependency-aware removal and export/delete choices remain open.
 - [ ] Connect private package authoring through inspect → host preview → permission review → explicit
       install in the general UI; ensure configured prebuilts expose `package.inspect` to the authoring task.
 - [ ] Run full host-backed fresh-Space installs of all three references, exercise their first tasks,
@@ -75,7 +113,7 @@ marketplace activation or a deployed fresh-Space install.
 
 ## Verification
 
-Latest checkpoint: Spaces activation helper, SpaceDO install/removal tests, and all three reference
-blueprint instantiation tests; router product-session route tests; Spaces/Shell/router typechecks.
-Offline results currently being refreshed for the latest edits. No deployment, marketplace publication,
-external provider request or tenant certificate was performed.
+Latest checkpoint: Spaces activation, lifecycle, fresh-target installation, migration, and graduation
+tests (32 focused tests); create-Space/outbox tests (41); agent-sdk blueprint/pin tests (33); router
+lifecycle-route tests (32); Spaces/Shell/router/provisioner typechecks. No deployment, marketplace
+publication, external provider request or tenant-owned production certificate was performed.

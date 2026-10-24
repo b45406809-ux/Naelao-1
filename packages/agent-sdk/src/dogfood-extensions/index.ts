@@ -50,7 +50,7 @@ const spaceFacet = (id: string, name: string, schema: string, permissions: strin
 });
 
 const entry = (manifest: ExtensionManifest, maturity: FirstPartyExtensionMaturity): FirstPartyExtensionCatalogEntry => Object.freeze({
-  manifest,
+  manifest: Object.freeze({ ...manifest, releaseVersion: manifest.releaseVersion ?? "1.0.0" }),
   maturity,
   productClaim: maturity === "anchor" ? "commercial_anchor" : "reference_implementation",
 });
