@@ -27,6 +27,7 @@ import { useRouter } from "next/navigation";
 import { canManageSpaceSettings } from "@/lib/roles";
 import { PRESENTATION_PROFILE_LABELS, usePresentationProfile, type PresentationProfile, type TechnicalDetailFilter } from "@/lib/presentation-profile";
 import { AssistantChannelsPanel } from "@/components/AssistantChannelsPanel";
+import { AssistantVoicePanel } from "@/components/AssistantVoicePanel";
 import { DomainGlossaryPanel } from "@/components/DomainGlossaryPanel";
 import { ArchiveKeyRotationPanel } from "@/components/ArchiveKeyRotationPanel";
 import { AttachmentOcrSettings } from "@/components/AttachmentOcrSettings";
@@ -164,6 +165,7 @@ export default function SettingsPage() {
 
       <div className="settings-content">
         {tab === "general" && creds && <AssistantChannelsPanel spaceId={activeSpaceId} session={creds} canManage={canManage} />}
+        {tab === "general" && creds && <AssistantVoicePanel spaceId={activeSpaceId} session={creds} canManage={canManage} />}
         {tab === "general" && (
           <GeneralTab
             isBusinessSpace={isBusinessSpace}

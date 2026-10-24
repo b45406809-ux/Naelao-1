@@ -16,7 +16,8 @@ use scoped host SDK services. Voice cloning requires consent. No native provider
 - [ ] Bind adapters to production host budget reservations, catalog selection and durable reconciliation.
 - [ ] Connect interactive cascade to both assistant transports and durable planner turns.
 - [ ] Voice model/endpoint discovery with codecs, billing units and custom voice compatibility.
-- [ ] Voice settings UI, Project overrides and template activation/onboarding.
+- [x] Voice settings UI for Space and Project scopes, including revisioned saves and configured call caps.
+- [ ] Template activation/onboarding for voice preferences and capability/entitlement explanation.
 - [ ] Scoped host extension bridge and Voice Studio dogfood extension.
 - [ ] Runtime dispatch for worker kinds and host-approved model classes; preserve legacy routing.
 - [ ] Controlled real-call/provider acceptance and measured cost per completed task.
@@ -37,11 +38,21 @@ Preference storage currently rejects non-null voice profile references until the
 lifecycle is implemented. Saving preferences does not activate a new audio adapter. Existing
 voice transport remains unchanged until the OpenRouter path has metering and acceptance evidence.
 
+The shell now exposes the persisted Space/Project preferences and handles revision conflicts through
+the authenticated settings API. The enable switch currently saves policy only; it does not activate
+OpenRouter audio on live calls. Do not represent a call as using the selected model until the host
+audio adapter, cost reservation and durable usage reconciliation are bound to the call transport.
+The current `agents/voice` STT contract is a continuous PCM stream, while OpenRouter transcription
+accepts complete encoded audio requests. A production bridge therefore needs bounded utterance/VAD
+collection and WAV framing (or a verified streaming transcription endpoint) before replacing the
+existing transport provider. The current call path cannot simply swap in the existing one-shot adapter.
+
 ## Verification
 
 Combined full Spaces/Credentials source suites: 82 files / 315 tests passed. Focused SDK,
 preferences, gateway authorization, catalog, audio adapter, vault and owner-voice regressions:
 10 files / 48 tests passed. Signed audio-purpose/forgery, air-gap and proxy tests: 12 passed.
 Router source suite: 12 files / 73 tests passed. SDK, Spaces, Credentials, Agents and Router
-TypeScript checks passed; `git diff --check` passed. No provider request, production voice
+TypeScript checks passed before this UI addition; the shell TypeScript check and `git diff --check`
+passed after it. No provider request, production voice
 activation or live telephone acceptance has been performed.
