@@ -141,6 +141,14 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
     match: /skill library|installed skill|skill health|manage skills/i,
   },
   {
+    capability: "package_authoring",
+    description:
+      "Inspect extension and Space Template package drafts before host-side permission review and installation.",
+    tools: ["package-authoring"],
+    skills: [],
+    match: /package\.inspect|author(?:ing)? (?:an? )?(?:extension|space template|package)|manifest|extension bundle|space template export/i,
+  },
+  {
     capability: "local_machine_access",
     description: "Use the explicitly authorized local machine connection.",
     tools: ["local-machine"],

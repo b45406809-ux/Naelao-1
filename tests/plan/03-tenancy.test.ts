@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { InstallationLedger, canUseLinkedSpace, scopedInstallationId } from "@naelao/agent-sdk";
 import { validateMigrationSequence } from "@naelao/db";
 import { deriveSpaceInstallationId } from "../../workers/spaces/src/create-space";
-import { linkedBusinessTenantBoundary } from "../../workers/spaces/src/business-create";
 import { restartLocalWorkers, retrieveSeededSpace, seedSpace } from "./support/runtime";
 
 const shared = { tenantId: "tenant-a", spaceId: "space-a", extensionId: "ext.crm", scope: "SPACE_SHARED" as const, installedBy: "owner" };
@@ -40,9 +39,7 @@ describe("Step 03 tenancy and installation lifetimes", () => {
     expect(ledger.removeMember("space-a", "alice")).toBe(0);
   });
 
-  it("requires an explicit linked-space grant and does not inherit data", () => {
-    const boundary = linkedBusinessTenantBoundary({ parentTenantId: "tenant-parent", childTenantId: "tenant-child", linkedBySpaceId: "space-parent" });
-    expect(boundary.dataInheritance).toBe("none");
+  it("requires an explicit cross-Space grant and does not inherit data", () => {
     const grant = { grantId: "grant-1", tenantId: "tenant-parent", fromSpaceId: "space-parent", toSpaceId: "space-child", userId: "alice", actions: ["read"] as const };
     expect(canUseLinkedSpace(grant, { tenantId: "tenant-parent", fromSpaceId: "space-parent", toSpaceId: "space-child", userId: "alice", action: "read" })).toBe(true);
     expect(canUseLinkedSpace(grant, { tenantId: "tenant-parent", fromSpaceId: "space-parent", toSpaceId: "space-child", userId: "bob", action: "read" })).toBe(false);

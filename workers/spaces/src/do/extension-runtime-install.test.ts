@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SpaceDO } from "./SpaceDO.js";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.js";
 import { mintInternalToken } from "@naelao/http";
+import { PERSONAL_ASSISTANT_SPACE_TEMPLATE } from "@naelao/agent-sdk";
 
 const image = "registry.example/media@sha256:" + "a".repeat(64);
 function manifest(binary = "ffmpeg") {
@@ -169,6 +170,29 @@ describe("runtime extension installation", () => {
     expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("removed");
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_shared_filesystem_grants WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(0);
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM installed_extensions WHERE extension_id='ext_runtime_ffmpeg'").toArray()[0]?.count).toBe(1);
+  });
+
+  it("blocks removal of a Space-shared extension required by an installed Space Template", async () => {
+    const storage = createDOStorage(), space = new SpaceDO({ storage } as never, {} as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id="));
+    const extensionId = "ext_template_required_probe";
+    const shared = { id: extensionId, type: "extension", declaredPermissions: [], capabilityRequirements: ["space.shared.read"],
+      gadgets: [{ id: "required_app", name: "Required app", viewportComponent: "./app.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" }],
+      daemons: [], commands: [] };
+    const installedResponse = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: shared, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: shared.capabilityRequirements }) }));
+    expect(installedResponse.status, await installedResponse.clone().text()).toBe(201);
+    const { installationId } = await installedResponse.json() as { installationId: string };
+    const blueprint = { ...structuredClone(PERSONAL_ASSISTANT_SPACE_TEMPLATE), id: "tpl_dependency_probe", requiredExtensions: [extensionId] };
+    const activation = await space.fetch(new Request("http://space/blueprints/instantiate", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ blueprint, target_space_id: "space", activation_key: blueprint.id }) }));
+    expect(activation.status, await activation.clone().text()).toBe(201);
+    expect(storage.sql.exec("SELECT required_extensions_json FROM space_blueprint_installations WHERE space_id='space' AND blueprint_id=?", blueprint.id).toArray()[0]?.required_extensions_json).toBe(JSON.stringify([extensionId]));
+    const remove = () => space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ instance_id: installationId, tenant_id: "tenant", space_id: "space" }), { method: "DELETE" }));
+    const blocked = await remove();
+    expect(blocked.status, await blocked.clone().text()).toBe(409);
+    expect(await blocked.json()).toMatchObject({ error_code: "extension_required_by_space_template", blueprint_id: blueprint.id });
+    expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("active");
   });
 
   it("pauses and resumes Space-shared extensions without discarding their data or grants", async () => {

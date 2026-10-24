@@ -28,14 +28,15 @@ describe("blueprint conformance durable step replay (provider interfaces mocked)
   it("pins artifact bytes, avoids production SpaceDO writes and does not repeat fixture effects after restart", async () => {
     const h=await harness();const result=await h.run();
     expect(result).toMatchObject({status:"certified",report:{passed:50,total:50}});
-    const envelope=JSON.parse(h.objects.get("blueprints/blueprint.json")!);
+    const envelope=JSON.parse(h.objects.get("blueprints/tenant/blueprint.json")!);
     expect(await verifyArtifactCertificate(h.blueprint,envelope.conformanceCertificate,"secret","state-delta")).toBe(true);
+    expect(h.objects.has("blueprints/blueprint.json")).toBe(false);
     h.restart(); expect(await h.run()).toEqual(result);
     expect(h.executions()).toBe(50); expect(h.installations()).toBe(0);
   });
   it("rejects a regression without creating a publishable artifact", async () => {
     const h=await harness(true);expect(await h.run()).toMatchObject({status:"rejected",report:{passed:49,total:50}});
-    expect(h.objects.has("blueprints/blueprint.json")).toBe(false);
+    expect(h.objects.has("blueprints/tenant/blueprint.json")).toBe(false);
   });
   it("rejects changed R2 job bytes before executing a worker", async () => {
     const h=await harness();h.objects.set("job-key",h.objects.get("job-key")!+" ");

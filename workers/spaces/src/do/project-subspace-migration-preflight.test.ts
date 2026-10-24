@@ -282,7 +282,7 @@ describe("project to subspace migration preflight", () => {
         }),
       })
     );
-    expect(childProject.status).toBe(201);
+    expect(childProject.status, await childProject.clone().text()).toBe(201);
     const childListAfterCreate = await space.fetch(
       new Request(
         `https://space/projects?space_id=root&subspace_id=${encodeURIComponent(result.subspace_id)}`

@@ -85,6 +85,27 @@ describe("task-filtered default worker capabilities", () => {
     expect(result.fallback).toBe("decision_unavailable");
   });
 
+  it("selects package inspection for a Space Template authoring task without granting it to unrelated tasks", async () => {
+    const tools = ["package-authoring", "file-manager", "code-exec"];
+    const authoring = await selectDefaultWorkerCapabilities({
+      task: "Inspect this extension bundle manifest before I submit it for permission review.",
+      enabledPrebuilts: tools,
+      skills: [],
+      allowRemoteDecision: false,
+    });
+    expect(authoring.selectedBundles).toContain("package_authoring");
+    expect(authoring.enabledPrebuilts).toContain("package-authoring");
+    expect(authoring.enabledPrebuilts).not.toContain("code-exec");
+
+    const unrelated = await selectDefaultWorkerCapabilities({
+      task: "Summarize the current conversation history.",
+      enabledPrebuilts: tools,
+      skills: [],
+      allowRemoteDecision: false,
+    });
+    expect(unrelated.enabledPrebuilts).not.toContain("package-authoring");
+  });
+
   it("offers built-in tool families beyond the former first-nine standalone cutoff", async () => {
     const configured = [
       "browser-use",

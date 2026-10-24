@@ -41,7 +41,7 @@ export default defineConfig({
     include: [
       "src/**/*.test.ts",
       "../../tests/unit/external-revenue-tracking.test.ts",
-      "../../tests/unit/business-create.test.ts",
+      "../../tests/unit/generic-product-space-creation.test.ts",
       "../../tests/unit/create-space-record.test.ts",
       "../../tests/unit/builder-payout-requests.test.ts",
       "../../tests/unit/pricing-catalog.test.ts",

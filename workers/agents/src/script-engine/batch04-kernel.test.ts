@@ -11,17 +11,18 @@ import type { ScriptEngineEnv } from "./types.js";
 
 const manifest: UniversalAgentManifest = {
   scope: "SPACE_WIDE", role: "CUSTOMER_SUPPORT",
-  prompts: { systemPrompt: "Be kind.", instructions: "Resolve tickets.", userCustomInstructions: "Never promise refunds." },
+    prompts: { systemPrompt: "Coordinate the project.", instructions: "Work through the shared planner and worker runtime.", userCustomInstructions: "Ask before external changes." },
   capabilities: { enabledPrebuilts: ["knowledge-base"], maxTier: 2 },
   autonomy: { approvalMode: "gate_listed", autoApprovedActions: [], requiresApprovalFor: [] },
 };
 
 describe("Batch 04 universal kernel", () => {
-  it("compiles exactly four prompt layers in deterministic order", () => {
-    const prompt = composeUniversalPrompt({ manifest, spaceContext: { name: "Acme", kind: "store", offering: "Widgets", pricing: "$10", setup_status: "complete" } });
-    const tags = ["universal_operating_kernel", "living_business_identity", "agent_archetype", "founder_custom_directives"];
+  it("compiles the four generic prompt layers in deterministic order", () => {
+    const prompt = composeUniversalPrompt({ manifest, spaceContext: { name: "Research Space", setup_status: "complete" } });
+    const tags = ["universal_operating_kernel", "space_identity", "agent_archetype", "founder_custom_directives"];
     expect(tags.map((tag) => prompt.indexOf(`<${tag}>`))).toEqual([...tags.map((tag) => prompt.indexOf(`<${tag}>`))].sort((a, b) => a - b));
-    expect(prompt).toContain("Never promise refunds.");
+    expect(prompt).toContain("Ask before external changes.");
+    expect(prompt).not.toContain("living_business_identity");
   });
 
   it("uses arbitrary descriptive roles while access remains capability-controlled", () => {

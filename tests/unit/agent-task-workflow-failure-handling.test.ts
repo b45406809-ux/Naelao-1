@@ -173,7 +173,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1", timestamp: new Date() } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -194,7 +194,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1", timestamp: new Date() } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -210,7 +210,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1", timestamp: new Date() } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("complete");
@@ -233,7 +233,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1", timestamp: new Date() } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -258,7 +258,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1", timestamp: new Date() } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -275,7 +275,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never);
+    await wf.run({ payload: baseParams, instanceId: "task-1", timestamp: new Date() } as never, step as never);
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
@@ -294,7 +294,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     });
     const wf = new AgentTaskWorkflow({} as never, env);
     const step = makeFakeStep();
-    await expect(wf.run({ payload: baseParams, instanceId: "task-1" } as never, step as never)).resolves.toBeUndefined();
+    await expect(wf.run({ payload: baseParams, instanceId: "task-1", timestamp: new Date() } as never, step as never)).resolves.toBeUndefined();
   });
 });
 
@@ -310,7 +310,7 @@ describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
    * The same "fixed on the sync path, missed on the async one" mistake has now happened twice, so
    * this asserts the whole set rather than the one field that broke.
    */
-  it("carries businessRole, callerRole, userId, projectId and businessContext through to the executor", async () => {
+  it("carries the caller identity and generic Space context through to the executor", async () => {
     const { stub } = makeFakeTaskDO();
     let forwarded: Record<string, unknown> = {};
     const env = makeEnv({
@@ -329,7 +329,7 @@ describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
           callerRole: "product_end_user",
           businessRole: "owner",
           projectId: "proj-1",
-          businessContext: { name: "Pixel Forge Studio", setup_status: "complete" },
+          spaceContext: { name: "Research Space", setup_status: "complete" },
         },
         instanceId: "task-1",
       } as never,
@@ -341,7 +341,7 @@ describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
     expect(forwarded["callerRole"]).toBe("product_end_user");
     expect(forwarded["userId"]).toBe("user-1");
     expect(forwarded["projectId"]).toBe("proj-1");
-    expect((forwarded["businessContext"] as { name?: string })?.name).toBe("Pixel Forge Studio");
+    expect((forwarded["spaceContext"] as { name?: string })?.name).toBe("Research Space");
   });
 
   it("omits nothing merely because the caller is a builder with no business role", async () => {

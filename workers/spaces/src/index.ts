@@ -29,6 +29,7 @@ import { registerRecipeRoutes } from "./routes/recipes.js";
 import { registerMarketplaceRoutes } from "./routes/marketplace.js";
 import { registerDeskDropRoutes } from "./routes/desk-drop.js";
 import { conformanceDigest, type BlueprintConformanceParams } from "./BlueprintConformanceWorkflow.js";
+import { loadCertifiedBlueprint } from "./certified-blueprint.js";
 import { runStateDeltaFixture, validateStateDeltaSuite, type StateDeltaSuite, type StateDeltaFixture } from "./state-delta-conformance.js";
 import type { WorkerLoaderBinding } from "../../agents/src/script-engine/code-runner.js";
 import { registerGraduationRoutes } from "./routes/graduation.js";
@@ -504,10 +505,8 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   if (!identity.userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
   if (!await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first()) throw notFound("Space");
-  const stored = await c.env.SCRIPTS_R2?.get(`blueprints/${c.req.param("blueprintId")}.json`);
-  if (!stored) throw notFound("Blueprint");
-  const value = await stored.json<SpaceBlueprint | { blueprint: SpaceBlueprint; conformanceCertificate: ConformanceCertificate }>();
-  if (!("blueprint" in value) || !("conformanceCertificate" in value)) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
+  const value = await loadCertifiedBlueprint(c.env, tenantId, c.req.param("blueprintId"));
+  if (!value) throw notFound("Blueprint");
   const blueprint = value.blueprint, artifact = { ...blueprint } as SpaceBlueprint & { securityRating?: unknown };
   delete artifact.securityRating;
   if (!await verifyArtifactCertificate(artifact, value.conformanceCertificate, c.env.PLATFORM_SECRET, "state-delta")) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
@@ -542,14 +541,12 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   if (!await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first();
   if (!owned) throw notFound("Space");
-  const stored = await c.env.SCRIPTS_R2?.get(`blueprints/${c.req.param("blueprintId")}.json`);
-  if (!stored) throw notFound("Blueprint");
-  const storedValue = await stored.json<SpaceBlueprint | { blueprint: SpaceBlueprint; conformanceCertificate: ConformanceCertificate }>();
-  const isCertifiedEnvelope = "blueprint" in storedValue && "conformanceCertificate" in storedValue;
-  const certifiedBlueprint = isCertifiedEnvelope ? storedValue.blueprint : undefined;
+  const storedValue = await loadCertifiedBlueprint(c.env, tenantId, c.req.param("blueprintId"));
+  if (!storedValue) throw notFound("Blueprint");
+  const certifiedBlueprint = storedValue.blueprint;
   const artifactForVerification = certifiedBlueprint ? { ...certifiedBlueprint } : {};
   delete (artifactForVerification as SpaceBlueprint & { securityRating?: unknown }).securityRating;
-  if (!isCertifiedEnvelope || !await verifyArtifactCertificate(
+  if (!await verifyArtifactCertificate(
     artifactForVerification,
     storedValue.conformanceCertificate,
     c.env.PLATFORM_SECRET,

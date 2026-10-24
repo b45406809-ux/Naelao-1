@@ -14,10 +14,14 @@ export const SPACE_ERASURE_TABLES = [
   "extension_publisher_keys", "installed_extensions", "kb_external_publication_documents",
   "kb_external_publications", "launchpad_products", "fde_graduations", "llm_token_reservations",
   "mcp_servers", "oauth_sessions", "oauth_providers", "payment_connections",
-  "payout_destinations", "project_access", "project_steward_decisions", "project_steward_runs",
+  "payout_destinations", "project_access", "project_agent_email_addresses", "project_steward_decisions", "project_steward_runs",
   "recipe_installations", "scheduled_job_runs", "scheduled_jobs", "space_compliance_policy",
   "space_credential_keys", "space_credentials", "space_members", "triggers", "virtual_cli_commands",
   "webhook_subscriptions", "whop_sub_merchants", "workflow_budget_reservations", "workflow_executions_v2",
+  // Assistant communication and provisioning D1 rows contain identity and message metadata.
+  // Their external profiles/callbacks are purged before this final scoped database cleanup.
+  "assistant_active_voice_endpoints", "assistant_approval_decisions", "assistant_live_calls",
+  "assistant_mail_ingress_usage", "assistant_verification_waits", "space_provisioning_outbox",
 ] as const;
 
 /** Stable audit keys make D1 writes idempotent when a Workflow step retries after a lost response. */

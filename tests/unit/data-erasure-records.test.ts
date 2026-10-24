@@ -32,7 +32,8 @@ describe("data erasure D1 records", () => {
     const retainedOrSeparatelyHandled = new Set([
       "developer_earnings_ledger", "launchpad_orders", "platform_provenance", "template_subscriptions",
       "portal_domains", "space_provisioning_leases", "usage_events", "wallet_transactions",
-      "whop_payout_requests", "whop_sub_merchants",
+      "whop_payout_requests", "whop_sub_merchants", "website_connections",
+      "assistant_communication_identities",
     ]);
     const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
     const scoped = new Set<string>();
@@ -41,7 +42,8 @@ describe("data erasure D1 records", () => {
       if (columns.results.some((column) => column.name === "space_id")) scoped.add(name);
     }
     const classified = new Set([...SPACE_ERASURE_TABLES, ...retainedOrSeparatelyHandled]);
-    expect([...scoped].filter((table) => !classified.has(table)).sort()).toEqual([]);
+    const unclassifiedSpaceTables = [...scoped].filter((table) => !classified.has(table)).sort();
+    expect(unclassifiedSpaceTables, `Unclassified Space tables: ${unclassifiedSpaceTables.join(", ")}`).toEqual([]);
     expect([...SPACE_ERASURE_TABLES].filter((table) => !scoped.has(table)).sort()).toEqual([]);
   });
 
@@ -53,6 +55,7 @@ describe("data erasure D1 records", () => {
       "marketplace_listings", "marketplace_reviews", "notifications", "org_members", "portal_domains", "assistant_sessions",
       "reseller_accounts", "service_accounts", "space_provisioning_leases", "space_type_tools",
       "spaces", "spacetypes", "subscriptions", "usage_events", "users", "web_push_subscriptions",
+      "website_connections", "assistant_communication_identities",
     ]);
     // Financial records and immutable provenance are deliberately retained; their schedules need a
     // separate policy rather than being removed by account erasure.
@@ -67,7 +70,8 @@ describe("data erasure D1 records", () => {
       if (columns.results.some((column) => column.name === "tenant_id" || column.name === "org_id")) tenantScoped.add(name);
     }
     const classified = new Set([...SPACE_ERASURE_TABLES, ...handledTenantScoped, ...retainedTenantScoped]);
-    expect([...tenantScoped].filter((table) => !classified.has(table)).sort()).toEqual([]);
+    const unclassifiedTenantTables = [...tenantScoped].filter((table) => !classified.has(table)).sort();
+    expect(unclassifiedTenantTables, `Unclassified tenant tables: ${unclassifiedTenantTables.join(", ")}`).toEqual([]);
     expect([...handledTenantScoped, ...retainedTenantScoped].filter((table) => !tenantScoped.has(table)).sort()).toEqual([]);
   });
 
@@ -106,6 +110,49 @@ describe("data erasure D1 records", () => {
       .toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM space_credentials WHERE space_id = ?").get("space-a"))
       .toEqual({ count: 0 });
+  });
+
+  it("deletes assistant ingress, project aliases, approval, voice, and provisioning state by Space", async () => {
+    const db = createFakeD1(platformMigrations);
+    db.db.prepare(`INSERT INTO orgs (id,name,owner_id,plan_tier,status) VALUES(?,?,?,?,?)`)
+      .run("tenant-a", "Tenant", "owner", "free", "active");
+    db.db.prepare(`INSERT INTO spacetypes (id,org_id,name) VALUES(?,?,?)`)
+      .run("type-a", "tenant-a", "Default");
+    db.db.prepare(`INSERT INTO spaces (id,tenant_id,spacetype_id,name,status) VALUES(?,?,?,?,?)`)
+      .run("space-a", "tenant-a", "type-a", "A", "active");
+    db.db.prepare(`INSERT INTO spaces (id,tenant_id,spacetype_id,name,status) VALUES(?,?,?,?,?)`)
+      .run("space-b", "tenant-a", "type-a", "B", "active");
+    db.db.prepare(`INSERT INTO project_agent_email_addresses
+      (address_hash,tenant_id,space_id,agent_id,project_id,status,created_at) VALUES (?,?,?,?,?,?,?)`)
+      .run("hash-a", "tenant-a", "space-a", "agent-a", "project-a", "active", "2026-01-01");
+    db.db.prepare(`INSERT INTO project_agent_email_addresses
+      (address_hash,tenant_id,space_id,agent_id,project_id,status,created_at) VALUES (?,?,?,?,?,?,?)`)
+      .run("hash-b", "tenant-a", "space-b", "agent-b", "project-b", "active", "2026-01-01");
+    db.db.prepare(`INSERT INTO assistant_mail_ingress_usage(tenant_id,space_id,day,bytes,messages) VALUES(?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "2026-01-01", 512, 1);
+    db.db.prepare(`INSERT INTO assistant_mail_ingress_usage(tenant_id,space_id,day,bytes,messages) VALUES(?,?,?,?,?)`)
+      .run("tenant-a", "space-b", "2026-01-01", 256, 1);
+    db.db.prepare(`INSERT INTO assistant_active_voice_endpoints
+      (tenant_id,space_id,project_key,user_id,agent_name,connection_id,expires_at) VALUES(?,?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "project-a", "user-a", "assistant", "connection-a", 1);
+    db.db.prepare(`INSERT INTO assistant_approval_decisions
+      (token_hash,tenant_id,space_id,approval_id,request_hash,user_id,channel,contact,decision,expires_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`)
+      .run("token-a", "tenant-a", "space-a", "approval-a", "request-a", "user-a", "email", "x", "approve", 1);
+    db.db.prepare(`INSERT INTO space_provisioning_outbox(space_id,tenant_id,payload_json) VALUES(?,?,?)`)
+      .run("space-a", "tenant-a", '{"secret":"setup"}');
+
+    await eraseSpaceD1Records(db as never, "space-a");
+
+    for (const table of ["project_agent_email_addresses", "assistant_mail_ingress_usage",
+      "assistant_active_voice_endpoints", "assistant_approval_decisions", "space_provisioning_outbox"]) {
+      expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE space_id = ?`).get("space-a"))
+        .toEqual({ count: 0 });
+    }
+    expect(db.db.prepare("SELECT address_hash FROM project_agent_email_addresses").all())
+      .toEqual([{ address_hash: "hash-b" }]);
+    expect(db.db.prepare("SELECT space_id FROM assistant_mail_ingress_usage").all())
+      .toEqual([{ space_id: "space-b" }]);
   });
 
   it("erases platform assistant sessions and cascading messages by tenant", async () => {

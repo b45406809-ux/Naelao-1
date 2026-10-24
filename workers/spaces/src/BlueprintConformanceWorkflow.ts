@@ -11,6 +11,7 @@ import {
 } from "@naelao/security";
 import type { Env } from "./index.js";
 import type { StateDeltaSuite } from "./state-delta-conformance.js";
+import { certifiedBlueprintKey } from "./certified-blueprint.js";
 
 export interface BlueprintConformanceParams {
   tenantId: string;
@@ -115,7 +116,7 @@ export class BlueprintConformanceWorkflow extends WorkflowEntrypoint<
       if (!certificate) return { status: "rejected", report };
       if (!this.env.SCRIPTS_R2)
         throw new Error("conformance_artifact_storage_unavailable");
-      const key = `blueprints/${blueprint.id}.json`;
+      const key = certifiedBlueprintKey(params.tenantId, blueprint.id);
       await this.env.SCRIPTS_R2.put(
         key,
         JSON.stringify({

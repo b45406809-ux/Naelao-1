@@ -28,24 +28,24 @@ async function request(path: string, method: "GET" | "POST", tenant = "tenant-a"
   return { response, ...db };
 }
 
-describe("internal business service tenant boundary", () => {
-  it("does not create a service for a space outside the signed tenant", async () => {
+describe("retired business-service API", () => {
+  it("does not expose service creation or query another tenant's Space", async () => {
     const { response, prepare } = await request("/internal/business-services", "POST", "tenant-a", {
       space_id: "other-tenant-space", kind: "custom_domain", custom_domain: "store.example.com",
     });
     expect(response.status).toBe(404);
-    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare).not.toHaveBeenCalled();
   });
 
-  it("does not read service configuration for a space outside the signed tenant", async () => {
+  it("does not expose service configuration reads", async () => {
     const { response, prepare } = await request("/internal/business-services?space_id=other-tenant-space&kind=storefront", "GET");
     expect(response.status).toBe(404);
-    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare).not.toHaveBeenCalled();
   });
 
-  it("does not poll another tenant's custom domain status", async () => {
+  it("does not expose custom-domain polling", async () => {
     const { response, prepare } = await request("/internal/business-services/custom-domain-status?space_id=other-tenant-space", "GET");
     expect(response.status).toBe(404);
-    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare).not.toHaveBeenCalled();
   });
 });

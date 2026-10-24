@@ -3,6 +3,7 @@ import { evaluateBlueprintSecurity, verifyArtifactCertificate, type ConformanceC
 import type { Hono } from "hono";
 import type { Env } from "../index.js";
 import { resolveEndUserBusinessRole } from "../business-auth.js";
+import { certifiedBlueprintKey } from "../certified-blueprint.js";
 
 export const GRADUATION_STAGES = ["consulting_embed", "blueprint_staged", "marketplace_published"] as const;
 
@@ -30,7 +31,8 @@ export function registerGraduationRoutes(app: Hono<{ Bindings: Env }>): void {
     const { blueprint: source } = await original.json<{ blueprint: SpaceBlueprint }>();
     const existingListing = await c.env.PLATFORM_DB.prepare("SELECT id FROM marketplace_listings WHERE tenant_id=? AND blueprint_id=? AND status='published' LIMIT 1").bind(tenantId, source.id).first<{ id: string }>();
     if (existingListing) return c.json({ error_code: "already_graduated", listing_id: existingListing.id, blueprint_id: source.id }, 409);
-    const stored = await c.env.SCRIPTS_R2.get(`blueprints/${source.id}.json`);
+    const stored = await c.env.SCRIPTS_R2.get(certifiedBlueprintKey(tenantId, source.id))
+      ?? await c.env.SCRIPTS_R2.get(`blueprints/${source.id}.json`);
     if (!stored) return c.json({ error_code: "conformance_not_certified" }, 422);
     const envelope = await stored.json<{ blueprint: SpaceBlueprint & { securityRating?: string }; conformanceCertificate: ConformanceCertificate }>();
     const blueprint = { ...envelope.blueprint }; delete blueprint.securityRating;

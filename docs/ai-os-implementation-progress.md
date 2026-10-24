@@ -65,6 +65,19 @@ running work may finish. Template activation preview rejects disabled required d
 99 expands the installation status constraint without changing existing rows. The first lifecycle test
 caught the old CHECK constraint rejecting `disabled`; the migration was added and the test now passes.
 
+Template activation now records the required extension IDs on the durable per-Space installation
+receipt (migration 100). Uninstalling a Space-shared extension returns a conflict while an installed
+Space Template depends on it, so the user must resolve the dependent template lifecycle first. The
+guard is tested against the actual SpaceDO install/remove path.
+
+Certified artifacts are now written to a tenant namespace:
+`blueprints/{tenantId}/{blueprintId}.json`. Activation resolves the publisher artifact from that
+namespace, or the exact artifact/certificate stored in the installing tenant's published marketplace
+fork. The old global key is only a compatibility read and remains subject to issuer, signature,
+license, and byte-for-byte fork checks. This closes a cross-tenant overwrite/denial-of-service gap in
+the previous global `blueprints/{blueprintId}.json` key. Account erasure removes the tenant-owned
+certificate and conformance-export prefixes while retaining already-issued fork receipts in D1.
+
 The conformance workflow's compile check now uses the same pure SDK blueprint compiler as activation
 instead of instantiating into a synthetic production `SpaceDO` ID. This removes persistent project,
 task and file side effects from certification dry-runs. The conformance sandbox remains the execution
@@ -96,34 +109,49 @@ marketplace activation or a deployed fresh-Space install.
       cover concurrent claims, duplicate retry, changed artifact and fresh-target cases.
 - [ ] Define and enforce runtime-compatibility attestations; extension IDs, versions and content
       digests are now checked, while container/runtime host constraints remain open.
-- [ ] Finish extension lifecycle controls across project and Space scopes: dependency-aware uninstall,
-      data export/delete choices and safe schema migration/rollback remain open. Space-shared and
+- [ ] Finish extension lifecycle controls across project and Space scopes: dependency-aware uninstall
+      is now enforced for active Space Template dependencies. Data export/delete choices and safe
+      schema migration/rollback remain open. Space-shared and
       project-scoped pause/resume retain data/grants and block new invocations while active work may
       finish. Project managers can manage only installations in projects they can manage; paused
       channel handlers can be uninstalled, which revokes provider connections and clears sessions.
 - [ ] Connect private package authoring through inspect → host preview → permission review → explicit
       install in the general UI; ensure configured prebuilts expose `package.inspect` to the authoring task.
-- [ ] Run full host-backed fresh-Space installs of all three references, exercise their first tasks,
+- [x] Run local host-backed fresh-Space installs of Foundry, Personal Assistant and Software
+      Development, including independent IDs, task/file creation, retries and artifact-change denial.
+      This covers the SpaceDO host harness only; deployed provisioning and first-task journeys remain
+      open.
+- [ ] Run deployed fresh-Space installs of all three references, exercise their first tasks,
       connection setup, approval boundaries, scoped access denials, restart/resume and removal.
 - [ ] Complete a Foundry export that contains only reviewed customer artifacts, validates dependencies,
       strips fixtures/secrets, and runs the host conformance suite against that exact export.
-- [ ] Publish only after the tenant-owned export has a valid artifact-bound certificate and marketplace
-      review; verify install/update/rollback from a separate tenant. No public certificate/listing exists.
+- [x] Complete and test the local tenant-owned export, conformance, signature verification and
+      graduation pipeline; certification objects now use tenant-scoped R2 keys and activation binds
+      the exact bytes to the tenant's fork. No live Naelao team export or production certificate has
+      been created.
+- [ ] Publish only after the Naelao team tenant has a passing tenant-owned export certificate and
+      marketplace review; verify install/update/rollback from a separate tenant. No live public
+      certificate/listing exists.
 - [ ] Measure task completion and recovery from host receipts; do not infer success from mock tests.
 - [ ] Record deployed/provider acceptance separately; credentials and deployment evidence are unavailable
       in this local run.
-- [ ] Reconcile the broad Spaces worker suite with the approved OS architecture. The last full run
-      passed 70 of 80 test files (325 of 383 tests); 58 tests failed. Failures include tests asserting retired
-      business-commerce and payout behavior, a removed `business-create` module, obsolete project
-      presets, stale cache-version assumptions, and incomplete route-test database doubles. The
-      Launchpad version fixture was corrected afterward; rerun and triage the remaining failures.
+- [x] Reconcile the Spaces worker suite with the approved OS architecture. The suite now passes
+      80/80 files and 346/346 tests. Obsolete tests for removed business commerce, external revenue
+      accounting, manual payouts, product pricing and personal-plan host routes were replaced with
+      regression checks that the routes stay unavailable to ordinary tenants; generic product Space
+      creation remains behind a verified product-user identity. The missing deleted-module import
+      was removed from the test graph. This is local worker evidence, not a deployed marketplace
+      settlement or customer-tenant acceptance test.
+- [ ] Reconcile the monorepo test graph against the approved kernel, Space Template, extension and
+      platform-subscription boundaries. Last complete root run: 2,101 suites discovered, 213 failed;
+      5,673 tests total, 387 failed. Most failures are stale tests for deleted business/wallet,
+      reseller, persona and fixed project-template behavior; there are also current test-mock/config
+      failures that still need triage. The Spaces worker suite remains green independently.
 
 ## Verification
 
-Latest checkpoint: Spaces activation, project lifecycle route, lifecycle, fresh-target installation,
-migration, and graduation tests (30 focused tests); conformance durable replay tests (3);
-create-Space/outbox tests (41); agent-sdk blueprint/pin tests (33); router lifecycle-route tests (33);
-Spaces/Shell/router/Agents typechecks. The full Spaces suite is not green; see the open test-reconciliation
-item above.
-No deployment, marketplace publication, external provider request or tenant-owned production
-certificate was performed.
+Latest checkpoint: full Spaces suite (81 files, 351 tests); focused activation, dependency-aware
+extension removal, tenant-scoped certificate lookup, project lifecycle, fresh-target installation,
+erasure and graduation tests (64); conformance durable replay tests (3); Spaces and Workflows
+typechecks. No deployment, marketplace publication, external provider request or tenant-owned
+production certificate was performed.

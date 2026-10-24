@@ -2222,6 +2222,11 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_extension_instances_named ON extension_instances(extension_id,tenant_id,space_id,project_id,instance_key,status);
     `,
   },
+  {
+    version: 100,
+    description: "track active Space Template extension dependencies",
+    up: `ALTER TABLE space_blueprint_installations ADD COLUMN required_extensions_json TEXT NOT NULL DEFAULT '[]';`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2979,6 +2984,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const spaceId = url.searchParams.get("space_id") ?? "";
         const projectId = url.searchParams.get("project_id") ?? "";
         if (!instanceId || !tenantId || !spaceId) return Response.json({ error_code: "extension_installation_scope_required" }, { status: 400 });
+        if (!projectId) {
+          const dependency = queryOne<{ blueprint_id: string }>(this.ctx.storage.sql as never,
+            `SELECT b.blueprint_id FROM space_blueprint_installations b
+             WHERE b.space_id=? AND b.status='installed' AND EXISTS (
+               SELECT 1 FROM json_each(b.required_extensions_json) required
+               JOIN extension_instances i ON i.extension_id=required.value
+               WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED'
+             ) LIMIT 1`,
+            spaceId, instanceId, tenantId, spaceId);
+          if (dependency) return Response.json({ error_code: "extension_required_by_space_template", blueprint_id: dependency.blueprint_id }, { status: 409 });
+        }
         const result = projectId
           ? this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status IN ('active','disabled')`, instanceId, tenantId, spaceId, projectId)
           : this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status IN ('active','disabled')`, instanceId, tenantId, spaceId);
@@ -4193,8 +4209,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     let acquired = false;
     this.ctx.storage.transactionSync(() => {
-      acquired = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO space_blueprint_installations(space_id,blueprint_id,artifact_sha256,status,created_at,updated_at)
-        VALUES(?,?,?,'installing',?,?)`, targetSpaceId, blueprint.id, artifactHash, now, now).rowsWritten === 1;
+      acquired = this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO space_blueprint_installations(space_id,blueprint_id,artifact_sha256,required_extensions_json,status,created_at,updated_at)
+        VALUES(?,?,?,?,'installing',?,?)`, targetSpaceId, blueprint.id, artifactHash,
+        JSON.stringify([...new Set(blueprint.requiredExtensions ?? [])].sort()), now, now).rowsWritten === 1;
     });
     if (!acquired) {
       const concurrent = queryOne<{ artifact_sha256: string; status: string; result_json: string | null }>(this.ctx.storage.sql as never,

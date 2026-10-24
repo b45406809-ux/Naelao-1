@@ -26,17 +26,9 @@ describe("onboardingAutonomyPolicy", () => {
     expect(onboardingAutonomyPolicy(options.slice(0, 2), options[0])).toBeNull();
   });
 
-  it("keeps every current template's autonomy choices compatible with the policy compiler", () => {
-    const autonomyPrompts = LAUNCHPAD_TEMPLATES.flatMap((template) =>
-      (template.bootstrap?.prompts ?? []).filter((prompt) => prompt.id === "autonomy")
-    );
-    expect(autonomyPrompts.length).toBeGreaterThan(0);
-    for (const prompt of autonomyPrompts) {
-      expect(prompt.options, `${prompt.id} in ${prompt.question}`).toHaveLength(3);
-      for (const option of prompt.options ?? []) {
-        expect(onboardingAutonomyPolicy(prompt.options, option)).not.toBeNull();
-      }
-    }
+  it("keeps domain-specific onboarding templates out of the kernel", () => {
+    // FDE Space Templates own onboarding prompts. The kernel only compiles a selected answer.
+    expect(LAUNCHPAD_TEMPLATES).toEqual([]);
   });
 
   it("writes the compiled policy with the internal request headers and fails closed", async () => {

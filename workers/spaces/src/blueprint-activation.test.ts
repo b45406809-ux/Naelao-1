@@ -48,7 +48,7 @@ describe("Space Template activation preview", () => {
     const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-a");
     if (!certificate) throw new Error("test_certificate_not_issued");
     const envelope = { blueprint: artifact, conformanceCertificate: certificate };
-    const stored = new Map([[`blueprints/${artifact.id}.json`, envelope]]);
+    const stored = new Map([[`blueprints/tenant-a/${artifact.id}.json`, envelope]]);
     let instantiateCalls = 0;
     const stub = { fetch: async (request: Request) => {
       const url = new URL(request.url);
@@ -87,7 +87,7 @@ describe("Space Template activation preview", () => {
       return new Response("not found", { status: 404 });
     } };
     const env = { PLATFORM_SECRET: secret, PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "fresh-space" }), run: async () => ({ success: true }) }) }) },
-      SCRIPTS_R2: { get: async (key: string) => key === `blueprints/${artifact.id}.json` ? { json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) } : null },
+      SCRIPTS_R2: { get: async (key: string) => key === `blueprints/tenant-fresh/${artifact.id}.json` ? { json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) } : null },
       SPACE_DO: { idFromName: () => "fresh-space-do", get: () => stub } } as never;
     const headers = { "x-naelao-tenant-id": "tenant-fresh", "x-naelao-user-id": "owner", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-fresh") };
     const preview = await worker.fetch(new Request(`https://spaces/spaces/fresh-space/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);

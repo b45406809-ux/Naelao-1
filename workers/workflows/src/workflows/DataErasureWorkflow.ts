@@ -24,6 +24,7 @@ import {
   anonymizeOrgUsers,
   claimErasureRequest,
   deleteKvPrefix,
+  deleteR2Prefix,
   erasureAuditId,
   eraseOrgOperationalRecords,
   eraseSpaceD1Records,
@@ -222,6 +223,14 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
       },
     );
     console.log(`[DataErasure] Deleted data for ${spacesProcessed} space(s) in org=${params.orgId}`);
+
+    await step.do("erase-tenant-blueprint-artifacts", async () => {
+      // New certified templates are tenant-namespaced. Keep marketplace fork receipts in D1 for
+      // existing licensees, but remove the erased publisher's source exports and certificates.
+      await deleteR2Prefix(this.env.SCRIPTS_R2, `blueprints/${params.orgId}/`);
+      await deleteR2Prefix(this.env.SCRIPTS_R2, `conformance-jobs/${params.orgId}/`);
+      return { tenantArtifactsErased: true };
+    });
 
     // ── Step 4: Anonymize user PII ────────────────────────────────────────────
     await step.do("delete-user-pii", async () => {

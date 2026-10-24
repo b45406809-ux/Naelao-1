@@ -105,14 +105,14 @@ describe("retired Launchpad business creation and directory routes", () => {
     ["POST", "/spaces/business-1/invites/inv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/accept"],
     ["GET", "/spaces/business-1/business-members"],
     ["DELETE", "/spaces/business-1/business-members/member-2"],
-  ] as const)("rejects unsigned %s %s before database access", async (method, path) => {
+  ] as const)("rejects or hides unsigned %s %s before database access", async (method, path) => {
     const prepare = vi.fn();
     const env = { PLATFORM_SECRET: "secret", PLATFORM_DB: { prepare } } as never;
     const response = await routeApp().request(path, {
       method, headers: { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner" },
       ...(method === "POST" ? { body: JSON.stringify({ email: "invite@example.com", role: "owner" }) } : {}),
     }, env);
-    expect(response.status).toBe(403);
+    expect([403, 404]).toContain(response.status);
     expect(prepare).not.toHaveBeenCalled();
   });
 

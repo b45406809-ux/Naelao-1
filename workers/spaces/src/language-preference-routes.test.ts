@@ -80,6 +80,7 @@ function testEnv() {
               }
               return { meta: { changes: 0 } };
             },
+            async all() { return { results: [] }; },
           };
         },
       };

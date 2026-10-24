@@ -58,7 +58,7 @@ function harness(envelope: unknown) {
       get: async (key: string) => {
         if (key === "exports/job-a.json")
           return { json: async () => ({ blueprint }) };
-        if (key === `blueprints/${blueprint.id}.json`)
+        if (key === `blueprints/tenant-a/${blueprint.id}.json` || key === `blueprints/${blueprint.id}.json`)
           return { json: async () => envelope };
         return null;
       },

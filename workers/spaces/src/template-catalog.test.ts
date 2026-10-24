@@ -10,7 +10,7 @@ function db() {
 
 describe("template catalog dependency boundaries", () => {
   it("uses bounded cached data, and refetches malformed cache entries", async () => {
-    const values = new Map<string, unknown>([["launchpad-template-catalog:v5", { unexpected: true }]]);
+    const values = new Map<string, unknown>([["launchpad-template-catalog:v6", { unexpected: true }]]);
     const kv = {
       get: async (key: string) => values.get(key) ?? null,
       put: async (key: string, value: string) => { values.set(key, JSON.parse(value)); },
@@ -19,7 +19,7 @@ describe("template catalog dependency boundaries", () => {
     const result = await loadTemplateCatalogOrNull({ NAELAO_CONFIG_KV: kv as never, AGENTS_WORKER: { fetch } as never });
     expect(result?.[0]).toMatchObject({ id: "free-template", free_tier_eligible: true });
     expect(fetch).toHaveBeenCalledOnce();
-    expect(values.get("launchpad-template-catalog:v5")).toMatchObject({ templates: [{ id: "free-template" }] });
+    expect(values.get("launchpad-template-catalog:v6")).toMatchObject({ templates: [{ id: "free-template" }] });
   });
 
   it("treats malformed, oversized, and unavailable provider results as unavailable", async () => {
