@@ -1,3 +1,4 @@
+import { packageAuthoring } from "./package-authoring.js";
 /**
  * Prebuilt Script & Skill Catalogue (spec §12).
  *
@@ -112,6 +113,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [artifacts.name]: artifacts,
   [approvals.name]: approvals,
   [notifications.name]: notifications,
+  [packageAuthoring.name]: packageAuthoring,
   [subAgent.name]: subAgent,
   [dynamicWorkflow.name]: dynamicWorkflow,
   // Connector layer: reach any external platform over MCP (Whop, Gumroad, Beehiiv, …).

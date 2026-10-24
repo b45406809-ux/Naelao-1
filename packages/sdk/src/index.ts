@@ -21,3 +21,5 @@ export function createSdkContext(input: SdkContext): SdkContext {
   if (!input.spaceId || !input.extensionId) throw new Error("sdk_context_identity_required");
   return Object.freeze({ ...input });
 }
+export { inspectExtensionPackage } from "./package.js";
+export type { ExtensionPackageDraft, PackageInspection } from "./package.js";

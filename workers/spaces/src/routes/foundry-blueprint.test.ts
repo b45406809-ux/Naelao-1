@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FOUNDRY_SPACE_TEMPLATE } from "@naelao/agent-sdk";
+import { FOUNDRY_SPACE_TEMPLATE, PERSONAL_ASSISTANT_SPACE_TEMPLATE, SOFTWARE_DEVELOPMENT_SPACE_TEMPLATE } from "@naelao/agent-sdk";
 import { evaluateBlueprintSecurity } from "@naelao/security";
 
 describe("Foundry dogfood marketplace blueprint", () => {
@@ -15,4 +15,9 @@ describe("Foundry dogfood marketplace blueprint", () => {
     expect(exported.has("product/brief.md")).toBe(false);
     expect(exported.has("product/export-manifest.json")).toBe(false);
   });
+});
+
+
+it.each([PERSONAL_ASSISTANT_SPACE_TEMPLATE,SOFTWARE_DEVELOPMENT_SPACE_TEMPLATE])("applies the general export security gate to $id",template=>{
+ expect(evaluateBlueprintSecurity(template).publishable).toBe(true);
 });

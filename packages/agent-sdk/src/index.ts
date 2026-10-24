@@ -193,3 +193,5 @@ export * from "./tunnel-protocol.js";
 export { parseArtifactLinters, lintArtifact, type ArtifactLinterSpec, type ArtifactDiagnostic } from "./artifact-linters.js";
 
 export type { VoiceChannelAction, VoiceChannelResponse, VoiceChannelEventPayload } from "./voice-channel.js";
+export * from "./templates/reference-spaces.js";
+export * from "./package-inspection.js";
