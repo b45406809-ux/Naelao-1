@@ -112,12 +112,18 @@ marketplace activation or a deployed fresh-Space install.
 - [ ] Measure task completion and recovery from host receipts; do not infer success from mock tests.
 - [ ] Record deployed/provider acceptance separately; credentials and deployment evidence are unavailable
       in this local run.
+- [ ] Reconcile the broad Spaces worker suite with the approved OS architecture. The last full run
+      passed 70 of 80 test files (325 of 383 tests); 58 tests failed. Failures include tests asserting retired
+      business-commerce and payout behavior, a removed `business-create` module, obsolete project
+      presets, stale cache-version assumptions, and incomplete route-test database doubles. The
+      Launchpad version fixture was corrected afterward; rerun and triage the remaining failures.
 
 ## Verification
 
 Latest checkpoint: Spaces activation, project lifecycle route, lifecycle, fresh-target installation,
 migration, and graduation tests (30 focused tests); conformance durable replay tests (3);
 create-Space/outbox tests (41); agent-sdk blueprint/pin tests (33); router lifecycle-route tests (33);
-Spaces/Shell/router/Agents typechecks.
+Spaces/Shell/router/Agents typechecks. The full Spaces suite is not green; see the open test-reconciliation
+item above.
 No deployment, marketplace publication, external provider request or tenant-owned production
 certificate was performed.
