@@ -110,6 +110,11 @@ export function interceptPlatformCli(command: string): CliDispatch | null {
   const tree = parseShell(command);
   if (tree.length !== 1 || tree[0]!.commands.length !== 1 || tree[0]!.commands[0]!.redirects.length) return null;
   const words = tree[0]!.commands[0]!.argv;
+  if(words[0]==="phone"){
+    const operation=({status:"phone.status",inbox:"phone.inbox",read:"phone.read",actions:"phone.actions",draft:"phone.draft",send:"phone.send"} as Record<string,string>)[words[1]??"status"];
+    if(!operation)throw new Error("usage: phone status|inbox|read|actions|draft|send");
+    const {body,positional}=bodyAndFlags(words.slice(2));return{operation,params:{...body,...positional[0]?{id:positional[0]}:{}}};
+  }
   if(words[0]==="mail"){
     const operation=({identity:"mail.identity",inbox:"mail.inbox",read:"mail.read",draft:"mail.draft",send:"mail.send"} as Record<string,string>)[words[1]??"identity"];
     if(!operation)throw new Error("usage: mail identity|inbox|read|draft|send");

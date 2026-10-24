@@ -38,3 +38,27 @@ Added Space/private-user erasure and retention, byte/message ingress bounds and 
 reconciliation. Focused regression tests passed (41); Agents/Browser/Spaces/Provisioner/Shell type checks passed. Production Agents worker dry-run passed with unchanged container builds disabled (`--containers-rollout none`); the normal container rebuild ran out of Docker disk space, and only unused build cache was pruned. No live provider test was possible.
 Next: commit this validated checkpoint, then implement optional BYO/managed calls/SMS/MMS,
 browser/video demonstration skill lifecycle, and capability-aware current-model selection.
+
+## Step 3a — optional assistant telephony (BYO checkpoint)
+
+Added migration 0131 and scoped persistent phone bindings for personal Space assistants and
+shared Project assistants. Apps supports storing scoped Twilio credentials, attaching an owned
+number, explicit current-price rental quotes/purchases, call/SMS approval drafts, inbound SMS/MMS
+metadata, DTMF, voicemail/transcription opt-in and a human transfer destination. New worker tools
+and the `phone` CLI expose only inbox/draft/approved-send operations, never provisioning or policy
+authority. Webhooks verify the official Twilio signature and provider account, active scope,
+channel and egress policies. Paired caller numbers create pending commands, never automatic owner
+runs. Concurrent submission claims and uncertain-outcome states prevent blind retries. Deleting
+an assistant first detaches its BYO number and restores prior callbacks; it never silently releases
+a customer's carrier number. Released/detached histories do not block future binding.
+
+Fresh focused tests: 54 passed (communications, ingress, CLI and telephony primitives), including
+20-way purchase races, 30-way sends, 20 duplicate ingress callbacks, signature rejection, changed
+channel policy, pagination ties and erasure. Agents and Shell type checks and the production Agents Worker dry-run passed. No live carrier calls were made.
+
+Still open in the phone phase: managed-number prepaid billing/renewal/usage settlement; interactive
+planner-backed calls; inbound media download and outbound MMS; SMS website-verification waits;
+reconciliation UI and full call/number cleanup/retention. Managed numbers deliberately report
+unavailable, and the existing WhatsApp carrier account is never implicitly charged. Calls in this
+checkpoint speak an approved message; the UI/manual do not claim interactive AI conversations.
+Next: complete these phone paths, then browser/video demonstrations and model capability selection.

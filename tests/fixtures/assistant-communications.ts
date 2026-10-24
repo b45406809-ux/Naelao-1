@@ -14,6 +14,7 @@ export function fixture() {
       "utf8"
     ),
   ]);
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0131_assistant_phones.sql", import.meta.url), "utf8"));
   const objects = new Map<string, string>();
   const fetch = vi.fn(async (req: Request) =>
     req.url.includes("assistant-access")

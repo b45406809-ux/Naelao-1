@@ -1,4 +1,5 @@
 "use client";
+import { AssistantPhonePanel } from "./AssistantPhonePanel";
 import * as React from "react";
 import { Button, FormInput, FormTextarea, FormSelect } from "@naelao/ui";
 import {
@@ -287,6 +288,7 @@ export function AssistantMailboxPanel({
         onApprove={(id) => void act("approve-command", { id })}
       />
       {error && <p role="alert">{error}</p>}
+      <AssistantPhonePanel spaceId={spaceId} {...(project ? {projectId:project} : {})} session={session} />
     </section>
   );
 }

@@ -163,6 +163,7 @@ async function handle(c: C, agent: boolean) {
   if (
     agent &&
     ![
+      "phone-status", "phone-draft", "phone-send", "phone-actions", "phone-events", "phone-event",
       "identity",
       "messages",
       "message",
@@ -188,6 +189,16 @@ async function handle(c: C, agent: boolean) {
       },
       409
     );
+  }
+  if (action.startsWith("phone-")) {
+    if (c.req.method === "GET" && !["phone-status", "phone-actions", "phone-events", "phone-event"].includes(action)) return c.json({error_code:"method_not_allowed"},405);
+    try {
+      const { handlePhoneAction } = await import("./phones.js");
+      const params = c.req.method === "GET" ? Object.fromEntries(new URL(c.req.url).searchParams) : body;
+      return c.json(await handlePhoneAction(c.env, scope, identity, action, params, await manageIdentity(c.env, scope, identity), agent));
+    } catch (error) {
+      return c.json({ error_code: error instanceof Error && /^[a-z][a-z0-9_]{1,100}$/.test(error.message) ? error.message : "assistant_phone_unavailable" }, 409);
+    }
   }
   if (action === "identity")
     return c.json({

@@ -1,4 +1,5 @@
 import { receiveAssistantEmail } from "./communications/inbound.js";
+import { registerPhoneWebhooks } from "./communications/phone-webhooks.js";
 import { registerCommunicationRoutes } from "./communications/routes.js";
 import { DynamicSandboxDO } from "./do/DynamicSandboxDO.js";
 export { DynamicSandboxDO };
@@ -454,6 +455,7 @@ const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 registerCommunicationRoutes(app);
+registerPhoneWebhooks(app);
 
 // Product sessions authorize a person, not access to every conversation in a product. Apply
 // ownership before every session-scoped Agents route (runs, status/stream, approvals, context,

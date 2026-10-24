@@ -27,6 +27,7 @@ export async function eraseCommunicationIdentities(
     if (!env.SCRIPTS_R2)
       throw new Error("communication_storage_erasure_unavailable");
     for (const identity of results) {
+      await (await import('./phone-lifecycle.js')).detachAssistantPhonesForErasure(env,identity.id);
       await env.PLATFORM_DB.prepare(
         "UPDATE assistant_communication_identities SET status='erasing' WHERE id=? AND tenant_id=?"
       )
