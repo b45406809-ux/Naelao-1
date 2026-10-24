@@ -1309,7 +1309,7 @@ app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
   const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
-  const response = await stub.fetch(new Request("http://space-do/workflow-installation?" + new URLSearchParams({ instance_id: c.req.param("instanceId"), tenant_id: tenantId, space_id: c.req.param("spaceId") })));
+  const response = await stub.fetch(new Request("http://space-do/workflow-installation?" + new URLSearchParams({ instance_id: c.req.param("instanceId"), tenant_id: tenantId, space_id: c.req.param("spaceId"), ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
   if (!response.ok) return response;
   const result = await response.json<Record<string, unknown>>();
   const release = result.release as { signatureValid?: unknown; publisher?: { keyId?: unknown } } | null | undefined;
@@ -1331,7 +1331,7 @@ app.get("/spaces/:spaceId/internal/channel-installations", async c => {
   const space = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first();
   if (!space) throw notFound("Space");
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const response = await stub.fetch(new Request("http://space-do/channel-installations?" + new URLSearchParams({ project_id: projectId, tenant_id: tenantId, space_id: spaceId })));
+  const response = await stub.fetch(new Request("http://space-do/channel-installations?" + new URLSearchParams({ project_id: projectId, tenant_id: tenantId, space_id: spaceId, ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
   if (!response.ok) return response;
   const result = await response.json<{ installations?: Array<{ publisher_key_id?: string }> }>();
   const keyIds = [...new Set((result.installations ?? []).flatMap(item => item.publisher_key_id ? [item.publisher_key_id] : []))];
@@ -1347,8 +1347,17 @@ app.get("/spaces/:spaceId/container-installations", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const userId = c.req.header("x-naelao-user-id") ?? "";
   if (!tenantId || !userId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  if (c.req.query("include_disabled") === "1") {
+    const projectId = c.req.query("project_id");
+    if (projectId) {
+      const denied = await requireManageableAutomationProject(c, c.req.param("spaceId"), projectId);
+      if (denied) return denied;
+    } else if (!await canExportBlueprint(c, c.req.param("spaceId"))) {
+      return c.json({ error_code: "owner_or_admin_required" }, 403);
+    }
+  }
   const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
-  return stub.fetch(new Request("http://space-do/container-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"), user_id: userId, project_id: c.req.query("project_id") ?? "" })));
+  return stub.fetch(new Request("http://space-do/container-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: c.req.param("spaceId"), user_id: userId, project_id: c.req.query("project_id") ?? "", ...(c.req.query("include_disabled") === "1" ? { include_disabled: "1" } : {}) })));
 });
 
 app.use("/spaces/:spaceId/runtime-catalog", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
@@ -2214,6 +2223,20 @@ app.delete("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId"
     instance_id: instanceId, tenant_id: tenantId, space_id: spaceId, project_id: projectId,
   }), { method: "DELETE" }));
   return new Response(removed.body, { status: removed.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/lifecycle", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.patch("/spaces/:spaceId/projects/:projectId/extension-installations/:instanceId/lifecycle", async c => {
+  const { spaceId, projectId, instanceId } = c.req.param();
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  const body = await c.req.json<{ action?: "enable" | "disable" }>().catch((): { action?: "enable" | "disable" } => ({}));
+  if (body.action !== "enable" && body.action !== "disable") return c.json({ error_code: "extension_lifecycle_action_invalid" }, 400);
+  const tenantId = getCallerIdentity(c).tenantId;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  return stub.fetch(new Request("http://space-do/project-extension-lifecycle", { method: "PATCH",
+    headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+    body: JSON.stringify({ tenantId, spaceId, projectId, instanceId, action: body.action }) }));
 });
 
 app.use("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/active", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));

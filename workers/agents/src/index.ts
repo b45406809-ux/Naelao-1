@@ -7645,7 +7645,7 @@ app.get("/spaces/:spaceId/assistant/channel-extensions", async c => {
   const projectId = c.req.query("project_id") ?? "";
   if (!projectId) throw badRequest("project_id is required");
   const response = await c.env.SPACES_WORKER.fetch(new Request(
-    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/internal/channel-installations?project_id=${encodeURIComponent(projectId)}`,
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/internal/channel-installations?project_id=${encodeURIComponent(projectId)}&include_disabled=1`,
     { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }
   ));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
@@ -7708,14 +7708,16 @@ app.post("/internal/channel-extensions/session-state", async c => {
     .catch(() => ({} as { spaceId?: string; projectId?: string; installationId?: string; action?: string }));
   if (!body.spaceId || !body.projectId || !body.installationId || !["summary", "clear", "uninstall"].includes(String(body.action))) return c.json({ error_code: "channel_session_scope_invalid" }, 400);
   if (!c.env.SPACES_WORKER) return c.json({ error_code: "extension_installation_unavailable" }, 503);
+  const uninstalling = body.action === "uninstall";
   const installationResponse = await c.env.SPACES_WORKER.fetch(new Request(
-    `http://spaces-worker/spaces/${encodeURIComponent(body.spaceId)}/workflow-installations/${encodeURIComponent(body.installationId)}`,
+    `http://spaces-worker/spaces/${encodeURIComponent(body.spaceId)}/workflow-installations/${encodeURIComponent(body.installationId)}${uninstalling ? "?include_disabled=1" : ""}`,
     { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } },
   ));
   if (!installationResponse.ok) return c.json({ error_code: "extension_installation_unavailable" }, installationResponse.status === 404 ? 404 : 503);
   const installation = await installationResponse.json<{ instance?: { tenant_id?: string; space_id?: string; project_id?: string | null; status?: string } }>();
   const instance = installation.instance;
-  if (!instance || instance.status !== "active" || instance.tenant_id !== tenantId || instance.space_id !== body.spaceId || instance.project_id !== body.projectId)
+  const allowedStatus = instance?.status === "active" || (uninstalling && instance?.status === "disabled");
+  if (!instance || !allowedStatus || instance.tenant_id !== tenantId || instance.space_id !== body.spaceId || instance.project_id !== body.projectId)
     return c.json({ error_code: "extension_installation_scope_mismatch" }, 403);
   if (body.action === "uninstall") {
     const connections = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,webhook_secret_name FROM extension_provider_connections

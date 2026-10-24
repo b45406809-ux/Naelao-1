@@ -18,7 +18,7 @@ import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -469,6 +469,7 @@ export function ChannelConnect({
   const [installSourcesDraft, setInstallSourcesDraft] = React.useState("");
   const [installingExtension, setInstallingExtension] = React.useState(false);
   const [removingExtension, setRemovingExtension] = React.useState<string | null>(null);
+  const [changingExtension, setChangingExtension] = React.useState<string | null>(null);
   const [installScope, setInstallScope] = React.useState<"PROJECT_BOUND" | "PROJECT_SHARED">("PROJECT_BOUND");
   const [confirmUpgrade, setConfirmUpgrade] = React.useState(false);
   const [canvasManifestDraft, setCanvasManifestDraft] = React.useState("");
@@ -512,14 +513,14 @@ export function ChannelConnect({
     setExtensionInstallations([]); setOtherProjectInstallations([]);
     setExtensionsLoading(true);
     setExtensionLoadError(null);
-    Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId), listExtensionPublisherKeys(spaceId, session)])
+    Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true), listExtensionPublisherKeys(spaceId, session)])
       .then(([items, installed, publishers]) => {
         if (cancelled) return;
         setExtensionInstallations(items);
         setPublisherKeys(publishers.publishers);
         const channelInstances = new Set(items.map(item => item.instance_id));
         setOtherProjectInstallations(installed.installations.filter(item => item.instance.project_id === projectId
-          && item.instance.status === "active" && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+          && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       })
       .catch((err) => { if (!cancelled) { setExtensionInstallations([]); setOtherProjectInstallations([]); setPublisherKeys([]); setExtensionLoadError(err instanceof Error ? err.message : "Couldn't load project extensions."); } })
       .finally(() => { if (!cancelled) setExtensionsLoading(false); });
@@ -632,11 +633,11 @@ export function ChannelConnect({
       const artifacts = JSON.parse(canvasArtifactsDraft) as Record<string, string>;
       const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim(), { key_id: canvasPublisherKeyId, signature: canvasPublisherSignature.trim() });
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Canvas/Gadget package installation failed");
-      const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId)]);
+      const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);
       setExtensionInstallations(channels);
       const channelInstances = new Set(channels.map(item => item.instance_id));
       setOtherProjectInstallations(all.installations.filter(item => item.instance.project_id === projectId
-        && item.instance.status === "active" && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+        && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       setCanvasManifestDraft(""); setCanvasArtifactsDraft(""); setCanvasPublisherSignature(""); setCanvasInstallConfirmed(false); setConfirmUpgrade(false); setCanvasInstanceKey("default");
       onChanged();
     } catch (err) {
@@ -674,14 +675,32 @@ export function ChannelConnect({
     setRemovingExtension(instanceId); setError(null);
     try {
       await removeChannelExtension(spaceId, projectId, instanceId, session);
-      const [channels, installed] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId)]);
+      const [channels, installed] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);
       setExtensionInstallations(channels);
       const channelInstances = new Set(channels.map(item => item.instance_id));
       setOtherProjectInstallations(installed.installations.filter(item => item.instance.project_id === projectId
-        && item.instance.status === "active" && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+        && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       onChanged();
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't uninstall this channel handler."); }
     finally { setRemovingExtension(null); }
+  }
+
+  async function changeProjectExtensionLifecycle(instanceId: string, enabled: boolean) {
+    if (!projectId || changingExtension) return;
+    const installation = extensionInstallations.find(item => item.instance_id === instanceId);
+    const instance = otherProjectInstallations.find(item => item.instance.instance_id === instanceId);
+    const label = installation?.name ?? instance?.manifest.id ?? "this extension";
+    if (!enabled && !window.confirm(`Pause ${label}? New invocations will stop. Running work may finish; saved data and grants will be retained.`)) return;
+    setChangingExtension(instanceId); setError(null);
+    try {
+      await setProjectExtensionEnabled(spaceId, projectId, instanceId, session, enabled);
+      const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);
+      setExtensionInstallations(channels);
+      const channelInstances = new Set(channels.map(item => item.instance_id));
+      setOtherProjectInstallations(all.installations.filter(item => item.instance.project_id === projectId && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+      onChanged();
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't update extension status."); }
+    finally { setChangingExtension(null); }
   }
 
   return (
@@ -716,15 +735,21 @@ export function ChannelConnect({
           {!extensionsLoading && extensionInstallations.length === 0 && <div style={{ fontSize: 11, color: "var(--text3)" }}>No channel handlers installed.</div>}
           {extensionInstallations.map(installation => <div key={installation.instance_id} style={{ padding: "7px 0", borderTop: "1px solid var(--border)" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <div style={{ fontSize: 11.5 }}>{installation.name} · {installation.scope === "PROJECT_SHARED" ? "shared" : "project"}</div>
+              <div style={{ fontSize: 11.5 }}>{installation.name} · {installation.scope === "PROJECT_SHARED" ? "shared" : "project"} · {installation.status === "active" ? "enabled" : "paused"}</div>
+              <div style={{ display: "flex", gap: 5 }}>
+              <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!changingExtension || !!removingExtension} onClick={() => void changeProjectExtensionLifecycle(installation.instance_id, installation.status !== "active")}>
+                {changingExtension === installation.instance_id ? "Updating…" : installation.status === "active" ? "Pause" : "Resume"}
+              </button>
               <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!removingExtension} onClick={() => void uninstallChannelExtension(installation.instance_id)}>
                 {removingExtension === installation.instance_id ? "Uninstalling…" : "Uninstall"}
               </button>
+              </div>
             </div>
-            {installation.connections?.map(connection => <ExtensionConnectionControls key={connection.id} spaceId={spaceId} projectId={projectId} session={session} installation={installation} connection={connection} canManage={canManage} />)}
+            {installation.status === "disabled" && <div style={{ color: "var(--text3)", fontSize: 11 }}>New handler invocations are paused. Existing work may finish; data and grants are retained.</div>}
+            {installation.status === "active" && <>{installation.connections?.map(connection => <ExtensionConnectionControls key={connection.id} spaceId={spaceId} projectId={projectId} session={session} installation={installation} connection={connection} canManage={canManage} />)}
             <ExtensionSessionControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
             <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
-            <ExtensionInbox spaceId={spaceId} projectId={projectId} session={session} installation={installation} />
+            <ExtensionInbox spaceId={spaceId} projectId={projectId} session={session} installation={installation} /></>}
           </div>)}
         </div>
       </details>}
@@ -783,15 +808,20 @@ export function ChannelConnect({
         {otherProjectInstallations.map(item => {
           const instanceId = item.instance.instance_id;
           const extensionId = item.instance.extension_id;
-          if (!instanceId || !extensionId || !item.manifest.bundle?.version) return null;
+          if (!instanceId || !extensionId) return null;
           return <div key={instanceId} style={{ padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-              <span>{extensionId} · {item.manifest.bundle.version} · {item.instance.instance_key ?? "default"}</span>
+              <span>{extensionId} · {item.manifest.bundle?.version ?? "legacy"} · {item.instance.instance_key ?? "default"} · {item.instance.status === "active" ? "enabled" : "paused"}</span>
+              <div style={{ display: "flex", gap: 5 }}>
+              <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!changingExtension || !!removingExtension} onClick={() => void changeProjectExtensionLifecycle(instanceId, item.instance.status !== "active")}>
+                {changingExtension === instanceId ? "Updating…" : item.instance.status === "active" ? "Pause" : "Resume"}
+              </button>
               <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!removingExtension} onClick={() => void uninstallChannelExtension(instanceId)}>
                 {removingExtension === instanceId ? "Uninstalling…" : "Uninstall"}
               </button>
+              </div>
             </div>
-            <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ extension_id: extensionId, version: item.manifest.bundle.version }} />
+            {item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ extension_id: extensionId, version: item.manifest.bundle.version }} />}
           </div>;
         })}
       </details>}
@@ -800,7 +830,7 @@ export function ChannelConnect({
         const connected = !!link;
         const on = !!link?.enabled;
         const boundInstallation = extensionInstallations.find((installation) => installation.instance_id === link?.extension_instance_id);
-        const connectionRequirements = (boundInstallation?.connections ?? []).filter((connection) => connection.required);
+        const connectionRequirements = (boundInstallation && boundInstallation.status === "active" ? boundInstallation.connections ?? [] : []).filter((connection) => connection.required);
         const showing = open === ch.id;
         return (
           <div key={ch.id} className="settings-row" style={{ display: "block" }}>
@@ -808,7 +838,7 @@ export function ChannelConnect({
               <div>
                 <div style={{ fontSize: 13, color: "var(--text)" }}>{ch.name}</div>
                 <div style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 2 }}>
-                  {connected ? (on ? "Receiving messages" : "Connected but turned off") : ch.pitch}
+                  {connected ? (boundInstallation?.status === "disabled" ? "Connected; customer handler is paused" : on ? "Receiving messages" : "Connected but turned off") : ch.pitch}
                 </div>
               </div>
               {canManage ? (
@@ -861,7 +891,8 @@ export function ChannelConnect({
               <select id={`channel-extension-${ch.id}`} aria-label={`${ch.name} customer channel handler`} disabled={busy} value={link?.extension_instance_id ?? ""} onChange={(event) => void bindExtension(ch.id, event.target.value)} style={{ maxWidth: 360, background: "var(--surface2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, padding: "6px 8px", fontSize: 12 }}>
                 <option value="">No customer extension bound (hold for human review)</option>
                 {extensionsLoading && <option disabled value="__loading">Loading handlers…</option>}
-                {extensionInstallations.filter((installation) => installation.channels.some((declaration) => declaration.provider === ch.id)).map((installation) => (
+                {boundInstallation?.status === "disabled" && <option disabled value={boundInstallation.instance_id}>{boundInstallation.extension_id} · paused (resume before binding)</option>}
+                {extensionInstallations.filter((installation) => installation.status === "active" && installation.channels.some((declaration) => declaration.provider === ch.id)).map((installation) => (
                   <option key={installation.instance_id} value={installation.instance_id}>{installation.extension_id} · {installation.scope === "PROJECT_SHARED" ? "shared" : "project"}</option>
                 ))}
               </select>

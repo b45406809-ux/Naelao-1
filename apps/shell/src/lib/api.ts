@@ -1524,9 +1524,15 @@ export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string };
   manifest: { id?: string; name?: string; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string }> } };
 }
-export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string) {
-  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string, includeDisabled = false) {
+  const params = new URLSearchParams();
+  if (projectId) params.set("project_id", projectId);
+  if (includeDisabled) params.set("include_disabled", "1");
+  const query = params.size ? `?${params}` : "";
   return apiFetch<{ installations: ContainerInstallation[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/container-installations${query}`, { session });
+}
+export function setProjectExtensionEnabled(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials, enabled: boolean) {
+  return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(instanceId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
 }
 export async function installRuntime(spaceId: string, session: SessionCredentials, imageId: string, options: {
   scope?: "SPACE_SHARED" | "SPACE_ASSISTANT" | "PROJECT_SHARED"; projectId?: string; promoteExisting?: boolean; acknowledgePromotion?: boolean; acknowledgeIsolation?: boolean;
@@ -1835,6 +1841,7 @@ export interface ChannelExtensionInstallation {
   instance_id: string;
   extension_id: string;
   scope: "PROJECT_BOUND" | "PROJECT_SHARED";
+  status: "active" | "disabled";
   name: string;
   version?: string;
   channels: Array<{ id: string; provider: string; handlerScript: string; connection_id?: string; session?: { enabled: true; max_bytes: number; ttl_days: number } }>;

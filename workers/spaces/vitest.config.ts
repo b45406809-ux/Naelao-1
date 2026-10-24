@@ -45,6 +45,7 @@ export default defineConfig({
       "../../tests/unit/create-space-record.test.ts",
       "../../tests/unit/builder-payout-requests.test.ts",
       "../../tests/unit/pricing-catalog.test.ts",
+      "../../tests/unit/blueprint-conformance-workflow.test.ts",
     ],
   },
 });

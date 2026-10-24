@@ -90,15 +90,17 @@ marketplace activation or a deployed fresh-Space install.
       wrong-scope dependencies, read-only previews, blocker rejection without instantiation, and a
       fresh-target host activation in worker tests; queued template creation retains pending state for
       explicit user approval.
-- [ ] Add cross-tenant fork/license-mismatch route coverage and deployed activation acceptance.
+- [x] Cover cross-tenant fork/license-mismatch activation preview in worker tests.
+- [ ] Run deployed activation acceptance with a real marketplace fork and target tenant.
 - [x] Make certified Space Template installation retry-safe per target Space and artifact digest;
       cover concurrent claims, duplicate retry, changed artifact and fresh-target cases.
 - [ ] Define and enforce runtime-compatibility attestations; extension IDs, versions and content
       digests are now checked, while container/runtime host constraints remain open.
-- [ ] Finish extension lifecycle controls across project and Space scopes: disable/re-enable,
-      dependency-aware uninstall, active-run handling, connection revocation, data export/delete choices,
-      and safe schema migrations/rollback. Space-shared pause/resume is now implemented; project-scoped
-      lifecycle, dependency-aware removal and export/delete choices remain open.
+- [ ] Finish extension lifecycle controls across project and Space scopes: dependency-aware uninstall,
+      data export/delete choices and safe schema migration/rollback remain open. Space-shared and
+      project-scoped pause/resume retain data/grants and block new invocations while active work may
+      finish. Project managers can manage only installations in projects they can manage; paused
+      channel handlers can be uninstalled, which revokes provider connections and clears sessions.
 - [ ] Connect private package authoring through inspect → host preview → permission review → explicit
       install in the general UI; ensure configured prebuilts expose `package.inspect` to the authoring task.
 - [ ] Run full host-backed fresh-Space installs of all three references, exercise their first tasks,
@@ -113,7 +115,9 @@ marketplace activation or a deployed fresh-Space install.
 
 ## Verification
 
-Latest checkpoint: Spaces activation, lifecycle, fresh-target installation, migration, and graduation
-tests (32 focused tests); create-Space/outbox tests (41); agent-sdk blueprint/pin tests (33); router
-lifecycle-route tests (32); Spaces/Shell/router/provisioner typechecks. No deployment, marketplace
-publication, external provider request or tenant-owned production certificate was performed.
+Latest checkpoint: Spaces activation, project lifecycle route, lifecycle, fresh-target installation,
+migration, and graduation tests (30 focused tests); conformance durable replay tests (3);
+create-Space/outbox tests (41); agent-sdk blueprint/pin tests (33); router lifecycle-route tests (33);
+Spaces/Shell/router/Agents typechecks.
+No deployment, marketplace publication, external provider request or tenant-owned production
+certificate was performed.

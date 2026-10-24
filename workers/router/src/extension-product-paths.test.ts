@@ -4,6 +4,7 @@ import { PRODUCT_END_USER_PATH_PATTERNS } from "./index.js";
 describe("product session routes for composed project extensions", () => {
   const paths = [
     "/spaces/s/projects/p/extensions",
+    "/spaces/s/projects/p/extension-installations/install-a/lifecycle",
     "/spaces/s/projects/p/extensions/ext_demo/releases",
     "/spaces/s/extension-releases/rollback",
     "/spaces/s/extension-publishers",

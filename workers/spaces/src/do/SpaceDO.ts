@@ -2876,13 +2876,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/space-shared-extensions" && method === "GET") return this.listSpaceSharedExtensions(url.searchParams);
       if (url.pathname === "/extension-shared-filesystem-grants" && method === "POST") return this.updateSharedFilesystemGrants(request);
       if (url.pathname === "/space-shared-extension-lifecycle" && method === "PATCH") return this.updateSpaceSharedExtensionLifecycle(request);
+      if (url.pathname === "/project-extension-lifecycle" && method === "PATCH") return this.updateProjectExtensionLifecycle(request);
       if (url.pathname === "/project-steward-facts" && method === "GET") return this.projectStewardFacts(url.searchParams);
       if (url.pathname === "/project-lifecycle" && method === "GET") return this.projectLifecycle(url.searchParams);
       if (url.pathname === "/machine-authority" && method === "POST") return this.machineAuthority(request);
       if (url.pathname === "/container-installations" && method === "GET") {
+        const includeDisabled = url.searchParams.get("include_disabled") === "1";
+        const projectId = url.searchParams.get("project_id") ?? "";
+        const projectLifecycleView = includeDisabled && Boolean(projectId);
+        const statusFilter = includeDisabled ? "i.status IN ('active','disabled')" : "i.status='active'";
+        const scopeFilter = projectLifecycleView
+          ? "i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')"
+          : "(i.scope='SPACE_SHARED' OR (i.scope='SPACE_ASSISTANT' AND ?='') OR (i.scope='SPACE_USER' AND i.user_id=?) OR (i.scope='PROJECT_BOUND' AND i.project_id=?) OR (i.scope='PROJECT_SHARED' AND i.project_id=?) OR (i.scope='PROJECT_USER' AND i.project_id=? AND i.user_id=?))";
+        const scopeParams = projectLifecycleView
+          ? [projectId]
+          : [projectId, url.searchParams.get("user_id"), projectId, projectId, projectId, url.searchParams.get("user_id")];
         const rows = queryAll<{ manifest_json: string; instance_id: string }>(this.ctx.storage.sql as never,
-          "SELECT i.*, e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status='active' AND (i.scope='SPACE_SHARED' OR (i.scope='SPACE_ASSISTANT' AND ?='') OR (i.scope='SPACE_USER' AND i.user_id=?) OR (i.scope='PROJECT_BOUND' AND i.project_id=?) OR (i.scope='PROJECT_SHARED' AND i.project_id=?) OR (i.scope='PROJECT_USER' AND i.project_id=? AND i.user_id=?))",
-          url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), url.searchParams.get("project_id") ?? "", url.searchParams.get("user_id"), url.searchParams.get("project_id"), url.searchParams.get("project_id"), url.searchParams.get("user_id"));
+          `SELECT i.*, e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND ${statusFilter} AND ${scopeFilter}`,
+          url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), ...scopeParams);
         return Response.json({ installations: rows.map(row => { const { manifest_json, ...instance } = row; return { instance, manifest: JSON.parse(manifest_json),
           approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }; }) });
       }
@@ -2941,8 +2952,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({ managed, active, releaseValid, ...(publisherKeyId ? { publisherKeyId } : {}) });
       }
       if (url.pathname === "/workflow-installation" && method === "GET") {
+        const statusFilter = url.searchParams.get("include_disabled") === "1"
+          ? "i.status IN ('active','disabled')"
+          : "i.status='active'";
         const rows = queryAll<{ instance_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          "SELECT i.*, e.manifest_json, e.updated_at AS manifest_updated_at FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active'",
+          `SELECT i.*, e.manifest_json, e.updated_at AS manifest_updated_at FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND ${statusFilter}`,
           url.searchParams.get("instance_id"), url.searchParams.get("tenant_id"), url.searchParams.get("space_id"));
         const row = rows[0];
         if (!row) return Response.json({ error: "installation_not_found" }, { status: 404 });
@@ -2975,19 +2989,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/channel-installations" && method === "GET") {
         const projectId = url.searchParams.get("project_id") ?? "";
+        const statusFilter = url.searchParams.get("include_disabled") === "1" ? "i.status IN ('active','disabled')" : "i.status='active'";
         if (!projectId || !queryOne(this.ctx.storage.sql as never,
           "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, url.searchParams.get("space_id"))) {
           return Response.json({ error: "project_not_found" }, { status: 404 });
         }
-        const rows = queryAll<{ instance_id: string; extension_id: string; scope: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          "SELECT i.instance_id,i.extension_id,i.scope,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND i.status='active' ORDER BY i.installed_at",
+        const rows = queryAll<{ instance_id: string; extension_id: string; scope: string; status: string; manifest_json: string }>(this.ctx.storage.sql as never,
+          `SELECT i.instance_id,i.extension_id,i.scope,i.status,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND ${statusFilter} ORDER BY i.installed_at`,
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), projectId);
         const installations = rows.flatMap(row => {
           const manifest = JSON.parse(row.manifest_json) as { id?: string; bundle?: { version?: string; connections?: Array<{ id?: string; provider?: string; purpose?: string; required?: boolean }> }; channels?: Array<{ kind?: string; id?: string; provider?: string; connectionId?: string; handlerScript?: string; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number } }> };
           const channels = (manifest.channels ?? []).filter(channel => channel.kind === "channel");
           const publisherKeyId = manifest.bundle?.version ? queryOne<{ publisher_key_id: string | null }>(this.ctx.storage.sql as never,
             "SELECT publisher_key_id FROM extension_releases WHERE extension_id=? AND version=?", row.extension_id, manifest.bundle.version)?.publisher_key_id : null;
-          return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, scope: row.scope, version: manifest.bundle?.version ?? "legacy",
+          return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, scope: row.scope, status: row.status, version: manifest.bundle?.version ?? "legacy",
             ...(publisherKeyId ? { publisher_key_id: publisherKeyId } : {}),
             name: manifest.id ?? row.extension_id,
             channels: channels.map(channel => ({ id: channel.id ?? "", provider: channel.provider ?? "", handlerScript: channel.handlerScript ?? "", ...(channel.connectionId ? { connection_id: channel.connectionId } : {}), ...(channel.session?.enabled ? { session: { enabled: true, max_bytes: channel.session.maxBytes ?? 1_024, ttl_days: channel.session.ttlDays ?? 30 } } : {}) })),
@@ -11475,6 +11490,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const result = this.ctx.storage.sql.exec(
       `UPDATE extension_instances SET status=? WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status IN ('active','disabled')`,
       status, body.instanceId, body.tenantId, body.spaceId,
+    );
+    return result.rowsWritten === 1
+      ? Response.json({ instance_id: body.instanceId, status })
+      : Response.json({ error_code: "extension_installation_not_found" }, { status: 404 });
+  }
+
+  private async updateProjectExtensionLifecycle(request: Request): Promise<Response> {
+    const body = await request.json<{ tenantId?: string; spaceId?: string; projectId?: string; instanceId?: string; action?: string }>()
+      .catch((): { tenantId?: string; spaceId?: string; projectId?: string; instanceId?: string; action?: string } => ({}));
+    if (!body.tenantId || !body.spaceId || !body.projectId || !body.instanceId || !["disable", "enable"].includes(body.action ?? "")
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const status = body.action === "disable" ? "disabled" : "active";
+    const result = this.ctx.storage.sql.exec(
+      `UPDATE extension_instances SET status=? WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status IN ('active','disabled')`,
+      status, body.instanceId, body.tenantId, body.spaceId, body.projectId,
     );
     return result.rowsWritten === 1
       ? Response.json({ instance_id: body.instanceId, status })

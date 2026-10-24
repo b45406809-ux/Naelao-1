@@ -196,6 +196,35 @@ describe("runtime extension installation", () => {
     expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("removed");
   });
 
+  it("pauses project extensions at the project boundary and exposes them only in the admin lifecycle view", async () => {
+    const storage = createDOStorage(), secret = "project-lifecycle-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active')");
+    const installed = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: manifest(), installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND", gatekeeperCapabilities: ["native-execution"] }) }));
+    const { installationId } = await installed.json() as { installationId: string };
+    const shared = { id: "ext_space_shared_lifecycle_view", type: "extension", declaredPermissions: [], capabilityRequirements: [], gadgets: [], daemons: [], commands: [] };
+    await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: shared, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: [] }) }));
+    const token = await mintInternalToken(secret, "tenant");
+    const lifecycle = (projectId: string, action: "disable" | "enable") => space.fetch(new Request("http://space/project-extension-lifecycle", { method: "PATCH", headers: { "content-type": "application/json", "x-naelao-internal-token": token },
+      body: JSON.stringify({ tenantId: "tenant", spaceId: "space", projectId, instanceId: installationId, action }) }));
+    expect((await lifecycle("project-b", "disable")).status).toBe(404);
+    expect(await (await lifecycle("project-a", "disable")).json()).toMatchObject({ status: "disabled" });
+    const runtimeList = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    expect(await runtimeList.json()).toMatchObject({ installations: [] });
+    const runtimeLookup = await space.fetch(new Request(`http://space/workflow-installation?instance_id=${installationId}&tenant_id=tenant&space_id=space`));
+    expect(runtimeLookup.status).toBe(404);
+    const cleanupLookup = await space.fetch(new Request(`http://space/workflow-installation?instance_id=${installationId}&tenant_id=tenant&space_id=space&include_disabled=1`));
+    expect(await cleanupLookup.json()).toMatchObject({ instance: { status: "disabled", project_id: "project-a" } });
+    const adminList = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=owner&project_id=project-a&include_disabled=1"));
+    const listed = await adminList.json() as { installations: Array<{ instance: { instance_id: string; status: string } }> };
+    expect(listed.installations).toHaveLength(1);
+    expect(listed.installations[0]).toMatchObject({ instance: { instance_id: installationId, status: "disabled" } });
+    expect(await (await lifecycle("project-a", "enable")).json()).toMatchObject({ status: "active" });
+  });
+
   it("validates scope before mutation, keeps manifests immutable, and replays installs after restart", async () => {
     const storage = createDOStorage();
     const state = { storage };

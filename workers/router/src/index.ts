@@ -656,6 +656,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // the product session identity; the Spaces/Agents handlers still enforce project membership,
   // owner/admin policy, publisher trust, and exact installation scope.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions$/,
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extension-installations\/([^/]+)\/lifecycle$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/extensions\/([^/]+)\/releases$/,
   /^\/spaces\/([^/]+)\/extension-releases\/rollback$/,
   /^\/spaces\/([^/]+)\/extension-publishers(\/[^/]+)?$/,

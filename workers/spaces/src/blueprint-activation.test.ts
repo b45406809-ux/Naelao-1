@@ -98,6 +98,23 @@ describe("Space Template activation preview", () => {
     expect(activationCount).toBe(1);
   });
 
+  it("rejects a fork whose tenant license points at different certified bytes", async () => {
+    const secret = "fork-license-test-secret";
+    const artifact = blueprint({ id: "tpl_forked", projects: [], requiredExtensions: [], requiredCredentials: [] });
+    const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `fork-${index}` })) };
+    const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "publisher-tenant");
+    if (!certificate) throw new Error("test_certificate_not_issued");
+    const db = { prepare: (query: string) => ({ bind: () => ({ first: async () => query.includes("FROM spaces") ? { id: "space-a" }
+      : query.includes("marketplace_forks") ? { certificate_json: JSON.stringify(certificate), artifact_json: JSON.stringify({ ...artifact, metadata: { name: "tampered" } }) } : null }) }) };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db,
+      SCRIPTS_R2: { get: async () => ({ json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) }) },
+      SPACE_DO: { idFromName: () => "must-not-be-read", get: () => ({ fetch: async () => { throw new Error("unexpected_space_do_call"); } }) } } as never;
+    const headers = { "x-naelao-tenant-id": "tenant-a", "x-naelao-user-id": "owner-a", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-a") };
+    const response = await worker.fetch(new Request(`https://spaces/spaces/space-a/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "template_license_mismatch" });
+  });
+
   it("reports target dependency state and credential setup without installing or granting", () => {
     const result = previewBlueprintActivation(
       blueprint(),
