@@ -171,6 +171,19 @@ describe("assistant telephone safety and lifecycle", () => {
         .bind(draft.id)
         .first<{ status: string }>())!.status
     ).toBe("indeterminate");
+    await expect(
+      f.act("phone-reconcile", {
+        id: draft.id,
+        provider_checked: true,
+        outcome: "not_sent",
+      })
+    ).rejects.toThrow("wait_for_provider");
+    await f.db
+      .prepare(
+        "UPDATE assistant_phone_actions SET updated_at=datetime('now','-3 minutes') WHERE id=?"
+      )
+      .bind(draft.id)
+      .run();
     await f.act("phone-reconcile", {
       id: draft.id,
       provider_checked: true,
@@ -409,5 +422,163 @@ describe("assistant telephone safety and lifecycle", () => {
     } while (before);
     expect(new Set(ids).size).toBe(130);
     expect(ids).toHaveLength(130);
+  });
+  it("serializes SMS verification per number, privately delivers a code and never treats it as an owner command", async () => {
+    const f = await phoneFixture(),
+      app = new Hono<{ Bindings: AgentsEnv }>();
+    registerCommunicationRoutes(app);
+    registerPhoneWebhooks(app);
+    f.db.db.exec(
+      "CREATE TABLE website_connections(id TEXT,tenant_id TEXT,space_id TEXT,owner_user_id TEXT,project_id TEXT,origins_json TEXT,status TEXT); INSERT INTO website_connections VALUES('website','tenant','space','user',NULL,'[\"https://example.com\"]','active'); INSERT INTO website_connections VALUES('website2','tenant','space','user',NULL,'[\"https://elsewhere.com\"]','active');"
+    );
+    const headers = {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": "tenant",
+      "x-naelao-user-id": "user",
+      "x-naelao-role": "product_end_user",
+      "x-naelao-internal-token": await mintInternalToken("secret", "tenant"),
+    };
+    const begin = (connection = "website") =>
+      app.request(
+        "/internal/assistant-communications",
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            spaceId: "space",
+            action: "verification-begin",
+            transport: "sms",
+            kind: "code",
+            connection_id: connection,
+            run_id: "run",
+            sender_addresses: [other],
+          }),
+        },
+        f.env
+      );
+    expect((await begin()).status).toBe(403);
+    await f.act("phone-policy", {
+      policy: { ...defaultPhonePolicy, allowWebsiteVerification: true },
+    });
+    const first = await begin();
+    expect(first.status).toBe(201);
+    const wait = (await first.json()) as { id: string; phone_number: string };
+    expect(wait.phone_number).toBe(number);
+    expect((await begin("website2")).status).toBe(409);
+    await f.db
+      .prepare(
+        "INSERT INTO assistant_communication_controllers(identity_id,user_id,channel,address,verified_at) VALUES(?,'user','phone',?,datetime('now'))"
+      )
+      .bind(f.identity.id, other)
+      .run();
+    const sid = "SM" + "f".repeat(32),
+      path = `/assistant-phone/twilio/${f.binding.id}/sms`,
+      params = {
+        AccountSid: account,
+        MessageSid: sid,
+        From: other,
+        To: number,
+        Body: "Your verification code is 654321",
+        NumMedia: "0",
+      };
+    const signature = getExpectedTwilioSignature(
+      token,
+      "https://phone.example.com" + path,
+      params
+    );
+    expect(
+      (
+        await app.request(
+          path,
+          {
+            method: "POST",
+            headers: {
+              "x-twilio-signature": signature,
+              "content-type": "application/x-www-form-urlencoded",
+            },
+            body: new URLSearchParams(params).toString(),
+          },
+          f.env
+        )
+      ).status
+    ).toBe(200);
+    const visible = await f.act("phone-event", { id: sid }, false, true);
+    expect(JSON.stringify(visible)).not.toContain("654321");
+    expect(JSON.stringify(await f.act("phone-event", { id: sid }))).toContain(
+      "654321"
+    );
+    expect(
+      (await f.db
+        .prepare("SELECT COUNT(*) n FROM assistant_communication_commands")
+        .first<{ n: number }>())!.n
+    ).toBe(0);
+    const { consumeVerification } = await import("./verification.js");
+    const browser = {
+      tenantId: "tenant",
+      spaceId: "space",
+      actorId: "user",
+      agentId: "worker",
+      runId: "run",
+      sessionId: "browser",
+      connectionId: "website",
+      expiresAt: Date.now() + 60000,
+      maxTier: 5 as const,
+      authorizedOrigins: ["https://example.com"],
+      authorizedActions: ["type" as const],
+    };
+    await expect(
+      consumeVerification(
+        f.env,
+        { ...browser, connectionId: "website2" },
+        wait.id,
+        "action",
+        "code"
+      )
+    ).rejects.toThrow();
+    expect(
+      await consumeVerification(f.env, browser, wait.id, "action", "code")
+    ).toBe("654321");
+    await expect(
+      consumeVerification(f.env, browser, wait.id, "again", "code")
+    ).rejects.toThrow();
+    expect([...f.objects.values()].join("")).not.toContain("654321");
+  });
+  it("withholds code-like SMS from workers even without an active verification wait", async () => {
+    const f = await phoneFixture(),
+      app = new Hono<{ Bindings: AgentsEnv }>();
+    registerPhoneWebhooks(app);
+    const sid = "SM" + "1".repeat(32),
+      path = `/assistant-phone/twilio/${f.binding.id}/sms`,
+      params = {
+        AccountSid: account,
+        MessageSid: sid,
+        From: other,
+        To: number,
+        Body: "Login code: 123456",
+        NumMedia: "0",
+      };
+    const signature = getExpectedTwilioSignature(
+      token,
+      "https://phone.example.com" + path,
+      params
+    );
+    await app.request(
+      path,
+      {
+        method: "POST",
+        headers: {
+          "x-twilio-signature": signature,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams(params).toString(),
+      },
+      f.env
+    );
+    expect(
+      JSON.stringify(await f.act("phone-event", { id: sid }, false, true))
+    ).not.toContain("123456");
+    expect(JSON.stringify(await f.act("phone-event", { id: sid }))).toContain(
+      "123456"
+    );
   });
 });

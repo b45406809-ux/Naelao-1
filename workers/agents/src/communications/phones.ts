@@ -26,6 +26,7 @@ import {
 } from "./phone-provider.js";
 
 export interface AssistantPhonePolicy {
+  allowWebsiteVerification?: boolean;
   maxDailyActions: number;
   maxDailyInboundMessages: number;
   maxDailyInboundCalls: number;
@@ -35,6 +36,7 @@ export interface AssistantPhonePolicy {
   transferTo: string | null;
 }
 export const defaultPhonePolicy: AssistantPhonePolicy = {
+  allowWebsiteVerification: false,
   maxDailyActions: 20,
   maxDailyInboundMessages: 100,
   maxDailyInboundCalls: 20,
@@ -70,7 +72,13 @@ export function validatePhonePolicy(value: unknown): AssistantPhonePolicy {
       (typeof p.transferTo !== "string" || !isE164(p.transferTo)))
   )
     throw new Error("invalid_phone_policy");
+  if (
+    p.allowWebsiteVerification !== undefined &&
+    typeof p.allowWebsiteVerification !== "boolean"
+  )
+    throw new Error("invalid_phone_policy");
   return {
+    allowWebsiteVerification: p.allowWebsiteVerification === true,
     maxDailyActions: p.maxDailyActions,
     maxDailyInboundMessages: p.maxDailyInboundMessages,
     maxDailyInboundCalls: p.maxDailyInboundCalls,
@@ -280,12 +288,19 @@ export async function handlePhoneAction(
       .bind(String(body.id), binding?.id ?? "")
       .first<{ body_key: string | null }>();
     if (!event) throw new Error("phone_event_not_found");
+    const content = event.body_key
+      ? await readBody(env, identity, String(body.id), event.body_key)
+      : null;
+    if (!content) return { body: null };
+    const { private_text, private_actor_id, ...visible } = content;
     return {
-      body: event.body_key
-        ? await readBody(env, identity, String(body.id), event.body_key)
-        : null,
+      body:
+        !agent && private_actor_id === scope.userId
+          ? { ...visible, text: private_text }
+          : visible,
     };
   }
+
   const payer =
     binding?.payer ?? (body.payer === "managed" ? "managed" : "byo");
   const credentials = await resolvePhoneCredentials(env, identity, payer);
@@ -661,6 +676,7 @@ export async function handlePhoneAction(
       body_key: string;
       status: string;
       provider_sid: string | null;
+      updated_at: string;
     }>();
   if (!row) throw new Error("phone_action_not_found");
   if (action === "phone-approve") {
@@ -683,6 +699,15 @@ export async function handlePhoneAction(
       throw new Error("provider_reconciliation_confirmation_required");
     if (!["sending", "indeterminate"].includes(row.status))
       throw new Error("phone_action_not_indeterminate");
+    if (body.outcome === "not_sent") {
+      const at = Date.parse(
+        row.updated_at.includes("T")
+          ? row.updated_at
+          : row.updated_at.replace(" ", "T") + "Z"
+      );
+      if (!Number.isFinite(at) || Date.now() - at < 120000)
+        throw new Error("phone_reconciliation_wait_for_provider");
+    }
     const sid = String(body.provider_sid ?? "");
     if (body.outcome === "sent") {
       if (

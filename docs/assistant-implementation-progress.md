@@ -2,12 +2,12 @@
 
 User-approved sequence; no live provider credentials are configured in this environment.
 
-- [ ] Channel preferences, template defaults, onboarding and runtime enforcement.
-- [ ] Persistent assistant email, inbox/drafts/send, owner command authorization.
-- [ ] Scoped verification waits and browser delivery.
+- [ ] Channel preferences/defaults/onboarding: settings and outgoing gates implemented; legacy channel ingress still open.
+- [x] Persistent Cloudflare assistant email, inbox/drafts/send and owner command authorization.
+- [x] Scoped email/SMS verification waits and private single-use browser delivery.
 - [ ] Optional BYO/managed phone, calls/SMS/MMS and lifecycle billing.
 - [ ] Browser/video demonstration learning, validation and schedules.
-- [ ] Existing model pool capability and live-price validation.
+- [x] Existing model pool capability and live-price validation.
 - [ ] Cross-scope tests, production build checks and live provider acceptance.
 
 Every completed step is committed to matching work and Mcbt5s-Backup-2 remote heads.
@@ -21,7 +21,7 @@ Verified SDK/blueprint tests (6), Spaces/Agents/Shell type checks and whitespace
 Next: persistent generic assistant identities, email inbox/drafts/sending, then verification.
 Existing external channel ingress still needs integration with effective channel settings.
 
-## Step 2 — mailbox and verification implementation (validation in progress)
+## Step 2 — mailbox and email verification implementation
 
 Added migration 0130 for canonical Space-user / shared Project assistant identities, encrypted
 inboxes and attachments, pagination, drafts, recipient-scoped standing send policy, verified
@@ -116,3 +116,54 @@ silently seeded no balance; fixtures now seed the actual DO directly without res
 Fresh tests: 40 passed, including 30 concurrent repeated debit requests charging only once,
 malformed requests and cross-tenant mutation rejection. Spaces type check passed. This does not
 activate managed carrier resale or introduce a wallet.
+
+## Step 7 — private SMS website verification
+
+Migration 0132 adds SMS transport to task-bound verification waits. Phone verification requires an
+active SMS-capable binding, phone-channel availability, explicit owner opt-in, a website connection
+owned by that same actor in the exact workspace, and an exact sender allowlist. A partial unique
+index serializes pending verification across websites sharing one number; ambiguous/expired codes
+never become a successful verification. The existing single-use browser fill path consumes codes
+only for the matching run/actor/account, with current channel and binding policy checked again.
+Worker inbox reads redact both matched verification messages and code-like unsolicited messages;
+the authenticated owning human can review originals. They never become pending owner commands.
+Added phone.verification tools and an opt-in control. Focused regression tests passed (40), and
+Agents/Shell type checks passed. No real SMS was sent or received. Phone carrier acceptance for
+individual websites remains provider/site-specific.
+
+
+## Full Agents suite and integration follow-up
+
+Ran all 168 Agents test files: initially 796 passed / 19 failed. Re-ran the six failing files in
+an isolated checkout of pre-change commit 38a2ddda: the same 19 tests failed there. They reference
+removed curated personas/templates, legacy attachment routes, earlier prompt layers and obsolete
+worker groups. Added explicit communication and demonstration tool bundles to System One's
+selection, and the default assistant profile now actually includes their built-ins. Custom workers
+still receive only configured tools. Updated the worker-group regression to assert the previously
+removed customer/foundry tools are not granted, while checking the new related tool bundles.
+Focused combined tests now pass (85). The other pre-existing failures remain open; no removed
+business functionality was restored to satisfy stale expectations.
+
+Also hardened late UI results across assistant/Space changes: inbox reads and pagination,
+owner-command review, website discovery and recording-save results cannot populate a newly
+selected scope. Added carrier receipt/number reconciliation controls. An uncertain phone action
+still requires provider verification and a new approval before retrying.
+
+Remaining implementation is explicit: managed phone billing/renewal and spending settlement;
+interactive planner-backed telephone conversations; inbound media retrieval and outbound MMS;
+production multimodal video analysis with normal metering, workflow scheduling/reconciliation;
+optional AgentMail provider wiring; email attachments/downloads and configured email event rules;
+full legacy-channel ingress policy gating; and live provider/deployment acceptance. Offline
+checks do not certify these remaining capabilities or a production deployment.
+
+Final full-suite rerun: 799 passed, 17 pre-existing failures across five files (816 tests total).
+The pre-change isolated checkout reproduced all 19 original failures; the worker-group assertions
+are now green. Final Agents/Shell type checks and the production Agents Worker dry-run passed.
+No live deployment, carrier call/message, or provider inference was performed.
+
+Final retry review also bound demonstration replay journals to the durable task/root invocation,
+skill digest, website connection and declared parameter values (hashed, never stored as literals).
+Different inputs in one task no longer reuse an unrelated completion; the same invocation retried
+under a new run attempt cannot blindly repeat an interrupted replay. Focused phone/learning tests
+passed (20) after this correction. Early negative carrier reconciliation is held for two minutes
+to avoid racing an in-flight provider request; a positive receipt is verified against the account.

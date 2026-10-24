@@ -62,17 +62,33 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
   },
   {
     capability: "external_integrations",
-    description:
-      "Use configured MCP connectors and their authorized tools.",
+    description: "Use configured MCP connectors and their authorized tools.",
     tools: ["mcp-connector"],
     skills: [],
     match:
       /extension|connector|mcp|third.party|external service|integration|email|inbox|send mail/i,
   },
   {
-    capability: "notifications",
+    capability: "assistant_communications",
     description:
-      "Send user-approved notifications and status updates.",
+      "Use the current assistant’s scoped email or optional phone, private website verification, inboxes and approved outgoing drafts. Human controls govern pairing, provisioning and enablement.",
+    tools: ["assistant-mail", "assistant-phone", "browser-use"],
+    skills: [],
+    match:
+      /email|inbox|mailbox|send mail|phone|telephone|sms|mms|voicemail|verification|sign.?up/i,
+  },
+  {
+    capability: "browser_demonstration_learning",
+    description:
+      "Review private browser demonstration skills, test semantic workflows through current browser grants and replay explicitly enabled versions.",
+    tools: ["browser-demonstrations", "browser-use"],
+    skills: [],
+    match:
+      /demonstrat|learn.*workflow|learned browser|replay|record.*skill|test.*skill|skill\.demo/i,
+  },
+  {
+    capability: "notifications",
+    description: "Send user-approved notifications and status updates.",
     tools: ["notifications"],
     skills: [],
     match: /notify|notification|reply|message|status update/i,
@@ -99,11 +115,13 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
     description: "Browse websites and use authorized visual computer controls.",
     tools: ["browser-use", "computer-use"],
     skills: [],
-    match: /browser|website|web page|click|navigate|computer|screen|visual|sign.?in|log.?in|website account/i,
+    match:
+      /browser|website|web page|click|navigate|computer|screen|visual|sign.?in|log.?in|website account/i,
   },
   {
     capability: "language_services",
-    description: "Detect, translate, and maintain terminology across languages.",
+    description:
+      "Detect, translate, and maintain terminology across languages.",
     tools: ["language-detection", "language-glossary", "language-translation"],
     skills: [],
     match: /language|translate|translation|locali[sz]e|glossary|terminology/i,
@@ -163,7 +181,9 @@ export function prioritizeWorkerSkillNames(
   limit = 100
 ): string[] {
   const tokens = taskTokens(task);
-  const safeLimit = Number.isSafeInteger(limit) ? Math.max(0, Math.min(500, limit)) : 100;
+  const safeLimit = Number.isSafeInteger(limit)
+    ? Math.max(0, Math.min(500, limit))
+    : 100;
   return [...new Set(names)]
     .filter((name) => /^[a-zA-Z0-9._-]{1,128}$/.test(name))
     .map((name) => {
@@ -275,7 +295,8 @@ export async function selectDefaultWorkerCapabilities(input: {
       if (
         !decision ||
         !Array.isArray(decision.capabilities) ||
-        (decision.provider !== "deterministic" && decision.provider !== "openrouter")
+        (decision.provider !== "deterministic" &&
+          decision.provider !== "openrouter")
       ) {
         decisionUnavailable = true;
       } else {

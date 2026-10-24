@@ -45,10 +45,13 @@ export function WebsiteConnections({
     [skillName, setSkillName] = React.useState("");
   const generation = React.useRef(0);
   const refresh = React.useCallback(async () => {
+    const version = generation.current;
     try {
-      setItems(await listWebsiteConnections(spaceId, session));
+      const result = await listWebsiteConnections(spaceId, session);
+      if (version === generation.current) setItems(result);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load websites");
+      if (version === generation.current)
+        setError(e instanceof Error ? e.message : "Could not load websites");
     }
   }, [spaceId, session]);
   React.useEffect(() => {
@@ -61,9 +64,14 @@ export function WebsiteConnections({
     setValue("");
     setItems([]);
     void refresh();
+    const version = generation.current;
     void listProjects(spaceId, session)
-      .then(setProjects)
-      .catch(() => setProjects([]));
+      .then((result) => {
+        if (version === generation.current) setProjects(result);
+      })
+      .catch(() => {
+        if (version === generation.current) setProjects([]);
+      });
     return () => {
       generation.current++;
     };
@@ -163,6 +171,7 @@ export function WebsiteConnections({
   }
   async function create(e: React.FormEvent) {
     e.preventDefault();
+    const version = generation.current;
     setBusy(true);
     setError("");
     try {
@@ -179,17 +188,20 @@ export function WebsiteConnections({
           .map((x) => x.trim())
           .filter(Boolean),
       });
+      if (version !== generation.current) return;
       setName("");
       setUrl("");
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not connect website");
+      if (version === generation.current)
+        setError(e instanceof Error ? e.message : "Could not connect website");
     } finally {
-      setBusy(false);
+      if (version === generation.current) setBusy(false);
     }
   }
   async function saveDemonstration() {
     if (!active || !observation) return;
+    const version = generation.current;
     const expected = observation.elements.find(
       (e) => e.handle === field && e.enabled
     );
@@ -224,15 +236,17 @@ export function WebsiteConnections({
         },
         true
       );
+      if (version !== generation.current) return;
       setRecording(false);
       setRecorded([]);
       setSkillName("");
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Could not save the demonstration"
-      );
+      if (version === generation.current)
+        setError(
+          e instanceof Error ? e.message : "Could not save the demonstration"
+        );
     } finally {
-      setBusy(false);
+      if (version === generation.current) setBusy(false);
     }
   }
   const selected = observation?.elements.find((e) => e.handle === field);

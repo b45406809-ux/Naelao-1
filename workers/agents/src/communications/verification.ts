@@ -1,7 +1,11 @@
 import type { AgentsEnv } from "../index.js";
 import type { ParsedCloudflareEmail } from "../channels/cloudflare-email.js";
 import { hashEmailAddress } from "../channels/cloudflare-email.js";
-import { sealCommunication, type CommunicationIdentity } from "./core.js";
+import {
+  channelPreferences,
+  sealCommunication,
+  type CommunicationIdentity,
+} from "./core.js";
 export async function receiveVerification(
   env: AgentsEnv,
   identity: CommunicationIdentity,
@@ -10,7 +14,7 @@ export async function receiveVerification(
   messageId: string
 ): Promise<boolean> {
   const wait = await env.PLATFORM_DB.prepare(
-    "SELECT id,kind,sender_hosts_json,origins_json,status FROM assistant_verification_waits WHERE address_hash=? AND identity_id=? AND expires_at>? ORDER BY created_at DESC LIMIT 1"
+    "SELECT id,kind,sender_hosts_json,origins_json,status FROM assistant_verification_waits WHERE transport='email' AND address_hash=? AND identity_id=? AND expires_at>? ORDER BY created_at DESC LIMIT 1"
   )
     .bind(
       await hashEmailAddress(recipient),
@@ -71,6 +75,52 @@ export async function receiveVerification(
   return true;
 }
 
+/** A single number cannot route replies by alias, so one pending website at a time owns it. */
+export async function receiveSmsVerification(
+  env: AgentsEnv,
+  identity: CommunicationIdentity,
+  bindingId: string,
+  sender: string,
+  text: string,
+  messageId: string
+): Promise<{ actorId: string } | null> {
+  const wait = await env.PLATFORM_DB.prepare(
+    "SELECT id,kind,actor_id,status,sender_hosts_json FROM assistant_verification_waits WHERE identity_id=? AND phone_binding_id=? AND transport='sms' AND status IN ('waiting','received') AND expires_at>? LIMIT 1"
+  )
+    .bind(identity.id, bindingId, new Date().toISOString())
+    .first<{
+      id: string;
+      kind: string;
+      actor_id: string;
+      status: string;
+      sender_hosts_json: string;
+    }>();
+  if (
+    !wait ||
+    !(JSON.parse(wait.sender_hosts_json) as string[]).includes(
+      sender.toLowerCase()
+    )
+  )
+    return null;
+  if (wait.status === "received") return { actorId: wait.actor_id };
+  const codes = [...new Set(text.match(/(?<!\d)\d{4,8}(?!\d)/g) ?? [])];
+  const envelope =
+    codes.length === 1
+      ? await sealCommunication(env, identity, wait.id, { secret: codes[0] })
+      : null;
+  await env.PLATFORM_DB.prepare(
+    "UPDATE assistant_verification_waits SET status=?,secret_json=?,message_id=? WHERE id=? AND status='waiting'"
+  )
+    .bind(
+      envelope ? "received" : "ambiguous",
+      envelope ? JSON.stringify(envelope) : null,
+      messageId,
+      wait.id
+    )
+    .run();
+  return { actorId: wait.actor_id };
+}
+
 export async function consumeVerification(
   env: AgentsEnv,
   scope: import("@naelao/agent-sdk").BrowserRuntimeScope,
@@ -102,6 +152,8 @@ export async function consumeVerification(
       secret_json: string | null;
       status: string;
       kind: string;
+      transport: string;
+      phone_binding_id: string | null;
     }>();
   if (
     !wait ||
@@ -110,6 +162,28 @@ export async function consumeVerification(
     wait.kind !== kind
   )
     throw new Error("verification_not_ready_or_consumed");
+  const preferences = await channelPreferences(env, {
+    tenantId: scope.tenantId,
+    spaceId: scope.spaceId,
+    userId: scope.actorId,
+    role: "product_end_user",
+    ...(scope.projectId ? { projectId: scope.projectId } : {}),
+  });
+  if (!preferences.enabled[wait.transport === "sms" ? "phone" : "email"])
+    throw new Error("verification_channel_disabled");
+  if (wait.transport === "sms") {
+    const phone = await env.PLATFORM_DB.prepare(
+      "SELECT status,policy_json FROM assistant_phone_bindings WHERE id=? AND identity_id=?"
+    )
+      .bind(wait.phone_binding_id, wait.identity_id)
+      .first<{ status: string; policy_json: string }>();
+    if (
+      !phone ||
+      phone.status !== "active" ||
+      JSON.parse(phone.policy_json).allowWebsiteVerification !== true
+    )
+      throw new Error("phone_verification_no_longer_authorized");
+  }
   const { openCommunication } = await import("./core.js");
   const identity = await env.PLATFORM_DB.prepare(
     "SELECT * FROM assistant_communication_identities WHERE id=? AND status='active'"

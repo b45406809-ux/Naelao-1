@@ -257,6 +257,11 @@ describe("demonstration learning lifecycle", () => {
     const count = run.mock.calls.length;
     await browserDemonstrations.operations["skill.demo.run"]!(args, ctx);
     expect(run).toHaveBeenCalledTimes(count);
+    await browserDemonstrations.operations["skill.demo.run"]!(
+      { ...args, values: { query: "different request" } },
+      ctx
+    );
+    expect(run.mock.calls.length).toBeGreaterThan(count);
   });
   it("never calls a failed test verified or blindly repeats an interrupted replay", async () => {
     const f = setup();
@@ -278,6 +283,14 @@ describe("demonstration learning lifecycle", () => {
     ).rejects.toThrow("reconciliation_required");
     expect(run).toHaveBeenCalledTimes(calls);
     expect((await f.store.read("search"))!.skill.status).toBe("draft");
+    const retry = {
+      ...ctx,
+      env: { ...f.env, rootRunId: "run-1", runId: "run-1:retry" },
+    } as PrebuiltOpContext;
+    await expect(
+      browserDemonstrations.operations["skill.demo.test"]!(args, retry)
+    ).rejects.toThrow("reconciliation_required");
+    expect(run).toHaveBeenCalledTimes(calls);
   });
   it("detects tampering and bounds concurrent draft creation", async () => {
     const f = setup(),

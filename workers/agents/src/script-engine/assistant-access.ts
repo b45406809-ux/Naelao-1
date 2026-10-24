@@ -46,6 +46,9 @@ export type AssistantEffectiveRole = "owner" | "editor" | "viewer";
  */
 export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
   "runtime.list", "runtime.find",
+  "mail.identity", "mail.inbox", "mail.read",
+  "phone.status", "phone.inbox", "phone.read", "phone.actions",
+  "skill.demo.list", "skill.demo.read",
   // r2-workspace (bare op names)
   "read_file",
   "list_directory",

@@ -8,6 +8,7 @@ interface Phone {
   payer: string;
   capabilities: Record<string, boolean>;
   policy: {
+    allowWebsiteVerification?: boolean;
     maxDailyActions: number;
     maxDailyInboundMessages: number;
     maxDailyInboundCalls: number;
@@ -55,6 +56,7 @@ export function AssistantPhonePanel({
     [events, setEvents] = React.useState<Row[]>([]),
     [content, setContent] = React.useState(""),
     [transfer, setTransfer] = React.useState("");
+  const [receipt, setReceipt] = React.useState("");
   const generation = React.useRef(0);
   const call = React.useCallback(
     <T,>(action: string, args: Record<string, unknown> = {}, write = false) =>
@@ -93,6 +95,7 @@ export function AssistantPhonePanel({
     setState(null);
     setQuote(null);
     setSecret("");
+    setReceipt("");
     setAccount("");
     setSid("");
     setTo("");
@@ -255,6 +258,44 @@ export function AssistantPhonePanel({
         </fieldset>
       ) : (
         <>
+          {["configuring", "indeterminate", "failed"].includes(
+            state.phone.status
+          ) && (
+            <fieldset disabled={busy}>
+              <legend>Reconcile number setup</legend>
+              <p>
+                Check your carrier account before doing anything else. If the
+                number was created and these assistant callbacks are attached,
+                enter its number SID to recover the binding. Do not purchase a
+                second number.
+              </p>
+              <label>
+                Carrier number SID{" "}
+                <input
+                  value={sid}
+                  onChange={(e) => setSid(e.target.value)}
+                  placeholder="PN…"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      "Have you checked that this existing carrier number belongs to this assistant setup?"
+                    )
+                  )
+                    void act("phone-reconcile-number", {
+                      provider_checked: true,
+                      number_sid: sid,
+                    });
+                }}
+              >
+                Verify existing number
+              </button>
+            </fieldset>
+          )}
+
           {state.phone.status === "active" && (
             <>
               <fieldset disabled={busy || !state.enabled}>
@@ -305,6 +346,24 @@ export function AssistantPhonePanel({
               </fieldset>
               <fieldset disabled={busy || !state.enabled}>
                 <legend>Inbound calls</legend>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={
+                      state.phone.policy.allowWebsiteVerification === true
+                    }
+                    onChange={(e) =>
+                      void act("phone-policy", {
+                        policy: {
+                          ...state.phone!.policy,
+                          allowWebsiteVerification: e.target.checked,
+                        },
+                      })
+                    }
+                  />{" "}
+                  Allow this number’s owner to receive task-bound website
+                  verification codes privately
+                </label>
                 <p>
                   Caller ID never authenticates an owner command. Recording and
                   transcription are off until enabled.
@@ -384,6 +443,58 @@ export function AssistantPhonePanel({
               Release number
             </button>
           </p>
+          {actions.some((a) =>
+            ["sending", "indeterminate"].includes(a.status)
+          ) && (
+            <fieldset disabled={busy}>
+              <legend>Reconcile a held action</legend>
+              <label>
+                Carrier call/message SID if submitted{" "}
+                <input
+                  value={receipt}
+                  onChange={(e) => setReceipt(e.target.value)}
+                  placeholder="CA… or SM…"
+                />
+              </label>
+              {actions
+                .filter((a) => ["sending", "indeterminate"].includes(a.status))
+                .map((a) => (
+                  <p key={a.id}>
+                    {a.kind} to {a.recipient}{" "}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void act("phone-reconcile", {
+                          id: a.id,
+                          provider_checked: true,
+                          outcome: "sent",
+                          provider_sid: receipt,
+                        })
+                      }
+                    >
+                      Verify submitted receipt
+                    </button>{" "}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            "Confirm that you checked the carrier account and this action was NOT submitted. A fresh approval will be required before any retry."
+                          )
+                        )
+                          void act("phone-reconcile", {
+                            id: a.id,
+                            provider_checked: true,
+                            outcome: "not_sent",
+                          });
+                      }}
+                    >
+                      Confirmed not submitted
+                    </button>
+                  </p>
+                ))}
+            </fieldset>
+          )}
           <ul>
             {actions.map((a) => (
               <li key={a.id}>

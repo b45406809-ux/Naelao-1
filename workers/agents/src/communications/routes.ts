@@ -231,101 +231,40 @@ async function handle(c: C, agent: boolean) {
     });
 
   if (action === "verification-begin") {
-    const connectionId = String(body.connection_id ?? ""),
-      runId = String(body.run_id ?? "");
-    if (
-      !ID.test(connectionId) ||
-      !ID.test(runId) ||
-      !["code", "link"].includes(String(body.kind))
-    )
-      return c.json({ error_code: "invalid_verification_request" }, 400);
-    const conn = await c.env.PLATFORM_DB.prepare(
-      "SELECT project_id,origins_json FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND status='active'"
-    )
-      .bind(connectionId, tenant, space, user)
-      .first<{ project_id: string | null; origins_json: string }>();
-    if (
-      !conn ||
-      (conn.project_id ?? undefined) !== scope.projectId ||
-      !identity.email_address
-    )
-      return c.json({ error_code: "connection_not_authorized" }, 403);
-    const origins = JSON.parse(conn.origins_json) as string[];
-    const hosts = origins.flatMap((origin) => {
-      const host = new URL(origin).hostname;
-      return host.startsWith("www.") ? [host, host.slice(4)] : [host];
-    });
-    const expected = Array.isArray(body.sender_hosts)
-      ? body.sender_hosts
-      : hosts;
-    if (
-      expected.length > 32 ||
-      expected.some(
-        (host) =>
-          typeof host !== "string" ||
-          !hosts.some((base) => host === base || host.endsWith("." + base))
-      )
-    )
-      return c.json({ error_code: "verification_sender_not_authorized" }, 403);
-    const now = new Date().toISOString();
-    await c.env.PLATFORM_DB.prepare(
-      "UPDATE assistant_verification_waits SET status='expired',secret_json=NULL WHERE identity_id=? AND connection_id=? AND expires_at<=? AND status IN ('waiting','received')"
-    )
-      .bind(identity.id, connectionId, now)
-      .run();
-    const active = await c.env.PLATFORM_DB.prepare(
-      "SELECT id,run_id,expires_at,status FROM assistant_verification_waits WHERE identity_id=? AND connection_id=? AND status IN ('waiting','received')"
-    )
-      .bind(identity.id, connectionId)
-      .first<{
-        id: string;
-        run_id: string;
-        expires_at: string;
-        status: string;
-      }>();
-    if (active && active.run_id !== runId)
-      return c.json({ error_code: "verification_connection_busy" }, 409);
-    const aliasId = (
-      await hashEmailAddress(identity.id + ":" + connectionId)
-    ).slice(0, 32);
-    const address = identity.email_address.replace("@", `+v-${aliasId}@`);
-    await c.env.PLATFORM_DB.prepare(
-      "INSERT OR IGNORE INTO assistant_website_mail_aliases(identity_id,connection_id,address_hash,email_address) VALUES(?,?,?,?)"
-    )
-      .bind(identity.id, connectionId, await hashEmailAddress(address), address)
-      .run();
-    if (active)
-      return c.json({
-        id: active.id,
-        email_address: address,
-        expires_at: active.expires_at,
-        status: active.status,
-      });
-    const id = crypto.randomUUID(),
-      expires = new Date(Date.now() + 10 * 60000).toISOString();
-    await c.env.PLATFORM_DB.prepare(
-      "INSERT INTO assistant_verification_waits(id,identity_id,tenant_id,space_id,project_id,actor_id,run_id,connection_id,kind,address_hash,sender_hosts_json,origins_json,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"
-    )
-      .bind(
-        id,
-        identity.id,
-        tenant,
-        space,
-        scope.projectId ?? null,
-        user,
-        runId,
-        connectionId,
-        body.kind,
-        await hashEmailAddress(address),
-        JSON.stringify(expected),
-        JSON.stringify(origins),
-        expires
-      )
-      .run();
-    return c.json(
-      { id, email_address: address, expires_at: expires, status: "waiting" },
-      201
-    );
+    const connectionId=String(body.connection_id??""),runId=String(body.run_id??""),transport=body.transport??"email";
+    if(!ID.test(connectionId)||!ID.test(runId)||!["email","sms"].includes(String(transport))||!["code","link"].includes(String(body.kind))||transport==="sms"&&body.kind!=="code")return c.json({error_code:"invalid_verification_request"},400);
+    if(!preferences.enabled[transport==="sms"?"phone":"email"])return c.json({error_code:"assistant_channel_disabled"},403);
+    const conn=await c.env.PLATFORM_DB.prepare("SELECT project_id,origins_json FROM website_connections WHERE id=? AND tenant_id=? AND space_id=? AND owner_user_id=? AND status='active'").bind(connectionId,tenant,space,user).first<{project_id:string|null;origins_json:string}>();
+    if(!conn||(conn.project_id??undefined)!==scope.projectId)return c.json({error_code:"connection_not_authorized"},403);
+    const origins=JSON.parse(conn.origins_json) as string[];
+    const hosts=origins.flatMap(origin=>{const h=new URL(origin).hostname;return h.startsWith("www.")?[h,h.slice(4)]:[h];});
+    let expected:unknown[],address:string,phoneId:string|null=null;
+    if(transport==="sms"){
+      const {assistantPhone,validatePhonePolicy}=await import("./phones.js");
+      const phone=await assistantPhone(c.env,identity.id);
+      if(identity.owner_user_id!==user||!phone||phone.status!=="active"||!phone.phone_number||JSON.parse(phone.capabilities_json).sms!==true||!validatePhonePolicy(JSON.parse(phone.policy_json)).allowWebsiteVerification)return c.json({error_code:"phone_owner_verification_opt_in_required"},403);
+      expected=Array.isArray(body.sender_addresses)?body.sender_addresses:[];
+      if(expected.length<1||expected.length>8||expected.some(sender=>typeof sender!=="string"||!/^(?:\+[1-9]\d{7,14}|\d{3,10}|[A-Za-z][A-Za-z0-9_-]{1,31})$/.test(sender)))return c.json({error_code:"verification_exact_sms_senders_required"},400);
+      expected=expected.map(sender=>(sender as string).toLowerCase());address=phone.phone_number;phoneId=phone.id;
+    }else{
+      if(!identity.email_address)return c.json({error_code:"email_not_configured"},409);
+      expected=Array.isArray(body.sender_hosts)?body.sender_hosts:hosts;
+      if(expected.length<1||expected.length>32||expected.some(host=>typeof host!=="string"||!hosts.some(base=>host===base||host.endsWith("."+base))))return c.json({error_code:"verification_sender_not_authorized"},403);
+      const aliasId=(await hashEmailAddress(identity.id+":"+connectionId)).slice(0,32);
+      address=identity.email_address.replace("@",`+v-${aliasId}@`);
+      await c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_website_mail_aliases(identity_id,connection_id,address_hash,email_address) VALUES(?,?,?,?)").bind(identity.id,connectionId,await hashEmailAddress(address),address).run();
+    }
+    const now=new Date().toISOString();
+    await c.env.PLATFORM_DB.prepare("UPDATE assistant_verification_waits SET status='expired',secret_json=NULL WHERE identity_id=? AND expires_at<=? AND status IN ('waiting','received')").bind(identity.id,now).run();
+    const active=await c.env.PLATFORM_DB.prepare("SELECT id,run_id,expires_at,status,transport,phone_binding_id FROM assistant_verification_waits WHERE identity_id=? AND connection_id=? AND status IN ('waiting','received')").bind(identity.id,connectionId).first<{id:string;run_id:string;expires_at:string;status:string;transport:string;phone_binding_id:string|null}>();
+    if(active&&(active.run_id!==runId||active.transport!==transport||active.phone_binding_id!==phoneId))return c.json({error_code:"verification_connection_busy"},409);
+    const recipient=transport==="sms"?{phone_number:address}:{email_address:address};
+    if(active)return c.json({id:active.id,...recipient,expires_at:active.expires_at,status:active.status});
+    const id=crypto.randomUUID(),expires=new Date(Date.now()+10*60000).toISOString();
+    try {
+      await c.env.PLATFORM_DB.prepare("INSERT INTO assistant_verification_waits(id,identity_id,tenant_id,space_id,project_id,actor_id,run_id,connection_id,kind,address_hash,sender_hosts_json,origins_json,expires_at,transport,phone_binding_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(id,identity.id,tenant,space,scope.projectId??null,user,runId,connectionId,body.kind,await hashEmailAddress(address),JSON.stringify(expected),JSON.stringify(origins),expires,transport,phoneId).run();
+    }catch{return c.json({error_code:"verification_connection_or_number_busy"},409);}
+    return c.json({id,...recipient,expires_at:expires,status:"waiting"},201);
   }
   if (action === "verification-status" || action === "verification-cancel") {
     const wait = await c.env.PLATFORM_DB.prepare(

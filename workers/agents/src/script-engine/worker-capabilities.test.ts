@@ -109,23 +109,20 @@ describe("task-filtered default worker capabilities", () => {
       allowRemoteDecision: false,
     });
     expect(result.selectedBundles).toEqual(
-      expect.arrayContaining([
-        "language_services",
-        "customer_intake",
-        "approval_and_policy",
-      ])
+      expect.arrayContaining(["language_services", "approval_and_policy"])
     );
     expect(result.enabledPrebuilts).toEqual(
       expect.arrayContaining([
         "language-detection",
         "language-glossary",
         "language-translation",
-        "foundry-inbox",
         "approvals",
         "plan",
       ])
     );
     expect(result.enabledPrebuilts).not.toContain("code-exec");
+    expect(result.enabledPrebuilts).not.toContain("customer-bot");
+    expect(result.enabledPrebuilts).not.toContain("foundry-inbox");
   });
 
   it("has a worker capability group for every non-planner built-in prebuilt", () => {
@@ -140,13 +137,22 @@ describe("task-filtered default worker capabilities", () => {
   });
 
   it("prioritizes task-matching skill names beyond the bounded metadata scan prefix", () => {
-    const names = Array.from({ length: 150 }, (_, index) => `skill-${String(index).padStart(3, "0")}`);
+    const names = Array.from(
+      { length: 150 },
+      (_, index) => `skill-${String(index).padStart(3, "0")}`
+    );
     names.push("zz-conversation-research");
-    const selected = prioritizeWorkerSkillNames("research the conversation history", names, 100);
+    const selected = prioritizeWorkerSkillNames(
+      "research the conversation history",
+      names,
+      100
+    );
     expect(selected).toHaveLength(100);
     expect(selected[0]).toBe("zz-conversation-research");
     expect(selected).not.toContain("unsafe/skill");
-    expect(prioritizeWorkerSkillNames("task", ["../escape", "valid-skill"], 100)).toEqual(["valid-skill"]);
+    expect(
+      prioritizeWorkerSkillNames("task", ["../escape", "valid-skill"], 100)
+    ).toEqual(["valid-skill"]);
   });
 
   it("treats malformed decision payloads as unavailable without granting tools", async () => {
@@ -157,7 +163,10 @@ describe("task-filtered default worker capabilities", () => {
       skills: [],
       decision: {
         classifyWorkerCapabilities: async () =>
-          ({ capabilities: [null, "tool:code-exec"], provider: "unknown" }) as never,
+          ({
+            capabilities: [null, "tool:code-exec"],
+            provider: "unknown",
+          }) as never,
       } as never,
       allowRemoteDecision: true,
     });
@@ -187,5 +196,35 @@ describe("task-filtered default worker capabilities", () => {
     });
     expect(result.enabledPrebuilts).toEqual([]);
     expect(result.selectedSkills).toEqual([]);
+  });
+  it("routes assistant inbox/verification and demonstration tasks only through configured related tools", async () => {
+    const selected = await selectDefaultWorkerCapabilities({
+      task: "Test a learned browser demonstration and check email verification",
+      enabledPrebuilts: [
+        "assistant-mail",
+        "assistant-phone",
+        "browser-use",
+        "browser-demonstrations",
+        "plan",
+      ],
+      skills: [],
+      allowRemoteDecision: false,
+    });
+    expect(selected.enabledPrebuilts).toEqual(
+      expect.arrayContaining([
+        "assistant-mail",
+        "assistant-phone",
+        "browser-use",
+        "browser-demonstrations",
+      ])
+    );
+    const restricted = await selectDefaultWorkerCapabilities({
+      task: "Check email verification and replay a browser demonstration",
+      enabledPrebuilts: ["assistant-mail", "plan"],
+      skills: [],
+      allowRemoteDecision: false,
+    });
+    expect(restricted.enabledPrebuilts).not.toContain("assistant-phone");
+    expect(restricted.enabledPrebuilts).not.toContain("browser-demonstrations");
   });
 });

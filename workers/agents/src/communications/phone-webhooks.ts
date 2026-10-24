@@ -257,8 +257,31 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
         ).slice(0, 120),
       });
     }
+    const incomingText = (form.get("Body") ?? "").slice(0, 16000);
+    const verification = policy.allowWebsiteVerification
+      ? await (await import("./verification.js")).receiveSmsVerification(
+          c.env,
+          identity,
+          binding.id,
+          from,
+          incomingText,
+          sid
+        )
+      : null;
+    const privateCode =
+      verification !== null ||
+      (/\b(?:code|pin|passcode|otp|verification)\b/i.test(incomingText) &&
+        /(?<!\d)\d{4,8}(?!\d)/.test(incomingText));
     const key = await storeBody(c.env, identity, sid, {
-      text: (form.get("Body") ?? "").slice(0, 16000),
+      text: privateCode
+        ? "[private account verification message]"
+        : incomingText,
+      ...(privateCode
+        ? {
+            private_text: incomingText,
+            private_actor_id: verification?.actorId ?? identity.owner_user_id,
+          }
+        : {}),
       media,
       untrusted: true,
     });
@@ -273,7 +296,7 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
     )
       .bind(identity.id, from)
       .first<{ user_id: string }>();
-    if (controller) {
+    if (controller && !privateCode) {
       await c.env.PLATFORM_DB.prepare(
         "INSERT OR IGNORE INTO assistant_communication_messages(id,identity_id,provider_message_id,direction,channel,sender,recipient,status,body_key) VALUES(?,?,?,'inbound','sms',?,?,'received',?)"
       )

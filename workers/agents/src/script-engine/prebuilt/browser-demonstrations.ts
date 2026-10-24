@@ -22,11 +22,37 @@ async function execute(
   )
     throw new Error("demonstration_not_enabled");
   if (!c.env.runId) throw new Error("demonstration_run_identity_required");
+  const connectionId = String(a.connection_id ?? "");
+  const values =
+    a.values && typeof a.values === "object" && !Array.isArray(a.values)
+      ? (a.values as Record<string, unknown>)
+      : {};
+  const parameters = [
+    ...new Set(
+      current.skill.steps.flatMap((step) =>
+        step.type === "type" || step.type === "select" ? [step.parameter] : []
+      )
+    ),
+  ].sort();
+  if (
+    !connectionId ||
+    parameters.some(
+      (key) =>
+        typeof values[key] !== "string" || (values[key] as string).length > 8192
+    )
+  )
+    throw new Error("demonstration_parameter_missing_or_too_large");
+  const invocationIdentity = JSON.stringify([
+    c.env.taskId ?? c.env.rootRunId ?? c.env.runId,
+    current.skill.digest,
+    connectionId,
+    parameters.map((key) => [key, values[key]]),
+  ]);
   const runHash = Array.from(
     new Uint8Array(
       await crypto.subtle.digest(
         "SHA-256",
-        new TextEncoder().encode(c.env.runId)
+        new TextEncoder().encode(invocationIdentity)
       )
     ),
     (b) => b.toString(16).padStart(2, "0")
@@ -35,11 +61,6 @@ async function execute(
   const claim = await library.claimReplay(name, replayId);
   if ("result" in claim) return claim.result;
   try {
-    const connectionId = String(a.connection_id ?? "");
-    const values =
-      a.values && typeof a.values === "object" && !Array.isArray(a.values)
-        ? (a.values as Record<string, unknown>)
-        : {};
     const result = await replayBrowserDemonstration(
       current.skill,
       { connectionId, values, replayId: replayId.slice(0, 100) },

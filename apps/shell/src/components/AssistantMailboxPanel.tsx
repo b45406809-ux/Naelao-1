@@ -43,6 +43,18 @@ export function AssistantMailboxPanel({
     [spaceId, session, scope]
   );
   const generation = React.useRef(0);
+  const actionVersion = React.useRef(0);
+  const pendingPages = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    actionVersion.current++;
+    setBusy(false);
+    setTo("");
+    setSubject("");
+    setText("");
+    setBody("");
+    setToken("");
+    setQuery("");
+  }, [spaceId, session, project]);
   const refresh = React.useCallback(async () => {
     const version = ++generation.current;
     setError("");
@@ -80,10 +92,13 @@ export function AssistantMailboxPanel({
     };
   }, [spaceId, session, scope, refresh]);
   async function act(action: string, args: Record<string, unknown> = {}) {
+    const version = generation.current,
+      requestId = ++actionVersion.current;
     setBusy(true);
     setError("");
     try {
       const result = await call<Record<string, unknown>>(action, args, true);
+      if (version !== generation.current) return;
       if (action === "command-token")
         setToken(
           String(result.subject_marker) +
@@ -92,9 +107,44 @@ export function AssistantMailboxPanel({
         );
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Operation failed");
+      if (version === generation.current)
+        setError(e instanceof Error ? e.message : "Operation failed");
     } finally {
-      setBusy(false);
+      if (requestId === actionVersion.current) setBusy(false);
+    }
+  }
+  async function readMessage(id: string) {
+    const version = generation.current;
+    try {
+      const r = await call<{ body: { text: string } }>("message", { id });
+      if (version === generation.current) setBody(r.body.text);
+    } catch (e) {
+      if (version === generation.current)
+        setError(e instanceof Error ? e.message : "Message unavailable");
+    }
+  }
+  async function loadMore() {
+    if (!cursor) return;
+    const version = generation.current,
+      key = version + ":" + cursor;
+    if (pendingPages.current.has(key)) return;
+    pendingPages.current.add(key);
+    try {
+      const r = await call<{
+        data: AssistantMailMessage[];
+        next_cursor: string | null;
+      }>("messages", { cursor, query });
+      if (version !== generation.current) return;
+      setItems((v) => [
+        ...v,
+        ...r.data.filter((item) => !v.some((old) => old.id === item.id)),
+      ]);
+      setCursor(r.next_cursor);
+    } catch (e) {
+      if (version === generation.current)
+        setError(e instanceof Error ? e.message : "Inbox page unavailable");
+    } finally {
+      pendingPages.current.delete(key);
     }
   }
   return (
@@ -157,6 +207,12 @@ export function AssistantMailboxPanel({
               <option value="standing">Standing permissions</option>
             </FormSelect>
             <FormInput
+              key={
+                "recipients:" +
+                mailbox.identity?.id +
+                ":" +
+                mailbox.autonomy.recipients.join(",")
+              }
               aria-label="Standing recipient addresses"
               defaultValue={mailbox.autonomy.recipients.join(", ")}
               onBlur={(e) => {
@@ -175,6 +231,12 @@ export function AssistantMailboxPanel({
             />
             <FormInput
               type="number"
+              key={
+                "limit:" +
+                mailbox.identity?.id +
+                ":" +
+                mailbox.autonomy.dailySendLimit
+              }
               aria-label="Daily email limit"
               min={1}
               max={1000}
@@ -240,14 +302,7 @@ export function AssistantMailboxPanel({
             {" "}
             · {item.sender} → {item.recipient} · {item.status}
           </span>
-          <Button
-            disabled={busy}
-            onClick={() =>
-              void call<{ body: { text: string } }>("message", { id: item.id })
-                .then((r) => setBody(r.body.text))
-                .catch((e) => setError(e.message))
-            }
-          >
+          <Button disabled={busy} onClick={() => void readMessage(item.id)}>
             Read
           </Button>
           {item.status === "draft" && (
@@ -268,29 +323,24 @@ export function AssistantMailboxPanel({
           )}
         </div>
       ))}
-      {cursor && (
-        <Button
-          onClick={() =>
-            void call<{
-              data: AssistantMailMessage[];
-              next_cursor: string | null;
-            }>("messages", { cursor, query }).then((r) => {
-              setItems((v) => [...v, ...r.data]);
-              setCursor(r.next_cursor);
-            })
-          }
-        >
-          Load more
-        </Button>
-      )}
+      {cursor && <Button onClick={() => void loadMore()}>Load more</Button>}
       {body && <pre style={{ whiteSpace: "pre-wrap" }}>{body}</pre>}
       <CommandInbox
+        key={spaceId + ":" + project + ":" + session.endUserId}
         call={call}
         onApprove={(id) => void act("approve-command", { id })}
       />
       {error && <p role="alert">{error}</p>}
-      <AssistantPhonePanel spaceId={spaceId} {...(project ? {projectId:project} : {})} session={session} />
-      <AssistantLearningPanel spaceId={spaceId} {...(project ? {projectId:project} : {})} session={session} />
+      <AssistantPhonePanel
+        spaceId={spaceId}
+        {...(project ? { projectId: project } : {})}
+        session={session}
+      />
+      <AssistantLearningPanel
+        spaceId={spaceId}
+        {...(project ? { projectId: project } : {})}
+        session={session}
+      />
     </section>
   );
 }
