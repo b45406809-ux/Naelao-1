@@ -677,6 +677,8 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/my-spaces$/,
   /^\/spaces\/([^/]+)\/spaces$/,
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/activate$/,
+  /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/activation-preview$/,
+  /^\/spaces\/([^/]+)\/shared-extension-installations\/([^/]+)(?:\/filesystem-grants)?$/,
   // Step 18: the public-within-the-product business directory (all active businesses under this
   // product; safe projection only + an is_mine flag). Identity here (which product's session to
   // verify), authorization there (the route computes is_mine from the caller's own memberships and

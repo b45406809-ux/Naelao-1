@@ -1562,6 +1562,9 @@ export function installSpaceSharedExtension(spaceId: string, extensionId: string
 export function updateSpaceSharedExtensionFilesystemGrants(spaceId: string, installationId: string, session: SessionCredentials, grants: SharedFilesystemGrant[]) {
   return apiFetch<{ instance_id: string; approved_shared_filesystem: SharedFilesystemGrant[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/filesystem-grants`, { method: "PATCH", session, body: JSON.stringify({ grants }) });
 }
+export function removeSpaceSharedExtension(spaceId: string, installationId: string, session: SessionCredentials) {
+  return apiFetch<{ removed: true; instance_id: string }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}`, { method: "DELETE", session });
+}
 export type SpaceExtensionHostCapability = "blueprint.export" | "blueprint.status" | "marketplace.graduate";
 export function callSpaceSharedExtensionOperation(spaceId: string, session: SessionCredentials, capability: SpaceExtensionHostCapability, input: unknown) {
   if (capability === "blueprint.export") return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/export-template`, { method: "POST", session, body: JSON.stringify(input) });
@@ -2330,6 +2333,17 @@ export async function forkSpaceTemplate(listingId: string, session: SessionCrede
 
 export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials): Promise<unknown> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, { method: "POST", session });
+}
+
+export interface SpaceTemplateActivationPreview {
+  ready: boolean; blueprint_id: string; target_space_id: string;
+  dependencies: Array<{ extension_id: string; status: "installed" | "installable" | "unavailable" }>;
+  setup_credentials: Array<{ name: string; description: string; required: boolean }>;
+  blockers: string[]; requires_human_activation: true; installs_or_grants_applied: false;
+  security: { publishable: boolean; blockers?: string[] };
+}
+export function previewSpaceTemplateActivation(spaceId: string, blueprintId: string, session: SessionCredentials): Promise<SpaceTemplateActivationPreview> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activation-preview`, { session, cache: "no-store" });
 }
 
 export interface SpaceAnalytics {

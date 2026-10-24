@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Button, Badge, Card, CardTitle, CardDesc, FormInput, FormSelect, Modal, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
+import { listMySpaces, createSpace, getSpaceAnalytics, listSpaceTemplates, forkSpaceTemplate, activateSpaceTemplate, previewSpaceTemplateActivation, type SpaceTemplateActivationPreview, type SpaceSummary, type SpaceTemplateListing } from "@/lib/api";
 import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
 import { modelLabel } from "@/components/ModelSelector";
 
@@ -42,6 +42,8 @@ export default function SpacesPage() {
   const [creating, setCreating] = React.useState(false);
   const [createError, setCreateError] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
+  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview } | null>(null);
+  const [activatingTemplate, setActivatingTemplate] = React.useState(false);
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
 
   const refresh = React.useCallback(async () => {
@@ -84,7 +86,12 @@ export default function SpacesPage() {
       // spaces have no queue, so activate it now that the owner membership is committed.
       if (fork && created.status === "active") {
         try {
-          await activateSpaceTemplate(created.id, fork.space_type_id, creds);
+          const preview = await previewSpaceTemplateActivation(created.id, fork.space_type_id, creds);
+          setActivationReview({ spaceId: created.id, blueprintId: fork.space_type_id, preview });
+          setCreatedSpaceId(created.id);
+          setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
+          await refresh();
+          return;
         } catch (error) {
           setCreatedSpaceId(created.id);
           setCreateError(`Space created, but the template was not installed: ${error instanceof Error ? error.message : "installation failed"}`);
@@ -105,6 +112,17 @@ export default function SpacesPage() {
     } finally {
       setCreating(false);
     }
+  }
+
+  async function confirmTemplateActivation() {
+    if (!creds || !activationReview || !activationReview.preview.ready || activatingTemplate) return;
+    setActivatingTemplate(true); setCreateError(null);
+    try {
+      await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds);
+      setCreateOpen(false);
+      window.location.assign(`/p/${product.slug}/spaces/${activationReview.spaceId}`);
+    } catch (error) { setCreateError(`Template was not activated: ${error instanceof Error ? error.message : "activation failed"}`); }
+    finally { setActivatingTemplate(false); }
   }
 
   React.useEffect(() => { void refresh(); }, [refresh]);
@@ -141,7 +159,7 @@ export default function SpacesPage() {
           <div className="page-title">Spaces</div>
           <div className="page-subtitle">Your Naelao workspaces.</div>
         </div>
-        <Button onClick={() => { setCreateError(null); setCreatedSpaceId(null); setCreateOpen(true); }}>New Space</Button>
+        <Button onClick={() => { setCreateError(null); setCreatedSpaceId(null); setActivationReview(null); setCreateOpen(true); }}>New Space</Button>
       </div>
 
       {!loading && !listFailed && spaces.length > 0 && (
@@ -236,7 +254,7 @@ export default function SpacesPage() {
       </div>
       {!showAllModels && listModelBenchmarks().length > 6 && <Button variant="secondary" onClick={() => setShowAllModels(true)} style={{ marginTop: 10 }}>Show all {listModelBenchmarks().length} models</Button>}
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Create a Space" footer={createdSpaceId ? <Button onClick={() => window.location.assign(`/p/${product.slug}/spaces/${createdSpaceId}`)}>Open Space</Button> : <><Button variant="secondary" type="button" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={() => void handleCreate()} disabled={creating || !newSpaceName.trim()}>{creating ? "Creating…" : "Create Space"}</Button></>}>
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title={activationReview ? "Review Space Template" : "Create a Space"} footer={activationReview ? <><Button variant="secondary" onClick={() => { setCreateOpen(false); setActivationReview(null); }}>Later</Button><Button onClick={() => void confirmTemplateActivation()} disabled={!activationReview.preview.ready || activatingTemplate}>{activatingTemplate ? "Installing…" : "Approve and install"}</Button></> : createdSpaceId ? <Button onClick={() => window.location.assign(`/p/${product.slug}/spaces/${createdSpaceId}`)}>Open Space</Button> : <><Button variant="secondary" type="button" onClick={() => setCreateOpen(false)}>Cancel</Button><Button onClick={() => void handleCreate()} disabled={creating || !newSpaceName.trim()}>{creating ? "Creating…" : "Create Space"}</Button></>}>
         <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ fontSize: 12 }}>Name<FormInput autoFocus maxLength={100} placeholder="What is this Space for?" value={newSpaceName} onChange={(event) => setNewSpaceName(event.target.value)} required /></label>
           {templates.some((template) => template.price_cents === 0) && (
@@ -247,6 +265,15 @@ export default function SpacesPage() {
           )}
           <p style={{ margin: 0, fontSize: 12, color: "var(--text3)" }}>You can install extensions and configure the Space after it is created.</p>
           {createError && <p role="alert" style={{ margin: 0, fontSize: 12, color: "#dc2626" }}>{createError}</p>}
+          {activationReview && <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, fontSize: 12 }}>
+            <strong>{activationReview.preview.ready ? "Ready for your approval" : "Cannot install yet"}</strong>
+            <p>This preview made no changes and granted no access.</p>
+            <strong>Extensions</strong>
+            {activationReview.preview.dependencies.length ? <ul>{activationReview.preview.dependencies.map(item => <li key={item.extension_id}>{item.extension_id}: {item.status}</li>)}</ul> : <p>None required</p>}
+            <strong>Connections to set up</strong>
+            {activationReview.preview.setup_credentials.length ? <ul>{activationReview.preview.setup_credentials.map(item => <li key={item.name}>{item.name}{item.required ? " (required)" : " (optional)"}: {item.description}</li>)}</ul> : <p>None required</p>}
+            {!activationReview.preview.ready && <p role="alert">{activationReview.preview.blockers.join(", ")}</p>}
+          </div>}
         </form>
       </Modal>
       <Toast toast={toast} />

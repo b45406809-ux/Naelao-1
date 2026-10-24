@@ -2846,9 +2846,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }; }) });
       }
       if (url.pathname === "/extension-installations" && method === "GET") {
-        const rows = queryAll<{ instance_id: string; project_id: string | null; scope: string; status: string; installed_at: string }>(this.ctx.storage.sql as never,
-          "SELECT instance_id,project_id,scope,status,installed_at FROM extension_instances WHERE tenant_id=? AND space_id=? AND extension_id=? AND status='active' ORDER BY installed_at",
-          url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), url.searchParams.get("extension_id"));
+        const extensionId = url.searchParams.get("extension_id") ?? "";
+        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; status: string; installed_at: string }>(this.ctx.storage.sql as never,
+          extensionId === "__all__" ? "SELECT instance_id,extension_id,project_id,scope,status,installed_at FROM extension_instances WHERE tenant_id=? AND space_id=? AND status='active' ORDER BY installed_at"
+            : "SELECT instance_id,extension_id,project_id,scope,status,installed_at FROM extension_instances WHERE tenant_id=? AND space_id=? AND extension_id=? AND status='active' ORDER BY installed_at",
+          ...(extensionId === "__all__" ? [url.searchParams.get("tenant_id"), url.searchParams.get("space_id")] : [url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), extensionId]));
         return Response.json({ installations: rows });
       }
       if (url.pathname === "/project-extension-runtime" && method === "GET") {
@@ -2915,10 +2917,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const tenantId = url.searchParams.get("tenant_id") ?? "";
         const spaceId = url.searchParams.get("space_id") ?? "";
         const projectId = url.searchParams.get("project_id") ?? "";
-        if (!instanceId || !tenantId || !spaceId || !projectId) return Response.json({ error_code: "extension_installation_scope_required" }, { status: 400 });
-        const result = this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now')
-          WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status='active'`,
-        instanceId, tenantId, spaceId, projectId);
+        if (!instanceId || !tenantId || !spaceId) return Response.json({ error_code: "extension_installation_scope_required" }, { status: 400 });
+        const result = projectId
+          ? this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status='active'`, instanceId, tenantId, spaceId, projectId)
+          : this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status='active'`, instanceId, tenantId, spaceId);
         if (result.rowsWritten === 1) execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
         return result.rowsWritten === 1
           ? Response.json({ removed: true, instance_id: instanceId })

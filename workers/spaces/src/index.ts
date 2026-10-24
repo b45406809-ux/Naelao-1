@@ -44,6 +44,7 @@ import { eraseWebsiteConnections } from "./website-connection-erasure.js";
 import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 import { eraseBusinessServiceProviders } from "./business-erasure.js";
 import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "./erasure-request-state.js";
+import { previewBlueprintActivation } from "./blueprint-activation.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -479,6 +480,36 @@ app.post("/internal/spaces/:spaceId/artifact-validation/:action", async c => {
   return forwardToSpaceDO(stub,`/artifact-validation/${action}`,"POST",JSON.stringify({...body,space_id:spaceId}));
 });
 
+app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c => {
+  const identity = getCallerIdentity(c), tenantId = identity.tenantId, spaceId = c.req.param("spaceId");
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  if (!identity.userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
+  if (!await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status='active'").bind(spaceId, tenantId).first()) throw notFound("Space");
+  const stored = await c.env.SCRIPTS_R2?.get(`blueprints/${c.req.param("blueprintId")}.json`);
+  if (!stored) throw notFound("Blueprint");
+  const value = await stored.json<SpaceBlueprint | { blueprint: SpaceBlueprint; conformanceCertificate: ConformanceCertificate }>();
+  if (!("blueprint" in value) || !("conformanceCertificate" in value)) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
+  const blueprint = value.blueprint, artifact = { ...blueprint } as SpaceBlueprint & { securityRating?: unknown };
+  delete artifact.securityRating;
+  if (!await verifyArtifactCertificate(artifact, value.conformanceCertificate, c.env.PLATFORM_SECRET, "state-delta")) return c.json({ error_code: "conformance_certificate_invalid" }, 422);
+  if (value.conformanceCertificate.issuerTenantId !== tenantId) {
+    const fork = await c.env.PLATFORM_DB.prepare(`SELECT f.certificate_json,f.artifact_json FROM marketplace_forks f JOIN marketplace_listings l ON l.id=f.listing_id WHERE f.tenant_id=? AND f.blueprint_id=? AND l.status='published' LIMIT 1`).bind(tenantId, blueprint.id).first<{ certificate_json: string; artifact_json: string }>();
+    if (!fork) return c.json({ error_code: "template_license_required" }, 402);
+    try {
+      const certificate = JSON.parse(fork.certificate_json) as ConformanceCertificate;
+      if (certificate.signature !== value.conformanceCertificate.signature || JSON.stringify(JSON.parse(fork.artifact_json)) !== JSON.stringify(blueprint)) return c.json({ error_code: "template_license_mismatch" }, 403);
+    } catch { return c.json({ error_code: "template_license_mismatch" }, 403); }
+  }
+  const security = evaluateBlueprintSecurity(blueprint);
+  if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const result = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
+  if (!result.ok) return c.json({ error_code: "extension_readiness_unavailable" }, 503);
+  const rows = await result.json<{ installations: Array<{ extension_id?: string; scope?: string }> }>();
+  const preview = previewBlueprintActivation(blueprint, new Set((rows.installations ?? []).filter(row => row.scope === "SPACE_SHARED").map(row => row.extension_id).filter((id): id is string => typeof id === "string")), new Set(Object.keys(DOGFOOD_EXTENSION_BY_ID)));
+  return c.json({ ...preview, blueprint_id: blueprint.id, target_space_id: spaceId, security });
+});
+
 app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const identity = getCallerIdentity(c);
   const tenantId = identity.tenantId;
@@ -529,12 +560,17 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const security = evaluateBlueprintSecurity(blueprint);
   if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
   const targetId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
+  const dependenciesResponse = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
+  if (!dependenciesResponse.ok) return c.json({ error_code: "extension_readiness_unavailable" }, 503);
+  const dependencies = await dependenciesResponse.json<{ installations: Array<{ extension_id?: string; scope?: string }> }>();
+  const readiness = previewBlueprintActivation(blueprint, new Set((dependencies.installations ?? []).filter(row => row.scope === "SPACE_SHARED").map(row => row.extension_id).filter((id): id is string => typeof id === "string")), new Set(Object.keys(DOGFOOD_EXTENSION_BY_ID)));
+  if (!readiness.ready) return c.json({ error_code: "required_extension_unavailable", blockers: readiness.blockers }, 422);
   const response = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/blueprints/instantiate", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint, target_space_id: spaceId }),
   }));
   if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
   for (const extensionId of blueprint.requiredExtensions ?? []) {
-    if (!DOGFOOD_EXTENSION_BY_ID[extensionId]) continue;
+    if (!DOGFOOD_EXTENSION_BY_ID[extensionId] || readiness.dependencies.some(dependency => dependency.extension_id === extensionId && dependency.status === "installed")) continue;
     const installed = await installFirstPartySpaceExtension(c.env, tenantId, spaceId, "naelao-template", extensionId);
     if (!installed.ok) return c.json({ error_code: "required_extension_install_failed", extension_id: extensionId, reason: installed.error }, 503);
   }
@@ -627,6 +663,16 @@ app.patch("/spaces/:spaceId/shared-extension-installations/:instanceId/filesyste
     headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId) },
     body: JSON.stringify({ tenantId: owned.tenantId, spaceId, instanceId: c.req.param("instanceId"), approvedBy: identity.userId ?? "space-admin", grants: body.grants }) }));
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
+});
+
+app.use("/spaces/:spaceId/shared-extension-installations/:instanceId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/spaces/:spaceId/shared-extension-installations/:instanceId", requireBusinessMembership({ DELETE: "admin" }));
+app.delete("/spaces/:spaceId/shared-extension-installations/:instanceId", async c => {
+  const spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const stub = await spaceDoStub(c.env, spaceId, owned.tenantId);
+  return stub.fetch(new Request(`http://space-do/extension-installation?${new URLSearchParams({ instance_id: instanceId, tenant_id: owned.tenantId, space_id: spaceId })}`, { method: "DELETE" }));
 });
 
 // ── PATCH /spaces/:id ───────────────────────────────────────────────────────

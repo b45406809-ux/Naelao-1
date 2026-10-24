@@ -5,7 +5,7 @@ import { Button, Card, CardDesc, CardTitle } from "@naelao/ui";
 import { MicroAppCanvas } from "@/components/viewports/MicroAppCanvas";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, updateSpaceSharedExtensionFilesystemGrants, type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry } from "@/lib/api";
+import { installSpaceSharedExtension, listSpaceSharedExtensionApps, listSpaceSharedExtensionCatalog, removeSpaceSharedExtension, updateSpaceSharedExtensionFilesystemGrants, type SharedFilesystemGrant, type SpaceSharedExtensionApp, type SpaceSharedExtensionCatalogEntry } from "@/lib/api";
 
 /** Generic mount point for every installed Space-shared extension canvas. Product-specific
  * features belong in extension artifacts; the shell only discovers and mounts them. */
@@ -35,6 +35,7 @@ export default function ExtensionsPage() {
   const [selectedGrants, setSelectedGrants] = React.useState<Record<string, SharedFilesystemGrant[]>>({});
   const [editingGrants, setEditingGrants] = React.useState<string | null>(null);
   const [savingGrants, setSavingGrants] = React.useState<string | null>(null);
+  const [removing, setRemoving] = React.useState<string | null>(null);
   React.useEffect(() => setSelectedGrants(current => {
     const next = { ...current };
     for (const entry of catalog) if (!(entry.id in next)) next[entry.id] = [];
@@ -61,6 +62,14 @@ export default function ExtensionsPage() {
     try { await updateSpaceSharedExtensionFilesystemGrants(activeSpaceId, app.installation_id, credentials, selectedGrants[app.installation_id] ?? []); setEditingGrants(null); await refresh(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update shared-drive access."); }
     finally { setSavingGrants(null); }
+  }
+  async function remove(app: SpaceSharedExtensionApp) {
+    if (!credentials || removing) return;
+    if (!window.confirm(`Remove ${app.name} from this Space? Its access and grants will be revoked. Stored extension data will be retained.`)) return;
+    setRemoving(app.installation_id); setError(null);
+    try { await removeSpaceSharedExtension(activeSpaceId, app.installation_id, credentials); setActive(null); await refresh(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not remove extension."); }
+    finally { setRemoving(null); }
   }
   function grantsEditor(key: string, requested: SharedFilesystemGrant[], current: SharedFilesystemGrant[], allowSave = false) {
     if (!requested.length) return <p style={{ color: "var(--text3)", fontSize: 12 }}>This extension requests no shared-drive access.</p>;
@@ -92,6 +101,7 @@ export default function ExtensionsPage() {
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Shared across this Space · installed {new Date(app.installed_at).toLocaleDateString()}</p>
       <p style={{ color: "var(--text3)", fontSize: 12 }}>Approved folders: {app.approved_shared_filesystem.length ? app.approved_shared_filesystem.map(item => `${item.path} (${item.access})`).join(", ") : "none"}</p>
       {editingGrants === app.installation_id ? grantsEditor(app.installation_id, app.requested_shared_filesystem, app.approved_shared_filesystem, true) : <Button variant="secondary" onClick={() => { setSelectedGrants(current => ({ ...current, [app.installation_id]: app.approved_shared_filesystem })); setEditingGrants(app.installation_id); }}>Manage access</Button>}
+      <Button variant="secondary" disabled={removing !== null} onClick={() => void remove(app)}>{removing === app.installation_id ? "Removing…" : "Remove extension"}</Button>
       <Button onClick={() => setActive(app)}>Open extension</Button>
       </Card>)}</div> : null}
     {!active && !loading && catalog.some(entry => !installedIds.has(entry.id)) ? <section style={{ marginTop: 24 }}><h2>Available Space extensions</h2><div className="grid-3">{catalog.filter(entry => !installedIds.has(entry.id)).map(entry => <Card key={entry.id}>

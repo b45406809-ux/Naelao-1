@@ -153,6 +153,24 @@ describe("runtime extension installation", () => {
     expect((await remove("tenant", "project-a")).status).toBe(404);
   });
 
+  it("removes a Space-shared install at exact tenant and Space scope, revoking grants while retaining package data", async () => {
+    const storage = createDOStorage(), space = new SpaceDO({ storage } as never, {} as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project"));
+    const response = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: manifest(), installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: ["native-execution"] }) }));
+    const { installationId } = await response.json() as { installationId: string };
+    const all = await space.fetch(new Request("http://space/extension-installations?" + new URLSearchParams({ tenant_id: "tenant", space_id: "space", extension_id: "__all__" })));
+    expect(await all.json()).toMatchObject({ installations: [expect.objectContaining({ extension_id: "ext_runtime_ffmpeg", scope: "SPACE_SHARED" })] });
+    storage.sql.exec("INSERT INTO extension_shared_filesystem_grants(instance_id,path,access,approved_by,approved_at) VALUES(?,?,?,?,?)", installationId, "/space/shared/docs", "READ", "owner", "2026-01-01");
+    const remove = (tenantId: string, spaceId: string) => space.fetch(new Request("http://space/extension-installation?" + new URLSearchParams({ instance_id: installationId, tenant_id: tenantId, space_id: spaceId }), { method: "DELETE" }));
+    expect((await remove("other-tenant", "space")).status).toBe(404);
+    expect((await remove("tenant", "other-space")).status).toBe(404);
+    await expect((await remove("tenant", "space")).json()).resolves.toMatchObject({ removed: true });
+    expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("removed");
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_shared_filesystem_grants WHERE instance_id=?", installationId).toArray()[0]?.count).toBe(0);
+    expect(storage.sql.exec("SELECT COUNT(*) AS count FROM installed_extensions WHERE extension_id='ext_runtime_ffmpeg'").toArray()[0]?.count).toBe(1);
+  });
+
   it("validates scope before mutation, keeps manifests immutable, and replays installs after restart", async () => {
     const storage = createDOStorage();
     const state = { storage };
