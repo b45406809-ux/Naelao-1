@@ -1,4 +1,4 @@
-import type { TwilioVoiceCredentials } from "./customer-telephony.js";
+import type { TwilioVoiceCredentials } from "./twilio-telephony.js";
 import { readBoundedResponseText } from "../shared/bounded-response-text.js";
 
 export interface AvailableTwilioLocalNumber {

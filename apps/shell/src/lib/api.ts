@@ -66,46 +66,6 @@ export async function apiFetch<T>(path: string, options: RequestInit & {
   return requestJson<T>(`${session?.sessionToken === "cookie" ? "/api/naelao" : API_URL}${path}`, { ...fetchOptions, headers, ...(session?.sessionToken === "cookie" ? { credentials: "include" as const } : {}) }, { onRetry, retries });
 }
 
-export interface CustomerVoiceNumber {
-  id: string; provider_number_sid: string; phone_number: string; country_code: string; region: string;
-  capabilities_json: string; monthly_cost_minor: number; inbound_price_per_minute_minor: number;
-  max_concurrent_calls: number; max_call_duration_seconds: number; status: string; created_at: string;
-}
-const customerVoicePath = (spaceId: string) => `/v1/spaces/${encodeURIComponent(spaceId)}/customer-voice`;
-export function listCustomerVoiceNumbers(spaceId: string, session: SessionCredentials) {
-  return apiFetch<{ numbers: CustomerVoiceNumber[] }>(`${customerVoicePath(spaceId)}/numbers`, { session, cache: "no-store" });
-}
-export function searchCustomerVoiceNumbers(spaceId: string, session: SessionCredentials, country: string, areaCode?: string) {
-  const query = new URLSearchParams({ country });
-  if (areaCode) query.set("area_code", areaCode);
-  return apiFetch<{ numbers: Array<{ phone_number: string; country_code: string; region: string; locality: string; capabilities: { voice: boolean; sms: boolean; mms: boolean } }>; pricing: { status: "current_rate_card"; number_type: "local"; monthly_cost_minor: number; currency: "USD"; quoted_at: string; taxes_included: false } | { status: "unavailable" }; purchase: "not_performed" }>(`${customerVoicePath(spaceId)}/available-numbers?${query}`, { session, cache: "no-store" });
-}
-export interface TwilioCustomerVoicePurchaseQuote {
-  quote_id: string; phone_number: string; number_type: string; monthly_cost_minor: number;
-  inbound_price_per_minute_minor: number; currency: "USD"; taxes_included: false; quoted_at: string; expires_at: string;
-}
-export function quoteCustomerVoiceNumber(spaceId: string, session: SessionCredentials, phoneNumber: string, countryCode: string) {
-  return apiFetch<TwilioCustomerVoicePurchaseQuote>(`${customerVoicePath(spaceId)}/numbers/purchase/quote`, { method: "POST", session, body: JSON.stringify({ phone_number: phoneNumber, country_code: countryCode }) });
-}
-export function purchaseCustomerVoiceNumber(spaceId: string, session: SessionCredentials, quoteId: string, monthlyCostMinor: number, agentId: string, ownerPrompt: string) {
-  return apiFetch<CustomerVoiceNumber>(`${customerVoicePath(spaceId)}/numbers/purchase`, { method: "POST", session, body: JSON.stringify({ quote_id: quoteId, confirm_monthly_cost_minor: monthlyCostMinor, confirm_purchase: true, agent_id: agentId, owner_prompt: ownerPrompt }) });
-}
-export function resolveCustomerVoicePurchaseQuote(spaceId: string, session: SessionCredentials, quoteId: string, resolution: "imported" | "not_purchased") {
-  return apiFetch<{ resolved: boolean; status: string }>(`${customerVoicePath(spaceId)}/numbers/purchase/quotes/${encodeURIComponent(quoteId)}/resolve`, { method: "POST", session, body: JSON.stringify({ resolution, ...(resolution === "not_purchased" ? { confirm_account_checked: true } : {}) }) });
-}
-export function saveCustomerVoiceCredentials(spaceId: string, session: SessionCredentials, accountSid: string, authToken: string) {
-  return apiFetch<{ configured: boolean; account_sid: string }>(`${customerVoicePath(spaceId)}/twilio-credentials`, { method: "PUT", session, body: JSON.stringify({ account_sid: accountSid, auth_token: authToken }) });
-}
-export function importCustomerVoiceNumber(spaceId: string, session: SessionCredentials, body: { phone_number_sid: string; agent_id: string; owner_prompt: string }) {
-  return apiFetch<CustomerVoiceNumber>(`${customerVoicePath(spaceId)}/numbers/import`, { method: "POST", session, body: JSON.stringify(body) });
-}
-export function disableCustomerVoiceNumber(spaceId: string, session: SessionCredentials, bindingId: string) {
-  return apiFetch<{ disabled: boolean }>(`${customerVoicePath(spaceId)}/numbers/${encodeURIComponent(bindingId)}/disable`, { method: "POST", session, body: "{}" });
-}
-export function releaseCustomerVoiceNumber(spaceId: string, session: SessionCredentials, bindingId: string) {
-  return apiFetch<{ released: boolean }>(`${customerVoicePath(spaceId)}/numbers/${encodeURIComponent(bindingId)}`, { method: "DELETE", session, body: JSON.stringify({ confirm_release: true }) });
-}
-
 export interface ArchiveRewrapJob { job_id: string; status: "active" | "blocked" | "completed"; scanned_count: number; rewrapped_count: number; last_error?: string | null; updated_at?: string }
 export function getSpaceDataOps(spaceId: string, session: SessionCredentials) {
   return apiFetch<{ archives: Array<{ archive_id: string; status: string }>; rewrap_jobs: ArchiveRewrapJob[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/data-ops`, { session, cache: "no-store" });

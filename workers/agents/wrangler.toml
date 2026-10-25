@@ -12,15 +12,10 @@ name = "EMAIL"
 name = "NAELAO_AGENT_DO"
 class_name = "NaelaoAgentDO"
 
-# Cloudflare Agents voice SDK for owner browser calls; external customer telephony remains on
-# its existing VOICE_CALLS service. Voice Agent turns dispatch into the canonical session planner.
+# Cloudflare Agents voice SDK for authenticated Space and Project assistant calls.
 [[durable_objects.bindings]]
 name = "OWNER_VOICE_AGENT"
 class_name = "OwnerVoiceAgent"
-
-[[durable_objects.bindings]]
-name = "CUSTOMER_VOICE_AGENT"
-class_name = "CustomerVoiceAgent"
 
 [[durable_objects.bindings]]
 name = "HITL_APPROVAL_DO"
@@ -126,6 +121,10 @@ new_sqlite_classes = ["CustomerVoiceAgent"]
 [[migrations]]
 tag = "v14-dynamic-sandbox"
 new_sqlite_classes = ["DynamicSandboxDO"]
+
+[[migrations]]
+tag = "v15-retire-customer-voice-agent"
+deleted_classes = ["CustomerVoiceAgent"]
 
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
@@ -465,17 +464,12 @@ service = "naelao-browser"
 name = "NAELAO_AGENT_DO"
 class_name = "NaelaoAgentDO"
 
-# Cloudflare Agents voice SDK for owner browser calls; external customer telephony remains on
-# its existing VOICE_CALLS service. Voice Agent turns dispatch into the canonical session planner.
+# Cloudflare Agents voice SDK for authenticated Space and Project assistant calls.
 
 [[env.staging.durable_objects.bindings]]
 name = "OWNER_VOICE_AGENT"
 class_name = "OwnerVoiceAgent"
 
-
-[[env.staging.durable_objects.bindings]]
-name = "CUSTOMER_VOICE_AGENT"
-class_name = "CustomerVoiceAgent"
 
 
 [[env.staging.durable_objects.bindings]]
@@ -739,17 +733,12 @@ binding = "AI"
 name = "NAELAO_AGENT_DO"
 class_name = "NaelaoAgentDO"
 
-# Cloudflare Agents voice SDK for owner browser calls; external customer telephony remains on
-# its existing VOICE_CALLS service. Voice Agent turns dispatch into the canonical session planner.
+# Cloudflare Agents voice SDK for authenticated Space and Project assistant calls.
 
 [[env.production.durable_objects.bindings]]
 name = "OWNER_VOICE_AGENT"
 class_name = "OwnerVoiceAgent"
 
-
-[[env.production.durable_objects.bindings]]
-name = "CUSTOMER_VOICE_AGENT"
-class_name = "CustomerVoiceAgent"
 
 
 [[env.production.durable_objects.bindings]]

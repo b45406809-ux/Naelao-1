@@ -1,10 +1,10 @@
 import { readBoundedResponseJson } from "@naelao/http";
 import type { AgentsEnv } from "../index.js";
 import {
-  generateCustomerVoiceCredentialToken,
+  generatePhoneCredentialToken,
   parseTwilioVoiceCredentials,
   type TwilioVoiceCredentials,
-} from "../voice/customer-telephony.js";
+} from "../voice/twilio-telephony.js";
 import type { CommunicationIdentity } from "./core.js";
 
 export class PhoneProviderError extends Error {
@@ -75,7 +75,7 @@ export async function resolvePhoneCredentials(
   // The existing WhatsApp account is never implicitly used for paid telephone provisioning.
   if (payer === "managed") return null; // Managed resale needs a separately configured carrier billing contract.
   if (!env.CREDENTIALS_WORKER) return null;
-  const token = await generateCustomerVoiceCredentialToken(
+  const token = await generatePhoneCredentialToken(
     env.PLATFORM_SECRET,
     identity.tenant_id,
     identity.space_id

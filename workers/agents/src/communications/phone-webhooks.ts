@@ -1,6 +1,6 @@
 import type { Hono } from "hono";
 import { TwilioAdapter } from "@cloudflare/voice-twilio";
-import { validateTwilioMediaStream } from "../voice/customer-telephony.js";
+import { validateTwilioFormWebhook, validateTwilioMediaStream } from "../voice/twilio-telephony.js";
 import { verifyOwnerVoiceTicket } from "../voice/voice-ticket.js";
 import {
   claimLiveCall,
@@ -16,7 +16,6 @@ import {
 } from "@naelao/http";
 import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import type { AgentsEnv } from "../index.js";
-import { validateTwilioFormWebhook } from "../voice/customer-telephony.js";
 import {
   channelPreferences,
   scopeAccess,
@@ -27,6 +26,7 @@ import {
 import { type AssistantPhoneBinding, validatePhonePolicy } from "./phones.js";
 import {
   phonePublicOrigin,
+  phoneProvider,
   resolvePhoneCredentials,
   xml,
 } from "./phone-provider.js";
@@ -357,7 +357,6 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       binding.purpose !== "extension"
     )
       return reject();
-    if (event === "sms" && binding.purpose === "extension") return reject();
     const configuredHandler = await c.env.PLATFORM_DB.prepare(
       "SELECT binding_id FROM assistant_phone_extension_handlers WHERE binding_id=?"
     )
@@ -386,7 +385,15 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
           .run();
       }
       const digits = form.get("Digits") ?? "";
-      if (event === "menu" && !/^[0-9]{1,8}$/.test(digits)) return reject();
+      const speech = (form.get("SpeechResult") ?? "").slice(0, 8_000);
+      const confidenceRaw = form.get("Confidence");
+      const confidence = confidenceRaw !== null && Number.isFinite(Number(confidenceRaw))
+        ? Math.max(0, Math.min(1, Number(confidenceRaw))) : undefined;
+      if (event === "menu" && !( /^[0-9]{1,8}$/.test(digits) || speech.length > 0)) return reject();
+      const voiceEvent = event === "answer" ? "call.received" : speech ? "call.speech" : "call.digits";
+      const callbackToken = c.req.header("i-twilio-idempotency-token") ?? form.get("SequenceNumber") ?? `${digits}:${speech}`;
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(callbackToken));
+      const eventHash = Array.from(new Uint8Array(digest).slice(0, 12), byte => byte.toString(16).padStart(2, "0")).join("");
       const dispatched = await c.env.AGENTS_WORKER.fetch(
         new Request("http://agents/internal/phone-extension-dispatch", {
           method: "POST",
@@ -402,9 +409,9 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
             spaceId: identity.space_id,
             bindingId: binding.id,
             event: {
-              id: sid + (digits ? ":" + digits : ""),
-              type: event === "answer" ? "call.received" : "call.digits",
-              payload: { caller: from, ...(digits ? { digits } : {}) },
+              id: event === "answer" ? sid : `${sid}:${speech ? "speech" : "digits"}:${eventHash}`,
+              type: voiceEvent,
+              payload: { voice_event: voiceEvent, caller: from, ...(digits ? { digits } : {}), ...(speech ? { speech } : {}), ...(confidence !== undefined ? { confidence } : {}) },
             },
           }),
         })
@@ -418,7 +425,8 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
         return response(
           (await import("./voice-response.js")).renderExtensionVoiceResponse(
             result.response,
-            root + "/menu"
+            root + "/menu",
+            policy.allowSpeechInput === true,
           )
         );
       } catch {
@@ -426,22 +434,25 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       }
     }
     const existing = await c.env.PLATFORM_DB.prepare(
-      "SELECT id FROM assistant_phone_events WHERE id=? AND binding_id=?"
+      "SELECT id,status FROM assistant_phone_events WHERE id=? AND binding_id=?"
     )
       .bind(sid, binding.id)
-      .first();
-    if (existing) return response("");
+      .first<{ id: string; status: string }>();
+    const retryingExtensionDispatch = binding.purpose === "extension" && existing?.status === "received";
+    if (existing && !retryingExtensionDispatch) return response("");
     const daily = event === "sms" ? "messages" : "calls",
       limit =
         event === "sms"
           ? policy.maxDailyInboundMessages
           : policy.maxDailyInboundCalls;
-    const admitted = await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO assistant_phone_ingress_usage(binding_id,day,${daily}) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET ${daily}=${daily}+1 WHERE ${daily}<?`
-    )
-      .bind(binding.id, limit)
-      .run();
-    if (!admitted.meta.changes) return response('<Reject reason="busy"/>', 429);
+    if (!retryingExtensionDispatch) {
+      const admitted = await c.env.PLATFORM_DB.prepare(
+        `INSERT INTO assistant_phone_ingress_usage(binding_id,day,${daily}) VALUES(?,date('now'),1) ON CONFLICT(binding_id,day) DO UPDATE SET ${daily}=${daily}+1 WHERE ${daily}<?`
+      )
+        .bind(binding.id, limit)
+        .run();
+      if (!admitted.meta.changes) return response('<Reject reason="busy"/>', 429);
+    }
     const count = Number(form.get("NumMedia") ?? "0");
     if (!Number.isSafeInteger(count) || count < 0 || count > 10)
       return response("", 400);
@@ -485,24 +496,59 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       verification !== null ||
       (/\b(?:code|pin|passcode|otp|verification)\b/i.test(incomingText) &&
         /(?<!\d)\d{4,8}(?!\d)/.test(incomingText));
-    const key = await storeBody(c.env, identity, sid, {
-      text: privateCode
-        ? "[private account verification message]"
-        : incomingText,
-      ...(privateCode
-        ? {
-            private_text: incomingText,
-            private_actor_id: verification?.actorId ?? identity.owner_user_id,
-          }
-        : {}),
-      media,
-      untrusted: true,
-    });
-    await c.env.PLATFORM_DB.prepare(
-      "INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status,body_key) VALUES(?,?,'sms',?,'received',?)"
-    )
-      .bind(sid, binding.id, from, key)
-      .run();
+    if (!retryingExtensionDispatch) {
+      const key = await storeBody(c.env, identity, sid, {
+        text: privateCode
+          ? "[private account verification message]"
+          : incomingText,
+        ...(privateCode
+          ? {
+              private_text: incomingText,
+              private_actor_id: verification?.actorId ?? identity.owner_user_id,
+            }
+          : {}),
+        media,
+        untrusted: true,
+      });
+      await c.env.PLATFORM_DB.prepare(
+        "INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status,body_key) VALUES(?,?,'sms',?,'received',?)"
+      )
+        .bind(sid, binding.id, from, key)
+        .run();
+    }
+    if (binding.purpose === "extension") {
+      const dispatched = await c.env.AGENTS_WORKER.fetch(new Request("http://agents/internal/phone-extension-dispatch", {
+        method: "POST", headers: {
+          "content-type": "application/json", "x-naelao-tenant-id": identity.tenant_id,
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenant_id),
+        },
+        body: JSON.stringify({ spaceId: identity.space_id, bindingId: binding.id,
+          event: { id: sid, type: "message.received", payload: { caller: from, text: incomingText, media } } }),
+      }));
+      if (!dispatched.ok) {
+        await c.env.PLATFORM_DB.prepare("UPDATE assistant_phone_events SET status='extension_failed' WHERE id=? AND binding_id=?").bind(sid, binding.id).run();
+        return response("");
+      }
+      const result = await readBoundedResponseJson<{ message?: unknown }>(dispatched, 8_192).catch(() => ({}));
+      const reply = typeof result.message === "string" ? result.message.trim().slice(0, 1_600) : "";
+      if (!reply) {
+        await c.env.PLATFORM_DB.prepare("UPDATE assistant_phone_events SET status='extension_no_reply' WHERE id=? AND binding_id=?").bind(sid, binding.id).run();
+        return response("");
+      }
+      // Claim before calling Twilio. If the provider response is lost, the event remains
+      // indeterminate and is never automatically sent twice.
+      const claimed = await c.env.PLATFORM_DB.prepare("UPDATE assistant_phone_events SET status='reply_sending' WHERE id=? AND binding_id=? AND status='received'").bind(sid, binding.id).run();
+      if (!claimed.meta.changes) return response("");
+      try {
+        const sent = await phoneProvider(credentials, "Messages.json", "POST", new URLSearchParams({ From: binding.phone_number!, To: from, Body: reply }));
+        const providerSid = String(sent.sid ?? "");
+        if (!/^SM[a-fA-F0-9]{32}$/.test(providerSid)) throw new Error("extension_sms_receipt_unknown");
+        await c.env.PLATFORM_DB.prepare("UPDATE assistant_phone_events SET status='reply_sent',action_id=? WHERE id=? AND binding_id=? AND status='reply_sending'").bind(providerSid, sid, binding.id).run();
+      } catch {
+        await c.env.PLATFORM_DB.prepare("UPDATE assistant_phone_events SET status='reply_indeterminate' WHERE id=? AND binding_id=? AND status='reply_sending'").bind(sid, binding.id).run();
+      }
+      return response("");
+    }
     // Caller ID is not authentication. Even a paired number only creates a pending task.
     const controller = await c.env.PLATFORM_DB.prepare(
       "SELECT user_id FROM assistant_communication_controllers WHERE identity_id=? AND channel='phone' AND address=? AND status='active'"

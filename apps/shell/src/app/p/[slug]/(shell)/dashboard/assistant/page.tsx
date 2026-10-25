@@ -40,7 +40,6 @@ import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
 import { ByokKeysPanel } from "@/components/ByokKeysPanel";
 import { SettingsSection, SettingsRow } from "@/components/SettingsSection";
 import { ChannelConnect } from "@/components/ChannelConnect";
-import { CustomerTelephonySettings } from "@/components/CustomerTelephonySettings";
 import { canManageSpaceSettings } from "@/lib/roles";
 import { presentAutonomyPolicy } from "@naelao/agent-sdk";
 
@@ -193,8 +192,6 @@ export default function AssistantSettingsPage() {
             : "This space's assistant is configured by its owner in the builder dashboard."}
         </div>
       )}
-
-      {activeSpaceId && <CustomerTelephonySettings spaceId={activeSpaceId} session={creds} canEdit={canEdit} />}
 
       <SettingsSection
         title="Autonomy"

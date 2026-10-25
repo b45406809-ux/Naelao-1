@@ -2,7 +2,8 @@ import { xml } from "./phone-provider.js";
 /** Extensions return data, never executable TwiML or credential-bearing callback URLs. */
 export function renderExtensionVoiceResponse(
   value: unknown,
-  callback: string
+  callback: string,
+  allowSpeechInput = false,
 ): string {
   const plan = value as { actions?: unknown[] };
   if (!plan || !Array.isArray(plan.actions) || plan.actions.length > 8)
@@ -21,14 +22,19 @@ export function renderExtensionVoiceResponse(
         return `<Say>${xml(a.text)}</Say>`;
       if (
         a.type === "gather" &&
-        Object.keys(a).every((k) => ["type", "text", "digits"].includes(k)) &&
+        Object.keys(a).every((k) => ["type", "text", "digits", "input"].includes(k)) &&
         typeof a.text === "string" &&
         a.text.length <= 1000 &&
-        Number.isInteger(a.digits) &&
-        Number(a.digits) >= 1 &&
-        Number(a.digits) <= 8
-      )
-        return `<Gather input="dtmf" numDigits="${a.digits}" timeout="10" action="${xml(callback)}" method="POST"><Say>${xml(a.text)}</Say></Gather><Hangup/>`;
+        (a.input === undefined || ["dtmf", "speech", "dtmf speech"].includes(String(a.input))) &&
+        (allowSpeechInput || (a.input !== "speech" && a.input !== "dtmf speech")) &&
+        ((a.input === "speech" && a.digits === undefined) ||
+          (Number.isInteger(a.digits) && Number(a.digits) >= 1 && Number(a.digits) <= 8))
+      ) {
+        const input = a.input === "speech" ? "speech" : a.input === "dtmf speech" ? "dtmf speech" : "dtmf";
+        const digits = input === "speech" ? "" : ` numDigits="${Number(a.digits)}"`;
+        const speechTimeout = input.includes("speech") ? ` speechTimeout="auto"` : "";
+        return `<Gather input="${input}"${digits}${speechTimeout} timeout="10" action="${xml(callback)}" method="POST"><Say>${xml(a.text)}</Say></Gather><Hangup/>`;
+      }
       if (a.type === "hangup" && Object.keys(a).length === 1)
         return "<Hangup/>";
       throw new Error("invalid_extension_voice_action");

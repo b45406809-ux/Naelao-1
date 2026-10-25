@@ -1858,13 +1858,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return Response.json({ status: "warm", ts: Date.now() });
       }
 
-      // Voice-agent management is deliberately separate from per-call transcripts. The former
-      // is an admin-authored Tier-2 workspace file; call records live in isolated SpaceDO threads.
-      if (method === "PUT" && url.pathname === "/voice/config") return this.putVoiceConfig(request);
-      if (method === "GET" && url.pathname === "/voice/config") return this.getVoiceConfig(url.searchParams);
-      if (method === "POST" && url.pathname === "/voice/calls/start") return this.forwardVoiceCall(request, "start");
-      if (method === "POST" && url.pathname === "/voice/calls/finish") return this.forwardVoiceCall(request, "finish");
-
       // Finite-project terminal transition. Clearing the watchdog/schedule alarm is what lets
       // this Durable Object hibernate at zero compute until a subsequent human /script/run.
       if (method === "POST" && url.pathname === "/project/hibernate") {
@@ -2168,40 +2161,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { status: 500 }
       );
     }
-  }
-
-  private async putVoiceConfig(request: Request): Promise<Response> {
-    if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "workspace_unavailable" }, { status: 503 });
-    const body = await request.json<{ spaceId?: string; projectId?: string; config?: Record<string, unknown> }>()
-      .catch((): { spaceId?: string; projectId?: string; config?: Record<string, unknown> } => ({}));
-    if (!body.spaceId || !body.projectId || !body.config) return Response.json({ error_code: "invalid_voice_config" }, { status: 400 });
-    const greeting = String(body.config.greeting ?? "").trim();
-    const voiceModel = String(body.config.voiceModel ?? "@cf/myshell-ai/melotts");
-    const timezone = String(body.config.timezone ?? "UTC");
-    if (!greeting || greeting.length > 500) return Response.json({ error_code: "invalid_greeting" }, { status: 400 });
-    const config = { ...body.config, greeting, voiceModel, timezone };
-    const key = `spaces/${body.spaceId}/projects/${body.projectId}/workspace/voice_agent_config.json`;
-    const current = await readBytesWithHash(this.env.SCRIPTS_R2, key);
-    await putBytesCas(this.env.SCRIPTS_R2, key, new TextEncoder().encode(JSON.stringify(config, null, 2)), current?.hash ?? null, {}, { contentType: "application/json" });
-    return Response.json({ ok: true, path: "voice_agent_config.json", thread_tier: "tier_2_task", config });
-  }
-
-  private async getVoiceConfig(params: URLSearchParams): Promise<Response> {
-    if (!this.env.SCRIPTS_R2) return Response.json({ error_code: "workspace_unavailable" }, { status: 503 });
-    const spaceId = params.get("space_id") ?? "";
-    const projectId = params.get("project_id") ?? "";
-    if (!spaceId || !projectId) return Response.json({ error_code: "space_id_and_project_id_required" }, { status: 400 });
-    const object = await readBytesWithHash(this.env.SCRIPTS_R2, `spaces/${spaceId}/projects/${projectId}/workspace/voice_agent_config.json`);
-    if (!object) return Response.json({ error_code: "voice_config_not_found" }, { status: 404 });
-    return Response.json({ config: JSON.parse(new TextDecoder().decode(object.bytes)), thread_tier: "tier_2_task" });
-  }
-
-  private async forwardVoiceCall(request: Request, action: "start" | "finish"): Promise<Response> {
-    if (!this.env.SPACES_WORKER) return Response.json({ error_code: "spaces_unavailable" }, { status: 503 });
-    const body = await readBoundedRequestBytes(request, 64 * 1024);
-    return this.env.SPACES_WORKER.fetch(new Request(`http://spaces-do/internal/voice/calls/${action}`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: body.buffer as ArrayBuffer,
-    }));
   }
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
@@ -8674,22 +8633,145 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 1 WHERE id = ?`, messageId);
   }
 
-  private async handlePhoneExtension(request:Request):Promise<Response>{
-    const tenant=request.headers.get('x-naelao-tenant-id')??'';
-    if(!tenant||!await verifyInternalToken(request.headers.get('x-naelao-internal-token')??undefined,tenant,this.env.PLATFORM_SECRET))return Response.json({error_code:'forbidden'},{status:403});
-    const body=await readBoundedResponseJson<{bindingId:string;spaceId:string;validateOnly?:boolean;event?:{id:string;type:string;payload:Record<string,unknown>}}>(new Response(request.body),16384);
-    if(!this.env.PLATFORM_DB)return Response.json({error_code:'database_unavailable'},{status:503});
-    const row=await this.env.PLATFORM_DB.prepare("SELECT h.installation_id,h.handler_sha256,h.status,i.project_id,i.owner_user_id FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'").bind(body.bindingId,tenant,body.spaceId).first<{installation_id:string;handler_sha256:string;status:string;project_id:string|null;owner_user_id:string}>();
-    if(!row||await this.tenantSpaceSuspended(tenant,body.spaceId))return Response.json({error_code:'phone_handler_unavailable'},{status:403});
-    const handler=await this.loadActiveChannelHandler({spaceId:body.spaceId,tenantId:tenant,...(row.project_id ? {projectId:row.project_id} : {}),channel:'phone',messageId:body.event?.id??'validation',instanceId:row.installation_id,scriptSha256:row.handler_sha256});
-    if(!handler||handler.knowledgeCollections.length||handler.session)return Response.json({error_code:'phone_handler_invalid'},{status:409});
-    if(body.validateOnly)return Response.json({valid:true});
-    if(row.status!=='active'||!body.event||!['call.received','call.digits'].includes(body.event.type)||!/^CA[a-fA-F0-9]{32}(?::[0-9]{1,8})?$/.test(body.event.id))return Response.json({error_code:'phone_event_invalid'},{status:400});
-    const env=await this.buildScriptEngineEnv(body.spaceId,'naelao-agent',tenant,undefined,row.project_id ?? undefined);
-    if(!env?.codeRunner?.runChannel)return Response.json({error_code:'channel_runtime_unavailable'},{status:503});
-    const result=await env.codeRunner.runChannel({name:handler.name,code:handler.code,args:{},tenantId:tenant,spaceId:body.spaceId,agentId:'naelao-agent',installationId:row.installation_id,maxConcurrency:handler.maxConcurrency,limits:handler.limits,channel:{provider:'phone',event:{id:body.event.id,type:'message.received',occurredAt:new Date().toISOString(),payload:{voice_event:body.event.type,...body.event.payload}},conversation:{id:body.event.id.split(':')[0]!}}});
-    if(!result.ok||result.channel_replies?.length!==1||result.channel_answers?.length)return Response.json({error_code:'phone_handler_failed'},{status:409});
-    try{return Response.json({response:JSON.parse(result.channel_replies[0]!)});}catch{return Response.json({error_code:'phone_response_invalid'},{status:409});}
+  private async handlePhoneExtension(request: Request): Promise<Response> {
+    const tenant = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenant || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenant, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const body = await readBoundedResponseJson<{
+      bindingId: string; spaceId: string; validateOnly?: boolean;
+      event?: { id: string; type: string; payload: Record<string, unknown> };
+    }>(new Response(request.body), 16_384);
+    if (!this.env.PLATFORM_DB) return Response.json({ error_code: "database_unavailable" }, { status: 503 });
+    const row = await this.env.PLATFORM_DB.prepare(
+      "SELECT h.installation_id,h.handler_sha256,h.status,i.project_id FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'"
+    ).bind(body.bindingId, tenant, body.spaceId).first<{
+      installation_id: string; handler_sha256: string; status: string; project_id: string | null;
+    }>();
+    if (!row || await this.tenantSpaceSuspended(tenant, body.spaceId))
+      return Response.json({ error_code: "phone_handler_unavailable" }, { status: 403 });
+    const event = body.event;
+    if (!body.validateOnly && (row.status !== "active" || !event ||
+      !["call.received", "call.digits", "call.speech", "message.received"].includes(event.type) ||
+      !/^(?:CA[a-fA-F0-9]{32}(?::(?:digits|speech):[A-Za-z0-9._-]{1,128})?|(?:SM|MM)[a-fA-F0-9]{32})$/.test(event.id)))
+      return Response.json({ error_code: "phone_event_invalid" }, { status: 400 });
+    const handler = await this.loadActiveChannelHandler({
+      spaceId: body.spaceId, tenantId: tenant, ...(row.project_id ? { projectId: row.project_id } : {}),
+      channel: "phone", messageId: event?.id ?? "validation", instanceId: row.installation_id,
+      scriptSha256: row.handler_sha256,
+    });
+    if (!handler || handler.knowledgeCollections.length)
+      return Response.json({ error_code: "phone_handler_invalid" }, { status: 409 });
+    if (body.validateOnly) return Response.json({ valid: true });
+    const engine = await this.buildScriptEngineEnv(body.spaceId, "naelao-agent", tenant, undefined, row.project_id ?? undefined);
+    const runChannel = engine?.codeRunner?.runChannel;
+    if (!runChannel || !event) return Response.json({ error_code: "channel_runtime_unavailable" }, { status: 503 });
+
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS phone_extension_events (
+      installation_id TEXT NOT NULL, event_id TEXT NOT NULL, status TEXT NOT NULL,
+      response_json TEXT, updated_at INTEGER NOT NULL,
+      PRIMARY KEY(installation_id,event_id)
+    )`);
+    // Receipts exist only to deduplicate Twilio retries. Retain a bounded replay window and a
+    // hard per-Space ceiling so a public phone number cannot grow the SpaceDO without limit.
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      "DELETE FROM phone_extension_events WHERE rowid IN (SELECT rowid FROM phone_extension_events WHERE updated_at<? ORDER BY updated_at LIMIT 500)",
+      now - 7 * 86_400_000,
+    );
+    const prior = this.ctx.storage.sql.exec(
+      "SELECT status,response_json FROM phone_extension_events WHERE installation_id=? AND event_id=?",
+      row.installation_id, event.id,
+    ).toArray()[0] as { status: string; response_json: string | null } | undefined;
+    if (prior?.status === "completed" && prior.response_json) {
+      try { return Response.json(JSON.parse(prior.response_json)); }
+      catch { return Response.json({ error_code: "phone_event_receipt_invalid" }, { status: 503 }); }
+    }
+    if (prior) return Response.json({ error_code: prior.status === "running" ? "phone_event_in_progress" : "phone_event_outcome_unknown" }, { status: 409 });
+    const eventCount = Number(this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM phone_extension_events").toArray()[0]?.count ?? 0);
+    if (eventCount >= 50_000) return Response.json({ error_code: "phone_event_store_full" }, { status: 503 });
+    this.ctx.storage.sql.exec(
+      "INSERT INTO phone_extension_events(installation_id,event_id,status,updated_at) VALUES(?,?,'running',?)",
+      row.installation_id, event.id, now,
+    );
+    const failEvent = (code: string, status = 409) => {
+      this.ctx.storage.sql.exec("UPDATE phone_extension_events SET status='failed',response_json=?,updated_at=? WHERE installation_id=? AND event_id=? AND status='running'",
+        JSON.stringify({ error_code: code }), Date.now(), row.installation_id, event.id);
+      return Response.json({ error_code: code }, { status });
+    };
+
+    // Extension channel state is keyed by the installation and provider call/message id. A
+    // SPACE_SHARED installation gets its own synthetic scope key inside this SpaceDO; it cannot
+    // read another extension's records or any assistant/project workspace data.
+    const sessionScope = row.project_id ?? `space:${body.spaceId}`;
+    // Use a keyed surrogate for the caller so state can continue across calls and SMS without
+    // storing the phone number itself in the extension session database.
+    const caller = typeof event.payload.caller === "string" ? event.payload.caller : "unknown";
+    const conversationDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([body.spaceId, body.bindingId, caller])));
+    const conversationId = Array.from(new Uint8Array(conversationDigest), byte => byte.toString(16).padStart(2, "0")).join("");
+    let sessionState: unknown = null;
+    let namedStates: Record<string, unknown> = {};
+    if (handler.session) {
+      try {
+        sessionState = readChannelExtensionSession(this.ctx.storage.sql, {
+          projectId: sessionScope, installationId: row.installation_id, conversationId,
+        });
+        namedStates = readChannelExtensionSessions(this.ctx.storage.sql, {
+          projectId: sessionScope, installationId: row.installation_id, conversationId,
+        });
+      } catch { return failEvent("phone_session_unavailable", 503); }
+    }
+    if (await this.tenantSpaceSuspended(tenant, body.spaceId))
+      return failEvent("phone_handler_unavailable", 403);
+    const result = await runChannel.call(engine.codeRunner, {
+      name: handler.name, code: handler.code, args: {}, tenantId: tenant, spaceId: body.spaceId,
+      agentId: "naelao-agent", installationId: row.installation_id,
+      maxConcurrency: handler.maxConcurrency, limits: handler.limits,
+      channel: {
+        provider: "phone",
+        event: { id: event.id, type: "message.received", occurredAt: new Date().toISOString(), payload: { ...event.payload, voice_event: event.type } },
+        conversation: { id: conversationId },
+        ...(handler.session ? {
+          session: { state: sessionState, maxBytes: handler.session.maxBytes },
+          sessions: { states: namedStates, maxBytes: handler.session.maxBytes },
+        } : {}),
+      },
+    });
+    if (!result.ok || result.channel_replies?.length !== 1 || result.channel_answers?.length)
+      return failEvent("phone_handler_failed");
+    let response: unknown;
+    const isSms = event.type === "message.received";
+    if (isSms) {
+      const message = result.channel_replies[0]!.trim();
+      if (!message || message.length > 1_600) return failEvent("phone_response_invalid");
+      response = { message };
+    } else {
+      try { response = JSON.parse(result.channel_replies[0]!); }
+      catch { return failEvent("phone_response_invalid"); }
+    }
+    if (handler.session) {
+      try {
+        this.ctx.storage.transactionSync(() => {
+          if (result.channel_session_update !== undefined) writeChannelExtensionSession(this.ctx.storage.sql, {
+            projectId: sessionScope, installationId: row.installation_id, conversationId,
+            value: result.channel_session_update, maxBytes: handler.session!.maxBytes, ttlDays: handler.session!.ttlDays,
+          });
+          if (result.channel_session_updates?.length) writeChannelExtensionNamedSessions(this.ctx.storage.sql, {
+            projectId: sessionScope, installationId: row.installation_id, conversationId,
+            updates: result.channel_session_updates, maxBytes: handler.session!.maxBytes, ttlDays: handler.session!.ttlDays,
+          });
+          const receipt = JSON.stringify(isSms ? response : { response });
+          if (new TextEncoder().encode(receipt).byteLength > 8_192) throw new Error("phone_receipt_too_large");
+          this.ctx.storage.sql.exec("UPDATE phone_extension_events SET status='completed',response_json=?,updated_at=? WHERE installation_id=? AND event_id=? AND status='running'",
+            receipt, Date.now(), row.installation_id, event.id);
+        });
+      } catch { return failEvent("phone_session_save_failed"); }
+    } else {
+      const receipt = JSON.stringify(isSms ? response : { response });
+      if (new TextEncoder().encode(receipt).byteLength > 8_192) return failEvent("phone_receipt_too_large");
+      this.ctx.storage.sql.exec("UPDATE phone_extension_events SET status='completed',response_json=?,updated_at=? WHERE installation_id=? AND event_id=? AND status='running'",
+        receipt, Date.now(), row.installation_id, event.id);
+    }
+    return Response.json(isSms ? response : { response });
   }
 
   private async loadActiveChannelHandler(input: {

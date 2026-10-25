@@ -4,7 +4,7 @@ import type { AgentsEnv } from "../index.js";
 import {
   isE164,
   parseTwilioVoiceCredentials,
-} from "../voice/customer-telephony.js";
+} from "../voice/twilio-telephony.js";
 import { searchTwilioLocalNumbers } from "../voice/twilio-number-search.js";
 import { fetchTwilioNumberPrice } from "../voice/twilio-number-pricing.js";
 import {
@@ -27,6 +27,7 @@ import {
 
 export interface AssistantPhonePolicy {
   allowWebsiteVerification?: boolean;
+  allowSpeechInput?: boolean;
   maxDailyActions: number;
   maxDailyInboundMessages: number;
   maxDailyInboundCalls: number;
@@ -37,6 +38,7 @@ export interface AssistantPhonePolicy {
 }
 export const defaultPhonePolicy: AssistantPhonePolicy = {
   allowWebsiteVerification: false,
+  allowSpeechInput: false,
   maxDailyActions: 20,
   maxDailyInboundMessages: 100,
   maxDailyInboundCalls: 20,
@@ -75,8 +77,11 @@ export function validatePhonePolicy(value: unknown): AssistantPhonePolicy {
     typeof p.allowWebsiteVerification !== "boolean"
   )
     throw new Error("invalid_phone_policy");
+  if (p.allowSpeechInput !== undefined && typeof p.allowSpeechInput !== "boolean")
+    throw new Error("invalid_phone_policy");
   return {
     allowWebsiteVerification: p.allowWebsiteVerification === true,
+    allowSpeechInput: p.allowSpeechInput === true,
     maxDailyActions: p.maxDailyActions,
     maxDailyInboundMessages: p.maxDailyInboundMessages,
     maxDailyInboundCalls: p.maxDailyInboundCalls,

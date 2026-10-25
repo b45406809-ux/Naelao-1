@@ -1352,12 +1352,7 @@ api.all("/spaces/:spaceId/channels/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
-// Customer PSTN number credentials, policy, and lifecycle are owned by the Agents worker.
-// Keep this specific route before the general /spaces/* proxy below.
 api.all("/spaces/:spaceId/assistant-communications", async c => proxyTo(c.env.AGENTS_WORKER,c.get("claims"),c.req.raw,c.env.PLATFORM_SECRET));
-api.all("/spaces/:spaceId/customer-voice/*", async (c) =>
-  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
-);
 
 // Provider OAuth, credential vaulting, and connection lifecycle for a specific composed project
 // extension are Agents-owned. Keep this before `/spaces/*` so it does not land in Spaces Worker.

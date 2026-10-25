@@ -9,6 +9,7 @@ interface Phone {
   capabilities: Record<string, boolean>;
   policy: {
     allowWebsiteVerification?: boolean;
+    allowSpeechInput?: boolean;
     maxDailyActions: number;
     maxDailyInboundMessages: number;
     maxDailyInboundCalls: number;
@@ -415,15 +416,16 @@ export function AssistantPhonePanel({
                   )}
                 </fieldset>
                 <fieldset disabled={busy}>
-                  <legend>Separate external bot line</legend>
+                  <legend>Extension phone handler</legend>
                   <p>
-                    Bind a signed channel extension installed in this
-                    assistant’s Space or project, declaring provider phone. Its
-                    handler replies through ctx.channel.reply with JSON actions
-                    (say, gather, hangup). The host validates the installation
-                    and exact source digest before activation.
+                    Bind a signed channel extension installed in this Space or
+                    project. The extension owns the caller experience and may
+                    use opted-in bounded conversation state. The host owns the
+                    call and SMS transport, callback URLs, provider checks, and
+                    response limits. Speech capture and keypad input are passed
+                    to the extension as untrusted caller input.
                   </p>
-                  <p>Assigning this number to an extension makes it an external bot line. Your internal assistant needs a separate number. End private calls before changing the line.</p>
+                  <p>Assigning this number routes calls and messages to the selected extension. The extension defines its behavior; Naelao provides the carrier callbacks, caller input, and bounded response transport. End active calls before changing the line.</p>
                   <label>
                     Installation ID{" "}
                     <input
@@ -454,27 +456,22 @@ export function AssistantPhonePanel({
                 </fieldset>
 
                 <p>
-                  Legacy greeting settings do not define extension behavior.
-                  Configure the greeting for your workflow before accepting
-                  calls. The current transport menu uses 1 for enabled voicemail
-                  and 2 for an enabled transfer destination.
+                  Call speech, keypad input, and SMS are delivered to the assigned
+                  extension as untrusted input. Extension conversation state is
+                  available only when its manifest enables scoped sessions.
                 </p>
                 <label>
-                  Workflow greeting{" "}
-                  <textarea
-                    key={state.phone.id + state.phone.policy.greeting}
-                    defaultValue={state.phone.policy.greeting}
-                    maxLength={1000}
-                    onBlur={(e) => {
-                      if (e.target.value !== state.phone!.policy.greeting)
-                        void act("phone-policy", {
-                          policy: {
-                            ...state.phone!.policy,
-                            greeting: e.target.value,
-                          },
-                        });
+                  <input
+                    type="checkbox"
+                    checked={state.phone.policy.allowSpeechInput === true}
+                    onChange={(e) => {
+                      if (e.target.checked && !window.confirm("Allow the phone provider to transcribe caller speech for this extension line?")) return;
+                      void act("phone-policy", {
+                        policy: { ...state.phone!.policy, allowSpeechInput: e.target.checked },
+                      });
                     }}
-                  />
+                  />{" "}
+                  Allow speech recognition on extension calls
                 </label>
                 <label>
                   <input
