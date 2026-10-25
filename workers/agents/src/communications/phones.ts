@@ -169,10 +169,21 @@ export async function handlePhoneAction(
       extension_lines: manager
         ? (
             await env.PLATFORM_DB.prepare(
-              "SELECT b.id,b.phone_number,b.status,h.installation_id FROM assistant_phone_bindings b LEFT JOIN assistant_phone_extension_handlers h ON h.binding_id=b.id WHERE b.identity_id=? AND b.purpose='extension' AND b.status NOT IN ('detached','released')"
+              "SELECT b.id,b.phone_number,b.provider_number_sid,b.status,h.installation_id,h.handler_sha256,h.status AS handler_status FROM assistant_phone_bindings b LEFT JOIN assistant_phone_extension_handlers h ON h.binding_id=b.id WHERE b.identity_id=? AND b.purpose='extension' AND b.status NOT IN ('detached','released')"
             )
               .bind(identity.id)
               .all()
+          ).results
+        : [],
+      legacy_numbers: manager
+        ? (
+            await env.PLATFORM_DB.prepare(
+              `SELECT l.id,l.phone_number,l.provider_number_sid,l.status
+                 FROM customer_voice_number_bindings l
+                WHERE l.tenant_id=? AND l.space_id=? AND l.status='active'
+                  AND NOT EXISTS (SELECT 1 FROM assistant_phone_bindings b WHERE b.provider_number_sid=l.provider_number_sid AND b.status NOT IN ('released','detached'))
+                ORDER BY l.created_at,l.id`
+            ).bind(scope.tenantId, scope.spaceId).all()
           ).results
         : [],
       enabled: preferences.enabled.phone,
@@ -222,6 +233,8 @@ export async function handlePhoneAction(
         "phone-release",
         "phone-handler",
         "phone-policy",
+        "phone-reconcile",
+        "phone-reconcile-number",
       ].includes(action)
     )
       throw new Error("human_control_required");
@@ -343,6 +356,9 @@ export async function handlePhoneAction(
 
   const payer =
     binding?.payer ?? (body.payer === "managed" ? "managed" : "byo");
+  const legacyBindingId = action === "phone-import" && typeof body.legacy_binding_id === "string"
+    ? body.legacy_binding_id
+    : null;
   const credentials = await resolvePhoneCredentials(env, identity, payer);
   if (!credentials)
     throw new Error(
@@ -353,7 +369,7 @@ export async function handlePhoneAction(
   if (
     binding &&
     !["released", "detached"].includes(binding.status) &&
-    binding.provider_account_sid !== credentials.accountSid
+    !legacyBindingId && binding.provider_account_sid !== credentials.accountSid
   )
     throw new Error("phone_provider_account_changed");
   if (action === "phone-search") {
@@ -417,11 +433,12 @@ export async function handlePhoneAction(
     };
   }
   if (action === "phone-import" || action === "phone-purchase") {
-    if (binding && !["released", "detached"].includes(binding.status))
+    if (binding && !["released", "detached"].includes(binding.status) && !legacyBindingId)
       throw new Error("assistant_phone_already_bound");
     if (body.confirm !== true)
       throw new Error("explicit_phone_confirmation_required");
     let record: Record<string, unknown> | undefined;
+    let legacyBinding: { id: string; provider_account_sid: string; provider_number_sid: string; status: string } | null = null;
     type Quote = {
       id: string;
       phone_number: string;
@@ -433,6 +450,13 @@ export async function handlePhoneAction(
     if (action === "phone-import") {
       if (!/^PN[a-fA-F0-9]{32}$/.test(String(body.number_sid)))
         throw new Error("invalid_phone_number_sid");
+      if (legacyBindingId) {
+        legacyBinding = await env.PLATFORM_DB.prepare(
+          "SELECT id,provider_account_sid,provider_number_sid,status FROM customer_voice_number_bindings WHERE id=? AND tenant_id=? AND space_id=? AND status='active'"
+        ).bind(legacyBindingId, scope.tenantId, scope.spaceId).first<{ id: string; provider_account_sid: string; provider_number_sid: string; status: string }>();
+        if (!legacyBinding || legacyBinding.provider_number_sid !== body.number_sid || legacyBinding.provider_account_sid !== credentials.accountSid)
+          throw new Error("legacy_phone_binding_mismatch");
+      }
       record = await phoneProvider(
         credentials,
         `IncomingPhoneNumbers/${body.number_sid}.json`
@@ -483,7 +507,9 @@ export async function handlePhoneAction(
     }
     const id = crypto.randomUUID(),
       callbacks = phoneCallbacks(env, id);
-    const previous = record
+    const previous = legacyBinding
+      ? { voice_url: "", voice_method: "POST", sms_url: "", sms_method: "POST", status_callback: "", status_callback_method: "POST" }
+      : record
       ? Object.fromEntries(
           [
             "voice_url",
@@ -498,11 +524,12 @@ export async function handlePhoneAction(
     // Claim the assistant slot before any paid/remote mutation. Keep uncertain claims for reconciliation.
 
     await env.PLATFORM_DB.prepare(
-      "INSERT INTO assistant_phone_bindings(id,identity_id,payer,provider_account_sid,provider_number_sid,phone_number,country_code,capabilities_json,previous_callbacks_json,policy_json,monthly_cost_minor) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+      "INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider_account_sid,provider_number_sid,phone_number,country_code,capabilities_json,previous_callbacks_json,policy_json,monthly_cost_minor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
     )
       .bind(
         id,
         identity.id,
+        legacyBinding ? "extension" : "assistant",
         payer,
         credentials.accountSid,
         record?.sid ?? null,
@@ -537,13 +564,21 @@ export async function handlePhoneAction(
       )
         .bind(record.sid, record.phone_number, JSON.stringify(capabilities), id)
         .run();
+      if (legacyBinding) {
+        await env.PLATFORM_DB.prepare(
+          "UPDATE customer_voice_number_bindings SET status='disabled',updated_at=? WHERE id=? AND tenant_id=? AND space_id=? AND status='active'"
+        ).bind(new Date().toISOString(), legacyBinding.id, scope.tenantId, scope.spaceId).run();
+      }
       if (quote)
         await env.PLATFORM_DB.prepare(
           "UPDATE assistant_phone_quotes SET status='completed' WHERE id=?"
         )
           .bind(quote.id)
           .run();
-      return { phone: metadata(await assistantPhone(env, identity.id)) };
+      const migrated = legacyBinding
+        ? await env.PLATFORM_DB.prepare("SELECT * FROM assistant_phone_bindings WHERE id=? AND identity_id=?").bind(id, identity.id).first<AssistantPhoneBinding>()
+        : await assistantPhone(env, identity.id);
+      return { phone: metadata(migrated), legacy_migrated: Boolean(legacyBinding) };
     } catch (error) {
       const rejected = error instanceof PhoneProviderError && !error.uncertain;
       await env.PLATFORM_DB.prepare(
@@ -610,7 +645,8 @@ export async function handlePhoneAction(
     )
       .bind(identity.id, record.phone_number)
       .run();
-    return { phone: metadata(await assistantPhone(env, identity.id)) };
+    const reconciled = await env.PLATFORM_DB.prepare("SELECT * FROM assistant_phone_bindings WHERE id=? AND identity_id=?").bind(binding.id, identity.id).first<AssistantPhoneBinding>();
+    return { phone: metadata(reconciled) };
   }
   if (!binding || !binding.provider_number_sid)
     throw new Error("assistant_phone_not_connected");

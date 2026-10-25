@@ -36,7 +36,8 @@ export function AssistantPhonePanel({
   const [state, setState] = React.useState<{
       phone: Phone | null;
       enabled: boolean;
-      extension_lines?:Array<{id:string;phone_number:string|null;installation_id:string|null;status:string}>;
+      extension_lines?:Array<{id:string;phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
+      legacy_numbers?:Array<{id:string;phone_number:string;provider_number_sid:string;status:string}>;
     } | null>(null),
     [error, setError] = React.useState(""),
     [busy, setBusy] = React.useState(false);
@@ -61,6 +62,7 @@ export function AssistantPhonePanel({
   const [receipt, setReceipt] = React.useState("");
   const [handlerInstallation, setHandlerInstallation] = React.useState(""),
     [handlerDigest, setHandlerDigest] = React.useState("");
+  const [extensionAssignments, setExtensionAssignments] = React.useState<Record<string, { installation: string; digest: string }>>({});
   const [liveCall, setLiveCall] = React.useState<{
     code: string;
     expires_at: number;
@@ -84,11 +86,25 @@ export function AssistantPhonePanel({
   const refresh = React.useCallback(async () => {
     const g = ++generation.current;
     try {
-      const result = await call<{ phone: Phone | null; enabled: boolean }>(
+      const result = await call<{
+        phone: Phone | null;
+        enabled: boolean;
+        extension_lines?: Array<{
+          id: string;
+          phone_number: string | null;
+          provider_number_sid: string | null;
+          installation_id: string | null;
+          handler_sha256: string | null;
+          handler_status: string | null;
+          status: string;
+        }>;
+        legacy_numbers?: Array<{ id: string; phone_number: string; provider_number_sid: string; status: string }>;
+      }>(
         "phone-status"
       );
       if (g !== generation.current) return;
       setState(result);
+      setExtensionAssignments(Object.fromEntries((result.extension_lines ?? []).map((line) => [line.id, { installation: line.installation_id ?? "", digest: line.handler_sha256 ?? "" }])));
       setTransfer(result.phone?.policy.transferTo ?? "");
       if (result.phone) {
         const [a, e] = await Promise.all([
@@ -167,7 +183,28 @@ export function AssistantPhonePanel({
   return (
     <section aria-label="Assistant phone">
       <h4>Optional phone</h4>
-      {state?.extension_lines?.map(line=><div key={line.id}><p>External extension line: {line.phone_number} · {line.status}</p><button type="button" disabled={busy} onClick={()=>void act("phone-detach",{binding_id:line.id,confirm:true})}>Disconnect external line</button></div>)}
+      {state?.legacy_numbers?.map((line) => (
+        <fieldset key={line.id} disabled={busy || !state.enabled}>
+          <legend>Phone number awaiting extension migration</legend>
+          <p>{line.phone_number} · currently uses a retired callback</p>
+          <p>Move it onto Naelao’s phone transport, then assign an installed phone extension. The old callback will not be restored if you later detach this number.</p>
+          <button type="button" onClick={() => {
+            if (window.confirm(`Move ${line.phone_number} to the extension phone handler? Calls will stay unavailable until you assign an extension.`))
+              void act("phone-import", { number_sid: line.provider_number_sid, legacy_binding_id: line.id, confirm: true });
+          }}>Move number to extension setup</button>
+        </fieldset>
+      ))}
+      {state?.extension_lines?.map((line) => {
+        const assignment = extensionAssignments[line.id] ?? { installation: "", digest: "" };
+        return <fieldset key={line.id} disabled={busy || !state.enabled}>
+          <legend>Extension phone handler</legend>
+          <p>{line.phone_number ?? "Phone number"} · {line.status} · {line.handler_status ?? "No handler assigned"}</p>
+          <label>Installation ID <input value={assignment.installation} onChange={(e) => setExtensionAssignments((current) => ({ ...current, [line.id]: { ...assignment, installation: e.target.value } }))} /></label>
+          <label>Handler SHA-256 <input value={assignment.digest} maxLength={64} onChange={(e) => setExtensionAssignments((current) => ({ ...current, [line.id]: { ...assignment, digest: e.target.value } }))} /></label>
+          <button type="button" onClick={() => void act("phone-handler", { binding_id: line.id, installation_id: assignment.installation, handler_sha256: assignment.digest, confirm: true })}>Assign or update extension</button>{" "}
+          <button type="button" onClick={() => { if (window.confirm("Detach this number and restore its prior carrier callbacks?")) void act("phone-detach", { binding_id: line.id, confirm: true }); }}>Detach number</button>
+        </fieldset>;
+      })}
       <p>
         {state?.phone?.phone_number ?? "No number connected"}{" "}
         {state?.phone?.status ?? ""}
