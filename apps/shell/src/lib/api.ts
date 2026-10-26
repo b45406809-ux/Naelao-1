@@ -1492,6 +1492,20 @@ export async function listContainerInstallations(spaceId: string, session: Sessi
   const query = params.size ? `?${params}` : "";
   return apiFetch<{ installations: ContainerInstallation[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/container-installations${query}`, { session });
 }
+export interface ManagedRuntimeProfile {
+  enabled: boolean; state: "checkpointed" | "active" | "empty"; image?: string;
+  checkpoint_created_at?: number; can_restore: boolean;
+}
+function managedRuntimeProfilePath(spaceId: string, projectId: string, installationId: string, containerId: string) {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/runtime-installations/${encodeURIComponent(installationId)}/containers/${encodeURIComponent(containerId)}/profile`;
+}
+export function getManagedRuntimeProfile(spaceId: string, projectId: string, installationId: string, containerId: string, session: SessionCredentials, branch?: string) {
+  const suffix = branch ? `?branch=${encodeURIComponent(branch)}` : "";
+  return apiFetch<ManagedRuntimeProfile>(managedRuntimeProfilePath(spaceId, projectId, installationId, containerId) + suffix, { session, cache: "no-store" });
+}
+export function resetManagedRuntimeProfile(spaceId: string, projectId: string, installationId: string, containerId: string, session: SessionCredentials, branch?: string) {
+  return apiFetch<{ reset: true }>(`${managedRuntimeProfilePath(spaceId, projectId, installationId, containerId)}/reset`, { method: "POST", session, body: JSON.stringify(branch ? { branch } : {}) });
+}
 export function setProjectExtensionEnabled(spaceId: string, projectId: string, instanceId: string, session: SessionCredentials, enabled: boolean) {
   return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extension-installations/${encodeURIComponent(instanceId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
 }

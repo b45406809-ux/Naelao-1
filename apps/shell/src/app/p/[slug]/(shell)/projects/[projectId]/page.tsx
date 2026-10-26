@@ -14,6 +14,7 @@
 
 import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
 import { AssistantSidePanelBody } from "@/components/AssistantSidePanels";
+import { ManagedRuntimeProfilesPanel } from "@/components/ManagedRuntimeProfilesPanel";
 import { ProjectKindPanel } from "@/components/ProjectKindPanel";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProductAuth } from "@/lib/auth-provider";
@@ -542,6 +543,8 @@ export default function ProjectDetailPage() {
           isBusinessSpace={activeSpaceId !== product.space_id}
         />
       </section>}
+
+      {creds && <ManagedRuntimeProfilesPanel spaceId={activeSpaceId} projectId={project.id} session={creds} />}
 
       {/* Real data only — no fabricated "credits used" tile the way the mockup's equivalent had. */}
       <div className="grid-4">

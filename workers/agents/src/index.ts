@@ -99,11 +99,12 @@ import { applyOnboardingAutonomyPolicy } from "./launchpad/autonomy-policy.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 import { customAgentToConfig } from "./agent-templates.js";
 import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/agent-config.js";
-import { actorAddress, type ThreadTier } from "@naelao/agent-sdk";
+import { actorAddress, parseExtensionPrimitive, type ContainerContract, type ThreadTier } from "@naelao/agent-sdk";
 import { applyDurableObjectJurisdiction, isSpaceNetworkEgressDenied } from "@naelao/security";
 import { deleteBytesCas, putBytesCas, readBytesWithHash, R2CasConflictError } from "./script-engine/r2-cas.js";
 import { workspacePrefix } from "./script-engine/types.js";
-import { validateContainerScope, type ContainerInvocationScope } from "./script-engine/container-policy.js";
+import { approvedContainer, parseApprovedContainerImages, sidecarKey, validateContainerScope, type ContainerInvocationScope } from "./script-engine/container-policy.js";
+import { workspaceBranchScope } from "./script-engine/sandbox-routing.js";
 import {
   createAgentEmailAddress, createReplyAddress, emailReplyBody, hashEmailAddress, MAX_EMAIL_ATTACHMENT_BYTES,
   MAX_EMAIL_ATTACHMENTS_TOTAL_BYTES, MAX_INBOUND_EMAIL_BYTES, normalizeIngressDomain,
@@ -4130,6 +4131,86 @@ async function fetchInstalledConnectionContext(env: AgentsEnv, tenantId: string,
     || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(result.instance.scope ?? "") || result.release?.signatureValid !== true) return null;
   return result;
 }
+
+async function managedRuntimeProfileTarget(env: AgentsEnv, input: { tenantId: string; spaceId: string; projectId: string; installationId: string; containerId: string; actorId: string; branch?: string }) {
+  if (!env.DYNAMIC_SANDBOX || env.DYNAMIC_CONTAINERS_ENABLED !== "true" || !env.SPACES_WORKER) throw new Error("managed_runtime_profiles_unavailable");
+  if (![input.spaceId, input.projectId, input.installationId].every(value => /^[A-Za-z0-9._:-]{1,160}$/.test(value))
+    || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(input.containerId)) throw badRequest("Invalid runtime profile scope");
+  let branchSuffix: string;
+  try { branchSuffix = workspaceBranchScope(input.branch); } catch { throw badRequest("Invalid workspace branch"); }
+  const response = await env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(input.spaceId)}/workflow-installations/${encodeURIComponent(input.installationId)}`,
+    { headers: { "x-naelao-tenant-id": input.tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, input.tenantId) } },
+  ));
+  if (!response.ok) throw new Error("managed_runtime_installation_unavailable");
+  const result = await response.json<{ instance?: { instance_id?: string; tenant_id?: string; space_id?: string; project_id?: string | null; scope?: string; status?: string }; manifest?: { id?: string; bundle?: { primitives?: unknown[] }; containers?: unknown[] }; release?: { signatureValid?: boolean } }>();
+  const instance = result.instance, manifest = result.manifest;
+  if (!instance || instance.instance_id !== input.installationId || instance.tenant_id !== input.tenantId || instance.space_id !== input.spaceId
+    || instance.project_id !== input.projectId || !["PROJECT_BOUND", "PROJECT_SHARED"].includes(instance.scope ?? "") || instance.status !== "active"
+    || result.release?.signatureValid !== true || !manifest) throw new Error("managed_runtime_installation_unavailable");
+  const declarations = [...(manifest.bundle?.primitives ?? []), ...(manifest.containers ?? [])];
+  const containers: ContainerContract[] = [];
+  for (const declaration of declarations) {
+    try { const primitive = parseExtensionPrimitive(declaration); if (primitive.kind === "container") containers.push(primitive); } catch { /* ignore malformed historical declarations */ }
+  }
+  const matches = containers.filter(contract => contract.id === input.containerId);
+  if (matches.length !== 1) throw new Error("managed_runtime_container_unavailable");
+  const installed = { tenantId: input.tenantId, spaceId: input.spaceId, projectId: input.projectId,
+    installationId: input.installationId, extensionId: manifest.id ?? "", contract: matches[0]!, scope: instance.scope as ContainerInvocationScope["installationScope"] };
+  let approved;
+  try { approved = approvedContainer(installed, parseApprovedContainerImages(env.CONTAINER_IMAGE_REGISTRY)); }
+  catch { throw new Error("managed_runtime_profile_provider_unsupported"); }
+  if (approved.binding !== "TOOL_SANDBOX" || approved.schedulingPolicy !== "durable_object") throw new Error("managed_runtime_profile_provider_unsupported");
+  const now = Date.now();
+  const scope: ContainerInvocationScope = { tenantId: input.tenantId, spaceId: input.spaceId, projectId: input.projectId, actorId: input.actorId,
+    agentId: "runtime-profile-control", runId: `profile:${crypto.randomUUID()}`, executionId: crypto.randomUUID(), installationId: input.installationId,
+    installationScope: instance.scope as ContainerInvocationScope["installationScope"], image: matches[0]!.image, dynamicImage: true,
+    ...(input.branch ? { workspaceBranch: input.branch } : {}), timeoutMs: 5000, deadline: now + 5000 };
+  validateContainerScope(scope, now);
+  return { stub: env.DYNAMIC_SANDBOX.get(env.DYNAMIC_SANDBOX.idFromName(sidecarKey(scope) + branchSuffix)), tenantId: input.tenantId };
+}
+
+async function requireProjectAccessForManagedProfile(c: Context<{ Bindings: AgentsEnv }>, spaceId: string, projectId: string, write: boolean): Promise<{ tenantId: string; userId: string }> {
+  const tenantId = await requireVerifiedTenant(c), { userId, role } = getCallerIdentity(c);
+  if (!userId || userId.length > 160 || !c.env.SPACES_WORKER) throw forbidden("Project membership required");
+  if (write) await requireApprovalAuthority(c, spaceId);
+  const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": role,
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) };
+  const project = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}`, { headers }));
+  if (!project.ok) throw forbidden("Project membership required");
+  return { tenantId, userId };
+}
+
+function managedRuntimeProfileFailure(error: unknown, c: Context<{ Bindings: AgentsEnv }>) {
+  const code = error instanceof Error ? error.message : "";
+  if (code === "managed_runtime_profiles_unavailable") return c.json({ error_code: code }, 503);
+  if (["managed_runtime_installation_unavailable", "managed_runtime_container_unavailable"].includes(code)) return c.json({ error_code: code }, 404);
+  if (code === "managed_runtime_profile_provider_unsupported") return c.json({ error_code: code }, 503);
+  throw error;
+}
+
+app.get("/spaces/:spaceId/projects/:projectId/runtime-installations/:installationId/containers/:containerId/profile", async c => {
+  const { spaceId, projectId, installationId, containerId } = c.req.param();
+  const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, false);
+  const branch = c.req.query("branch") ?? "";
+  try {
+    const target = await managedRuntimeProfileTarget(c.env, { tenantId, spaceId, projectId, installationId, containerId, actorId: userId, ...(branch ? { branch } : {}) });
+    return target.stub.fetch(new Request("http://sandbox/_internal/profile", { method: "POST", headers: { "content-type": "application/json",
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ tenantId }) }));
+  } catch (error) { return managedRuntimeProfileFailure(error, c); }
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/runtime-installations/:installationId/containers/:containerId/profile/reset", async c => {
+  const { spaceId, projectId, installationId, containerId } = c.req.param();
+  const { tenantId, userId } = await requireProjectAccessForManagedProfile(c, spaceId, projectId, true);
+  const body = await c.req.json<{ branch?: string }>().catch(() => ({} as { branch?: string }));
+  if (body.branch !== undefined && typeof body.branch !== "string") throw badRequest("Invalid branch");
+  try {
+    const target = await managedRuntimeProfileTarget(c.env, { tenantId, spaceId, projectId, installationId, containerId, actorId: userId, ...(body.branch ? { branch: body.branch } : {}) });
+    return target.stub.fetch(new Request("http://sandbox/_internal/profile", { method: "POST", headers: { "content-type": "application/json",
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) }, body: JSON.stringify({ tenantId, reset: true }) }));
+  } catch (error) { return managedRuntimeProfileFailure(error, c); }
+});
 
 function extensionConnectionCredentialName(installationId: string, connectionId: string, generation: string, provider: "slack" | "telegram" | "whatsapp" = "slack"): string {
   const digest = [...new TextEncoder().encode(`${installationId}:${connectionId}`)].map(byte => byte.toString(16).padStart(2, "0")).join("");
