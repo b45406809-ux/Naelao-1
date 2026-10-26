@@ -175,6 +175,13 @@ function loopbackUrl(value) {
   if (url.protocol !== "http:" || url.username || url.password || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Error("bridge_inference_loopback_required");
   return url;
 }
+export function decodeBridgeArgument(value, maximumBytes) {
+  if (typeof value !== "string" || value.length > 4 * Math.ceil(maximumBytes / 3) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw new Error("bridge_encoded_argument_invalid");
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.length > maximumBytes || bytes.toString("base64") !== value) throw new Error("bridge_encoded_argument_invalid");
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new Error("bridge_encoded_argument_invalid"); }
+}
 async function consentedPath(path, roots, writing = false) {
   const absolute = resolve(String(path));
   let actual;
@@ -350,12 +357,17 @@ export async function runBridge(argv) {
     if (!value || value.startsWith("--")) throw new Error("bridge_option_value_required:" + flag);
     const fields = { "--url": "url", "--name": "name", "--identity": "identityFile", "--enrollment-file": "enrollmentFile", "--passphrase-file": "passphraseFile", "--inference-url": "inferenceUrl", "--inventory-file": "inventoryFile" };
     const arrays = { "--allow-dir": "allowDirs", "--allow-command": "allowCommands", "--model": "models", "--capability": "capabilities" };
+    const encodedArrays = { "--allow-dir-base64": ["allowDirs", 1024], "--allow-command-base64": ["allowCommands", 8192] };
     if (fields[flag]) options[fields[flag]] = value;
     else if (arrays[flag]) options[arrays[flag]].push(value);
+    else if (encodedArrays[flag]) {
+      const [field, maximumBytes] = encodedArrays[flag];
+      options[field].push(decodeBridgeArgument(value, maximumBytes));
+    }
     else throw new Error("bridge_unknown_option:" + flag);
     index++;
   }
-  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path] [--allow-command exact-command | --allow-sandboxed-shell] [--allow-inference --inference-url http://127.0.0.1:11434/v1/chat/completions]\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
+  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path | --allow-dir-base64 utf8-base64] [--allow-command exact-command | --allow-command-base64 utf8-base64 | --allow-sandboxed-shell] [--allow-inference --inference-url http://127.0.0.1:11434/v1/chat/completions]\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
   if (!options.identityFile) {
     if (!options.name || !/^[a-z][a-z0-9-]{1,62}$/.test(options.name)) throw new Error("bridge_named_identity_required");
     options.identityFile = join(homedir(), ".naelao", "bridge", options.name + ".json");

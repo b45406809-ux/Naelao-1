@@ -26,7 +26,7 @@ export interface EnvironmentRequirement {
   appId?: string;
   connectionId?: string;
   mode: "managed" | "capability" | "fallback";
-  /** Only the host may set this after confirming a capacity/provider availability failure. */
+  /** Only the host may set this when no compatible managed target is eligible or its provider is unavailable. */
   managedUnavailable?: boolean;
 }
 export interface EnvironmentOwner {

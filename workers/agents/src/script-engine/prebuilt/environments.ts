@@ -25,7 +25,7 @@ async function cards(ctx: PrebuiltOpContext, command?: string): Promise<Environm
     const inventory = await ctx.env.containerRuntimeInventory();
     result.push(...inventory.installed.slice(0, 128).filter(item => item.projectId === ctx.env.projectId).map(item => ({ ...scope, id: item.installationId, name: item.installationId,
       kind: "managed" as const, provider: "cloudflare", capabilities: ["bash", ...item.contract.exportedBinaries], observedAt: now,
-      available: true, authorized: true, persistence: "ephemeral" as const, filesystemModel: "workspace-backed" as const, apps: [], externalUse: [] })));
+      available: ctx.env.managedEnvironmentsUnavailable !== true && inventory.catalogue.some(image => image.available && image.image === item.contract.image), authorized: true, persistence: "ephemeral" as const, filesystemModel: "workspace-backed" as const, apps: [], externalUse: [] })));
   }
   if (ctx.env.localTunnel) {
     const machines = await ctx.env.localTunnel.list();
@@ -115,7 +115,7 @@ export const environments: PrebuiltScript = {
       if (!command.trim() || command.length > 8192) throw new Error("environment_command_invalid");
       if (args.cwd !== undefined && (typeof args.cwd !== "string" || args.cwd.length > 1024 || !args.cwd.startsWith("/"))) throw new Error("environment_working_directory_invalid");
       if (!ctx.env.executionSessions || !ctx.env.humanInvokerId) throw new Error("environment_session_host_unavailable");
-      if (args.mode !== undefined && args.mode !== "managed" && args.mode !== "capability" && (args.mode !== "fallback" || ctx.env.managedEnvironmentsUnavailable !== true)) throw new Error("environment_fallback_requires_host_availability_evidence");
+      if (args.mode !== undefined && args.mode !== "managed" && args.mode !== "capability" && args.mode !== "fallback") throw new Error("environment_execution_mode_invalid");
       const capabilities = args.capabilities ?? ["bash"];
       if (!Array.isArray(capabilities) || capabilities.some(value => typeof value !== "string")) throw new Error("environment_capabilities_invalid");
       if (args.app_id !== undefined && typeof args.app_id !== "string" || args.connection_id !== undefined && typeof args.connection_id !== "string") throw new Error("environment_app_requirement_invalid");
@@ -123,9 +123,12 @@ export const environments: PrebuiltScript = {
       const available = await cards(ctx, command);
       const sessionTarget = await ctx.env.executionSessions.target({ sessionId: String(args.session_id ?? ""), owner: owner(ctx), actorId: ctx.env.humanInvokerId, branch: ctx.env.workspaceBranch ?? "" });
       if (sessionTarget && args.target_id && sessionTarget !== args.target_id) throw new Error("environment_session_target_conflict");
+      const appRequirement = { capabilities, ...(typeof args.app_id === "string" ? { appId: args.app_id } : {}), ...(typeof args.connection_id === "string" ? { connectionId: args.connection_id } : {}) };
+      const managedEligible = eligibleEnvironments(available, owner(ctx), { ...appRequirement, mode: "managed" });
+      const managedUnavailable = ctx.env.managedEnvironmentsUnavailable === true || managedEligible.length === 0;
       const requirement = { capabilities, mode: args.mode === "capability" ? "capability" as const : args.mode === "fallback" ? "fallback" as const : "managed" as const,
         ...(typeof args.app_id === "string" ? { appId: args.app_id } : {}),
-        ...(ctx.env.managedEnvironmentsUnavailable === true ? { managedUnavailable: true } : {}),
+        ...(managedUnavailable ? { managedUnavailable: true } : {}),
         ...(typeof args.connection_id === "string" ? { connectionId: args.connection_id } : {}) };
       const eligible = eligibleEnvironments(available, owner(ctx), requirement);
       let recommended: string | undefined;

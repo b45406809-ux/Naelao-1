@@ -10,7 +10,9 @@ macOS and Windows shell adapters, native packaging and live-machine verification
 2. Set `NAELAO_BRIDGE_KEY_PASSPHRASE` or pass a private `--passphrase-file`.
    Run the built CLI's `login --url https://AGENTS_ENDPOINT --name MACHINE
    --enrollment-file TICKET.json --allow-dir FOLDER`. Opt into individual commands
-   with repeated `--allow-command`. Sandboxed shell requires both the host grant and local
+   with repeated `--allow-command`. The shell UI uses `--allow-dir-base64` and
+   `--allow-command-base64` so special characters are passed literally across terminals.
+   Sandboxed shell requires both the host grant and local
    `--allow-sandboxed-shell`; inference needs `--allow-inference`.
 3. Run `connect --identity IDENTITY.json`. Encrypted Ed25519 credentials and a
    request journal persist beside the identity. Only one daemon can hold its lock.
@@ -21,7 +23,8 @@ macOS and Windows shell adapters, native packaging and live-machine verification
 
 Operations require both server grants and local consent. The bridge keeps the computer's
 filesystem independent from the Naelao workspace: it does not mount or synchronize the
-workspace. On Linux, shell commands run through bubblewrap with network disabled, system
+workspace. Selected binary artifacts up to 12 KiB can be explicitly imported/exported; local
+exports create a new file and do not overwrite. On Linux, shell commands run through bubblewrap with network disabled, system
 runtime directories read-only, and only `--allow-dir` folders mounted read/write. An optional
 working directory must be inside one of those folders. Files cross the boundary only through
 explicit file or artifact operations. The Linux adapter fails closed if bubblewrap is absent.

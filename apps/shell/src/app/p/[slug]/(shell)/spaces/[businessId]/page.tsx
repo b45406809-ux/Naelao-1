@@ -33,6 +33,7 @@ import {
 } from "@/lib/api";
 
 const GRANT_TYPES = ["read", "write", "readwrite", "exec"] as const;
+function base64Arg(value: string): string { return btoa(Array.from(new TextEncoder().encode(value), (byte) => String.fromCharCode(byte)).join("")); }
 
 export default function BusinessDetailPage() {
   const params = useParams<{ slug: string; businessId: string }>();
@@ -55,6 +56,7 @@ export default function BusinessDetailPage() {
   const [machineCommands, setMachineCommands] = React.useState("");
   const [machineShellAccess, setMachineShellAccess] = React.useState(false);
   const [machineAutoSelect, setMachineAutoSelect] = React.useState(false);
+  const [machineFallback, setMachineFallback] = React.useState(false);
   const [machineEnrollment, setMachineEnrollment] = React.useState<{ ticket: string; command: string } | null>(null);
   const [creatingMachine, setCreatingMachine] = React.useState(false);
   const [grantType, setGrantType] = React.useState<(typeof GRANT_TYPES)[number]>("read");
@@ -199,20 +201,20 @@ export default function BusinessDetailPage() {
     setCreatingMachine(true);
     try {
       const commands = machineCommands.split("\n").map((value) => value.trim()).filter(Boolean);
-      if (!machineName.trim() || !machineRoot.trim()) throw new Error("Enter a computer name and one folder on that computer.");
+      if (!machineName.trim() || !machineRoot.trim() || new TextEncoder().encode(machineRoot.trim()).length > 1024 || !/^(?:\/|[A-Za-z]:[\\/])/.test(machineRoot.trim()) || /[\u0000-\u001f\u007f]/.test(machineRoot)) throw new Error("Enter a computer name and one absolute, valid folder path on that computer.");
       if (!machineShellAccess && commands.length === 0) throw new Error("Choose sandboxed shell access or enter at least one exact command.");
-      if (commands.some((value) => value.length > 8192)) throw new Error("Each exact command must be at most 8,192 characters.");
+      if (commands.some((value) => new TextEncoder().encode(value).length > 8192 || /[\u0000-\u001f\u007f]/.test(value))) throw new Error("Each exact command must be at most 8,192 printable UTF-8 bytes.");
       const grant: NamedMachineGrant = {
         id: crypto.randomUUID(), actorId: session.end_user_id, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
         roots: [{ path: machineRoot.trim(), access: "readwrite" }], commands, inference: false,
         ...(machineShellAccess ? { shellAccess: "sandboxed" as const } : {}),
-        ...(machineAutoSelect ? { externalUse: ["capability"] as Array<"capability"> } : {}),
+        ...(machineAutoSelect || machineFallback ? { externalUse: [...(machineAutoSelect ? ["capability" as const] : []), ...(machineFallback ? ["fallback" as const] : [])] } : {}),
       };
       const name = machineName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
       if (!/^[a-z][a-z0-9-]{1,62}$/.test(name)) throw new Error("Computer name must start with a letter and contain 2–63 letters, numbers, or hyphens.");
       const enrollment = await createTunnelEnrollment(params.businessId, creds, { name, grants: [grant] });
       const ticket = JSON.stringify(enrollment, null, 2);
-      const command = `naelao-bridge login --url https://AGENTS_ENDPOINT --name ${enrollment.name} --enrollment-file enrollment.json --allow-dir ${JSON.stringify(machineRoot.trim())}${machineShellAccess ? " --allow-sandboxed-shell" : ""}${commands.map((value) => ` --allow-command ${JSON.stringify(value)}`).join("")}`;
+      const command = `naelao-bridge login --url https://AGENTS_ENDPOINT --name ${enrollment.name} --enrollment-file enrollment.json --allow-dir-base64 ${base64Arg(machineRoot.trim())}${machineShellAccess ? " --allow-sandboxed-shell" : ""}${commands.map((value) => ` --allow-command-base64 ${base64Arg(value)}`).join("")}`;
       setMachineEnrollment({ ticket, command });
       setMachineName("");
       show("One-time enrollment created. Save its JSON privately and run the local consent command on that computer.");
@@ -389,6 +391,7 @@ export default function BusinessDetailPage() {
         </div>
         <label style={{ fontSize: 12, color: "var(--text2)" }}><input type="checkbox" checked={machineShellAccess} onChange={(event) => setMachineShellAccess(event.target.checked)} /> Allow sandboxed shell in this folder (also requires local opt-in; network stays disabled)</label>
         <label style={{ fontSize: 12, color: "var(--text2)" }}><input type="checkbox" checked={machineAutoSelect} onChange={(event) => setMachineAutoSelect(event.target.checked)} /> Allow the planner to select this computer when its capabilities match</label>
+        <label style={{ fontSize: 12, color: "var(--text2)" }}><input type="checkbox" checked={machineFallback} onChange={(event) => setMachineFallback(event.target.checked)} /> Allow this computer as a last resort only when no managed runtime can meet the task’s requirements</label>
         {!machineShellAccess && <FormInput placeholder="Exact commands, one per line (optional if shell is enabled)" value={machineCommands} onChange={(event) => setMachineCommands(event.target.value)} />}
         <div><Button type="submit" disabled={creatingMachine}>{creatingMachine ? "Creating enrollment…" : "Create one-time enrollment"}</Button></div>
         {machineEnrollment && <div className="settings-block" style={{ padding: 12 }}>

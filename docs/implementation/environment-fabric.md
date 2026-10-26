@@ -4,12 +4,12 @@ Requested 2026-10-26. The planner/worker architecture and three workspace bounda
 
 ## Acceptance checklist
 
-- [ ] Environment cards: scoped managed runtimes and named tunnels, timestamped capability/app observations; never credentials.
-- [ ] Deterministic eligibility before decision-model ranking; explicit external capability/fallback consent, no policy/budget bypass.
+- [x] Environment cards: scoped managed runtimes and named tunnels, timestamped capability/app observations; never credentials.
+- [x] Deterministic eligibility before decision-model ranking; explicit external capability/fallback consent, no policy/budget bypass. Host-derived fallback requires no compatible managed target or an unavailable managed provider.
 - [x] Durable execution sessions bind environment and command identity; uncertain outcomes never migrate or replay. Managed cross-run restoration is explicitly blocked until implemented.
 - [x] Scoped content-addressed workspace artifact publish/restore with destination revision checks; explicit machine import/export for files up to 12 KiB, with digest verification and recoverable tunnel request IDs. Larger resumable cross-provider transfers remain open.
 - [ ] Unified subscription limits, atomic reservations, usage reconciliation and bounded prewarming.
-- [ ] Template runtime requirements, dependency/order validation, reduced-plan preview and required-component blocking.
+- [x] Template runtime requirements, dependency/order validation, reduced-plan preview and required-component blocking. Automatic runtime installation remains incomplete.
 - [x] Activation preview reports required runtimes as unavailable and optional runtimes as deferred when the host has no provisioner; required runtimes block activation.
 - [ ] Installation UI displays included, deferred and unavailable components from real release resolution and plan capacity. Current UI reports only the truthful unavailable/deferred states.
 - [ ] Managed application data/profile lifecycle and restoration; credentials remain host-controlled.
@@ -30,7 +30,7 @@ This environment exposes no Modal/Cloudflare production credential bindings or a
 
 - SDK environment cards, deterministic scope/authority/freshness/capability/account eligibility, optional eligible-only System One ranking and pinned selection.
 - `naelao environment list|execute|status` in the existing virtual CLI and tool catalogue. Planners can inspect cards; execution remains worker-owned and subject to shell authorization and native execution ceilings.
-- Managed installed runtime execution and explicit capability/fallback tunnel selection; fallback currently requires total absence of managed bindings, not a transient provider error. Native grant and current infrastructure quota are checked before external dispatch. Existing grants do not opt into selection.
+- Managed installed runtime execution and explicit capability/fallback tunnel selection. A managed environment card is available only when its image is present in the deployment-approved catalogue. Fallback is host-derived per task: a tunnel is eligible only when no available managed card can satisfy the declared capabilities/app profile, and the owner granted fallback use. It does not trust worker-supplied unavailability claims. Native grant and current infrastructure quota are checked before external dispatch. Existing grants do not opt into selection.
 - Durable per-agent session/action journal: target binding, atomic claims, request reconciliation, conflict rejection, serialization of dependent actions, bounded receipts, duplicate suppression, and a 256-action session bound.
 - Managed sessions explicitly require restoration when their run changes. They do not claim cross-run app/process persistence. Group shell-dependent commands in one invocation.
 - Optional signed bridge app observations with strict field validation and no secret fields. Authentication observations are not automatically probed; account references are never copied.
@@ -39,6 +39,7 @@ This environment exposes no Modal/Cloudflare production credential bindings or a
 - Linux bridge commands use bubblewrap: private mount, process and network namespaces; system runtime paths read-only; scratch-only `/tmp`; approved roots mounted with host-granted read/write mode. The daemon intersects host roots with its own canonical owner-consented roots. Unsupported OSes and missing bubblewrap fail closed.
 - The host tunnel now sends only the matching machine grant's roots to execution, binds them into the durable request hash, and rejects dot-segment paths. A host-side `shellAccess: "sandboxed"` grant and local `--allow-sandboxed-shell` consent are both required for general shell work.
 - The Space computer panel creates one-use five-minute enrollment tickets, displays each registered machine's freshness and grant scope, and supports revocation. Linux auto-advertises `bash` only when bubblewrap and local sandbox consent are present.
+- The computer grant UI exposes separate capability-selection and last-resort fallback consent. It base64-encodes paths and exact commands in the enrollment command to pass them literally across Bash, PowerShell and CMD.
 - Template runtime requirements and dependency/capacity preview SDK. Requirements survive project instantiation and re-export. Automatic runtime installation and shell installation preview are not yet connected.
 - Template activation endpoint independently rejects required runtime declarations when no host provisioner is available; direct API calls cannot bypass the preview's required-runtime blocker.
 - Shared existing managed CPU/RAM/concurrency ceilings through `getExecutionLimits`; this is not yet a unified reservation system for all workspace types.
@@ -65,6 +66,7 @@ Next unfinished action: connect template runtime declarations to host-approved r
 - Agents environment/session/artifact/CLI/capability group: 59 tests passed; an additional CLI JSON/flag regression test passed afterward (18 CLI tests total).
 - Communications group: 23 tests passed after bringing its test fixture up to date with the retained legacy-number migration table. No customer runtime was restored.
 - Space Template activation focused group: 11 tests passed, including the direct-API required-runtime bypass regression.
+- External environment routing: 12 focused worker tests and 10 SDK tests passed, including task-specific fallback eligibility and provider outage handling. Bridge suite: 9 tests passed, including real Linux bubblewrap confinement and literal cross-shell argument parsing. Agents and shell typechecks passed.
 - Bridge model discovery: 2 tests passed.
 - Stress coverage includes 100 duplicate simultaneous submissions, maximum dependency-chain size, oversized outputs, stale revisions, scope/authority violations, unknown app fields and uncertain execution results.
 - No live Cloudflare/Modal, GPU, browser login or personal-machine acceptance was performed.

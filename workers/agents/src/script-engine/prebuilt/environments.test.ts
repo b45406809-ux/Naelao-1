@@ -14,7 +14,7 @@ function fixture() {
   const machine = { machineId: "gpu", updatedAt: Date.now(), hardware: { capabilities: ["cuda", "bash"], apps: [{ id: "blender" }] }, grants: [{ actorId: "owner", projectId: "project" as string | undefined, expiresAt: Date.now() + 60000, commands: ["python train.py"], shellAccess: undefined as "sandboxed" | undefined, externalUse: ["capability"] }] };
   const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", runId: "run", humanInvokerId: "owner", nativeExecutionAllowed: true, maxTier: 6,
     executionSessions: new ExecutionSessions(storage), scriptsBucket: {}, admitExternalEnvironment: vi.fn(async () => true),
-    containerRuntimeInventory: vi.fn(async () => ({ installed: [{ installationId: "runtime", projectId: "project", contract: { image: "image", exportedBinaries: ["node"] } }], catalogue: [] })),
+    containerRuntimeInventory: vi.fn(async () => ({ installed: [{ installationId: "runtime", projectId: "project", contract: { image: "image", exportedBinaries: ["node"] } }], catalogue: [{ id: "runtime-image", available: true, image: "image" }] })),
     codeRunner: { run: vi.fn(async () => ({ ok: true, output: { stdout: "built" }, tier: 6, actual_tier: 6, engine: "container" })) },
     localTunnel: { list: vi.fn(async () => [machine]), status: vi.fn(async () => ({ connected: true })), exec: vi.fn(async () => ({ ok: true, status: "sent", request_id: "request" })), requestStatus: vi.fn(async () => ({ ok: true, result: { status: "succeeded", stdout: "trained" } })) },
   }, authorizeShell: vi.fn(async () => true) } as unknown as PrebuiltOpContext;
@@ -102,11 +102,28 @@ describe("environment tool host integration", () => {
     await expect(execute({ ...args, action_id: "wrong-app", app_id: "office" }, ctx)).rejects.toThrow("environment_session_target_unavailable");
     expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
   });
-  it("rejects caller-supplied fallback evidence and lower execution ceilings", async () => {
+  it("allows host-verified last-resort fallback only when no managed runtime fits", async () => {
+    const { ctx, machine } = fixture();
+    machine.grants[0]!.externalUse = ["fallback"];
+    const fallback = { session_id: "fallback-cuda", action_id: "train", command: "python train.py", capabilities: ["cuda"], mode: "fallback", target_id: "gpu" };
+    expect(await execute(fallback, ctx)).toMatchObject({ environment_id: "gpu" });
+    const managedFits = { ...fallback, session_id: "fallback-bash", action_id: "list", capabilities: ["bash"], target_id: undefined };
+    expect(await execute(managedFits, ctx)).toMatchObject({ stdout: "built" });
+    expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
+  });
+  it("uses last-resort fallback when the host reports managed providers unavailable", async () => {
+    const { ctx, machine } = fixture();
+    machine.grants[0]!.externalUse = ["fallback"];
+    ctx.env.managedEnvironmentsUnavailable = true;
+    const args = { session_id: "provider-down", action_id: "step", command: "python train.py", capabilities: ["bash"], mode: "fallback", target_id: "gpu" };
+    expect(await execute(args, ctx)).toMatchObject({ environment_id: "gpu" });
+    expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
+  });
+  it("does not accept caller-supplied fallback evidence and enforces execution ceilings", async () => {
     const { ctx } = fixture(), args = { session_id: "session", action_id: "step", command: "python train.py", mode: "fallback", managedUnavailable: true };
-    await expect(execute(args, ctx)).rejects.toThrow("host_availability_evidence");
+    expect(await execute(args, ctx)).toMatchObject({ stdout: "built" });
     ctx.env.maxTier = 2;
-    await expect(execute({ ...args, mode: "capability" }, ctx)).rejects.toThrow("native_execution_denied");
+    await expect(execute({ ...args, session_id: "low-tier", mode: "capability" }, ctx)).rejects.toThrow("native_execution_denied");
     expect(ctx.env.localTunnel!.exec).not.toHaveBeenCalled();
   });
   it("checks shell authorization even for a granted tunnel command", async () => {
