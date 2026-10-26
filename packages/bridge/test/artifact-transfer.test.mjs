@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { readMachineArtifact, writeMachineArtifact } from "../src/artifact-transfer.mjs";
 
 test("machine artifact handoff is binary-safe, bounded, and create-only when requested", async () => {
@@ -27,4 +28,34 @@ test("machine artifact handoff is binary-safe, bounded, and create-only when req
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("resumes bounded binary chunks and publishes only a complete verified file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "naelao-chunk-transfer-"));
+  try {
+    const source = join(directory, "large.bin"), target = join(directory, "restored.bin");
+    const bytes = Buffer.from(Array.from({ length: 20_000 }, (_, index) => index % 251));
+    await writeFile(source, bytes);
+    const first = await readMachineArtifact(source, { offset: 0, length: 0 });
+    const chunks = [];
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+      chunks.push(await readMachineArtifact(source, { offset, length: Math.min(8192, bytes.length - offset), fingerprint: first.fingerprint }));
+    }
+    assert.deepEqual(Buffer.concat(chunks.map(chunk => Buffer.from(chunk.content, "base64"))), bytes);
+
+    const digest = createHash("sha256").update(bytes).digest("hex"), transferId = "a".repeat(64);
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+      const part = bytes.subarray(offset, Math.min(offset + 8192, bytes.length));
+      const result = await writeMachineArtifact(target, { encoding: "base64", content: part.toString("base64"), transfer_id: transferId,
+        offset, total_bytes: bytes.length, sha256: digest, finalize: offset + part.length === bytes.length });
+      if (offset + part.length === bytes.length) assert.equal(result.finalized, true);
+    }
+    assert.deepEqual(await readFile(target), bytes);
+    const last = bytes.subarray(16_384);
+    assert.deepEqual(await writeMachineArtifact(target, { encoding: "base64", content: last.toString("base64"), transfer_id: transferId,
+      offset: 16_384, total_bytes: bytes.length, sha256: digest, finalize: true }),
+    { written: true, bytes: last.length, total_bytes: bytes.length, sha256: digest, finalized: true, deduplicated: true });
+    await assert.rejects(writeMachineArtifact(target, { encoding: "base64", content: bytes.subarray(0, 10).toString("base64"), transfer_id: "b".repeat(64),
+      offset: 0, total_bytes: 10, sha256: createHash("sha256").update(bytes.subarray(0, 10)).digest("hex"), finalize: true }));
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

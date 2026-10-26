@@ -23,7 +23,8 @@ macOS and Windows shell adapters, native packaging and live-machine verification
 
 Operations require both server grants and local consent. The bridge keeps the computer's
 filesystem independent from the Naelao workspace: it does not mount or synchronize the
-workspace. Selected binary artifacts up to 12 KiB can be explicitly imported/exported; local
+workspace. Selected binary artifacts up to 1 MiB can be explicitly imported/exported in
+resumable 8 KiB chunks; local
 exports create a new file and do not overwrite. On Linux, shell commands run through bubblewrap with network disabled, system
 runtime directories read-only, and only `--allow-dir` folders mounted read/write. An optional
 working directory must be inside one of those folders. Files cross the boundary only through

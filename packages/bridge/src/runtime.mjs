@@ -295,7 +295,7 @@ export async function connectBridge(options, dependencies = {}) {
                 const file = await consentedPath(frame.params.path, state.consent.roots);
                 const size = (await lstat(file)).size;
                 if (frame.params.encoding === "base64") {
-                  result = await readMachineArtifact(file);
+                  result = await readMachineArtifact(file, frame.params);
                 } else {
                   if (size > 24000) throw new Error("bridge_file_result_limit");
                   result = await readFile(file, "utf8");

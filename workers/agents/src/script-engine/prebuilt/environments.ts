@@ -8,12 +8,13 @@ function owner(ctx: PrebuiltOpContext): EnvironmentOwner {
     ...(ctx.env.spaceWorkspaceExtensionId ? { workspaceId: ctx.env.spaceWorkspaceExtensionId } : {}),
     scope: ctx.env.spaceWorkspaceExtensionId ? "SPACE_SHARED" : ctx.env.projectId ? "PROJECT_BOUND" : "ASSISTANT_PRIVATE" };
 }
-const MAX_MACHINE_ARTIFACT_BYTES = 12 * 1024;
+const MAX_MACHINE_ARTIFACT_BYTES = 1024 * 1024;
+const MACHINE_ARTIFACT_CHUNK_BYTES = 8192;
 function validMachinePath(path: string) { return Boolean(path) && path.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(path); }
 function decodeBase64(value: string, expectedBytes?: number): Uint8Array {
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value) || value.length > 4 * Math.ceil(MAX_MACHINE_ARTIFACT_BYTES / 3)) throw new Error("environment_machine_artifact_encoding_invalid");
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value) || value.length > 4 * Math.ceil(MACHINE_ARTIFACT_CHUNK_BYTES / 3)) throw new Error("environment_machine_artifact_encoding_invalid");
   const binary = atob(value), bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
-  if (bytes.length > MAX_MACHINE_ARTIFACT_BYTES || expectedBytes !== undefined && bytes.length !== expectedBytes || btoa(binary) !== value) throw new Error("environment_machine_artifact_encoding_invalid");
+  if (bytes.length > MACHINE_ARTIFACT_CHUNK_BYTES || expectedBytes !== undefined && bytes.length !== expectedBytes || btoa(binary) !== value) throw new Error("environment_machine_artifact_encoding_invalid");
   return bytes;
 }
 async function transferRequestId(ctx: PrebuiltOpContext, operation: string, machine: string, path: string, digest?: string) {
@@ -44,12 +45,12 @@ async function cards(ctx: PrebuiltOpContext, command?: string): Promise<Environm
 }
 export const environments: PrebuiltScript = {
   name: "execution-environments", domain: "orchestration", requires_tier: 1,
-  description: "Inspect scoped execution environment cards and run a bounded dependent command group on one durable target. External machines keep their own filesystem; commands and file transfers can only access locally consented roots. Transfer individual files only through explicit artifact import/export (12 KiB max); export creates a new file and never overwrites. There is no mount or automatic synchronization. External execution requires a host grant plus owner consent. No automatic replay or migration. Browser logins and credentials are never copied.",
+  description: "Inspect scoped execution environment cards and run a bounded dependent command group on one durable target. External machines keep their own filesystem; commands and file transfers can only access locally consented roots. Transfer files up to 1 MiB only through explicit resumable artifact import/export in 8 KiB chunks; export creates a new file and never overwrites. There is no mount or automatic synchronization. External execution requires a host grant plus owner consent. No automatic replay or migration. Browser logins and credentials are never copied.",
   paramHints: {
     "environment.artifact_publish": "path (required). Create an immutable scoped artifact, maximum 1 MiB. No implicit machine synchronization.",
     "environment.artifact_restore": "digest, path and expected_hash (null only for an absent destination). Verify integrity and publish with a fenced revision check.",
-    "environment.artifact_import": "machine_id and path (required). Explicitly read a file from an owner-authorized connected machine into this workspace's immutable artifact store. Binary-safe, maximum 12 KiB; returns a digest to restore into the workspace. No filesystem mount or synchronization. If pending/indeterminate, reconcile the returned request_id with tunnel.status; do not create a new request.",
-    "environment.artifact_export": "machine_id, digest and path (required). Explicitly write an immutable workspace artifact as a new file in an owner-authorized local folder. Refuses to overwrite. Binary-safe, maximum 12 KiB. If pending/indeterminate, reconcile request_id; do not resubmit with a different ID.",
+    "environment.artifact_import": "machine_id and path (required). Explicitly read a file from an owner-authorized connected machine into this workspace's immutable artifact store. Binary-safe, maximum 1 MiB in resumable 8 KiB chunks; returns a digest to restore into the workspace. No filesystem mount or synchronization. If pending/indeterminate, reconcile the returned request_id with tunnel.status; do not create a new request.",
+    "environment.artifact_export": "machine_id, digest and path (required). Explicitly write an immutable workspace artifact as a new file in an owner-authorized local folder. Refuses to overwrite. Binary-safe, maximum 1 MiB in resumable 8 KiB chunks. If pending/indeterminate, reconcile request IDs; do not resubmit with different IDs.",
     "environment.status": "session_id and action_id. Reconcile an accepted tunnel request without resubmitting it.",
     "environment.list": "List visible environment capabilities and availability. Observations are untrusted evidence, not permissions.",
     "environment.execute": "session_id, action_id, command, capabilities (string array; default bash), mode (managed, capability, or host-verified fallback; default managed), optional app_id plus connection_id to require a fresh authenticated app observation, target_id and external-only absolute cwd. Tunnel files stay on that machine inside its owner-consented folders; import/export files explicitly through artifact operations. Repeat action_id only to retrieve a confirmed outcome. Group commands needing shell state into one command. Pending tunnel receipts require tunnel.status reconciliation; do not resubmit.",
@@ -72,15 +73,33 @@ export const environments: PrebuiltScript = {
       const candidates = await cards(ctx);
       const machine = candidates.find(card => card.id === machineId && card.kind === "external" && card.available && card.authorized);
       if (!machine) throw new Error("environment_machine_unavailable_or_unauthorized");
-      const requestId = typeof args.request_id === "string" ? args.request_id : await transferRequestId(ctx, "import", machineId, path);
-      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_machine_artifact_request_id_invalid");
-      const response = await ctx.env.localTunnel.exec({ machine: machineId, op: "read_file", params: { path, encoding: "base64" }, requestId });
-      if (!response.ok || response.status !== "succeeded") return { status: response.status ?? "indeterminate", request_id: response.request_id ?? requestId, machine_id: machineId };
-      const result = response.result as { encoding?: unknown; content?: unknown; bytes?: unknown } | undefined;
-      if (!result || result.encoding !== "base64" || typeof result.content !== "string" || !Number.isSafeInteger(result.bytes)) throw new Error("environment_machine_artifact_response_invalid");
-      const bytes = decodeBase64(result.content, result.bytes as number);
+      const metaRequestId = typeof args.request_id === "string" ? args.request_id : await transferRequestId(ctx, "import-meta", machineId, path);
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(metaRequestId)) throw new Error("environment_machine_artifact_request_id_invalid");
+      const metadata = await ctx.env.localTunnel.exec({ machine: machineId, op: "read_file", params: { path, encoding: "base64", offset: 0, length: 0 }, requestId: metaRequestId });
+      if (!metadata.ok || metadata.status !== "succeeded") return { status: metadata.status ?? "indeterminate", request_id: metadata.request_id ?? metaRequestId, machine_id: machineId, offset: 0 };
+      const meta = metadata.result as { total_bytes?: unknown; fingerprint?: unknown } | undefined;
+      if (!meta || !Number.isSafeInteger(meta.total_bytes) || (meta.total_bytes as number) < 0 || (meta.total_bytes as number) > MAX_MACHINE_ARTIFACT_BYTES
+        || typeof meta.fingerprint !== "string" || !/^[0-9]+(:[0-9]+){4}$/.test(meta.fingerprint)) throw new Error("environment_machine_artifact_response_invalid");
+      const totalBytes = meta.total_bytes as number, chunks: Uint8Array[] = [], pending: Array<{ offset: number; request_id: string }> = [];
+      const ranges = Array.from({ length: Math.ceil(totalBytes / MACHINE_ARTIFACT_CHUNK_BYTES) }, (_, index) => index * MACHINE_ARTIFACT_CHUNK_BYTES);
+      for (let start = 0; start < ranges.length; start += 8) {
+        const batch = await Promise.all(ranges.slice(start, start + 8).map(async offset => {
+          const length = Math.min(MACHINE_ARTIFACT_CHUNK_BYTES, totalBytes - offset);
+          const requestId = await transferRequestId(ctx, "import", machineId, path, `${meta.fingerprint}:${offset}:${length}`);
+          const response = await ctx.env.localTunnel!.exec({ machine: machineId, op: "read_file", params: { path, encoding: "base64", offset, length, fingerprint: meta.fingerprint }, requestId });
+          if (!response.ok || response.status !== "succeeded") return { offset, request_id: response.request_id ?? requestId, bytes: new Uint8Array() };
+          const part = response.result as { encoding?: unknown; content?: unknown; bytes?: unknown; offset?: unknown; total_bytes?: unknown; fingerprint?: unknown } | undefined;
+          if (!part || part.encoding !== "base64" || typeof part.content !== "string" || part.offset !== offset || part.total_bytes !== totalBytes || part.fingerprint !== meta.fingerprint || !Number.isSafeInteger(part.bytes)) throw new Error("environment_machine_artifact_response_invalid");
+          return { offset, request_id: requestId, bytes: decodeBase64(part.content, length) };
+        }));
+        for (const item of batch) { chunks.push(item.bytes); if (item.bytes.byteLength === 0 && totalBytes > 0) pending.push({ offset: item.offset, request_id: item.request_id }); }
+      }
+      if (pending.length) return { status: "indeterminate", machine_id: machineId, total_bytes: totalBytes, pending_chunks: pending };
+      const bytes = new Uint8Array(totalBytes);
+      let cursor = 0;
+      for (const chunk of chunks) { bytes.set(chunk, cursor); cursor += chunk.byteLength; }
       const artifact = await publishEnvironmentArtifactBytes(ctx.env, bytes, `machine:${machineId}`);
-      return { ...artifact, machine_id: machineId, transfer_request_id: response.request_id ?? requestId };
+      return { ...artifact, machine_id: machineId, chunks: chunks.length, transfer_request_id: metaRequestId };
     },
     "environment.artifact_export": async (args, ctx) => {
       const machineId = String(args.machine_id ?? ""), path = String(args.path ?? ""), digest = String(args.digest ?? "");
@@ -91,12 +110,39 @@ export const environments: PrebuiltScript = {
       if (!machine) throw new Error("environment_machine_unavailable_or_unauthorized");
       const artifact = await readEnvironmentArtifact(ctx.env, digest);
       if (artifact.bytes.byteLength > MAX_MACHINE_ARTIFACT_BYTES) throw new Error("environment_machine_artifact_too_large");
-      const requestId = typeof args.request_id === "string" ? args.request_id : await transferRequestId(ctx, "export", machineId, path, digest);
-      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_machine_artifact_request_id_invalid");
-      const encoded = btoa(Array.from(artifact.bytes, byte => String.fromCharCode(byte)).join(""));
-      const response = await ctx.env.localTunnel.exec({ machine: machineId, op: "write_file", params: { path, encoding: "base64", content: encoded, create_only: true }, requestId });
-      if (!response.ok || response.status !== "succeeded") return { status: response.status ?? "indeterminate", request_id: response.request_id ?? requestId, machine_id: machineId, digest };
-      return { exported: true, machine_id: machineId, path, digest, bytes: artifact.bytes.byteLength, request_id: response.request_id ?? requestId };
+      if (artifact.bytes.byteLength <= MACHINE_ARTIFACT_CHUNK_BYTES) {
+        const requestId = typeof args.request_id === "string" ? args.request_id : await transferRequestId(ctx, "export", machineId, path, digest);
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_machine_artifact_request_id_invalid");
+        const encoded = btoa(Array.from(artifact.bytes, byte => String.fromCharCode(byte)).join(""));
+        const response = await ctx.env.localTunnel.exec({ machine: machineId, op: "write_file", params: { path, encoding: "base64", content: encoded, create_only: true }, requestId });
+        if (!response.ok || response.status !== "succeeded") return { status: response.status ?? "indeterminate", request_id: response.request_id ?? requestId, machine_id: machineId, digest };
+        return { exported: true, machine_id: machineId, path, digest, bytes: artifact.bytes.byteLength, request_id: response.request_id ?? requestId, chunks: 1 };
+      }
+      const transferId = await transferRequestId(ctx, "export-transfer", machineId, path, digest);
+      const pending: Array<{ offset: number; request_id: string }> = [];
+      const parts: Array<{ offset: number; bytes: Uint8Array; request_id: string }> = [];
+      for (let offset = 0; offset < artifact.bytes.byteLength; offset += MACHINE_ARTIFACT_CHUNK_BYTES) {
+        const bytes = artifact.bytes.subarray(offset, Math.min(offset + MACHINE_ARTIFACT_CHUNK_BYTES, artifact.bytes.byteLength));
+        const requestId = await transferRequestId(ctx, "export-chunk", machineId, path, `${transferId}:${offset}`);
+        parts.push({ offset, bytes, request_id: requestId });
+      }
+      const staging = parts.slice(0, -1);
+      for (let start = 0; start < staging.length; start += 8) {
+        const results = await Promise.all(staging.slice(start, start + 8).map(async part => {
+          const content = btoa(Array.from(part.bytes, byte => String.fromCharCode(byte)).join(""));
+          const response = await ctx.env.localTunnel!.exec({ machine: machineId, op: "write_file", params: { path, encoding: "base64", content,
+            transfer_id: transferId, offset: part.offset, total_bytes: artifact.bytes.byteLength, sha256: digest, finalize: false }, requestId: part.request_id });
+          return { part, response };
+        }));
+        for (const { part, response } of results) if (!response.ok || response.status !== "succeeded") pending.push({ offset: part.offset, request_id: response.request_id ?? part.request_id });
+      }
+      if (pending.length) return { status: "indeterminate", machine_id: machineId, digest, total_bytes: artifact.bytes.byteLength, pending_chunks: pending };
+      const finalPart = parts[parts.length - 1]!;
+      const finalContent = btoa(Array.from(finalPart.bytes, byte => String.fromCharCode(byte)).join(""));
+      const finalResponse = await ctx.env.localTunnel.exec({ machine: machineId, op: "write_file", params: { path, encoding: "base64", content: finalContent,
+        transfer_id: transferId, offset: finalPart.offset, total_bytes: artifact.bytes.byteLength, sha256: digest, finalize: true }, requestId: finalPart.request_id });
+      if (!finalResponse.ok || finalResponse.status !== "succeeded") return { status: finalResponse.status ?? "indeterminate", machine_id: machineId, digest, request_id: finalResponse.request_id ?? finalPart.request_id, offset: finalPart.offset };
+      return { exported: true, machine_id: machineId, path, digest, bytes: artifact.bytes.byteLength, request_id: finalResponse.request_id ?? finalPart.request_id, chunks: parts.length };
     },
     "environment.list": async (_args, ctx) => ({ environments: await cards(ctx) }),
     "environment.status": async (args, ctx) => {

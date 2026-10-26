@@ -7,7 +7,7 @@ Requested 2026-10-26. The planner/worker architecture and three workspace bounda
 - [x] Environment cards: scoped managed runtimes and named tunnels, timestamped capability/app observations; never credentials.
 - [x] Deterministic eligibility before decision-model ranking; explicit external capability/fallback consent, no policy/budget bypass. Host-derived fallback requires no compatible managed target or an unavailable managed provider.
 - [x] Durable execution sessions bind environment and command identity; uncertain outcomes never migrate or replay. Managed cross-run restoration is explicitly blocked until implemented.
-- [x] Scoped content-addressed workspace artifact publish/restore with destination revision checks; explicit machine import/export for files up to 12 KiB, with digest verification and recoverable tunnel request IDs. Larger resumable cross-provider transfers remain open.
+- [x] Scoped content-addressed workspace artifact publish/restore with destination revision checks; explicit machine import/export for files up to 1 MiB in resumable 8 KiB chunks, with per-chunk tunnel request IDs, source version checks, digest verification and create-only destination publication.
 - [ ] Unified subscription limits, atomic reservations, usage reconciliation and bounded prewarming.
 - [x] Template runtime requirements, dependency/order validation, reduced-plan preview and required-component blocking. Automatic runtime installation remains incomplete.
 - [x] Activation preview reports required runtimes as unavailable and optional runtimes as deferred when the host has no provisioner; required runtimes block activation.
@@ -48,7 +48,7 @@ This environment exposes no Modal/Cloudflare production credential bindings or a
 
 ## Remaining sequence and acceptance criteria
 
-1. Extend artifact handoff beyond the implemented explicit 12 KiB machine import/export: add chunked transfers with durable per-chunk receipts for larger files, immutable manifests, digest verification and destination CAS. Current artifacts stay workspace-scoped; machine paths require separate owner consent and create-only export. No filesystem is mounted or implicitly synchronized.
+1. Add transfer cleanup/expiry and destination compare-and-swap for replace workflows. Current transfer export is create-only; source workspace artifacts are immutable and scoped. No filesystem is mounted or implicitly synchronized.
 2. Connect template declarations to certified, deployment-approved runtime release resolution; reserve plan capacity atomically; show required/optional/deferred components in the install UI. A capability declaration must not be shown as a provisioned runtime.
 3. Extend authoritative subscription admission across installed slots, external jobs, active projects, storage, GPU and speculative prewarming. Existing quota checks are not an atomic external-compute budget reservation.
 4. Add provider lifecycle adapters beginning with Modal: approved image and instance selection, owner credential binding, budget hold, create/stop/delete/reconcile, persistent data and GPU usage. Validate against official APIs and live provider receipts before enabling.
@@ -56,7 +56,7 @@ This environment exposes no Modal/Cloudflare production credential bindings or a
 6. Complete macOS and Windows isolation adapters, browser/desktop bridge adapters, profile-specific permissions, signed installers and service packaging. Linux has a bubblewrap adapter; other platforms still fail closed.
 7. Live acceptance with configured Cloudflare/Modal credentials and consenting test machines: suspend/resume, reconnect mid-command, duplicate submissions, expired account sessions, plan downgrades, provider billing and cleanup.
 
-Implemented after the initial foundation: bounded immutable workspace artifact publish/restore with digest verification, worker file boundaries, destination CAS, and fenced publication through the existing workspace gateway. Added explicit, binary-safe import/export between a connected machine and its scoped artifact store (12 KiB limit). The bridge enforces local root consent and base64 size limits; exports are create-only to prevent overwrites. Tunnel request IDs support retry-safe reconciliation within a run. Larger chunked transfer and host-native browser/file-manager UX remain unfinished.
+Implemented after the initial foundation: bounded immutable workspace artifact publish/restore with digest verification, worker file boundaries, destination CAS, and fenced publication through the existing workspace gateway. Added explicit, binary-safe import/export between a connected machine and its scoped artifact store (1 MiB limit in 8 KiB chunks). Each chunk uses a stable tunnel request ID; imports pin a machine-side file fingerprint across chunks, and exports verify the full digest before atomically publishing a create-only destination. Uncertain chunks can be replayed with the same request IDs and the final publish recognizes an already-created matching file. Transfer cleanup/expiry and host-native browser/file-manager UX remain unfinished.
 
 Next unfinished action: connect template runtime declarations to host-approved release resolution, subscription capacity reservation and the installation preview UI. Production credentials and test machines are also required for live acceptance; none were available in this environment.
 
@@ -67,7 +67,7 @@ Next unfinished action: connect template runtime declarations to host-approved r
 - Agents environment/session/artifact/CLI/capability group: 59 tests passed; an additional CLI JSON/flag regression test passed afterward (18 CLI tests total).
 - Communications group: 23 tests passed after bringing its test fixture up to date with the retained legacy-number migration table. No customer runtime was restored.
 - Space Template activation focused group: 11 tests passed, including the direct-API required-runtime bypass regression.
-- External environment routing: 13 focused worker tests and 10 SDK tests passed, including task-specific fallback eligibility, provider outage handling, and space-extension/assistant isolation. Bridge suite: 9 tests passed, including real Linux bubblewrap confinement and literal cross-shell argument parsing. Agents, SDK, and shell typechecks passed.
+- External environment routing: 14 focused worker tests and 10 SDK tests passed, including task-specific fallback eligibility, provider outage handling, space-extension/assistant isolation, and chunked export. Bridge suite: 10 tests passed, including resumable chunk transfer, Linux bubblewrap confinement, and literal cross-shell argument parsing. Agents and SDK typechecks passed.
 - Bridge model discovery: 2 tests passed.
 - Stress coverage includes 100 duplicate simultaneous submissions, maximum dependency-chain size, oversized outputs, stale revisions, scope/authority violations, unknown app fields and uncertain execution results.
 - No live Cloudflare/Modal, GPU, browser login or personal-machine acceptance was performed.

@@ -48,10 +48,12 @@ describe("environment tool host integration", () => {
         objects.set(key, { bytes: value, etag: "etag", customMetadata: options.customMetadata ?? {} }); return { etag: "etag" };
       },
     } as unknown as R2Bucket;
-    ctx.env.localTunnel!.exec = vi.fn(async () => ({ ok: true, status: "succeeded", request_id: "read-1", result: { encoding: "base64", content: btoa("\0\u00ff\b\r"), bytes: bytes.length } }));
+    ctx.env.localTunnel!.exec = vi.fn(async input => input.params.length === 0
+      ? ({ ok: true, status: "succeeded", request_id: "read-meta", result: { encoding: "base64", content: "", bytes: 0, offset: 0, total_bytes: bytes.length, fingerprint: "1:2:4:3:4" } })
+      : ({ ok: true, status: "succeeded", request_id: "read-1", result: { encoding: "base64", content: btoa("\0\u00ff\b\r"), bytes: bytes.length, offset: 0, total_bytes: bytes.length, fingerprint: "1:2:4:3:4" } }));
     const result = await environments.operations["environment.artifact_import"]!({ machine_id: "gpu", path: "/home/owner/data.bin" }, ctx);
     expect(result).toMatchObject({ bytes: bytes.length, immutable: true, machine_id: "gpu" });
-    expect(ctx.env.localTunnel.exec).toHaveBeenCalledWith(expect.objectContaining({ machine: "gpu", op: "read_file", params: { path: "/home/owner/data.bin", encoding: "base64" } }));
+    expect(ctx.env.localTunnel.exec).toHaveBeenCalledWith(expect.objectContaining({ machine: "gpu", op: "read_file", params: { path: "/home/owner/data.bin", encoding: "base64", offset: 0, length: 0 } }));
     expect(objects.has(workspacePrefix(ctx.env) + ".environment-artifacts/" + (result as { digest: string }).digest)).toBe(true);
   });
   it("exports only a verified bounded artifact and asks the bridge to create a new local file", async () => {
@@ -69,6 +71,27 @@ describe("environment tool host integration", () => {
     ctx.env.localTunnel!.exec = vi.fn(async () => ({ ok: true, status: "succeeded", request_id: "write-1", result: { written: true, bytes: bytes.length } }));
     expect(await environments.operations["environment.artifact_export"]!({ machine_id: "gpu", digest: artifact.digest, path: "/home/owner/new.bin" }, ctx)).toMatchObject({ exported: true, bytes: bytes.length });
     expect(ctx.env.localTunnel.exec).toHaveBeenCalledWith(expect.objectContaining({ machine: "gpu", op: "write_file", params: expect.objectContaining({ path: "/home/owner/new.bin", encoding: "base64", create_only: true }) }));
+  });
+  it("exports larger artifacts as bounded chunks and finalizes only the last chunk", async () => {
+    const { ctx } = fixture(), bytes = new Uint8Array(Array.from({ length: 20_000 }, (_, index) => index % 251));
+    const objects = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
+    ctx.env.scriptsBucket = {
+      head: async (key: string) => { const value = objects.get(key); return value ? { ...value, size: value.bytes.length } : null; },
+      get: async (key: string) => { const value = objects.get(key); return value ? { ...value, size: value.bytes.length, arrayBuffer: async () => value.bytes.slice().buffer } : null; },
+      put: async (key: string, value: Uint8Array, options: { onlyIf?: { etagDoesNotMatch?: string }; customMetadata?: Record<string, string> }) => {
+        if (options.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null;
+        objects.set(key, { bytes: value, etag: "etag", customMetadata: options.customMetadata ?? {} }); return { etag: "etag" };
+      },
+    } as unknown as R2Bucket;
+    const artifact = await publishEnvironmentArtifactBytes(ctx.env, bytes, "large-test");
+    ctx.env.localTunnel!.exec = vi.fn(async input => ({ ok: true, status: "succeeded", request_id: input.requestId, result: { written: true } }));
+    expect(await environments.operations["environment.artifact_export"]!({ machine_id: "gpu", digest: artifact.digest, path: "/home/owner/large.bin" }, ctx))
+      .toMatchObject({ exported: true, bytes: bytes.length, chunks: 3 });
+    const calls = vi.mocked(ctx.env.localTunnel.exec).mock.calls.map(call => call[0]);
+    expect(calls).toHaveLength(3);
+    expect(calls.map(call => call.params.content.length)).toEqual([10924, 10924, 4824]);
+    expect(calls.slice(0, 2).every(call => call.params.finalize === false)).toBe(true);
+    expect(calls[2]!.params.finalize).toBe(true);
   });
   it("enforces the caller's read/write file role before machine transfers", async () => {
     const { ctx } = fixture();
