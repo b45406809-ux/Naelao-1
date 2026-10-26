@@ -740,7 +740,7 @@ export function ChannelConnect({
       {projectId && canManage && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
         <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install an approved project runtime</summary>
         <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>Only deployment-approved images are installable. Naelao checks your current plan before installation and again before execution. A capability listed by a template does not mean its runtime is installed.</p>
-        {runtimeSlotLimit !== null && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Your plan allows {runtimeSlotLimit} installed container slots per workspace. Paused runtimes retain their slots. Uninstall an unused runtime to free capacity.</p>}
+        {runtimeSlotLimit !== null && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Runtime slots used: {otherProjectInstallations.reduce((total, item) => total + (item.manifest.containers?.length ?? 0), 0)} / {runtimeSlotLimit} for this project. Paused runtimes retain their slots; uninstall one to free capacity.</p>}
         {runtimeCatalogueError && <p role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11.5 }}>{runtimeCatalogueError}</p>}
         {!runtimeCatalogueError && runtimeCatalogue.filter(image => image.available).length === 0 && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>No approved runtimes are deployed for installation in this environment.</p>}
         {runtimeCatalogue.filter(image => image.available).map(image => {
