@@ -36,6 +36,15 @@ macOS and Windows shell execution still fail closed until their native isolation
 Windows ACL enforcement are implemented. This client transports authorized local model calls;
 it is not a disconnected OS.
 
+The same outbound bridge can run on a user's computer, a VM, or a container host such as Modal,
+provided it can run the supported Node client and maintain outbound WSS. Naelao treats each as an
+external machine with its own filesystem and installed applications; it does not provision or
+stop that provider's containers. For hosted machines, configure the provider's persistent volume
+and lifecycle separately if local files or logged-in application state must survive restarts.
+Managed Naelao containers remain a separate, workspace-backed execution target. A connected
+machine is eligible as a last resort only when the host finds no available managed target matching
+the task and the owner granted fallback use; a worker cannot assert that managed runtimes are down.
+
 Service templates are examples to configure explicitly, not installation scripts.
 SIGINT/SIGTERM cancel outstanding requests and close the socket. Reconnects
 authenticate a fresh short session and reconcile saved outcomes, never resend
@@ -46,9 +55,9 @@ with Unix modes or Windows ACLs. Templates and platform shutdown still need live
 
 An administrator can add `externalUse: ["capability"]` or `["fallback"]` to a
 machine grant, in addition to exact commands and folders. Existing grants do not
-opt into scheduler selection. Fallback also requires host-confirmed absence of
-managed compute bindings and current admission; it does not override policy or
-quota denial.
+opt into scheduler selection. Fallback also requires host-confirmed absence of a compatible
+managed target (or a managed provider outage) and current admission; it does not override policy
+or quota denial.
 
 `connect --inventory-file /absolute/path/apps.json` optionally reports an array of
 metadata records: `[{"id":"blender","version":"4.5"}]`. A connection reference
