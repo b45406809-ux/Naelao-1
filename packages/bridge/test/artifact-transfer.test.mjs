@@ -22,7 +22,7 @@ test("machine artifact handoff is binary-safe, bounded, and create-only when req
     const oversizedTarget = join(directory, "oversized-target.bin"), oversizedLink = join(directory, "oversized-link.bin");
     await writeFile(oversizedTarget, Buffer.alloc(12 * 1024 + 1));
     await symlink(oversizedTarget, oversizedLink);
-    await assert.rejects(readMachineArtifact(oversizedLink), /bridge_file_result_limit/);
+    await assert.rejects(readMachineArtifact(oversizedLink));
     await assert.rejects(writeMachineArtifact(join(directory, "large"), { content: Buffer.alloc(12 * 1024 + 1).toString("base64") }), /bridge_file_result_limit/);
   } finally {
     await rm(directory, { recursive: true, force: true });

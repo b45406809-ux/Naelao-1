@@ -1,12 +1,26 @@
-import { stat, readFile, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, writeFile } from "node:fs/promises";
 
 export const MACHINE_ARTIFACT_MAX_BYTES = 12 * 1024;
 
 export async function readMachineArtifact(path) {
-  // stat the resolved file, not a symlink's tiny directory entry, before reading it.
-  const bytes = (await stat(path)).size;
-  if (bytes > MACHINE_ARTIFACT_MAX_BYTES) throw new Error("bridge_file_result_limit");
-  return { encoding: "base64", content: (await readFile(path)).toString("base64"), bytes };
+  // Open without following a last-component symlink, then cap actual reads. A prior stat
+  // followed by readFile could race a growing file and allocate an unbounded buffer.
+  const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || info.size > MACHINE_ARTIFACT_MAX_BYTES) throw new Error("bridge_file_result_limit");
+    const buffer = Buffer.alloc(MACHINE_ARTIFACT_MAX_BYTES + 1);
+    let bytes = 0;
+    while (bytes < buffer.length) {
+      const result = await file.read(buffer, bytes, buffer.length - bytes, bytes);
+      if (result.bytesRead === 0) break;
+      bytes += result.bytesRead;
+    }
+    if (bytes > MACHINE_ARTIFACT_MAX_BYTES) throw new Error("bridge_file_result_limit");
+    const content = buffer.subarray(0, bytes);
+    return { encoding: "base64", content: content.toString("base64"), bytes };
+  } finally { await file.close(); }
 }
 
 export async function writeMachineArtifact(path, params, signal) {
