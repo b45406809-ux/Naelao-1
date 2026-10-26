@@ -9,12 +9,12 @@ function fixture() {
   const data = new Map<string, unknown>();
   let queue = Promise.resolve();
   const storage = { transaction: (fn: (tx: unknown) => Promise<unknown>) => {
-    const operation = queue.then(() => fn({ get: async (key: string) => structuredClone(data.get(key)), put: async (key: string, value: unknown) => { data.set(key, structuredClone(value)); } }));
+    const operation = queue.then(() => fn({ get: async (key: string) => structuredClone(data.get(key)), put: async (key: string, value: unknown) => { data.set(key, structuredClone(value)); }, delete: async (key: string) => { data.delete(key); } }));
     queue = operation.then(() => undefined, () => undefined); return operation;
   } } as SessionStorage;
   const machine = { machineId: "gpu", updatedAt: Date.now(), hardware: { capabilities: ["cuda", "bash"], apps: [{ id: "blender" }] }, grants: [{ actorId: "owner", projectId: "project" as string | undefined, expiresAt: Date.now() + 60000, commands: ["python train.py"], shellAccess: undefined as "sandboxed" | undefined, externalUse: ["capability"] }] };
   const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", runId: "run", humanInvokerId: "owner", nativeExecutionAllowed: true, maxTier: 6,
-    executionSessions: new ExecutionSessions(storage), scriptsBucket: {}, admitExternalEnvironment: vi.fn(async () => true),
+    executionSessions: new ExecutionSessions(storage), scriptsBucket: {}, reserveExternalEnvironment: vi.fn(async () => undefined), finalizeExternalEnvironment: vi.fn(async () => undefined),
     containerRuntimeInventory: vi.fn(async () => ({ installed: [{ installationId: "runtime", projectId: "project", contract: { image: "image", exportedBinaries: ["node"] } }], catalogue: [{ id: "runtime-image", available: true, image: "image" }] })),
     codeRunner: { run: vi.fn(async () => ({ ok: true, output: { stdout: "built" }, tier: 6, actual_tier: 6, engine: "container" })) },
     localTunnel: { list: vi.fn(async () => [machine]), status: vi.fn(async () => ({ connected: true })), exec: vi.fn(async () => ({ ok: true, status: "sent", request_id: "request" })), requestStatus: vi.fn(async () => ({ ok: true, result: { status: "succeeded", stdout: "trained" } })) },
@@ -105,13 +105,19 @@ describe("environment tool host integration", () => {
     const { ctx } = fixture(), args = { session_id: "build", action_id: "compile", command: "npm run build" };
     await execute(args, ctx); await execute(args, ctx);
     expect(ctx.env.codeRunner!.run).toHaveBeenCalledTimes(1);
+    expect(ctx.env.reserveExternalEnvironment).not.toHaveBeenCalled();
     expect(ctx.env.codeRunner!.run).toHaveBeenCalledWith(expect.objectContaining({ installationId: "runtime", runId: "run", projectId: "project" }));
   });
   it("routes a consented exact command to a GPU and reconciles its receipt", async () => {
     const { ctx } = fixture(), args = { session_id: "gpujob", action_id: "train", command: "python train.py", capabilities: ["cuda"], mode: "capability" };
     expect(await execute(args, ctx)).toMatchObject({ status: "sent", environment_id: "gpu" });
     await expect(execute({ ...args, command: "python steal.py", action_id: "other" }, ctx)).rejects.toThrow();
+    ctx.env.localTunnel!.status = vi.fn(async () => ({ connected: false }));
+    ctx.env.runId = "next-run";
     await environments.operations["environment.status"]!({ session_id: "gpujob", action_id: "train" }, ctx);
+    expect(ctx.env.localTunnel!.requestStatus).toHaveBeenCalledWith("gpu", "request", "run");
+    expect(ctx.env.reserveExternalEnvironment).toHaveBeenCalledTimes(1);
+    expect(ctx.env.finalizeExternalEnvironment).toHaveBeenCalledWith(expect.any(String), "settle", 1);
     expect(await execute(args, ctx)).toMatchObject({ status: "succeeded", stdout: "trained" });
     expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
   });
@@ -154,6 +160,15 @@ describe("environment tool host integration", () => {
     ctx.env.managedEnvironmentsUnavailable = true;
     const args = { session_id: "provider-down", action_id: "step", command: "python train.py", capabilities: ["bash"], mode: "fallback", target_id: "gpu" };
     expect(await execute(args, ctx)).toMatchObject({ environment_id: "gpu" });
+    expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
+  });
+  it("reserves plan quota before dispatch and lets a quota-denied action retry safely", async () => {
+    const { ctx } = fixture(), args = { session_id: "quota-gpu", action_id: "train", command: "python train.py", capabilities: ["cuda"], mode: "capability", target_id: "gpu" };
+    vi.mocked(ctx.env.reserveExternalEnvironment!).mockRejectedValueOnce(new Error("quota exceeded"));
+    await expect(execute(args, ctx)).rejects.toThrow("external_environment_admission_denied");
+    expect(ctx.env.localTunnel!.exec).not.toHaveBeenCalled();
+    expect(await execute(args, ctx)).toMatchObject({ status: "sent", environment_id: "gpu" });
+    expect(ctx.env.reserveExternalEnvironment).toHaveBeenCalledTimes(2);
     expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
   });
   it("does not accept caller-supplied fallback evidence and enforces execution ceilings", async () => {

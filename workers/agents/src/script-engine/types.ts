@@ -847,7 +847,7 @@ export interface LocalTunnelGateway {
     params: Record<string, unknown>;
   }): Promise<{ ok: boolean; status?: string; request_id?: string; result?: unknown; error?: string }>;
   status(machine: string): Promise<{ connected: boolean }>;
-  requestStatus(machine: string, requestId: string): Promise<unknown>;
+  requestStatus(machine: string, requestId: string, originalRunId?: string): Promise<unknown>;
   cancel(machine: string, requestId: string): Promise<unknown>;
 }
 
@@ -1096,7 +1096,10 @@ export interface ScriptEngineEnv {
   executionSessions?: import("../tunnels/execution-sessions.js").ExecutionSessions;
   /** Host evidence only: no managed compute binding is deployed. Not a budget/permission override. */
   managedEnvironmentsUnavailable?: boolean;
-  admitExternalEnvironment?: () => Promise<boolean>;
+  /** Atomically reserve one plan credit for a bounded external environment action. */
+  reserveExternalEnvironment?: (reservationId: string) => Promise<void>;
+  /** Settle accepted external work or release a reservation proven not to have dispatched. */
+  finalizeExternalEnvironment?: (reservationId: string, action: "settle" | "release", usedCredits?: number) => Promise<void>;
   /** §A1.17 Phase R — the container half of the explicit multi-workspace model. Present when
    *  TOOL_SANDBOX is wired up; the `workspace` prebuilt reports itself unavailable, not
    *  degraded, when absent (same posture as localTunnel — no safe fallback for "pretend the

@@ -2,6 +2,7 @@ import { eligibleEnvironments, selectEnvironment, tunnelHash, type EnvironmentCa
 import type { PrebuiltOpContext, PrebuiltScript } from "./index.js";
 import { publishEnvironmentArtifact, publishEnvironmentArtifactBytes, readEnvironmentArtifact, restoreEnvironmentArtifact } from "../environment-artifacts.js";
 import { authorizeEnvironmentCommand, runEnvironmentBash } from "./code-exec.js";
+import { ExecutionPreDispatchError } from "../../tunnels/execution-sessions.js";
 
 function owner(ctx: PrebuiltOpContext): EnvironmentOwner {
   return { tenantId: ctx.env.tenantId, spaceId: ctx.env.spaceId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
@@ -19,6 +20,13 @@ function decodeBase64(value: string, expectedBytes?: number): Uint8Array {
 }
 async function transferRequestId(ctx: PrebuiltOpContext, operation: string, machine: string, path: string, digest?: string) {
   return tunnelHash(JSON.stringify([ctx.env.tenantId, ctx.env.spaceId, ctx.env.projectId ?? "_assistant", ctx.env.humanInvokerId, ctx.env.runId, operation, machine, path, digest ?? null]));
+}
+async function settleExternalEnvironment(result: unknown, ctx: PrebuiltOpContext) {
+  if (!result || typeof result !== "object" || !ctx.env.finalizeExternalEnvironment) return;
+  const value = result as { status?: unknown; budget_reservation_id?: unknown };
+  if (typeof value.budget_reservation_id === "string" && ["succeeded", "failed", "cancelled"].includes(String(value.status))) {
+    await ctx.env.finalizeExternalEnvironment(value.budget_reservation_id, "settle", 1);
+  }
 }
 async function cards(ctx: PrebuiltOpContext, command?: string): Promise<EnvironmentCard[]> {
   if (!ctx.env.humanInvokerId || Boolean(command) && !ctx.env.nativeExecutionAllowed || ctx.env.airGappedOnly || ctx.env.workspaceFileScope !== undefined) throw new Error("environment_scoped_native_authority_required");
@@ -148,14 +156,18 @@ export const environments: PrebuiltScript = {
     "environment.status": async (args, ctx) => {
       if (!ctx.env.executionSessions || !ctx.env.humanInvokerId || !ctx.env.localTunnel) throw new Error("environment_session_host_unavailable");
       const available = await cards(ctx);
-      return ctx.env.executionSessions.reconcile({ sessionId: String(args.session_id ?? ""), actionId: String(args.action_id ?? ""), owner: owner(ctx),
+      const resolved = await ctx.env.executionSessions.reconcile({ sessionId: String(args.session_id ?? ""), actionId: String(args.action_id ?? ""), owner: owner(ctx),
         actorId: ctx.env.humanInvokerId, branch: ctx.env.workspaceBranch ?? "" }, async receipt => {
-        const value = receipt as { environment_id?: string; request_id?: string };
-        if (!value.environment_id || !value.request_id || !available.some(card => card.id === value.environment_id && card.available)) throw new Error("environment_receipt_unavailable");
-        const response = await ctx.env.localTunnel!.requestStatus(value.environment_id, value.request_id) as { ok?: boolean; result?: { status?: string } };
+        const value = receipt as { environment_id?: string; request_id?: string; request_run_id?: string; budget_reservation_id?: string };
+        if (!value.environment_id || !value.request_id || !available.some(card => card.id === value.environment_id && card.kind === "external" && card.authorized)) throw new Error("environment_receipt_unavailable");
+        const response = await ctx.env.localTunnel!.requestStatus(value.environment_id, value.request_id, value.request_run_id) as { ok?: boolean; result?: { status?: string } };
         if (!response.ok || !response.result) throw new Error("environment_reconciliation_unavailable");
-        return { terminal: ["succeeded", "failed", "cancelled"].includes(response.result.status ?? ""), result: { ...response.result, environment_id: value.environment_id, request_id: value.request_id } };
+        return { terminal: ["succeeded", "failed", "cancelled"].includes(response.result.status ?? ""), result: { ...response.result, environment_id: value.environment_id, request_id: value.request_id,
+          ...(value.request_run_id ? { request_run_id: value.request_run_id } : {}),
+          ...(value.budget_reservation_id ? { budget_reservation_id: value.budget_reservation_id } : {}) } };
       });
+      await settleExternalEnvironment(resolved, ctx);
+      return resolved;
     },
     "environment.execute": async (args, ctx) => {
       const command = String(args.command ?? "");
@@ -167,9 +179,13 @@ export const environments: PrebuiltScript = {
       if (!Array.isArray(capabilities) || capabilities.some(value => typeof value !== "string")) throw new Error("environment_capabilities_invalid");
       if (args.app_id !== undefined && typeof args.app_id !== "string" || args.connection_id !== undefined && typeof args.connection_id !== "string") throw new Error("environment_app_requirement_invalid");
       await authorizeEnvironmentCommand(command, ctx);
-      const available = await cards(ctx, command);
-      const sessionTarget = await ctx.env.executionSessions.target({ sessionId: String(args.session_id ?? ""), owner: owner(ctx), actorId: ctx.env.humanInvokerId, branch: ctx.env.workspaceBranch ?? "" });
+      const sessionId = String(args.session_id ?? ""), actionId = String(args.action_id ?? ""), actorId = ctx.env.humanInvokerId, branch = ctx.env.workspaceBranch ?? "";
+      const identity = { sessionId, owner: owner(ctx), actorId, branch };
+      const sessionTarget = await ctx.env.executionSessions.target(identity);
       if (sessionTarget && args.target_id && sessionTarget !== args.target_id) throw new Error("environment_session_target_conflict");
+      const previous = await ctx.env.executionSessions.completed({ ...identity, actionId, command, ...(typeof args.cwd === "string" ? { workingDirectory: args.cwd } : {}) });
+      if (previous.found) { await settleExternalEnvironment(previous.result, ctx); return previous.result; }
+      const available = await cards(ctx, command);
       const appRequirement = { capabilities, ...(typeof args.app_id === "string" ? { appId: args.app_id } : {}), ...(typeof args.connection_id === "string" ? { connectionId: args.connection_id } : {}) };
       const managedEligible = eligibleEnvironments(available, owner(ctx), { ...appRequirement, mode: "managed" });
       const managedUnavailable = ctx.env.managedEnvironmentsUnavailable === true || managedEligible.length === 0;
@@ -189,19 +205,30 @@ export const environments: PrebuiltScript = {
       }
       const selected = selectEnvironment(available, owner(ctx), requirement, recommended,
         sessionTarget ?? (typeof args.target_id === "string" ? args.target_id : undefined));
-      if (selected.kind === "external" && (!ctx.env.admitExternalEnvironment || !await ctx.env.admitExternalEnvironment())) throw new Error("environment_external_admission_denied");
       if (selected.kind === "managed" && args.cwd !== undefined) throw new Error("environment_working_directory_external_only");
-      return ctx.env.executionSessions.execute({ sessionId: String(args.session_id ?? ""), actionId: String(args.action_id ?? ""), owner: owner(ctx),
-        actorId: ctx.env.humanInvokerId, branch: ctx.env.workspaceBranch ?? "", targetId: selected.id, command, ...(typeof args.cwd === "string" ? { workingDirectory: args.cwd } : {}), ...(selected.kind === "managed" && ctx.env.runId ? { executionEpoch: ctx.env.runId } : {}) }, async () => {
+      const reservationId = selected.kind === "external" ? await tunnelHash(JSON.stringify(["external-environment-budget", owner(ctx), actorId, branch, sessionId, actionId, selected.id])) : undefined;
+      const result = await ctx.env.executionSessions.execute({ sessionId, actionId, owner: owner(ctx),
+        actorId, branch, targetId: selected.id, command, ...(typeof args.cwd === "string" ? { workingDirectory: args.cwd } : {}), ...(selected.kind === "managed" && ctx.env.runId ? { executionEpoch: ctx.env.runId } : {}) }, async () => {
         if (selected.kind === "external") {
-          const result = await ctx.env.localTunnel!.exec({ machine: selected.id, op: "exec", params: { command, ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}) }, requestId: await tunnelHash(JSON.stringify([ctx.env.tenantId, ctx.env.spaceId, ctx.env.projectId, ctx.env.agentId, ctx.env.runId, ctx.env.workspaceBranch, args.session_id, args.action_id, selected.id])) });
-          if (!result.ok) throw new Error(result.error ?? "environment_tunnel_dispatch_failed");
-          return { ...result, environment_id: selected.id };
+          if (!ctx.env.reserveExternalEnvironment || !ctx.env.finalizeExternalEnvironment) throw new ExecutionPreDispatchError("external_environment_billing_unavailable");
+          try { await ctx.env.reserveExternalEnvironment(reservationId!); }
+          catch { throw new ExecutionPreDispatchError("external_environment_admission_denied"); }
+          const requestId = await tunnelHash(JSON.stringify([ctx.env.tenantId, ctx.env.spaceId, ctx.env.projectId, ctx.env.agentId, ctx.env.runId, branch, sessionId, actionId, selected.id]));
+          let response;
+          try { response = await ctx.env.localTunnel!.exec({ machine: selected.id, op: "exec", params: { command, ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}) }, requestId }); }
+          catch { return { ok: false, status: "indeterminate", request_id: requestId, request_run_id: ctx.env.runId, environment_id: selected.id, budget_reservation_id: reservationId }; }
+          if (!response.ok && !response.status) {
+            try { await ctx.env.finalizeExternalEnvironment(reservationId!, "release"); } catch { /* expires if billing is unavailable */ }
+            throw new ExecutionPreDispatchError(response.error ?? "environment_tunnel_dispatch_failed");
+          }
+          return { ...response, request_run_id: ctx.env.runId, environment_id: selected.id, budget_reservation_id: reservationId };
         }
         const installed = (await ctx.env.containerRuntimeInventory!()).installed.find(item => item.installationId === selected.id);
         if (!installed) throw new Error("environment_installation_revoked");
         return runEnvironmentBash(command, installed, ctx);
       });
+      await settleExternalEnvironment(result, ctx);
+      return result;
     },
   },
 };

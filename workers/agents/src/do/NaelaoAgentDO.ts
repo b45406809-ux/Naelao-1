@@ -39,6 +39,7 @@ import { mintInternalToken, verifyInternalToken, broadcastSpaceEvent, readBounde
 import { getDOName } from "@naelao/crypto";
 import { ExecutionSessions } from "../tunnels/execution-sessions.js";
 import { createNamedTunnelGateway } from "../tunnels/host.js";
+import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
@@ -3089,12 +3090,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       };
     }
 
-    env.admitExternalEnvironment = async () => {
-      if (!this.env.BILLING_WORKER || !env.runId || !await nativeGrantActive({ tenantId, spaceId, projectId, userId, agentId, runId: env.runId })) return false;
-      const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/infra-credits/check", { headers: await this.internalHeaders(tenantId) }));
-      if (!response.ok) return false;
-      const quota = await readBoundedResponseJson<{ allowed?: boolean }>(response, 8192);
-      return quota.allowed === true;
+    env.reserveExternalEnvironment = async reservationId => {
+      if (!this.env.BILLING_WORKER || !userId || !env.runId || !await nativeGrantActive({ tenantId, spaceId, projectId, userId, agentId, runId: env.runId })) throw new Error("external_environment_admission_denied");
+      await reserveWorkflowBudget(this.env as unknown as import("../env.js").Env, tenantId, spaceId, reservationId,
+        `external-environment:${projectId ?? "assistant"}:${agentId}`, 1, Date.now() + 10 * 60_000,
+        { ...(projectId ? { projectId } : {}), runtimeTier: 6, runId: reservationId });
+    };
+    env.finalizeExternalEnvironment = async (reservationId, action, usedCredits) => {
+      if (!this.env.BILLING_WORKER) throw new Error("external_environment_billing_unavailable");
+      await finalizeWorkflowBudget(this.env as unknown as import("../env.js").Env, tenantId, reservationId, action, usedCredits);
     };
     env.executionSessions = new ExecutionSessions(this.ctx.storage);
     env.managedEnvironmentsUnavailable = !(this.env.DYNAMIC_CONTAINERS_ENABLED === "true" ? this.env.DYNAMIC_SANDBOX : this.env.TOOL_SANDBOX) && !this.env.DOCUMENT_SANDBOX && !this.env.MEDIA_SANDBOX;

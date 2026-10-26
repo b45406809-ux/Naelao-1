@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { ExecutionSessions, type SessionStorage } from "./execution-sessions.js";
+import { ExecutionPreDispatchError, ExecutionSessions, type SessionStorage } from "./execution-sessions.js";
 function storage(): SessionStorage {
   const map = new Map<string, unknown>();
   let queue = Promise.resolve();
   return { transaction<T>(fn: Parameters<SessionStorage["transaction"]>[0]): Promise<T> {
-    const operation = queue.then(() => fn({ get: async <V>(key: string) => structuredClone(map.get(key)) as V, put: async (key, value) => { map.set(key, structuredClone(value)); } }));
+    const operation = queue.then(() => fn({ get: async <V>(key: string) => structuredClone(map.get(key)) as V, put: async (key, value) => { map.set(key, structuredClone(value)); }, delete: async key => { map.delete(key); } }));
     queue = operation.then(() => undefined, () => undefined);
     return operation as Promise<T>;
   } };
@@ -30,6 +30,14 @@ describe("durable execution sessions", () => {
     await expect(sessions.execute(input, dispatch)).rejects.toThrow("reconciliation_required");
     await expect(sessions.execute({ ...input, actionId: "test" }, dispatch)).rejects.toThrow("busy_or_unreconciled");
     expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+  it("aborts a reservation failure before dispatch so the same action can retry", async () => {
+    const sessions = new ExecutionSessions(storage()), dispatch = vi.fn()
+      .mockRejectedValueOnce(new ExecutionPreDispatchError("quota denied"))
+      .mockResolvedValueOnce({ status: "sent", request_id: "request" });
+    await expect(sessions.execute(input, dispatch)).rejects.toThrow("quota denied");
+    expect(await sessions.execute(input, dispatch)).toMatchObject({ status: "sent" });
+    expect(dispatch).toHaveBeenCalledTimes(2);
   });
   it("does not call an accepted tunnel submission completed", async () => {
     const sessions = new ExecutionSessions(storage()), dispatch = vi.fn(async () => ({ status: "sent", request_id: "request" }));

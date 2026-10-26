@@ -18,6 +18,7 @@ function fixture() {
       { ...machine, machineId: "revoked", status: "revoked" },
     ] });
     if (new URL(request.url).pathname === "/exec") return Response.json({ ok: true, status: "sent", request_id: "request-1" }, { status: 202 });
+    if (new URL(request.url).pathname === "/request/status") return Response.json({ ok: true, result: { status: "succeeded" } });
     return Response.json({ connected: true });
   });
   const stub = { fetch: response };
@@ -52,6 +53,14 @@ describe("named tunnel host gateway", () => {
     expect(body.invocation).toMatchObject({ actorId: "actor-1", projectId: "project-1", runId: "run-1", requestId: "request-1" });
     expect(body.params).toEqual({ command: "test" });
     expect(exec.headers.get("x-naelao-internal-token")).toBeTruthy();
+  });
+
+  it("reconciles durable requests using the original run identity after the caller resumes", async () => {
+    const f = fixture();
+    await f.gateway.requestStatus("workstation", "request-1", "original-run");
+    const status = f.calls.find(request => new URL(request.url).pathname === "/request/status")!;
+    const body = await status.json() as { invocation: Record<string, unknown> };
+    expect(body.invocation).toMatchObject({ actorId: "actor-1", projectId: "project-1", runId: "original-run", requestId: "request-1" });
   });
 
   it("fails closed for missing or ambiguous visible machine aliases", async () => {

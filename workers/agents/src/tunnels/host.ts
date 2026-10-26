@@ -34,9 +34,9 @@ export function createNamedTunnelGateway(
     const machine = matches[0]!;
     return { machine, stub: await namedTunnelStub(env, machine) };
   }
-  async function call(machineName: string, path: string, op?: string, params?: Record<string, unknown>, requestId: string = crypto.randomUUID()) {
+  async function call(machineName: string, path: string, op?: string, params?: Record<string, unknown>, requestId: string = crypto.randomUUID(), originalRunId?: string) {
     if (!await scope.authorize()) throw new Error("tunnel_actor_grant_required");
-    const runId = scope.runId();
+    const runId = originalRunId ?? scope.runId();
     if (!runId) throw new Error("tunnel_run_scope_required");
     const { machine, stub } = await selected(machineName);
     const response = await stub.fetch(new Request("https://tunnel" + path, { method: "POST", headers: await headers(),
@@ -54,7 +54,7 @@ export function createNamedTunnelGateway(
       if (!response.ok) throw new Error("tunnel_status_unavailable");
       return response.json<{ connected: boolean }>();
     },
-    requestStatus: (machine, requestId) => call(machine, "/request/status", undefined, undefined, requestId),
+    requestStatus: (machine, requestId, originalRunId) => call(machine, "/request/status", undefined, undefined, requestId, originalRunId),
     cancel: (machine, requestId) => call(machine, "/cancel", undefined, undefined, requestId),
   };
 }

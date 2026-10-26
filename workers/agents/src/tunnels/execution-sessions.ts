@@ -4,7 +4,10 @@ interface Session extends EnvironmentOwner { actorId: string; branch: string; ta
 interface SessionIdentity { sessionId: string; owner: EnvironmentOwner; actorId: string; branch: string; }
 interface Action { digest: string; status: "prepared" | "completed" | "indeterminate"; result?: unknown; }
 export interface SessionStorage {
-  transaction<T>(fn: (tx: { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void> }) => Promise<T>): Promise<T>;
+  transaction<T>(fn: (tx: { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void>; delete(key: string): Promise<unknown> }) => Promise<T>): Promise<T>;
+}
+export class ExecutionPreDispatchError extends Error {
+  constructor(message: string) { super(message); this.name = "ExecutionPreDispatchError"; }
 }
 /** Claim before dispatch. A crash leaves a prepared action that cannot be replayed or moved. */
 export class ExecutionSessions {
@@ -16,6 +19,27 @@ export class ExecutionSessions {
   async target(input: SessionIdentity): Promise<string | undefined> {
     const key = await this.key(input);
     return this.storage.transaction(async tx => (await tx.get<Session>(key))?.targetId);
+  }
+  async completed(input: SessionIdentity & { actionId: string; command: string; workingDirectory?: string }): Promise<{ found: false } | { found: true; result: unknown }> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(input.actionId) || !input.command.trim() || input.command.length > 8192) throw new Error("environment_action_invalid");
+    const key = await this.key(input), actionKey = key + ":action:" + input.actionId;
+    return this.storage.transaction(async tx => {
+      const session = await tx.get<Session>(key), action = await tx.get<Action>(actionKey);
+      if (!session || !action || action.status !== "completed") return { found: false };
+      const digest = await tunnelHash(JSON.stringify(input.workingDirectory === undefined ? [session.targetId, input.command] : [session.targetId, input.command, input.workingDirectory]));
+      if (action.digest !== digest) throw new Error("environment_action_conflict");
+      return { found: true, result: action.result };
+    });
+  }
+  private async abortPrepared(input: SessionIdentity & { actionId: string }): Promise<void> {
+    const key = await this.key(input), actionKey = key + ":action:" + input.actionId;
+    await this.storage.transaction(async tx => {
+      const [session, action] = await Promise.all([tx.get<Session>(key), tx.get<Action>(actionKey)]);
+      if (!session || session.activeAction !== input.actionId || action?.status !== "prepared") throw new Error("environment_pre_dispatch_abort_conflict");
+      await tx.delete(actionKey);
+      if (session.actions <= 1) await tx.delete(key);
+      else await tx.put(key, { ...session, activeAction: undefined, actions: session.actions - 1 });
+    });
   }
   async reconcile(input: SessionIdentity & { actionId: string }, resolve: (receipt: unknown) => Promise<{ terminal: boolean; result: unknown }>): Promise<unknown> {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(input.actionId)) throw new Error("environment_action_invalid");
@@ -76,6 +100,10 @@ export class ExecutionSessions {
       });
       return result;
     } catch (error) {
+      if (error instanceof ExecutionPreDispatchError) {
+        await this.abortPrepared(input);
+        throw error;
+      }
       await this.storage.transaction(async tx => { await tx.put(actionKey, { digest, status: "indeterminate" }); });
       throw error;
     }
