@@ -216,7 +216,7 @@ export function getExecutionLimits(plan: string) {
     : tier === "business" || tier === "pro" ? { maxProfile: "standard-3", concurrency: 10 }
     : tier === "growth" || tier === "starter" ? { maxProfile: "standard-2", concurrency: 3 }
     : { maxProfile: "standard-1", concurrency: 1 };
-  return Object.freeze(limits);
+  return Object.freeze({ ...limits, installedContainersPerWorkspace: limits.concurrency * 2 });
 }
 
 /** Authoritative plan check shared by runtime installation and execution admission. */

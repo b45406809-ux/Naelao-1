@@ -1,5 +1,5 @@
 import { assistantVoiceSettings } from "../assistant-voice-settings.js";
-import { EntitlementsChecker, assertExecutionPlanResources } from "@naelao/entitlements";
+import { EntitlementsChecker, assertExecutionPlanResources, getExecutionLimits } from "@naelao/entitlements";
 import { parseScratchpadCiphertext } from "@naelao/agent-sdk";
 import { parseArtifactLinters, lintArtifact } from "@naelao/agent-sdk";
 import { normalizeWorkspacePath } from "../../../agents/src/script-engine/workspace-paths.js";
@@ -11584,11 +11584,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
     // Enforce subscription resources at the owning actor too: generic extension installs,
     // upgrades and template activation must not bypass the runtime route's plan checks.
+    let runtimeSlotLimit: number | undefined;
     if (manifest.containers?.length) {
       if (!body.tenantId || !this.env.PLATFORM_DB)
         return Response.json({ error: "runtime_subscription_service_unavailable" }, { status: 503 });
       try {
         const tier = await new EntitlementsChecker(this.env.PLATFORM_DB).getTenantTier(body.tenantId);
+        runtimeSlotLimit = getExecutionLimits(tier).installedContainersPerWorkspace;
         for (const container of manifest.containers) assertExecutionPlanResources(tier, container.resources);
       } catch (error) {
         return Response.json({ error: error instanceof Error ? error.message : "runtime_subscription_validation_failed" }, { status: 403 });
@@ -11643,6 +11645,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const releaseSignature = manifest.bundle ? await this.signExtensionRelease(manifest.id, manifest.bundle.version, manifestJson, artifactSha256) : undefined;
     try {
       this.ctx.storage.transactionSync(() => {
+        if (runtimeSlotLimit !== undefined && body.scope && instanceId) {
+          const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; manifest_json: string }>(this.ctx.storage.sql as never,
+            `SELECT i.instance_id,i.extension_id,i.project_id,i.scope,e.manifest_json FROM extension_instances i
+             JOIN installed_extensions e ON e.extension_id=i.extension_id
+             WHERE i.tenant_id=? AND i.space_id=? AND i.status!='removed'`, body.tenantId, body.spaceId);
+          const counts = new Map<string, number>();
+          for (const row of rows) {
+            if (row.instance_id === instanceId || body.promoteExisting && row.extension_id === manifest.id && row.scope === "PROJECT_SHARED") continue;
+            const count = row.extension_id === manifest.id ? (manifest.containers?.length ?? 0)
+              : ((JSON.parse(row.manifest_json) as ExtensionManifest).containers?.length ?? 0);
+            const key = row.project_id ?? "";
+            counts.set(key, (counts.get(key) ?? 0) + count);
+          }
+          const key = body.projectId ?? "";
+          counts.set(key, (counts.get(key) ?? 0) + (manifest.containers?.length ?? 0));
+          if ([...counts.values()].some(count => count > runtimeSlotLimit!)) throw new Error("runtime_installation_slot_limit");
+        }
         const existing = queryOne<{ manifest_json: string }>(this.ctx.storage.sql as never,
           "SELECT manifest_json FROM installed_extensions WHERE extension_id=?", manifest.id);
         if (existing && existing.manifest_json !== manifestJson) {

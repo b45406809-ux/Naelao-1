@@ -385,3 +385,15 @@ it("blocks runtime installs at the actor when subscription validation is unavail
   expect(storage.sql.exec("SELECT COUNT(*) AS count FROM installed_extensions").toArray()[0]?.count).toBe(0);
   expect((await space.fetch(request())).status).toBe(201);
 });
+
+it("atomically caps concurrent installed runtimes by workspace subscription allowance", async () => {
+  const storage = createDOStorage();
+  const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb } as never);
+  const responses = await Promise.all(Array.from({ length: 24 }, (_, index) => {
+    const value = manifest(); value.id = `ext_runtime_${index}`;
+    return space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest: value, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: ["native-execution"] }) }));
+  }));
+  expect(responses.filter(response => response.status === 201)).toHaveLength(2);
+  expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_instances WHERE status='active'").toArray()[0]?.count).toBe(2);
+});
