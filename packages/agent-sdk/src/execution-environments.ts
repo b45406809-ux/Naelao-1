@@ -22,6 +22,8 @@ export interface EnvironmentCard {
 }
 export interface EnvironmentRequirement {
   capabilities: readonly string[];
+  /** Pin routing to a fresh, owner-reported authenticated app observation. */
+  appId?: string;
   connectionId?: string;
   mode: "managed" | "capability" | "fallback";
   /** Only the host may set this after confirming a capacity/provider availability failure. */
@@ -35,12 +37,15 @@ export function sameEnvironmentOwner(a: EnvironmentOwner, b: EnvironmentOwner): 
   return a.tenantId === b.tenantId && a.spaceId === b.spaceId && a.projectId === b.projectId && a.scope === b.scope;
 }
 export function eligibleEnvironments(cards: readonly EnvironmentCard[], owner: EnvironmentOwner, requirement: EnvironmentRequirement, now = Date.now()): EnvironmentCard[] {
-  if (cards.length > 512 || requirement.capabilities.length > 64 || !["managed", "capability", "fallback"].includes(requirement.mode)) throw new Error("environment_requirements_invalid");
+  if (cards.length > 512 || requirement.capabilities.length > 64 || requirement.appId !== undefined && !/^[a-z][a-z0-9_.:-]{0,127}$/.test(requirement.appId)
+    || requirement.connectionId !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requirement.connectionId)
+    || !["managed", "capability", "fallback"].includes(requirement.mode)) throw new Error("environment_requirements_invalid");
   if (new Set(cards.map(card => card.id)).size !== cards.length) throw new Error("environment_registry_identity_collision");
   return cards.filter(card => sameEnvironmentOwner(card, owner) && card.authorized && card.available
     && Number.isSafeInteger(card.observedAt) && card.observedAt <= now && now - card.observedAt <= 60_000
     && requirement.capabilities.every(capability => card.capabilities.includes(capability))
-    && (!requirement.connectionId || card.apps.some(app => app.connectionId === requirement.connectionId
+    && (!(requirement.appId || requirement.connectionId) || card.apps.some(app => (!requirement.appId || app.id === requirement.appId)
+      && (!requirement.connectionId || app.connectionId === requirement.connectionId) && Boolean(app.connectionId)
       && Number.isSafeInteger(app.authenticatedAt) && app.authenticatedAt! <= now && now - app.authenticatedAt! <= 60_000))
     && (card.kind === "managed" || requirement.mode === "capability" && card.externalUse.includes("capability")
       || requirement.mode === "fallback" && requirement.managedUnavailable === true && card.externalUse.includes("fallback")))

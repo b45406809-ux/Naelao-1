@@ -25,6 +25,14 @@ describe("environment policy", () => {
     expect(selectEnvironment([loggedIn], owner, { capabilities: [], mode: "managed", connectionId: "account-a" }, undefined, undefined, 1001)).toEqual(loggedIn);
     expect(() => selectEnvironment([loggedIn], owner, { capabilities: [], mode: "managed", connectionId: "account-b" }, undefined, undefined, 1001)).toThrow();
   });
+  it("requires the requested app and account to match one fresh observation", () => {
+    const browser = { ...card, apps: [{ id: "browser", connectionId: "profile-a", authenticatedAt: 1000 }] };
+    const office = { ...card, id: "office-pc", apps: [{ id: "office", connectionId: "profile-a", authenticatedAt: 1000 }] };
+    expect(eligibleEnvironments([browser, office], owner, { capabilities: [], mode: "managed", appId: "browser", connectionId: "profile-a" }, 1001)).toEqual([browser]);
+    expect(eligibleEnvironments([browser], owner, { capabilities: [], mode: "managed", appId: "browser", connectionId: "profile-b" }, 1001)).toEqual([]);
+    expect(eligibleEnvironments([{ ...browser, observedAt: 60_001, apps: [{ id: "browser", connectionId: "profile-a", authenticatedAt: 0 }] }], owner,
+      { capabilities: [], mode: "managed", appId: "browser" }, 60_001)).toEqual([]);
+  });
 });
 const core: TemplateRuntimeRequirement = { id: "core", capabilities: ["bash"], required: true, priority: 2, dependencies: [] };
 describe("template runtime previews", () => {

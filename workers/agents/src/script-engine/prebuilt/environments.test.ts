@@ -94,6 +94,14 @@ describe("environment tool host integration", () => {
     expect(result).toMatchObject({ status: "sent", environment_id: "gpu" });
     expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
   });
+  it("routes only to a connected machine with the requested fresh app profile", async () => {
+    const { ctx, machine } = fixture();
+    machine.hardware.apps = [{ id: "browser", connectionId: "profile-a", authenticatedAt: Date.now() }];
+    const args = { session_id: "browser-session", action_id: "open", command: "python train.py", capabilities: ["cuda"], mode: "capability", target_id: "gpu", app_id: "browser", connection_id: "profile-a" };
+    expect(await execute(args, ctx)).toMatchObject({ environment_id: "gpu" });
+    await expect(execute({ ...args, action_id: "wrong-app", app_id: "office" }, ctx)).rejects.toThrow("environment_session_target_unavailable");
+    expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
+  });
   it("rejects caller-supplied fallback evidence and lower execution ceilings", async () => {
     const { ctx } = fixture(), args = { session_id: "session", action_id: "step", command: "python train.py", mode: "fallback", managedUnavailable: true };
     await expect(execute(args, ctx)).rejects.toThrow("host_availability_evidence");
