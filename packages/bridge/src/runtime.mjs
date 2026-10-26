@@ -5,10 +5,13 @@ import { dirname, resolve, relative, join, basename, isAbsolute, sep } from "nod
 import { homedir, cpus, totalmem, platform, arch } from "node:os";
 import { machineProofBytes, tunnelHash, validateMachineApps } from "@naelao/agent-sdk";
 import { createLinuxSandboxExecutor } from "./linux-sandbox.mjs";
+import { createContainerSandboxExecutor } from "./container-sandbox.mjs";
 import { readMachineArtifact, writeMachineArtifact } from "./artifact-transfer.mjs";
 
 const FRAME_LIMIT = 65536, OUTPUT_LIMIT = 1048576;
 const executeLocalIsolated = createLinuxSandboxExecutor();
+const executeContainerIsolated = createContainerSandboxExecutor();
+const PINNED_SANDBOX_IMAGE = /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
 function baseUrl(value) {
   const url = new URL(value);
   if (url.username || url.password || url.search || url.hash || url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("bridge_https_endpoint_required");
@@ -38,7 +41,8 @@ async function passphrase(options) {
 }
 function hardware(options, models = options.models ?? []) {
   const capabilities = new Set(options.capabilities?.length ? options.capabilities : ["storage:folder"]);
-  if (options.allowSandboxedShell === true && platform() === "linux" && existsSync("/usr/bin/bwrap")) capabilities.add("bash");
+  if (options.allowSandboxedShell === true && (platform() === "linux" && existsSync("/usr/bin/bwrap")
+    || ["darwin", "win32"].includes(platform()) && PINNED_SANDBOX_IMAGE.test(options.containerImage ?? ""))) capabilities.add("bash");
   return { platform: platform(), arch: arch(), cpuCount: cpus().length, memoryBytes: totalmem(), capabilities: [...capabilities].slice(0, 64), models };
 }
 function modelIds(payload) {
@@ -93,7 +97,10 @@ async function consent(options) {
   const roots = [];
   for (const path of options.allowDirs ?? []) roots.push(await realpath(resolve(path)));
   const inference = options.allowInference === true;
-  return { roots, commands: options.allowCommands ?? [], sandboxedShell: options.allowSandboxedShell === true, inference,
+  const containerImage = options.containerImage;
+  if (options.allowSandboxedShell === true && ["darwin", "win32"].includes(platform()) && !PINNED_SANDBOX_IMAGE.test(containerImage ?? "")) throw new Error("bridge_pinned_container_image_required");
+  return { roots, commands: options.allowCommands ?? [], sandboxedShell: options.allowSandboxedShell === true,
+    ...(options.allowSandboxedShell === true && ["darwin", "win32"].includes(platform()) && containerImage && PINNED_SANDBOX_IMAGE.test(containerImage) ? { sandboxImage: containerImage } : {}), inference,
     ...(inference ? { inferenceUrl: loopbackUrl(options.inferenceUrl).toString() } : {}) };
 }
 export async function enrollBridge(options) {
@@ -316,7 +323,8 @@ export async function connectBridge(options, dependencies = {}) {
               } else if (frame.op === "exec") {
                 if (!state.consent.commands.includes(frame.params.command) && state.consent.sandboxedShell !== true) throw new Error("bridge_command_consent_denied");
                 const executionRoots = await intersectExecutionRoots(state.consent.roots, frame.execution_roots);
-                result = await (dependencies.executeIsolated ?? executeLocalIsolated)(frame.params, { signal: controller.signal, roots: executionRoots, output });
+                const execute = dependencies.executeIsolated ?? (state.consent.sandboxImage ? executeContainerIsolated : executeLocalIsolated);
+                result = await execute({ ...frame.params, ...(state.consent.sandboxImage ? { sandboxImage: state.consent.sandboxImage } : {}) }, { signal: controller.signal, roots: executionRoots, output });
               } else throw new Error("bridge_operation_unknown");
               if (controller.signal.aborted) throw new Error("bridge_request_cancelled");
               record.status = "succeeded"; record.result = result;
@@ -355,7 +363,7 @@ export async function runBridge(argv) {
     if (flag === "--allow-inference") { options.allowInference = true; continue; }
     if (flag === "--allow-sandboxed-shell") { options.allowSandboxedShell = true; continue; }
     if (!value || value.startsWith("--")) throw new Error("bridge_option_value_required:" + flag);
-    const fields = { "--url": "url", "--name": "name", "--identity": "identityFile", "--enrollment-file": "enrollmentFile", "--passphrase-file": "passphraseFile", "--inference-url": "inferenceUrl", "--inventory-file": "inventoryFile" };
+    const fields = { "--url": "url", "--name": "name", "--identity": "identityFile", "--enrollment-file": "enrollmentFile", "--passphrase-file": "passphraseFile", "--inference-url": "inferenceUrl", "--inventory-file": "inventoryFile", "--container-image": "containerImage" };
     const arrays = { "--allow-dir": "allowDirs", "--allow-command": "allowCommands", "--model": "models", "--capability": "capabilities" };
     const encodedArrays = { "--allow-dir-base64": ["allowDirs", 1024], "--allow-command-base64": ["allowCommands", 8192] };
     if (fields[flag]) options[fields[flag]] = value;
@@ -367,7 +375,7 @@ export async function runBridge(argv) {
     else throw new Error("bridge_unknown_option:" + flag);
     index++;
   }
-  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path | --allow-dir-base64 utf8-base64] [--allow-command exact-command | --allow-command-base64 utf8-base64 | --allow-sandboxed-shell] [--allow-inference --inference-url http://127.0.0.1:11434/v1/chat/completions]\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
+  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path | --allow-dir-base64 utf8-base64] [--allow-command exact-command | --allow-command-base64 utf8-base64 | --allow-sandboxed-shell [--container-image registry/image@sha256:<64-hex>]] [--allow-inference --inference-url http://127.0.0.1:11434/v1/chat/completions]\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
   if (!options.identityFile) {
     if (!options.name || !/^[a-z][a-z0-9-]{1,62}$/.test(options.name)) throw new Error("bridge_named_identity_required");
     options.identityFile = join(homedir(), ".naelao", "bridge", options.name + ".json");

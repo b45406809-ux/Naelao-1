@@ -1,4 +1,5 @@
 import { deriveSpaceDataKey, encryptAuthenticated, decryptAuthenticated, type EncryptedEnvelope } from "@naelao/crypto";
+import { gunzipSync, gzipSync } from "fflate";
 import { sha256Text } from "./r2-cas.js";
 import type { ScriptEngineEnv } from "./types.js";
 
@@ -14,6 +15,32 @@ export function estimateTokens(text: string): number {
 }
 const PREVIEW_CHARS = Math.floor(TOOL_OUTPUT_TOKEN_LIMIT * 3.85) - 600;
 const pathPattern = /^\/\.avos\/tmp\/tool_out_[a-f0-9-]+\.log$/;
+const TOOL_OUTPUT_MAX_BYTES = 16 * 1024 * 1024;
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  return btoa(binary);
+}
+function fromBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+function packToolOutput(text: string): { payload: string; compressedBytes: number; compression: "gzip-base64-v1" | "none" } {
+  const raw = new TextEncoder().encode(text);
+  const packed = `gzip-base64-v1:${toBase64(gzipSync(raw, { level: 1 }))}`;
+  return packed.length < text.length
+    ? { payload: packed, compressedBytes: new TextEncoder().encode(packed).byteLength, compression: "gzip-base64-v1" }
+    : { payload: text, compressedBytes: raw.byteLength, compression: "none" };
+}
+function unpackToolOutput(payload: string, compression: string | undefined, expectedBytes: number): string {
+  if (compression !== "gzip-base64-v1") return payload;
+  if (!payload.startsWith("gzip-base64-v1:") || !Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || expectedBytes > TOOL_OUTPUT_MAX_BYTES) throw new Error("tool_output_compression_metadata_invalid");
+  const expanded = gunzipSync(fromBase64(payload.slice("gzip-base64-v1:".length)));
+  if (expanded.byteLength !== expectedBytes) throw new Error("tool_output_decompression_size_mismatch");
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(expanded);
+}
 
 function boundedOutputEnvelope(input: {
   outputPath: string;
@@ -64,10 +91,11 @@ export async function offloadToolOutput(env: ScriptEngineEnv, output: unknown): 
   // Failure to persist is a failure to deliver this result, not permission to silently lose it.
   const storageKey = toolOutputKey(env, path);
   const key = await deriveSpaceDataKey(env.platformSecret ?? "", env.tenantId, env.spaceId);
-  const envelope = await encryptAuthenticated(text, key, storageKey);
+  const packed = packToolOutput(text);
+  const envelope = await encryptAuthenticated(packed.payload, key, storageKey);
   const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
   await (env.workspaceBucket ?? env.scriptsBucket).put(storageKey, JSON.stringify(envelope), {
-    customMetadata: { sealed: "space-aes-gcm-v1", plaintextBytes: String(new TextEncoder().encode(text).byteLength), sha256: await sha256Text(text), expiresAt: String(expiresAt) },
+    customMetadata: { sealed: "space-aes-gcm-v1", plaintextBytes: String(new TextEncoder().encode(text).byteLength), compressedBytes: String(packed.compressedBytes), compression: packed.compression, sha256: await sha256Text(text), expiresAt: String(expiresAt) },
   });
   try {
     await env.scheduleToolOutputExpiry(storageKey, expiresAt);
@@ -114,8 +142,11 @@ export function toolOutputReadBucket(env: ScriptEngineEnv): R2Bucket {
       const obj = await target.get(storageKey);
       if (!obj || Number(obj.customMetadata?.expiresAt ?? 0) <= Date.now()) return null;
       if (obj.customMetadata?.sealed !== "space-aes-gcm-v1") throw new Error("tool_output_sealing_required");
+      const plainBytes = Number(obj.customMetadata?.plaintextBytes);
+      if (!Number.isSafeInteger(plainBytes) || plainBytes < 0 || plainBytes > TOOL_OUTPUT_MAX_BYTES) throw new Error("tool_output_metadata_invalid");
       const key = await deriveSpaceDataKey(env.platformSecret ?? "", env.tenantId, env.spaceId);
-      const text = await decryptAuthenticated(JSON.parse(await obj.text()) as EncryptedEnvelope, key, storageKey);
+      const payload = await decryptAuthenticated(JSON.parse(await obj.text()) as EncryptedEnvelope, key, storageKey);
+      const text = unpackToolOutput(payload, obj.customMetadata?.compression, plainBytes);
       const full = new TextEncoder().encode(text);
       const range = options?.range;
       const offset = range && "offset" in range ? range.offset ?? 0 : 0;

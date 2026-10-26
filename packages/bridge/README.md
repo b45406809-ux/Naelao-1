@@ -2,7 +2,7 @@
 
 This is the Node 22.11+ reference CLI for Windows, Linux and macOS. It is an outbound
 HTTPS/WSS client; it opens no inbound shell endpoint. Linux shell execution uses bubblewrap;
-macOS and Windows shell adapters, native packaging and live-machine verification remain open.
+macOS and Windows can opt into a digest-pinned, preloaded Docker Desktop sandbox.
 
 1. A space owner/admin creates an expiring enrollment ticket at
    `POST /spaces/:spaceId/tunnels/enrollment`, with a unique name and explicit actor,
@@ -12,8 +12,9 @@ macOS and Windows shell adapters, native packaging and live-machine verification
    --enrollment-file TICKET.json --allow-dir FOLDER`. Opt into individual commands
    with repeated `--allow-command`. The shell UI uses `--allow-dir-base64` and
    `--allow-command-base64` so special characters are passed literally across terminals.
-   Sandboxed shell requires both the host grant and local
-   `--allow-sandboxed-shell`; inference needs `--allow-inference`.
+   Sandboxed shell requires both the host grant and local `--allow-sandboxed-shell`. On
+   macOS/Windows also pass `--container-image registry/name@sha256:<64-hex>`; inference needs
+   `--allow-inference`.
 3. Run `connect --identity IDENTITY.json`. Encrypted Ed25519 credentials and a
    request journal persist beside the identity. Only one daemon can hold its lock.
    Never delete a lock until its recorded process has stopped.
@@ -23,7 +24,7 @@ macOS and Windows shell adapters, native packaging and live-machine verification
 
 Operations require both server grants and local consent. The bridge keeps the computer's
 filesystem independent from the Naelao workspace: it does not mount or synchronize the
-workspace. Selected binary artifacts up to 1 MiB can be explicitly imported/exported in
+workspace. Selected binary artifacts up to 16 MiB can be explicitly imported/exported in
 resumable 8 KiB chunks; local
 exports create a new file and do not overwrite. On Linux, shell commands run through bubblewrap with network disabled, system
 runtime directories read-only, and only `--allow-dir` folders mounted read/write. An optional
@@ -32,9 +33,14 @@ explicit file or artifact operations. The Linux adapter fails closed if bubblewr
 The matching host grant further narrows those folders and makes read-only grants read-only
 inside the sandbox; the bridge intersects that grant with local consent.
 An explicitly granted sandboxed shell can run changing commands, but only within write-enabled
-roots and with no network; exact-command grants remain available for narrower access.
-macOS and Windows shell execution still fail closed until their native isolation adapters and
-Windows ACL enforcement are implemented. This client transports authorized local model calls;
+roots and with no network; exact-command grants remain available for narrower access. On
+macOS/Windows, Docker Desktop runs the image with `--pull=never`, a read-only root filesystem,
+network disabled, dropped capabilities, an unprivileged user, fixed process/CPU/memory limits,
+and only consented host folders mounted under `/mnt/naelao/<index>`. Commands use that guest path
+for file access. The container does not inherit the host application's login profile or browser
+cookies. This is Linux-container isolation hosted by Docker Desktop, not native macOS sandboxing
+or Windows ACL enforcement; without the pinned local image and explicit opt-in, shell execution
+fails closed. This client transports authorized local model calls;
 it is not a disconnected OS.
 
 The same outbound bridge can run on a user's computer, a VM, or a container host such as Modal,

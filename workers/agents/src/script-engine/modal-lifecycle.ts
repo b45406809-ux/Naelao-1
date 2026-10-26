@@ -3,7 +3,7 @@ import { assertExecutionPlanResources } from "@naelao/entitlements";
 export interface ModalSandboxClient {
   create(input: { image: string; cpu: number; memoryMb: number; gpu?: string; timeoutSeconds: number; persistentVolume?: string }): Promise<{ id: string }>;
   terminate(id: string): Promise<void>;
-  inspect(id: string): Promise<{ state: "running" | "stopped" | "unknown"; cpuSeconds?: number; memoryGbSeconds?: number }>;
+  inspect(id: string): Promise<{ state: "running" | "stopped" | "unknown"; actualCredits?: number }>;
 }
 export interface ModalLifecycleHooks {
   reserve(id: string, credits: number): Promise<void>;
@@ -13,7 +13,7 @@ export interface ModalLifecycleHooks {
 }
 export interface ModalSandboxRecord {
   id: string; providerId: string; image: string; state: "running" | "stopped" | "unknown";
-  createdAt: number; updatedAt: number; reservedCredits: number; cpuSeconds?: number; memoryGbSeconds?: number;
+  createdAt: number; updatedAt: number; reservedCredits: number; actualCredits?: number;
 }
 const PIN = /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
 export async function createModalSandbox(input: {
@@ -44,17 +44,25 @@ export async function createModalSandbox(input: {
 }
 export async function reconcileModalSandbox(client: ModalSandboxClient, hooks: ModalLifecycleHooks, record: ModalSandboxRecord): Promise<ModalSandboxRecord> {
   const receipt = await client.inspect(record.providerId);
-  const updated = { ...record, state: receipt.state, updatedAt: Date.now(), ...(receipt.cpuSeconds !== undefined ? { cpuSeconds: receipt.cpuSeconds } : {}), ...(receipt.memoryGbSeconds !== undefined ? { memoryGbSeconds: receipt.memoryGbSeconds } : {}) };
-  if (receipt.cpuSeconds !== undefined && receipt.memoryGbSeconds !== undefined) {
-    if (![receipt.cpuSeconds, receipt.memoryGbSeconds].every(value => Number.isFinite(value) && value >= 0)) throw new Error("modal_usage_receipt_invalid");
-    const actual = Math.ceil(receipt.cpuSeconds * 0.1 + receipt.memoryGbSeconds * 0.01);
-    await hooks.settle(record.id, Math.min(actual, record.reservedCredits));
+  const updated: ModalSandboxRecord = { ...record, state: receipt.state, updatedAt: Date.now() };
+  if (receipt.actualCredits !== undefined) {
+    if (!Number.isSafeInteger(receipt.actualCredits) || receipt.actualCredits < 0) throw new Error("modal_usage_receipt_invalid");
+    if (receipt.actualCredits > record.reservedCredits) throw new Error("modal_usage_over_reservation_reconciliation_required");
+    if (record.actualCredits === undefined) {
+      updated.actualCredits = receipt.actualCredits;
+      await hooks.settle(record.id, receipt.actualCredits);
+    } else if (record.actualCredits !== receipt.actualCredits) {
+      throw new Error("modal_usage_receipt_changed_after_settlement");
+    }
   }
   await hooks.record(updated);
   return updated;
 }
 export async function terminateModalSandbox(client: ModalSandboxClient, hooks: ModalLifecycleHooks, record: ModalSandboxRecord): Promise<void> {
   await client.terminate(record.providerId);
-  await hooks.settle(record.id, record.reservedCredits);
-  await hooks.record({ ...record, state: "stopped", updatedAt: Date.now() });
+  // Provider billing is authoritative. Never charge the full reservation merely because
+  // termination was requested; reconcile only after a provider usage receipt is available.
+  const stopped = await reconcileModalSandbox(client, hooks, { ...record, state: "stopped" });
+  if (stopped.state !== "stopped") throw new Error("modal_sandbox_termination_unconfirmed");
+  if (stopped.actualCredits === undefined) throw new Error("modal_usage_receipt_unavailable");
 }
