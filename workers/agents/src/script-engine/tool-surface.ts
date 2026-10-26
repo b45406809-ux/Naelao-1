@@ -84,6 +84,21 @@ const PRIVATE_SCRIPT_NAMES = new Set(["schedule", "local-machine", "file-manager
 const HIGH_PRIVILEGE_OPERATIONS = /(?:^|\.)(?:send|delete|write|edit|bash|execute|provision|add_destination|transfer|payout)(?:$|\.)/i;
 const BUILTIN_PLATFORM_SKILLS = [
   {
+    name: "reusable-command-authoring",
+    description: "Create reusable scoped commands and durable workflows, chaining authorized tools without exposing credentials.",
+    domain: "orchestration",
+    role_target: "WORKER_EXECUTION" as const,
+    manual_markdown: `# Reusable command authoring
+
+Inspect script.find and script.read before creating a duplicate. Use script.create/update for reusable execution through the existing tier ladder, preserving the execution ceiling and declared capabilities. Use workflow.create for durable waits, schedules and resumable orchestration; its entrypoint is export async function execute(step, ctx). Call installed operations through ctx.tools.call(stableStepKey, operation, params), and declare their capabilities. Reuse stable step keys on retries; reconcile uncertain effects before repeating writes.
+
+For virtual CLI commands use the supported export async function run(args, ctx) ABI. Context is injected by the host, not imported from an arbitrary module. Discover the actual context API for the selected runtime before writing code: CLI, stored scripts, workflows and Python have different harnesses. Do not assume JavaScript ctx or connector methods exist in Python or a bare container. Delegate work through the authorized host operations when a harness does not expose them.
+
+Treat MCP as a tool protocol with host-managed authentication, not as authorization by itself. A reusable command inherits the current caller's granted connectors, tool subset, workspace scope, approvals and budget; creating it never grants access. Keep credentials in the vault and use authorized connector operations. Chain bounded calls, filter intermediate results, and return a small evidence receipt. Require explicit approval for consequential effects when host policy requires it.
+
+Gzip compresses stored or transmitted bytes; it does not reduce model tokens for the same decoded text. Do not send gzip/base64 blobs as model context. Use supported HTTP compression for transport and bounded extraction, filtering or summarization for context reduction.`,
+  },
+  {
     name: "conversation-research-routing",
     description: "Planner guidance for delegating transcript research and combining bounded results with RAG and document processing.",
     domain: "knowledge",
@@ -363,7 +378,7 @@ export class ScriptToolSurface {
   ) {
     this.role = context.role ?? "DEV_OPERATOR";
     this.plannerScope = context.plannerScope;
-    this.defaultSkills = new Set(context.defaultSkills ?? []);
+    this.defaultSkills = new Set(["reusable-command-authoring", ...(context.defaultSkills ?? [])]);
     this.skillAllowlist = context.skillAllowlist === undefined ? undefined : new Set(context.skillAllowlist);
     this.library = new SkillLibrary(env.scriptsBucket, env.spaceId);
     this.ops = buildOperationMap(enabledPrebuilt);
