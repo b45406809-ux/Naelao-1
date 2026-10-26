@@ -463,6 +463,7 @@ export function ChannelConnect({
   const [newPublisherPublicKey, setNewPublisherPublicKey] = React.useState("");
   const [otherProjectInstallations, setOtherProjectInstallations] = React.useState<ContainerInstallation[]>([]);
   const [runtimeCatalogue, setRuntimeCatalogue] = React.useState<RuntimeCatalogueEntry[]>([]);
+  const [runtimeSlotLimit, setRuntimeSlotLimit] = React.useState<number | null>(null);
   const [runtimeCatalogueError, setRuntimeCatalogueError] = React.useState<string | null>(null);
   const [installingRuntime, setInstallingRuntime] = React.useState<string | null>(null);
   const [extensionLoadError, setExtensionLoadError] = React.useState<string | null>(null);
@@ -531,10 +532,10 @@ export function ChannelConnect({
   }, [spaceId, projectId, session, canManage]);
 
   React.useEffect(() => {
-    if (!projectId || !canManage) { setRuntimeCatalogue([]); setRuntimeCatalogueError(null); return; }
+    if (!projectId || !canManage) { setRuntimeCatalogue([]); setRuntimeSlotLimit(null); setRuntimeCatalogueError(null); return; }
     let cancelled = false;
-    listRuntimeCatalogue(spaceId, session).then(result => { if (!cancelled) { setRuntimeCatalogue(result.images); setRuntimeCatalogueError(null); } })
-      .catch(error => { if (!cancelled) { setRuntimeCatalogue([]); setRuntimeCatalogueError(error instanceof Error ? error.message : "Runtime catalogue is unavailable."); } });
+    listRuntimeCatalogue(spaceId, session).then(result => { if (!cancelled) { setRuntimeCatalogue(result.images); setRuntimeSlotLimit(result.installed_slots_per_workspace); setRuntimeCatalogueError(null); } })
+      .catch(error => { if (!cancelled) { setRuntimeCatalogue([]); setRuntimeSlotLimit(null); setRuntimeCatalogueError(error instanceof Error ? error.message : "Runtime catalogue is unavailable."); } });
     return () => { cancelled = true; };
   }, [spaceId, projectId, session, canManage]);
 
@@ -739,6 +740,7 @@ export function ChannelConnect({
       {projectId && canManage && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
         <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install an approved project runtime</summary>
         <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>Only deployment-approved images are installable. Naelao checks your current plan before installation and again before execution. A capability listed by a template does not mean its runtime is installed.</p>
+        {runtimeSlotLimit !== null && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>Your plan allows {runtimeSlotLimit} installed container slots per workspace. Paused runtimes retain their slots. Uninstall an unused runtime to free capacity.</p>}
         {runtimeCatalogueError && <p role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11.5 }}>{runtimeCatalogueError}</p>}
         {!runtimeCatalogueError && runtimeCatalogue.filter(image => image.available).length === 0 && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>No approved runtimes are deployed for installation in this environment.</p>}
         {runtimeCatalogue.filter(image => image.available).map(image => {

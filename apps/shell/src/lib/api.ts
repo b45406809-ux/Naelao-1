@@ -1479,7 +1479,7 @@ export interface RuntimeCatalogueEntry {
   install_manifest?: { id?: string; containers?: Array<{ id: string; image: string; resources: { memoryMb: number; cpuCores: number; timeoutSeconds: number }; networkPolicy?: string }> };
 }
 export async function listRuntimeCatalogue(spaceId: string, session: SessionCredentials) {
-  return apiFetch<{ images: RuntimeCatalogueEntry[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
+  return apiFetch<{ images: RuntimeCatalogueEntry[]; installed_slots_per_workspace: number }>(`/v1/spaces/${encodeURIComponent(spaceId)}/runtime-catalog`, { session });
 }
 export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string };

@@ -47,7 +47,7 @@ import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 import { eraseBusinessServiceProviders } from "./business-erasure.js";
 import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "./erasure-request-state.js";
 import { previewBlueprintActivation } from "./blueprint-activation.js";
-import { assertExecutionPlanResources, EntitlementsChecker, isPlanTierAtLeast } from "@naelao/entitlements";
+import { assertExecutionPlanResources, EntitlementsChecker, getExecutionLimits, isPlanTierAtLeast } from "@naelao/entitlements";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -1455,7 +1455,7 @@ app.get("/spaces/:spaceId/runtime-catalog", async c => {
     }
     return { ...image, plan_available: planAvailable, ...(planReason ? { plan_reason: planReason } : {}) };
   });
-  return c.json({ images });
+  return c.json({ images, installed_slots_per_workspace: getExecutionLimits(plan).installedContainersPerWorkspace });
 });
 
 // Explicit human installation. The catalogue is refreshed rather than trusting a cached
