@@ -462,7 +462,7 @@ export class OwnerVoiceAgent extends VoiceAgent<AgentsEnv> {
     try {
       const credentials =
         identity && binding
-          ? await resolvePhoneCredentials(this.env, identity, binding.payer)
+          ? await resolvePhoneCredentials(this.env, identity, binding.payer, binding)
           : null;
       if (!credentials) throw new Error("phone_credentials_unavailable");
       await phoneProvider(

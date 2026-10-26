@@ -49,6 +49,8 @@ export async function armLiveCall(
     throw new Error("live_call_session_required");
   if (binding.purpose === "extension")
     throw new Error("internal_assistant_line_required");
+  if (binding.provider !== undefined && binding.provider !== "twilio")
+    throw new Error("phone_provider_live_transport_unavailable");
   if (binding.status !== "active")
     throw new Error("assistant_phone_not_connected");
   if (sessionId === undefined)
@@ -107,6 +109,7 @@ export async function claimLiveCall(
   maxSeconds: number
 ): Promise<LiveCall | null> {
   if (
+    (binding.provider !== undefined && binding.provider !== "twilio") ||
     binding.purpose === "extension" ||
     !/^CA[a-fA-F0-9]{32}$/.test(callSid) ||
     !/^\d{8}$/.test(code) ||

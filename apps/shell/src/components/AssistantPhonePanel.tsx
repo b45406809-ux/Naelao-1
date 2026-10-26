@@ -2,6 +2,8 @@
 import * as React from "react";
 import { assistantMailApi, type SessionCredentials } from "@/lib/api";
 interface Phone {
+  provider?: "twilio" | "telnyx";
+  provider_number_id?: string | null;
   id: string;
   phone_number: string | null;
   status: string;
@@ -220,6 +222,7 @@ export function AssistantPhonePanel({
       <p>
         {state?.phone?.phone_number ?? "No number connected"}{" "}
         {state?.phone?.status ?? ""}
+        {state?.phone ? ` · ${state.phone.provider ?? "twilio"}` : ""}
       </p>
       <p>
         Phone is optional for Space and Project assistants. Enable it in

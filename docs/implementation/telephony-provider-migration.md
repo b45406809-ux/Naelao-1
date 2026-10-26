@@ -36,8 +36,13 @@ entitlement, country availability, prices, or deployed webhook delivery.
 
 ## Remaining integration
 
-- Persist provider discriminator and provider-specific account/number identities without
-  reinterpreting existing Twilio SIDs. Preserve existing callbacks during migration.
+- Migration 0136 persists a carrier discriminator on bindings and quotes, defaulting existing
+  records to Twilio and preserving their IDs/callbacks. Number resource uniqueness is now
+  carrier-specific; active E.164 addresses remain globally unique. APIs expose provider and
+  opaque number ID. Twilio credential resolution, lifecycle, callbacks, quote purchases and
+  live-call admission reject other carriers. Deployment checks require the new columns.
+  Existing legacy SID-named storage columns remain for compatibility; Telnyx active binding
+  creation and callback configuration remain open.
 - Verified account preparation and scoped Vault storage/removal are implemented. Active
   number import, quoted purchase, callback migration, detach and release remain open.
 - Signed Telnyx ingress with durable event claims, binding/destination checks and assistant

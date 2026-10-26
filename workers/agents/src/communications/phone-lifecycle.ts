@@ -30,7 +30,8 @@ export async function detachAssistantPhonesForErasure(
       const credentials = await resolvePhoneCredentials(
         env,
         identity,
-        binding.payer
+        binding.payer,
+        binding
       );
       if (
         !credentials ||

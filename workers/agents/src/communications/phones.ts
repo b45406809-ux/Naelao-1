@@ -92,6 +92,7 @@ export function validatePhonePolicy(value: unknown): AssistantPhonePolicy {
   };
 }
 export interface AssistantPhoneBinding {
+  provider?: "twilio" | "telnyx";
   id: string;
   identity_id: string;
   purpose?: "assistant" | "extension";
@@ -125,6 +126,8 @@ function metadata(binding: AssistantPhoneBinding | null) {
   if (!binding) return null;
   return {
     id: binding.id,
+    provider: binding.provider ?? "twilio",
+    provider_number_id: binding.provider_number_sid,
     phone_number: binding.phone_number,
     status: binding.status,
     payer: binding.payer,
@@ -371,7 +374,7 @@ export async function handlePhoneAction(
   const legacyBindingId = action === "phone-import" && typeof body.legacy_binding_id === "string"
     ? body.legacy_binding_id
     : null;
-  const credentials = await resolvePhoneCredentials(env, identity, payer);
+  const credentials = await resolvePhoneCredentials(env, identity, payer, binding ?? undefined);
   if (!credentials)
     throw new Error(
       payer === "managed"
@@ -485,7 +488,7 @@ export async function handlePhoneAction(
         throw new Error("phone_already_assigned");
     } else {
       quote = await env.PLATFORM_DB.prepare(
-        "SELECT * FROM assistant_phone_quotes WHERE id=? AND identity_id=? AND quoted_by=? AND provider_account_sid=? AND status='quoted' AND expires_at>?"
+        "SELECT * FROM assistant_phone_quotes WHERE id=? AND identity_id=? AND quoted_by=? AND provider_account_sid=? AND provider='twilio' AND status='quoted' AND expires_at>?"
       )
         .bind(
           String(body.quote_id),
@@ -686,7 +689,8 @@ export async function handlePhoneAction(
     const credentials = await resolvePhoneCredentials(
       env,
       identity,
-      binding.payer
+      binding.payer,
+      binding
     );
     if (live.results.length && !credentials)
       throw new Error("phone_access_revoked_carrier_hangup_unconfirmed");

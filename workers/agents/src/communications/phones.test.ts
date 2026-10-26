@@ -68,6 +68,20 @@ async function phoneFixture() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe("assistant telephone safety and lifecycle", () => {
+  it("migrates existing bindings as Twilio and exposes their opaque provider identity", async () => {
+    const f = await phoneFixture();
+    const status = await f.act("phone-status") as { phone: { provider: string; provider_number_id: string } };
+    expect(status.phone.provider).toBe("twilio");
+    expect(status.phone.provider_number_id).toBe(pn);
+  });
+  it("never uses Twilio credentials or callbacks for a different carrier binding", async () => {
+    const f = await phoneFixture();
+    await f.db.prepare("UPDATE assistant_phone_bindings SET provider='telnyx' WHERE id=?").bind(f.binding.id).run();
+    f.provider.mockClear();
+    await expect(f.act("phone-detach", { confirm: true })).rejects.toThrow("assistant_phone_credentials_missing");
+    await expect(detachAssistantPhonesForErasure(f.env, f.identity.id)).rejects.toThrow("phone_detachment_required_before_erasure");
+    expect(f.provider).not.toHaveBeenCalled();
+  });
   it("keeps numbers optional and rejects invalid limits and transfer addresses", () => {
     expect(defaultPhonePolicy.voicemail).toBe(false);
     expect(defaultPhonePolicy.greeting).toBe("");

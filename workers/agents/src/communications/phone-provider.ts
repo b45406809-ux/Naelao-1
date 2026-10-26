@@ -70,8 +70,11 @@ export function phoneCredentialName(identity: CommunicationIdentity) {
 export async function resolvePhoneCredentials(
   env: AgentsEnv,
   identity: CommunicationIdentity,
-  payer: string
+  payer: string,
+  binding?: { provider?: string }
 ): Promise<TwilioVoiceCredentials | null> {
+  // Never resolve a Twilio secret for a number owned by another carrier.
+  if (binding?.provider !== undefined && binding.provider !== "twilio") return null;
   // The existing WhatsApp account is never implicitly used for paid telephone provisioning.
   if (payer === "managed") return null; // Managed resale needs a separately configured carrier billing contract.
   if (!env.CREDENTIALS_WORKER) return null;

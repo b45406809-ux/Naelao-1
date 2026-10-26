@@ -102,7 +102,7 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       : null;
     const credentials =
       identity && binding
-        ? await resolvePhoneCredentials(c.env, identity, binding.payer)
+        ? await resolvePhoneCredentials(c.env, identity, binding.payer, binding)
         : null;
     const canonical = new URL(c.req.url);
     canonical.protocol = "wss:";
@@ -158,7 +158,8 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
     const credentials = await resolvePhoneCredentials(
       c.env,
       identity,
-      binding.payer
+      binding.payer,
+      binding
     );
     if (!credentials || credentials.accountSid !== binding.provider_account_sid)
       return reject();
