@@ -57,3 +57,19 @@ test("executor rejects a cwd outside local grants and refuses unsupported operat
   const unsupported = createLinuxSandboxExecutor({ os: "darwin" });
   await assert.rejects(unsupported({ command: "pwd" }, { signal: new AbortController().signal, roots: ["/tmp/project"], output() {} }), /os_sandbox_unavailable/);
 });
+
+test("cancellation hard-stops the process group when SIGTERM is ignored", async () => {
+  const controller = new AbortController(), signals = [];
+  const child = new EventEmitter(); child.pid = 123;
+  child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+  const execute = createLinuxSandboxExecutor({
+    spawn: () => { setImmediate(() => controller.abort()); return child; },
+    exists: () => true, realpathFn: async path => path, os: "linux",
+    killProcess: (pid, signal) => {
+      assert.equal(pid, -123); signals.push(signal);
+      if (signal === "SIGKILL") queueMicrotask(() => child.emit("close", null));
+    },
+  });
+  await assert.rejects(execute({ command: "sleep 100" }, { signal: controller.signal, roots: [], output() {} }), /bridge_request_cancelled/);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});

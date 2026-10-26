@@ -11,7 +11,7 @@ function within(root, target) {
 
 /** Linux local-PC executor. bubblewrap exposes only system runtime directories read-only and
  * owner-consented folders read/write. The host's general filesystem and network are hidden. */
-export function createLinuxSandboxExecutor({ spawn = nodeSpawn, exists = existsSync, realpathFn = realpath, os = platform() } = {}) {
+export function createLinuxSandboxExecutor({ spawn = nodeSpawn, exists = existsSync, realpathFn = realpath, os = platform(), killProcess = process.kill } = {}) {
   return async function executeIsolated(params, { signal, roots, output }) {
     if (os !== "linux") throw new Error("bridge_os_sandbox_unavailable");
     if (!Array.isArray(roots) || roots.length > 32 || typeof params?.command !== "string"
@@ -52,13 +52,19 @@ export function createLinuxSandboxExecutor({ spawn = nodeSpawn, exists = existsS
     return await new Promise((resolve, reject) => {
       if (signal?.aborted) return reject(new Error("bridge_request_cancelled"));
       const child = spawn("/usr/bin/bwrap", args, { stdio: ["ignore", "pipe", "pipe"], detached: true, windowsHide: true });
-      let stdout = "", stderr = "", settled = false;
-      const kill = () => { if (child.pid) { try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill("SIGTERM"); } } };
-      const cleanup = () => { signal?.removeEventListener("abort", kill); };
+      let stdout = "", stderr = "", settled = false, killTimer;
+      const terminate = kind => {
+        if (child.pid) { try { killProcess(-child.pid, kind); } catch { child.kill(kind); } }
+      };
+      const kill = () => {
+        killTimer ??= setTimeout(() => terminate("SIGKILL"), 1000);
+        terminate("SIGTERM");
+      };
+      const cleanup = () => { signal?.removeEventListener("abort", kill); clearTimeout(killTimer); };
       const finish = (error, value) => { if (settled) return; settled = true; cleanup(); error ? reject(error) : resolve(value); };
       signal?.addEventListener("abort", kill, { once: true });
-      child.stdout.on("data", chunk => { const text = chunk.toString("utf8"); stdout += text; output("stdout", text); });
-      child.stderr.on("data", chunk => { const text = chunk.toString("utf8"); stderr += text; output("stderr", text); });
+      child.stdout.on("data", chunk => { const text = chunk.toString("utf8"); stdout = (stdout + text).slice(-65536); output("stdout", text); });
+      child.stderr.on("data", chunk => { const text = chunk.toString("utf8"); stderr = (stderr + text).slice(-65536); output("stderr", text); });
       child.on("error", error => finish(error));
       child.on("close", code => {
         if (signal?.aborted) return finish(new Error("bridge_request_cancelled"));
