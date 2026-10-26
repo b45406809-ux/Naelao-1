@@ -9,7 +9,7 @@ function fixture() {
     const operation = queue.then(() => fn({ get: async (key: string) => structuredClone(data.get(key)), put: async (key: string, value: unknown) => { data.set(key, structuredClone(value)); } }));
     queue = operation.then(() => undefined, () => undefined); return operation;
   } } as SessionStorage;
-  const machine = { machineId: "gpu", updatedAt: Date.now(), hardware: { capabilities: ["cuda", "bash"], apps: [{ id: "blender" }] }, grants: [{ actorId: "owner", projectId: "project", expiresAt: Date.now() + 60000, commands: ["python train.py"], externalUse: ["capability"] }] };
+  const machine = { machineId: "gpu", updatedAt: Date.now(), hardware: { capabilities: ["cuda", "bash"], apps: [{ id: "blender" }] }, grants: [{ actorId: "owner", projectId: "project" as string | undefined, expiresAt: Date.now() + 60000, commands: ["python train.py"], shellAccess: undefined as "sandboxed" | undefined, externalUse: ["capability"] }] };
   const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "project", agentId: "agent", runId: "run", humanInvokerId: "owner", nativeExecutionAllowed: true, maxTier: 6,
     executionSessions: new ExecutionSessions(storage), scriptsBucket: {}, admitExternalEnvironment: vi.fn(async () => true),
     containerRuntimeInventory: vi.fn(async () => ({ installed: [{ installationId: "runtime", projectId: "project", contract: { image: "image", exportedBinaries: ["node"] } }], catalogue: [] })),
@@ -40,6 +40,15 @@ describe("environment tool host integration", () => {
     expect(ctx.env.localTunnel!.exec).toHaveBeenCalledWith(expect.objectContaining({ params: { command: args.command, cwd: args.cwd } }));
     await expect(execute({ ...args, cwd: "/home/owner/other" }, ctx)).rejects.toThrow("environment_action_conflict");
     expect(ctx.env.containerRuntimeInventory).toHaveBeenCalled();
+  });
+  it("selects a machine with a dual-approved sandboxed-shell grant", async () => {
+    const { ctx, machine } = fixture();
+    machine.grants[0]!.commands = [];
+    machine.grants[0]!.shellAccess = "sandboxed";
+    machine.grants[0]!.projectId = undefined;
+    const result = await execute({ session_id: "local-shell", action_id: "list", command: "find . -maxdepth 1", capabilities: ["bash"], mode: "capability", target_id: "gpu" }, ctx);
+    expect(result).toMatchObject({ status: "sent", environment_id: "gpu" });
+    expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
   });
   it("rejects caller-supplied fallback evidence and lower execution ceilings", async () => {
     const { ctx } = fixture(), args = { session_id: "session", action_id: "step", command: "python train.py", mode: "fallback", managedUnavailable: true };

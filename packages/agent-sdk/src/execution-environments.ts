@@ -1,6 +1,8 @@
 /** Host-filtered metadata. Observations may rank candidates but never grant authority. */
 export interface EnvironmentCard {
   id: string;
+  /** User-visible host label; identity/authority remain the separate stable id. */
+  name?: string;
   kind: "managed" | "external";
   provider: string;
   scope: "SPACE_SHARED" | "ASSISTANT_PRIVATE" | "PROJECT_BOUND";
