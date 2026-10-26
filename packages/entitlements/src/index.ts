@@ -128,7 +128,7 @@ export function isPlanTier(value: unknown): value is PlanTier {
 export function isPlanTierAtLeast(plan: string, minimum: string): boolean {
   const order: Record<PlanTier, number> = { free: 0, growth: 1, business: 2, enterprise: 3 };
   const actual = isPlanTier(plan) ? plan : "free";
-  const required = minimum === "free" ? "free" : minimum === "pro" ? "growth" : minimum === "enterprise" ? "enterprise" : null;
+  const required = isPlanTier(minimum) ? minimum : minimum === "pro" ? "growth" : null;
   return required !== null && order[actual] >= order[required];
 }
 

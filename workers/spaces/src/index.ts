@@ -2809,9 +2809,8 @@ app.get("/spaces/:spaceId/projects/:projectId/container-slots", async (c) => {
 });
 
 // POST validates image_id against the real catalogue (exists + available) and the product's
-// configured slot limit BEFORE ever reaching SpaceDO — SpaceDO's own hard ceiling is a backstop,
-// not the primary control (same split as project templates: the worker layer holds business
-// rules, the DO is CRUD).
+// configured slot limit from host configuration. SpaceDO checks that limit beside its
+// synchronous insert so concurrent requests cannot overbook; its hard ceiling is a backstop.
 app.post("/spaces/:spaceId/projects/:projectId/container-slots", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -2838,13 +2837,9 @@ app.post("/spaces/:spaceId/projects/:projectId/container-slots", async (c) => {
   const maxSlots = pc?.containerMarketplace?.maxSlotsPerProject ?? 0;
 
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const listRes = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/container-slots`, "GET");
-  const existing = await listRes.json<{ count: number }>().catch(() => ({ count: 0 }));
-  if (existing.count >= maxSlots) {
-    return c.json({ error_code: "slot_limit_reached", message: `This product allows at most ${maxSlots} container slot(s) per project` }, 409);
-  }
-
-  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/container-slots`, "POST", JSON.stringify(body));
+  // Pass the host-derived limit to the actor that owns the rows. A separate GET/count
+  // followed by POST lets concurrent installs all observe the same free slot.
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/container-slots`, "POST", JSON.stringify({ ...body, max_slots: maxSlots }));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 

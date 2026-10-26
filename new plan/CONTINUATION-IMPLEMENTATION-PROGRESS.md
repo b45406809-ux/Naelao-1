@@ -1820,3 +1820,7 @@ Remaining deployment validation: apply migration 0129, deploy the matching worke
 and test authorized real website sign-in/MFA/reconnect flows with Cloudflare credentials.
 Full browser disk profiles and native passkey/pop-up interaction remain backend gaps;
 this change provides cookies/local-storage persistence and DOM-based sign-in controls.
+
+## Environment-fabric follow-up (2026-10-26)
+
+The current user-directed environment plan remains authoritative. Reviewed live source for catalogue plan floors and container-slot admission. Fixed rejection of canonical growth/business minimum plans. Removed the Worker count/create race by enforcing the host-derived product slot cap beside the synchronous SpaceDO insert. A 32-request storm admits exactly two rows under a two-slot cap; missing caps fail closed. Entitlements suite: 7 passed; slot admission: 1 passed; Spaces typecheck passed. Current environment readiness has no secrets, runtime variables or outbound identities. Remaining: extension-backed installation reservations and aggregate project/storage/GPU/prewarm admission, managed app profiles, Modal lifecycle, non-Linux isolation, provider acceptance. CMD authoring/MCP chaining and gzip research remain queued after environment implementation as requested.

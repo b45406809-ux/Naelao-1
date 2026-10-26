@@ -51,6 +51,11 @@ describe("plan tier validation and immutable limits", () => {
     expect(isPlanTierAtLeast("free", "free")).toBe(true);
     expect(isPlanTierAtLeast("free", "pro")).toBe(false);
     expect(isPlanTierAtLeast("growth", "pro")).toBe(true);
+    expect(isPlanTierAtLeast("growth", "growth")).toBe(true);
+    expect(isPlanTierAtLeast("free", "growth")).toBe(false);
+    expect(isPlanTierAtLeast("growth", "business")).toBe(false);
+    expect(isPlanTierAtLeast("business", "business")).toBe(true);
+    expect(isPlanTierAtLeast("enterprise", "business")).toBe(true);
     expect(isPlanTierAtLeast("business", "enterprise")).toBe(false);
     expect(isPlanTierAtLeast("corrupt", "pro")).toBe(false);
     expect(isPlanTierAtLeast("enterprise", "unknown")).toBe(false);

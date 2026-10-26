@@ -8902,7 +8902,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
 
     const body = await request
-      .json<{ image_id: string; slot_name?: string }>()
+      .json<{ image_id: string; slot_name?: string; max_slots?: number }>()
       .catch(() => ({}) as Record<string, never>);
     if (!body.image_id)
       return Response.json(
@@ -8910,16 +8910,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
 
+    if (!Number.isSafeInteger(body.max_slots) || body.max_slots! < 0)
+      return Response.json({ error_code: "container_slot_limit_required" }, { status: 400 });
+    const maxSlots = Math.min(body.max_slots!, SpaceDO.MAX_SLOTS_PER_PROJECT_HARD_CEILING);
+    // Count and insert use synchronous SQLite without an await between them. Requests
+    // cannot interleave here, so the host-derived cap also holds during install storms.
     const existing = queryAll<{ id: string }>(
       this.ctx.storage.sql as never,
       "SELECT id FROM container_slots WHERE project_id = ?",
       projectId
     );
-    if (existing.length >= SpaceDO.MAX_SLOTS_PER_PROJECT_HARD_CEILING) {
+    if (existing.length >= maxSlots) {
       return Response.json(
         {
           error_code: "slot_limit_reached",
-          message: `A project may not exceed ${SpaceDO.MAX_SLOTS_PER_PROJECT_HARD_CEILING} container slots`,
+          message: `A project may not exceed ${maxSlots} container slots`,
         },
         { status: 409 }
       );
