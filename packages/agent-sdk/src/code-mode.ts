@@ -5,32 +5,33 @@ export interface CodeModeTool {
   parameterHint?: string;
   inputSchema?: Record<string, unknown>;
 }
-export interface CodeModeTools {
+/** CLI facade injected into composed code. Operations are invoked as argv, not as a
+ * model-native JSON tool catalogue. The host still resolves argv to scoped operations. */
+export interface CodeModeCli {
   search(query: string, limit?: number): Promise<ReturnType<typeof searchCodeModeTools>>;
-  describe(name: string): Promise<ReturnType<typeof describeCodeModeTool>>;
-  call(operation: string, params: Record<string, unknown>): Promise<unknown>;
-}
-
-function schemaType(schema: Record<string, unknown>, depth = 0): string {
-  if (depth > 8) return "unknown";
-  if (Array.isArray(schema.enum) && schema.enum.length <= 50 && schema.enum.every(value => value === null || ["string", "number", "boolean"].includes(typeof value))) return schema.enum.map(value => JSON.stringify(value)).join(" | ") || "never";
-  if (schema.type === "string") return "string";
-  if (schema.type === "number" || schema.type === "integer") return "number";
-  if (schema.type === "boolean") return "boolean";
-  if (schema.type === "null") return "null";
-  if (schema.type === "array") return `Array<${schema.items && typeof schema.items === "object" ? schemaType(schema.items as Record<string, unknown>, depth + 1) : "unknown"}>`;
-  if (schema.type === "object" && schema.properties && typeof schema.properties === "object") {
-    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
-    const fields = Object.entries(schema.properties).slice(0, 100).map(([key, value]) => `${JSON.stringify(key)}${required.has(key) ? "" : "?"}: ${value && typeof value === "object" ? schemaType(value as Record<string, unknown>, depth + 1) : "unknown"}`);
-    if (schema.additionalProperties !== false) fields.push("[key: string]: unknown");
-    return `{ ${fields.join("; ")} }`;
-  }
-  if (schema.type === "object") return "Record<string, unknown>";
-  return "unknown";
+  help(name: string): Promise<ReturnType<typeof describeCodeModeTool>>;
+  run(argv: readonly string[]): Promise<unknown>;
 }
 
 export function describeCodeModeTool(tool: CodeModeTool) {
-  return { ...tool, types: `call(operation: ${JSON.stringify(tool.name)}, params: ${tool.inputSchema ? schemaType(tool.inputSchema) : "Record<string, unknown>"}): Promise<unknown>;` };
+  const usage = `${tool.name}${tool.parameterHint ? ` ${tool.parameterHint}` : " --params <json>"}`;
+  return { name: tool.name, description: tool.description, usage };
+}
+
+/** Parse one virtual CLI command. It deliberately supports a single command and a JSON
+ * parameter payload; pipes, shell syntax, and positional guessing are handled by the existing
+ * virtual shell, not by the composition RPC. */
+export function parseCodeModeCommand(tools: readonly CodeModeTool[], argv: readonly string[]) {
+  if (!Array.isArray(argv) || argv.length < 1 || argv.length > 64 || argv.some(value => typeof value !== "string" || value.length > 8192)) throw new Error("cli_command_invalid");
+  const [name, ...flags] = argv;
+  if (!/^[A-Za-z][A-Za-z0-9_.:-]{0,180}$/.test(name!) || !tools.some(tool => tool.name === name)) throw new Error("cli_command_unavailable");
+  let input: unknown = {};
+  if (flags.length) {
+    if (flags.length !== 2 || flags[0] !== "--params") throw new Error("cli_command_usage: use --params <json>");
+    try { input = JSON.parse(flags[1]!); } catch { throw new Error("cli_command_params_invalid"); }
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("cli_command_params_invalid");
+  }
+  return { name: name!, input };
 }
 
 /** Bounded deterministic discovery over an already authorized invocation catalogue. */

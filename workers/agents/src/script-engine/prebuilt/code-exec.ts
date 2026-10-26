@@ -391,9 +391,10 @@ export const codeExec: PrebuiltScript = {
       "an explicitly authorized container or local-machine command.",
     "code.run_js":
       "code (string, REQUIRED — an exported async run(args, ctx) module). args (object, optional). " +
-      "capabilities (string array, max 64; explicit tool:<operation> names). ctx.tools.search(query, limit) " +
-      "and describe(name) discover only these capabilities with current host authorization; ctx.tools.call(name, params) " +
-      "composes them through the normal host approval, scope, tier, and budget checks. No ambient network or imports.",
+      "capabilities (string array, max 64; explicit tool:<operation> names). Naelao agents use the virtual CLI. " +
+      "Inside a composed module use ctx.cli.search(query), ctx.cli.help(name), and ctx.cli.run([name, '--params', JSON.stringify(params)]). " +
+      "This accepts one registered command, not shell syntax; the host rechecks its capability and authorization. " +
+      "Calls pass through the normal host approval, scope, tier, and budget checks. No ambient network or imports.",
   },
   operations: {
     "code.execute_python": (a, c) => {

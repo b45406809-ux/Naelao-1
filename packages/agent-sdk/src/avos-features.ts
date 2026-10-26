@@ -480,7 +480,7 @@ export function distillTrace(
 ): { path: string; source: string } {
   if (!/^[a-z][a-z0-9-]*$/.test(name) || steps.length === 0)
     throw new Error("invalid_demonstration");
-  const source = `export async function run(args, ctx) {\n${steps.map((step) => `  await ctx.cli.run(${JSON.stringify(step.operation)}, ${JSON.stringify(Object.keys(step.input))}.map(k => String(args[k] ?? "")));`).join("\n")}\n}`;
+  const source = `export async function run(args, ctx) {\n${steps.map((step) => `  await ctx.cli.run([${JSON.stringify(step.operation)}, "--params", JSON.stringify(Object.fromEntries(${JSON.stringify(Object.keys(step.input))}.map(k => [k, args[k]])))]);`).join("\n")}\n}`;
   return { path: `/.avos/shared/skills/${name}.ts`, source };
 }
 

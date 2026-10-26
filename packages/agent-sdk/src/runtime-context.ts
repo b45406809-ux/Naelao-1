@@ -141,7 +141,7 @@ export interface CodeInvocationScope {
   tenantId: string; spaceId: string; agentId: string; projectId?: string | undefined; userId?: string | undefined;
   runId?: string | undefined; taskId?: string; installationId?: string | undefined; grantVersion?: string;
 }
-import { describeCodeModeTool, searchCodeModeTools } from "./code-mode.js";
+import { describeCodeModeTool, parseCodeModeCommand, searchCodeModeTools } from "./code-mode.js";
 export interface ScopedCodeRpcOptions {
   scope: Readonly<CodeInvocationScope>;
   capabilities: readonly string[];
@@ -172,7 +172,7 @@ export function createScopedCodeRpc(options: ScopedCodeRpcOptions): (capability:
   let calls = 0;
   return async (capability, input) => {
     if (options.signal.aborted) throw new Error("code_invocation_closed");
-    const discovery = capability === "codemode.search" || capability === "codemode.describe";
+    const discovery = capability === "codemode.search" || capability === "codemode.describe" || capability === "codemode.run";
     if (discovery ? !options.tools : !allowed.has(capability) || !await options.authorize(scope, capability)) throw new Error(`code_capability_denied:${capability}`);
     if (++calls > (options.maxCalls ?? 64)) throw new Error("code_rpc_quota");
     // Clone input rather than letting getters, bindings or mutable host objects cross the boundary.
@@ -184,6 +184,14 @@ export function createScopedCodeRpc(options: ScopedCodeRpcOptions): (capability:
       if (options.signal.aborted) throw new Error("code_invocation_closed");
       const args = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
       if (capability === "codemode.search") return redactCodeValue(searchCodeModeTools(tools, String(args.query ?? ""), args.limit === undefined ? 10 : Number(args.limit)), options.maxPayloadBytes, options.secrets);
+      if (capability === "codemode.run") {
+        const invocation = parseCodeModeCommand(tools, Array.isArray(args.argv) ? args.argv as string[] : []);
+        const operationCapability = "tool:" + invocation.name;
+        if (!allowed.has(operationCapability) || !await options.authorize(scope, operationCapability)) throw new Error("cli_command_unavailable");
+        const result = await options.dispatch(scope, operationCapability, invocation.input, options.signal);
+        if (options.signal.aborted || !await options.authorize(scope, operationCapability)) throw new Error("code_invocation_closed");
+        return redactCodeValue(result, options.maxPayloadBytes, options.secrets);
+      }
       const tool = tools.find(tool => tool.name === args.name);
       if (!tool) throw new Error("code_tool_unavailable");
       return redactCodeValue(describeCodeModeTool(tool), options.maxPayloadBytes, options.secrets);

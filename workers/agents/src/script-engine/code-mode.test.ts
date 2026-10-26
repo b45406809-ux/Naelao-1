@@ -23,7 +23,7 @@ describe("scoped code composition", () => {
     const rpc = createScopedCodeRpc({ scope, capabilities: ["tool:conversation.search", "tool:code.run_js", "tool:mcp.call", "tool:tools.search"],
       signal: new AbortController().signal, tools: env.codeTools!(), authorize: env.codeAuthorize!, dispatch: env.codeDispatch! });
     expect(await rpc("codemode.search", { query: "" })).toMatchObject({ total: 1, results: [{ name: "conversation.search" }] });
-    expect(await rpc("codemode.describe", { name: "conversation.search" })).toMatchObject({ types: expect.stringContaining('"session_id": string') });
+    expect(await rpc("codemode.describe", { name: "conversation.search" })).toMatchObject({ usage: expect.stringContaining("conversation.search") });
     env.maxTier = 2;
     expect(await rpc("codemode.search", { query: "" })).toMatchObject({ total: 2 });
     env.codeGrantIsActive = async () => false;
@@ -36,10 +36,10 @@ describe("scoped code composition", () => {
       capabilities: ["tool:source.list", "tool:source.check"], tools: [{ name: "source.list", description: "List sources" }],
       signal: new AbortController().signal, authorize: async () => true, dispatch });
     const source = buildGuestHarness(4096).replace(/^import .*;\n/gm, "").replace("export default", "return");
-    const run = async (_: unknown, ctx: { tools: { search(query: string): Promise<unknown>; describe(name: string): Promise<unknown>; call(name: string, params: unknown): Promise<unknown> } }) => {
-      await ctx.tools.search("sources"); await ctx.tools.describe("source.list");
-      const rows = await ctx.tools.call("source.list", {}) as number[];
-      await ctx.tools.call("source.check", { id: rows[0] });
+    const run = async (_: unknown, ctx: { cli: { search(query: string): Promise<unknown>; help(name: string): Promise<unknown>; run(argv: string[]): Promise<unknown> } }) => {
+      await ctx.cli.search("sources"); await ctx.cli.help("source.list");
+      const rows = await ctx.cli.run(["source.list"]) as number[];
+      await ctx.cli.run(["source.check", "--params", JSON.stringify({ id: rows[0] })]);
       return { checked: 1 };
     };
     const guest = new Function("run", "encode", "freeze", "jsonResponse", "byteLength", source)(run, JSON.stringify, Object.freeze, Response.json.bind(Response), (value: string) => new TextEncoder().encode(value).length);
@@ -58,7 +58,7 @@ describe("scoped code composition", () => {
       authorize: async (_, capability) => !revoked && capability === "tool:conversation.search", dispatch,
     });
     expect(await rpc("codemode.search", { query: "" })).toMatchObject({ total: 1, results: [{ name: "conversation.search" }] });
-    expect(await rpc("codemode.describe", { name: "conversation.search" })).toMatchObject({ types: 'call(operation: "conversation.search", params: { "query": string }): Promise<unknown>;' });
+    expect(await rpc("codemode.describe", { name: "conversation.search" })).toMatchObject({ usage: "conversation.search --params <json>" });
     await expect(rpc("codemode.describe", { name: "secret.admin" })).rejects.toThrow("code_tool_unavailable");
     expect(dispatch).not.toHaveBeenCalled();
     expect(await rpc("tool:conversation.search", { query: "decision" })).toEqual({ matches: ["evidence-1"] });
@@ -73,7 +73,7 @@ describe("scoped code composition", () => {
       signal: new AbortController().signal, maxCalls: 1, tools: [], authorize: async () => true, dispatch: async () => null });
     await expect(rpc("codemode.search", { query: "x", limit: 51 })).rejects.toThrow("code_discovery_input_invalid");
     await expect(rpc("codemode.search", { query: "x" })).rejects.toThrow("code_rpc_quota");
-    expect(describeCodeModeTool({ name: "mcp.call", description: "Scoped connector call", parameterHint: "server, tool, params" }).types).toContain("Record<string, unknown>");
+    expect(describeCodeModeTool({ name: "mcp.call", description: "Scoped connector call", parameterHint: "server, tool, params" }).usage).toBe("mcp.call server, tool, params");
   });
 
   it("passes explicit composition capabilities separately from module arguments", async () => {
