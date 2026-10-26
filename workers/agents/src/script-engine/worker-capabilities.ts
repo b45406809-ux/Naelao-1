@@ -4,6 +4,13 @@ import type { FastDecisionGateway, WorkRuntimeOption } from "@naelao/agent-sdk";
  * the parent's configured prebuilt list; a decision can recommend a subset, never grant a tool. */
 export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
   {
+    capability: "reusable_command_authoring",
+    description: "Author reusable scoped CLI commands and durable workflows that chain permitted connector operations.",
+    tools: ["code-exec", "dynamic-workflow", "mcp-connector"],
+    skills: ["reusable-command-authoring"],
+    match: /(?:create|author|build|save|reuse|reusable|chain).*(?:command|cmd|script|workflow|mcp)|(?:command|cmd|script|workflow).*(?:create|author|reuse|chain)/i,
+  },
+  {
     capability: "conversation_research",
     description:
       "Search current/archived conversation history and use document summarize, extract, or compress on selected excerpts.",

@@ -18,6 +18,16 @@ describe("task-filtered default worker capabilities", () => {
     "plan",
   ];
 
+  it("offers command authoring guidance without granting unconfigured connectors or workflows", async () => {
+    const result = await selectDefaultWorkerCapabilities({
+      task: "Create a reusable command that chains MCP calls", enabledPrebuilts: ["code-exec"],
+      skills: [], allowRemoteDecision: false,
+    });
+    expect(result.selectedBundles).toContain("reusable_command_authoring");
+    expect(result.selectedSkills).toContain("reusable-command-authoring");
+    expect(result.enabledPrebuilts).toEqual(["code-exec"]);
+  });
+
   it("selects the related transcript and document tools, excluding unrelated tools", async () => {
     const result = await selectDefaultWorkerCapabilities({
       task: "Search the archived conversation for the launch decision and summarize the original message.",
