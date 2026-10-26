@@ -43,7 +43,7 @@ async function cards(ctx: PrebuiltOpContext, command?: string): Promise<Environm
 }
 export const environments: PrebuiltScript = {
   name: "execution-environments", domain: "orchestration", requires_tier: 1,
-  description: "Inspect scoped execution environment cards and run a bounded dependent command group on one durable target. External machines keep their own filesystem; commands can only access locally consented roots. Moving workspace files requires explicit artifact publish/restore. External execution requires an exact-command grant plus capability-use consent. No automatic replay or migration. Browser logins and credentials are never copied.",
+  description: "Inspect scoped execution environment cards and run a bounded dependent command group on one durable target. External machines keep their own filesystem; commands and file transfers can only access locally consented roots. Transfer individual files only through explicit artifact import/export (12 KiB max); export creates a new file and never overwrites. There is no mount or automatic synchronization. External execution requires a host grant plus owner consent. No automatic replay or migration. Browser logins and credentials are never copied.",
   paramHints: {
     "environment.artifact_publish": "path (required). Create an immutable scoped artifact, maximum 1 MiB. No implicit machine synchronization.",
     "environment.artifact_restore": "digest, path and expected_hash (null only for an absent destination). Verify integrity and publish with a fenced revision check.",
