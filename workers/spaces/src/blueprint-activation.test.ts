@@ -1,6 +1,6 @@
 import type { SpaceBlueprint } from "@naelao/agent-sdk";
 import { describe, expect, it } from "vitest";
-import worker from "./index.js";
+import worker, { blueprintRuntimeInstallability } from "./index.js";
 import { mintInternalToken } from "@naelao/http";
 import { previewBlueprintActivation } from "./blueprint-activation.js";
 import { certifyStateDeltaArtifact } from "@naelao/security";
@@ -273,4 +273,16 @@ describe("Space Template activation preview", () => {
     expect(result.dependencies[0]).toMatchObject({ extension_id: "ext_installed", status: "disabled" });
     expect(result.blockers).toEqual(["required_extension_disabled:ext_installed"]);
   });
+});
+
+
+it("blocks a fresh template whose required runtime slots exceed its plan before activation", () => {
+  const requirements = ["one", "two", "three"].map(id => ({ id, capabilities: ["bash"], required: true, priority: 0, dependencies: [] }));
+  const project = { id: "project-a", name: "A", kind: "DualPane" as const, templateMode: "cowork_studio" as const, configuration: { executionCeiling: 6 }, viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], runtimeRequirements: requirements };
+  const artifact = blueprint({ projects: [project], requiredExtensions: [], requiredCredentials: [] });
+  const images = requirements.map(item => ({ id: item.id, name: item.id, available: true, plan_available: true, install_manifest: { id: `ext_${item.id}`, containers: [{}] } }));
+  const free = blueprintRuntimeInstallability(artifact, images, "free");
+  expect([...free.values()].every(item => !item.installable && item.reason === "subscription_slot_limit")).toBe(true);
+  expect(previewBlueprintActivation(artifact, new Map(), new Map(), free).ready).toBe(false);
+  expect([...blueprintRuntimeInstallability(artifact, images, "growth").values()].every(item => item.installable)).toBe(true);
 });

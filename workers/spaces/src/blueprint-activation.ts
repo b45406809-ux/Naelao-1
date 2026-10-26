@@ -17,7 +17,7 @@ export interface BlueprintActivationDependency {
 export interface BlueprintActivationPreview {
   ready: boolean;
   dependencies: BlueprintActivationDependency[];
-  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted" }>;
+  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted" }>;
   setup_credentials: Array<{
     name: string;
     description: string;
