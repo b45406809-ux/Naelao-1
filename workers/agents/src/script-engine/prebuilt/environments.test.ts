@@ -56,6 +56,14 @@ describe("environment tool host integration", () => {
     expect(await environments.operations["environment.artifact_export"]!({ machine_id: "gpu", digest: artifact.digest, path: "/home/owner/new.bin" }, ctx)).toMatchObject({ exported: true, bytes: bytes.length });
     expect(ctx.env.localTunnel.exec).toHaveBeenCalledWith(expect.objectContaining({ machine: "gpu", op: "write_file", params: expect.objectContaining({ path: "/home/owner/new.bin", encoding: "base64", create_only: true }) }));
   });
+  it("enforces the caller's read/write file role before machine transfers", async () => {
+    const { ctx } = fixture();
+    ctx.authorizeShell = vi.fn(async () => false);
+    await expect(environments.operations["environment.artifact_import"]!({ machine_id: "gpu", path: "/home/owner/private.bin" }, ctx)).rejects.toThrow("environment_artifact_read_denied");
+    expect(ctx.env.localTunnel!.exec).not.toHaveBeenCalled();
+    await expect(environments.operations["environment.artifact_export"]!({ machine_id: "gpu", digest: "a".repeat(64), path: "/home/owner/new.bin" }, ctx)).rejects.toThrow("environment_artifact_write_denied");
+    expect(ctx.env.localTunnel!.exec).not.toHaveBeenCalled();
+  });
   it("pins an installation and returns confirmed results without re-executing", async () => {
     const { ctx } = fixture(), args = { session_id: "build", action_id: "compile", command: "npm run build" };
     await execute(args, ctx); await execute(args, ctx);

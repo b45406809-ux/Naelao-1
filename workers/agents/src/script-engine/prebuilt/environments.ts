@@ -8,6 +8,7 @@ function owner(ctx: PrebuiltOpContext): EnvironmentOwner {
     scope: ctx.env.projectId ? "PROJECT_BOUND" : "ASSISTANT_PRIVATE" };
 }
 const MAX_MACHINE_ARTIFACT_BYTES = 12 * 1024;
+function validMachinePath(path: string) { return Boolean(path) && path.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(path); }
 function decodeBase64(value: string, expectedBytes?: number): Uint8Array {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value) || value.length > 4 * Math.ceil(MAX_MACHINE_ARTIFACT_BYTES / 3)) throw new Error("environment_machine_artifact_encoding_invalid");
   const binary = atob(value), bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
@@ -65,7 +66,8 @@ export const environments: PrebuiltScript = {
     },
     "environment.artifact_import": async (args, ctx) => {
       const machineId = String(args.machine_id ?? ""), path = String(args.path ?? "");
-      if (!machineId || !path || path.length > 1024 || !ctx.env.localTunnel || !ctx.env.humanInvokerId) throw new Error("environment_machine_artifact_scope_required");
+      if (!machineId || !validMachinePath(path) || !ctx.env.localTunnel || !ctx.env.humanInvokerId) throw new Error("environment_machine_artifact_scope_required");
+      if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "file", name: `tunnel:${machineId}:${path}`, access: "read" })) throw new Error("environment_artifact_read_denied");
       const candidates = await cards(ctx);
       const machine = candidates.find(card => card.id === machineId && card.kind === "external" && card.available && card.authorized);
       if (!machine) throw new Error("environment_machine_unavailable_or_unauthorized");
@@ -81,7 +83,8 @@ export const environments: PrebuiltScript = {
     },
     "environment.artifact_export": async (args, ctx) => {
       const machineId = String(args.machine_id ?? ""), path = String(args.path ?? ""), digest = String(args.digest ?? "");
-      if (!machineId || !path || path.length > 1024 || !/^[a-f0-9]{64}$/.test(digest) || !ctx.env.localTunnel || !ctx.env.humanInvokerId) throw new Error("environment_machine_artifact_scope_required");
+      if (!machineId || !validMachinePath(path) || !/^[a-f0-9]{64}$/.test(digest) || !ctx.env.localTunnel || !ctx.env.humanInvokerId) throw new Error("environment_machine_artifact_scope_required");
+      if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "file", name: `tunnel:${machineId}:${path}`, access: "write" })) throw new Error("environment_artifact_write_denied");
       const candidates = await cards(ctx);
       const machine = candidates.find(card => card.id === machineId && card.kind === "external" && card.available && card.authorized);
       if (!machine) throw new Error("environment_machine_unavailable_or_unauthorized");
