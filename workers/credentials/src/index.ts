@@ -548,7 +548,7 @@ export function buildOutboundResponse(response: Response, bytes: Uint8Array, sec
   }
   // Secret removal can change bytes and their digests. Let the runtime calculate framing for
   // the replacement body rather than forwarding the origin's now-stale representation metadata.
-  for (const name of ["content-length", "content-md5", "digest", "etag", "content-range", "accept-ranges"]) {
+  for (const name of ["content-encoding", "content-length", "content-md5", "digest", "etag", "content-range", "accept-ranges"]) {
     headers.delete(name);
   }
   const body = [204, 205, 304].includes(response.status) ? null : bytes;

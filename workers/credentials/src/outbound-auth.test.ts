@@ -35,11 +35,12 @@ describe("credential outbound authorization", () => {
       .toBe("Bearer secret");
   });
 
-  it("drops stale representation metadata after response bytes change and never attaches bodies to bodyless statuses", () => {
+  it("drops stale representation metadata after response bytes change and never attaches bodies to bodyless statuses", async () => {
     const upstream = new Response("secret removed", {
       status: 200,
       headers: {
         "content-length": "14",
+        "content-encoding": "gzip",
         "content-md5": "old-digest",
         digest: "sha-256=old-digest",
         etag: '"origin-version"',
@@ -52,6 +53,8 @@ describe("credential outbound authorization", () => {
     const redacted = buildOutboundResponse(upstream, new TextEncoder().encode("[REDACTED]"), ["secret"]);
     expect(redacted.status).toBe(200);
     expect(redacted.headers.get("content-length")).toBeNull();
+    expect(redacted.headers.get("content-encoding")).toBeNull();
+    expect(await redacted.text()).toBe("[REDACTED]");
     expect(redacted.headers.get("content-md5")).toBeNull();
     expect(redacted.headers.get("digest")).toBeNull();
     expect(redacted.headers.get("etag")).toBeNull();
