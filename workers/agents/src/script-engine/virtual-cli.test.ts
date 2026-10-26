@@ -247,4 +247,8 @@ describe("environment CLI", () => {
     expect(interceptPlatformCli('naelao environment artifact_restore --digest abc --path result --expected-hash absent')).toMatchObject({ params: { expected_hash: null } });
     expect(interceptPlatformCli('naelao environment execute --json \'{"session_id":"build","action_id":"test","command":"npm test","capabilities":["bash"]}\'')).toMatchObject({ params: { command: "npm test", capabilities: ["bash"] } });
   });
+  it("supports explicit named-machine artifact handoffs", () => {
+    expect(interceptPlatformCli('naelao environment artifact_import --json \'{"machine_id":"pc","path":"/home/user/input.bin"}\'')).toMatchObject({ operation: "environment.artifact_import", params: { machine_id: "pc", path: "/home/user/input.bin" } });
+    expect(interceptPlatformCli('naelao environment artifact_export --json \'{"machine_id":"pc","digest":"abc","path":"/home/user/output.bin","request_id":"transfer-1"}\'')).toMatchObject({ operation: "environment.artifact_export", params: { machine_id: "pc", digest: "abc", request_id: "transfer-1" } });
+  });
 });

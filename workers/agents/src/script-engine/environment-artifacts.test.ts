@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { publishEnvironmentArtifact, restoreEnvironmentArtifact } from "./environment-artifacts.js";
+import { publishEnvironmentArtifact, publishEnvironmentArtifactBytes, readEnvironmentArtifact, restoreEnvironmentArtifact } from "./environment-artifacts.js";
 import { workspacePrefix, type ScriptEngineEnv } from "./types.js";
 function fixture() {
   const entries = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
@@ -40,5 +40,13 @@ describe("immutable environment handoffs", () => {
     f.entries.get(f.prefix + "source.txt")!.bytes = new Uint8Array(1024 * 1024 + 1);
     await expect(publishEnvironmentArtifact(f.env, "source.txt")).rejects.toThrow("too_large");
     await expect(publishEnvironmentArtifact(f.env, "../secret")).rejects.toThrow();
+  });
+  it("stores bounded machine bytes immutably and verifies them on read", async () => {
+    const f = fixture(), bytes = new Uint8Array([0, 255, 1, 128]);
+    const artifact = await publishEnvironmentArtifactBytes(f.env, bytes, "machine:pc:/home/user/data.bin");
+    expect(artifact).toMatchObject({ bytes: 4, immutable: true });
+    expect((await readEnvironmentArtifact(f.env, artifact.digest)).bytes).toEqual(bytes);
+    await expect(publishEnvironmentArtifactBytes(f.env, new Uint8Array(1024 * 1024 + 1), "oversized")).rejects.toThrow("too_large");
+    await expect(readEnvironmentArtifact({ ...f.env, projectId: "other" }, artifact.digest)).rejects.toThrow("integrity");
   });
 });

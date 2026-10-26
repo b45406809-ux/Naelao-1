@@ -92,6 +92,28 @@ describe("LocalTunnelDO correlation and multiplexing", () => {
     await pending;
   });
 
+  it("authorizes machine artifact reads and create-only writes by the explicit root grant", async () => {
+    const f = await fixture();
+    const dispatch = async (op: string, path: string, requestId: string, access: "read" | "write") => {
+      if (access === "read") f.machine.grants[0]!.roots[0]!.access = "read";
+      else f.machine.grants[0]!.roots[0]!.access = "readwrite";
+      const promise = f.tunnel.fetch(new Request("https://tunnel/exec", { method: "POST", headers: f.headers,
+        body: JSON.stringify({ op, params: { path, encoding: "base64", ...(op === "write_file" ? { content: "AQI=", create_only: true } : {}) }, invocation: f.invocation(requestId) }) }));
+      await vi.waitFor(() => expect(f.outbox.some(text => JSON.parse(text).request_id === requestId)).toBe(true));
+      const frame = f.outbox.map(text => JSON.parse(text)).find(value => value.request_id === requestId)!;
+      expect(frame.op).toBe(op);
+      await f.tunnel.webSocketMessage(f.socket as never, JSON.stringify({ type: "response", request_id: requestId, generation: frame.generation, ok: true,
+        result: op === "read_file" ? { encoding: "base64", content: "AQI=", bytes: 2 } : { written: true, bytes: 2 } }));
+      return promise;
+    };
+    expect(await (await dispatch("read_file", "/home/owner/project/in.bin", "file-read", "read")).json()).toMatchObject({ status: "succeeded" });
+    expect(await (await dispatch("write_file", "/home/owner/project/out.bin", "file-write", "write")).json()).toMatchObject({ status: "succeeded" });
+    const denied = await f.tunnel.fetch(new Request("https://tunnel/exec", { method: "POST", headers: f.headers,
+      body: JSON.stringify({ op: "write_file", params: { path: "/home/owner/outside.bin", content: "AQI=", encoding: "base64", create_only: true }, invocation: f.invocation("file-denied") }) }));
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ error: "tunnel_machine_grant_denied" });
+  });
+
   it("marks a disconnect indeterminate and does not replay a request after DO restart", async () => {
     const f = await fixture();
     const pending = f.tunnel.fetch(f.invoke("request-restart", "task1"));

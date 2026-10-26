@@ -285,12 +285,27 @@ export async function connectBridge(options, dependencies = {}) {
               let result;
               if (frame.op === "read_file") {
                 const file = await consentedPath(frame.params.path, state.consent.roots);
-                if ((await lstat(file)).size > 24000) throw new Error("bridge_file_result_limit");
-                result = await readFile(file, "utf8");
+                const size = (await lstat(file)).size;
+                if (frame.params.encoding === "base64") {
+                  if (size > 12 * 1024) throw new Error("bridge_file_result_limit");
+                  result = { encoding: "base64", content: (await readFile(file)).toString("base64"), bytes: size };
+                } else {
+                  if (size > 24000) throw new Error("bridge_file_result_limit");
+                  result = await readFile(file, "utf8");
+                }
               } else if (frame.op === "write_file") {
                 const file = await consentedPath(frame.params.path, state.consent.roots, true);
-                if (typeof frame.params.content !== "string" || Buffer.byteLength(frame.params.content) > 24000) throw new Error("bridge_file_result_limit");
-                await writeFile(file, frame.params.content, { signal: controller.signal }); result = { written: true };
+                if (frame.params.encoding === "base64") {
+                  const encoded = frame.params.content;
+                  if (typeof encoded !== "string" || encoded.length > 4 * Math.ceil((12 * 1024) / 3) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error("bridge_file_result_limit");
+                  const bytes = Buffer.from(encoded, "base64");
+                  if (bytes.length > 12 * 1024 || bytes.toString("base64") !== encoded) throw new Error("bridge_file_result_limit");
+                  await writeFile(file, bytes, { signal: controller.signal, ...(frame.params.create_only === true ? { flag: "wx" } : {}) });
+                  result = { written: true, bytes: bytes.length };
+                } else {
+                  if (typeof frame.params.content !== "string" || Buffer.byteLength(frame.params.content) > 24000) throw new Error("bridge_file_result_limit");
+                  await writeFile(file, frame.params.content, { signal: controller.signal, ...(frame.params.create_only === true ? { flag: "wx" } : {}) }); result = { written: true };
+                }
               } else if (frame.op === "inference") {
                 if (!state.consent.inference) throw new Error("bridge_inference_consent_required");
                 const response = await fetch(loopbackUrl(options.inferenceUrl), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(frame.params), signal: controller.signal, redirect: "error" });

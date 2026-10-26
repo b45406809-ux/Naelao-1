@@ -14,7 +14,7 @@ function plannerCoordinationCli(words: string[], rawCommand?: string): CliDispat
   if (words[0] !== "naelao") return null;
   if (words[1] === "environment") {
     const action = words[2] ?? "list";
-    if (!["list", "execute", "status", "artifact_publish", "artifact_restore"].includes(action)) throw new Error("usage: naelao environment list|execute");
+    if (!["list", "execute", "status", "artifact_publish", "artifact_restore", "artifact_import", "artifact_export"].includes(action)) throw new Error("usage: naelao environment list|execute");
     const { body } = bodyAndFlags(words.slice(3));
     const input = words.includes("--json") ? rawJsonFlag(rawCommand, "--json") : body;
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("environment --json requires an object");

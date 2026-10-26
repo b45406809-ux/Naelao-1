@@ -1,11 +1,21 @@
 import { eligibleEnvironments, selectEnvironment, tunnelHash, type EnvironmentCard, type EnvironmentOwner } from "@naelao/agent-sdk";
 import type { PrebuiltOpContext, PrebuiltScript } from "./index.js";
-import { publishEnvironmentArtifact, restoreEnvironmentArtifact } from "../environment-artifacts.js";
+import { publishEnvironmentArtifact, publishEnvironmentArtifactBytes, readEnvironmentArtifact, restoreEnvironmentArtifact } from "../environment-artifacts.js";
 import { authorizeEnvironmentCommand, runEnvironmentBash } from "./code-exec.js";
 
 function owner(ctx: PrebuiltOpContext): EnvironmentOwner {
   return { tenantId: ctx.env.tenantId, spaceId: ctx.env.spaceId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
     scope: ctx.env.projectId ? "PROJECT_BOUND" : "ASSISTANT_PRIVATE" };
+}
+const MAX_MACHINE_ARTIFACT_BYTES = 12 * 1024;
+function decodeBase64(value: string, expectedBytes?: number): Uint8Array {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value) || value.length > 4 * Math.ceil(MAX_MACHINE_ARTIFACT_BYTES / 3)) throw new Error("environment_machine_artifact_encoding_invalid");
+  const binary = atob(value), bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+  if (bytes.length > MAX_MACHINE_ARTIFACT_BYTES || expectedBytes !== undefined && bytes.length !== expectedBytes || btoa(binary) !== value) throw new Error("environment_machine_artifact_encoding_invalid");
+  return bytes;
+}
+async function transferRequestId(ctx: PrebuiltOpContext, operation: string, machine: string, path: string, digest?: string) {
+  return tunnelHash(JSON.stringify([ctx.env.tenantId, ctx.env.spaceId, ctx.env.projectId ?? "_assistant", ctx.env.humanInvokerId, ctx.env.runId, operation, machine, path, digest ?? null]));
 }
 async function cards(ctx: PrebuiltOpContext, command?: string): Promise<EnvironmentCard[]> {
   if (!ctx.env.humanInvokerId || Boolean(command) && !ctx.env.nativeExecutionAllowed || ctx.env.airGappedOnly || ctx.env.workspaceFileScope !== undefined) throw new Error("environment_scoped_native_authority_required");
@@ -36,6 +46,8 @@ export const environments: PrebuiltScript = {
   paramHints: {
     "environment.artifact_publish": "path (required). Create an immutable scoped artifact, maximum 1 MiB. No implicit machine synchronization.",
     "environment.artifact_restore": "digest, path and expected_hash (null only for an absent destination). Verify integrity and publish with a fenced revision check.",
+    "environment.artifact_import": "machine_id and path (required). Explicitly read a file from an owner-authorized connected machine into this workspace's immutable artifact store. Binary-safe, maximum 12 KiB; returns a digest to restore into the workspace. No filesystem mount or synchronization. If pending/indeterminate, reconcile the returned request_id with tunnel.status; do not create a new request.",
+    "environment.artifact_export": "machine_id, digest and path (required). Explicitly write an immutable workspace artifact as a new file in an owner-authorized local folder. Refuses to overwrite. Binary-safe, maximum 12 KiB. If pending/indeterminate, reconcile request_id; do not resubmit with a different ID.",
     "environment.status": "session_id and action_id. Reconcile an accepted tunnel request without resubmitting it.",
     "environment.list": "List visible environment capabilities and availability. Observations are untrusted evidence, not permissions.",
     "environment.execute": "session_id, action_id, command, capabilities (string array; default bash), mode (managed, capability, or host-verified fallback; default managed), optional target_id and external-only absolute cwd. Tunnel files stay on that machine inside its owner-consented folders; workspace transfer requires explicit artifact publish/restore. Repeat action_id only to retrieve a confirmed outcome. Group commands needing shell state into one command. Pending tunnel receipts require tunnel.status reconciliation; do not resubmit.",
@@ -50,6 +62,37 @@ export const environments: PrebuiltScript = {
       if (typeof args.path !== "string" || typeof args.digest !== "string" || args.expected_hash !== null && typeof args.expected_hash !== "string") throw new Error("environment_artifact_expected_revision_required");
       if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "file", name: args.path, access: "write" })) throw new Error("environment_artifact_write_denied");
       return restoreEnvironmentArtifact(ctx.env, args.digest, args.path, args.expected_hash);
+    },
+    "environment.artifact_import": async (args, ctx) => {
+      const machineId = String(args.machine_id ?? ""), path = String(args.path ?? "");
+      if (!machineId || !path || path.length > 1024 || !ctx.env.localTunnel || !ctx.env.humanInvokerId) throw new Error("environment_machine_artifact_scope_required");
+      const candidates = await cards(ctx);
+      const machine = candidates.find(card => card.id === machineId && card.kind === "external" && card.available && card.authorized);
+      if (!machine) throw new Error("environment_machine_unavailable_or_unauthorized");
+      const requestId = typeof args.request_id === "string" ? args.request_id : await transferRequestId(ctx, "import", machineId, path);
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_machine_artifact_request_id_invalid");
+      const response = await ctx.env.localTunnel.exec({ machine: machineId, op: "read_file", params: { path, encoding: "base64" }, requestId });
+      if (!response.ok || response.status !== "succeeded") return { status: response.status ?? "indeterminate", request_id: response.request_id ?? requestId, machine_id: machineId };
+      const result = response.result as { encoding?: unknown; content?: unknown; bytes?: unknown } | undefined;
+      if (!result || result.encoding !== "base64" || typeof result.content !== "string" || !Number.isSafeInteger(result.bytes)) throw new Error("environment_machine_artifact_response_invalid");
+      const bytes = decodeBase64(result.content, result.bytes as number);
+      const artifact = await publishEnvironmentArtifactBytes(ctx.env, bytes, `machine:${machineId}`);
+      return { ...artifact, machine_id: machineId, transfer_request_id: response.request_id ?? requestId };
+    },
+    "environment.artifact_export": async (args, ctx) => {
+      const machineId = String(args.machine_id ?? ""), path = String(args.path ?? ""), digest = String(args.digest ?? "");
+      if (!machineId || !path || path.length > 1024 || !/^[a-f0-9]{64}$/.test(digest) || !ctx.env.localTunnel || !ctx.env.humanInvokerId) throw new Error("environment_machine_artifact_scope_required");
+      const candidates = await cards(ctx);
+      const machine = candidates.find(card => card.id === machineId && card.kind === "external" && card.available && card.authorized);
+      if (!machine) throw new Error("environment_machine_unavailable_or_unauthorized");
+      const artifact = await readEnvironmentArtifact(ctx.env, digest);
+      if (artifact.bytes.byteLength > MAX_MACHINE_ARTIFACT_BYTES) throw new Error("environment_machine_artifact_too_large");
+      const requestId = typeof args.request_id === "string" ? args.request_id : await transferRequestId(ctx, "export", machineId, path, digest);
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(requestId)) throw new Error("environment_machine_artifact_request_id_invalid");
+      const encoded = btoa(Array.from(artifact.bytes, byte => String.fromCharCode(byte)).join(""));
+      const response = await ctx.env.localTunnel.exec({ machine: machineId, op: "write_file", params: { path, encoding: "base64", content: encoded, create_only: true }, requestId });
+      if (!response.ok || response.status !== "succeeded") return { status: response.status ?? "indeterminate", request_id: response.request_id ?? requestId, machine_id: machineId, digest };
+      return { exported: true, machine_id: machineId, path, digest, bytes: artifact.bytes.byteLength, request_id: response.request_id ?? requestId };
     },
     "environment.list": async (_args, ctx) => ({ environments: await cards(ctx) }),
     "environment.status": async (args, ctx) => {

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { environments } from "./environments.js";
 import { ExecutionSessions, type SessionStorage } from "../../tunnels/execution-sessions.js";
+import { publishEnvironmentArtifactBytes } from "../environment-artifacts.js";
+import { workspacePrefix } from "../types.js";
 import type { PrebuiltOpContext } from "./index.js";
 function fixture() {
   const data = new Map<string, unknown>();
@@ -20,6 +22,40 @@ function fixture() {
 }
 const execute = environments.operations["environment.execute"]!;
 describe("environment tool host integration", () => {
+  it("imports a small binary from the explicitly selected machine into scoped immutable storage", async () => {
+    const { ctx } = fixture();
+    const bytes = new Uint8Array([0, 255, 8, 13]);
+    const objects = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
+    ctx.env.scriptsBucket = {
+      head: async (key: string) => { const value = objects.get(key); return value ? { ...value, size: value.bytes.length } : null; },
+      get: async (key: string) => { const value = objects.get(key); return value ? { ...value, size: value.bytes.length, arrayBuffer: async () => value.bytes.slice().buffer } : null; },
+      put: async (key: string, value: Uint8Array, options: { onlyIf?: { etagDoesNotMatch?: string }; customMetadata?: Record<string, string> }) => {
+        if (options.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null;
+        objects.set(key, { bytes: value, etag: "etag", customMetadata: options.customMetadata ?? {} }); return { etag: "etag" };
+      },
+    } as unknown as R2Bucket;
+    ctx.env.localTunnel!.exec = vi.fn(async () => ({ ok: true, status: "succeeded", request_id: "read-1", result: { encoding: "base64", content: btoa("\0\u00ff\b\r"), bytes: bytes.length } }));
+    const result = await environments.operations["environment.artifact_import"]!({ machine_id: "gpu", path: "/home/owner/data.bin" }, ctx);
+    expect(result).toMatchObject({ bytes: bytes.length, immutable: true, machine_id: "gpu" });
+    expect(ctx.env.localTunnel.exec).toHaveBeenCalledWith(expect.objectContaining({ machine: "gpu", op: "read_file", params: { path: "/home/owner/data.bin", encoding: "base64" } }));
+    expect(objects.has(workspacePrefix(ctx.env) + ".environment-artifacts/" + (result as { digest: string }).digest)).toBe(true);
+  });
+  it("exports only a verified bounded artifact and asks the bridge to create a new local file", async () => {
+    const { ctx } = fixture(), bytes = new Uint8Array([0, 255, 8, 13]);
+    const objects = new Map<string, { bytes: Uint8Array; etag: string; customMetadata: Record<string, string> }>();
+    ctx.env.scriptsBucket = {
+      head: async (key: string) => { const value = objects.get(key); return value ? { ...value, size: value.bytes.length } : null; },
+      get: async (key: string) => { const value = objects.get(key); return value ? { ...value, size: value.bytes.length, arrayBuffer: async () => value.bytes.slice().buffer } : null; },
+      put: async (key: string, value: Uint8Array, options: { onlyIf?: { etagDoesNotMatch?: string }; customMetadata?: Record<string, string> }) => {
+        if (options.onlyIf?.etagDoesNotMatch === "*" && objects.has(key)) return null;
+        objects.set(key, { bytes: value, etag: "etag", customMetadata: options.customMetadata ?? {} }); return { etag: "etag" };
+      },
+    } as unknown as R2Bucket;
+    const artifact = await publishEnvironmentArtifactBytes(ctx.env, bytes, "test");
+    ctx.env.localTunnel!.exec = vi.fn(async () => ({ ok: true, status: "succeeded", request_id: "write-1", result: { written: true, bytes: bytes.length } }));
+    expect(await environments.operations["environment.artifact_export"]!({ machine_id: "gpu", digest: artifact.digest, path: "/home/owner/new.bin" }, ctx)).toMatchObject({ exported: true, bytes: bytes.length });
+    expect(ctx.env.localTunnel.exec).toHaveBeenCalledWith(expect.objectContaining({ machine: "gpu", op: "write_file", params: expect.objectContaining({ path: "/home/owner/new.bin", encoding: "base64", create_only: true }) }));
+  });
   it("pins an installation and returns confirmed results without re-executing", async () => {
     const { ctx } = fixture(), args = { session_id: "build", action_id: "compile", command: "npm run build" };
     await execute(args, ctx); await execute(args, ctx);
