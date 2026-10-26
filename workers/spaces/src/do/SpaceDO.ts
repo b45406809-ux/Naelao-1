@@ -1,4 +1,5 @@
 import { assistantVoiceSettings } from "../assistant-voice-settings.js";
+import { EntitlementsChecker, assertExecutionPlanResources } from "@naelao/entitlements";
 import { parseScratchpadCiphertext } from "@naelao/agent-sdk";
 import { parseArtifactLinters, lintArtifact } from "@naelao/agent-sdk";
 import { normalizeWorkspacePath } from "../../../agents/src/script-engine/workspace-paths.js";
@@ -2247,6 +2248,7 @@ export async function provenanceHmac(secret: string, fields: readonly string[]):
 
 export interface SpaceDOEnv {
   PLATFORM_SECRET: string;
+  PLATFORM_DB?: D1Database;
   /** Optional stable, separately managed key for archive encryption. Keep stable across deploys. */
   SPACE_ARCHIVE_KEY?: string;
   SPACE_ARCHIVE_KEY_ID?: string;
@@ -11580,6 +11582,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
+    // Enforce subscription resources at the owning actor too: generic extension installs,
+    // upgrades and template activation must not bypass the runtime route's plan checks.
+    if (manifest.containers?.length) {
+      if (!body.tenantId || !this.env.PLATFORM_DB)
+        return Response.json({ error: "runtime_subscription_service_unavailable" }, { status: 503 });
+      try {
+        const tier = await new EntitlementsChecker(this.env.PLATFORM_DB).getTenantTier(body.tenantId);
+        for (const container of manifest.containers) assertExecutionPlanResources(tier, container.resources);
+      } catch (error) {
+        return Response.json({ error: error instanceof Error ? error.message : "runtime_subscription_validation_failed" }, { status: 403 });
+      }
+    }
     const approvedSharedFilesystem = body.approvedSharedFilesystem ?? [];
     const requestedSharedFilesystem = manifest.shared_filesystem ?? [];
     if (!Array.isArray(approvedSharedFilesystem) || approvedSharedFilesystem.length > 64

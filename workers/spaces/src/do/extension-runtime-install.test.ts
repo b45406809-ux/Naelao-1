@@ -4,6 +4,8 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim.j
 import { mintInternalToken } from "@naelao/http";
 import { PERSONAL_ASSISTANT_SPACE_TEMPLATE } from "@naelao/agent-sdk";
 
+const planDb = { prepare: () => ({ bind: () => ({ first: async () => ({ plan_tier: "free" }) }) }) };
+
 const image = "registry.example/media@sha256:" + "a".repeat(64);
 function manifest(binary = "ffmpeg") {
   return { id: "ext_runtime_ffmpeg", type: "extension", declaredPermissions: ["container:execute"], capabilityRequirements: ["native-execution"],
@@ -15,7 +17,7 @@ function manifest(binary = "ffmpeg") {
 describe("runtime extension installation", () => {
   it("requires owner-approved per-installation grants and exposes only approved access to workers", async () => {
     const storage = createDOStorage(), secret = "filesystem-grant-secret";
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
     const manifest = { id: "ext_shared_drive_demo", type: "extension", declaredPermissions: [], capabilityRequirements: ["space.shared.read", "space.shared.write"],
       gadgets: [{ id: "shared_console", name: "Shared Console", viewportComponent: "./console.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" }],
       daemons: [], commands: [], shared_filesystem: [{ path: "/space/shared/dropzones/audio/", access: "READ_WRITE" }] };
@@ -43,7 +45,7 @@ describe("runtime extension installation", () => {
 
   it("host-signs immutable bundle releases and only rolls back to a verified recorded version", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, { PLATFORM_SECRET: "release-test-secret" } as never);
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "release-test-secret" } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
     const bundleManifest = (version: string) => ({ id: "ext_versioned", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"], gadgets: [], daemons: [], commands: [],
@@ -66,7 +68,7 @@ describe("runtime extension installation", () => {
 
   it("binds publisher identity to immutable releases and blocks a revoked publisher release", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, { PLATFORM_SECRET: "publisher-test-secret" } as never);
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "publisher-test-secret" } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
     const manifest = { id: "ext_publisher_lifecycle", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"], gadgets: [], daemons: [], commands: [],
@@ -95,7 +97,7 @@ describe("runtime extension installation", () => {
 
   it("installs a project-bound code indexer only for the selected project and preserves scope through restart", async () => {
     const storage = createDOStorage(), state = { storage };
-    let space = new SpaceDO(state as never, {} as never);
+    let space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active')");
     const lsp = { id: "ext_lsp_indexer", type: "extension", declaredPermissions: ["repo.read", "facet.sqlite.read", "facet.sqlite.write"],
@@ -110,13 +112,13 @@ describe("runtime extension installation", () => {
     const installed = await (await list("project-a")).json() as { installations: Array<{ instance: { scope: string; project_id: string | null } }> };
     expect(installed.installations).toEqual([expect.objectContaining({ instance: expect.objectContaining({ scope: "PROJECT_BOUND", project_id: "project-a" }) })]);
     expect((await install()).status).toBe(201);
-    space = new SpaceDO(state as never, {} as never);
+    space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     expect(await (await list("project-b")).json()).toMatchObject({ installations: [] });
   });
 
   it("stores a composed versioned bundle and exposes its validated channel primitive to the runtime", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, { PLATFORM_SECRET: "test-platform-secret" } as never);
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "test-platform-secret" } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
     const channel = { schemaVersion: "1.0", kind: "channel", id: "student_whatsapp", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {},
@@ -139,7 +141,7 @@ describe("runtime extension installation", () => {
 
   it("removes only the active project installation addressed by tenant, space, and project", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, {} as never);
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active')");
     const installedResponse = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
@@ -155,7 +157,7 @@ describe("runtime extension installation", () => {
   });
 
   it("removes a Space-shared install at exact tenant and Space scope, revoking grants while retaining package data", async () => {
-    const storage = createDOStorage(), space = new SpaceDO({ storage } as never, {} as never);
+    const storage = createDOStorage(), space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project"));
     const response = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest: manifest(), installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: ["native-execution"] }) }));
@@ -173,7 +175,7 @@ describe("runtime extension installation", () => {
   });
 
   it("blocks removal of a Space-shared extension required by an installed Space Template", async () => {
-    const storage = createDOStorage(), space = new SpaceDO({ storage } as never, {} as never);
+    const storage = createDOStorage(), space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id="));
     const extensionId = "ext_template_required_probe";
     const shared = { id: extensionId, type: "extension", declaredPermissions: [], capabilityRequirements: ["space.shared.read"],
@@ -196,7 +198,7 @@ describe("runtime extension installation", () => {
   });
 
   it("pauses and resumes Space-shared extensions without discarding their data or grants", async () => {
-    const storage = createDOStorage(), secret = "lifecycle-secret", space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    const storage = createDOStorage(), secret = "lifecycle-secret", space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id="));
     const shared = { id: "ext_shared_lifecycle", type: "extension", declaredPermissions: [], capabilityRequirements: ["space.shared.read"], gadgets: [
       { id: "shared_app", name: "Shared app", viewportComponent: "./app.ts", scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: "" },
@@ -222,7 +224,7 @@ describe("runtime extension installation", () => {
 
   it("pauses project extensions at the project boundary and exposes them only in the admin lifecycle view", async () => {
     const storage = createDOStorage(), secret = "project-lifecycle-secret";
-    const space = new SpaceDO({ storage } as never, { PLATFORM_SECRET: secret } as never);
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active')");
     const installed = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
@@ -252,7 +254,7 @@ describe("runtime extension installation", () => {
   it("validates scope before mutation, keeps manifests immutable, and replays installs after restart", async () => {
     const storage = createDOStorage();
     const state = { storage };
-    let space = new SpaceDO(state as never, {} as never);
+    let space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project','space','Project','active')");
     const call = (body: unknown) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
@@ -271,14 +273,14 @@ describe("runtime extension installation", () => {
     expect(storage.sql.exec("SELECT manifest_json FROM installed_extensions WHERE extension_id='ext_runtime_ffmpeg'").toArray()[0]?.manifest_json).toContain("ffmpeg");
     expect(storage.sql.exec("SELECT COUNT(*) AS count FROM extension_instances").toArray()[0]?.count).toBe(1);
 
-    space = new SpaceDO(state as never, {} as never);
+    space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     const list = await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project"));
     expect(await list.json()).toMatchObject({ installations: [{ instance: { instance_id: installed.installationId, scope: "SPACE_SHARED" } }] });
   });
 
   it("creates distinct named instances of the same project extension without sharing IDs", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, {} as never);
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project','space','Project','active')");
     const install = (instanceKey: string) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
@@ -297,7 +299,7 @@ describe("runtime extension installation", () => {
 
   it("attests active Canvas runtimes by project install and revokes their route on uninstall", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, { PLATFORM_SECRET: "canvas-runtime-secret" } as never);
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "canvas-runtime-secret" } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
     const canvasManifest = (version: string, canvasId: string) => ({ id: "ext_canvas_runtime", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [],
@@ -324,10 +326,10 @@ describe("runtime extension installation", () => {
 
   it("preserves existing unscoped extension revision updates when no scoped grant exists", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, {} as never);
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project"));
     const install = (value: unknown) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ manifest: value, installedBy: "owner", gatekeeperCapabilities: ["native-execution"] }) }));
+      body: JSON.stringify({ manifest: value, installedBy: "owner", tenantId: "tenant", gatekeeperCapabilities: ["native-execution"] }) }));
     expect((await install(manifest())).status).toBe(201);
     expect((await install(manifest("ffprobe"))).status).toBe(201);
     expect(storage.sql.exec("SELECT manifest_json FROM installed_extensions WHERE extension_id='ext_runtime_ffmpeg'").toArray()[0]?.manifest_json).toContain("ffprobe");
@@ -335,7 +337,7 @@ describe("runtime extension installation", () => {
 
   it("promotes project installations atomically to a Space extension installation", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, {} as never);
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active')");
     const install = (scope: string, projectId?: string, promoteExisting = false) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
@@ -352,7 +354,7 @@ describe("runtime extension installation", () => {
 
   it("keeps Space Assistant runtime installs distinct from Space-shared extensions and project runs", async () => {
     const storage = createDOStorage(), state = { storage };
-    const space = new SpaceDO(state as never, {} as never);
+    const space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id="));
     const install = (scope: string, projectId?: string) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ manifest: manifest(), installedBy: "owner", tenantId: "tenant", spaceId: "space", scope, projectId, gatekeeperCapabilities: ["native-execution"] }) }));
@@ -369,4 +371,17 @@ describe("runtime extension installation", () => {
       .toEqual(["SPACE_SHARED"]);
     expect((await install("SPACE_ASSISTANT", "project")).status).toBe(400);
   });
+});
+
+
+it("blocks runtime installs at the actor when subscription validation is unavailable or over plan", async () => {
+  const request = (value = manifest()) => new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ manifest: value, installedBy: "owner", tenantId: "tenant", spaceId: "space", scope: "SPACE_SHARED", gatekeeperCapabilities: ["native-execution"] }) });
+  const unavailable = new SpaceDO({ storage: createDOStorage() } as never, {} as never);
+  expect((await unavailable.fetch(request())).status).toBe(503);
+  const storage = createDOStorage();
+  const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb } as never);
+  const oversized = manifest(); oversized.containers[0]!.resources.memoryMb = 12288;
+  expect((await space.fetch(request(oversized))).status).toBe(403);
+  expect(storage.sql.exec("SELECT COUNT(*) AS count FROM installed_extensions").toArray()[0]?.count).toBe(0);
+  expect((await space.fetch(request())).status).toBe(201);
 });
