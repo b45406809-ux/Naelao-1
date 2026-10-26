@@ -15,6 +15,9 @@ import {
   createLocalGrant,
   deleteLocalGrant,
   mintLocalTunnelConnectToken,
+  listNamedTunnels,
+  createTunnelEnrollment,
+  updateNamedTunnel,
   getConnectorStatus,
   connectPlatform,
   startOAuthConnect,
@@ -22,6 +25,8 @@ import {
   type BusinessMember,
   type Business,
   type LocalGrant,
+  type NamedTunnel,
+  type NamedMachineGrant,
   getOnboarding,
   type OnboardingState,
   type ConnectorInfo,
@@ -44,6 +49,14 @@ export default function BusinessDetailPage() {
   const [inviting, setInviting] = React.useState(false);
   const [lastInviteToken, setLastInviteToken] = React.useState<string | null>(null);
   const [localGrants, setLocalGrants] = React.useState<LocalGrant[]>([]);
+  const [namedTunnels, setNamedTunnels] = React.useState<NamedTunnel[]>([]);
+  const [machineName, setMachineName] = React.useState("");
+  const [machineRoot, setMachineRoot] = React.useState("");
+  const [machineCommands, setMachineCommands] = React.useState("");
+  const [machineShellAccess, setMachineShellAccess] = React.useState(false);
+  const [machineAutoSelect, setMachineAutoSelect] = React.useState(false);
+  const [machineEnrollment, setMachineEnrollment] = React.useState<{ ticket: string; command: string } | null>(null);
+  const [creatingMachine, setCreatingMachine] = React.useState(false);
   const [grantType, setGrantType] = React.useState<(typeof GRANT_TYPES)[number]>("read");
   const [grantDirectory, setGrantDirectory] = React.useState("");
   const [grantCommands, setGrantCommands] = React.useState("");
@@ -84,10 +97,11 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, grants, conns, onboard] = await Promise.all([
+      const [mine, mem, grants, tunnels, conns, onboard] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
         listLocalGrants(params.businessId, creds).catch(() => []),
+        listNamedTunnels(params.businessId, creds).catch(() => []),
         getConnectorStatus(params.businessId, creds).catch(() => []),
         // Member-level read; a 403 here just means the caller lost membership mid-load.
         getOnboarding(params.businessId, creds).catch(() => null),
@@ -95,6 +109,7 @@ export default function BusinessDetailPage() {
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
       setLocalGrants(grants);
+      setNamedTunnels(tunnels);
       setConnectors(conns);
       setOnboarding(onboard);
     } catch {
@@ -177,6 +192,40 @@ export default function BusinessDetailPage() {
     } finally {
       setConnecting(false);
     }
+  }
+
+  async function handleCreateNamedMachine() {
+    if (!creds || !session?.end_user_id || creatingMachine) return;
+    setCreatingMachine(true);
+    try {
+      const commands = machineCommands.split("\n").map((value) => value.trim()).filter(Boolean);
+      if (!machineName.trim() || !machineRoot.trim()) throw new Error("Enter a computer name and one folder on that computer.");
+      if (!machineShellAccess && commands.length === 0) throw new Error("Choose sandboxed shell access or enter at least one exact command.");
+      if (commands.some((value) => value.length > 8192)) throw new Error("Each exact command must be at most 8,192 characters.");
+      const grant: NamedMachineGrant = {
+        id: crypto.randomUUID(), actorId: session.end_user_id, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+        roots: [{ path: machineRoot.trim(), access: "readwrite" }], commands, inference: false,
+        ...(machineShellAccess ? { shellAccess: "sandboxed" as const } : {}),
+        ...(machineAutoSelect ? { externalUse: ["capability"] as Array<"capability"> } : {}),
+      };
+      const name = machineName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
+      if (!/^[a-z][a-z0-9-]{1,62}$/.test(name)) throw new Error("Computer name must start with a letter and contain 2–63 letters, numbers, or hyphens.");
+      const enrollment = await createTunnelEnrollment(params.businessId, creds, { name, grants: [grant] });
+      const ticket = JSON.stringify(enrollment, null, 2);
+      const command = `naelao-bridge login --url https://AGENTS_ENDPOINT --name ${enrollment.name} --enrollment-file enrollment.json --allow-dir ${JSON.stringify(machineRoot.trim())}${machineShellAccess ? " --allow-sandboxed-shell" : ""}${commands.map((value) => ` --allow-command ${JSON.stringify(value)}`).join("")}`;
+      setMachineEnrollment({ ticket, command });
+      setMachineName("");
+      show("One-time enrollment created. Save its JSON privately and run the local consent command on that computer.");
+    } catch (error) { show(error instanceof Error ? error.message : "Could not create the computer enrollment."); }
+    finally { setCreatingMachine(false); }
+  }
+
+  async function handleRevokeNamedMachine(machineId: string) {
+    if (!creds) return;
+    try {
+      await updateNamedTunnel(params.businessId, machineId, "revoke", creds);
+      setNamedTunnels((current) => current.map((machine) => machine.machineId === machineId ? { ...machine, status: "revoked", grants: [] } : machine));
+    } catch (error) { show(error instanceof Error ? error.message : "Could not revoke this computer."); }
   }
 
   // Growth-layer "click Install" connect (G-1/G-3): branches on how the connector reaches the
@@ -312,15 +361,56 @@ export default function BusinessDetailPage() {
         ))}
       </div>
 
-      <div className="section-label">My Local Machine</div>
+      <div className="section-label">Connected computers</div>
       <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
-        Let this business&rsquo;s agents read/write files or run exact commands on YOUR OWN
+        A connected computer keeps its own files, applications, and login state. Naelao never mounts your Space workspace on it. Linux shell runs are isolated to the folder you approve, with network access disabled.
+      </p>
+      <div className="settings-block">
+        {namedTunnels.map((machine) => {
+          const online = machine.status === "active" && Boolean(machine.heartbeatAt && machine.heartbeatAt > Date.now() - 45000);
+          return <div className="settings-row" key={machine.machineId}>
+            <div style={{ minWidth: 0 }}>
+              <div className="settings-row-label">{machine.name} · {machine.hardware.platform}/{machine.hardware.arch}</div>
+              <div className="settings-row-sub">{online ? "Connected" : machine.status === "active" ? "Offline" : machine.status} · {machine.hardware.capabilities.join(", ") || "no reported capabilities"}</div>
+              {machine.grants.map((grant) => <div className="settings-row-sub" key={grant.id}>
+                {grant.roots.map((root) => `${root.access}: ${root.path}`).join(", ") || "temporary scratch only"}{grant.shellAccess === "sandboxed" ? " · sandboxed shell" : ""}{grant.externalUse?.includes("capability") ? " · eligible for selected tasks" : " · manual use only"}
+              </div>)}
+            </div>
+            {canManage && machine.status === "active" && <button className="btn btn-secondary" type="button" onClick={() => void handleRevokeNamedMachine(machine.machineId)}>Revoke</button>}
+          </div>;
+        })}
+        {namedTunnels.length === 0 && <div className="settings-row-sub" style={{ padding: 12 }}>No connected computers yet.</div>}
+      </div>
+      {canManage && <form onSubmit={(event) => { event.preventDefault(); void handleCreateNamedMachine(); }} style={{ display: "grid", gap: 8, margin: "12px 0 22px" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <FormInput placeholder="Computer name (for example, tendai-laptop)" value={machineName} onChange={(event) => setMachineName(event.target.value)} style={{ flex: 1, minWidth: 210 }} />
+          <FormInput placeholder="Approved folder on that computer" value={machineRoot} onChange={(event) => setMachineRoot(event.target.value)} style={{ flex: 2, minWidth: 260 }} />
+        </div>
+        <label style={{ fontSize: 12, color: "var(--text2)" }}><input type="checkbox" checked={machineShellAccess} onChange={(event) => setMachineShellAccess(event.target.checked)} /> Allow sandboxed shell in this folder (also requires local opt-in; network stays disabled)</label>
+        <label style={{ fontSize: 12, color: "var(--text2)" }}><input type="checkbox" checked={machineAutoSelect} onChange={(event) => setMachineAutoSelect(event.target.checked)} /> Allow the planner to select this computer when its capabilities match</label>
+        {!machineShellAccess && <FormInput placeholder="Exact commands, one per line (optional if shell is enabled)" value={machineCommands} onChange={(event) => setMachineCommands(event.target.value)} />}
+        <div><Button type="submit" disabled={creatingMachine}>{creatingMachine ? "Creating enrollment…" : "Create one-time enrollment"}</Button></div>
+        {machineEnrollment && <div className="settings-block" style={{ padding: 12 }}>
+          <div className="settings-row-label">Save this enrollment JSON as <code>enrollment.json</code> on the computer</div>
+          <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 11, maxHeight: 180, overflow: "auto" }}>{machineEnrollment.ticket}</pre>
+          <div className="settings-row-sub">It expires shortly and can be used once. Configure the bridge endpoint supplied by your Naelao deployment.</div>
+          <code style={{ display: "block", padding: 8, overflowWrap: "anywhere", fontSize: 11 }}>{machineEnrollment.command}</code>
+          <Button type="button" variant="secondary" onClick={() => void navigator.clipboard.writeText(machineEnrollment.ticket)}>Copy enrollment JSON</Button>
+        </div>}
+      </form>}
+
+      <div className="section-label">Legacy local folder grants</div>
+      <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+        Let the Space assistant and its project assistants read/write files or run approved commands on YOUR OWN
         machine. No access is granted by default — you see only your own grants here.
+      </p>
+      <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+        Your computer keeps its own files and installed apps; Naelao does not mount or sync your workspace onto it. Linux command runs are isolated to the folders you approve and have no network access. Copying files between the two requires an explicit transfer.
       </p>
       <div className="settings-block">
         <div className="settings-row">
           <div>
-            <div className="settings-row-label">Connection</div>
+        <div className="settings-row-label">Legacy local agent connection</div>
             <div className="settings-row-sub">Mint a connect token, then run the Naelao Local Agent with it.</div>
           </div>
           <Button onClick={handleConnectLocalMachine} disabled={connecting}>

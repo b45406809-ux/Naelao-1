@@ -34,14 +34,15 @@ export class ExecutionSessions {
     });
     return resolved.result;
   }
-  async execute(input: { sessionId: string; actionId: string; owner: EnvironmentOwner; actorId: string; branch: string; targetId: string; command: string; executionEpoch?: string }, dispatch: () => Promise<unknown>): Promise<unknown> {
+  async execute(input: { sessionId: string; actionId: string; owner: EnvironmentOwner; actorId: string; branch: string; targetId: string; command: string; workingDirectory?: string; executionEpoch?: string }, dispatch: () => Promise<unknown>): Promise<unknown> {
     for (const id of [input.sessionId, input.actionId, input.actorId, input.targetId]) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(id)) throw new Error("environment_session_identity_invalid");
     }
     if (!input.command.trim() || input.command.length > 8192) throw new Error("environment_command_invalid");
     const key = await this.key(input);
     const actionKey = key + ":action:" + input.actionId;
-    const digest = await tunnelHash(JSON.stringify([input.targetId, input.command]));
+    if (input.workingDirectory !== undefined && (input.workingDirectory.length > 1024 || !input.workingDirectory.startsWith("/"))) throw new Error("environment_working_directory_invalid");
+    const digest = await tunnelHash(JSON.stringify(input.workingDirectory === undefined ? [input.targetId, input.command] : [input.targetId, input.command, input.workingDirectory]));
     const previous = await this.storage.transaction(async tx => {
       const session = await tx.get<Session>(key);
       if (session && (!sameEnvironmentOwner(session, input.owner) || session.actorId !== input.actorId || session.branch !== input.branch || session.targetId !== input.targetId)) throw new Error("environment_session_target_conflict");

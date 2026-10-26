@@ -11,6 +11,8 @@ export interface EnvironmentCard {
   observedAt: number;
   available: boolean;
   persistence: "ephemeral" | "filesystem" | "snapshot";
+  /** Where commands see files. Machine-local storage is never a workspace mount. */
+  filesystemModel: "workspace-backed" | "machine-local";
   apps: readonly { id: string; version?: string; connectionId?: string; authenticatedAt?: number }[];
   /** Supplied by the host after current grants and plan admission checks. */
   authorized: boolean;

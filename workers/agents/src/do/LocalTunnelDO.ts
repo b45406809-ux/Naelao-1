@@ -1,7 +1,7 @@
 /** One named, authenticated machine per DO; no most-recent-user-socket routing. */
 import { DurableObject } from "cloudflare:workers";
 import { mintInternalToken, readBoundedRequestText, RequestBodyTooLargeError, verifyInternalToken } from "@naelao/http";
-import { assertMachineIdentity, machineSocketKey, tunnelHash, type NamedMachine, type MachineProof } from "@naelao/agent-sdk";
+import { assertMachineIdentity, machineSocketKey, tunnelHash, type NamedMachine, type MachineGrant, type MachineProof } from "@naelao/agent-sdk";
 import { TunnelRequestJournal, type TunnelRequestRecord } from "../tunnels/request-journal.js";
 interface LocalTunnelEnv { PLATFORM_SECRET: string; SPACES_WORKER?: Fetcher }
 interface Identity { tenantId: string; spaceId: string; machineId: string }
@@ -58,12 +58,12 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
     if (!value || !id.test(value.actorId) || value.actorId === "system" || !id.test(value.runId) || !id.test(value.requestId)
       || value.projectId && !id.test(value.projectId) || !Number.isFinite(value.deadline) || value.deadline <= Date.now() || value.deadline > Date.now() + 60000) throw new Error("tunnel_invocation_invalid");
   }
-  private allowed(machine: NamedMachine, invocation: Invocation, op: string, params: Record<string, unknown>): boolean {
-    if (machine.status !== "active") return false;
-    return machine.grants.some(grant => {
+  private allowed(machine: NamedMachine, invocation: Invocation, op: string, params: Record<string, unknown>): MachineGrant | undefined {
+    if (machine.status !== "active") return undefined;
+    return machine.grants.find(grant => {
       if (grant.actorId !== invocation.actorId || grant.projectId && grant.projectId !== invocation.projectId || grant.expiresAt <= Date.now()) return false;
       if (op === "inference") return grant.inference && typeof params.model === "string" && machine.hardware.models.includes(params.model);
-      if (op === "exec") return typeof params.command === "string" && grant.commands.includes(params.command);
+      if (op === "exec") return typeof params.command === "string" && (grant.commands.includes(params.command) || grant.shellAccess === "sandboxed");
       if (op !== "read_file" && op !== "write_file") return false;
       if (typeof params.path !== "string" || params.path.includes("\0")) return false;
       const normalize = (path: string) => path.replaceAll("\\", "/").replace(/\/+$/, "");
@@ -140,18 +140,23 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
       }
       if (url.pathname === "/exec" && request.method === "POST") {
         const machine = await this.authority(identity, { action: "lookup", actorId: body.invocation.actorId }), op = body.op ?? "", params = body.params ?? {};
-        if (!this.allowed(machine, body.invocation, op, params)) throw new Error("tunnel_machine_grant_denied");
+        const grant = this.allowed(machine, body.invocation, op, params);
+        if (!grant) throw new Error("tunnel_machine_grant_denied");
+        // Shell execution receives only the roots in the matching, current host grant. The
+        // daemon intersects these with its own local consent before constructing the OS jail.
+        const executionRoots = op === "exec" ? grant.roots : undefined;
+        const payloadHash = await tunnelHash(JSON.stringify([op, params, executionRoots ?? null]));
         const socket = this.target(identity, machine.sequence);
         if (!socket) return Response.json({ ok: false, error: "local_machine_offline", machineId: machine.machineId }, { status: 503 });
         const prepared = await this.journal.prepare({ id: body.invocation.requestId, ...identity, actorId: body.invocation.actorId, projectId: body.invocation.projectId, runId: body.invocation.runId,
-          operation: op, payloadHash: await tunnelHash(JSON.stringify([op, params])), generation: machine.sequence, deadline: body.invocation.deadline, status: "prepared", nextOutputSequence: 0, outputBytes: 0, stdout: "", stderr: "", createdAt: Date.now(), updatedAt: Date.now() },
+          operation: op, payloadHash, generation: machine.sequence, deadline: body.invocation.deadline, status: "prepared", nextOutputSequence: 0, outputBytes: 0, stdout: "", stderr: "", createdAt: Date.now(), updatedAt: Date.now() },
           existing ? {} : { activeLimit: 8 });
         if (!prepared.created) return this.receipt(prepared.record);
         // Persist sent before send: a crash here is uncertain, never an automatic replay.
         await this.journal.update(prepared.record.id, machine.sequence, { status: "sent" });
         try {
           if (socket !== this.target(identity, machine.sequence) || machine.sequence !== await this.ctx.storage.get("socket_generation")) throw new Error("tunnel_socket_changed_before_dispatch");
-          socket.send(JSON.stringify({ type: "request", request_id: prepared.record.id, generation: machine.sequence, op, params, invocation: body.invocation, payload_hash: prepared.record.payloadHash }));
+          socket.send(JSON.stringify({ type: "request", request_id: prepared.record.id, generation: machine.sequence, op, params, ...(executionRoots ? { execution_roots: executionRoots } : {}), invocation: body.invocation, payload_hash: prepared.record.payloadHash }));
         } catch {
           await this.journal.update(prepared.record.id, machine.sequence, { status: "indeterminate", error: "tunnel_send_outcome_unknown" });
           return this.receipt((await this.journal.get(prepared.record.id))!);

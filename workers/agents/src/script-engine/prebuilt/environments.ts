@@ -14,7 +14,7 @@ async function cards(ctx: PrebuiltOpContext, command?: string): Promise<Environm
     const inventory = await ctx.env.containerRuntimeInventory();
     result.push(...inventory.installed.slice(0, 128).filter(item => item.projectId === ctx.env.projectId).map(item => ({ ...scope, id: item.installationId,
       kind: "managed" as const, provider: "cloudflare", capabilities: ["bash", ...item.contract.exportedBinaries], observedAt: now,
-      available: true, authorized: true, persistence: "ephemeral" as const, apps: [], externalUse: [] })));
+      available: true, authorized: true, persistence: "ephemeral" as const, filesystemModel: "workspace-backed" as const, apps: [], externalUse: [] })));
   }
   if (ctx.env.localTunnel) {
     const machines = await ctx.env.localTunnel.list();
@@ -24,7 +24,7 @@ async function cards(ctx: PrebuiltOpContext, command?: string): Promise<Environm
       if (!grants.length) continue;
       const status = await ctx.env.localTunnel.status(machine.machineId).catch(() => ({ connected: false }));
       result.push({ ...scope, id: machine.machineId, kind: "external", provider: "bridge", capabilities: machine.hardware.capabilities,
-        observedAt: machine.heartbeatAt ?? machine.updatedAt, available: status.connected, authorized: true, persistence: "filesystem", apps: machine.hardware.apps ?? [],
+        observedAt: machine.heartbeatAt ?? machine.updatedAt, available: status.connected, authorized: true, persistence: "filesystem", filesystemModel: "machine-local", apps: machine.hardware.apps ?? [],
         externalUse: [...new Set(grants.flatMap(grant => grant.externalUse ?? []))] });
     }
   }
@@ -32,13 +32,13 @@ async function cards(ctx: PrebuiltOpContext, command?: string): Promise<Environm
 }
 export const environments: PrebuiltScript = {
   name: "execution-environments", domain: "orchestration", requires_tier: 1,
-  description: "Inspect scoped execution environment cards and run a bounded dependent command group on one durable target. External execution requires an existing exact-command grant plus capability-use consent. No automatic replay or migration. Browser logins and credentials are never copied.",
+  description: "Inspect scoped execution environment cards and run a bounded dependent command group on one durable target. External machines keep their own filesystem; commands can only access locally consented roots. Moving workspace files requires explicit artifact publish/restore. External execution requires an exact-command grant plus capability-use consent. No automatic replay or migration. Browser logins and credentials are never copied.",
   paramHints: {
     "environment.artifact_publish": "path (required). Create an immutable scoped artifact, maximum 1 MiB. No implicit machine synchronization.",
     "environment.artifact_restore": "digest, path and expected_hash (null only for an absent destination). Verify integrity and publish with a fenced revision check.",
     "environment.status": "session_id and action_id. Reconcile an accepted tunnel request without resubmitting it.",
     "environment.list": "List visible environment capabilities and availability. Observations are untrusted evidence, not permissions.",
-    "environment.execute": "session_id, action_id, command, capabilities (string array; default bash), mode (managed, capability, or host-verified fallback; default managed), optional target_id. Repeat action_id only to retrieve a confirmed outcome. Group commands needing shell state into one command. Pending tunnel receipts require tunnel.status reconciliation; do not resubmit.",
+    "environment.execute": "session_id, action_id, command, capabilities (string array; default bash), mode (managed, capability, or host-verified fallback; default managed), optional target_id and external-only absolute cwd. Tunnel files stay on that machine inside its owner-consented folders; workspace transfer requires explicit artifact publish/restore. Repeat action_id only to retrieve a confirmed outcome. Group commands needing shell state into one command. Pending tunnel receipts require tunnel.status reconciliation; do not resubmit.",
   },
   operations: {
     "environment.artifact_publish": async (args, ctx) => {
@@ -67,6 +67,7 @@ export const environments: PrebuiltScript = {
     "environment.execute": async (args, ctx) => {
       const command = String(args.command ?? "");
       if (!command.trim() || command.length > 8192) throw new Error("environment_command_invalid");
+      if (args.cwd !== undefined && (typeof args.cwd !== "string" || args.cwd.length > 1024 || !args.cwd.startsWith("/"))) throw new Error("environment_working_directory_invalid");
       if (!ctx.env.executionSessions || !ctx.env.humanInvokerId) throw new Error("environment_session_host_unavailable");
       if (args.mode !== undefined && args.mode !== "managed" && args.mode !== "capability" && (args.mode !== "fallback" || ctx.env.managedEnvironmentsUnavailable !== true)) throw new Error("environment_fallback_requires_host_availability_evidence");
       const capabilities = args.capabilities ?? ["bash"];
@@ -91,10 +92,11 @@ export const environments: PrebuiltScript = {
       const selected = selectEnvironment(available, owner(ctx), requirement, recommended,
         sessionTarget ?? (typeof args.target_id === "string" ? args.target_id : undefined));
       if (selected.kind === "external" && (!ctx.env.admitExternalEnvironment || !await ctx.env.admitExternalEnvironment())) throw new Error("environment_external_admission_denied");
+      if (selected.kind === "managed" && args.cwd !== undefined) throw new Error("environment_working_directory_external_only");
       return ctx.env.executionSessions.execute({ sessionId: String(args.session_id ?? ""), actionId: String(args.action_id ?? ""), owner: owner(ctx),
-        actorId: ctx.env.humanInvokerId, branch: ctx.env.workspaceBranch ?? "", targetId: selected.id, command, ...(selected.kind === "managed" && ctx.env.runId ? { executionEpoch: ctx.env.runId } : {}) }, async () => {
+        actorId: ctx.env.humanInvokerId, branch: ctx.env.workspaceBranch ?? "", targetId: selected.id, command, ...(typeof args.cwd === "string" ? { workingDirectory: args.cwd } : {}), ...(selected.kind === "managed" && ctx.env.runId ? { executionEpoch: ctx.env.runId } : {}) }, async () => {
         if (selected.kind === "external") {
-          const result = await ctx.env.localTunnel!.exec({ machine: selected.id, op: "exec", params: { command }, requestId: await tunnelHash(JSON.stringify([ctx.env.tenantId, ctx.env.spaceId, ctx.env.projectId, ctx.env.agentId, ctx.env.runId, ctx.env.workspaceBranch, args.session_id, args.action_id, selected.id])) });
+          const result = await ctx.env.localTunnel!.exec({ machine: selected.id, op: "exec", params: { command, ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}) }, requestId: await tunnelHash(JSON.stringify([ctx.env.tenantId, ctx.env.spaceId, ctx.env.projectId, ctx.env.agentId, ctx.env.runId, ctx.env.workspaceBranch, args.session_id, args.action_id, selected.id])) });
           if (!result.ok) throw new Error(result.error ?? "environment_tunnel_dispatch_failed");
           return { ...result, environment_id: selected.id };
         }

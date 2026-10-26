@@ -21,6 +21,8 @@ export interface MachineGrant {
   id: string; actorId: string; projectId?: string; expiresAt: number;
   roots: readonly { path: string; access: "read" | "write" | "readwrite" }[];
   commands: readonly string[]; inference: boolean;
+  /** Owner-approved shell capability; Linux still runs it inside the local folder/network jail. */
+  shellAccess?: "sandboxed";
   /** Owner-consented scheduler use; absent means explicit named commands only. */
   externalUse?: readonly ("capability" | "fallback")[];
 }
@@ -57,10 +59,12 @@ export function validateMachineGrants(grants: readonly MachineGrant[], now = Dat
     if (!grant || !MACHINE_ID.test(grant.id) || ids.has(grant.id) || !MACHINE_ID.test(grant.actorId) || grant.actorId === "system"
       || grant.projectId && !MACHINE_ID.test(grant.projectId) || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= now
       || !Array.isArray(grant.commands) || grant.commands.length > 128 || grant.commands.some((cmd: unknown) => typeof cmd !== "string" || !cmd.trim() || cmd.length > 8192)
-      || typeof grant.inference !== "boolean" || !Array.isArray(grant.roots) || grant.roots.length > 32) throw new Error("tunnel_grant_invalid");
+      || typeof grant.inference !== "boolean" || grant.shellAccess !== undefined && grant.shellAccess !== "sandboxed"
+      || !Array.isArray(grant.roots) || grant.roots.length > 32) throw new Error("tunnel_grant_invalid");
     if (grant.externalUse !== undefined && (!Array.isArray(grant.externalUse) || grant.externalUse.length > 2 || grant.externalUse.some((value: unknown) => (typeof value !== "string" || !["capability", "fallback"].includes(value))))) throw new Error("tunnel_external_use_invalid");
     ids.add(grant.id);
-    for (const root of grant.roots) if (!root || typeof root.path !== "string" || root.path.length > 1024 || !/^(?:\/|[A-Za-z]:[\\/])/.test(root.path) || !["read", "write", "readwrite"].includes(root.access)) throw new Error("tunnel_root_grant_invalid");
+    for (const root of grant.roots) if (!root || typeof root.path !== "string" || root.path.length > 1024 || !/^(?:\/|[A-Za-z]:[\\/])/.test(root.path)
+      || root.path.replaceAll("\\", "/").split("/").some((part: string) => part === "." || part === "..") || !["read", "write", "readwrite"].includes(root.access)) throw new Error("tunnel_root_grant_invalid");
   }
 }
 export function machineProofBytes(proof: MachineProof): Uint8Array {

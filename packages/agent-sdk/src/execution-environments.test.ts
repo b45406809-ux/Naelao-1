@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { eligibleEnvironments, selectEnvironment, previewTemplateRuntimes, validateTemplateRuntimes, type EnvironmentCard, type TemplateRuntimeRequirement } from "./execution-environments.js";
 const owner = { tenantId: "tenant", spaceId: "space", projectId: "project", scope: "PROJECT_BOUND" as const };
-const card: EnvironmentCard = { ...owner, id: "managed", kind: "managed", provider: "cf", capabilities: ["bash"], observedAt: 1000, available: true, authorized: true, persistence: "ephemeral", apps: [], externalUse: [] };
+const card: EnvironmentCard = { ...owner, id: "managed", kind: "managed", provider: "cf", capabilities: ["bash"], observedAt: 1000, available: true, authorized: true, persistence: "ephemeral", filesystemModel: "workspace-backed", apps: [], externalUse: [] };
 describe("environment policy", () => {
   it("filters stale, cross-scope, revoked and future observations before ranking", () => {
     const invalid = [{ ...card, id: "other", spaceId: "other" }, { ...card, id: "private", scope: "ASSISTANT_PRIVATE" as const }, { ...card, id: "revoked", authorized: false }, { ...card, id: "future", observedAt: 1002 }];
@@ -9,10 +9,12 @@ describe("environment policy", () => {
     expect(eligibleEnvironments([card], owner, { capabilities: [], mode: "managed" }, 62000)).toEqual([]);
   });
   it("requires explicit external consent and host availability evidence", () => {
-    const external: EnvironmentCard = { ...card, id: "gpu", kind: "external", externalUse: ["fallback"], capabilities: ["bash", "cuda"] };
+    const external: EnvironmentCard = { ...card, id: "gpu", kind: "external", filesystemModel: "machine-local", persistence: "filesystem", externalUse: ["fallback"], capabilities: ["bash", "cuda"] };
     expect(() => selectEnvironment([external], owner, { capabilities: ["cuda"], mode: "fallback" }, undefined, undefined, 1001)).toThrow("no_eligible");
     expect(selectEnvironment([external], owner, { capabilities: ["cuda"], mode: "fallback", managedUnavailable: true }, undefined, undefined, 1001).id).toBe("gpu");
     expect(() => selectEnvironment([external], owner, { capabilities: ["cuda"], mode: "capability" }, undefined, undefined, 1001)).toThrow("no_eligible");
+    expect(external.filesystemModel).toBe("machine-local");
+    expect(card.filesystemModel).toBe("workspace-backed");
   });
   it("does not let model selection override eligibility or replace a pinned session", () => {
     expect(selectEnvironment([card], owner, { capabilities: ["bash"], mode: "managed" }, "invented", undefined, 1001).id).toBe("managed");

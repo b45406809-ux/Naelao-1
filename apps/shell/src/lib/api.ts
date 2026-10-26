@@ -2310,6 +2310,7 @@ export async function activateSpaceTemplate(spaceId: string, blueprintId: string
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
   dependencies: Array<{ extension_id: string; status: "installed" | "disabled" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string }>;
+  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" }>;
   setup_credentials: Array<{ name: string; description: string; required: boolean }>;
   blockers: string[]; requires_human_activation: true; installs_or_grants_applied: false;
   security: { publishable: boolean; blockers?: string[] };
@@ -2439,6 +2440,32 @@ export interface LocalTunnelConnectInfo {
 
 export async function mintLocalTunnelConnectToken(spaceId: string, session: SessionCredentials): Promise<LocalTunnelConnectInfo> {
   return apiFetch(`/v1/spaces/${spaceId}/local-tunnel/connect-token`, { method: "POST", session });
+}
+
+export interface NamedMachineGrant {
+  id: string; actorId: string; projectId?: string; expiresAt: number;
+  roots: Array<{ path: string; access: "read" | "write" | "readwrite" }>;
+  commands: string[]; inference: boolean; shellAccess?: "sandboxed";
+  externalUse?: Array<"capability" | "fallback">;
+}
+export interface NamedTunnel {
+  machineId: string; name: string; status: "active" | "revoked" | "removed"; ownerId: string;
+  hardware: { platform: string; arch: string; cpuCount: number; memoryBytes: number; capabilities: string[]; apps?: Array<{ id: string; version?: string; connectionId?: string; authenticatedAt?: number }> };
+  grants: NamedMachineGrant[]; heartbeatAt?: number;
+}
+export interface TunnelEnrollment {
+  enrollmentToken: string; expiresAt: number; tenantId: string; spaceId: string; name: string;
+}
+export async function listNamedTunnels(spaceId: string, session: SessionCredentials): Promise<NamedTunnel[]> {
+  const result = await apiFetch<{ machines: NamedTunnel[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/tunnels`, { session });
+  return result.machines ?? [];
+}
+export function createTunnelEnrollment(spaceId: string, session: SessionCredentials, input: { name: string; grants: NamedMachineGrant[] }): Promise<TunnelEnrollment> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/tunnels/enrollment`, { method: "POST", body: JSON.stringify(input), session });
+}
+export async function updateNamedTunnel(spaceId: string, machineId: string, action: "rename" | "revoke" | "remove" | "grants", session: SessionCredentials, body: Record<string, unknown> = {}): Promise<NamedTunnel> {
+  const result = await apiFetch<{ machine: NamedTunnel }>(`/v1/spaces/${encodeURIComponent(spaceId)}/tunnels/${encodeURIComponent(machineId)}/${action}`, { method: "POST", body: JSON.stringify(body), session });
+  return result.machine;
 }
 
 // ── Knowledge Base (WS-4: optional project_id isolates a document to a project's own KB;

@@ -34,6 +34,13 @@ describe("environment tool host integration", () => {
     expect(await execute(args, ctx)).toMatchObject({ status: "succeeded", stdout: "trained" });
     expect(ctx.env.localTunnel!.exec).toHaveBeenCalledTimes(1);
   });
+  it("keeps a connected computer's filesystem local and binds cwd into the action identity", async () => {
+    const { ctx } = fixture(), args = { session_id: "local", action_id: "edit", command: "python train.py", cwd: "/home/owner/project", capabilities: ["cuda"], mode: "capability" };
+    await execute(args, ctx);
+    expect(ctx.env.localTunnel!.exec).toHaveBeenCalledWith(expect.objectContaining({ params: { command: args.command, cwd: args.cwd } }));
+    await expect(execute({ ...args, cwd: "/home/owner/other" }, ctx)).rejects.toThrow("environment_action_conflict");
+    expect(ctx.env.containerRuntimeInventory).toHaveBeenCalled();
+  });
   it("rejects caller-supplied fallback evidence and lower execution ceilings", async () => {
     const { ctx } = fixture(), args = { session_id: "session", action_id: "step", command: "python train.py", mode: "fallback", managedUnavailable: true };
     await expect(execute(args, ctx)).rejects.toThrow("host_availability_evidence");

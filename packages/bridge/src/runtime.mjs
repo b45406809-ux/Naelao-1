@@ -1,10 +1,13 @@
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { mkdir, readFile, writeFile, rename, realpath, lstat, rm, readdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, resolve, relative, join, basename, isAbsolute, sep } from "node:path";
 import { homedir, cpus, totalmem, platform, arch } from "node:os";
 import { machineProofBytes, tunnelHash, validateMachineApps } from "@naelao/agent-sdk";
+import { createLinuxSandboxExecutor } from "./linux-sandbox.mjs";
 
 const FRAME_LIMIT = 65536, OUTPUT_LIMIT = 1048576;
+const executeLocalIsolated = createLinuxSandboxExecutor();
 function baseUrl(value) {
   const url = new URL(value);
   if (url.username || url.password || url.search || url.hash || url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("bridge_https_endpoint_required");
@@ -33,7 +36,9 @@ async function passphrase(options) {
   return secret;
 }
 function hardware(options, models = options.models ?? []) {
-  return { platform: platform(), arch: arch(), cpuCount: cpus().length, memoryBytes: totalmem(), capabilities: options.capabilities ?? ["storage:folder"], models };
+  const capabilities = new Set(options.capabilities?.length ? options.capabilities : ["storage:folder"]);
+  if (options.allowSandboxedShell === true && platform() === "linux" && existsSync("/usr/bin/bwrap")) capabilities.add("bash");
+  return { platform: platform(), arch: arch(), cpuCount: cpus().length, memoryBytes: totalmem(), capabilities: [...capabilities].slice(0, 64), models };
 }
 function modelIds(payload) {
   const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
@@ -87,7 +92,7 @@ async function consent(options) {
   const roots = [];
   for (const path of options.allowDirs ?? []) roots.push(await realpath(resolve(path)));
   const inference = options.allowInference === true;
-  return { roots, commands: options.allowCommands ?? [], inference,
+  return { roots, commands: options.allowCommands ?? [], sandboxedShell: options.allowSandboxedShell === true, inference,
     ...(inference ? { inferenceUrl: loopbackUrl(options.inferenceUrl).toString() } : {}) };
 }
 export async function enrollBridge(options) {
@@ -177,6 +182,22 @@ async function consentedPath(path, roots, writing = false) {
   if (!roots.some(root => { const suffix = relative(root, actual); return suffix === "" || !isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(".." + sep); })) throw new Error("bridge_folder_consent_denied");
   return actual;
 }
+function pathWithin(root, target) {
+  const suffix = relative(root, target);
+  return suffix === "" || !isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(".." + sep);
+}
+async function intersectExecutionRoots(localRoots, serverRoots) {
+  if (!Array.isArray(serverRoots) || serverRoots.length > 32) throw new Error("bridge_execution_roots_invalid");
+  const local = await Promise.all(localRoots.map(root => realpath(root)));
+  const effective = [];
+  for (const grant of serverRoots) {
+    if (!grant || typeof grant.path !== "string" || !["read", "write", "readwrite"].includes(grant.access)) throw new Error("bridge_execution_root_invalid");
+    const path = await realpath(grant.path);
+    if (path === "/" || !local.some(root => pathWithin(root, path))) throw new Error("bridge_execution_root_outside_local_consent");
+    effective.push({ path, access: grant.access });
+  }
+  return effective;
+}
 export async function connectBridge(options, dependencies = {}) {
   const identityFile = resolve(options.identityFile), lock = identityFile + ".lock";
   await writeFile(lock, JSON.stringify({ pid: process.pid, createdAt: Date.now() }), { flag: "wx", mode: 0o600 }).catch(() => { throw new Error("bridge_identity_in_use_or_stale_lock: inspect the recorded process before removing its lock"); });
@@ -243,7 +264,7 @@ export async function connectBridge(options, dependencies = {}) {
               send({ type: "response", generation, request_id: frame.request_id, status: previous.status === "prepared" ? "indeterminate" : previous.status,
                 ok: previous.status === "succeeded", result: previous.result, error: previous.error }); return;
             }
-            if (await tunnelHash(JSON.stringify([frame.op, frame.params])) !== frame.payload_hash || !Number.isFinite(frame.invocation?.deadline)
+            if (await tunnelHash(JSON.stringify([frame.op, frame.params, frame.execution_roots ?? null])) !== frame.payload_hash || !Number.isFinite(frame.invocation?.deadline)
               || frame.invocation.requestId !== frame.request_id || !frame.invocation.actorId || !frame.invocation.runId
               || frame.invocation.deadline <= Date.now() || frame.invocation.deadline > Date.now() + 60000) throw new Error("bridge_request_scope_invalid");
             const record = { id: frame.request_id, payloadHash: frame.payload_hash, generation, invocation: frame.invocation, status: "prepared" };
@@ -276,11 +297,9 @@ export async function connectBridge(options, dependencies = {}) {
                 const text = await response.text(); if (Buffer.byteLength(text) > 24000) throw new Error("bridge_inference_result_limit");
                 if (!response.ok) throw new Error("bridge_local_model_failed"); result = JSON.parse(text);
               } else if (frame.op === "exec") {
-                if (!state.consent.commands.includes(frame.params.command)) throw new Error("bridge_command_consent_denied");
-                // The native isolation adapter is supplied by Step 16. Never pretend a cwd
-                // restriction is an OS jail; absent isolation fails closed on all platforms.
-                if (!dependencies.executeIsolated) throw new Error("bridge_local_process_isolation_unavailable");
-                result = await dependencies.executeIsolated(frame.params, { signal: controller.signal, roots: state.consent.roots, output });
+                if (!state.consent.commands.includes(frame.params.command) && state.consent.sandboxedShell !== true) throw new Error("bridge_command_consent_denied");
+                const executionRoots = await intersectExecutionRoots(state.consent.roots, frame.execution_roots);
+                result = await (dependencies.executeIsolated ?? executeLocalIsolated)(frame.params, { signal: controller.signal, roots: executionRoots, output });
               } else throw new Error("bridge_operation_unknown");
               if (controller.signal.aborted) throw new Error("bridge_request_cancelled");
               record.status = "succeeded"; record.result = result;
@@ -317,6 +336,7 @@ export async function runBridge(argv) {
   for (let index = 1; index < argv.length; index++) {
     const flag = argv[index], value = argv[index + 1];
     if (flag === "--allow-inference") { options.allowInference = true; continue; }
+    if (flag === "--allow-sandboxed-shell") { options.allowSandboxedShell = true; continue; }
     if (!value || value.startsWith("--")) throw new Error("bridge_option_value_required:" + flag);
     const fields = { "--url": "url", "--name": "name", "--identity": "identityFile", "--enrollment-file": "enrollmentFile", "--passphrase-file": "passphraseFile", "--inference-url": "inferenceUrl", "--inventory-file": "inventoryFile" };
     const arrays = { "--allow-dir": "allowDirs", "--allow-command": "allowCommands", "--model": "models", "--capability": "capabilities" };
@@ -325,7 +345,7 @@ export async function runBridge(argv) {
     else throw new Error("bridge_unknown_option:" + flag);
     index++;
   }
-  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path] [--allow-command exact-command] [--allow-inference --inference-url http://127.0.0.1:11434/v1/chat/completions]\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
+  if (operation === "help") { process.stdout.write("naelao-bridge login --url https://agents.example --name machine-name --enrollment-file ticket.json [--allow-dir path] [--allow-command exact-command | --allow-sandboxed-shell] [--allow-inference --inference-url http://127.0.0.1:11434/v1/chat/completions]\nnaelao-bridge connect|rotate|remove --identity path [--passphrase-file path]\n"); return; }
   if (!options.identityFile) {
     if (!options.name || !/^[a-z][a-z0-9-]{1,62}$/.test(options.name)) throw new Error("bridge_named_identity_required");
     options.identityFile = join(homedir(), ".naelao", "bridge", options.name + ".json");

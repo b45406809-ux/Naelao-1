@@ -20,7 +20,7 @@ async function fixture() {
     } };
   const machine = { schema: 1, ...identity, name: "machine", ownerId: "owner", status: "active", sequence: 1, keyVersion: 1,
     hardware: { platform: "linux", arch: "x64", cpuCount: 2, memoryBytes: 4096, capabilities: [], models: ["local-model"] },
-    grants: [{ id: "grant", actorId: "owner", projectId: "project", expiresAt: Date.now() + 300000, roots: [], commands: ["task1", "task2"], inference: true }] };
+    grants: [{ id: "grant", actorId: "owner", projectId: "project", expiresAt: Date.now() + 300000, roots: [{ path: "/home/owner/project", access: "readwrite" }], commands: ["task1", "task2"], inference: true }] };
   const ctx = { storage, getWebSockets: () => sockets };
   const env = { PLATFORM_SECRET: "test-secret", SPACES_WORKER: { fetch: async () => Response.json({ machine }) } as never };
   const tunnel = new LocalTunnelDO(ctx as never, env);
@@ -79,6 +79,17 @@ describe("LocalTunnelDO correlation and multiplexing", () => {
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: "tunnel_machine_grant_denied" });
     expect(f.outbox).toHaveLength(0);
+  });
+
+  it("sends only the matching host-granted folders to the local OS sandbox", async () => {
+    const f = await fixture();
+    const pending = f.tunnel.fetch(f.invoke("request-scoped-root", "task1"));
+    await vi.waitFor(() => expect(f.outbox).toHaveLength(1));
+    const frame = JSON.parse(f.outbox[0]!);
+    expect(frame.execution_roots).toEqual([{ path: "/home/owner/project", access: "readwrite" }]);
+    expect(frame.payload_hash).toMatch(/^[a-f0-9]{64}$/);
+    await f.tunnel.webSocketMessage(f.socket as never, JSON.stringify({ type: "response", request_id: frame.request_id, generation: frame.generation, ok: true, result: { exitCode: 0 } }));
+    await pending;
   });
 
   it("marks a disconnect indeterminate and does not replay a request after DO restart", async () => {

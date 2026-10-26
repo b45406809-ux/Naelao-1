@@ -21,6 +21,19 @@ const blueprint = (
 });
 
 describe("Space Template activation preview", () => {
+  it("does not imply declared project runtimes are installed when no host provisioner exists", () => {
+    const project = { id: "project-a", name: "Project A", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
+      viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], runtimeRequirements: [
+        { id: "gpu", capabilities: ["cuda"], required: true, priority: 0, dependencies: [] },
+        { id: "media", capabilities: ["ffmpeg"], required: false, priority: 1, dependencies: [] },
+      ] };
+    const preview = previewBlueprintActivation(blueprint({ projects: [project], requiredExtensions: [], requiredCredentials: [] }), new Map(), new Map());
+    expect(preview).toMatchObject({ ready: false, runtime_requirements: [
+      { project_id: "project-a", runtime_id: "gpu", required: true, status: "unavailable", reason: "runtime_provisioning_unavailable" },
+      { project_id: "project-a", runtime_id: "media", required: false, status: "deferred", reason: "runtime_provisioning_unavailable" },
+    ], blockers: ["required_runtime_unavailable:project-a:gpu"] });
+  });
+
   it("rejects unauthenticated and non-admin preview requests before touching storage", async () => {
     const secret = "activation-preview-test-secret";
     const env = { PLATFORM_SECRET: secret } as never;

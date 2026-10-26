@@ -10,15 +10,17 @@ Requested 2026-10-26. The planner/worker architecture and three workspace bounda
 - [x] Scoped content-addressed workspace artifact publish/restore with destination revision checks. Cross-provider transfer remains open below.
 - [ ] Unified subscription limits, atomic reservations, usage reconciliation and bounded prewarming.
 - [ ] Template runtime requirements, dependency/order validation, reduced-plan preview and required-component blocking.
-- [ ] Installation UI displays included, deferred and unavailable components.
+- [x] Activation preview reports required runtimes as unavailable and optional runtimes as deferred when the host has no provisioner; required runtimes block activation.
+- [ ] Installation UI displays included, deferred and unavailable components from real release resolution and plan capacity. Current UI reports only the truthful unavailable/deferred states.
 - [ ] Managed application data/profile lifecycle and restoration; credentials remain host-controlled.
 - [ ] Modal lifecycle adapter with trusted image provisioning, metering, shutdown and GPU admission.
 - [ ] Native bridge OS isolation and browser/desktop adapters, explicit profile access.
+- [x] Connected personal computers keep their own filesystem; execution is restricted to the intersection of a current host grant and the computer owner's local consent (Linux bubblewrap adapter).
 - [ ] Adversarial routing/session tests, scoped integration tests, provider and machine acceptance.
 
 ## Rules
 
-External environments are explicit execution targets, not an automatic permission escalation. A bound session cannot be transparently moved. Hardware/app metadata is evidence, not authority. Account connections are references, not transferable credentials. Immutable artifacts are the only implicit cross-machine data exchange; process and shell state require explicit session support.
+External environments are explicit execution targets, not an automatic permission escalation. A bound session cannot be transparently moved. Hardware/app metadata is evidence, not authority. Account connections are references, not transferable credentials. A connected personal computer keeps its own filesystem and installed apps; Naelao never mounts or synchronizes its workspace onto that machine. Shell access is confined to the intersection of the current host grant and the computer owner's local consent. Immutable artifacts are the explicit cross-machine data exchange; process and shell state require explicit session support.
 
 ## Deployment dependencies
 
@@ -32,6 +34,10 @@ This environment exposes no Modal/Cloudflare production credential bindings or a
 - Durable per-agent session/action journal: target binding, atomic claims, request reconciliation, conflict rejection, serialization of dependent actions, bounded receipts, duplicate suppression, and a 256-action session bound.
 - Managed sessions explicitly require restoration when their run changes. They do not claim cross-run app/process persistence. Group shell-dependent commands in one invocation.
 - Optional signed bridge app observations with strict field validation and no secret fields. Authentication observations are not automatically probed; account references are never copied.
+- External environment cards distinguish `machine-local` filesystems from `workspace-backed` managed runtimes. External commands accept an optional absolute working directory that must fall inside an approved folder; it is part of the durable action identity.
+- Linux bridge commands use bubblewrap: private mount, process and network namespaces; system runtime paths read-only; scratch-only `/tmp`; approved roots mounted with host-granted read/write mode. The daemon intersects host roots with its own canonical owner-consented roots. Unsupported OSes and missing bubblewrap fail closed.
+- The host tunnel now sends only the matching machine grant's roots to execution, binds them into the durable request hash, and rejects dot-segment paths. A host-side `shellAccess: "sandboxed"` grant and local `--allow-sandboxed-shell` consent are both required for general shell work.
+- The Space computer panel creates one-use five-minute enrollment tickets, displays each registered machine's freshness and grant scope, and supports revocation. Linux auto-advertises `bash` only when bubblewrap and local sandbox consent are present.
 - Template runtime requirements and dependency/capacity preview SDK. Requirements survive project instantiation and re-export. Automatic runtime installation and shell installation preview are not yet connected.
 - Shared existing managed CPU/RAM/concurrency ceilings through `getExecutionLimits`; this is not yet a unified reservation system for all workspace types.
 - Incidental fixes: duplicate voice type exports and an out-of-scope SMS body-key reference found by full package type checking.
@@ -43,7 +49,7 @@ This environment exposes no Modal/Cloudflare production credential bindings or a
 3. Extend authoritative subscription admission across installed slots, external jobs, active projects, storage, GPU and speculative prewarming. Existing quota checks are not an atomic external-compute budget reservation.
 4. Add provider lifecycle adapters beginning with Modal: approved image and instance selection, owner credential binding, budget hold, create/stop/delete/reconcile, persistent data and GPU usage. Validate against official APIs and live provider receipts before enabling.
 5. Add durable application data and browser profile adapters, explicit migration/restore actions and account-health probes. Existing cookies/localStorage support is not full browser/desktop persistence.
-6. Implement native OS isolation and browser/desktop bridge adapters, then signed installers and service packaging. Current reference bridge fails closed without native isolation.
+6. Complete macOS and Windows isolation adapters, browser/desktop bridge adapters, profile-specific permissions, signed installers and service packaging. Linux has a bubblewrap adapter; other platforms still fail closed.
 7. Live acceptance with configured Cloudflare/Modal credentials and consenting test machines: suspend/resume, reconnect mid-command, duplicate submissions, expired account sessions, plan downgrades, provider billing and cleanup.
 
 Implemented after the initial foundation: bounded immutable workspace artifact publish/restore with digest verification, worker file boundaries, destination CAS, and fenced publication through the existing workspace gateway. Cross-provider transfer adapters and resumable transfer receipts remain unfinished.

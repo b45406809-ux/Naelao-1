@@ -17,6 +17,7 @@ export interface BlueprintActivationDependency {
 export interface BlueprintActivationPreview {
   ready: boolean;
   dependencies: BlueprintActivationDependency[];
+  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" }>;
   setup_credentials: Array<{
     name: string;
     description: string;
@@ -92,9 +93,16 @@ export function previewBlueprintActivation(
           ? `required_extension_disabled:${item.extension_id}`
           : `required_extension_unavailable:${item.extension_id}`
     );
+  const runtime_requirements = blueprint.projects.flatMap(project => (project.runtimeRequirements ?? []).map(requirement => ({
+    project_id: project.id ?? project.name, runtime_id: requirement.id, required: requirement.required,
+    status: (requirement.required ? "unavailable" : "deferred") as "unavailable" | "deferred",
+    reason: "runtime_provisioning_unavailable" as const,
+  })));
+  for (const requirement of runtime_requirements) if (requirement.required) blockers.push(`required_runtime_unavailable:${requirement.project_id}:${requirement.runtime_id}`);
   return {
     ready: blockers.length === 0,
     dependencies,
+    runtime_requirements,
     setup_credentials: (blueprint.requiredCredentials ?? []).map(
       ({ name, description, required }) => ({ name, description, required })
     ),
