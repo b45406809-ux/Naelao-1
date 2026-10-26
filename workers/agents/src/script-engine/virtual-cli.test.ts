@@ -239,3 +239,12 @@ describe("VirtualCliDispatcher", () => {
     expect(chores.execute).toHaveBeenCalledWith("repomix-pack", []);
   });
 });
+
+
+describe("environment CLI", () => {
+  it("preserves quoted commands, capabilities and explicit absent revisions", () => {
+    expect(interceptPlatformCli('naelao environment execute --session-id build --action-id test --command "npm run build" --capabilities bash,node')).toEqual({ operation: "environment.execute", params: { session_id: "build", action_id: "test", command: "npm run build", capabilities: ["bash", "node"] } });
+    expect(interceptPlatformCli('naelao environment artifact_restore --digest abc --path result --expected-hash absent')).toMatchObject({ params: { expected_hash: null } });
+    expect(interceptPlatformCli('naelao environment execute --json \'{"session_id":"build","action_id":"test","command":"npm test","capabilities":["bash"]}\'')).toMatchObject({ params: { command: "npm test", capabilities: ["bash"] } });
+  });
+});

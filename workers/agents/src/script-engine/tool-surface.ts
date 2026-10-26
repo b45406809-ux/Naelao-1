@@ -515,6 +515,11 @@ export class ScriptToolSurface {
       rows.push("## preconfigured platform skills");
       for (const skill of selectedBuiltinSkills) rows.push(skill.manual_markdown);
     }
+    if (this.ops.has("environment.list")) {
+      rows.push("## execution environment continuity");
+      rows.push("Use `naelao environment list` for scoped capability cards. The planner delegates execution and includes capability, account and same-environment requirements in the worker task.");
+      if (!this.plannerScope) rows.push("Use `naelao environment execute --session-id <stable-session> --action-id <stable-step> --command <command>` for dependent native work. Reuse the session; group commands needing shell variables/process state into one command. Choose mode capability for an explicitly consented external resource such as CUDA, or fallback only when the host confirms managed compute is unavailable. Never retry uncertain actions on another machine. Use `naelao environment status --session-id <id> --action-id <id>` to reconcile tunnel receipts. Pending is not success. Managed sessions require explicit restoration before continuing in a new run; an installed runtime is not a permanent computer. Share versioned artifacts explicitly; never copy account credentials.");
+    }
     rows.push("## planner coordination Bash commands");
     rows.push("- `naelao project agents list` - list every agent addressable in the current project - no parameters");
     rows.push("- `naelao project agents consult --agent-id <id> --message <text>` - privately ask a named project worker for information or a bounded handoff");

@@ -42,7 +42,7 @@ export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
     capability: "code_and_runtime",
     description:
       "Run code, shell commands, and inspect or select installed execution runtimes.",
-    tools: ["code-exec", "runtime-discovery", "workspace", "file-manager"],
+    tools: ["code-exec", "execution-environments", "runtime-discovery", "workspace", "file-manager"],
     skills: [],
     match:
       /code|implement|debug|test|build|compile|shell|bash|container|runtime|repository|source code/i,

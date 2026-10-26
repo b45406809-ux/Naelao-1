@@ -1,3 +1,4 @@
+import { getExecutionLimits } from "@naelao/entitlements";
 /** Cloudflare durable_object-policy sizing. Only host-approved requirements reach this selector.
  * No `basic` alias: the runtime supports lite and standard-1..4; custom sizes start at 1 vCPU.
  */
@@ -21,12 +22,8 @@ export function selectDynamicProfile(cpuCores: number, memoryMb: number): Dynami
   throw new Error("container_resources_unsupported");
 }
 export function dynamicPlanLimits(tier: string): { maxProfile: DynamicProfile; concurrency: number } {
-  switch (tier) {
-    case "growth": return { maxProfile: "standard-2", concurrency: 3 };
-    case "business": return { maxProfile: "standard-3", concurrency: 10 };
-    case "enterprise": return { maxProfile: "standard-4", concurrency: 25 };
-    default: return { maxProfile: "standard-1", concurrency: 1 };
-  }
+  const limits = getExecutionLimits(tier);
+  return { maxProfile: limits.maxProfile as DynamicProfile, concurrency: limits.concurrency };
 }
 export function assertDynamicPlan(profile: DynamicProfile, tier: string): void {
   const max = DYNAMIC_PROFILES[dynamicPlanLimits(tier).maxProfile];

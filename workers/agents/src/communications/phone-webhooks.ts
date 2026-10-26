@@ -496,8 +496,9 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       verification !== null ||
       (/\b(?:code|pin|passcode|otp|verification)\b/i.test(incomingText) &&
         /(?<!\d)\d{4,8}(?!\d)/.test(incomingText));
+    let bodyKey: string | undefined;
     if (!retryingExtensionDispatch) {
-      const key = await storeBody(c.env, identity, sid, {
+      bodyKey = await storeBody(c.env, identity, sid, {
         text: privateCode
           ? "[private account verification message]"
           : incomingText,
@@ -513,7 +514,7 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       await c.env.PLATFORM_DB.prepare(
         "INSERT OR IGNORE INTO assistant_phone_events(id,binding_id,kind,sender,status,body_key) VALUES(?,?,'sms',?,'received',?)"
       )
-        .bind(sid, binding.id, from, key)
+        .bind(sid, binding.id, from, bodyKey)
         .run();
     }
     if (binding.purpose === "extension") {
@@ -529,7 +530,7 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
         await c.env.PLATFORM_DB.prepare("UPDATE assistant_phone_events SET status='extension_failed' WHERE id=? AND binding_id=?").bind(sid, binding.id).run();
         return response("");
       }
-      const result = await readBoundedResponseJson<{ message?: unknown }>(dispatched, 8_192).catch(() => ({}));
+      const result = await readBoundedResponseJson<{ message?: unknown }>(dispatched, 8_192).catch((): { message?: unknown } => ({}));
       const reply = typeof result.message === "string" ? result.message.trim().slice(0, 1_600) : "";
       if (!reply) {
         await c.env.PLATFORM_DB.prepare("UPDATE assistant_phone_events SET status='extension_no_reply' WHERE id=? AND binding_id=?").bind(sid, binding.id).run();
@@ -559,7 +560,7 @@ export function registerPhoneWebhooks(app: Hono<{ Bindings: AgentsEnv }>) {
       await c.env.PLATFORM_DB.prepare(
         "INSERT OR IGNORE INTO assistant_communication_messages(id,identity_id,provider_message_id,direction,channel,sender,recipient,status,body_key) VALUES(?,?,?,'inbound','sms',?,?,'received',?)"
       )
-        .bind(sid, identity.id, sid, from, to, key)
+        .bind(sid, identity.id, sid, from, to, bodyKey)
         .run();
       await c.env.PLATFORM_DB.prepare(
         "INSERT OR IGNORE INTO assistant_communication_commands(id,identity_id,message_id,controller_user_id) VALUES(?,?,?,?)"

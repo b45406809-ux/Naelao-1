@@ -4161,6 +4161,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return {
         id: project.id, name: project.name, kind: project.kind as ProjectKind, templateMode: project.template_mode,
         viewports: safeJsonParseObj(project.viewport_config),
+        ...(safeJsonParseObj(project.channel_config).runtime_requirements ? { runtimeRequirements: safeJsonParseObj(project.channel_config).runtime_requirements as import("@naelao/agent-sdk").TemplateRuntimeRequirement[] } : {}),
         configuration: { ...(await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${project.id}`) ? { assistantChannels: await this.ctx.storage.get<AssistantChannelPatch>(`channels:template-project:${project.id}`) } : {}), executionCeiling: project.execution_ceiling, channel: safeJsonParseObj(project.channel_config), artifactLinters: parseArtifactLinters(JSON.parse(project.artifact_linter_policy)) },
         systemPrompt: typeof config.system_prompt === "string" ? config.system_prompt : "",
         initialTasks: tasks.map((task) => ({ id: task.id, title: task.title, status: task.status, dependencies: safeJsonParseArr(task.dependencies).filter((id): id is string => typeof id === "string"), ...(task.assigned_agent ? { assignedAgent: task.assigned_agent } : {}) })),
@@ -4298,8 +4299,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           const hydrationSeed = validateProjectHydrationSeed(project.configuration?.hydrationSeed, new Set(project.starterFiles.map(file => file.path)));
           const artifactLinters = parseArtifactLinters(project.configuration?.artifactLinters);
           execute(this.ctx.storage.sql as never,"UPDATE projects SET artifact_linter_policy=? WHERE id=? AND space_id=?",JSON.stringify(artifactLinters),projectId,targetSpaceId);
-          if (hydrationSeed || artifactLinters.length) execute(this.ctx.storage.sql as never,
-            "UPDATE projects SET channel_config = ? WHERE id = ? AND space_id = ?", JSON.stringify({ ...(hydrationSeed ? { hydration_seed: hydrationSeed } : {}), ...(artifactLinters.length ? { artifact_linters: artifactLinters } : {}) }), projectId, targetSpaceId);
+          if (hydrationSeed || artifactLinters.length || project.runtimeRequirements?.length) execute(this.ctx.storage.sql as never,
+            "UPDATE projects SET channel_config = ? WHERE id = ? AND space_id = ?", JSON.stringify({ ...(hydrationSeed ? { hydration_seed: hydrationSeed } : {}), ...(artifactLinters.length ? { artifact_linters: artifactLinters } : {}), ...(project.runtimeRequirements?.length ? { runtime_requirements: project.runtimeRequirements } : {}) }), projectId, targetSpaceId);
           const ceiling = project.configuration?.executionCeiling;
           if (typeof ceiling === "number" && ceiling >= 1 && ceiling <= 6) execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", ceiling, projectId);
           if (project.systemPrompt) {

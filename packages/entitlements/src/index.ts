@@ -192,3 +192,13 @@ export class EntitlementsChecker {
     };
   }
 }
+
+/** Shared execution ceilings. Unknown plans fail to the lowest allowance. */
+export function getExecutionLimits(plan: string) {
+  const tier = plan.toLowerCase();
+  const limits = tier === "enterprise" ? { maxProfile: "standard-4", concurrency: 25 }
+    : tier === "business" || tier === "pro" ? { maxProfile: "standard-3", concurrency: 10 }
+    : tier === "growth" || tier === "starter" ? { maxProfile: "standard-2", concurrency: 3 }
+    : { maxProfile: "standard-1", concurrency: 1 };
+  return Object.freeze(limits);
+}

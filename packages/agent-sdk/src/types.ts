@@ -207,6 +207,7 @@ export interface BlueprintStarterFile {
 }
 
 export interface BlueprintProject {
+  runtimeRequirements?: readonly import("./execution-environments.js").TemplateRuntimeRequirement[];
   id?: string;
   name: string;
   kind: ProjectKind;

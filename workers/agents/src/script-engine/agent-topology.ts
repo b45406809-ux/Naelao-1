@@ -3,7 +3,7 @@ export type PlannerScope = "space" | "project";
 
 /** Installed on persistent planners; domain execution tools are granted by explicit profiles/tasks. */
 export const UNIVERSAL_PLANNER_PREBUILTS = [
-  "goal-planner", "sub-agent", "project-coordination", "model-race", "executive-cabinet",
+  "execution-environments", "goal-planner", "sub-agent", "project-coordination", "model-race", "executive-cabinet",
 ] as const;
 
 export const UNIVERSAL_AGENT_BASELINE_PREBUILTS = [
@@ -18,6 +18,7 @@ const UNIVERSAL_REPL_OPERATIONS = new Set([
 ]);
 
 const PLANNER_OPERATIONS = new Set([
+  "environment.list",
   "engine.plan_and_delegate_goal",
   "agent.spawn",
   "model.race",

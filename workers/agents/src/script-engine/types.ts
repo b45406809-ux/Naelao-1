@@ -1093,6 +1093,10 @@ export interface ScriptEngineEnv {
    *  `local-machine` prebuilt reports itself unavailable, not degraded, when absent (unlike
    *  lockGateway, there's no safe fallback behavior for "pretend the local machine exists"). */
   localTunnel?: LocalTunnelGateway;
+  executionSessions?: import("../tunnels/execution-sessions.js").ExecutionSessions;
+  /** Host evidence only: no managed compute binding is deployed. Not a budget/permission override. */
+  managedEnvironmentsUnavailable?: boolean;
+  admitExternalEnvironment?: () => Promise<boolean>;
   /** §A1.17 Phase R — the container half of the explicit multi-workspace model. Present when
    *  TOOL_SANDBOX is wired up; the `workspace` prebuilt reports itself unavailable, not
    *  degraded, when absent (same posture as localTunnel — no safe fallback for "pretend the

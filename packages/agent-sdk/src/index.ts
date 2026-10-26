@@ -193,7 +193,6 @@ export * from "./templates/foundry-space.js";
 export * from "./tunnel-protocol.js";
 export { parseArtifactLinters, lintArtifact, type ArtifactLinterSpec, type ArtifactDiagnostic } from "./artifact-linters.js";
 
-export type { VoiceChannelAction, VoiceChannelResponse, VoiceChannelEventPayload } from "./voice-channel.js";
 export * from "./templates/reference-spaces.js";
 export * from "./package-inspection.js";
 
@@ -201,3 +200,4 @@ export { DEFAULT_ASSISTANT_VOICE, validateAssistantVoicePatch, resolveAssistantV
 export type { ModelClass, WorkerExecutionKind, WorkerExecutionPolicy, AssistantVoicePreferences, AssistantVoiceSettings, VoiceProfile, VoiceCapability } from "./assistant-voice.js";
 export { ASSISTANT_VOICE_CATALOG, approvedAssistantVoice, resolveAssistantVoiceProfile } from "./assistant-voice-catalog.js";
 export type { ApprovedAssistantVoice } from "./assistant-voice-catalog.js";
+export * from "./execution-environments.js";

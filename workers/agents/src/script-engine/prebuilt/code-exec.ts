@@ -425,3 +425,17 @@ export const codeExec: PrebuiltScript = {
     },
   },
 };
+
+/** Environment selection is host-filtered; the normal native runner still checks live grants,
+ * deployed images, workspace scope, concurrency, execution ceiling and billing admission. */
+export async function runEnvironmentBash(command: string, installation: import("../container-policy.js").InstalledContainer, ctx: PrebuiltOpContext): Promise<unknown> {
+  await authorizeEnvironmentCommand(command, ctx);
+  return runTier(ctx, "container.extension_binary", BASH_HARNESS, 6, { commands: command, timeout: 30 }, installation);
+}
+export async function authorizeEnvironmentCommand(command: string, ctx: PrebuiltOpContext): Promise<void> {
+  if (!ctx.env.nativeExecutionAllowed || (ctx.env.maxTier ?? 0) < 6) throw new Error("environment_native_execution_denied");
+  await inspectMutation(command, { kind: "shell", ...(ctx.env.mutationGrant ? { token: ctx.env.mutationGrant } : {}), secret: ctx.env.platformSecret ?? "", resourceId: ctx.env.projectId ?? ctx.env.spaceId });
+  for (const stage of parseShell(command).flatMap(pipeline => pipeline.commands)) {
+    if (!ctx.authorizeShell || !await ctx.authorizeShell({ kind: "command", name: stage.argv[0] ?? "" })) throw new Error("environment_shell_permission_denied");
+  }
+}

@@ -63,4 +63,13 @@ describe("named tunnel host gateway", () => {
     }, { tenantId: "tenant-1", spaceId: "space-1", actorId: "actor-1", runId: () => "run-1", authorize: async () => true });
     await expect(ambiguous.status("workstation")).rejects.toThrow("tunnel_named_machine_unavailable");
   });
+  it("allows membership-scoped discovery without granting command dispatch", async () => {
+    const f = fixture();
+    const gateway = createNamedTunnelGateway({ PLATFORM_SECRET: "test-secret", SPACES_WORKER: { fetch: f.response } as never }, {
+      tenantId: "tenant-1", spaceId: "space-1", actorId: "actor-1", runId: () => "run-1", authorize: async () => false, authorizeDiscovery: async () => true,
+    });
+    expect(await gateway.list()).toEqual([f.machine]);
+    await expect(gateway.exec({ machine: "workstation", op: "exec", params: { command: "test" } })).rejects.toThrow("actor_grant_required");
+  });
+
 });

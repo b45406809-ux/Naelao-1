@@ -45,7 +45,7 @@ export type AssistantEffectiveRole = "owner" | "editor" | "viewer";
  * tool, local.read_file reads a granting user's machine) — is refused under the clamp.
  */
 export const READ_SAFE_PREBUILT_OPS: ReadonlySet<string> = new Set([
-  "runtime.list", "runtime.find",
+  "runtime.list", "runtime.find", "environment.list",
   "mail.identity", "mail.inbox", "mail.read",
   "phone.status", "phone.inbox", "phone.read", "phone.actions",
   "skill.demo.list", "skill.demo.read",

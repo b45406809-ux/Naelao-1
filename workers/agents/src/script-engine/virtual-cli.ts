@@ -12,6 +12,17 @@ export interface CliDispatch {
  */
 function plannerCoordinationCli(words: string[], rawCommand?: string): CliDispatch | null {
   if (words[0] !== "naelao") return null;
+  if (words[1] === "environment") {
+    const action = words[2] ?? "list";
+    if (!["list", "execute", "status", "artifact_publish", "artifact_restore"].includes(action)) throw new Error("usage: naelao environment list|execute");
+    const { body } = bodyAndFlags(words.slice(3));
+    const input = words.includes("--json") ? rawJsonFlag(rawCommand, "--json") : body;
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("environment --json requires an object");
+    const params = { ...(input as Record<string, unknown>) };
+    if (typeof params.capabilities === "string") params.capabilities = params.capabilities.split(",").map(value => value.trim()).filter(Boolean);
+    if (params.expected_hash === "absent") params.expected_hash = null;
+    return { operation: "environment." + action, params };
+  }
   if (words[1] === "tunnel") {
     const action = words[2] ?? "list";
     const { positional, body } = bodyAndFlags(words.slice(3));

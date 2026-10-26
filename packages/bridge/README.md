@@ -28,3 +28,19 @@ SIGINT/SIGTERM cancel outstanding requests and close the socket. Reconnects
 authenticate a fresh short session and reconcile saved outcomes, never resend
 uncertain commands. Limit the process owner and protect identity/passphrase files
 with Unix modes or Windows ACLs. Templates and platform shutdown still need live tests.
+
+## Application inventory and scheduler consent
+
+An administrator can add `externalUse: ["capability"]` or `["fallback"]` to a
+machine grant, in addition to exact commands and folders. Existing grants do not
+opt into scheduler selection. Fallback also requires host-confirmed absence of
+managed compute bindings and current admission; it does not override policy or
+quota denial.
+
+`connect --inventory-file /absolute/path/apps.json` optionally reports an array of
+metadata records: `[{"id":"blender","version":"4.5"}]`. A connection reference
+may add `connectionId` and a measured `authenticatedAt` timestamp. These are
+untrusted observations, not credentials or proof of account ownership. Do not
+invent timestamps or include passwords, cookies or tokens; unknown fields are
+rejected. A trusted app adapter must refresh authentication observations. This
+option does not install apps, copy profiles, or grant account access.

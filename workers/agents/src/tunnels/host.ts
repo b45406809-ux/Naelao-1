@@ -14,14 +14,14 @@ export async function namedTunnelStub(env: { PLATFORM_SECRET: string; LOCAL_TUNN
 /** The host supplies immutable actor/run scope. A command only selects a visible alias. */
 export function createNamedTunnelGateway(
   env: { PLATFORM_SECRET: string; LOCAL_TUNNEL?: DurableObjectNamespace<LocalTunnelDO> | undefined; SPACES_WORKER: Fetcher },
-  scope: { tenantId: string; spaceId: string; actorId: string; projectId?: string; runId: () => string | undefined; authorize: () => Promise<boolean> },
+  scope: { tenantId: string; spaceId: string; actorId: string; projectId?: string; runId: () => string | undefined; authorize: () => Promise<boolean>; authorizeDiscovery?: () => Promise<boolean> },
 ): LocalTunnelGateway {
   async function headers() {
     return { "content-type": "application/json", "x-naelao-tenant-id": scope.tenantId,
       "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId), "x-naelao-user-id": scope.actorId };
   }
   async function list(): Promise<NamedMachine[]> {
-    if (!scope.actorId || !await scope.authorize()) throw new Error("tunnel_actor_grant_required");
+    if (!scope.actorId || !await (scope.authorizeDiscovery ?? scope.authorize)()) throw new Error("tunnel_actor_grant_required");
     const response = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/spaces/" + encodeURIComponent(scope.spaceId) + "/tunnels", { headers: await headers() }));
     if (!response.ok) throw new Error("tunnel_registry_access_denied");
     const body = await response.json<{ machines: NamedMachine[] }>();
@@ -35,6 +35,7 @@ export function createNamedTunnelGateway(
     return { machine, stub: await namedTunnelStub(env, machine) };
   }
   async function call(machineName: string, path: string, op?: string, params?: Record<string, unknown>, requestId: string = crypto.randomUUID()) {
+    if (!await scope.authorize()) throw new Error("tunnel_actor_grant_required");
     const runId = scope.runId();
     if (!runId) throw new Error("tunnel_run_scope_required");
     const { machine, stub } = await selected(machineName);

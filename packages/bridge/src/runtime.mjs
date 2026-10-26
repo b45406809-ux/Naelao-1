@@ -2,7 +2,7 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, si
 import { mkdir, readFile, writeFile, rename, realpath, lstat, rm, readdir } from "node:fs/promises";
 import { dirname, resolve, relative, join, basename, isAbsolute, sep } from "node:path";
 import { homedir, cpus, totalmem, platform, arch } from "node:os";
-import { machineProofBytes, tunnelHash } from "@naelao/agent-sdk";
+import { machineProofBytes, tunnelHash, validateMachineApps } from "@naelao/agent-sdk";
 
 const FRAME_LIMIT = 65536, OUTPUT_LIMIT = 1048576;
 function baseUrl(value) {
@@ -65,7 +65,15 @@ export async function discoverLocalModelIds(options, fetchImpl = fetch) {
 async function discoveredHardware(options) {
   const discovered = await discoverLocalModelIds(options);
   const models = [...new Set([...(options.models ?? []), ...discovered])].slice(0, 64);
-  return hardware(options, models);
+  const result = hardware(options, models);
+  if (options.inventoryFile) {
+    const file = await lstat(options.inventoryFile);
+    if (!file.isFile() || file.size > 65536) throw new Error("bridge_inventory_file_invalid");
+    const apps = JSON.parse(await readFile(options.inventoryFile, "utf8"));
+    validateMachineApps(apps);
+    result.apps = apps;
+  }
+  return result;
 }
 async function jsonFetch(url, body, fetchImpl = fetch) {
   const response = await fetchImpl(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000), redirect: "error" });
@@ -310,7 +318,7 @@ export async function runBridge(argv) {
     const flag = argv[index], value = argv[index + 1];
     if (flag === "--allow-inference") { options.allowInference = true; continue; }
     if (!value || value.startsWith("--")) throw new Error("bridge_option_value_required:" + flag);
-    const fields = { "--url": "url", "--name": "name", "--identity": "identityFile", "--enrollment-file": "enrollmentFile", "--passphrase-file": "passphraseFile", "--inference-url": "inferenceUrl" };
+    const fields = { "--url": "url", "--name": "name", "--identity": "identityFile", "--enrollment-file": "enrollmentFile", "--passphrase-file": "passphraseFile", "--inference-url": "inferenceUrl", "--inventory-file": "inventoryFile" };
     const arrays = { "--allow-dir": "allowDirs", "--allow-command": "allowCommands", "--model": "models", "--capability": "capabilities" };
     if (fields[flag]) options[fields[flag]] = value;
     else if (arrays[flag]) options[arrays[flag]].push(value);

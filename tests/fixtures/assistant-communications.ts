@@ -6,6 +6,7 @@ import type { CommunicationScope } from "../../workers/agents/src/communications
 export function fixture() {
   const db = createFakeD1([
     "CREATE TABLE orgs(id TEXT PRIMARY KEY,status TEXT); INSERT INTO orgs VALUES('tenant','active'); CREATE TABLE spaces(id TEXT PRIMARY KEY,tenant_id TEXT,status TEXT,parent_space_id TEXT,config_json TEXT,created_by TEXT); INSERT INTO spaces VALUES('space','tenant','active','root','{}','user'); CREATE TABLE space_members(space_id TEXT,end_user_id TEXT,role TEXT,suspended_at TEXT); INSERT INTO space_members VALUES('space','user','owner',NULL); INSERT INTO space_members VALUES('space','other','member',NULL); CREATE TABLE agent_email_addresses(address_hash TEXT,tenant_id TEXT,space_id TEXT,agent_id TEXT,status TEXT,created_at TEXT); CREATE TABLE project_agent_email_addresses(address_hash TEXT,tenant_id TEXT,space_id TEXT,project_id TEXT,agent_id TEXT,status TEXT,created_at TEXT); CREATE TABLE business_memberships(business_space_id TEXT,end_user_id TEXT,role TEXT,status TEXT);",
+    readFileSync(new URL("../../infra/migrations/0097_customer_voice_telephony.sql", import.meta.url), "utf8"),
     readFileSync(
       new URL(
         "../../infra/migrations/0130_assistant_communications.sql",

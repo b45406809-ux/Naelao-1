@@ -37,6 +37,7 @@ import type { DurableWorkflowIdentity } from "@naelao/agent-sdk";
 import { normalizePreferredLanguage } from "@naelao/types";
 import { mintInternalToken, verifyInternalToken, broadcastSpaceEvent, readBoundedRequestText, readBoundedRequestBytes, readBoundedResponseJson, readBoundedResponseText, readResponsePrefixText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName } from "@naelao/crypto";
+import { ExecutionSessions } from "../tunnels/execution-sessions.js";
 import { createNamedTunnelGateway } from "../tunnels/host.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
@@ -3088,10 +3089,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       };
     }
 
+    env.admitExternalEnvironment = async () => {
+      if (!this.env.BILLING_WORKER || !env.runId || !await nativeGrantActive({ tenantId, spaceId, projectId, userId, agentId, runId: env.runId })) return false;
+      const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/infra-credits/check", { headers: await this.internalHeaders(tenantId) }));
+      if (!response.ok) return false;
+      const quota = await readBoundedResponseJson<{ allowed?: boolean }>(response, 8192);
+      return quota.allowed === true;
+    };
+    env.executionSessions = new ExecutionSessions(this.ctx.storage);
+    env.managedEnvironmentsUnavailable = !(this.env.DYNAMIC_CONTAINERS_ENABLED === "true" ? this.env.DYNAMIC_SANDBOX : this.env.TOOL_SANDBOX) && !this.env.DOCUMENT_SANDBOX && !this.env.MEDIA_SANDBOX;
     // Every dispatch selects a live, visible named machine; identity comes from this host.
     if (this.env.LOCAL_TUNNEL) {
       env.localTunnel = createNamedTunnelGateway(this.env, { tenantId, spaceId, actorId: userId ?? "",
         ...(projectId ? { projectId } : {}), runId: () => env.runId,
+        authorizeDiscovery: async () => Boolean(userId && !airGappedOnly),
         authorize: () => nativeGrantActive({ tenantId, spaceId, projectId, userId, agentId, runId: env.runId }) });
     }
 

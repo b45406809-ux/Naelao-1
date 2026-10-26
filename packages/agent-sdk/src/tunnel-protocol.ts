@@ -1,12 +1,28 @@
+export interface MachineAppObservation {
+  id: string; version?: string; connectionId?: string; authenticatedAt?: number;
+}
+/** The daemon reports metadata only. Reject unknown fields rather than transport secrets. */
+export function validateMachineApps(apps: readonly MachineAppObservation[]): void {
+  if (!Array.isArray(apps) || apps.length > 64) throw new Error("tunnel_apps_invalid");
+  for (const app of apps) {
+    if (!app || typeof app !== "object" || Object.keys(app).some(key => !["id", "version", "connectionId", "authenticatedAt"].includes(key))
+      || !/^[a-z][a-z0-9_.:-]{0,127}$/.test(app.id) || app.version !== undefined && (typeof app.version !== "string" || app.version.length > 64)
+      || app.connectionId !== undefined && !MACHINE_ID.test(app.connectionId)
+      || app.authenticatedAt !== undefined && (!app.connectionId || !Number.isSafeInteger(app.authenticatedAt) || app.authenticatedAt < 0)) throw new Error("tunnel_app_invalid");
+  }
+}
 /** Named machine identity, distinct from preview-sharing Quick Tunnels. */
 export interface MachineHardware {
   platform: "win32" | "linux" | "darwin"; arch: string; cpuCount: number; memoryBytes: number;
   capabilities: readonly string[]; models: readonly string[];
+  apps?: readonly MachineAppObservation[];
 }
 export interface MachineGrant {
   id: string; actorId: string; projectId?: string; expiresAt: number;
   roots: readonly { path: string; access: "read" | "write" | "readwrite" }[];
   commands: readonly string[]; inference: boolean;
+  /** Owner-consented scheduler use; absent means explicit named commands only. */
+  externalUse?: readonly ("capability" | "fallback")[];
 }
 export interface NamedMachine {
   schema: 1; tenantId: string; spaceId: string; machineId: string; name: string; ownerId: string;
@@ -28,6 +44,7 @@ export function validateMachinePublicKey(key: JsonWebKey): void {
   if (!key || key.kty !== "OKP" || key.crv !== "Ed25519" || typeof key.x !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(key.x) || key.d !== undefined) throw new Error("tunnel_public_key_invalid");
 }
 export function validateMachineHardware(value: MachineHardware): void {
+  if (value?.apps !== undefined) validateMachineApps(value.apps);
   if (!value || !["win32", "linux", "darwin"].includes(value.platform) || typeof value.arch !== "string" || value.arch.length > 32
     || !Number.isSafeInteger(value.cpuCount) || value.cpuCount < 1 || value.cpuCount > 1024 || !Number.isSafeInteger(value.memoryBytes) || value.memoryBytes < 1
     || !Array.isArray(value.capabilities) || value.capabilities.length > 64 || value.capabilities.some(item => !/^[a-z][a-z0-9_:.-]{0,127}$/.test(item))
@@ -41,6 +58,7 @@ export function validateMachineGrants(grants: readonly MachineGrant[], now = Dat
       || grant.projectId && !MACHINE_ID.test(grant.projectId) || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= now
       || !Array.isArray(grant.commands) || grant.commands.length > 128 || grant.commands.some((cmd: unknown) => typeof cmd !== "string" || !cmd.trim() || cmd.length > 8192)
       || typeof grant.inference !== "boolean" || !Array.isArray(grant.roots) || grant.roots.length > 32) throw new Error("tunnel_grant_invalid");
+    if (grant.externalUse !== undefined && (!Array.isArray(grant.externalUse) || grant.externalUse.length > 2 || grant.externalUse.some((value: unknown) => (typeof value !== "string" || !["capability", "fallback"].includes(value))))) throw new Error("tunnel_external_use_invalid");
     ids.add(grant.id);
     for (const root of grant.roots) if (!root || typeof root.path !== "string" || root.path.length > 1024 || !/^(?:\/|[A-Za-z]:[\\/])/.test(root.path) || !["read", "write", "readwrite"].includes(root.access)) throw new Error("tunnel_root_grant_invalid");
   }
