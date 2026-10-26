@@ -5,7 +5,8 @@ import { authorizeEnvironmentCommand, runEnvironmentBash } from "./code-exec.js"
 
 function owner(ctx: PrebuiltOpContext): EnvironmentOwner {
   return { tenantId: ctx.env.tenantId, spaceId: ctx.env.spaceId, ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
-    scope: ctx.env.projectId ? "PROJECT_BOUND" : "ASSISTANT_PRIVATE" };
+    ...(ctx.env.spaceWorkspaceExtensionId ? { workspaceId: ctx.env.spaceWorkspaceExtensionId } : {}),
+    scope: ctx.env.spaceWorkspaceExtensionId ? "SPACE_SHARED" : ctx.env.projectId ? "PROJECT_BOUND" : "ASSISTANT_PRIVATE" };
 }
 const MAX_MACHINE_ARTIFACT_BYTES = 12 * 1024;
 function validMachinePath(path: string) { return Boolean(path) && path.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(path); }

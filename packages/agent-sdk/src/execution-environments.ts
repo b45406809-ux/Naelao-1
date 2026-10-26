@@ -31,10 +31,12 @@ export interface EnvironmentRequirement {
 }
 export interface EnvironmentOwner {
   tenantId: string; spaceId: string; projectId?: string;
+  /** Distinguishes a space extension's workspace from the Space Assistant workspace. */
+  workspaceId?: string;
   scope: EnvironmentCard["scope"];
 }
 export function sameEnvironmentOwner(a: EnvironmentOwner, b: EnvironmentOwner): boolean {
-  return a.tenantId === b.tenantId && a.spaceId === b.spaceId && a.projectId === b.projectId && a.scope === b.scope;
+  return a.tenantId === b.tenantId && a.spaceId === b.spaceId && a.projectId === b.projectId && a.workspaceId === b.workspaceId && a.scope === b.scope;
 }
 export function eligibleEnvironments(cards: readonly EnvironmentCard[], owner: EnvironmentOwner, requirement: EnvironmentRequirement, now = Date.now()): EnvironmentCard[] {
   if (cards.length > 512 || requirement.capabilities.length > 64 || requirement.appId !== undefined && !/^[a-z][a-z0-9_.:-]{0,127}$/.test(requirement.appId)

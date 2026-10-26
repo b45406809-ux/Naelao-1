@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { eligibleEnvironments } from "@naelao/agent-sdk";
 import { environments } from "./environments.js";
 import { ExecutionSessions, type SessionStorage } from "../../tunnels/execution-sessions.js";
 import { publishEnvironmentArtifactBytes } from "../environment-artifacts.js";
@@ -22,6 +23,19 @@ function fixture() {
 }
 const execute = environments.operations["environment.execute"]!;
 describe("environment tool host integration", () => {
+  it("isolates space-extension environment cards from the assistant workspace", async () => {
+    const extension = fixture(), assistant = fixture();
+    for (const item of [extension, assistant]) {
+      item.ctx.env.projectId = undefined;
+      item.machine.grants[0]!.projectId = undefined;
+    }
+    extension.ctx.env.spaceWorkspaceExtensionId = "extension_123";
+    const extensionCards = (await environments.operations["environment.list"]!({}, extension.ctx) as { environments: Array<{ id: string; scope: "SPACE_SHARED" | "ASSISTANT_PRIVATE"; workspaceId?: string }> }).environments;
+    const assistantCards = (await environments.operations["environment.list"]!({}, assistant.ctx) as { environments: Array<{ id: string; scope: "SPACE_SHARED" | "ASSISTANT_PRIVATE"; workspaceId?: string }> }).environments;
+    expect(extensionCards[0]).toMatchObject({ scope: "SPACE_SHARED", workspaceId: "extension_123" });
+    expect(assistantCards[0]).toMatchObject({ scope: "ASSISTANT_PRIVATE" });
+    expect(eligibleEnvironments(extensionCards as never, { tenantId: "tenant", spaceId: "space", scope: "ASSISTANT_PRIVATE" }, { capabilities: ["cuda"], mode: "capability" })).toHaveLength(0);
+  });
   it("imports a small binary from the explicitly selected machine into scoped immutable storage", async () => {
     const { ctx } = fixture();
     const bytes = new Uint8Array([0, 255, 8, 13]);
