@@ -1,9 +1,10 @@
-import { lstat, readFile, writeFile } from "node:fs/promises";
+import { stat, readFile, writeFile } from "node:fs/promises";
 
 export const MACHINE_ARTIFACT_MAX_BYTES = 12 * 1024;
 
 export async function readMachineArtifact(path) {
-  const bytes = (await lstat(path)).size;
+  // stat the resolved file, not a symlink's tiny directory entry, before reading it.
+  const bytes = (await stat(path)).size;
   if (bytes > MACHINE_ARTIFACT_MAX_BYTES) throw new Error("bridge_file_result_limit");
   return { encoding: "base64", content: (await readFile(path)).toString("base64"), bytes };
 }
