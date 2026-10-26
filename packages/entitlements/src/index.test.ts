@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { EntitlementsChecker, getPlanLimits, isFeatureAllowed, isPlanTier } from "./index.js";
+import { assertExecutionPlanResources, EntitlementsChecker, getExecutionLimits, getPlanLimits, isFeatureAllowed, isPlanTier, isPlanTierAtLeast } from "./index.js";
 
 function checkerFor(planTier: string | null) {
   const first = vi.fn(async () => planTier === null ? null : { plan_tier: planTier });
@@ -37,5 +37,22 @@ describe("plan tier validation and immutable limits", () => {
     expect(getPlanLimits("growth").max_worker_tokens).toBe(20_000);
     expect(getPlanLimits("business").max_worker_tokens).toBe(200_000);
     expect(getPlanLimits("enterprise").max_worker_tokens).toBe(2_000_000);
+  });
+
+  it("shares plan resource admission between runtime installs and execution", () => {
+    expect(getExecutionLimits("free")).toMatchObject({ maxProfile: "standard-1", concurrency: 1 });
+    expect(() => assertExecutionPlanResources("free", { cpuCores: .5, memoryMb: 4096 })).not.toThrow();
+    expect(() => assertExecutionPlanResources("free", { cpuCores: 1, memoryMb: 6144 })).toThrow("container_subscription_resource_limit");
+    expect(() => assertExecutionPlanResources("growth", { cpuCores: 1, memoryMb: 6144 })).not.toThrow();
+    expect(() => assertExecutionPlanResources("enterprise", { cpuCores: 2, memoryMb: 16384 })).toThrow("container_subscription_resource_limit");
+  });
+
+  it("maps deployment catalogue plan floors conservatively", () => {
+    expect(isPlanTierAtLeast("free", "free")).toBe(true);
+    expect(isPlanTierAtLeast("free", "pro")).toBe(false);
+    expect(isPlanTierAtLeast("growth", "pro")).toBe(true);
+    expect(isPlanTierAtLeast("business", "enterprise")).toBe(false);
+    expect(isPlanTierAtLeast("corrupt", "pro")).toBe(false);
+    expect(isPlanTierAtLeast("enterprise", "unknown")).toBe(false);
   });
 });

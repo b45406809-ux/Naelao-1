@@ -12,6 +12,7 @@
     "@naelao/billing-core": "workspace:*",
     "@naelao/crypto": "workspace:*",
     "@naelao/db": "workspace:*",
+    "@naelao/entitlements": "workspace:*",
     "@naelao/events": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/sdk": "workspace:*",

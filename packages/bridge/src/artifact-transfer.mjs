@@ -1,10 +1,13 @@
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
-import { link, open, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, open, readdir, rm, unlink, writeFile } from "node:fs/promises";
 
 export const MACHINE_ARTIFACT_MAX_BYTES = 12 * 1024;
-export const MACHINE_ARTIFACT_MAX_TRANSFER_BYTES = 1024 * 1024;
+// Keep the bridge-side temporary file and host artifact buffers bounded while allowing
+// realistic source files and media snippets to move in resumable 8 KiB protocol chunks.
+export const MACHINE_ARTIFACT_MAX_TRANSFER_BYTES = 16 * 1024 * 1024;
+export const MACHINE_ARTIFACT_STAGING_TTL_MS = 24 * 60 * 60 * 1000;
 
 function fingerprint(info) { return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].map(String).join(":"); }
 async function readBounded(file, maximumBytes) {
@@ -26,6 +29,20 @@ async function verifyExisting(path, total, digest) {
     const bytes = await readBounded(file, total);
     return bytes.length === total && (await file.stat()).size === total && createHash("sha256").update(bytes).digest("hex") === digest;
   } finally { await file.close(); }
+}
+
+async function cleanupExpiredStaging(directory) {
+  const cutoff = Date.now() - MACHINE_ARTIFACT_STAGING_TTL_MS;
+  let names;
+  try { names = await readdir(directory); } catch { return; }
+  for (const name of names) {
+    if (!/^\.naelao-[a-f0-9]{64}\.part$/.test(name)) continue;
+    const candidate = join(directory, name);
+    try {
+      const info = await lstat(candidate);
+      if (info.isFile() && info.mtimeMs <= cutoff) await rm(candidate, { force: true });
+    } catch { /* Staging cleanup is best-effort; the active transfer still validates its own file. */ }
+  }
 }
 
 export async function readMachineArtifact(path, options = {}) {
@@ -76,6 +93,7 @@ export async function writeMachineArtifact(path, params, signal) {
         throw new Error("bridge_file_destination_exists");
       } catch (error) { if (error.code !== "ENOENT") throw error; }
     }
+    if (offset === 0) await cleanupExpiredStaging(dirname(path));
     const temporary = join(dirname(path), `.naelao-${id}.part`);
     let file;
     try { file = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0), 0o600); }

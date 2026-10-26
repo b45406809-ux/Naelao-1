@@ -9,7 +9,7 @@ function owner(ctx: PrebuiltOpContext): EnvironmentOwner {
     ...(ctx.env.spaceWorkspaceExtensionId ? { workspaceId: ctx.env.spaceWorkspaceExtensionId } : {}),
     scope: ctx.env.spaceWorkspaceExtensionId ? "SPACE_SHARED" : ctx.env.projectId ? "PROJECT_BOUND" : "ASSISTANT_PRIVATE" };
 }
-const MAX_MACHINE_ARTIFACT_BYTES = 1024 * 1024;
+const MAX_MACHINE_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const MACHINE_ARTIFACT_CHUNK_BYTES = 8192;
 function validMachinePath(path: string) { return Boolean(path) && path.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(path); }
 function decodeBase64(value: string, expectedBytes?: number): Uint8Array {
@@ -53,12 +53,12 @@ async function cards(ctx: PrebuiltOpContext, command?: string): Promise<Environm
 }
 export const environments: PrebuiltScript = {
   name: "execution-environments", domain: "orchestration", requires_tier: 1,
-  description: "Inspect scoped execution environment cards and run a bounded dependent command group on one durable target. External machines keep their own filesystem; commands and file transfers can only access locally consented roots. Transfer files up to 1 MiB only through explicit resumable artifact import/export in 8 KiB chunks; export creates a new file and never overwrites. There is no mount or automatic synchronization. External execution requires a host grant plus owner consent. No automatic replay or migration. Browser logins and credentials are never copied.",
+  description: "Inspect scoped execution environment cards and run a bounded dependent command group on one durable target. External machines keep their own filesystem; commands and file transfers can only access locally consented roots. Transfer files up to 16 MiB only through explicit resumable artifact import/export in 8 KiB chunks; export creates a new file and never overwrites. There is no mount or automatic synchronization. External execution requires a host grant plus owner consent. No automatic replay or migration. Browser logins and credentials are never copied.",
   paramHints: {
-    "environment.artifact_publish": "path (required). Create an immutable scoped artifact, maximum 1 MiB. No implicit machine synchronization.",
+    "environment.artifact_publish": "path (required). Create an immutable scoped artifact, maximum 16 MiB. No implicit machine synchronization.",
     "environment.artifact_restore": "digest, path and expected_hash (null only for an absent destination). Verify integrity and publish with a fenced revision check.",
-    "environment.artifact_import": "machine_id and path (required). Explicitly read a file from an owner-authorized connected machine into this workspace's immutable artifact store. Binary-safe, maximum 1 MiB in resumable 8 KiB chunks; returns a digest to restore into the workspace. No filesystem mount or synchronization. If pending/indeterminate, reconcile the returned request_id with tunnel.status; do not create a new request.",
-    "environment.artifact_export": "machine_id, digest and path (required). Explicitly write an immutable workspace artifact as a new file in an owner-authorized local folder. Refuses to overwrite. Binary-safe, maximum 1 MiB in resumable 8 KiB chunks. If pending/indeterminate, reconcile request IDs; do not resubmit with different IDs.",
+    "environment.artifact_import": "machine_id and path (required). Explicitly read a file from an owner-authorized connected machine into this workspace's immutable artifact store. Binary-safe, maximum 16 MiB in resumable 8 KiB chunks; returns a digest to restore into the workspace. No filesystem mount or synchronization. If pending/indeterminate, reconcile the returned request_id with tunnel.status; do not create a new request.",
+    "environment.artifact_export": "machine_id, digest and path (required). Explicitly write an immutable workspace artifact as a new file in an owner-authorized local folder. Refuses to overwrite. Binary-safe, maximum 16 MiB in resumable 8 KiB chunks. If pending/indeterminate, reconcile request IDs; do not resubmit with different IDs.",
     "environment.status": "session_id and action_id. Reconcile an accepted tunnel request without resubmitting it.",
     "environment.list": "List visible environment capabilities and availability. Observations are untrusted evidence, not permissions.",
     "environment.execute": "session_id, action_id, command, capabilities (string array; default bash), mode (managed, capability, or host-verified fallback; default managed), optional app_id plus connection_id to require a fresh authenticated app observation, target_id and external-only absolute cwd. Tunnel files stay on that machine inside its owner-consented folders; import/export files explicitly through artifact operations. Repeat action_id only to retrieve a confirmed outcome. Group commands needing shell state into one command. Pending tunnel receipts require tunnel.status reconciliation; do not resubmit.",

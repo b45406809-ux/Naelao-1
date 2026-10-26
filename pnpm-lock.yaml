@@ -1290,6 +1290,9 @@ importers:
       '@naelao/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@naelao/entitlements':
+        specifier: workspace:*
+        version: link:../../packages/entitlements
       '@naelao/events':
         specifier: workspace:*
         version: link:../../packages/events

@@ -124,6 +124,14 @@ export function isPlanTier(value: unknown): value is PlanTier {
   return typeof value === "string" && Object.hasOwn(PLAN_LIMITS, value);
 }
 
+/** Compare plan floors for deployment/catalogue products without guessing from plan names. */
+export function isPlanTierAtLeast(plan: string, minimum: string): boolean {
+  const order: Record<PlanTier, number> = { free: 0, growth: 1, business: 2, enterprise: 3 };
+  const actual = isPlanTier(plan) ? plan : "free";
+  const required = minimum === "free" ? "free" : minimum === "pro" ? "growth" : minimum === "enterprise" ? "enterprise" : null;
+  return required !== null && order[actual] >= order[required];
+}
+
 export function isFeatureAllowed(tier: PlanTier, feature: keyof PlanLimits): boolean {
   const limits = PLAN_LIMITS[tier];
   const val = limits[feature];
@@ -193,6 +201,14 @@ export class EntitlementsChecker {
   }
 }
 
+export const EXECUTION_PROFILES = Object.freeze({
+  lite: { cpuCores: 1 / 16, memoryMb: 256 },
+  "standard-1": { cpuCores: .5, memoryMb: 4096 },
+  "standard-2": { cpuCores: 1, memoryMb: 6144 },
+  "standard-3": { cpuCores: 2, memoryMb: 8192 },
+  "standard-4": { cpuCores: 4, memoryMb: 12288 },
+});
+
 /** Shared execution ceilings. Unknown plans fail to the lowest allowance. */
 export function getExecutionLimits(plan: string) {
   const tier = plan.toLowerCase();
@@ -201,4 +217,14 @@ export function getExecutionLimits(plan: string) {
     : tier === "growth" || tier === "starter" ? { maxProfile: "standard-2", concurrency: 3 }
     : { maxProfile: "standard-1", concurrency: 1 };
   return Object.freeze(limits);
+}
+
+/** Authoritative plan check shared by runtime installation and execution admission. */
+export function assertExecutionPlanResources(plan: string, requested: { cpuCores: number; memoryMb: number }): void {
+  if (!Number.isFinite(requested.cpuCores) || requested.cpuCores <= 0 || !Number.isSafeInteger(requested.memoryMb) || requested.memoryMb <= 0)
+    throw new Error("container_resources_invalid");
+  const limits = getExecutionLimits(plan);
+  const max = EXECUTION_PROFILES[limits.maxProfile as keyof typeof EXECUTION_PROFILES];
+  if (!max || requested.cpuCores > max.cpuCores || requested.memoryMb > max.memoryMb)
+    throw new Error("container_subscription_resource_limit");
 }

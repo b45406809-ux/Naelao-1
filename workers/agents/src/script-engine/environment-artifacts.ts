@@ -3,7 +3,9 @@ import { workspacePrefix } from "./types.js";
 import { assertWorkspaceFileAllowed } from "./workspace-paths.js";
 import { publishWorkspaceBytesCas, readBytesWithHash, sha256Bytes } from "./r2-cas.js";
 
-const MAX_BYTES = 1024 * 1024;
+// R2 artifacts are read into a bounded worker buffer before digest/CAS operations.
+// 16 MiB supports useful project files without turning transfer into unbounded memory use.
+const MAX_BYTES = 16 * 1024 * 1024;
 function artifactKey(env: ScriptEngineEnv, digest: string) {
   if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error("environment_artifact_digest_invalid");
   // Workspace prefix contains the host's tenant/Space/project/assistant/branch boundary.

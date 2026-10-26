@@ -37,7 +37,7 @@ describe("immutable environment handoffs", () => {
   it("preserves delegated file boundaries and rejects oversized payloads", async () => {
     const f = fixture();
     await expect(publishEnvironmentArtifact({ ...f.env, workspaceFileScope: ["different.txt"] }, "source.txt")).rejects.toThrow("scope_denied");
-    f.entries.get(f.prefix + "source.txt")!.bytes = new Uint8Array(1024 * 1024 + 1);
+    f.entries.get(f.prefix + "source.txt")!.bytes = new Uint8Array(16 * 1024 * 1024 + 1);
     await expect(publishEnvironmentArtifact(f.env, "source.txt")).rejects.toThrow("too_large");
     await expect(publishEnvironmentArtifact(f.env, "../secret")).rejects.toThrow();
   });
@@ -46,7 +46,10 @@ describe("immutable environment handoffs", () => {
     const artifact = await publishEnvironmentArtifactBytes(f.env, bytes, "machine:pc:/home/user/data.bin");
     expect(artifact).toMatchObject({ bytes: 4, immutable: true });
     expect((await readEnvironmentArtifact(f.env, artifact.digest)).bytes).toEqual(bytes);
-    await expect(publishEnvironmentArtifactBytes(f.env, new Uint8Array(1024 * 1024 + 1), "oversized")).rejects.toThrow("too_large");
+    const large = new Uint8Array(2 * 1024 * 1024 + 9);
+    const largeArtifact = await publishEnvironmentArtifactBytes(f.env, large, "machine:pc:/home/user/large.bin");
+    expect((await readEnvironmentArtifact(f.env, largeArtifact.digest)).bytes.byteLength).toBe(large.byteLength);
+    await expect(publishEnvironmentArtifactBytes(f.env, new Uint8Array(16 * 1024 * 1024 + 1), "oversized")).rejects.toThrow("too_large");
     await expect(readEnvironmentArtifact({ ...f.env, projectId: "other" }, artifact.digest)).rejects.toThrow("integrity");
   });
 });

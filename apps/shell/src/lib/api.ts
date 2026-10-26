@@ -1474,6 +1474,7 @@ export interface CrossSpaceGrant {
 }
 export interface RuntimeCatalogueEntry {
   id: string; name: string; description: string; category: string; available: boolean;
+  plan_available?: boolean; plan_reason?: string;
   image?: string; exported_binaries?: string[];
   install_manifest?: { id?: string; containers?: Array<{ id: string; image: string; resources: { memoryMb: number; cpuCores: number; timeoutSeconds: number }; networkPolicy?: string }> };
 }

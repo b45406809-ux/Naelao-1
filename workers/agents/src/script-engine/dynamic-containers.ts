@@ -1,14 +1,14 @@
-import { getExecutionLimits } from "@naelao/entitlements";
+import { assertExecutionPlanResources, EXECUTION_PROFILES, getExecutionLimits } from "@naelao/entitlements";
 /** Cloudflare durable_object-policy sizing. Only host-approved requirements reach this selector.
  * No `basic` alias: the runtime supports lite and standard-1..4; custom sizes start at 1 vCPU.
  */
-export const DYNAMIC_PROFILES = {
-  lite: { cpuCores: 1 / 16, memoryMb: 256, diskGb: 2 },
-  "standard-1": { cpuCores: .5, memoryMb: 4096, diskGb: 8 },
-  "standard-2": { cpuCores: 1, memoryMb: 6144, diskGb: 12 },
-  "standard-3": { cpuCores: 2, memoryMb: 8192, diskGb: 16 },
-  "standard-4": { cpuCores: 4, memoryMb: 12288, diskGb: 20 },
-} as const;
+export const DYNAMIC_PROFILES = Object.freeze({
+  lite: { ...EXECUTION_PROFILES.lite, diskGb: 2 },
+  "standard-1": { ...EXECUTION_PROFILES["standard-1"], diskGb: 8 },
+  "standard-2": { ...EXECUTION_PROFILES["standard-2"], diskGb: 12 },
+  "standard-3": { ...EXECUTION_PROFILES["standard-3"], diskGb: 16 },
+  "standard-4": { ...EXECUTION_PROFILES["standard-4"], diskGb: 20 },
+});
 export type DynamicProfile = keyof typeof DYNAMIC_PROFILES;
 export const CLOUDFLARE_IMAGE_PIN = /^registry\.cloudflare\.com\/[a-f0-9]{32}\/[a-z0-9][a-z0-9._/-]{0,127}@sha256:[a-f0-9]{64}$/;
 export function isDynamicProfile(value: unknown): value is DynamicProfile {
@@ -26,9 +26,8 @@ export function dynamicPlanLimits(tier: string): { maxProfile: DynamicProfile; c
   return { maxProfile: limits.maxProfile as DynamicProfile, concurrency: limits.concurrency };
 }
 export function assertDynamicPlan(profile: DynamicProfile, tier: string): void {
-  const max = DYNAMIC_PROFILES[dynamicPlanLimits(tier).maxProfile];
   const requested = DYNAMIC_PROFILES[profile];
-  if (requested.cpuCores > max.cpuCores || requested.memoryMb > max.memoryMb) throw new Error("container_subscription_resource_limit");
+  assertExecutionPlanResources(tier, requested);
 }
 /** Upper-bound provider allocation estimate, full CPU + provisioned RAM/disk, plus 15%.
  * This is Naelao's published conservative allocation tariff, not measured provider CPU usage.

@@ -47,6 +47,7 @@ import { eraseProductUsersForSpace } from "./product-user-erasure.js";
 import { eraseBusinessServiceProviders } from "./business-erasure.js";
 import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "./erasure-request-state.js";
 import { previewBlueprintActivation } from "./blueprint-activation.js";
+import { assertExecutionPlanResources, EntitlementsChecker, isPlanTierAtLeast } from "@naelao/entitlements";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -1349,7 +1350,30 @@ app.get("/spaces/:spaceId/runtime-catalog", async c => {
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(c.req.param("spaceId"), identity.tenantId).first();
   if (!owned) throw notFound("Space");
   if (!c.env.AGENTS_WORKER) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
-  return c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
+  const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
+  if (!response.ok) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
+  const catalogue = await response.json<{ images: Array<{ id: string; available: boolean; image?: string; billing_tier?: string; install_manifest?: unknown; plan_available?: boolean; plan_reason?: string }> }>();
+  const plan = await new EntitlementsChecker(c.env.PLATFORM_DB).getTenantTier(identity.tenantId);
+  const images = catalogue.images.map(image => {
+    const requirements = (image.install_manifest as { containers?: Array<{ resources?: { cpuCores?: number; memoryMb?: number } }> } | undefined)?.containers ?? [];
+    let planAvailable = image.available;
+    let planReason = image.available ? undefined : "runtime_not_deployed";
+    if (image.available && image.billing_tier && !isPlanTierAtLeast(plan, image.billing_tier)) {
+      planAvailable = false;
+      planReason = "subscription_plan_required";
+    }
+    try {
+      for (const container of requirements) {
+        if (!container.resources || typeof container.resources.cpuCores !== "number" || typeof container.resources.memoryMb !== "number") throw new Error("runtime_requirements_invalid");
+        assertExecutionPlanResources(plan, { cpuCores: container.resources.cpuCores, memoryMb: container.resources.memoryMb });
+      }
+    } catch (error) {
+      planAvailable = false;
+      planReason = (error as Error).message === "container_subscription_resource_limit" ? "subscription_resource_limit" : (error as Error).message;
+    }
+    return { ...image, plan_available: planAvailable, ...(planReason ? { plan_reason: planReason } : {}) };
+  });
+  return c.json({ images });
 });
 
 // Explicit human installation. The catalogue is refreshed rather than trusting a cached
@@ -1378,11 +1402,15 @@ app.post("/spaces/:spaceId/runtime-installations", async c => {
   if (!c.env.AGENTS_WORKER) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
   const response = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
   if (!response.ok) return c.json({ error_code: "runtime_catalog_unavailable" }, 503);
-  const catalogue = await response.json<{ images: Array<{ id: string; available: boolean; image?: string; install_manifest?: unknown }> }>();
+  const catalogue = await response.json<{ images: Array<{ id: string; available: boolean; image?: string; billing_tier?: string; install_manifest?: unknown }> }>();
   const candidate = catalogue.images.find(entry => entry.id === body.image_id && entry.available && entry.install_manifest);
+  if (!candidate) return c.json({ error_code: "runtime_not_deployed_or_approved" }, 409);
+  const plan = await new EntitlementsChecker(c.env.PLATFORM_DB).getTenantTier(tenantId);
+  if (candidate.billing_tier && !isPlanTierAtLeast(plan, candidate.billing_tier))
+    return c.json({ error_code: "subscription_plan_required" }, 403);
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try {
-    manifest = validateExtensionManifest(candidate?.install_manifest, { gatekeeperCapabilities: ["native-execution"] });
+    manifest = validateExtensionManifest(candidate.install_manifest, { gatekeeperCapabilities: ["native-execution"] });
     if (!manifest.containers?.length || manifest.gadgets.length || manifest.daemons.length || manifest.commands.length) throw new Error("Only container declarations belong on this runtime installation route");
     for (const contract of manifest.containers) {
       if (contract.networkPolicy && contract.networkPolicy !== "none" || contract.mounts?.some(mount => !mount.writable)) throw new Error("Runtime network/mount profile is unavailable");
@@ -1392,6 +1420,16 @@ app.post("/spaces/:spaceId/runtime-installations", async c => {
       if (!profile || contract.resources.memoryMb > profile.resources.memoryMb || contract.resources.cpuCores > profile.resources.cpuCores) throw new Error("Runtime exceeds deployed resources");
     }
   } catch (error) { return c.json({ error_code: "runtime_manifest_invalid", message: (error as Error).message }, 422); }
+  try {
+    for (const contract of manifest.containers ?? []) {
+      const resources = contract.resources;
+      if (!resources || typeof resources.cpuCores !== "number" || typeof resources.memoryMb !== "number") throw new Error("runtime_requirements_invalid");
+      assertExecutionPlanResources(plan, { cpuCores: resources.cpuCores, memoryMb: resources.memoryMb });
+    }
+  } catch (error) {
+    const reason = (error as Error).message;
+    return c.json({ error_code: reason === "container_subscription_resource_limit" ? reason : "runtime_plan_validation_failed" }, 403);
+  }
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const installationsResponse = await stub.fetch(new Request("http://space-do/extension-installations?" + new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: manifest.id })));
   if (!installationsResponse.ok) return c.json({ error_code: "runtime_installation_lookup_unavailable" }, 503);

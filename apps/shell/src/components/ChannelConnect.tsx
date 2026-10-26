@@ -17,8 +17,8 @@
 import * as React from "react";
 import { QrCode } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
-import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, SessionCredentials } from "@/lib/api";
-import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla } from "@/lib/api";
+import type { ChannelExtensionInstallation, ChannelExtensionInboxEvent, ChannelExtensionInboxNote, ChannelLink, ChannelPairing, ContainerInstallation, ExtensionProviderConnection, ExtensionPublisherKey, ExtensionRelease, RuntimeCatalogueEntry, SessionCredentials } from "@/lib/api";
+import { updateAssistantChannel, pairAssistantChannel, listChannelExtensionInstallations, listChannelExtensionInbox, assignChannelExtensionInboxEvent, takeOverChannelExtensionInboxEvent, deleteChannelExtensionConversation, replyToChannelExtensionEvent, exportChannelExtensionConversation, listProjectExtensionReleases, rollbackProjectExtension, installProjectChannelExtension, installProjectCanvasExtension, getChannelExtensionSessionSummary, clearChannelExtensionSessionState, removeChannelExtension, listContainerInstallations, setProjectExtensionEnabled, listExtensionPublisherKeys, registerExtensionPublisherKey, revokeExtensionPublisherKey, getExtensionProviderConnection, startExtensionSlackOAuth, disconnectExtensionProvider, listProjectMembers, listChannelExtensionInboxNotes, addChannelExtensionInboxNote, listExtensionSlackRoutes, saveExtensionSlackRoutes, connectExtensionTelegram, connectExtensionWhatsApp, getChannelExtensionInboxSla, setChannelExtensionInboxSla, listRuntimeCatalogue, installRuntime } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 
 type ChannelId = "telegram" | "slack" | "discord" | "whatsapp" | "email";
@@ -462,6 +462,9 @@ export function ChannelConnect({
   const [newPublisherId, setNewPublisherId] = React.useState("pub_my_team");
   const [newPublisherPublicKey, setNewPublisherPublicKey] = React.useState("");
   const [otherProjectInstallations, setOtherProjectInstallations] = React.useState<ContainerInstallation[]>([]);
+  const [runtimeCatalogue, setRuntimeCatalogue] = React.useState<RuntimeCatalogueEntry[]>([]);
+  const [runtimeCatalogueError, setRuntimeCatalogueError] = React.useState<string | null>(null);
+  const [installingRuntime, setInstallingRuntime] = React.useState<string | null>(null);
   const [extensionLoadError, setExtensionLoadError] = React.useState<string | null>(null);
   const [extensionsLoading, setExtensionsLoading] = React.useState(false);
   const [installDialogOpen, setInstallDialogOpen] = React.useState(false);
@@ -524,6 +527,14 @@ export function ChannelConnect({
       })
       .catch((err) => { if (!cancelled) { setExtensionInstallations([]); setOtherProjectInstallations([]); setPublisherKeys([]); setExtensionLoadError(err instanceof Error ? err.message : "Couldn't load project extensions."); } })
       .finally(() => { if (!cancelled) setExtensionsLoading(false); });
+    return () => { cancelled = true; };
+  }, [spaceId, projectId, session, canManage]);
+
+  React.useEffect(() => {
+    if (!projectId || !canManage) { setRuntimeCatalogue([]); setRuntimeCatalogueError(null); return; }
+    let cancelled = false;
+    listRuntimeCatalogue(spaceId, session).then(result => { if (!cancelled) { setRuntimeCatalogue(result.images); setRuntimeCatalogueError(null); } })
+      .catch(error => { if (!cancelled) { setRuntimeCatalogue([]); setRuntimeCatalogueError(error instanceof Error ? error.message : "Runtime catalogue is unavailable."); } });
     return () => { cancelled = true; };
   }, [spaceId, projectId, session, canManage]);
 
@@ -703,9 +714,43 @@ export function ChannelConnect({
     finally { setChangingExtension(null); }
   }
 
+  async function installProjectRuntime(imageId: string) {
+    if (!projectId || installingRuntime) return;
+    const image = runtimeCatalogue.find(item => item.id === imageId);
+    const runtime = image?.install_manifest?.containers?.[0];
+    if (!image?.available || image.plan_available === false || !runtime) return;
+    if (!window.confirm(`Install ${image.name} for this project? It will run with ${runtime.resources.cpuCores} CPU cores and ${runtime.resources.memoryMb} MiB memory. The deployment and subscription plan will be checked again by Naelao.`)) return;
+    setInstallingRuntime(imageId); setError(null);
+    try {
+      const result = await installRuntime(spaceId, session, imageId, { scope: "PROJECT_SHARED", projectId });
+      if (result.status === "promotion_confirmation_required") throw new Error(result.warning ?? "This runtime is already installed in another scope. Install it from the Space runtime settings.");
+      const all = await listContainerInstallations(spaceId, session, projectId, true);
+      const channelInstances = new Set(extensionInstallations.map(item => item.instance_id));
+      setOtherProjectInstallations(all.installations.filter(item => item.instance.project_id === projectId
+        && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+      onChanged();
+    } catch (err) { setError(err instanceof Error ? err.message : "Runtime installation was rejected."); }
+    finally { setInstallingRuntime(null); }
+  }
+
   return (
     <div>
       {extensionLoadError && <div role="alert" style={{ marginBottom: 10, color: "var(--danger, #b42318)", fontSize: 12 }}>{extensionLoadError}</div>}
+      {projectId && canManage && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
+        <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install an approved project runtime</summary>
+        <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>Only deployment-approved images are installable. Naelao checks your current plan before installation and again before execution. A capability listed by a template does not mean its runtime is installed.</p>
+        {runtimeCatalogueError && <p role="alert" style={{ color: "var(--danger, #b42318)", fontSize: 11.5 }}>{runtimeCatalogueError}</p>}
+        {!runtimeCatalogueError && runtimeCatalogue.filter(image => image.available).length === 0 && <p style={{ fontSize: 11.5, color: "var(--text3)" }}>No approved runtimes are deployed for installation in this environment.</p>}
+        {runtimeCatalogue.filter(image => image.available).map(image => {
+          const runtime = image.install_manifest?.containers?.[0];
+          const installed = otherProjectInstallations.some(item => item.instance.extension_id === image.install_manifest?.id && item.instance.status === "active");
+          const planBlocked = image.plan_available === false;
+          return <div key={image.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
+            <span><strong>{image.name}</strong> · {runtime ? `${runtime.resources.cpuCores} CPU · ${runtime.resources.memoryMb} MiB` : "runtime requirements unavailable"}{planBlocked ? ` · unavailable on this plan (${image.plan_reason ?? "plan limit"})` : ""}</span>
+            <button type="button" className="btn-ghost" disabled={!!installingRuntime || installed || planBlocked || !runtime} onClick={() => void installProjectRuntime(image.id)}>{installed ? "Installed" : installingRuntime === image.id ? "Installing…" : "Install"}</button>
+          </div>;
+        })}
+      </details>}
       {projectId && canManage && <details open={installDialogOpen} onToggle={event => setInstallDialogOpen(event.currentTarget.open)} style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
         <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install a channel extension package</summary>
         <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>

@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { readMachineArtifact, writeMachineArtifact } from "../src/artifact-transfer.mjs";
+import { MACHINE_ARTIFACT_STAGING_TTL_MS, readMachineArtifact, writeMachineArtifact } from "../src/artifact-transfer.mjs";
 
 test("machine artifact handoff is binary-safe, bounded, and create-only when requested", async () => {
   const directory = await mkdtemp(join(tmpdir(), "naelao-artifact-test-"));
@@ -34,7 +34,7 @@ test("resumes bounded binary chunks and publishes only a complete verified file"
   const directory = await mkdtemp(join(tmpdir(), "naelao-chunk-transfer-"));
   try {
     const source = join(directory, "large.bin"), target = join(directory, "restored.bin");
-    const bytes = Buffer.from(Array.from({ length: 20_000 }, (_, index) => index % 251));
+    const bytes = Buffer.from(Array.from({ length: 2 * 1024 * 1024 + 137 }, (_, index) => index % 251));
     await writeFile(source, bytes);
     const first = await readMachineArtifact(source, { offset: 0, length: 0 });
     const chunks = [];
@@ -51,11 +51,28 @@ test("resumes bounded binary chunks and publishes only a complete verified file"
       if (offset + part.length === bytes.length) assert.equal(result.finalized, true);
     }
     assert.deepEqual(await readFile(target), bytes);
-    const last = bytes.subarray(16_384);
+    const lastOffset = Math.floor((bytes.length - 1) / 8192) * 8192;
+    const last = bytes.subarray(lastOffset);
     assert.deepEqual(await writeMachineArtifact(target, { encoding: "base64", content: last.toString("base64"), transfer_id: transferId,
-      offset: 16_384, total_bytes: bytes.length, sha256: digest, finalize: true }),
+      offset: lastOffset, total_bytes: bytes.length, sha256: digest, finalize: true }),
     { written: true, bytes: last.length, total_bytes: bytes.length, sha256: digest, finalized: true, deduplicated: true });
+    await assert.rejects(writeMachineArtifact(join(directory, "too-large"), { encoding: "base64", content: "AA==", transfer_id: "c".repeat(64),
+      offset: 0, total_bytes: 16 * 1024 * 1024 + 1, sha256: digest, finalize: false }), /bridge_file_transfer_invalid/);
     await assert.rejects(writeMachineArtifact(target, { encoding: "base64", content: bytes.subarray(0, 10).toString("base64"), transfer_id: "b".repeat(64),
       offset: 0, total_bytes: 10, sha256: createHash("sha256").update(bytes.subarray(0, 10)).digest("hex"), finalize: true }));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("expires abandoned transfer staging files after the retention window", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "naelao-staging-expiry-"));
+  try {
+    const stale = join(directory, `.naelao-${"d".repeat(64)}.part`), target = join(directory, "target.bin");
+    await writeFile(stale, Buffer.from("partial"));
+    const old = new Date(Date.now() - MACHINE_ARTIFACT_STAGING_TTL_MS - 1000);
+    await utimes(stale, old, old);
+    const bytes = Buffer.from("new transfer"), digest = createHash("sha256").update(bytes).digest("hex");
+    await writeMachineArtifact(target, { content: bytes.toString("base64"), transfer_id: "e".repeat(64), offset: 0,
+      total_bytes: bytes.length, sha256: digest, finalize: false });
+    await assert.rejects(readFile(stale), { code: "ENOENT" });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
