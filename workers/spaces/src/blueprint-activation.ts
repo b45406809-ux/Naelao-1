@@ -17,7 +17,7 @@ export interface BlueprintActivationDependency {
 export interface BlueprintActivationPreview {
   ready: boolean;
   dependencies: BlueprintActivationDependency[];
-  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" }>;
+  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted" }>;
   setup_credentials: Array<{
     name: string;
     description: string;
@@ -38,7 +38,8 @@ export function previewBlueprintActivation(
   installableExtensions: ReadonlyMap<
     string,
     { version: string; digest: string }
-  >
+  >,
+  runtimeInstallability: ReadonlyMap<string, { installable: boolean; reason?: BlueprintActivationPreview["runtime_requirements"][number]["reason"] }> = new Map()
 ): BlueprintActivationPreview {
   const dependencies = [...new Set(blueprint.requiredExtensions ?? [])]
     .sort()
@@ -93,12 +94,19 @@ export function previewBlueprintActivation(
           ? `required_extension_disabled:${item.extension_id}`
           : `required_extension_unavailable:${item.extension_id}`
     );
-  const runtime_requirements = blueprint.projects.flatMap(project => (project.runtimeRequirements ?? []).map(requirement => ({
-    project_id: project.id ?? project.name, runtime_id: requirement.id, required: requirement.required,
-    status: (requirement.required ? "unavailable" : "deferred") as "unavailable" | "deferred",
-    reason: "runtime_provisioning_unavailable" as const,
-  })));
-  for (const requirement of runtime_requirements) if (requirement.required) blockers.push(`required_runtime_unavailable:${requirement.project_id}:${requirement.runtime_id}`);
+  const runtime_requirements = blueprint.projects.flatMap(project => (project.runtimeRequirements ?? []).map(requirement => {
+    const project_id = project.id ?? project.name;
+    const key = `${project_id}:${requirement.id}`;
+    const availability = runtimeInstallability.get(key);
+    const installable = availability?.installable === true;
+    return {
+      project_id, runtime_id: requirement.id, required: requirement.required,
+      status: (requirement.required ? installable ? "installable" : "unavailable" : "deferred") as "installable" | "unavailable" | "deferred",
+      reason: requirement.required ? installable ? "owner_approval_required" as const : availability?.reason ?? "runtime_provisioning_unavailable" as const : "optional_runtime_omitted" as const,
+    };
+  }));
+  for (const requirement of runtime_requirements) if (requirement.required && requirement.status === "unavailable")
+    blockers.push(`required_runtime_unavailable:${requirement.project_id}:${requirement.runtime_id}`);
   return {
     ready: blockers.length === 0,
     dependencies,

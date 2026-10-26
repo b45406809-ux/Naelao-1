@@ -30,8 +30,20 @@ describe("Space Template activation preview", () => {
     const preview = previewBlueprintActivation(blueprint({ projects: [project], requiredExtensions: [], requiredCredentials: [] }), new Map(), new Map());
     expect(preview).toMatchObject({ ready: false, runtime_requirements: [
       { project_id: "project-a", runtime_id: "gpu", required: true, status: "unavailable", reason: "runtime_provisioning_unavailable" },
-      { project_id: "project-a", runtime_id: "media", required: false, status: "deferred", reason: "runtime_provisioning_unavailable" },
+      { project_id: "project-a", runtime_id: "media", required: false, status: "deferred", reason: "optional_runtime_omitted" },
     ], blockers: ["required_runtime_unavailable:project-a:gpu"] });
+  });
+
+  it("allows only deployment and plan approved required runtimes through after human approval", () => {
+    const project = { id: "project-a", name: "Project A", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
+      configuration: { executionCeiling: 6 }, viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], runtimeRequirements: [
+        { id: "ffmpeg", capabilities: ["ffmpeg"], required: true, priority: 0, dependencies: [] },
+      ] };
+    const artifact = blueprint({ projects: [project], requiredExtensions: [], requiredCredentials: [] });
+    const ready = previewBlueprintActivation(artifact, new Map(), new Map(), new Map([["project-a:ffmpeg", { installable: true }]]));
+    expect(ready).toMatchObject({ ready: true, runtime_requirements: [{ status: "installable", reason: "owner_approval_required" }], installs_or_grants_applied: false });
+    const blocked = previewBlueprintActivation(artifact, new Map(), new Map(), new Map([["project-a:ffmpeg", { installable: false, reason: "subscription_resource_limit" }]]));
+    expect(blocked).toMatchObject({ ready: false, blockers: ["required_runtime_unavailable:project-a:ffmpeg"], runtime_requirements: [{ status: "unavailable", reason: "subscription_resource_limit" }] });
   });
 
   it("rejects unauthenticated and non-admin preview requests before touching storage", async () => {
@@ -136,6 +148,56 @@ describe("Space Template activation preview", () => {
     expect(response.status).toBe(422);
     expect(await response.json()).toMatchObject({ error_code: "required_runtime_unavailable", blockers: ["required_runtime_unavailable:project-with-gpu:gpu"] });
     expect(instantiateCalls).toBe(0);
+  });
+
+  it("installs a required approved runtime into the newly created project after owner approval", async () => {
+    const secret = "runtime-template-auto-install-secret";
+    const image = "registry.example/ffmpeg@sha256:" + "a".repeat(64);
+    const runtimeManifest = { id: "ext_runtime_ffmpeg", type: "extension", declaredPermissions: ["container:execute"], capabilityRequirements: ["native-execution"],
+      gadgets: [], daemons: [], commands: [], containers: [{ schemaVersion: "1.0", kind: "container", id: "ffmpeg", version: "1.0.0",
+        permissions: [{ scope: "PROJECT_BOUND", actions: ["execute"], resource: "workspace" }], capabilityRequirements: ["native-execution"], lifecycle: {},
+        image, resources: { memoryMb: 4096, cpuCores: 0.5, timeoutSeconds: 60 }, exportedBinaries: ["ffmpeg"], networkPolicy: "none" }] };
+    const project = { id: "media-project", name: "Media Project", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
+      configuration: { executionCeiling: 6 }, viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], runtimeRequirements: [
+        { id: "ffmpeg", capabilities: ["ffmpeg"], required: true, priority: 0, dependencies: [] },
+      ] };
+    const artifact = blueprint({ id: "tpl_runtime_project", projects: [project], requiredExtensions: [], requiredCredentials: [] });
+    const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `runtime-install-${index}` })) };
+    const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-runtime-install");
+    if (!certificate) throw new Error("test_certificate_not_issued");
+    const stored = new Map([[`blueprints/tenant-runtime-install/${artifact.id}.json`, { blueprint: artifact, conformanceCertificate: certificate }]]);
+    const installs: Array<Record<string, unknown>> = [];
+    let activationRequests = 0, createdProjects = 0;
+    const stub = { fetch: async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/extension-installations") return Response.json({ installations: [] });
+      if (url.pathname === "/blueprints/instantiate") {
+        activationRequests++; if (activationRequests === 1) createdProjects++;
+        return Response.json({ projectIds: ["created-project"], taskCount: 0, fileCount: 0 }, { status: activationRequests === 1 ? 201 : 200 });
+      }
+      if (url.pathname === "/projects/created-project") return Response.json({ execution_ceiling: 6 });
+      if (url.pathname === "/extensions" && request.method === "POST") {
+        installs.push(await request.json() as Record<string, unknown>);
+        return installs.length === 1 ? Response.json({ error_code: "temporary_install_failure" }, { status: 503 }) : Response.json({ installationId: "runtime-installation" }, { status: 201 });
+      }
+      return new Response("not found", { status: 404 });
+    } };
+    const db = { prepare: (sql: string) => ({ bind: () => ({ first: async () => sql.includes("FROM orgs") ? { plan_tier: "free" } : { id: "space-runtime-install" }, run: async () => ({ success: true }) }) }) };
+    const env = { PLATFORM_SECRET: secret, PLATFORM_DB: db,
+      SCRIPTS_R2: { get: async (key: string) => stored.has(key) ? { json: async () => stored.get(key) } : null },
+      AGENTS_WORKER: { fetch: async () => Response.json({ images: [{ id: "ffmpeg", name: "FFmpeg", available: true, billing_tier: "free", image, exported_binaries: ["ffmpeg"], install_manifest: runtimeManifest }] }) },
+      SPACE_DO: { idFromName: () => "runtime-install-do", get: () => stub } } as never;
+    const headers = { "x-naelao-tenant-id": "tenant-runtime-install", "x-naelao-user-id": "owner", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-runtime-install") };
+    const preview = await worker.fetch(new Request(`https://spaces/spaces/space-runtime-install/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
+    expect(await preview.json()).toMatchObject({ ready: true, runtime_requirements: [{ status: "installable", reason: "owner_approval_required" }], installs_or_grants_applied: false });
+    const activationUrl = `https://spaces/spaces/space-runtime-install/blueprints/${artifact.id}/activate`;
+    const interrupted = await worker.fetch(new Request(activationUrl, { method: "POST", headers }), env, {} as ExecutionContext);
+    expect(interrupted.status).toBe(503);
+    const response = await worker.fetch(new Request(activationUrl, { method: "POST", headers }), env, {} as ExecutionContext);
+    expect(response.status).toBe(200);
+    expect(createdProjects).toBe(1);
+    expect(installs).toHaveLength(2);
+    expect(installs[0]).toMatchObject({ installedBy: "owner", scope: "PROJECT_SHARED", projectId: "created-project", manifest: { id: "ext_runtime_ffmpeg" } });
   });
 
   it("rejects a fork whose tenant license points at different certified bytes", async () => {

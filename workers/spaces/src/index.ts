@@ -285,6 +285,48 @@ function installedSpaceExtensionPins(rows: Array<{ extension_id?: string; scope?
   }
   return pins;
 }
+interface RuntimeCatalogueRecord { id: string; name: string; available: boolean; image?: string; exported_binaries?: string[]; billing_tier?: string; install_manifest?: unknown; plan_available: boolean; plan_reason?: string }
+async function getPlanAwareRuntimeCatalogue(env: Env, tenantId: string): Promise<{ plan: string; images: RuntimeCatalogueRecord[] } | null> {
+  if (!env.AGENTS_WORKER) return null;
+  const response = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
+  if (!response.ok) return null;
+  const catalogue = await response.json<{ images: Array<Omit<RuntimeCatalogueRecord, "plan_available" | "plan_reason">> }>();
+  const plan = await new EntitlementsChecker(env.PLATFORM_DB).getTenantTier(tenantId);
+  const images = catalogue.images.map(image => {
+    const requirements = (image.install_manifest as { containers?: Array<{ resources?: { cpuCores?: number; memoryMb?: number } }> } | undefined)?.containers ?? [];
+    let planAvailable = image.available;
+    let planReason = image.available ? undefined : "runtime_not_deployed";
+    if (image.available && image.billing_tier && !isPlanTierAtLeast(plan, image.billing_tier)) {
+      planAvailable = false;
+      planReason = "subscription_plan_required";
+    }
+    try {
+      for (const container of requirements) {
+        if (!container.resources || typeof container.resources.cpuCores !== "number" || typeof container.resources.memoryMb !== "number") throw new Error("runtime_requirements_invalid");
+        assertExecutionPlanResources(plan, { cpuCores: container.resources.cpuCores, memoryMb: container.resources.memoryMb });
+      }
+    } catch (error) {
+      planAvailable = false;
+      planReason = (error as Error).message === "container_subscription_resource_limit" ? "subscription_resource_limit" : (error as Error).message;
+    }
+    return { ...image, plan_available: planAvailable, ...(planReason ? { plan_reason: planReason } : {}) };
+  });
+  return { plan, images };
+}
+type RuntimeReadinessReason = "runtime_provisioning_unavailable" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "project_execution_ceiling_required";
+function blueprintRuntimeInstallability(blueprint: SpaceBlueprint, images: readonly RuntimeCatalogueRecord[]): Map<string, { installable: boolean; reason?: RuntimeReadinessReason }> {
+  const result = new Map<string, { installable: boolean; reason?: RuntimeReadinessReason }>();
+  for (const project of blueprint.projects) for (const requirement of project.runtimeRequirements ?? []) {
+    const key = `${project.id ?? project.name}:${requirement.id}`, image = images.find(item => item.id === requirement.id);
+    let reason: RuntimeReadinessReason | undefined;
+    if (!image?.available) reason = "runtime_not_deployed";
+    else if (!requirement.capabilities.every(capability => capability === "bash" || image.exported_binaries?.includes(capability))) reason = "runtime_capability_mismatch";
+    else if (!image.plan_available) reason = image.plan_reason === "subscription_resource_limit" ? "subscription_resource_limit" : "subscription_plan_required";
+    else if ((typeof project.configuration?.executionCeiling === "number" ? project.configuration.executionCeiling : 5) < 6) reason = "project_execution_ceiling_required";
+    result.set(key, reason ? { installable: false, reason } : { installable: true });
+  }
+  return result;
+}
 async function installableSpaceExtensionPins(): Promise<Map<string, { version: string; digest: string }>> {
   const entries = await Promise.all(Object.entries(DOGFOOD_EXTENSION_BY_ID).filter(([, manifest]) => manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)).map(async ([id, raw]) => {
     const manifest = validateExtensionManifest(raw, { gatekeeperCapabilities: raw.capabilityRequirements });
@@ -525,11 +567,14 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
   try { instantiateBlueprint(blueprint, spaceId); }
   catch (error) { return c.json({ error_code: "blueprint_invalid", message: (error as Error).message.slice(0, 240) }, 422); }
+  const hasRuntimeRequirements = blueprint.projects.some(project => project.runtimeRequirements?.length);
+  const runtimeCatalogue = hasRuntimeRequirements ? await getPlanAwareRuntimeCatalogue(c.env, tenantId) : null;
+  const runtimeReadiness = runtimeCatalogue ? blueprintRuntimeInstallability(blueprint, runtimeCatalogue.images) : undefined;
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const result = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
   if (!result.ok) return c.json({ error_code: "extension_readiness_unavailable" }, 503);
   const rows = await result.json<{ installations: Array<{ extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null }> }>();
-  const preview = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(rows.installations ?? []), await installableSpaceExtensionPins());
+  const preview = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(rows.installations ?? []), await installableSpaceExtensionPins(), runtimeReadiness);
   return c.json({ ...preview, blueprint_id: blueprint.id, target_space_id: spaceId, security });
 });
 
@@ -581,11 +626,14 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   if (!security.publishable) return c.json({ error_code: "blueprint_rejected", security }, 422);
   try { instantiateBlueprint(blueprint, spaceId); }
   catch (error) { return c.json({ error_code: "blueprint_invalid", message: (error as Error).message.slice(0, 240) }, 422); }
+  const hasRuntimeRequirements = blueprint.projects.some(project => project.runtimeRequirements?.length);
+  const runtimeCatalogue = hasRuntimeRequirements ? await getPlanAwareRuntimeCatalogue(c.env, tenantId) : null;
+  const runtimeReadiness = runtimeCatalogue ? blueprintRuntimeInstallability(blueprint, runtimeCatalogue.images) : undefined;
   const targetId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
   const dependenciesResponse = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
   if (!dependenciesResponse.ok) return c.json({ error_code: "extension_readiness_unavailable" }, 503);
   const dependencies = await dependenciesResponse.json<{ installations: Array<{ extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null }> }>();
-  const readiness = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(dependencies.installations ?? []), await installableSpaceExtensionPins());
+  const readiness = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(dependencies.installations ?? []), await installableSpaceExtensionPins(), runtimeReadiness);
   if (!readiness.ready) {
     const runtimeBlockers = readiness.blockers.filter(blocker => blocker.startsWith("required_runtime_unavailable:"));
     if (runtimeBlockers.length) return c.json({ error_code: "required_runtime_unavailable", runtime_requirements: readiness.runtime_requirements, blockers: runtimeBlockers }, 422);
@@ -600,6 +648,40 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id }),
   }));
   if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  const activation = await response.clone().json<{ projectIds?: string[] }>().catch(() => ({} as { projectIds?: string[] }));
+  if (hasRuntimeRequirements) {
+    const projectIds = activation.projectIds ?? [];
+    for (const [index, project] of blueprint.projects.entries()) {
+      const projectId = projectIds[index];
+      if (!projectId) return c.json({ error_code: "runtime_project_mapping_missing" }, 503);
+      for (const requirement of project.runtimeRequirements ?? []) {
+        if (!requirement.required) continue;
+        const readinessItem = runtimeReadiness?.get(`${project.id ?? project.name}:${requirement.id}`);
+        const runtime = runtimeCatalogue?.images.find(image => image.id === requirement.id);
+        if (!readinessItem?.installable || !runtime?.install_manifest) return c.json({ error_code: "required_runtime_unavailable", project_id: project.id ?? project.name, runtime_id: requirement.id }, 422);
+        const manifest = validateExtensionManifest(runtime.install_manifest, { gatekeeperCapabilities: ["native-execution"] });
+        for (const contract of manifest.containers ?? []) {
+          if (contract.networkPolicy && contract.networkPolicy !== "none" || contract.mounts?.some(mount => !mount.writable))
+            return c.json({ error_code: "runtime_install_profile_unsupported", project_id: projectId, runtime_id: requirement.id }, 422);
+          const deployedImage = runtimeCatalogue?.images.find(image => image.available && image.image === contract.image);
+          const deployedProfile = deployedImage?.install_manifest
+            ? validateExtensionManifest(deployedImage.install_manifest).containers?.find(item => item.image === contract.image)
+            : undefined;
+          if (!deployedProfile || contract.resources.memoryMb > deployedProfile.resources.memoryMb || contract.resources.cpuCores > deployedProfile.resources.cpuCores)
+            return c.json({ error_code: "runtime_image_not_approved", project_id: projectId, runtime_id: requirement.id }, 422);
+        }
+        const projectResponse = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}`));
+        if (!projectResponse.ok) return c.json({ error_code: "runtime_project_lookup_failed", project_id: projectId }, 503);
+        const details = await projectResponse.json<{ execution_ceiling?: number }>();
+        if ((details.execution_ceiling ?? 5) < 6) return c.json({ error_code: "container_execution_ceiling_exceeded", project_id: projectId }, 422);
+        const installResponse = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/extensions", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId, spaceId,
+            scope: "PROJECT_SHARED", projectId, gatekeeperCapabilities: ["native-execution"] }),
+        }));
+        if (!installResponse.ok) return c.json({ error_code: "required_runtime_install_failed", project_id: projectId, runtime_id: requirement.id }, 503);
+      }
+    }
+  }
   await c.env.PLATFORM_DB.prepare("UPDATE spaces SET config_json=json_remove(COALESCE(config_json,'{}'),'$.pending_blueprint_id') WHERE id=? AND tenant_id=? AND json_extract(config_json,'$.pending_blueprint_id')=?")
     .bind(spaceId, tenantId, blueprint.id).run();
   return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
