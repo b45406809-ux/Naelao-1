@@ -39,6 +39,7 @@ This environment exposes no Modal/Cloudflare production credential bindings or a
 - The host tunnel now sends only the matching machine grant's roots to execution, binds them into the durable request hash, and rejects dot-segment paths. A host-side `shellAccess: "sandboxed"` grant and local `--allow-sandboxed-shell` consent are both required for general shell work.
 - The Space computer panel creates one-use five-minute enrollment tickets, displays each registered machine's freshness and grant scope, and supports revocation. Linux auto-advertises `bash` only when bubblewrap and local sandbox consent are present.
 - Template runtime requirements and dependency/capacity preview SDK. Requirements survive project instantiation and re-export. Automatic runtime installation and shell installation preview are not yet connected.
+- Template activation endpoint independently rejects required runtime declarations when no host provisioner is available; direct API calls cannot bypass the preview's required-runtime blocker.
 - Shared existing managed CPU/RAM/concurrency ceilings through `getExecutionLimits`; this is not yet a unified reservation system for all workspace types.
 - Incidental fixes: duplicate voice type exports and an out-of-scope SMS body-key reference found by full package type checking.
 
@@ -62,7 +63,7 @@ Next unfinished action: connect template runtime declarations to host-approved r
 - SDK routing/template/manifest group: 37 tests passed.
 - Agents environment/session/artifact/CLI/capability group: 59 tests passed; an additional CLI JSON/flag regression test passed afterward (18 CLI tests total).
 - Communications group: 23 tests passed after bringing its test fixture up to date with the retained legacy-number migration table. No customer runtime was restored.
-- Certified template activation group: 9 tests passed.
+- Space Template activation focused group: 11 tests passed, including the direct-API required-runtime bypass regression.
 - Bridge model discovery: 2 tests passed.
 - Stress coverage includes 100 duplicate simultaneous submissions, maximum dependency-chain size, oversized outputs, stale revisions, scope/authority violations, unknown app fields and uncertain execution results.
 - No live Cloudflare/Modal, GPU, browser login or personal-machine acceptance was performed.

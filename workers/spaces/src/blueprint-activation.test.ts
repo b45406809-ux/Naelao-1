@@ -111,6 +111,33 @@ describe("Space Template activation preview", () => {
     expect(activationCount).toBe(1);
   });
 
+  it("cannot bypass required runtime blockers by calling activation directly", async () => {
+    const secret = "required-runtime-activation-secret";
+    const project = { id: "project-with-gpu", name: "GPU project", kind: "DualPane" as const, templateMode: "cowork_studio" as const,
+      viewports: {}, systemPrompt: "", initialTasks: [], starterFiles: [], runtimeRequirements: [
+        { id: "gpu", capabilities: ["cuda"], required: true, priority: 0, dependencies: [] },
+      ] };
+    const artifact = blueprint({ id: "tpl_required_runtime", projects: [project], requiredExtensions: [], requiredCredentials: [] });
+    const suite = { fixtures: Array.from({ length: 50 }, (_, index) => ({ id: `runtime-${index}` })) };
+    const certificate = await certifyStateDeltaArtifact(artifact, suite, { runner: "naelao-state-delta-v1", passed: 50, total: 50, securityViolations: 0, tokensUsed: 0, maximumCostUpperBoundUsd: 0.025, diagnostics: [] }, secret, "tenant-runtime");
+    if (!certificate) throw new Error("test_certificate_not_issued");
+    let instantiateCalls = 0;
+    const stub = { fetch: async (request: Request) => {
+      if (new URL(request.url).pathname === "/extension-installations") return Response.json({ installations: [] });
+      if (new URL(request.url).pathname === "/blueprints/instantiate") { instantiateCalls++; return Response.json({ ok: true }, { status: 201 }); }
+      return new Response("not found", { status: 404 });
+    } };
+    const env = { PLATFORM_SECRET: secret,
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ id: "space-runtime" }) }) }) },
+      SCRIPTS_R2: { get: async (key: string) => key === `blueprints/tenant-runtime/${artifact.id}.json` ? { json: async () => ({ blueprint: artifact, conformanceCertificate: certificate }) } : null },
+      SPACE_DO: { idFromName: () => "space-runtime-do", get: () => stub } } as never;
+    const headers = { "x-naelao-tenant-id": "tenant-runtime", "x-naelao-user-id": "owner", "x-naelao-role": "owner", "x-naelao-internal-token": await mintInternalToken(secret, "tenant-runtime") };
+    const response = await worker.fetch(new Request(`https://spaces/spaces/space-runtime/blueprints/${artifact.id}/activate`, { method: "POST", headers }), env, {} as ExecutionContext);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error_code: "required_runtime_unavailable", blockers: ["required_runtime_unavailable:project-with-gpu:gpu"] });
+    expect(instantiateCalls).toBe(0);
+  });
+
   it("rejects a fork whose tenant license points at different certified bytes", async () => {
     const secret = "fork-license-test-secret";
     const artifact = blueprint({ id: "tpl_forked", projects: [], requiredExtensions: [], requiredCredentials: [] });

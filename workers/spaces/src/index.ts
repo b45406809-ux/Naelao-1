@@ -585,7 +585,11 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   if (!dependenciesResponse.ok) return c.json({ error_code: "extension_readiness_unavailable" }, 503);
   const dependencies = await dependenciesResponse.json<{ installations: Array<{ extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null }> }>();
   const readiness = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(dependencies.installations ?? []), await installableSpaceExtensionPins());
-  if (!readiness.ready) return c.json({ error_code: "required_extension_unavailable", blockers: readiness.blockers }, 422);
+  if (!readiness.ready) {
+    const runtimeBlockers = readiness.blockers.filter(blocker => blocker.startsWith("required_runtime_unavailable:"));
+    if (runtimeBlockers.length) return c.json({ error_code: "required_runtime_unavailable", runtime_requirements: readiness.runtime_requirements, blockers: runtimeBlockers }, 422);
+    return c.json({ error_code: "required_extension_unavailable", blockers: readiness.blockers }, 422);
+  }
   for (const extensionId of blueprint.requiredExtensions ?? []) {
     if (!DOGFOOD_EXTENSION_BY_ID[extensionId] || readiness.dependencies.some(dependency => dependency.extension_id === extensionId && dependency.status === "installed")) continue;
     const installed = await installFirstPartySpaceExtension(c.env, tenantId, spaceId, "naelao-template", extensionId);
