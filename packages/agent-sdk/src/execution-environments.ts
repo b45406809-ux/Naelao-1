@@ -9,6 +9,7 @@ export interface EnvironmentCard {
   tenantId: string;
   spaceId: string;
   projectId?: string;
+  workspaceId?: string;
   capabilities: readonly string[];
   observedAt: number;
   available: boolean;
