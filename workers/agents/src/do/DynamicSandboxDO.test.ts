@@ -174,7 +174,9 @@ describe("Cloudflare dynamic execution", () => {
   });
   it("destroys a timed-out dynamic execution and returns its concurrency leases", async () => {
     const r = runtime(); await r.invoke(); r.hangBuild();
-    const response = await r.invoke("/build", { timeoutMs: 20, deadline: Date.now() + 20 });
+    // Leave enough time for auth, policy, and metering setup under a loaded test runner;
+    // the mocked build remains pending so this still exercises the execution timeout path.
+    const response = await r.invoke("/build", { timeoutMs: 200, deadline: Date.now() + 200 });
     expect(response.ok).toBe(false);
     expect(r.transport.destroy).toHaveBeenCalledOnce();
     expect(r.capacity.held.get("global")?.size).toBe(0);
