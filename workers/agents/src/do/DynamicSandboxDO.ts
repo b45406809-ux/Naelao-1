@@ -36,6 +36,24 @@ export class DynamicSandboxDO extends ToolSandboxDO {
   private get bindings(): DynamicBindings { return this.env as DynamicBindings; }
 
   override async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === "/_internal/profile") {
+      const scope: { tenantId?: string; reset?: boolean } = await request.json<{ tenantId?: string; reset?: boolean }>().catch(() => ({}));
+      if (!scope.tenantId || !this.bindings.PLATFORM_SECRET || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
+        scope.tenantId, this.bindings.PLATFORM_SECRET)) return new Response(null, { status: 403 });
+      if (scope.reset === true) {
+        await this.stopContainer().catch(() => undefined);
+        await this.ctx.storage.delete("dynamic_snapshot");
+        await this.ctx.storage.delete("dynamic_restored");
+        await this.ctx.storage.delete("dynamic_selection");
+        return Response.json({ reset: true });
+      }
+      const snapshot = await this.ctx.storage.get<SavedSnapshot>("dynamic_snapshot");
+      const selection = await this.ctx.storage.get<Selection>("dynamic_selection");
+      return Response.json({ enabled: this.bindings.DYNAMIC_CONTAINER_SNAPSHOTS_ENABLED === "true",
+        state: snapshot ? "checkpointed" : this.container?.running ? "active" : "empty",
+        image: selection?.image, checkpoint_created_at: snapshot?.createdAt,
+        can_restore: Boolean(snapshot && snapshot.createdAt > Date.now() - 29 * 86400000) });
+    }
     if (new URL(request.url).pathname === "/_internal/images") {
       if (!this.bindings.PLATFORM_SECRET || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined,
         "naelao-container-catalogue", this.bindings.PLATFORM_SECRET)) return new Response(null, { status: 403 });
