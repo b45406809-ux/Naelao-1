@@ -5,6 +5,7 @@ import { dirname, resolve, relative, join, basename, isAbsolute, sep } from "nod
 import { homedir, cpus, totalmem, platform, arch } from "node:os";
 import { machineProofBytes, tunnelHash, validateMachineApps } from "@naelao/agent-sdk";
 import { createLinuxSandboxExecutor } from "./linux-sandbox.mjs";
+import { readMachineArtifact, writeMachineArtifact } from "./artifact-transfer.mjs";
 
 const FRAME_LIMIT = 65536, OUTPUT_LIMIT = 1048576;
 const executeLocalIsolated = createLinuxSandboxExecutor();
@@ -287,8 +288,7 @@ export async function connectBridge(options, dependencies = {}) {
                 const file = await consentedPath(frame.params.path, state.consent.roots);
                 const size = (await lstat(file)).size;
                 if (frame.params.encoding === "base64") {
-                  if (size > 12 * 1024) throw new Error("bridge_file_result_limit");
-                  result = { encoding: "base64", content: (await readFile(file)).toString("base64"), bytes: size };
+                  result = await readMachineArtifact(file);
                 } else {
                   if (size > 24000) throw new Error("bridge_file_result_limit");
                   result = await readFile(file, "utf8");
@@ -296,12 +296,7 @@ export async function connectBridge(options, dependencies = {}) {
               } else if (frame.op === "write_file") {
                 const file = await consentedPath(frame.params.path, state.consent.roots, true);
                 if (frame.params.encoding === "base64") {
-                  const encoded = frame.params.content;
-                  if (typeof encoded !== "string" || encoded.length > 4 * Math.ceil((12 * 1024) / 3) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error("bridge_file_result_limit");
-                  const bytes = Buffer.from(encoded, "base64");
-                  if (bytes.length > 12 * 1024 || bytes.toString("base64") !== encoded) throw new Error("bridge_file_result_limit");
-                  await writeFile(file, bytes, { signal: controller.signal, ...(frame.params.create_only === true ? { flag: "wx" } : {}) });
-                  result = { written: true, bytes: bytes.length };
+                  result = await writeMachineArtifact(file, frame.params, controller.signal);
                 } else {
                   if (typeof frame.params.content !== "string" || Buffer.byteLength(frame.params.content) > 24000) throw new Error("bridge_file_result_limit");
                   await writeFile(file, frame.params.content, { signal: controller.signal, ...(frame.params.create_only === true ? { flag: "wx" } : {}) }); result = { written: true };
