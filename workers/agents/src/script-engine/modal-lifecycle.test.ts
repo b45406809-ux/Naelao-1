@@ -65,11 +65,12 @@ describe("Modal sandbox lifecycle adapter", () => {
     expect(hooks.settle).not.toHaveBeenCalled();
   });
 
-  it("fails closed when the provider reports usage beyond the reservation", async () => {
+  it("settles measured over-reservation usage and records the overrun for billing policy", async () => {
     const { client, hooks } = setup(101);
     const record = { id: "modal:3", providerId: "sbx_provider_3", image, state: "running" as const,
       createdAt: 1, updatedAt: 1, reservedCredits: 100 };
-    await expect(reconcileModalSandbox(client, hooks, record)).rejects.toThrow("modal_usage_over_reservation_reconciliation_required");
-    expect(hooks.settle).not.toHaveBeenCalled();
+    const reconciled = await reconcileModalSandbox(client, hooks, record);
+    expect(reconciled).toMatchObject({ actualCredits: 101, overrunCredits: 1 });
+    expect(hooks.settle).toHaveBeenCalledExactlyOnceWith(record.id, 101);
   });
 });

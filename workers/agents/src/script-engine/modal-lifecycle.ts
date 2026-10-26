@@ -14,7 +14,7 @@ export interface ModalLifecycleHooks {
 }
 export interface ModalSandboxRecord {
   id: string; providerId: string; image: string; state: "running" | "stopped" | "unknown";
-  createdAt: number; updatedAt: number; reservedCredits: number; actualCredits?: number;
+  createdAt: number; updatedAt: number; reservedCredits: number; actualCredits?: number; overrunCredits?: number;
 }
 const PIN = /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
 export async function createModalSandbox(input: {
@@ -48,9 +48,9 @@ export async function reconcileModalSandbox(client: ModalSandboxClient, hooks: M
   const updated: ModalSandboxRecord = { ...record, state: receipt.state, updatedAt: Date.now() };
   if (receipt.actualCredits !== undefined) {
     if (!Number.isSafeInteger(receipt.actualCredits) || receipt.actualCredits < 0) throw new Error("modal_usage_receipt_invalid");
-    if (receipt.actualCredits > record.reservedCredits) throw new Error("modal_usage_over_reservation_reconciliation_required");
     if (record.actualCredits === undefined) {
       updated.actualCredits = receipt.actualCredits;
+      if (receipt.actualCredits > record.reservedCredits) updated.overrunCredits = receipt.actualCredits - record.reservedCredits;
       await hooks.settle(record.id, receipt.actualCredits);
     } else if (record.actualCredits !== receipt.actualCredits) {
       throw new Error("modal_usage_receipt_changed_after_settlement");
