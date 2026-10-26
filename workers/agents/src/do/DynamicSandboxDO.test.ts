@@ -60,7 +60,12 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; capaci
       "x-naelao-container-scope": JSON.stringify(scope), "x-naelao-internal-token": await mintInternalToken("secret", scope.tenantId),
     } }));
   }
-  return { invoke, transport, records, capacity, env, billing, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
+  async function profile(reset?: boolean, suppliedToken?: string) {
+    const token = suppliedToken ?? await mintInternalToken("secret", "tenant");
+    return sandbox.fetch(new Request("http://sandbox/_internal/profile", { method: "POST", body: JSON.stringify({ tenantId: "tenant", ...(reset ? { reset: true } : {}) }),
+      headers: { "x-naelao-internal-token": token } }));
+  }
+  return { invoke, profile, transport, records, capacity, env, billing, get alarmAt() { return alarmAt; }, alarm: () => sandbox.alarm(),
     restart: () => { sandbox = new DynamicSandboxDO(ctx as never, env as never); },
     setInfo: (v: any) => { info = v; }, hangBuild: () => { task = new Promise<Response>(() => undefined); },
     legacy: () => new ToolSandboxDO(ctx as never, env as never) };
@@ -68,6 +73,25 @@ function runtime(options: { tier?: string; cpu?: number; memory?: number; capaci
 afterEach(() => vi.restoreAllMocks());
 
 describe("Cloudflare dynamic execution", () => {
+  it("exposes tenant-authenticated managed profile status and reset", async () => {
+    let now = 2_000_000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true });
+    expect(await (await r.profile()).json()).toMatchObject({ enabled: true, state: "empty", can_restore: false });
+    await r.invoke();
+    expect(await (await r.profile()).json()).toMatchObject({ state: "active", can_restore: false });
+    now += 5001;
+    await r.alarm();
+    expect(await (await r.profile()).json()).toMatchObject({ state: "checkpointed", can_restore: true });
+    expect(await (await r.profile(true)).json()).toEqual({ reset: true });
+    expect(r.records.has("dynamic_snapshot")).toBe(false);
+    expect(r.records.has("dynamic_selection")).toBe(false);
+    expect(r.transport.destroy).toHaveBeenCalledOnce();
+  });
+  it("rejects unauthenticated profile reads and resets", async () => {
+    const r = runtime();
+    expect((await r.profile(false, "invalid-token")).status).toBe(403);
+    expect(r.records.size).toBe(0);
+  });
   it("chooses the smallest supported size and enforces plan resource ceilings", () => {
     expect(selectDynamicProfile(.0625, 256)).toBe("lite");
     expect(selectDynamicProfile(.25, 1024)).toBe("standard-1");

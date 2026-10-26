@@ -7,6 +7,7 @@ export interface ModalSandboxClient {
 }
 export interface ModalLifecycleHooks {
   reserve(id: string, credits: number): Promise<void>;
+  /** Must be durable and idempotent by reservation id; replayed equal usage settles once. */
   settle(id: string, actualCredits: number): Promise<void>;
   release(id: string): Promise<void>;
   record(record: ModalSandboxRecord): Promise<void>;
