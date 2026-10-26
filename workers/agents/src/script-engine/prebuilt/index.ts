@@ -94,6 +94,8 @@ export interface PrebuiltScript {
    * populated example.
    */
   paramHints?: Record<string, string>;
+  /** Host-provided JSON schemas for typed code discovery; hints remain valid when absent. */
+  inputSchemas?: Record<string, Record<string, unknown>>;
 }
 
 /** The full catalogue shipped in this build, keyed by prebuilt script name. */
@@ -181,6 +183,9 @@ export function buildOperationMap(
     if (!prebuilt) continue;
     for (const [opName, op] of Object.entries(prebuilt.operations)) {
       map.set(opName, { op, prebuilt });
+      // Older MCP scripts exported bare names. Keep them callable while exposing
+      // stable namespaced methods for composition and typed discovery.
+      if (name === "mcp-connector" && !opName.includes(".")) map.set(`mcp.${opName}`, { op, prebuilt });
     }
   }
   return map;

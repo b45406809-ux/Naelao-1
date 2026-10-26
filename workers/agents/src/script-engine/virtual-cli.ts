@@ -504,6 +504,7 @@ export class VirtualCliDispatcher {
     return { exit_code: 0, stdout: await responseText(response) };
   }
   static validateSynthesized(name: string, source: string): void {
+    VirtualCliDispatcher.synthesizedCapabilities(source);
     if (!/^[a-z][a-z0-9_-]{0,63}$/i.test(name)) throw new Error("invalid_command_name");
     // Persisted commands created before the TypeScript annotation requirement used the same
     // two-argument ABI as plain JavaScript. Accept both spellings while still rejecting any
@@ -511,6 +512,15 @@ export class VirtualCliDispatcher {
     if (source.length > 16_384 || !/export\s+async\s+function\s+run\s*\(\s*args(?:\s*:\s*string\[\])?\s*,\s*ctx(?:\s*:\s*RuntimeContext)?\s*\)/.test(source)) throw new Error("invalid_synthesized_command_schema");
     if (/\b(?:eval|Function)\s*\(|\bimport\s*\(|\b(?:WebSocket|connect|createConnection|Deno)\b|\b(?:process\.env|ctx\.vault\.(?:get|read)|STRIPE_KEY|GITHUB_TOKEN|RESEND_API_KEY)\b/.test(source)) throw new Error("unsafe_synthesized_command");
     if (/\$\{[^}]+\}/.test(source)) throw new Error("unsafe_string_interpolation");
+  }
+  static synthesizedCapabilities(source: string): string[] {
+    const headers = source.match(/^\/\/ @naelao-capabilities: (.+)$/gm) ?? [];
+    if (!headers.length) return [];
+    if (headers.length !== 1) throw new Error("invalid_command_capabilities");
+    let value: unknown;
+    try { value = JSON.parse(headers[0]!.slice("// @naelao-capabilities: ".length)); } catch { throw new Error("invalid_command_capabilities"); }
+    if (!Array.isArray(value) || value.length > 64 || value.some(capability => typeof capability !== "string" || !/^(?:tool:[A-Za-z][A-Za-z0-9_.:-]{0,180}|storage\.(?:read|write|list)|proxy\.request)$/.test(capability))) throw new Error("invalid_command_capabilities");
+    return [...new Set(value as string[])];
   }
   async registerSynthesized(name: string, source: string): Promise<string> {
     VirtualCliDispatcher.validateSynthesized(name, source);

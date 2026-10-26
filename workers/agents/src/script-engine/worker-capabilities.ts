@@ -5,10 +5,10 @@ import type { FastDecisionGateway, WorkRuntimeOption } from "@naelao/agent-sdk";
 export const DEFAULT_WORKER_CAPABILITY_BUNDLES = [
   {
     capability: "reusable_command_authoring",
-    description: "Author reusable scoped CLI commands and durable workflows that chain permitted connector operations.",
+    description: "Compose permitted tools with Code Mode; author reusable scoped CLI commands and durable workflows.",
     tools: ["code-exec", "dynamic-workflow", "mcp-connector"],
     skills: ["reusable-command-authoring"],
-    match: /(?:create|author|build|save|reuse|reusable|chain).*(?:command|cmd|script|workflow|mcp)|(?:command|cmd|script|workflow).*(?:create|author|reuse|chain)/i,
+    match: /code.?mode|compos(?:e|ition).*tool|(?:create|author|build|save|reuse|reusable|chain).*(?:command|cmd|script|workflow|mcp)|(?:command|cmd|script|workflow).*(?:create|author|reuse|chain)/i,
   },
   {
     capability: "conversation_research",

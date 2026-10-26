@@ -34,7 +34,7 @@ import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
 import { enforceWriteGuardWithSentry } from "@naelao/agent-sdk";
 import { interceptPlatformCli } from "./virtual-cli.js";
-import { workspacePrefix } from "./types.js";
+import { machinePrefix } from "./types.js";
 import { validProviderUsage, type UniversalAgentRole } from "@naelao/agent-sdk";
 import { isToolAllowedForRole } from "./agent-firewall.js";
 import { isPlannerOperationAllowed, type PlannerScope } from "./agent-topology.js";
@@ -93,6 +93,12 @@ const BUILTIN_PLATFORM_SKILLS = [
 Inspect script.find and script.read before creating a duplicate. Use script.create/update for reusable execution through the existing tier ladder, preserving the execution ceiling and declared capabilities. Use workflow.create for durable waits, schedules and resumable orchestration; its entrypoint is export async function execute(step, ctx). Call installed operations through ctx.tools.call(stableStepKey, operation, params), and declare their capabilities. Reuse stable step keys on retries; reconcile uncertain effects before repeating writes.
 
 For virtual CLI commands use the supported export async function run(args, ctx) ABI. Context is injected by the host, not imported from an arbitrary module. Discover the actual context API for the selected runtime before writing code: CLI, stored scripts, workflows and Python have different harnesses. Do not assume JavaScript ctx or connector methods exist in Python or a bare container. Delegate work through the authorized host operations when a harness does not expose them.
+
+For Code Mode, first discover permitted operations with tools.search/tools.describe on the CLI. Call code.run_js with explicit top-level capabilities such as ["tool:conversation.search", "tool:mcp.list_tools", "tool:mcp.call"]. The module exports async run(args, ctx). Within it, use await ctx.tools.search(query), await ctx.tools.describe(operation), and await ctx.tools.call(operation, params). Discovery reveals only the explicit invocation capability subset that the host still authorizes. A type hint describes the calling contract; it does not grant access or replace host validation. MCP tools are discovered through authorized mcp.list_tools and invoked through mcp.call, preserving connector account scope.
+
+Keep intermediate data in code and return bounded evidence with source identifiers. Calls requiring reasoning can return a bounded observation for the next model turn. Run consequential operations sequentially and preserve stable action/idempotency identifiers. An approval or uncertain outcome must return to the existing durable task/approval flow; never restart a composed script to bypass a pause or assume the isolate has durable replay. Use an authorized dynamic workflow for durable orchestration and long waits.
+
+After verifying a command, its source may declare a single header: // @naelao-capabilities: ["tool:conversation.search"]. Store the validated run(args, ctx) module under /.avos/bin. Arguments arrive as args.argv for CLI commands. Every later invocation reauthorizes these requested capabilities; saved code never preserves old grants. Execution receipts bind the compiled code digest. Promote reusable commands through the existing scoped script/skill authoring path; never auto-save failed, paused or uncertain executions.
 
 Treat MCP as a tool protocol with host-managed authentication, not as authorization by itself. A reusable command inherits the current caller's granted connectors, tool subset, workspace scope, approvals and budget; creating it never grants access. Keep credentials in the vault and use authorized connector operations. Chain bounded calls, filter intermediate results, and return a small evidence receipt. Require explicit approval for consequential effects when host policy requires it.
 
@@ -415,15 +421,22 @@ export class ScriptToolSurface {
     this.ops.set("tools.search", { prebuilt: toolsMeta, op: async (args) => this.searchOperations(String(args["query"] ?? "")) });
     this.ops.set("tools.describe", { prebuilt: toolsMeta, op: async (args) => this.describeOperation(String(args["name"] ?? "")) });
     env.nativeExecutionAllowed = !this.plannerScope && this.ops.has("Bash");
+    env.codeTools = () => [...this.ops].filter(([name]) => this.isPlannerVisible(name)).map(([name, { prebuilt }]) => ({
+      name, description: prebuilt.description,
+      ...(prebuilt.paramHints?.[name] ? { parameterHint: prebuilt.paramHints[name] } : {}),
+      ...(prebuilt.inputSchemas?.[name] ? { inputSchema: prebuilt.inputSchemas[name] } : {}),
+    }));
     env.codeAuthorize = async (scope, capability) => {
       if (scope.tenantId !== env.tenantId || scope.spaceId !== env.spaceId || scope.agentId !== env.agentId || scope.projectId !== env.projectId) return false;
       if (!env.codeGrantIsActive || !await env.codeGrantIsActive(scope)) return false;
       if (capability === "proxy.request") return !this.plannerScope && !env.airGappedOnly && Boolean(env.codeProxyRequest) && this.ops.has("code.run_js");
       const operation = capability === "storage.read" ? "Read" : capability === "storage.write" ? "Write" : capability === "storage.list" ? "Glob"
         : capability.startsWith("tool:") ? capability.slice(5) : undefined;
-      if (!operation || ["Bash", "code.execute_bash", "code.run_js", "code.execute_python"].includes(operation)) return false;
+      if (!operation || ["Bash", "code.execute_bash", "code.run_js", "code.execute_python", "tools.search", "tools.describe"].includes(operation)) return false;
       const descriptor = this.ops.get(operation);
       return Boolean(descriptor && isToolAllowedForRole(this.role, operation, descriptor.prebuilt.requires_tier)
+        && (env.maxTier === undefined || descriptor.prebuilt.requires_tier <= env.maxTier)
+        && (env.effectiveRole !== "viewer" || isReadSafeOperation(operation))
         && (!this.plannerScope || isPlannerOperationAllowed(this.plannerScope, operation)));
     };
     env.codeDispatch = async (scope, capability, input, signal) => {
@@ -431,7 +444,7 @@ export class ScriptToolSurface {
       const args = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
       if (capability === "proxy.request") return env.codeProxyRequest!(scope, args, signal);
       const operation = capability === "storage.read" ? "Read" : capability === "storage.write" ? "Write" : capability === "storage.list" ? "Glob" : capability.slice(5);
-      const result = await this.run(operation, args);
+      const result = await this.run(operation, args, { codeResult: true });
       if (!result.ok) throw new Error(result.error ?? "code_rpc_failed");
       return result.output;
     };
@@ -545,7 +558,7 @@ export class ScriptToolSurface {
     rows.push("## planner interaction");
     rows.push("- `AskUser` - open a questionnaire with one to five related questions when required information is missing; the run resumes after all answers are submitted");
     const bucket = this.env.workspaceBucket ?? this.env.scriptsBucket;
-    const prefix = `${workspacePrefix(this.env)}.avos/bin/`;
+    const prefix = `${machinePrefix(this.env)}bin/`;
     rows.push("## virtual CLI namespaces (avos chore / ext: / auto:)");
     let cursor: string | undefined;
     do {
@@ -895,7 +908,7 @@ export class ScriptToolSurface {
   async run(
     name: string,
     params: Record<string, unknown> = {},
-    invocation: { delegatedByCabinet?: boolean } = {},
+    invocation: { delegatedByCabinet?: boolean; codeResult?: boolean } = {},
   ): Promise<ScriptRunResult> {
     const started = Date.now();
     if (this.plannerScope && !invocation.delegatedByCabinet && !isPlannerOperationAllowed(this.plannerScope, name)) {
@@ -1003,6 +1016,7 @@ export class ScriptToolSurface {
               // Executive Cabinet receives a closure for exactly one allowlisted operation. Its
               // nested call is therefore capability delegation, not a planner bypass.
               delegatedByCabinet: prebuilt.prebuilt.name === "executive-cabinet",
+              ...(invocation.codeResult ? { codeResult: true } : {}),
             });
             if (!r.ok) throw new Error(r.error ?? `nested script ${n} failed`);
             return r.output;
@@ -1017,7 +1031,9 @@ export class ScriptToolSurface {
         const usage = validProviderUsage((output as { usage?: unknown } | null)?.usage);
         // Step 9: generic result-size guard. Read usage from the ORIGINAL output above (the
         // paginated view may replace the primary list), then hand the model the size-limited view.
-        const limited = name === "browser.see" ? output : await offloadToolOutput(this.env, pageArg(params, "limit", "_limit", "offset", "_offset") !== undefined ? applyToolResultLimit(output, params) : output);
+        // Code consumes bounded intermediate JSON through the RPC payload cap, without
+        // turning it into model-context previews. Final model delivery still offloads.
+        const limited = invocation.codeResult || name === "browser.see" ? output : await offloadToolOutput(this.env, pageArg(params, "limit", "_limit", "offset", "_offset") !== undefined ? applyToolResultLimit(output, params) : output);
         const reportedEngine = executionEngine((output as { engine?: unknown } | null)?.engine)
           ?? route?.engine
           ?? EXECUTION_ENGINES[effectiveTier];
@@ -1121,7 +1137,7 @@ export class ScriptToolSurface {
     // The error, not just the boolean: it is what a later repair is aimed at, and what lets the
     // next run see "failed its last three times, and here is why" instead of a lower number.
     await this.library.recordOutcome(name, result.ok, result.error);
-    if (result.ok && result.output !== undefined) result.output = await offloadToolOutput(this.env, result.output);
+    if (!invocation.codeResult && result.ok && result.output !== undefined) result.output = await offloadToolOutput(this.env, result.output);
     return this.recordExecution(name, result);
   }
 

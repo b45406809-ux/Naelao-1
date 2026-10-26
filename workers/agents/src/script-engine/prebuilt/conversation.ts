@@ -275,6 +275,12 @@ export const conversation: PrebuiltScript = {
     "Search the full, uncompacted transcript of the current conversation. Use this whenever the user refers to something that isn't in your recent messages or summary — the earlier part of a long conversation is compacted away, and this is how you look it up instead of guessing.",
   domain: "knowledge",
   requires_tier: 1,
+  inputSchemas: {
+    "conversation.search": { type: "object", required: ["query", "session_id"], additionalProperties: false, properties: {
+      query: { type: "string" }, session_id: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 20 },
+      scan_limit: { type: "integer", minimum: 50, maximum: 10000 }, before_id: { type: "string" },
+    } },
+  },
   paramHints: {
     "conversation.search": "{query, session_id, limit?:1..20, scan_limit?:50..10000, before_id?:next_cursor} — scans a bounded transcript page; pass next_cursor as before_id to continue into older messages.",
     "conversation.research": "{query, session_id, limit?:1..20, scan_limit?:50..10000, before_id?, process?:'summarize'|'extract'|'compress', entities?} — search one bounded page, then optionally send only matched excerpts to document processing; extract requires entity descriptions.",

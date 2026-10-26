@@ -53,6 +53,7 @@ export interface CodeRunnerOptions {
   createRpcBinding?: (options: ScopedCodeRpcOptions, deadline: number) => Promise<{ binding: CodeRpcBinding; close(): void }>;
   authorizeCodeCapability?: ScopedCodeRpcOptions["authorize"];
   dispatchCodeCapability?: ScopedCodeRpcOptions["dispatch"];
+  codeTools?: () => readonly import("@naelao/agent-sdk").CodeModeTool[];
   maxConcurrentIsolates?: number;
   maxConcurrentPerTenant?: number;
   /** Pinned provider memory ceiling; Workers currently enforce 128 MiB per isolate. */

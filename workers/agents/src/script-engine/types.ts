@@ -1018,6 +1018,7 @@ export interface ScriptEngineEnv {
   codeGrantIsActive?: (scope: Readonly<import("@naelao/agent-sdk").CodeInvocationScope>) => Promise<boolean>;
   codeAuthorize?: import("@naelao/agent-sdk").ScopedCodeRpcOptions["authorize"];
   codeDispatch?: import("@naelao/agent-sdk").ScopedCodeRpcOptions["dispatch"];
+  codeTools?: () => readonly import("@naelao/agent-sdk").CodeModeTool[];
   codeProxyRequest?: (scope: Readonly<import("@naelao/agent-sdk").CodeInvocationScope>, input: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
   /** Dispatches `runtime:"workflow"` scripts to a durable CF Workflow. Optional — such scripts
    *  fail closed with an honest "unavailable" when absent, same precedent as codeRunner. */

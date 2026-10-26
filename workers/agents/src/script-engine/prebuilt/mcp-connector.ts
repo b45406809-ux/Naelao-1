@@ -143,6 +143,12 @@ Before acting, confirm the connection's scope and use only the account available
 Verify the result after an external write. If a request times out or returns an uncertain result, check the provider state before retrying. Never repeat a send, purchase, refund, deletion, or submission just to see whether it worked.`,
   domain: "comms",
   requires_tier: 2,
+  inputSchemas: {
+    "mcp.list_tools": { type: "object", required: ["server"], additionalProperties: false, properties: { server: { type: "string" } } },
+    "mcp.call": { type: "object", required: ["server", "tool"], additionalProperties: false, properties: {
+      server: { type: "string" }, tool: { type: "string" }, params: { type: "object", additionalProperties: true },
+    } },
+  },
   operations: {
     // mcp.register — add an MCP server for this space. credential_name (optional) references a
     // vault credential (space_credentials) the hub resolves at call time; the agent never holds it.

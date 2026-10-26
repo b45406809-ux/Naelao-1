@@ -141,6 +141,7 @@ export interface CodeInvocationScope {
   tenantId: string; spaceId: string; agentId: string; projectId?: string | undefined; userId?: string | undefined;
   runId?: string | undefined; taskId?: string; installationId?: string | undefined; grantVersion?: string;
 }
+import { describeCodeModeTool, searchCodeModeTools } from "./code-mode.js";
 export interface ScopedCodeRpcOptions {
   scope: Readonly<CodeInvocationScope>;
   capabilities: readonly string[];
@@ -148,6 +149,7 @@ export interface ScopedCodeRpcOptions {
   maxCalls?: number; maxPayloadBytes?: number; secrets?: readonly string[];
   authorize(scope: Readonly<CodeInvocationScope>, capability: string): Promise<boolean>;
   dispatch(scope: Readonly<CodeInvocationScope>, capability: string, input: unknown, signal: AbortSignal): Promise<unknown>;
+  tools?: readonly import("./code-mode.js").CodeModeTool[];
 }
 export function redactCodeValue(value: unknown, maxBytes = 65_536, secrets: readonly string[] = []): unknown {
   const encoded = JSON.stringify(value ?? null, (key, item: unknown) => {
@@ -164,16 +166,28 @@ export function redactCodeValue(value: unknown, maxBytes = 65_536, secrets: read
 }
 export function createScopedCodeRpc(options: ScopedCodeRpcOptions): (capability: string, input: unknown) => Promise<unknown> {
   if (!options.scope.tenantId || !options.scope.spaceId || !options.scope.agentId) throw new Error("code_scope_required");
+  if (options.capabilities.length > 64 || options.capabilities.some(value => typeof value !== "string" || value.length > 200)) throw new Error("code_capabilities_invalid");
   const scope = Object.freeze({ ...options.scope });
   const allowed = new Set(options.capabilities);
   let calls = 0;
   return async (capability, input) => {
     if (options.signal.aborted) throw new Error("code_invocation_closed");
-    if (!allowed.has(capability) || !await options.authorize(scope, capability)) throw new Error(`code_capability_denied:${capability}`);
+    const discovery = capability === "codemode.search" || capability === "codemode.describe";
+    if (discovery ? !options.tools : !allowed.has(capability) || !await options.authorize(scope, capability)) throw new Error(`code_capability_denied:${capability}`);
     if (++calls > (options.maxCalls ?? 64)) throw new Error("code_rpc_quota");
     // Clone input rather than letting getters, bindings or mutable host objects cross the boundary.
     const payload = JSON.parse(JSON.stringify(input ?? null)) as unknown;
     if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > (options.maxPayloadBytes ?? 65_536)) throw new Error("code_rpc_payload_limit");
+    if (discovery) {
+      const tools = [];
+      for (const tool of options.tools!) if (allowed.has("tool:" + tool.name) && await options.authorize(scope, "tool:" + tool.name)) tools.push(tool);
+      if (options.signal.aborted) throw new Error("code_invocation_closed");
+      const args = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+      if (capability === "codemode.search") return redactCodeValue(searchCodeModeTools(tools, String(args.query ?? ""), args.limit === undefined ? 10 : Number(args.limit)), options.maxPayloadBytes, options.secrets);
+      const tool = tools.find(tool => tool.name === args.name);
+      if (!tool) throw new Error("code_tool_unavailable");
+      return redactCodeValue(describeCodeModeTool(tool), options.maxPayloadBytes, options.secrets);
+    }
     const result = await options.dispatch(scope, capability, payload, options.signal);
     if (options.signal.aborted || !await options.authorize(scope, capability)) throw new Error("code_invocation_closed");
     return redactCodeValue(result, options.maxPayloadBytes, options.secrets);

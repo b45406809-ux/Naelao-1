@@ -176,6 +176,7 @@ export * from "./display-mode.js";
 export * from "./mode-dispatch.js";
 export * from "./cockpit-promotion.js";
 export * from "./runtime-context.js";
+export * from "./code-mode.js";
 export * from "./avos-features.js";
 export * from "./artifact-client.js";
 export * from "./widgets.js";

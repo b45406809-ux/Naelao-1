@@ -196,7 +196,8 @@ async function runTier(
   harness: string,
   tier: ExecutionTier,
   args: Record<string, unknown>,
-  sidecar?: import("../container-policy.js").InstalledContainer
+  sidecar?: import("../container-policy.js").InstalledContainer,
+  capabilities?: string[]
 ): Promise<unknown> {
   if (ctx.env.workspaceFileScope !== undefined && (tier >= 5 || name === "code-exec.execute_python"))
     throw new Error("worker_file_scope_native_execution_unavailable");
@@ -214,7 +215,7 @@ async function runTier(
     ...(ctx.env.maxTier !== undefined ? { maxTier: ctx.env.maxTier } : {}),
     ...(ctx.env.workspaceBranch ? { workspaceBranch: ctx.env.workspaceBranch } : {}),
     ...(ctx.env.humanInvokerId ? { userId: ctx.env.humanInvokerId } : {}),
-    ...(Array.isArray(args["capabilities"]) ? { capabilities: args["capabilities"].filter((value): value is string => typeof value === "string") } : {}),
+    ...(capabilities ? { capabilities } : Array.isArray(args["capabilities"]) ? { capabilities: args["capabilities"].filter((value): value is string => typeof value === "string") } : {}),
     ...(ctx.env.runId ? { runId: ctx.env.runId } : {}),
     ...(ctx.env.taskId ? { taskId: ctx.env.taskId } : {}),
     ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
@@ -342,7 +343,7 @@ async function runBash(
       assertNoReservedViolation({ name: `avos-bin.${first}`, code: source });
       return runTier(ctx, `avos-bin.${first}`, source, 2, {
         argv: parseCliWords(command).slice(1),
-      });
+      }, undefined, VirtualCliDispatcher.synthesizedCapabilities(source));
     }
   }
   const stages = parseShell(command).flatMap((pipeline) => pipeline.commands);
@@ -389,8 +390,10 @@ export const codeExec: PrebuiltScript = {
       "no project filesystem, network or pip installs. For native dependencies/files use " +
       "an explicitly authorized container or local-machine command.",
     "code.run_js":
-      "code (string, REQUIRED — a `run(args, ctx)` module body, no file I/O). args " +
-      "(object, optional — passed through to the module's own args param).",
+      "code (string, REQUIRED — an exported async run(args, ctx) module). args (object, optional). " +
+      "capabilities (string array, max 64; explicit tool:<operation> names). ctx.tools.search(query, limit) " +
+      "and describe(name) discover only these capabilities with current host authorization; ctx.tools.call(name, params) " +
+      "composes them through the normal host approval, scope, tier, and budget checks. No ambient network or imports.",
   },
   operations: {
     "code.execute_python": (a, c) => {
@@ -408,9 +411,14 @@ export const codeExec: PrebuiltScript = {
     // Same reserved-capability gate as script.create/update applies here too — ad hoc code
     // bypasses the library, so it must not bypass the money-in guard as well.
     async "code.run_js"(a, c) {
+      if (a.capabilities !== undefined && (!Array.isArray(a.capabilities) || a.capabilities.length > 64
+        || a.capabilities.some(value => typeof value !== "string" || value.length > 200))) throw new Error("code_capabilities_invalid");
       const adHocCode = String(a["code"] ?? "");
       assertNoReservedViolation({ name: "code-exec.run_js", code: adHocCode });
       await inspectMutation(adHocCode, {
+        // JavaScript semicolons are not SQL statements. Actual RPC mutations still
+        // enter their own host guards; retain catastrophic shell-pattern screening here.
+        kind: "shell",
         ...(c.env.mutationGrant ? { token: c.env.mutationGrant } : {}),
         secret: c.env.platformSecret ?? "",
         resourceId: c.env.projectId ?? c.env.spaceId,
@@ -420,7 +428,9 @@ export const codeExec: PrebuiltScript = {
         "code-exec.run_js",
         adHocCode,
         2,
-        (a["args"] as Record<string, unknown>) ?? {}
+        (a["args"] as Record<string, unknown>) ?? {},
+        undefined,
+        a.capabilities as string[] | undefined
       );
     },
   },

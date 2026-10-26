@@ -68,7 +68,11 @@ export default {
     const ctx = freeze({
       rpc: call,
       storage: freeze({ read: (path) => call('storage.read', {path}), write: (path,content,expectedHash) => call('storage.write', {path,content,expectedHash}), list: () => call('storage.list', {}) }),
-      tools: freeze({ call: (operation,params) => call('tool:' + operation, params || {}) }),
+      tools: freeze({
+        search: (query,limit) => call('codemode.search', {query,limit}),
+        describe: (name) => call('codemode.describe', {name}),
+        call: (operation,params) => call('tool:' + operation, params || {})
+      }),
       proxy: freeze({ request: (input) => call('proxy.request', input) }),
       ...(env.__PROJECT_ID__ ? {project: freeze({id:env.__PROJECT_ID__})} : {space: freeze({id:env.__SPACE_ID__})})
     });

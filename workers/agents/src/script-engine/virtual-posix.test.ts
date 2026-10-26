@@ -78,7 +78,7 @@ describe("virtual POSIX shell", () => {
         key.endsWith("/avos/bin/hello.ts")
           ? {
               text: async () =>
-                "export async function run(args, ctx) { return args.argv }",
+                '// @naelao-capabilities: ["tool:conversation.search"]\nexport async function run(args, ctx) { return args.argv }',
             }
           : null
       ),
@@ -103,6 +103,7 @@ describe("virtual POSIX shell", () => {
         name: "avos-bin.hello",
         tier: 2,
         args: { argv: ["world"] },
+        capabilities: ["tool:conversation.search"],
       })
     );
   });

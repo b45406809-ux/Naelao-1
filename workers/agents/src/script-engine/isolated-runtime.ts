@@ -124,6 +124,7 @@ async function runIsolateInternal(opts: CodeRunnerOptions, params: CodeRunParams
           ...(params.runId ? { runId: params.runId } : {}), ...(params.taskId ? { taskId: params.taskId } : {}),
           ...(params.installationId ? { installationId: params.installationId } : {}), ...(params.grantVersion ? { grantVersion: params.grantVersion } : {}) },
         capabilities, signal: controller.signal, maxCalls: 64, maxPayloadBytes: outputBytes,
+        ...(opts.codeTools ? { tools: opts.codeTools() } : {}),
         secrets: opts.platformSecret ? [opts.platformSecret] : [],
         authorize: opts.authorizeCodeCapability, dispatch: opts.dispatchCodeCapability,
       }, deadline);
