@@ -121,6 +121,15 @@ describe("Cloudflare dynamic execution", () => {
     expect((await r.invoke()).ok).toBe(false);
     expect(r.records.has("dynamic_snapshot")).toBe(false);
   });
+  it("restores an installed runtime snapshot on a later worker run for the same installation", async () => {
+    let now = 2500000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    const r = runtime({ snapshots: true });
+    expect((await r.invoke("/prewarm", { runId: "worker-run-one" })).status).toBe(200);
+    now += 5001; r.restart(); await r.alarm();
+    expect(r.records.get("dynamic_snapshot")?.id).toBe("snapshot-one");
+    expect((await r.invoke("/prewarm", { runId: "worker-run-two", executionId: "second-execution" })).status).toBe(200);
+    expect(r.transport.start).toHaveBeenLastCalledWith(expect.objectContaining({ containerSnapshot: { id: "snapshot-one" } }));
+  });
   it("rejects a different tenant before restoring a saved snapshot", async () => {
     let now = 3000000; vi.spyOn(Date, "now").mockImplementation(() => now);
     const r = runtime({ snapshots: true }); await r.invoke();

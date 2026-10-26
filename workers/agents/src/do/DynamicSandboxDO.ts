@@ -63,7 +63,7 @@ export class DynamicSandboxDO extends ToolSandboxDO {
     if (!image || !Object.values(this.container?.images ?? {}).includes(image)) throw new Error("container_image_not_in_deployed_image_map");
     assertDynamicPlan(profile, tier);
     const owner = await digest(JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId, scope.installationId,
-      scope.installationScope, scope.installationId ? scope.runId : null]));
+      scope.installationScope, scope.installationId ? null : scope.runId]));
     // Egress-policy changes invalidate snapshots as well as warm processes.
     const fingerprint = await digest(JSON.stringify([image, profile, owner,
       await this.ctx.storage.get("container_egress_profile")]));

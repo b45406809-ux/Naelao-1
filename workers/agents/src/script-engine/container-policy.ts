@@ -141,7 +141,11 @@ export function approvedContainer(item: InstalledContainer, registry: readonly A
   return approved;
 }
 export function sidecarKey(scope: ContainerInvocationScope): string {
-  return "sidecar:" + JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId, scope.installationId, scope.runId, scope.image]);
+  // Installed sidecars are durable per installation, not recreated for every worker run.
+  // The installation id is host-issued and scope-bound; uninstalled one-off containers remain
+  // run-isolated. Branch suffixing is applied by the caller to preserve worktree isolation.
+  return "sidecar:" + JSON.stringify([scope.tenantId, scope.spaceId, scope.projectId, scope.installationId,
+    scope.installationId ? null : scope.runId, scope.image]);
 }
 export interface BrowserContainerLease {
   actorId: string; tenantId: string; spaceId: string; projectId?: string | undefined; runId: string;

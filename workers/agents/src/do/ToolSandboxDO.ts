@@ -1020,7 +1020,11 @@ export class ToolSandboxDO extends DurableObject {
     const requestedScope = JSON.parse(request.headers.get("x-naelao-container-scope") ?? "null") as ContainerInvocationScope | null;
     await this.verifyContainer(container, requestedScope);
     if (requestedScope?.image) {
-      const installedOwner = JSON.stringify([requestedScope.installationId, requestedScope.runId, requestedScope.image]);
+      // Installed sidecars are installation-scoped across worker runs. The Durable Object
+      // name is also scope/branch-bound; keep this persisted guard aligned with that identity
+      // instead of rejecting a legitimate continuation because runId changed.
+      const installedOwner = JSON.stringify([requestedScope.tenantId, requestedScope.spaceId, requestedScope.projectId,
+        requestedScope.installationId, requestedScope.installationScope, requestedScope.workspaceBranch, requestedScope.image]);
       const previousOwner = await this.ctx.storage.get<string>("sidecar_owner");
       if (previousOwner && previousOwner !== installedOwner) throw new Error("container_sidecar_scope_mismatch");
       await this.ctx.storage.put("sidecar_owner", installedOwner);

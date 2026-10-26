@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveContainerBinary, resolveContainerCapabilities, validateContainerScope, type InstalledContainer } from "./container-policy.js";
+import { resolveContainerBinary, resolveContainerCapabilities, sidecarKey, validateContainerScope, type ContainerInvocationScope, type InstalledContainer } from "./container-policy.js";
 
 const installation = (overrides: Partial<InstalledContainer> = {}): InstalledContainer => ({
   tenantId: "tenant", spaceId: "space", projectId: "project", installationId: "install-a", extensionId: "media_tools",
@@ -52,5 +52,15 @@ describe("container capability resolution", () => {
       timeoutMs: 30_000, deadline: Date.now() + 30_000 };
     expect(() => validateContainerScope({ ...base, projectId: "project" })).not.toThrow();
     expect(() => validateContainerScope(base)).toThrow("project_runtime_project_scope_required");
+  });
+
+  it("keeps an installed sidecar identity stable across worker runs but isolates one-off containers", () => {
+    const base: ContainerInvocationScope = { tenantId: "tenant", spaceId: "space", projectId: "project", actorId: "person", agentId: "worker",
+      runId: "run-one", executionId: "exec-one", installationId: "install-a", installationScope: "PROJECT_SHARED",
+      image: "registry.example/ffmpeg@sha256:" + "b".repeat(64), timeoutMs: 30_000, deadline: Date.now() + 30_000 };
+    const continuation = { ...base, runId: "run-two", executionId: "exec-two" };
+    expect(sidecarKey(base)).toBe(sidecarKey(continuation));
+    expect(sidecarKey({ ...base, installationId: undefined, installationScope: undefined })).not.toBe(
+      sidecarKey({ ...continuation, installationId: undefined, installationScope: undefined }));
   });
 });
