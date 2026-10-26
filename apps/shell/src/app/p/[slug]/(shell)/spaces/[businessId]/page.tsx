@@ -363,7 +363,7 @@ export default function BusinessDetailPage() {
 
       <div className="section-label">Connected computers</div>
       <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
-        A connected computer keeps its own files, applications, and login state. Naelao never mounts your Space workspace on it. Linux shell runs are isolated to the folder you approve, with network access disabled.
+        A connected computer keeps its own files, applications, and login state. Naelao never mounts your Space workspace on it. Linux shell runs are isolated to the folder you approve, with network access disabled. Optional app inventory may report app/account labels only; it does not copy cookies or prove that a login still works.
       </p>
       <div className="settings-block">
         {namedTunnels.map((machine) => {
@@ -372,6 +372,7 @@ export default function BusinessDetailPage() {
             <div style={{ minWidth: 0 }}>
               <div className="settings-row-label">{machine.name} · {machine.hardware.platform}/{machine.hardware.arch}</div>
               <div className="settings-row-sub">{online ? "Connected" : machine.status === "active" ? "Offline" : machine.status} · {machine.hardware.capabilities.join(", ") || "no reported capabilities"}</div>
+              {(machine.hardware.apps?.length ?? 0) > 0 && <div className="settings-row-sub">App profiles (owner-reported, not live-checked): {machine.hardware.apps!.map((app) => `${app.id}${app.connectionId ? ` · ${app.connectionId}` : ""}${app.authenticatedAt !== undefined ? ` · auth metadata ${Date.now() - app.authenticatedAt >= 0 && Date.now() - app.authenticatedAt <= 60_000 ? "fresh" : "stale"}` : ""}`).join("; ")}</div>}
               {machine.grants.map((grant) => <div className="settings-row-sub" key={grant.id}>
                 {grant.roots.map((root) => `${root.access}: ${root.path}`).join(", ") || "temporary scratch only"}{grant.shellAccess === "sandboxed" ? " · sandboxed shell" : ""}{grant.externalUse?.includes("capability") ? " · eligible for selected tasks" : " · manual use only"}
               </div>)}
