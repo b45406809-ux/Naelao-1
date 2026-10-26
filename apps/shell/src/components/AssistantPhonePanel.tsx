@@ -60,6 +60,10 @@ export function AssistantPhonePanel({
     [content, setContent] = React.useState(""),
     [transfer, setTransfer] = React.useState("");
   const [receipt, setReceipt] = React.useState("");
+  const [telnyxKey, setTelnyxKey] = React.useState("");
+  const [telnyxPublicKey, setTelnyxPublicKey] = React.useState("");
+  const [telnyxNumberId, setTelnyxNumberId] = React.useState("");
+  const [telnyxSetup, setTelnyxSetup] = React.useState("");
   const [handlerInstallation, setHandlerInstallation] = React.useState(""),
     [handlerDigest, setHandlerDigest] = React.useState("");
   const [extensionAssignments, setExtensionAssignments] = React.useState<Record<string, { installation: string; digest: string }>>({});
@@ -130,6 +134,10 @@ export function AssistantPhonePanel({
     setLiveCall(null);
     setLiveSessionId(undefined);
     setAccount("");
+    setTelnyxKey("");
+    setTelnyxPublicKey("");
+    setTelnyxNumberId("");
+    setTelnyxSetup("");
     setSid("");
     setTo("");
     setText("");
@@ -172,6 +180,10 @@ export function AssistantPhonePanel({
       }
       if (action === "phone-live-end") setLiveCall(null);
       if (action === "phone-credentials") setSecret("");
+      if (["phone-telnyx-configure", "phone-telnyx-status", "phone-telnyx-remove"].includes(action)) {
+        setTelnyxKey("");
+        setTelnyxSetup(result.configured ? `Telnyx account verified for ${String(result.phone_number)}. Calling and messaging activation is pending.` : "No Telnyx account configured.");
+      }
       await refresh();
     } catch (e) {
       if (g === generation.current)
@@ -219,6 +231,20 @@ export function AssistantPhonePanel({
       <button type="button" disabled={busy} onClick={() => void refresh()}>
         Refresh phone
       </button>
+      <details style={{ marginTop: 12 }}>
+        <summary>Telnyx account preparation</summary>
+        <p>Verify an existing Telnyx number and store account credentials securely. Telnyx calling and messaging are awaiting integration; your active phone provider stays in place.</p>
+        <fieldset disabled={busy || !state?.enabled}>
+          <legend>Verify Telnyx account</legend>
+          <label>API key <input type="password" autoComplete="new-password" value={telnyxKey} onChange={event => setTelnyxKey(event.target.value)} /></label>
+          <label>Webhook public key <input autoComplete="off" value={telnyxPublicKey} onChange={event => setTelnyxPublicKey(event.target.value)} /></label>
+          <label>Existing number resource ID <input inputMode="numeric" autoComplete="off" value={telnyxNumberId} onChange={event => setTelnyxNumberId(event.target.value)} /></label>
+          <button type="button" disabled={!telnyxKey || !telnyxPublicKey || !telnyxNumberId} onClick={() => void act("phone-telnyx-configure", { api_key: telnyxKey, public_key: telnyxPublicKey, number_id: telnyxNumberId })}>Verify and save</button>{" "}
+          <button type="button" onClick={() => void act("phone-telnyx-status")}>Check setup status</button>
+          {telnyxSetup && <p role="status">{telnyxSetup}</p>}
+        </fieldset>
+        <button type="button" disabled={busy} onClick={() => { if (window.confirm("Remove the saved Telnyx account credentials? This does not release numbers at Telnyx.")) void act("phone-telnyx-remove", { confirm: true }); }}>Remove saved Telnyx credentials</button>
+      </details>
       {!state?.phone ||
       ["released", "detached"].includes(state.phone.status) ? (
         <fieldset disabled={busy || !state?.enabled}>

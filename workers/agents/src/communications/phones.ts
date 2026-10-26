@@ -219,10 +219,22 @@ export async function handlePhoneAction(
       "phone-event",
       "phone-reconcile",
       "phone-reconcile-number",
+      "phone-telnyx-remove",
+      "phone-telnyx-status",
     ].includes(action)
   )
     await livePhoneAllowed(env, scope);
   let binding = await assistantPhone(env, identity.id);
+  if (["phone-telnyx-configure", "phone-telnyx-status", "phone-telnyx-remove"].includes(action)) {
+    const { configureTelnyxAccount, telnyxAccountStatus, removeTelnyxAccount } = await import("./telnyx-account.js");
+    if (action === "phone-telnyx-remove") {
+      if (body.confirm !== true) throw new Error("phone_confirmation_required");
+      return removeTelnyxAccount(env, scope, identity);
+    }
+    return action === "phone-telnyx-configure"
+      ? configureTelnyxAccount(env, scope, identity, body)
+      : telnyxAccountStatus(env, identity);
+  }
   if (body.binding_id !== undefined) {
     if (
       !manager ||

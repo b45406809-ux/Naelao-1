@@ -76,4 +76,11 @@ export class TelnyxTelephony {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("telnyx_message_id_invalid");
     return this.request(`/messages/${encodeURIComponent(id)}`, "GET");
   }
+  async inspectPhoneNumber(id: string) {
+    if (!/^\d{1,32}$/.test(id)) throw new Error("telnyx_number_id_invalid");
+    const number = await this.request(`/phone_numbers/${id}`, "GET");
+    if (number.id !== id || typeof number.phone_number !== "string" || !isE164(number.phone_number))
+      throw new PhoneProviderError(false, "telnyx_number_receipt_invalid");
+    return { id, phoneNumber: number.phone_number };
+  }
 }

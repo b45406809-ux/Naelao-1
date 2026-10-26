@@ -6,6 +6,12 @@ Twilio remains the active assistant phone provider. Meta Direct WhatsApp is sepa
 `voice/telnyx-telephony.ts` implements an inactive Telnyx transport boundary: authenticated
 webhook parsing, answer/hangup with stable command IDs, SMS submission and message inspection.
 It does not provision numbers, mount ingress routes, dispatch assistant tasks, or switch carriers.
+The phone settings panel now supports owner-controlled Telnyx account preparation for Space
+and Project assistants. Setup verifies an exact number ID via the official phone-number
+resource before storing API/public keys in a separate identity-specific Vault credential.
+Status returns sanitized metadata and explicitly reports `transport_active: false`.
+Owners can remove that credential even after disabling the phone channel. This does not
+release the carrier number or change the active Twilio binding.
 
 ## Verified contracts
 
@@ -14,6 +20,7 @@ Official Telnyx SDK source was read on 2026-10-26:
 - https://github.com/team-telnyx/telnyx-node/blob/master/src/lib/webhooks.ts
 - https://github.com/team-telnyx/telnyx-node/blob/master/src/resources/calls/actions.ts
 - https://github.com/team-telnyx/telnyx-node/blob/master/src/resources/messages/messages.ts
+- https://github.com/team-telnyx/telnyx-node/blob/master/src/resources/phone-numbers/phone-numbers.ts
 
 The signature is Ed25519 over `timestamp|rawBody`, using a base64 raw 32-byte public
 key, a 64-byte signature and 300-second timestamp tolerance. Authentication precedes
@@ -31,7 +38,8 @@ entitlement, country availability, prices, or deployed webhook delivery.
 
 - Persist provider discriminator and provider-specific account/number identities without
   reinterpreting existing Twilio SIDs. Preserve existing callbacks during migration.
-- Owner-scoped Vault binding, verified number import, quoted purchase, detach and release.
+- Verified account preparation and scoped Vault storage/removal are implemented. Active
+  number import, quoted purchase, callback migration, detach and release remain open.
 - Signed Telnyx ingress with durable event claims, binding/destination checks and assistant
   membership verification before entering the existing planner/worker runtime.
 - Normalize usage receipts using actual currency and provider identifiers; keep uncertain
@@ -52,3 +60,7 @@ silently become a Twilio number. Carrier switching and number porting are distin
 Five focused tests passed: genuine signatures, altered payloads, stale/future timestamps,
 signed malformed events, uncertain mutations, missing receipts and path injection.
 Agents Worker TypeScript check passed. No live provider or SFU acceptance was run.
+
+2026-10-27 continuation: account preparation tests cover verify-before-store, mismatched
+number rejection, secret-free status, worker/nonowner denial and scope-specific credential
+removal. The complete assistant-phone regression group is included in local verification.
