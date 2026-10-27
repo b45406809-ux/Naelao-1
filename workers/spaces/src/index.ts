@@ -1380,6 +1380,15 @@ async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
   return env.SPACE_DO.get(doId);
 }
 
+app.post("/internal/spaces/:spaceId/widget-event-subscribers", async c => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);
+  const body = await c.req.json<{ event?: { spaceId?: unknown }; actorId?: string }>().catch(() => ({} as { event?: { spaceId?: unknown }; actorId?: string }));
+  if (body.event?.spaceId !== c.req.param("spaceId")) return c.json({ error_code: "scope_mismatch" }, 403);
+  const stub = await spaceDoStub(c.env, c.req.param("spaceId"), tenantId);
+  return stub.fetch(new Request("http://space-do/widget-event-subscribers", { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": c.req.header("x-naelao-internal-token") ?? "" }, body: JSON.stringify(body) }));
+});
+
 app.get("/spaces/:spaceId/workflow-installations/:instanceId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId || !await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET)) return c.json({ error_code: "forbidden" }, 403);

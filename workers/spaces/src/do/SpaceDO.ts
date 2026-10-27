@@ -27,7 +27,7 @@ import type {
 } from "@naelao/events";
 import { broadcastSpaceEvent, mintInternalToken, parseBoundedInteger, verifyInternalToken, readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import type { MessageRole } from "@naelao/types";
-import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
+import { DOGFOOD_EXTENSION_CATALOG, DOGFOOD_EXTENSIONS, digestExtensionManifest, getProjectTemplate, isSaasReplacementEligible, projectTemplateAsBlueprintProject, validateProjectHydrationSeed, validateDemoFixtureRows, validateExtensionManifest, validateWidgetHostEvent, scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { instantiateBlueprint as compileBlueprint } from "@naelao/agent-sdk";
 import { resolveAssistantChannels, validateAssistantChannelDefaults, validateAssistantChannelPatch, type AssistantChannelPatch, type AssistantChannelTemplateDefaults } from "@naelao/agent-sdk";
 import type { DisplayMode, ExtensionManifest, ProjectKind, SpaceBlueprint, TemplateMode } from "@naelao/agent-sdk";
@@ -2908,6 +2908,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), ...scopeParams);
         return Response.json({ installations: rows.map(row => { const { manifest_json, ...instance } = row; return { instance, manifest: JSON.parse(manifest_json),
           approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }; }) });
+      }
+      if (url.pathname === "/widget-event-subscribers" && method === "POST") {
+        const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+        if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error_code: "forbidden" }, { status: 403 });
+        const body = await request.json<{ event?: unknown; actorId?: string }>().catch(() => ({} as { event?: unknown; actorId?: string }));
+        let event: ReturnType<typeof validateWidgetHostEvent>;
+        try { event = validateWidgetHostEvent(body.event); } catch { return Response.json({ error_code: "invalid_widget_event" }, { status: 400 }); }
+        if (!body.actorId || body.actorId.length > 192) return Response.json({ error_code: "invalid_actor" }, { status: 400 });
+        const projectId = event.projectId ?? null;
+        const rows = queryAll<{ instance_id: string; extension_id: string; scope: string; manifest_json: string }>(this.ctx.storage.sql as never,
+          `SELECT i.instance_id,i.extension_id,i.scope,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
+           WHERE i.tenant_id=? AND i.space_id=? AND i.status='active' AND ((i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND i.project_id=?) OR (i.scope='PROJECT_USER' AND i.project_id=? AND i.user_id=?) OR (i.scope='SPACE_SHARED' AND ? IS NULL) OR (i.scope='SPACE_USER' AND ? IS NULL AND i.user_id=?)) ORDER BY i.instance_id LIMIT 128`,
+          tenantId, event.spaceId, projectId, projectId, body.actorId, projectId, projectId, body.actorId);
+        const subscribers = rows.flatMap(row => {
+          try {
+            const manifest = validateExtensionManifest(JSON.parse(row.manifest_json));
+            return (manifest.widgetSubscriptions ?? []).filter(subscription => subscription.event === event.type).map(subscription => ({ installationId: row.instance_id, extensionId: row.extension_id, scope: row.scope, component: subscription.component }));
+          } catch { return []; }
+        });
+        // These are candidates only. Execution must re-check release validity, membership,
+        // installation lifecycle and the event-specific grant at delivery time.
+        return Response.json({ subscribers, truncated: rows.length === 128 });
       }
       if (url.pathname === "/extension-installations" && method === "GET") {
         const extensionId = url.searchParams.get("extension_id") ?? "";
