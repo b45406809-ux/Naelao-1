@@ -27,6 +27,10 @@ jobs:
         # Probe the current manifest on this disposable runner; report the separate frozen
         # lockfile failure without letting it prevent the capacity measurement.
         run: pnpm install --no-frozen-lockfile
+      - name: Prepare local build dependencies
+        run: |
+          pnpm add --filter @naelao/shell --filter @naelao/dashboard --save-dev @types/node@22
+          pnpm exec turbo run build --filter='./packages/*' --concurrency=2
       - name: Start extended local stack and sample resources
         shell: bash
         run: |
@@ -53,7 +57,14 @@ jobs:
           cat "$RUNNER_TEMP/naelao-probe/start.log"
           for log in .dev/logs/*.log; do printf '\n%s\n' "$log"; tail -30 "$log"; done
           docker system df
+          ready=1
+          for port in 8080 8787 8788 8789 8791 3000 3100; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/health" || true)
+            if [ "$code" = 000 ]; then ready=0; fi
+          done
+          if ! kill -0 "$stack_pid" 2>/dev/null; then ready=0; fi
           kill "$stack_pid" 2>/dev/null || true
+          if [ "$ready" = 0 ]; then echo 'Core endpoints did not all become reachable'; exit 1; fi
       - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
