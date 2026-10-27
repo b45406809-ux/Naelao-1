@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { recordScheduledJobRun, SCHEDULED_JOB_RUN_HISTORY_LIMIT } from "../../workers/agents/src/index.js";
+import { recordScheduledJobRun } from "../../workers/agents/src/index.js";
+import { SCHEDULED_JOB_RUN_HISTORY_LIMIT } from "../../workers/agents/src/scheduled-job-constants.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 import { readFileSync } from "node:fs";

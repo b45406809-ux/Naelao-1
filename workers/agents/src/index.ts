@@ -2,6 +2,7 @@ import { receiveAssistantEmail } from "./communications/inbound.js";
 import { registerPhoneWebhooks } from "./communications/phone-webhooks.js";
 import { registerTelnyxWebhook } from "./communications/telnyx-webhook.js";
 import { handleTelnyxMediaStream } from "./voice/telnyx-media-bridge.js";
+import { SCHEDULED_JOB_RUN_HISTORY_LIMIT } from "./scheduled-job-constants.js";
 import { registerCommunicationRoutes } from "./communications/routes.js";
 import { DynamicSandboxDO } from "./do/DynamicSandboxDO.js";
 export { DynamicSandboxDO };
@@ -8622,7 +8623,6 @@ interface ScheduledJobRow {
 // Phase 3 item 27/28 — the max recent fires kept per job in scheduled_job_runs (migration 0071).
 // An hourly-or-more-frequent job would otherwise grow this table unbounded; a run-history UI
 // only ever needs "recently," not "forever."
-export const SCHEDULED_JOB_RUN_HISTORY_LIMIT = 50;
 
 /**
  * Append one fire to a job's history (migration 0071) and cap retention to the most recent
