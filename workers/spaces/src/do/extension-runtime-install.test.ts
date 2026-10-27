@@ -71,7 +71,7 @@ describe("runtime extension installation", () => {
   });
 
   it("keeps sibling project installs on their pinned release when one instance upgrades", async () => {
-    const storage = createDOStorage(), state = { storage };
+    const storage = Object.assign(createDOStorage(), { get: async () => undefined }), state = { storage };
     const space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "release-pin-test-secret" } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
     storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active')");
@@ -90,6 +90,15 @@ describe("runtime extension installation", () => {
       expect.objectContaining({ project_id: "project-a", release_version: "2.0.0" }),
       expect.objectContaining({ project_id: "project-b", release_version: "1.0.0" }),
     ]) });
+    const template = await space.exportBlueprint("space", { projectId: "project-b", requiredExtensions: ["ext_pinned"], requiredExtensionVersions: { ext_pinned: "1.0.0" } });
+    expect(template.requiredExtensionVersions).toEqual({ ext_pinned: "1.0.0" });
+    expect(template.requiredExtensionDigests?.ext_pinned).toMatch(/^[a-f0-9]{64}$/);
+    await expect(space.exportBlueprint("space", { projectId: "project-b", requiredExtensions: ["ext_pinned"], requiredExtensionVersions: { ext_pinned: "3.0.0" } }))
+      .rejects.toThrow("required_extension_release_unavailable");
+    const unavailable = await space.fetch(new Request("http://space/blueprints/export", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ space_id: "space", project_id: "project-b", required_extensions: ["ext_pinned"], required_extension_versions: { ext_pinned: "3.0.0" } }) }));
+    expect(unavailable.status).toBe(422);
+    expect(await unavailable.json()).toMatchObject({ error_code: "required_extension_release_unavailable" });
   });
 
   it("binds publisher identity to immutable releases and blocks a revoked publisher release", async () => {

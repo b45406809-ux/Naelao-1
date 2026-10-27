@@ -3154,13 +3154,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return Response.json({preferences:resolveAssistantChannels(isProject?"project_assistant":"space_assistant",isProject?template.projectAssistants:template.spaceAssistant,projectTemplate,projectDefaults,overrides),overrides:overrides??{},templateDefaults:template});
       }
       if (method === "POST" && url.pathname === "/blueprints/export") {
-        const body = await request.json<{ space_id?: string; project_id?: string; required_extensions?: string[]; name?: string; description?: string; template_category?: string }>();
+        const body = await request.json<{ space_id?: string; project_id?: string; required_extensions?: string[]; required_extension_versions?: Record<string, string>; name?: string; description?: string; template_category?: string }>();
         if (!body.space_id) return Response.json({ error: "space_id is required" }, { status: 400 });
-        return Response.json(await this.exportBlueprint(body.space_id, {
-          ...(body.project_id ? { projectId: body.project_id } : {}), ...(body.required_extensions ? { requiredExtensions: body.required_extensions } : {}),
-          ...(body.name ? { name: body.name } : {}), ...(body.description ? { description: body.description } : {}),
-          ...(body.template_category ? { templateCategory: body.template_category } : {}),
-        }));
+        try {
+          return Response.json(await this.exportBlueprint(body.space_id, {
+            ...(body.project_id ? { projectId: body.project_id } : {}), ...(body.required_extensions ? { requiredExtensions: body.required_extensions } : {}),
+            ...(body.required_extension_versions ? { requiredExtensionVersions: body.required_extension_versions } : {}),
+            ...(body.name ? { name: body.name } : {}), ...(body.description ? { description: body.description } : {}),
+            ...(body.template_category ? { templateCategory: body.template_category } : {}),
+          }));
+        } catch (error) {
+          const errorCode = error instanceof Error ? error.message : "blueprint_export_failed";
+          const status = errorCode === "required_extension_release_unavailable" ? 422 : errorCode === "required_extension_not_installed" ? 409 : 400;
+          return Response.json({ error_code: errorCode }, { status });
+        }
       }
       if (method === "POST" && url.pathname === "/blueprints/instantiate") {
         const body = await request.json<{ blueprint?: SpaceBlueprint; target_space_id?: string; activation_key?: string }>();
@@ -4196,7 +4203,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   /** Produce the raw portable representation. The public worker always scrubs it before R2. */
-  async exportBlueprint(spaceId: string, options: { projectId?: string; requiredExtensions?: string[]; name?: string; description?: string; templateCategory?: string } = {}): Promise<SpaceBlueprint> {
+  async exportBlueprint(spaceId: string, options: { projectId?: string; requiredExtensions?: string[]; requiredExtensionVersions?: Record<string, string>; name?: string; description?: string; templateCategory?: string } = {}): Promise<SpaceBlueprint> {
     this.ensureInit();
     if (options.projectId) {
       const project = queryOne<{ id: string }>(this.ctx.storage.sql as never,
@@ -4205,6 +4212,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     if (options.requiredExtensions && (!Array.isArray(options.requiredExtensions) || options.requiredExtensions.length > 128 ||
       options.requiredExtensions.some(id => typeof id !== "string" || !/^ext_[a-z0-9_-]{2,62}$/.test(id)))) throw new Error("invalid_required_extensions");
+    if (options.requiredExtensionVersions !== undefined && (!options.requiredExtensionVersions || typeof options.requiredExtensionVersions !== "object" || Array.isArray(options.requiredExtensionVersions) || Object.keys(options.requiredExtensionVersions).length > 128 ||
+      Object.entries(options.requiredExtensionVersions).some(([id, version]) => !/^ext_[a-z0-9_-]{2,62}$/.test(id) || typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)))) throw new Error("invalid_required_extension_versions");
     if (options.name !== undefined && (typeof options.name !== "string" || !options.name.trim() || options.name.length > 160)) throw new Error("invalid_blueprint_name");
     if (options.description !== undefined && (typeof options.description !== "string" || options.description.length > 2000)) throw new Error("invalid_blueprint_description");
     if (options.templateCategory !== undefined && !/^[a-z][a-z0-9_-]{1,63}$/.test(options.templateCategory)) throw new Error("invalid_template_category");
@@ -4248,6 +4257,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const requestedExtensions = options.projectId ? (options.requiredExtensions ?? []) : (options.requiredExtensions ?? [...availableExtensions]);
     if (requestedExtensions.some(id => !availableExtensions.has(id))) throw new Error("required_extension_not_installed");
+    const selectedExtensionIds = new Set(requestedExtensions);
+    if (Object.keys(options.requiredExtensionVersions ?? {}).some(id => !selectedExtensionIds.has(id))) throw new Error("required_extension_version_not_selected");
+    for (const [extensionId, version] of Object.entries(options.requiredExtensionVersions ?? {})) {
+      const release = queryOne<{ manifest_json: string; host_signature: string; artifact_sha256: string; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+        "SELECT manifest_json,host_signature,artifact_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?", extensionId, version);
+      if (!release || release.publisher_revoked_at || await this.signExtensionRelease(extensionId, version, release.manifest_json, release.artifact_sha256) !== release.host_signature)
+        throw new Error("required_extension_release_unavailable");
+      let manifest: ExtensionManifest;
+      try { manifest = validateExtensionManifest(JSON.parse(release.manifest_json)); }
+      catch { throw new Error("required_extension_release_unavailable"); }
+      if (manifest.id !== extensionId || manifest.bundle?.version !== version) throw new Error("required_extension_release_unavailable");
+      extensionVersions.set(extensionId, version);
+      extensionDigests.set(extensionId, await digestExtensionManifest(manifest));
+    }
     return {
       id: crypto.randomUUID(), schemaVersion: "2.0", metadata: { exportedAt: new Date().toISOString(), sourceSpaceId: spaceId,
         ...(options.name ? { name: options.name.trim() } : {}), ...(options.description ? { description: options.description.trim() } : {}) },
