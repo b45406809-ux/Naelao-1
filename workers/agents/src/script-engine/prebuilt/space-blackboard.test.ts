@@ -31,4 +31,12 @@ describe("space blackboard commands", () => {
     const request = fetch.mock.calls[0]![0] as Request;
     expect(await request.json()).toMatchObject({ source_project_id: "source", target_project_id: "target" });
   });
+  it("passes a valid search cursor to the host and rejects invalid cursors", async () => {
+    const fetch = vi.fn(async (_request: Request) => Response.json({ cards: [], next_cursor: "next", truncated: true }));
+    const ctx = { env: { tenantId: "tenant", spaceId: "space", userId: "user", platformSecret: "secret", spacesWorker: { fetch } } } as unknown as PrebuiltOpContext;
+    const result = await spaceBlackboard.operations["blackboard.search"]!({ query: "shipping", after: "project-1" }, ctx) as { next_cursor: string };
+    expect(result.next_cursor).toBe("next");
+    expect(new URL(fetch.mock.calls[0]![0].url).searchParams.get("after")).toBe("project-1");
+    await expect(spaceBlackboard.operations["blackboard.search"]!({ query: "shipping", after: "../other" }, ctx)).rejects.toThrow("blackboard_cursor_invalid");
+  });
 });

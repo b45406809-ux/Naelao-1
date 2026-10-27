@@ -34,6 +34,7 @@ export const spaceBlackboard: PrebuiltScript = {
       return call(ctx, "POST", "requests", { id: args.id, source_project_id: source, target_project_id: args.target_project_id, objective: args.objective, expected_result: args.expected_result, ...(args.deadline ? { deadline: args.deadline } : {}) });
     },
     "blackboard.requests": (_args, ctx) => call(ctx, "GET", `requests/${project(ctx)}`),
+    "blackboard.events": (_args, ctx) => call(ctx, "GET", `events/${project(ctx)}`),
     "blackboard.respond": async (args, ctx) => {
       const id = typeof args.id === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(args.id) ? args.id : null;
       if (!id) throw new Error("blackboard_request_id_invalid");
@@ -45,12 +46,14 @@ export const spaceBlackboard: PrebuiltScript = {
     "blackboard.search": async (args, ctx) => {
       const query = typeof args.query === "string" ? args.query.trim() : "";
       if (!query || query.length > 1000) throw new Error("blackboard_query_invalid");
-      const result = await call(ctx, "GET", "cards");
-      return { candidates: rankSharedCards(query, Array.isArray(result.cards) ? result.cards as SharedProjectCard[] : []).slice(0, 20), truncated: result.truncated === true, untrusted: true };
+      const after = typeof args.after === "string" ? args.after : "";
+      if (after && !/^[A-Za-z0-9._:-]{1,160}$/.test(after)) throw new Error("blackboard_cursor_invalid");
+      const result = await call(ctx, "GET", `cards${after ? `?after=${encodeURIComponent(after)}` : ""}`);
+      return { candidates: rankSharedCards(query, Array.isArray(result.cards) ? result.cards as SharedProjectCard[] : []).slice(0, 20), next_cursor: result.next_cursor ?? null, truncated: result.truncated === true, untrusted: true };
     },
   },
   paramHints: { "blackboard.publish": "summary (string), capabilities (string[]), evidence (string[]); shares only the current project.",
-    "blackboard.unpublish": "Removes the current project's shared summary.", "blackboard.search": "query (string); returns accessible shared candidates, not verified conclusions.",
+    "blackboard.unpublish": "Removes the current project's shared summary.", "blackboard.search": "query (string), after (optional cursor); returns accessible shared candidates, not verified conclusions.",
     "blackboard.request": "id (unique stable string), target_project_id, objective, expected_result, optional deadline; requires approval.",
-    "blackboard.requests": "Lists requests involving the current project.", "blackboard.respond": "id, action (accept, decline, complete, cancel), optional response; requires approval." },
+    "blackboard.requests": "Lists requests involving the current project.", "blackboard.events": "Lists recent coordination events for the current project.", "blackboard.respond": "id, action (accept, decline, complete, cancel), optional response; requires approval." },
 };

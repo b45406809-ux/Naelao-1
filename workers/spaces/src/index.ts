@@ -1868,9 +1868,14 @@ app.delete("/internal/spaces/:spaceId/blackboard/cards/:projectId", async c => {
 app.get("/internal/spaces/:spaceId/blackboard/cards", async c => {
   const spaceId = c.req.param("spaceId"), visible = await visibleAutomationProjectIds(c, spaceId);
   if (visible instanceof Response) return visible;
-  const cards = await c.env.PLATFORM_DB.prepare("SELECT project_id,summary,capabilities_json,evidence_json,updated_at FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? ORDER BY project_id LIMIT 1001").bind(c.req.header("x-naelao-tenant-id"), spaceId).all<{ project_id: string; summary: string; capabilities_json: string; evidence_json: string; updated_at: string }>();
-  const allowed = new Set(visible);
-  return c.json({ truncated: cards.results.length > 1000, cards: cards.results.slice(0, 1000).filter(card => allowed.has(card.project_id)).map(card => ({ projectId: card.project_id, summary: card.summary, capabilities: JSON.parse(card.capabilities_json), evidence: JSON.parse(card.evidence_json), updatedAt: card.updated_at })) });
+  const cursor = c.req.query("after") ?? "";
+  if (cursor && !/^[A-Za-z0-9._:-]{1,160}$/.test(cursor)) return c.json({ error_code:"invalid_cursor" },400);
+  const candidates = [...new Set(visible)].sort().filter(id => id > cursor);
+  const page = candidates.slice(0,100);
+  if (!page.length) return c.json({ cards: [], next_cursor: null, truncated: false });
+  const placeholders = page.map(() => "?").join(",");
+  const cards = await c.env.PLATFORM_DB.prepare(`SELECT project_id,summary,capabilities_json,evidence_json,updated_at FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id IN (${placeholders}) ORDER BY project_id`).bind(c.req.header("x-naelao-tenant-id"), spaceId, ...page).all<{ project_id: string; summary: string; capabilities_json: string; evidence_json: string; updated_at: string }>();
+  return c.json({ next_cursor: candidates.length > page.length ? page[page.length-1] : null, truncated: candidates.length > page.length, cards: cards.results.map(card => ({ projectId: card.project_id, summary: card.summary, capabilities: JSON.parse(card.capabilities_json), evidence: JSON.parse(card.evidence_json), updatedAt: card.updated_at })) });
 });
 app.post("/internal/spaces/:spaceId/blackboard/requests", async c => {
   const spaceId = c.req.param("spaceId"), tenant = c.req.header("x-naelao-tenant-id")!, user = c.req.header("x-naelao-user-id")!;
@@ -1883,8 +1888,12 @@ app.post("/internal/spaces/:spaceId/blackboard/requests", async c => {
   const card = await c.env.PLATFORM_DB.prepare("SELECT project_id FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id=?").bind(tenant,spaceId,b.target_project_id).first();
   if (!card) return c.json({ error_code: "target_not_shared" }, 409);
   const now = new Date().toISOString(), deadline = b.deadline ?? null;
-  await c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO space_blackboard_requests(tenant_id,space_id,id,source_project_id,target_project_id,objective,expected_result,deadline,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'pending',?,?,?)")
-    .bind(tenant,spaceId,b.id,b.source_project_id,b.target_project_id,b.objective.trim(),b.expected_result.trim(),deadline,user,now,now).run();
+  await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO space_blackboard_requests(tenant_id,space_id,id,source_project_id,target_project_id,objective,expected_result,deadline,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'pending',?,?,?)")
+      .bind(tenant,spaceId,b.id,b.source_project_id,b.target_project_id,b.objective.trim(),b.expected_result.trim(),deadline,user,now,now),
+    c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO space_blackboard_events(tenant_id,space_id,event_id,project_id,request_id,kind,created_at) SELECT tenant_id,space_id,id||':pending',target_project_id,id,'request.pending',created_at FROM space_blackboard_requests WHERE tenant_id=? AND space_id=? AND id=? AND source_project_id=? AND target_project_id=? AND objective=? AND expected_result=? AND deadline IS ? AND created_by=?")
+      .bind(tenant,spaceId,b.id,b.source_project_id,b.target_project_id,b.objective.trim(),b.expected_result.trim(),deadline,user),
+  ]);
   const row = await c.env.PLATFORM_DB.prepare("SELECT * FROM space_blackboard_requests WHERE tenant_id=? AND space_id=? AND id=?").bind(tenant,spaceId,b.id).first<{source_project_id:string;target_project_id:string;objective:string;expected_result:string;deadline:string|null;created_by:string}>();
   if (!row || row.source_project_id !== b.source_project_id || row.target_project_id !== b.target_project_id || row.objective !== b.objective.trim() || row.expected_result !== b.expected_result.trim() || row.deadline !== deadline || row.created_by !== user) return c.json({ error_code: "request_id_conflict" }, 409);
   return c.json({ request: row });
@@ -1907,9 +1916,19 @@ app.post("/internal/spaces/:spaceId/blackboard/requests/:id/transition", async c
   if (intended && row.status===intended && row.response===response) return c.json({ id,status:intended,deduplicated:true });
   const next=b.action==="accept" && b.project_id===row.target_project_id && row.status==="pending" ? "accepted" : b.action==="decline" && b.project_id===row.target_project_id && row.status==="pending" ? "declined" : b.action==="complete" && b.project_id===row.target_project_id && row.status==="accepted" ? "completed" : b.action==="cancel" && b.project_id===row.source_project_id && ["pending","accepted"].includes(row.status) ? "cancelled" : null;
   if(!next) return c.json({ error_code:"invalid_transition" },409);
-  const update=await c.env.PLATFORM_DB.prepare("UPDATE space_blackboard_requests SET status=?,response=?,updated_at=? WHERE tenant_id=? AND space_id=? AND id=? AND status=?").bind(next,response,new Date().toISOString(),tenant,spaceId,id,row.status).run();
-  if(!update.meta.changes) return c.json({ error_code:"request_changed" },409);
+  const now = new Date().toISOString(), recipient = b.project_id===row.source_project_id ? row.target_project_id : row.source_project_id;
+  const batch=await c.env.PLATFORM_DB.batch([
+    c.env.PLATFORM_DB.prepare("UPDATE space_blackboard_requests SET status=?,response=?,updated_at=? WHERE tenant_id=? AND space_id=? AND id=? AND status=?").bind(next,response,now,tenant,spaceId,id,row.status),
+    c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO space_blackboard_events(tenant_id,space_id,event_id,project_id,request_id,kind,created_at) SELECT tenant_id,space_id,id||':'||status,?,id,'request.'||status,updated_at FROM space_blackboard_requests WHERE tenant_id=? AND space_id=? AND id=? AND status=? AND updated_at=?").bind(recipient,tenant,spaceId,id,next,now),
+  ]);
+  if(!batch[0]?.meta.changes) return c.json({ error_code:"request_changed" },409);
   return c.json({ id,status:next });
+});
+app.get("/internal/spaces/:spaceId/blackboard/events/:projectId", async c => {
+  const spaceId=c.req.param("spaceId"), projectId=c.req.param("projectId");
+  const denied=await requireReadableAutomationProject(c,spaceId,projectId); if(denied) return denied;
+  const rows=await c.env.PLATFORM_DB.prepare("SELECT event_id,request_id,kind,created_at FROM space_blackboard_events WHERE tenant_id=? AND space_id=? AND project_id=? ORDER BY created_at DESC,event_id DESC LIMIT 101").bind(c.req.header("x-naelao-tenant-id"),spaceId,projectId).all();
+  return c.json({ events:rows.results.slice(0,100),truncated:rows.results.length>100 });
 });
 
 // POST /spaces/:spaceId/registry — internal: seed/refresh the root space row.
