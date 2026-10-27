@@ -324,6 +324,46 @@ describe("runtime extension installation", () => {
       .toEqual({ managed: false, active: false, releaseValid: false });
   });
 
+  it("keeps a composed Canvas bundle unavailable until its host initialization is confirmed", async () => {
+    const storage = createDOStorage();
+    const secret = "staged-canvas-runtime-secret";
+    const space = new SpaceDO({ storage } as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: secret } as never);
+    await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active')");
+    const manifest = { id: "ext_staged_canvas", type: "extension", declaredPermissions: [], capabilityRequirements: ["extension.project_canvas"], gadgets: [], daemons: [], commands: [],
+      bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_staged_canvas", version: "1.0.0", primitives: [
+        { schemaVersion: "1.0", kind: "canvas", id: "canvas", version: "1.0.0", permissions: [], capabilityRequirements: [], lifecycle: {}, layout: "CanvasMount", component: "./index.html", dynamicPage: false },
+      ] } };
+    const artifactSha256 = "d".repeat(64);
+    const install = await space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest, installedBy: "owner", tenantId: "tenant", spaceId: "space", projectId: "project-a", scope: "PROJECT_BOUND",
+        gatekeeperCapabilities: ["extension.project_canvas"], artifactSha256, deferActivation: true }) }));
+    expect(install.status).toBe(201);
+    const { installationId } = await install.json() as { installationId: string };
+    const visible = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_staged_canvas"));
+    expect(await visible.json()).toMatchObject({ installations: [{ status: "staging", project_id: "project-a" }] });
+    const appRoute = () => space.fetch(new Request(`http://space/project-extension-runtime?${new URLSearchParams({ tenant_id: "tenant", space_id: "space", project_id: "project-a", app_id: "canvas" })}`));
+    expect(await (await appRoute()).json()).toEqual({ managed: true, active: false, releaseValid: false });
+
+    const token = await mintInternalToken(secret, "tenant");
+    const activate = (overrides: Record<string, unknown> = {}, authToken = token) => space.fetch(new Request("http://space/extension-installation/activate", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": authToken },
+      body: JSON.stringify({ installationId, extensionId: "ext_staged_canvas", version: "1.0.0", artifactSha256, tenantId: "tenant", spaceId: "space", projectId: "project-a", ...overrides }),
+    }));
+    expect((await activate({}, "wrong-token")).status).toBe(403);
+    expect((await activate({ projectId: "project-b" })).status).toBe(409);
+    const abort = (projectId = "project-a") => space.fetch(new Request("http://space/extension-installation/abort", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant", "x-naelao-internal-token": token },
+      body: JSON.stringify({ installationId, tenantId: "tenant", spaceId: "space", projectId }),
+    }));
+    await expect((await abort("project-b")).json()).resolves.toMatchObject({ aborted: false });
+    expect(storage.sql.exec("SELECT status FROM extension_instances WHERE instance_id=?", installationId).toArray()[0]?.status).toBe("staging");
+    expect((await activate()).status).toBe(200);
+    expect(await (await appRoute()).json()).toEqual({ managed: true, active: true, releaseValid: true });
+    expect((await activate()).status).toBe(200); // idempotent host retry
+    expect(await (await abort()).json()).toMatchObject({ aborted: false });
+  });
+
   it("preserves existing unscoped extension revision updates when no scoped grant exists", async () => {
     const storage = createDOStorage(), state = { storage };
     const space = new SpaceDO(state as never, { PLATFORM_DB: planDb } as never);

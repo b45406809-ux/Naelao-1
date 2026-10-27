@@ -2233,6 +2233,27 @@ const MIGRATIONS: Migration[] = [
     space_id TEXT NOT NULL, scope_key TEXT NOT NULL, preferences_json TEXT NOT NULL,
     revision INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(space_id,scope_key)
   );` },
+  { version: 102, description: "staged extension bundle activation", up: `
+    DROP INDEX IF EXISTS idx_extension_instances_owner;
+    DROP INDEX IF EXISTS idx_extension_instances_project;
+    DROP INDEX IF EXISTS idx_extension_instances_named;
+    ALTER TABLE extension_instances RENAME TO extension_instances_v101;
+    CREATE TABLE extension_instances (
+      instance_id TEXT PRIMARY KEY, extension_id TEXT NOT NULL, tenant_id TEXT NOT NULL, space_id TEXT NOT NULL,
+      project_id TEXT, user_id TEXT,
+      scope TEXT NOT NULL CHECK (scope IN ('SPACE_SHARED','SPACE_ASSISTANT','SPACE_USER','PROJECT_BOUND','PROJECT_SHARED','PROJECT_USER')),
+      instance_key TEXT NOT NULL DEFAULT 'default', owner_key TEXT NOT NULL, installed_by TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled','staging','removed','expired')),
+      installed_at TEXT NOT NULL, removed_at TEXT,
+      UNIQUE(extension_id, tenant_id, space_id, project_id, user_id, scope, instance_key)
+    );
+    INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at)
+      SELECT instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at FROM extension_instances_v101;
+    DROP TABLE extension_instances_v101;
+    CREATE INDEX idx_extension_instances_owner ON extension_instances(tenant_id, space_id, status, scope);
+    CREATE INDEX idx_extension_instances_project ON extension_instances(space_id, project_id, status);
+    CREATE INDEX idx_extension_instances_named ON extension_instances(extension_id,tenant_id,space_id,project_id,instance_key,status);
+  ` },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2885,6 +2906,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/internal/domain-glossary" && method === "DELETE") return this.deleteDomainGlossary(url.searchParams);
       if (url.pathname === "/internal/domain-glossary/lookup" && method === "POST") return this.lookupDomainGlossary(request);
       if (url.pathname === "/extensions" && method === "GET") return this.listExtensions();
+      if (url.pathname === "/extension-installation/activate" && method === "POST") return this.activateExtensionInstallation(request);
+      if (url.pathname === "/extension-installation/abort" && method === "POST") return this.abortStagedExtensionInstallation(request);
       if (url.pathname === "/space-shared-extensions" && method === "GET") return this.listSpaceSharedExtensions(url.searchParams);
       if (url.pathname === "/extension-shared-filesystem-grants" && method === "POST") return this.updateSharedFilesystemGrants(request);
       if (url.pathname === "/space-shared-extension-lifecycle" && method === "PATCH") return this.updateSpaceSharedExtensionLifecycle(request);
@@ -2896,7 +2919,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const includeDisabled = url.searchParams.get("include_disabled") === "1";
         const projectId = url.searchParams.get("project_id") ?? "";
         const projectLifecycleView = includeDisabled && Boolean(projectId);
-        const statusFilter = includeDisabled ? "i.status IN ('active','disabled')" : "i.status='active'";
+        const statusFilter = includeDisabled ? "i.status IN ('active','disabled','staging')" : "i.status='active'";
         const scopeFilter = projectLifecycleView
           ? "i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')"
           : "(i.scope='SPACE_SHARED' OR (i.scope='SPACE_ASSISTANT' AND ?='') OR (i.scope='SPACE_USER' AND i.user_id=?) OR (i.scope='PROJECT_BOUND' AND i.project_id=?) OR (i.scope='PROJECT_SHARED' AND i.project_id=?) OR (i.scope='PROJECT_USER' AND i.project_id=? AND i.user_id=?))";
@@ -2934,8 +2957,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (url.pathname === "/extension-installations" && method === "GET") {
         const extensionId = url.searchParams.get("extension_id") ?? "";
         const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; status: string; installed_at: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          extensionId === "__all__" ? "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled') ORDER BY i.installed_at"
-            : "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled') ORDER BY i.installed_at",
+          extensionId === "__all__" ? "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at"
+            : "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at",
           ...(extensionId === "__all__" ? [url.searchParams.get("tenant_id"), url.searchParams.get("space_id")] : [url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), extensionId]));
         const installations = await Promise.all(rows.map(async ({ manifest_json, ...row }) => {
           try {
@@ -3025,8 +3048,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           if (dependency) return Response.json({ error_code: "extension_required_by_space_template", blueprint_id: dependency.blueprint_id }, { status: 409 });
         }
         const result = projectId
-          ? this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status IN ('active','disabled')`, instanceId, tenantId, spaceId, projectId)
-          : this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status IN ('active','disabled')`, instanceId, tenantId, spaceId);
+          ? this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND status IN ('active','disabled','staging')`, instanceId, tenantId, spaceId, projectId)
+          : this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now') WHERE instance_id=? AND tenant_id=? AND space_id=? AND scope='SPACE_SHARED' AND status IN ('active','disabled','staging')`, instanceId, tenantId, spaceId);
         if (result.rowsWritten === 1) execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
         return result.rowsWritten === 1
           ? Response.json({ removed: true, instance_id: instanceId })
@@ -11598,12 +11621,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async installExtension(request: Request): Promise<Response> {
-    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; artifactSha256?: string; publisherId?: string; publisherKeyId?: string; publisherSignature?: string; publisherPayloadSha256?: string; approvedSharedFilesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>();
+    const body = await request.json<{ manifest?: unknown; installedBy?: string; gatekeeperCapabilities?: string[]; tenantId?: string; spaceId?: string; scope?: InstallationScope; projectId?: string; userId?: string; instanceKey?: string; promoteExisting?: boolean; upgrade?: boolean; deferActivation?: boolean; artifactSha256?: string; publisherId?: string; publisherKeyId?: string; publisherSignature?: string; publisherPayloadSha256?: string; approvedSharedFilesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }> }>();
     if (!body.installedBy) return Response.json({ error: "installedBy is required" }, { status: 400 });
     if (body.scope && (!body.tenantId || !body.spaceId)) return Response.json({ error: "tenantId and spaceId are required for scoped installations" }, { status: 400 });
     let manifest: ExtensionManifest;
     try { manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: body.gatekeeperCapabilities ?? [] }); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "invalid_extension_manifest" }, { status: 400 }); }
+    if (body.deferActivation && (!manifest.bundle || !body.scope || !body.tenantId || !body.spaceId || !body.projectId))
+      return Response.json({ error_code: "deferred_extension_activation_scope_invalid" }, { status: 400 });
     // Enforce subscription resources at the owning actor too: generic extension installs,
     // upgrades and template activation must not bypass the runtime route's plan checks.
     let runtimeSlotLimit: number | undefined;
@@ -11720,9 +11745,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             throw new Error("extension_instance_identity_conflict");
           execute(this.ctx.storage.sql as never,
           `INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at)
-             VALUES(?,?,?,?,?,?,?,?,?,?,'active',?,NULL)
-             ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status='active',removed_at=NULL`,
-            instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, instanceKey, ownerKey, body.installedBy, now);
+             VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,NULL)
+             ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status=excluded.status,removed_at=NULL`,
+            instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, instanceKey, ownerKey, body.installedBy, body.deferActivation ? "staging" : "active", now);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
           for (const grant of approvedSharedFilesystem) execute(this.ctx.storage.sql as never,
             "INSERT INTO extension_shared_filesystem_grants(instance_id,path,access,approved_by,approved_at) VALUES(?,?,?,?,?)",
@@ -11753,6 +11778,52 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ installed: true, manifest, installedAt: now, ...(signature ? { release: { version: manifest.bundle!.version, artifactSha256, hostSignature: signature, signer: "naelao-host", manifestJson,
       ...(publisher?.publisher_key_id ? { publisher: { id: publisher.publisher_id, keyId: publisher.publisher_key_id, signature: publisher.publisher_signature,
         payloadSha256: publisher.publisher_payload_sha256, revoked: Boolean(publisher.publisher_revoked_at) } } : {}) } } : {}), ...(instanceId ? { installationId: instanceId } : {}) }, { status: 201 });
+  }
+
+  /** Activate a staged, signed project bundle only after its host runtime primitives initialize. */
+  private async activateExtensionInstallation(request: Request): Promise<Response> {
+    const body = await request.json<{ installationId?: string; extensionId?: string; version?: string; artifactSha256?: string;
+      tenantId?: string; spaceId?: string; projectId?: string }>().catch(() => ({} as { installationId?: string; extensionId?: string; version?: string; artifactSha256?: string;
+        tenantId?: string; spaceId?: string; projectId?: string }));
+    if (!body.installationId || !body.extensionId || !body.version || !/^[a-f0-9]{64}$/.test(body.artifactSha256 ?? "")
+      || !body.tenantId || !body.spaceId || !body.projectId
+      || request.headers.get("x-naelao-tenant-id") !== body.tenantId
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const row = queryOne<{ status: string; extension_id: string; tenant_id: string; space_id: string; project_id: string | null; manifest_json: string; artifact_sha256: string; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+      `SELECT i.status,i.extension_id,i.tenant_id,i.space_id,i.project_id,e.manifest_json,r.artifact_sha256,r.publisher_revoked_at
+       FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
+       JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=json_extract(e.manifest_json,'$.bundle.version')
+       WHERE i.instance_id=?`, body.installationId);
+    if (!row || row.extension_id !== body.extensionId || row.tenant_id !== body.tenantId || row.space_id !== body.spaceId
+      || row.project_id !== body.projectId || row.artifact_sha256 !== body.artifactSha256 || row.publisher_revoked_at)
+      return Response.json({ error_code: "staged_extension_release_mismatch" }, { status: 409 });
+    let manifest: ExtensionManifest;
+    try { manifest = validateExtensionManifest(JSON.parse(row.manifest_json)); } catch { return Response.json({ error_code: "staged_extension_manifest_invalid" }, { status: 409 }); }
+    if (manifest.id !== body.extensionId || manifest.bundle?.version !== body.version
+      || await this.signExtensionRelease(body.extensionId, body.version, row.manifest_json, body.artifactSha256)
+        !== queryOne<{ host_signature: string }>(this.ctx.storage.sql as never,
+          "SELECT host_signature FROM extension_releases WHERE extension_id=? AND version=?", body.extensionId, body.version)?.host_signature)
+      return Response.json({ error_code: "staged_extension_attestation_invalid" }, { status: 409 });
+    if (row.status === "active") return Response.json({ activated: true, installationId: body.installationId, status: "active" });
+    if (row.status !== "staging") return Response.json({ error_code: "staged_extension_not_activatable" }, { status: 409 });
+    const changed = this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='active' WHERE instance_id=? AND extension_id=? AND tenant_id=? AND space_id=? AND project_id=? AND status='staging'`,
+      body.installationId, body.extensionId, body.tenantId, body.spaceId, body.projectId);
+    if (changed.rowsWritten !== 1) return Response.json({ error_code: "staged_extension_activation_race" }, { status: 409 });
+    return Response.json({ activated: true, installationId: body.installationId, status: "active" });
+  }
+
+  private async abortStagedExtensionInstallation(request: Request): Promise<Response> {
+    const body = await request.json<{ installationId?: string; tenantId?: string; spaceId?: string; projectId?: string }>()
+      .catch(() => ({} as { installationId?: string; tenantId?: string; spaceId?: string; projectId?: string }));
+    if (!body.installationId || !body.tenantId || !body.spaceId || !body.projectId
+      || request.headers.get("x-naelao-tenant-id") !== body.tenantId
+      || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    const changed = this.ctx.storage.sql.exec(`UPDATE extension_instances SET status='removed',removed_at=datetime('now')
+      WHERE instance_id=? AND tenant_id=? AND space_id=? AND project_id=? AND scope='PROJECT_BOUND' AND status='staging'`,
+      body.installationId, body.tenantId, body.spaceId, body.projectId);
+    return Response.json({ aborted: changed.rowsWritten === 1, installationId: body.installationId });
   }
 
   private isNewerExtensionVersion(currentJson: string, nextVersion: string): boolean {

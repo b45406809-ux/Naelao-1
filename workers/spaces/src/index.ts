@@ -2113,9 +2113,9 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/lsp-indexer", async (c
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } });
 });
 
-// Owner/admin channel-only package installation. This path grants only the dedicated
-// channel.invoke capability and deliberately excludes Canvas/Gadget/member tool primitives;
-// those need their own host installers and grant review before they can be composed here.
+// Owner/admin channel-only package installation. This narrow path grants only the dedicated
+// channel.invoke capability. The separate signed project-bundle installer below supports
+// reviewed Canvas/Gadget/workflow/channel compositions and stages activation around setup.
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireBusinessMembership({ POST: "admin" }));
 app.use("/spaces/:spaceId/channel-extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
@@ -2422,13 +2422,27 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   }
   const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))].map(x => x.toString(16).padStart(2, "0")).join("");
   const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  const requiresRuntimeActivation = canvases.length > 0 || gadgets.length > 0;
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: [...requiredCapabilities], artifactSha256: digest, instanceKey,
-      publisherId: trustedPublisher.publisher_id, publisherKeyId, publisherSignature, publisherPayloadSha256, ...(body.upgrade ? { upgrade: true } : {}) }) }));
+      publisherId: trustedPublisher.publisher_id, publisherKeyId, publisherSignature, publisherPayloadSha256,
+      ...(requiresRuntimeActivation ? { deferActivation: true } : {}), ...(body.upgrade ? { upgrade: true } : {}) }) }));
   if (!installed.ok) return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
-  const installedResult = await readBoundedResponseJson<{ release?: { version?: string; artifactSha256?: string; hostSignature?: string } }>(installed.clone(), 64 * 1024);
-  if (canvases.length && (installedResult.release?.version !== bundle.version || installedResult.release.artifactSha256 !== digest
-    || !/^[a-f0-9]{64}$/.test(installedResult.release.hostSignature ?? ""))) return c.json({ error_code: "extension_canvas_release_attestation_unavailable" }, 503);
+  const installedResult = await readBoundedResponseJson<{ installationId?: string; release?: { version?: string; artifactSha256?: string; hostSignature?: string } }>(installed.clone(), 64 * 1024);
+  const abortStagedInstall = async () => {
+    if (!requiresRuntimeActivation || typeof installedResult.installationId !== "string") return;
+    await stub.fetch(new Request("http://space-do/extension-installation/abort", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+      body: JSON.stringify({ installationId: installedResult.installationId, tenantId: identity.tenantId, spaceId, projectId }),
+    })).catch(() => undefined);
+  };
+  const stagedFailure = async (errorCode: string, status: 400 | 409 | 500 | 503, message: string) => {
+    await abortStagedInstall();
+    return c.json({ error_code: errorCode, installation: installedResult, message: message.slice(0, 300) }, status);
+  };
+  if (requiresRuntimeActivation && (installedResult.release?.version !== bundle.version || installedResult.release.artifactSha256 !== digest
+    || !/^[a-f0-9]{64}$/.test(installedResult.release.hostSignature ?? ""))) return stagedFailure("extension_runtime_release_attestation_unavailable", 503, "Host release attestation was unavailable.");
   const runtimeAppId = (primitiveId: string) => {
     const appId = instanceKey === "default" ? primitiveId : `${instanceKey}_${primitiveId}`;
     if (!/^[a-z][a-z0-9_-]{1,63}$/.test(appId)) throw new Error("extension_runtime_app_id_invalid");
@@ -2445,19 +2459,29 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 3, html: canvasHtml, releaseProof }) }));
-    if (!init.ok) return c.json({ error_code: "extension_canvas_initialize_failed", message: (await readBoundedResponseText(init, 8 * 1024).catch(() => "")).slice(0, 300) }, init.status as 400 | 409 | 500);
+    if (!init.ok) return stagedFailure("extension_canvas_initialize_failed", 500, await readBoundedResponseText(init, 8 * 1024).catch(() => ""));
   }
   for (const gadget of gadgets) {
     const appId = runtimeAppId(gadget.id);
     const actor = gadgetActorId(c.env.MICRO_APP_DO, { scope: "PROJECT_BOUND", spaceId, projectId, appId });
     const init = await c.env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [] }) }));
-    if (!init.ok) return c.json({ error_code: "extension_gadget_initialize_failed", message: (await readBoundedResponseText(init, 8 * 1024).catch(() => "")).slice(0, 300) }, init.status as 400 | 409 | 500);
+    if (!init.ok) return stagedFailure("extension_gadget_initialize_failed", 500, await readBoundedResponseText(init, 8 * 1024).catch(() => ""));
   }
   if (canvases[0]) {
     const update = await stub.fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(identity.tenantId)}`, { method: "PATCH", headers: { "content-type": "application/json" },
       body: JSON.stringify({ viewport_config: { component: "CanvasMount", resourceId: runtimeAppId(canvases[0].id) } }) }));
-    if (!update.ok) return c.json({ error_code: "extension_canvas_mount_failed", installation: await readBoundedResponseJson(installed.clone(), 64 * 1024), message: (await readBoundedResponseText(update, 8 * 1024).catch(() => "")).slice(0, 300) }, 500);
+    if (!update.ok) return stagedFailure("extension_canvas_mount_failed", 500, await readBoundedResponseText(update, 8 * 1024).catch(() => ""));
+  }
+  if (requiresRuntimeActivation) {
+    const activation = await stub.fetch(new Request("http://space-do/extension-installation/activate", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
+      body: JSON.stringify({ installationId: (await readBoundedResponseJson<{ installationId?: string }>(installed.clone(), 64 * 1024)).installationId,
+        extensionId: bundle.id, version: bundle.version, artifactSha256: digest, tenantId: identity.tenantId, spaceId, projectId }),
+    }));
+    if (!activation.ok) return stagedFailure("extension_runtime_activation_failed", 503, await readBoundedResponseText(activation, 8 * 1024).catch(() => ""));
   }
   return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
 });

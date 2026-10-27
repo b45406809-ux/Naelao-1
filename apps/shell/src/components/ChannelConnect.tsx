@@ -524,7 +524,7 @@ export function ChannelConnect({
         setPublisherKeys(publishers.publishers);
         const channelInstances = new Set(items.map(item => item.instance_id));
         setOtherProjectInstallations(installed.installations.filter(item => item.instance.project_id === projectId
-          && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+          && ["active", "disabled", "staging"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       })
       .catch((err) => { if (!cancelled) { setExtensionInstallations([]); setOtherProjectInstallations([]); setPublisherKeys([]); setExtensionLoadError(err instanceof Error ? err.message : "Couldn't load project extensions."); } })
       .finally(() => { if (!cancelled) setExtensionsLoading(false); });
@@ -649,7 +649,7 @@ export function ChannelConnect({
       setExtensionInstallations(channels);
       const channelInstances = new Set(channels.map(item => item.instance_id));
       setOtherProjectInstallations(all.installations.filter(item => item.instance.project_id === projectId
-        && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+        && ["active", "disabled", "staging"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       setCanvasManifestDraft(""); setCanvasArtifactsDraft(""); setCanvasPublisherSignature(""); setCanvasInstallConfirmed(false); setConfirmUpgrade(false); setCanvasInstanceKey("default");
       onChanged();
     } catch (err) {
@@ -691,7 +691,7 @@ export function ChannelConnect({
       setExtensionInstallations(channels);
       const channelInstances = new Set(channels.map(item => item.instance_id));
       setOtherProjectInstallations(installed.installations.filter(item => item.instance.project_id === projectId
-        && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+        && ["active", "disabled", "staging"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       onChanged();
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't uninstall this channel handler."); }
     finally { setRemovingExtension(null); }
@@ -709,7 +709,7 @@ export function ChannelConnect({
       const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);
       setExtensionInstallations(channels);
       const channelInstances = new Set(channels.map(item => item.instance_id));
-      setOtherProjectInstallations(all.installations.filter(item => item.instance.project_id === projectId && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+      setOtherProjectInstallations(all.installations.filter(item => item.instance.project_id === projectId && ["active", "disabled", "staging"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       onChanged();
     } catch (err) { setError(err instanceof Error ? err.message : "Couldn't update extension status."); }
     finally { setChangingExtension(null); }
@@ -728,7 +728,7 @@ export function ChannelConnect({
       const all = await listContainerInstallations(spaceId, session, projectId, true);
       const channelInstances = new Set(extensionInstallations.map(item => item.instance_id));
       setOtherProjectInstallations(all.installations.filter(item => item.instance.project_id === projectId
-        && ["active", "disabled"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
+        && ["active", "disabled", "staging"].includes(item.instance.status) && !!item.instance.instance_id && !channelInstances.has(item.instance.instance_id)));
       onChanged();
     } catch (err) { setError(err instanceof Error ? err.message : "Runtime installation was rejected."); }
     finally { setInstallingRuntime(null); }
@@ -858,17 +858,18 @@ export function ChannelConnect({
           if (!instanceId || !extensionId) return null;
           return <div key={instanceId} style={{ padding: "8px 0", borderTop: "1px solid var(--border)", fontSize: 11.5 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-              <span>{extensionId} · {item.manifest.bundle?.version ?? "legacy"} · {item.instance.instance_key ?? "default"} · {item.instance.status === "active" ? "enabled" : "paused"}</span>
+              <span>{extensionId} · {item.manifest.bundle?.version ?? "legacy"} · {item.instance.instance_key ?? "default"} · {item.instance.status === "active" ? "enabled" : item.instance.status === "staging" ? "setup incomplete" : "paused"}</span>
               <div style={{ display: "flex", gap: 5 }}>
-              <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!changingExtension || !!removingExtension} onClick={() => void changeProjectExtensionLifecycle(instanceId, item.instance.status !== "active")}>
+              {item.instance.status !== "staging" && <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!changingExtension || !!removingExtension} onClick={() => void changeProjectExtensionLifecycle(instanceId, item.instance.status !== "active")}>
                 {changingExtension === instanceId ? "Updating…" : item.instance.status === "active" ? "Pause" : "Resume"}
-              </button>
+              </button>}
               <button type="button" className="btn-ghost" style={{ fontSize: 11 }} disabled={!!removingExtension} onClick={() => void uninstallChannelExtension(instanceId)}>
                 {removingExtension === instanceId ? "Uninstalling…" : "Uninstall"}
               </button>
               </div>
             </div>
-            {item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ extension_id: extensionId, version: item.manifest.bundle.version }} />}
+            {item.instance.status === "staging" && <div style={{ color: "var(--text3)", fontSize: 11 }}>Setup did not finish. This extension is not available to workers or channels; uninstall it or retry installation.</div>}
+            {item.instance.status !== "staging" && item.manifest.bundle?.version && <ExtensionReleaseControls spaceId={spaceId} projectId={projectId} session={session} installation={{ extension_id: extensionId, version: item.manifest.bundle.version }} />}
           </div>;
         })}
       </details>}
