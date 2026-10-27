@@ -19,6 +19,7 @@ const UNIVERSAL_REPL_OPERATIONS = new Set([
 
 const PLANNER_OPERATIONS = new Set([
   "environment.list",
+  "engine.coordination_patterns",
   "engine.plan_and_delegate_goal",
   "agent.spawn",
   "model.race",

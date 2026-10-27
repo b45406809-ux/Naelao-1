@@ -54,6 +54,8 @@ describe("Batch 04 universal kernel", () => {
 
   it("keeps worker-owned domain actions behind the parent planner boundary", () => {
     expect(isPlannerOperationAllowed("space", "delegate_to_space_worker")).toBe(true);
+    expect(isPlannerOperationAllowed("space", "engine.coordination_patterns")).toBe(true);
+    expect(isPlannerOperationAllowed("project", "engine.coordination_patterns")).toBe(true);
     expect(isPlannerOperationAllowed("space", "project.create")).toBe(false);
     expect(isPlannerOperationAllowed("project", "thread.delegate")).toBe(true);
     expect(isPlannerOperationAllowed("project", "wallet.request_payout")).toBe(false);
