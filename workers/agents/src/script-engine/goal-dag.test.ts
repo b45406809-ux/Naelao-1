@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { executeGoalDag, type GoalDagHost, type GoalDagJournal } from "./goal-dag.js";
-import { validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
+import { COORDINATION_PATTERNS, goalPlanner, validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { MAX_SUB_AGENT_BUDGET_TOKENS } from "./sub-agent-output.js";
 const task = (id: string, dependencies: string[] = []): GoalTask => ({ id, dependencies, title: id, subtask_spec: `do ${id}`, assigned_role: "schema-validator", file_paths: [`src/${id}.ts`], budget_tokens: 1800 });
 function fixture(initial?: GoalDagJournal) {
@@ -13,6 +13,15 @@ function fixture(initial?: GoalDagJournal) {
   return { host, snapshot: () => saved! };
 }
 describe("durable goal DAG", () => {
+  it("exposes versioned coordination patterns as advisory, valid task graphs", async () => {
+    const result = await goalPlanner.operations["engine.coordination_patterns"]!({}, {} as never) as { advisory: boolean; patterns: unknown[] };
+    expect(result.advisory).toBe(true);
+    expect(result.patterns).toHaveLength(2);
+    for (const pattern of COORDINATION_PATTERNS) {
+      const graph = pattern.steps.map(step => ({ ...task(step.id), dependencies: [...step.depends_on] }));
+      expect(() => validateGoalDag(graph)).not.toThrow();
+    }
+  });
   it("delivers only direct dependency results as bounded untrusted handoffs", async () => {
     const f = fixture();
     f.host.launch = vi.fn(async (t, id) => ({ id, ok: true, output: t.id === "a" ? "x".repeat(5000) : t.id }));

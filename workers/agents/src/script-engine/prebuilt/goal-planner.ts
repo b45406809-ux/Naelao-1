@@ -2,6 +2,19 @@ import type { UniversalAgentRole } from "@naelao/agent-sdk";
 import type { PrebuiltScript } from "./index.js";
 import { DEFAULT_SUB_AGENT_BUDGET_TOKENS, MAX_SUB_AGENT_BUDGET_TOKENS } from "../sub-agent-output.js";
 
+/** Advisory patterns: the planner still supplies task specifications and authorized capabilities. */
+export const COORDINATION_PATTERNS = [
+  { id: "implementation-and-review", version: 1, description: "Implement a change, then independently verify and review it.", steps: [
+    { id: "implement", depends_on: [], outcome: "Implementation and changed artifact references" },
+    { id: "verify", depends_on: ["implement"], outcome: "Verification results and evidence" },
+    { id: "review", depends_on: ["implement"], outcome: "Review findings and evidence" },
+  ] },
+  { id: "research-and-synthesis", version: 1, description: "Gather evidence, then synthesize a source-linked answer.", steps: [
+    { id: "research", depends_on: [], outcome: "Findings and source references" },
+    { id: "synthesize", depends_on: ["research"], outcome: "Synthesis with source references and limitations" },
+  ] },
+] as const;
+
 export interface GoalTask {
   id: string;
   title: string;
@@ -69,8 +82,11 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
 export const goalPlanner: PrebuiltScript = {
   name: "goal-planner", domain: "orchestration", requires_tier: 2,
   description: "Persist a frontier-planned task DAG and concurrently dispatch isolated edge workers.",
-  paramHints: { "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, context_affinity? (shared|isolated; inferred from file_paths when omitted), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host uses OpenRouter Decider decisions when available, plus deterministic task matching, to select a subset of that worker's already-configured related tools and skills. Selection never grants unconfigured tools; ambiguous or unavailable decisions preserve the full configured set. Do not select container images or installations. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
+  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, context_affinity? (shared|isolated; inferred from file_paths when omitted), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
   operations: {
+    async "engine.coordination_patterns"() {
+      return { patterns: structuredClone(COORDINATION_PATTERNS), advisory: true };
+    },
     async "engine.plan_and_delegate_goal"(args, ctx) {
       const objective = String(args.objective ?? "").trim();
       if (!objective) throw new Error("objective is required");
