@@ -1,5 +1,6 @@
 import { assertExtensionId, type ExtensionId, type GadgetScope, type GadgetTier, type RuntimeScope, type ExecutionMode, type PermissionAction } from "./types.js";
 import type { CanvasLayout } from "./canvas-runtime.js";
+import { WIDGET_EVENT_TYPES, type WidgetEventType } from "./widget-events.js";
 
 export interface ExtensionGadgetManifest {
   id: string;
@@ -21,6 +22,7 @@ export interface ExtensionDaemonManifest {
 
 export interface ExtensionCommandManifest { name: string; scriptPath: string }
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
+export interface ExtensionWidgetSubscription { event: WidgetEventType; component: string }
 
 /** Compatibility contract for extensions installed before modular manifests were introduced. */
 export type ExtensionPermission = "storage:read" | "storage:write" | "network" | "mcp:expose" | "alarms";
@@ -49,6 +51,8 @@ export interface ExtensionManifest {
   containers?: readonly ContainerContract[];
   /** Opt-in access to the common Space drive. Paths are directory prefixes below /space/shared/. */
   shared_filesystem?: readonly SharedFilesystemGrant[];
+  /** Declarations are inert until the host grants event access and activates delivery. */
+  widgetSubscriptions?: readonly ExtensionWidgetSubscription[];
 }
 
 /** Stable content pin for the canonical modular extension manifest stored by the host. */
@@ -114,7 +118,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
     return validateLegacyManifest(raw);
   }
   rejectKernelOverrides(raw);
-  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem"]);
+  const allowed = new Set(["id", "releaseVersion", "type", "declaredPermissions", "capabilityRequirements", "gadgets", "daemons", "commands", "channels", "containers", "bundle", "shared_filesystem", "widgetSubscriptions"]);
   for (const key of Object.keys(raw)) assert(allowed.has(key), `unknown_field:${key}`);
   assert(typeof raw.id === "string", "invalid_id");
   try { assertExtensionId(raw.id); } catch { throw new Error("invalid_extension_manifest:invalid_id"); }
@@ -125,6 +129,22 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
   if (context) {
     const granted = new Set(context.gatekeeperCapabilities);
     for (const capability of raw.capabilityRequirements as string[]) assert(granted.has(capability), `gatekeeper_capability_denied:${capability}`);
+  }
+  let widgetSubscriptions: ExtensionWidgetSubscription[] | undefined;
+  if (raw.widgetSubscriptions !== undefined) {
+    assert(Array.isArray(raw.widgetSubscriptions) && raw.widgetSubscriptions.length <= 32, "invalid_widget_subscriptions");
+    assert((raw.capabilityRequirements as string[]).includes("events.subscribe") && (raw.declaredPermissions as string[]).includes("events.subscribe"), "widget_event_capability_required");
+    const seen = new Set<string>();
+    widgetSubscriptions = (raw.widgetSubscriptions as unknown[]).map(value => {
+      assert(value && typeof value === "object" && !Array.isArray(value), "invalid_widget_subscription");
+      const item = value as Record<string, unknown>;
+      assert(Object.keys(item).every(key => key === "event" || key === "component"), "invalid_widget_subscription_field");
+      assert(typeof item.event === "string" && (WIDGET_EVENT_TYPES as readonly string[]).includes(item.event), "invalid_widget_event");
+      assert(typeof item.component === "string" && SAFE_PATH.test(item.component) && !FORBIDDEN_SCRIPT.test(item.component), "invalid_widget_component");
+      const key = `${item.event}:${item.component}`;
+      assert(!seen.has(key), "duplicate_widget_subscription"); seen.add(key);
+      return Object.freeze({ event: item.event as WidgetEventType, component: item.component });
+    });
   }
   let canonicalSharedFilesystem: SharedFilesystemGrant[] | undefined;
   if (raw.shared_filesystem !== undefined) {
@@ -204,7 +224,7 @@ export function validateExtensionManifest(value: unknown, context?: ExtensionVal
       containerIds.add(container.id);
     }
   }
-  return { ...raw, ...(canonicalSharedFilesystem ? { shared_filesystem: Object.freeze(canonicalSharedFilesystem) } : {}), ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}) } as unknown as ExtensionManifest;
+  return { ...raw, ...(widgetSubscriptions ? { widgetSubscriptions: Object.freeze(widgetSubscriptions) } : {}), ...(canonicalSharedFilesystem ? { shared_filesystem: Object.freeze(canonicalSharedFilesystem) } : {}), ...(canonicalBundle ? { bundle: canonicalBundle } : {}), ...(canonicalChannels !== undefined ? { channels: canonicalChannels } : {}) } as unknown as ExtensionManifest;
 }
 
 /** Verify a file path is contained in an installed Space-shared directory grant. */

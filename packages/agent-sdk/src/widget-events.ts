@@ -38,6 +38,8 @@ export function validateWidgetHostEvent(input: unknown): WidgetHostEvent {
 }
 
 /** Only a host-verified installation scope and its declared event grants may be passed here. */
-export function widgetSubscriptionAllows(event: WidgetHostEvent, installation: { spaceId: string; projectId?: string; allowedEvents: readonly WidgetEventType[] }): boolean {
-  return event.spaceId === installation.spaceId && (installation.projectId === undefined || event.projectId === installation.projectId) && installation.allowedEvents.includes(event.type);
+export function widgetSubscriptionAllows(event: WidgetHostEvent, installation: { spaceId: string; projectId?: string; allowedProjectIds?: readonly string[]; allowedEvents: readonly WidgetEventType[] }): boolean {
+  const projectAllowed = installation.projectId !== undefined ? event.projectId === installation.projectId
+    : event.projectId === undefined || installation.allowedProjectIds?.includes(event.projectId) === true;
+  return event.spaceId === installation.spaceId && projectAllowed && installation.allowedEvents.includes(event.type);
 }
