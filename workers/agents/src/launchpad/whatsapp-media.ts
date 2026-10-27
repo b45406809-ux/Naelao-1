@@ -64,6 +64,8 @@ function whatsappMessages(raw: JsonObject): JsonObject[] {
  */
 export async function downloadWhatsAppAttachments(raw: JsonObject, env: WhatsAppMediaEnv): Promise<DownloadedChannelAttachment[]> {
   if (!env.accessToken) throw new Error("whatsapp_media_unavailable");
+  const mediaMessages = whatsappMessages(raw).filter((message) => ["image", "document", "audio", "video", "sticker"].includes(String(message.type)));
+  if (mediaMessages.length > MAX_INBOUND_CHANNEL_MEDIA_FILES) throw new Error("whatsapp_media_rejected");
   const fetcher = env.fetcher ?? fetch;
   const version = env.graphApiVersion ?? "v26.0";
   if (!/^v\d+\.\d+$/.test(version)) throw new Error("whatsapp_graph_api_version_invalid");
@@ -74,7 +76,7 @@ export async function downloadWhatsAppAttachments(raw: JsonObject, env: WhatsApp
     if (!["image", "document", "audio", "video", "sticker"].includes(type)) continue;
     const media = object(message[type]);
     const id = typeof media?.id === "string" ? media.id : "";
-    if (!id || files.length >= MAX_INBOUND_CHANNEL_MEDIA_FILES) continue;
+    if (!id) throw new Error("whatsapp_media_rejected");
     const metadataResponse = await fetcher(`https://graph.facebook.com/${version}/${encodeURIComponent(id)}`, {
       headers: { authorization: `Bearer ${env.accessToken}`, accept: "application/json" },
       redirect: "manual", signal: AbortSignal.timeout(10_000),

@@ -5,6 +5,13 @@ import { downloadDiscordAttachments, hasDiscordAttachments } from "./discord-med
 const raw = { id: "M123", author: { id: "U123" }, attachments: [{ id: "A123", filename: "../scan.pdf", content_type: "application/pdf", size: 3, ephemeral: true, url: "https://cdn.discordapp.com/attachments/1/2/scan.pdf?ex=123&hm=abc" }] };
 
 describe("Discord attachment ingress", () => {
+  it("rejects more than five attachments before requesting any CDN file", async () => {
+    const tooMany = { attachments: Array.from({ length: 6 }, (_, index) => ({ ...raw.attachments[0], id: `A${index}` })) };
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(downloadDiscordAttachments(tooMany, { fetcher })).rejects.toThrow("discord_media_rejected");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("accepts media-only events and ingests bounded ephemeral CDN files", async () => {
     expect(hasDiscordAttachments(raw)).toBe(true);
     expect(getAdapter("discord")?.normalizeInbound(raw)).toMatchObject({ channel: "discord", text: "", external_id: "M123" });

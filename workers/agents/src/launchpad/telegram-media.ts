@@ -3,6 +3,7 @@ import type { DownloadedChannelAttachment } from "./whatsapp-media.js";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
+const MAX_FILES = 5;
 
 type JsonObject = Record<string, unknown>;
 
@@ -36,7 +37,7 @@ function mediaEntries(
     const item = object(message[kind]);
     if (item) result.push({ item, kind });
   }
-  return result.slice(0, 5);
+  return result;
 }
 
 export function hasTelegramMedia(raw: JsonObject): boolean {
@@ -91,6 +92,7 @@ export async function downloadTelegramAttachments(
   input: { botToken?: string; fetcher?: typeof fetch }
 ): Promise<DownloadedChannelAttachment[]> {
   if (!input.botToken) throw new Error("telegram_media_unavailable");
+  if (mediaEntries(raw).length > MAX_FILES) throw new Error("telegram_media_rejected");
   const fetcher = input.fetcher ?? fetch;
   const files: DownloadedChannelAttachment[] = [];
   let totalBytes = 0;

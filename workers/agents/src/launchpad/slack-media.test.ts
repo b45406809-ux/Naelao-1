@@ -6,6 +6,13 @@ import { buildPairing } from "./channel-pairing.js";
 const raw = { user: "U123", channel: "D123", ts: "1.25", thread_ts: "1.20", files: [{ id: "F123", name: "../invoice.pdf" }] };
 
 describe("Slack attachment ingress", () => {
+  it("rejects more than five attachments before requesting any file metadata", async () => {
+    const tooMany = { files: Array.from({ length: 6 }, (_, index) => ({ id: `F${index}` })) };
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(downloadSlackAttachments(tooMany, { botToken: "token", fetcher })).rejects.toThrow("slack_media_rejected");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("requests the least additional Slack scope needed for private file downloads", () => {
     const result = buildPairing({ SLACK_CLIENT_ID: "client-id", PUBLIC_AGENTS_URL: "https://agents.example" }, "slack", "cp_" + "a".repeat(32));
     expect(result.ok).toBe(true);

@@ -2,6 +2,7 @@ import type { DownloadedChannelAttachment } from "./whatsapp-media.js";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
+const MAX_FILES = 5;
 
 type JsonObject = Record<string, unknown>;
 
@@ -10,7 +11,7 @@ function object(value: unknown): JsonObject | undefined {
 }
 
 function attachments(raw: JsonObject): JsonObject[] {
-  return (Array.isArray(raw.attachments) ? raw.attachments : []).slice(0, 5).map(object).filter((item): item is JsonObject => Boolean(item));
+  return (Array.isArray(raw.attachments) ? raw.attachments : []).map(object).filter((item): item is JsonObject => Boolean(item));
 }
 
 export function hasDiscordAttachments(raw: JsonObject): boolean {
@@ -48,6 +49,7 @@ function safeFilename(name: string): string {
  * documents that non-ephemeral CDN fetches fail from Workers. Only handle ephemeral files here.
  */
 export async function downloadDiscordAttachments(raw: JsonObject, input: { fetcher?: typeof fetch } = {}): Promise<DownloadedChannelAttachment[]> {
+  if ((Array.isArray(raw.attachments) ? raw.attachments.length : 0) > MAX_FILES) throw new Error("discord_media_rejected");
   const references = attachments(raw);
   const fetcher = input.fetcher ?? fetch;
   const results: DownloadedChannelAttachment[] = [];

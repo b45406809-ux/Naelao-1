@@ -23,6 +23,13 @@ const update = {
 };
 
 describe("Telegram attachment ingress", () => {
+  it("rejects more than five attachments before making provider requests", async () => {
+    const multiFile = { message: { document: { file_id: "1" }, audio: { file_id: "2" }, voice: { file_id: "3" }, video: { file_id: "4" }, animation: { file_id: "5" }, sticker: { file_id: "6" } } };
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(downloadTelegramAttachments(multiFile, { botToken: "token", fetcher })).rejects.toThrow("telegram_media_rejected");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("accepts media-only updates and downloads bounded Bot API files", async () => {
     expect(hasTelegramMedia(update)).toBe(true);
     expect(getAdapter("telegram")?.normalizeInbound(update)).toMatchObject({

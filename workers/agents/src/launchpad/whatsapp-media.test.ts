@@ -61,6 +61,15 @@ describe("WhatsApp voice-note ingress", () => {
   });
 });
 
+describe("WhatsApp attachment count bounds", () => {
+  it("rejects over five media messages before resolving provider media IDs", async () => {
+    const raw = { entry: [{ changes: [{ value: { messages: Array.from({ length: 6 }, (_, index) => ({ type: "image", image: { id: `media-${index}` } })) } }] }] };
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(downloadWhatsAppAttachments(raw, { accessToken: "token", fetcher })).rejects.toThrow("whatsapp_media_rejected");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
 describe("WhatsApp attachment ingress", () => {
   it("resolves signed provider media IDs and returns bounded bytes with safe filenames", async () => {
     const raw = { entry: [{ changes: [{ value: { messages: [{ type: "document", document: { id: "media-2", filename: "../invoice.pdf" } }] } }] }] };

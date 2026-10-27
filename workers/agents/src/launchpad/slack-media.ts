@@ -3,6 +3,7 @@ import { readBoundedProviderJson } from "./bounded-provider-json.js";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
+const MAX_FILES = 5;
 
 type JsonObject = Record<string, unknown>;
 
@@ -11,7 +12,7 @@ function object(value: unknown): JsonObject | undefined {
 }
 
 function files(raw: JsonObject): JsonObject[] {
-  return (Array.isArray(raw.files) ? raw.files : []).slice(0, 5).map(object).filter((file): file is JsonObject => Boolean(file));
+  return (Array.isArray(raw.files) ? raw.files : []).map(object).filter((file): file is JsonObject => Boolean(file));
 }
 
 export function hasSlackFiles(raw: JsonObject): boolean {
@@ -48,6 +49,7 @@ function safeFilename(name: string): string {
 /** Resolve Slack message file IDs with files:read and fetch only Slack-owned HTTPS URLs. */
 export async function downloadSlackAttachments(raw: JsonObject, input: { botToken?: string; fetcher?: typeof fetch }): Promise<DownloadedChannelAttachment[]> {
   if (!input.botToken) throw new Error("slack_media_unavailable");
+  if ((Array.isArray(raw.files) ? raw.files.length : 0) > MAX_FILES) throw new Error("slack_media_rejected");
   const fetcher = input.fetcher ?? fetch;
   const results: DownloadedChannelAttachment[] = [];
   let aggregateBytes = 0;
