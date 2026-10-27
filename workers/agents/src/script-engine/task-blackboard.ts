@@ -1,4 +1,6 @@
-/** Messages are untrusted task data. This module does not authenticate callers. */
+import { verifyDelegationContract, type DelegationContract } from "./delegation-contract.js";
+
+/** Messages are untrusted task data. */
 export type TaskMessageKind = "finding" | "artifact" | "question" | "blocker" | "risk" | "completion" | "verification";
 export interface TaskMessage {
   id: string;
@@ -47,4 +49,49 @@ export function authorizeTaskMessaging(
   const grants = scope.recipientGrants.get(identity.workerId);
   if (!recipients.length || recipients.some(recipient => !scope.members.has(recipient) || !grants?.has(recipient)))
     throw new Error("task_blackboard_recipient_denied");
+}
+
+export interface TaskBlackboardScope {
+  tenantId: string; spaceId: string; projectId?: string; rootRunId: string; parentDoId: string;
+  members: ReadonlySet<string>; recipientGrants: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/** The host must bind this store instance to one durable goal, not a caller-supplied key. */
+export interface TaskMessageStore {
+  transact<T>(operation: (messages: TaskMessage[]) => { messages: TaskMessage[]; result: T }): Promise<T>;
+}
+
+async function authenticateTaskWorker(contract: DelegationContract, token: string, secret: string, scope: TaskBlackboardScope): Promise<void> {
+  await verifyDelegationContract(contract, token, secret);
+  if (!contract.tenantId || !contract.spaceId || !contract.rootRunId || !contract.parentDoId
+      || contract.tenantId !== scope.tenantId || contract.spaceId !== scope.spaceId
+      || (contract.projectId ?? null) !== (scope.projectId ?? null) || contract.rootRunId !== scope.rootRunId
+      || contract.parentDoId !== scope.parentDoId || !scope.members.has(contract.workerId)) throw new Error("task_blackboard_scope_denied");
+}
+
+export async function appendAuthenticatedTaskMessage(params: {
+  contract: DelegationContract; token: string; secret: string; scope: TaskBlackboardScope; store: TaskMessageStore;
+  input: { id: unknown; recipients: unknown; kind: unknown; text: unknown }; now: number;
+}): Promise<TaskMessage> {
+  const { contract, scope, input } = params;
+  await authenticateTaskWorker(contract, params.token, params.secret, scope);
+  const message = createTaskMessage(input, contract.workerId, scope.members, params.now);
+  authorizeTaskMessaging(contract, scope, message.recipients);
+  return params.store.transact(messages => {
+    const existing = messages.find(item => item.id === message.id);
+    if (existing) {
+      if (existing.sender !== message.sender || existing.kind !== message.kind || existing.text !== message.text
+          || JSON.stringify(existing.recipients) !== JSON.stringify(message.recipients)) throw new Error("task_blackboard_id_conflict");
+      return { messages, result: existing };
+    }
+    if (messages.length >= 500) throw new Error("task_blackboard_capacity_exceeded");
+    return { messages: [...messages, message], result: message };
+  });
+}
+
+export async function readAuthenticatedTaskMessages(params: {
+  contract: DelegationContract; token: string; secret: string; scope: TaskBlackboardScope; store: TaskMessageStore;
+}): Promise<TaskMessage[]> {
+  await authenticateTaskWorker(params.contract, params.token, params.secret, params.scope);
+  return params.store.transact(messages => ({ messages, result: visibleTaskMessages(messages, params.contract.workerId, params.scope.members) }));
 }

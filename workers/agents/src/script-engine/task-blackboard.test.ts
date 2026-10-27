@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { authorizeTaskMessaging, createTaskMessage, visibleTaskMessages } from "./task-blackboard.js";
+import { appendAuthenticatedTaskMessage, authorizeTaskMessaging, createTaskMessage, readAuthenticatedTaskMessages, visibleTaskMessages, type TaskMessage, type TaskMessageStore } from "./task-blackboard.js";
+import { issueDelegationContract, type DelegationContract } from "./delegation-contract.js";
 
 describe("task blackboard message boundaries", () => {
   const members = new Set(["worker:a", "worker:b", "worker:c"]);
@@ -22,5 +23,21 @@ describe("task blackboard message boundaries", () => {
     for (const change of [{ tenantId: "other" }, { spaceId: "other" }, { projectId: "other" }, { rootRunId: "other" }, { parentDoId: "other" }, { workerId: "outside" }])
       expect(() => authorizeTaskMessaging({ ...identity, ...change }, scope, ["worker:b"])).toThrow("scope_denied");
     expect(() => authorizeTaskMessaging(identity, scope, ["worker:c"])).toThrow("recipient_denied");
+  });
+  it("verifies signatures and enforces scoped idempotent storage", async () => {
+    const contract: DelegationContract = { tenantId: "t", spaceId: "s", projectId: "p", actorId: "u", agentId: "a", rootRunId: "r", parentRunId: "parent-run", parentDoId: "parent", workerId: "worker:a", depth: 2, planner: false, maxTokens: 100, maxSteps: 1, model: "m", role: "worker", callerRole: "editor", maxTier: 1, localOnly: false };
+    const secret = "test-host-secret";
+    const token = await issueDelegationContract(contract, secret);
+    const scope = { ...contract, members, recipientGrants: new Map([["worker:a", new Set(["worker:b"])]] ) };
+    let saved: TaskMessage[] = [];
+    const store: TaskMessageStore = { async transact(operation) { const update = operation(saved); saved = update.messages; return update.result; } };
+    const params = { contract, token, secret, scope, store, input, now: 123 };
+    const first = await appendAuthenticatedTaskMessage(params);
+    expect(await appendAuthenticatedTaskMessage({ ...params, now: 456 })).toEqual(first);
+    expect(saved).toHaveLength(1);
+    await expect(appendAuthenticatedTaskMessage({ ...params, input: { ...input, text: "different" } })).rejects.toThrow("id_conflict");
+    await expect(appendAuthenticatedTaskMessage({ ...params, contract: { ...contract, workerId: "worker:c" } })).rejects.toThrow();
+    await expect(readAuthenticatedTaskMessages({ ...params, scope: { ...scope, rootRunId: "other" } })).rejects.toThrow("scope_denied");
+    expect(await readAuthenticatedTaskMessages(params)).toEqual([first]);
   });
 });
