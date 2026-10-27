@@ -18,7 +18,7 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
       const operation = event.data as { type?: unknown; id?: unknown; capability?: unknown; input?: unknown };
       if (operation?.type === "naelao.extension.operation") {
         if (typeof operation.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(operation.id) || !session || projectScoped
-          || !["blueprint.export", "blueprint.status", "marketplace.graduate", "blackboard.read", "blackboard.policy"].includes(String(operation.capability))
+          || !["blueprint.export", "blueprint.status", "marketplace.graduate", "blackboard.read", "blackboard.policy", "blackboard.sharing"].includes(String(operation.capability))
           || !capabilities.includes(String(operation.capability))) return;
         let size = 0;
         try { size = new TextEncoder().encode(JSON.stringify(operation.input ?? {})).byteLength; } catch { return; }
@@ -29,6 +29,13 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
           if (!window.confirm(`${input.wakeEnabled ? "Enable" : "Disable"} automatic blackboard wake-ups for project ${input.projectId}?`)) {
             frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: operation.id, ok: false, error: "Cancelled" }, "*");
             return;
+          }
+        }
+        if (operation.capability === "blackboard.sharing") {
+          const input = operation.input as { projectId?: unknown; peers?: unknown; dailyLimit?: unknown } | null;
+          if (!input || typeof input.projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(input.projectId) || !Array.isArray(input.peers) || input.peers.length > 30 || input.peers.some(p => typeof p !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(p)) || !Number.isSafeInteger(input.dailyLimit) || Number(input.dailyLimit)<0 || Number(input.dailyLimit)>50) return;
+          if (!window.confirm(`Allow project ${input.projectId} to coordinate automatically with ${input.peers.join(", ") || "no projects"}, up to ${input.dailyLimit} actions per day? Automatic sharing is limited to its published summary.`)) {
+            frame.current?.contentWindow?.postMessage({ type:"naelao.extension.rpc.result",id:operation.id,ok:false,error:"Cancelled" },"*"); return;
           }
         }
         const capability = operation.capability as SpaceExtensionHostCapability;

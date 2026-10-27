@@ -1,5 +1,6 @@
 import {isReadSafeOperation} from "./assistant-access.js";
 import { validProviderUsage } from "@naelao/agent-sdk";
+import { mintInternalToken, readBoundedResponseJson } from "@naelao/http";
 /**
  * The script-first loop (spec §2) + escalation ladder (spec §5), implemented as the agent
  * behavior that runs inside NaelaoAgentDO.
@@ -651,7 +652,20 @@ export async function runScriptLoop(
         notes.push("HITL: current approval policy could not be refreshed; requiring approval");
       }
     }
-    const outcome = await hitlGate(name, params, gatedActions, approvalMode, alwaysGatedActions, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
+    const checkStanding = async (): Promise<boolean> => {
+      if (!["blackboard.request", "blackboard.respond"].includes(name) || alwaysGatedActions.has(name) || isGated(name,gatedActions,approvalMode)
+        || !env.spacesWorker || !env.platformSecret || !env.userId || !env.projectId) return false;
+      try {
+        const response = await env.spacesWorker.fetch(new Request(`http://spaces-worker/internal/spaces/${encodeURIComponent(env.spaceId)}/blackboard/authorize`, {
+          method:"POST",headers:{"content-type":"application/json","x-naelao-tenant-id":env.tenantId,"x-naelao-user-id":env.userId,"x-naelao-role":"product_end_user","x-naelao-internal-token":await mintInternalToken(env.platformSecret,env.tenantId)},
+          body:JSON.stringify({project_id:env.projectId,action:name,params}),
+        }));
+        return response.ok && (await readBoundedResponseJson<{allowed?:boolean}>(response,4096)).allowed === true;
+      } catch { return false; /* Missing policy or unavailable host requires human approval. */ }
+    };
+    const standingAllowed = await checkStanding();
+    const outcome: GateOutcome = standingAllowed ? { verdict:"proceed" } : await hitlGate(name, params, gatedActions, approvalMode, alwaysGatedActions, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
+    if (standingAllowed) notes.push(`Blackboard standing sharing policy authorized '${name}'`);
     if (name === "blackboard.publish" && outcome.verdict === "proceed") {
       const approved = stableStringify({ summary: params.summary, capabilities: params.capabilities ?? [], evidence: params.evidence ?? [] });
       const projectId = env.projectId;
@@ -668,7 +682,7 @@ export async function runScriptLoop(
       env.authorizeBlackboardAction = async (action, input) => {
         if (used || !projectId || env.projectId !== projectId || action !== name || stableStringify(input) !== approved) return false;
         used = true;
-        return true;
+        return !standingAllowed || await checkStanding();
       };
     }
     return outcome;

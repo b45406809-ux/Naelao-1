@@ -17,8 +17,9 @@ describe("Space-shared extension client", () => {
     await expect(client.graduate({ conformance_job_id: "job-1" })).resolves.toEqual({ capability: "marketplace.graduate", input: { conformance_job_id: "job-1" } });
     await expect(client.readBlackboard({ view: "cards" })).resolves.toEqual({ capability: "blackboard.read", input: { view: "cards" } });
     await expect(client.setBlackboardPolicy({ projectId: "p", wakeEnabled: true })).resolves.toEqual({ capability: "blackboard.policy", input: { projectId: "p", wakeEnabled: true } });
-    expect(Object.keys(client)).toEqual(["read", "list", "write", "remove", "storage", "call", "exportBlueprint", "exportStatus", "graduate", "readBlackboard", "setBlackboardPolicy"]);
+    await expect(client.setBlackboardSharing({ projectId: "p", peers: ["q"], dailyLimit: 3 })).resolves.toEqual({ capability: "blackboard.sharing", input: { projectId: "p", peers: ["q"], dailyLimit: 3 } });
+    expect(Object.keys(client)).toEqual(["read", "list", "write", "remove", "storage", "call", "exportBlueprint", "exportStatus", "graduate", "readBlackboard", "setBlackboardPolicy", "setBlackboardSharing"]);
     expect(request).toHaveBeenCalledTimes(5);
-    expect(operation).toHaveBeenCalledTimes(5);
+    expect(operation).toHaveBeenCalledTimes(6);
   });
 });

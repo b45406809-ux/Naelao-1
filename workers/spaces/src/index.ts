@@ -1,4 +1,5 @@
 import { registerAssistantVoiceRoutes } from "./routes/assistant-voice.js";
+import { standingBlackboardPeer } from "./blackboard-sharing.js";
 import { Hono, type Context } from "hono";
 import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken, readBoundedRequestBytes, readBoundedRequestText, readBoundedResponseJson, readBoundedResponseText, RequestBodyTooLargeError } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
@@ -1865,6 +1866,12 @@ app.delete("/internal/spaces/:spaceId/blackboard/cards/:projectId", async c => {
   await c.env.PLATFORM_DB.prepare("DELETE FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id=?").bind(c.req.header("x-naelao-tenant-id"), spaceId, projectId).run();
   return c.json({ unpublished: true });
 });
+app.get("/internal/spaces/:spaceId/blackboard/cards/:projectId", async c => {
+  const space=c.req.param("spaceId"), project=c.req.param("projectId"), denied=await requireReadableAutomationProject(c,space,project);
+  if(denied)return denied;
+  const card=await c.env.PLATFORM_DB.prepare("SELECT project_id,summary,capabilities_json,evidence_json,updated_at FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id=?").bind(c.req.header("x-naelao-tenant-id"),space,project).first<{project_id:string;summary:string;capabilities_json:string;evidence_json:string;updated_at:string}>();
+  return c.json({card:card ? {projectId:card.project_id,summary:card.summary,capabilities:JSON.parse(card.capabilities_json),evidence:JSON.parse(card.evidence_json),updatedAt:card.updated_at} : null});
+});
 app.get("/internal/spaces/:spaceId/blackboard/cards", async c => {
   const spaceId = c.req.param("spaceId"), visible = await visibleAutomationProjectIds(c, spaceId);
   if (visible instanceof Response) return visible;
@@ -1949,6 +1956,50 @@ app.put("/internal/spaces/:spaceId/blackboard/policy/:projectId", async c => {
     .bind(c.req.header("x-naelao-tenant-id"),space,project,b.wake_enabled ? 1 : 0,c.req.header("x-naelao-user-id"),new Date().toISOString()).run();
   return c.json({ wake_enabled:b.wake_enabled });
 });
+app.on(["GET","PUT"], "/internal/spaces/:spaceId/blackboard/sharing/:projectId", async c => {
+  const space=c.req.param("spaceId"), project=c.req.param("projectId"), tenant=c.req.header("x-naelao-tenant-id")!, user=c.req.header("x-naelao-user-id")!;
+  const denied=await (c.req.method==="PUT" ? requireManageableAutomationProject(c,space,project) : requireReadableAutomationProject(c,space,project)); if(denied) return denied;
+  if(c.req.method==="GET") {
+    const row=await c.env.PLATFORM_DB.prepare("SELECT peers_json,daily_limit,updated_at FROM space_blackboard_sharing_policies WHERE tenant_id=? AND space_id=? AND project_id=?").bind(tenant,space,project).first<{peers_json:string;daily_limit:number;updated_at:string}>();
+    return c.json({ peers:row ? JSON.parse(row.peers_json) : [], daily_limit:row?.daily_limit ?? 0, updated_at:row?.updated_at ?? null });
+  }
+  let b:{peers?:unknown;daily_limit?:unknown};try{b=JSON.parse(await readBoundedRequestText(c.req.raw,8192));}catch{return c.json({error_code:"invalid_sharing_policy"},400);}
+  if(!b || !Array.isArray(b.peers) || b.peers.length>30 || b.peers.some(v=>typeof v!=="string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(v) || v===project) || !Number.isSafeInteger(b.daily_limit) || Number(b.daily_limit)<0 || Number(b.daily_limit)>50) return c.json({error_code:"invalid_sharing_policy"},400);
+  const peers=[...new Set(b.peers as string[])];
+  const visible=await visibleAutomationProjectIds(c,space); if(visible instanceof Response)return visible;
+  if(peers.some(peer=>!visible.includes(peer)))return c.json({error_code:"peer_not_accessible"},403);
+  await c.env.PLATFORM_DB.prepare("INSERT INTO space_blackboard_sharing_policies(tenant_id,space_id,project_id,authorized_user_id,peers_json,daily_limit,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO UPDATE SET authorized_user_id=excluded.authorized_user_id,peers_json=excluded.peers_json,daily_limit=excluded.daily_limit,updated_at=excluded.updated_at")
+    .bind(tenant,space,project,user,JSON.stringify(peers),b.daily_limit,new Date().toISOString()).run();
+  return c.json({peers,daily_limit:b.daily_limit});
+});
+app.post("/internal/spaces/:spaceId/blackboard/authorize", async c => {
+  const space=c.req.param("spaceId"), tenant=c.req.header("x-naelao-tenant-id")!, user=c.req.header("x-naelao-user-id")!;
+  let b:{project_id?:unknown;action?:unknown;params?:Record<string,unknown>};try{b=JSON.parse(await readBoundedRequestText(c.req.raw,16384));}catch{return c.json({allowed:false},400);}
+  const idPattern=/^[A-Za-z0-9._:-]{1,160}$/;
+  if(!b || typeof b.project_id!=="string" || !idPattern.test(b.project_id) || !["blackboard.request","blackboard.respond"].includes(String(b.action)) || !b.params || typeof b.params!=="object" || Array.isArray(b.params) || typeof b.params.id!=="string" || !idPattern.test(b.params.id))return c.json({allowed:false},400);
+  const project=b.project_id, denied=await requireManageableAutomationProject(c,space,project); if(denied)return denied;
+  const policy=await c.env.PLATFORM_DB.prepare("SELECT authorized_user_id,peers_json,daily_limit FROM space_blackboard_sharing_policies WHERE tenant_id=? AND space_id=? AND project_id=?").bind(tenant,space,project).first<{authorized_user_id:string;peers_json:string;daily_limit:number}>();
+  if(!policy || policy.authorized_user_id!==user || policy.daily_limit<1)return c.json({allowed:false});
+  let peers:string[];try{peers=JSON.parse(policy.peers_json);}catch{return c.json({allowed:false});}
+  const card=await c.env.PLATFORM_DB.prepare("SELECT summary FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id=?").bind(tenant,space,project).first<{summary:string}>();
+  if(!card)return c.json({allowed:false});
+  const request=b.action==="blackboard.respond" ? await c.env.PLATFORM_DB.prepare("SELECT source_project_id,target_project_id FROM space_blackboard_requests WHERE tenant_id=? AND space_id=? AND id=?").bind(tenant,space,b.params.id).first<{source_project_id:string;target_project_id:string}>() : null;
+  const candidate=standingBlackboardPeer({action:String(b.action),projectId:project,summary:card.summary,params:b.params,request});
+  if(!candidate)return c.json({allowed:false});
+  const {peer,actionKey}=candidate;
+  if(!peers.includes(peer) || (await requireReadableAutomationProject(c,space,peer)))return c.json({allowed:false});
+  const digest=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify([b.action,b.params]))));
+  const hash=[...digest].map(v=>v.toString(16).padStart(2,"0")).join(""),day=new Date().toISOString().slice(0,10);
+  await c.env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO space_blackboard_policy_uses(tenant_id,space_id,project_id,action_key,payload_hash,user_id,used_day)
+    SELECT ?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM space_blackboard_policy_uses WHERE tenant_id=? AND space_id=? AND project_id=? AND used_day=?) < ?
+      AND EXISTS (SELECT 1 FROM space_blackboard_sharing_policies WHERE tenant_id=? AND space_id=? AND project_id=? AND authorized_user_id=? AND peers_json=? AND daily_limit=?)
+      AND EXISTS (SELECT 1 FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id=? AND summary=?)`)
+    .bind(tenant,space,project,actionKey,hash,user,day,tenant,space,project,day,policy.daily_limit,tenant,space,project,user,policy.peers_json,policy.daily_limit,tenant,space,project,card.summary).run();
+  const used=await c.env.PLATFORM_DB.prepare("SELECT payload_hash,user_id FROM space_blackboard_policy_uses WHERE tenant_id=? AND space_id=? AND project_id=? AND action_key=?").bind(tenant,space,project,actionKey).first<{payload_hash:string;user_id:string}>();
+  const current=await c.env.PLATFORM_DB.prepare("SELECT 1 AS valid FROM space_blackboard_sharing_policies p JOIN space_blackboard_cards c ON c.tenant_id=p.tenant_id AND c.space_id=p.space_id AND c.project_id=p.project_id WHERE p.tenant_id=? AND p.space_id=? AND p.project_id=? AND p.authorized_user_id=? AND p.peers_json=? AND p.daily_limit=? AND c.summary=?")
+    .bind(tenant,space,project,user,policy.peers_json,policy.daily_limit,card.summary).first();
+  return c.json({allowed:Boolean(current && used?.payload_hash===hash && used.user_id===user)});
+});
 app.post("/internal/spaces/:spaceId/blackboard/events/:projectId/:eventId/read", async c => {
   const spaceId=c.req.param("spaceId"), projectId=c.req.param("projectId"), eventId=c.req.param("eventId"), tenant=c.req.header("x-naelao-tenant-id")!, user=c.req.header("x-naelao-user-id")!;
   const denied=await requireReadableAutomationProject(c,spaceId,projectId); if(denied) return denied;
@@ -1963,7 +2014,7 @@ app.post("/internal/spaces/:spaceId/blackboard/events/:projectId/:eventId/read",
 app.on(["GET", "PUT"], "/spaces/:spaceId/blackboard/*", async c => {
   let suffix: string;
   try { suffix = decodeURIComponent(c.req.path.split("/blackboard/")[1] ?? ""); } catch { return c.json({ error_code: "not_found" }, 404); }
-  if (!/^(?:cards|requests\/[A-Za-z0-9._:-]{1,160}|events\/[A-Za-z0-9._:-]{1,160}|policy\/[A-Za-z0-9._:-]{1,160})$/.test(suffix) || (c.req.method === "PUT" && !suffix.startsWith("policy/"))) return c.json({ error_code: "not_found" }, 404);
+  if (!/^(?:cards|requests\/[A-Za-z0-9._:-]{1,160}|events\/[A-Za-z0-9._:-]{1,160}|policy\/[A-Za-z0-9._:-]{1,160}|sharing\/[A-Za-z0-9._:-]{1,160})$/.test(suffix) || (c.req.method === "PUT" && !suffix.startsWith("policy/") && !suffix.startsWith("sharing/"))) return c.json({ error_code: "not_found" }, 404);
   const url = new URL(c.req.url);
   const [view, projectId] = suffix.split("/");
   url.pathname = `/internal/spaces/${encodeURIComponent(c.req.param("spaceId"))}/blackboard/${view}${projectId ? `/${encodeURIComponent(projectId)}` : ""}`;
