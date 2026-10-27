@@ -123,8 +123,9 @@ Gadget MCP is mounted through `workers/spaces/src/routes/gadget-mcp.ts` and rema
 scope isolated by `MicroAppDO`. Project daemons now have a matching Streamable HTTP boundary in
 the agents worker: the router authenticates the tenant, verifies project ownership through the
 spaces worker, then forwards MCP traffic to the project actor. The initial production daemon is
-the bounded AST indexer, with explicit 200-file and 512 KB-per-file limits and durable symbol
-rows in the actor's SQLite store. Installed extension manifests now feed daemon discovery, and
+an optional bounded lexical symbol/identifier index, with explicit 200-file and 512 KB-per-file
+limits and durable rows in the actor's SQLite store. It is not a semantic AST/LSP implementation.
+Installed extension manifests now feed daemon discovery, and
 declared workflow daemons use the durable `DurableDaemon` controller for start/stop/status. The
 `daemon-mcp.test.ts` suite covers discovery, indexing, lifecycle dispatch, and rejection of
 oversized or escaping paths. A real grammar WASM artifact, generated daemon tool schemas, and a
