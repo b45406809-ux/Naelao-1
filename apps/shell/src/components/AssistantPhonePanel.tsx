@@ -244,8 +244,10 @@ export function AssistantPhonePanel({
           <label>Existing number resource ID <input inputMode="numeric" autoComplete="off" value={telnyxNumberId} onChange={event => setTelnyxNumberId(event.target.value)} /></label>
           <button type="button" disabled={!telnyxKey || !telnyxPublicKey || !telnyxNumberId} onClick={() => void act("phone-telnyx-configure", { api_key: telnyxKey, public_key: telnyxPublicKey, number_id: telnyxNumberId })}>Verify and save</button>{" "}
           <button type="button" onClick={() => void act("phone-telnyx-status")}>Check setup status</button>
+          {(!state?.phone || ["released", "detached"].includes(state.phone.status)) && <button type="button" onClick={() => { if (window.confirm("Prepare this number for your assistant? Calls and SMS will remain unavailable until its connection is activated.")) void act("phone-telnyx-stage", { confirm: true }); }}>Prepare assistant number</button>}
           {telnyxSetup && <p role="status">{telnyxSetup}</p>}
         </fieldset>
+        {state?.phone?.provider === "telnyx" && state.phone.status === "configuring" && <button type="button" disabled={busy} onClick={() => { if (window.confirm("Cancel this unfinished number setup? Telnyx will continue to bill the number.")) void act("phone-telnyx-cancel", { confirm: true }); }}>Cancel number setup</button>}
         <button type="button" disabled={busy} onClick={() => { if (window.confirm("Remove the saved Telnyx account credentials? This does not release numbers at Telnyx.")) void act("phone-telnyx-remove", { confirm: true }); }}>Remove saved Telnyx credentials</button>
       </details>
       {!state?.phone ||

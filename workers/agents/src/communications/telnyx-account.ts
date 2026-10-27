@@ -7,6 +7,24 @@ import type { CommunicationIdentity, CommunicationScope } from "./core.js";
 const credentialName = (identity: CommunicationIdentity) => `ASSISTANT_PHONE_TELNYX_${identity.id}`;
 type Account = TelnyxCredentials & { verifiedNumberId: string; verifiedPhoneNumber: string };
 
+export async function resolveTelnyxAccount(env: AgentsEnv, identity: CommunicationIdentity): Promise<Account | null> {
+  if (!env.CREDENTIALS_WORKER) throw new Error("credential_vault_unavailable");
+  const response = await env.CREDENTIALS_WORKER.fetch(new Request(
+    `http://credentials/v1/internal/spaces/${encodeURIComponent(identity.space_id)}/credentials/${encodeURIComponent(credentialName(identity))}/plaintext`,
+    { method: "POST", headers: { "x-naelao-tenant-id": identity.tenant_id,
+      "x-naelao-credential-token": await generatePhoneCredentialToken(env.PLATFORM_SECRET, identity.tenant_id, identity.space_id) } },
+  ));
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error("telnyx_account_status_unavailable");
+  const saved = await readBoundedResponseJson<{ value?: string }>(response, 16384);
+  try {
+    const account = JSON.parse(saved.value ?? "") as Account;
+    new TelnyxTelephony(account);
+    if (!/^\d{1,32}$/.test(account.verifiedNumberId) || !isE164(account.verifiedPhoneNumber)) throw new Error();
+    return account;
+  } catch { throw new Error("telnyx_account_record_invalid"); }
+}
+
 export async function removeTelnyxAccount(env: AgentsEnv, scope: CommunicationScope, identity: CommunicationIdentity) {
   if (!env.CREDENTIALS_WORKER) throw new Error("credential_vault_unavailable");
   const headers = { "x-naelao-tenant-id": scope.tenantId, "x-naelao-user-id": scope.userId, "x-naelao-role": "admin",
@@ -25,20 +43,9 @@ export async function removeTelnyxAccount(env: AgentsEnv, scope: CommunicationSc
 
 export async function telnyxAccountStatus(env: AgentsEnv, identity: CommunicationIdentity) {
   if (!env.CREDENTIALS_WORKER) return { configured: false, transport_active: false };
-  const response = await env.CREDENTIALS_WORKER.fetch(new Request(
-    `http://credentials/v1/internal/spaces/${encodeURIComponent(identity.space_id)}/credentials/${encodeURIComponent(credentialName(identity))}/plaintext`,
-    { method: "POST", headers: { "x-naelao-tenant-id": identity.tenant_id,
-      "x-naelao-credential-token": await generatePhoneCredentialToken(env.PLATFORM_SECRET, identity.tenant_id, identity.space_id) } },
-  ));
-  if (response.status === 404) return { configured: false, transport_active: false };
-  if (!response.ok) throw new Error("telnyx_account_status_unavailable");
-  const saved = await readBoundedResponseJson<{ value?: string }>(response, 16384);
-  try {
-    const account = JSON.parse(saved.value ?? "") as Account;
-    new TelnyxTelephony(account);
-    if (!/^\d{1,32}$/.test(account.verifiedNumberId) || !isE164(account.verifiedPhoneNumber)) throw new Error();
-    return { configured: true, transport_active: false, number_id: account.verifiedNumberId, phone_number: account.verifiedPhoneNumber };
-  } catch { throw new Error("telnyx_account_record_invalid"); }
+  const account = await resolveTelnyxAccount(env, identity);
+  if (!account) return { configured: false, transport_active: false };
+  return { configured: true, transport_active: false, number_id: account.verifiedNumberId, phone_number: account.verifiedPhoneNumber };
 }
 
 /** Called only after host authorization, phone enablement and egress checks. This stores

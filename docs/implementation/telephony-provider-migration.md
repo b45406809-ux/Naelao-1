@@ -45,6 +45,10 @@ entitlement, country availability, prices, or deployed webhook delivery.
   creation and callback configuration remain open.
 - Verified account preparation and scoped Vault storage/removal are implemented. Active
   number import, quoted purchase, callback migration, detach and release remain open.
+  A human owner can now stage a verified Telnyx number in an assistant binding after a fresh
+  provider lookup. The binding remains `configuring`, reserves the assistant slot and address,
+  and does not modify Telnyx callbacks. Cancellation only detaches the staged local record;
+  provider rental continues. Signed ingress, callback setup and activation are still required.
 - Signed Telnyx ingress with durable event claims, binding/destination checks and assistant
   membership verification before entering the existing planner/worker runtime.
   Migration 0137 and `telnyx-ingress-journal.ts` now provide atomic binding/event claims,

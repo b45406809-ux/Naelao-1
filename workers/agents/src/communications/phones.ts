@@ -224,10 +224,33 @@ export async function handlePhoneAction(
       "phone-reconcile-number",
       "phone-telnyx-remove",
       "phone-telnyx-status",
+      "phone-telnyx-cancel",
     ].includes(action)
   )
     await livePhoneAllowed(env, scope);
   let binding = await assistantPhone(env, identity.id);
+  if (action === "phone-telnyx-stage") {
+    if (body.confirm !== true) throw new Error("phone_confirmation_required");
+    if (binding && !["released", "detached"].includes(binding.status)) throw new Error("assistant_phone_already_bound");
+    const { resolveTelnyxAccount } = await import("./telnyx-account.js");
+    const account = await resolveTelnyxAccount(env, identity);
+    if (!account) throw new Error("telnyx_account_not_configured");
+    const { TelnyxTelephony } = await import("../voice/telnyx-telephony.js");
+    const number = await new TelnyxTelephony(account).inspectPhoneNumber(account.verifiedNumberId);
+    if (number.phoneNumber !== account.verifiedPhoneNumber) throw new Error("telnyx_number_changed");
+    const id = crypto.randomUUID();
+    await env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,capabilities_json,previous_callbacks_json,policy_json,status) VALUES(?,?,'assistant','byo','telnyx',?,?,?,'{}','{}',?,'configuring')")
+      .bind(id, identity.id, `identity:${identity.id}`, number.id, number.phoneNumber, JSON.stringify(defaultPhonePolicy)).run();
+    return { phone: metadata(await assistantPhone(env, identity.id)), transport_active: false };
+  }
+  if (action === "phone-telnyx-cancel") {
+    if (body.confirm !== true) throw new Error("phone_confirmation_required");
+    if (!binding || binding.provider !== "telnyx" || binding.status !== "configuring") throw new Error("telnyx_staged_binding_required");
+    const result = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='detached',updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND status='configuring'")
+      .bind(binding.id, identity.id).run();
+    if (!result.meta.changes) throw new Error("telnyx_staged_binding_changed");
+    return { detached: true, rental_continues: true };
+  }
   if (["phone-telnyx-configure", "phone-telnyx-status", "phone-telnyx-remove"].includes(action)) {
     const { configureTelnyxAccount, telnyxAccountStatus, removeTelnyxAccount } = await import("./telnyx-account.js");
     if (action !== "phone-telnyx-status" && await env.PLATFORM_DB.prepare(

@@ -68,6 +68,19 @@ async function phoneFixture() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe("assistant telephone safety and lifecycle", () => {
+  it("stages only a freshly verified Telnyx number and can cancel without changing the carrier", async () => {
+    const f = fixture();
+    f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    const identity = await ensureIdentity(f.env, scope);
+    f.env.CREDENTIALS_WORKER = { fetch: vi.fn(async () => Response.json({ value: JSON.stringify({ apiKey: "test-api-key-123456", publicKey: btoa("x".repeat(32)), verifiedNumberId: "12345", verifiedPhoneNumber: number }) })) } as unknown as Fetcher;
+    const provider = vi.fn(async () => Response.json({ data: { id: "12345", phone_number: number } }));
+    vi.stubGlobal("fetch", provider);
+    const result = await handlePhoneAction(f.env, scope, identity, "phone-telnyx-stage", { confirm: true }, true, false) as { phone: { provider: string; status: string }; transport_active: boolean };
+    expect(result).toMatchObject({ phone: { provider: "telnyx", status: "configuring" }, transport_active: false });
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-stage", { confirm: true }, true, false)).rejects.toThrow("assistant_phone_already_bound");
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-cancel", { confirm: true }, true, false)).resolves.toMatchObject({ detached: true, rental_continues: true });
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
   it("migrates existing bindings as Twilio and exposes their opaque provider identity", async () => {
     const f = await phoneFixture();
     const status = await f.act("phone-status") as { phone: { provider: string; provider_number_id: string } };
