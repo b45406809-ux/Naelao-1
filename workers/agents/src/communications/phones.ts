@@ -170,7 +170,9 @@ export async function handlePhoneAction(
     const currentPhone = await assistantPhone(env, identity.id);
     let telnyxWebhook: string | null = null;
     if (manager && currentPhone?.provider === "telnyx" && currentPhone.status === "configuring") {
-      try { telnyxWebhook = `${phonePublicOrigin(env)}/assistant-phone/telnyx/${encodeURIComponent(currentPhone.id)}`; } catch { /* Not configured. */ }
+      try { telnyxWebhook = currentPhone.payer === "managed"
+        ? `${phonePublicOrigin(env)}/assistant-phone/telnyx-managed`
+        : `${phonePublicOrigin(env)}/assistant-phone/telnyx/${encodeURIComponent(currentPhone.id)}`; } catch { /* Not configured. */ }
     }
     return {
       phone: metadata(currentPhone),
@@ -196,9 +198,11 @@ export async function handlePhoneAction(
           ).results
         : [],
       enabled: preferences.enabled.phone,
-      managed_available: false,
-      managed_reason:
-        "Managed numbers require dedicated carrier billing and settlement configuration. Your existing WhatsApp credentials are not used.",
+      managed_available: Boolean(env.TELNYX_MANAGED_API_KEY && env.TELNYX_MANAGED_PUBLIC_KEY && env.TELNYX_MANAGED_MESSAGING_PROFILE_ID && env.TELNYX_MANAGED_CALL_CONTROL_ID && env.TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT && env.TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE && env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH && env.BILLING_WORKER),
+      managed_rates: env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH && env.TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT && env.TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE
+        ? { rental_credits_per_month: Number(env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH), sms_credits_per_segment: Number(env.TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT), call_credits_per_minute: Number(env.TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE) }
+        : null,
+      managed_reason: "Managed Telnyx inventory is enabled only when Naelao carrier credentials and plan-credit prices are configured.",
       authority:
         "Phone numbers and caller IDs do not authenticate task commands.",
       billing:
@@ -240,24 +244,55 @@ export async function handlePhoneAction(
   let binding = await assistantPhone(env, identity.id);
   if (action === "phone-telnyx-activate") {
     if (body.confirm !== true || !binding || binding.provider !== "telnyx" || binding.status !== "configuring") throw new Error("telnyx_staged_binding_required");
-    const account = await (await import("./telnyx-account.js")).resolveTelnyxAccount(env, identity);
+    const account = await (await import("./telnyx-account.js")).resolveTelnyxAccount(env, identity, binding);
     if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number) throw new Error("telnyx_binding_mismatch");
     const client = new (await import("../voice/telnyx-telephony.js")).TelnyxTelephony(account);
     const number = await client.inspectPhoneNumber(account.verifiedNumberId);
     if (number.phoneNumber !== account.verifiedPhoneNumber || !number.messagingProfileId) throw new Error("telnyx_messaging_profile_required");
     const profile = await client.inspectMessagingProfile(number.messagingProfileId);
-    const expected = `${phonePublicOrigin(env)}/assistant-phone/telnyx/${encodeURIComponent(binding.id)}`;
+    const expected = binding.payer === "managed"
+      ? `${phonePublicOrigin(env)}/assistant-phone/telnyx-managed`
+      : `${phonePublicOrigin(env)}/assistant-phone/telnyx/${encodeURIComponent(binding.id)}`;
     if (profile.webhookUrl !== expected) throw new Error("telnyx_webhook_not_configured");
+    let voiceActive = false;
+    if (account.callControlId && number.callControlId === account.callControlId) {
+      const app = await client.inspectCallControlApplication(account.callControlId);
+      if (app.webhookUrl !== expected) throw new Error("telnyx_call_webhook_not_configured");
+      voiceActive = true;
+    }
+    if (binding.payer === "managed" && (!voiceActive || !env.TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH)) throw new Error("managed_telnyx_billing_unavailable");
+    if (binding.payer === "managed") {
+      const rental = await (await import("./managed-carrier-billing.js")).billManagedTelnyxRental(env, binding, identity);
+      if (!rental.billed) throw new Error("managed_telnyx_rental_billing_pending");
+    }
     await livePhoneAllowed(env, scope);
     const updated = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='active',capabilities_json=?,updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND status='configuring'")
-      .bind(JSON.stringify({ sms: true, voice: false, mms: false }), binding.id, identity.id).run();
+      .bind(JSON.stringify({ sms: true, voice: voiceActive, mms: false }), binding.id, identity.id).run();
     if (!updated.meta.changes) throw new Error("telnyx_staged_binding_changed");
-    return { phone: metadata(await assistantPhone(env, identity.id)), sms_active: true, voice_active: false };
+    return { phone: metadata(await assistantPhone(env, identity.id)), sms_active: true, voice_active: voiceActive };
   }
   if (action === "phone-telnyx-detach") {
-    if (body.confirm !== true || !binding || binding.provider !== "telnyx" || binding.status !== "active") throw new Error("telnyx_active_binding_required");
+    if (body.confirm !== true || !binding || binding.provider !== "telnyx" || !["active", "billing_hold", "indeterminate"].includes(binding.status)
+      || (binding.status !== "active" && body.provider_checked !== true)) throw new Error("telnyx_active_binding_required");
     if (await env.PLATFORM_DB.prepare("SELECT id FROM assistant_phone_actions WHERE binding_id=? AND status IN ('sending','indeterminate') LIMIT 1").bind(binding.id).first()) throw new Error("phone_reconciliation_required_before_detach");
     if (await env.PLATFORM_DB.prepare("SELECT event_id FROM assistant_telnyx_ingress_receipts WHERE binding_id=? AND state IN ('claimed','indeterminate') LIMIT 1").bind(binding.id).first()) throw new Error("phone_ingress_reconciliation_required_before_detach");
+    if (binding.payer === "managed") {
+      if (await env.PLATFORM_DB.prepare("SELECT id FROM assistant_live_calls WHERE binding_id=? AND status IN ('armed','connected') LIMIT 1").bind(binding.id).first()) throw new Error("end_live_calls_before_release");
+      if (await env.PLATFORM_DB.prepare("SELECT action_id FROM assistant_telnyx_cost_polls p JOIN assistant_phone_actions a ON a.id=p.action_id WHERE a.binding_id=? AND p.status IN ('pending','running','held') LIMIT 1").bind(binding.id).first()) throw new Error("carrier_cost_reconciliation_required_before_release");
+      if (await env.PLATFORM_DB.prepare("SELECT provider_message_id FROM assistant_managed_telnyx_message_costs WHERE binding_id=? AND status IN ('pending','running','held') LIMIT 1").bind(binding.id).first()) throw new Error("carrier_cost_reconciliation_required_before_release");
+      if (await env.PLATFORM_DB.prepare("SELECT live_call_id FROM assistant_telnyx_live_calls WHERE binding_id=? AND state='ended' AND settled_credits IS NULL LIMIT 1").bind(binding.id).first()) throw new Error("carrier_call_reconciliation_required_before_release");
+      const account = await (await import("./telnyx-account.js")).resolveTelnyxAccount(env, identity, binding);
+      if (!account) throw new Error("managed_telnyx_credentials_unavailable");
+      try { await new (await import("../voice/telnyx-telephony.js")).TelnyxTelephony(account).releasePhoneNumber(binding.provider_number_sid!); }
+      catch (error) {
+        if (error instanceof PhoneProviderError && error.uncertain) await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='indeterminate',updated_at=datetime('now') WHERE id=? AND status='active'").bind(binding.id).run();
+        throw error;
+      }
+      const released = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='released',updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND payer='managed' AND status IN ('active','billing_hold','indeterminate')")
+        .bind(binding.id, identity.id).run();
+      if (!released.meta.changes) throw new Error("managed_telnyx_release_receipt_unconfirmed");
+      return { released: true, carrier_number_released: true, current_month_rental_refundable: false };
+    }
     const updated = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='detached',updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND status='active'")
       .bind(binding.id, identity.id).run();
     if (!updated.meta.changes) throw new Error("telnyx_binding_changed");
@@ -285,6 +320,30 @@ export async function handlePhoneAction(
     await env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,capabilities_json,previous_callbacks_json,policy_json,status) VALUES(?,?,'assistant','byo','telnyx',?,?,?,'{}','{}',?,'configuring')")
       .bind(id, identity.id, `identity:${identity.id}`, number.id, number.phoneNumber, JSON.stringify(defaultPhonePolicy)).run();
     return { phone: metadata(await assistantPhone(env, identity.id)), transport_active: false };
+  }
+  if (action === "phone-telnyx-managed-stage") {
+    if (body.confirm !== true || !manager || agent) throw new Error("human_control_required");
+    if (binding && !["released", "detached"].includes(binding.status)) throw new Error("assistant_phone_already_bound");
+    if (!env.TELNYX_MANAGED_API_KEY || !env.TELNYX_MANAGED_PUBLIC_KEY || !env.TELNYX_MANAGED_MESSAGING_PROFILE_ID || !env.TELNYX_MANAGED_CALL_CONTROL_ID)
+      throw new Error("managed_telnyx_not_configured");
+    const { managedSmsCreditsPerSegment, managedCallCreditsPerMinute, managedRentalCreditsPerMonth } = await import("./managed-carrier-billing.js");
+    managedSmsCreditsPerSegment(env); managedCallCreditsPerMinute(env); managedRentalCreditsPerMonth(env);
+    const numberId = String(body.number_id ?? "");
+    const { TelnyxTelephony } = await import("../voice/telnyx-telephony.js");
+    const client = new TelnyxTelephony({ apiKey: env.TELNYX_MANAGED_API_KEY, publicKey: env.TELNYX_MANAGED_PUBLIC_KEY });
+    const number = await client.inspectPhoneNumber(numberId);
+    if (number.callControlId !== env.TELNYX_MANAGED_CALL_CONTROL_ID || number.messagingProfileId !== env.TELNYX_MANAGED_MESSAGING_PROFILE_ID)
+      throw new Error("managed_telnyx_number_not_assigned");
+    const expected = `${phonePublicOrigin(env)}/assistant-phone/telnyx-managed`;
+    const [profile, callApp] = await Promise.all([
+      client.inspectMessagingProfile(env.TELNYX_MANAGED_MESSAGING_PROFILE_ID),
+      client.inspectCallControlApplication(env.TELNYX_MANAGED_CALL_CONTROL_ID),
+    ]);
+    if (profile.webhookUrl !== expected || callApp.webhookUrl !== expected) throw new Error("managed_telnyx_webhooks_not_configured");
+    const id = crypto.randomUUID();
+    await env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_bindings(id,identity_id,purpose,payer,provider,provider_account_sid,provider_number_sid,phone_number,capabilities_json,previous_callbacks_json,policy_json,status) VALUES(?,?,'assistant','managed','telnyx','naelao-managed-telnyx',?,?, '{}','{}',?,'configuring')")
+      .bind(id, identity.id, number.id, number.phoneNumber, JSON.stringify(defaultPhonePolicy)).run();
+    return { phone: metadata(await assistantPhone(env, identity.id)), transport_active: false, managed: true };
   }
   if (action === "phone-telnyx-cancel") {
     if (body.confirm !== true) throw new Error("phone_confirmation_required");
@@ -422,7 +481,7 @@ export async function handlePhoneAction(
         ? "assistant_phone_actions"
         : "assistant_phone_events";
     const { results } = await env.PLATFORM_DB.prepare(
-      `SELECT *${action === "phone-actions" ? ", (SELECT status FROM assistant_telnyx_cost_polls p WHERE p.action_id=assistant_phone_actions.id) AS cost_collection_status" : ""} FROM ${table} WHERE binding_id=? ${cursor ? "AND (created_at<? OR (created_at=? AND id<?))" : ""} ORDER BY created_at DESC,id DESC LIMIT 51`
+      `SELECT *${action === "phone-actions" ? ", (SELECT status FROM assistant_telnyx_cost_polls p WHERE p.action_id=assistant_phone_actions.id) AS cost_collection_status, (SELECT managed_charge_credits FROM assistant_telnyx_usage_receipts r WHERE r.action_id=assistant_phone_actions.id ORDER BY r.observed_at DESC LIMIT 1) AS managed_charge_credits" : ""} FROM ${table} WHERE binding_id=? ${cursor ? "AND (created_at<? OR (created_at=? AND id<?))" : ""} ORDER BY created_at DESC,id DESC LIMIT 51`
     )
       .bind(
         binding?.id ?? "",
@@ -761,6 +820,8 @@ export async function handlePhoneAction(
   if (action === "phone-live") {
     if (binding.purpose === "extension")
       throw new Error("internal_assistant_line_required");
+    if (binding.provider === "telnyx" && JSON.parse(binding.capabilities_json || "{}").voice !== true)
+      throw new Error("phone_provider_live_transport_unavailable");
     if (agent || body.confirm !== true)
       throw new Error("human_control_required");
     const { armLiveCall } = await import("./live-calls.js");
@@ -770,30 +831,29 @@ export async function handlePhoneAction(
     if (agent || body.confirm !== true)
       throw new Error("human_control_required");
     const live = await env.PLATFORM_DB.prepare(
-      "SELECT call_sid FROM assistant_live_calls WHERE binding_id=? AND user_id=? AND status='connected'"
+      "SELECT call_sid,id FROM assistant_live_calls WHERE binding_id=? AND user_id=? AND status='connected'"
     )
       .bind(binding.id, scope.userId)
-      .all<{ call_sid: string }>();
+      .all<{ call_sid: string; id: string }>();
     await env.PLATFORM_DB.prepare(
       "UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND user_id=? AND status IN ('armed','connected')"
     )
       .bind(binding.id, scope.userId)
       .run();
-    const credentials = await resolvePhoneCredentials(
-      env,
-      identity,
-      binding.payer,
-      binding
-    );
-    if (live.results.length && !credentials)
-      throw new Error("phone_access_revoked_carrier_hangup_unconfirmed");
-    for (const call of live.results)
-      await phoneProvider(
-        credentials!,
-        `Calls/${call.call_sid}.json`,
-        "POST",
-        new URLSearchParams({ Status: "completed" })
-      );
+    if (binding.provider === "telnyx") {
+      const account = await (await import("./telnyx-account.js")).resolveTelnyxAccount(env, identity, binding);
+      if (live.results.length && !account) throw new Error("phone_access_revoked_carrier_hangup_unconfirmed");
+      const client = account ? new (await import("../voice/telnyx-telephony.js")).TelnyxTelephony(account) : null;
+      for (const call of live.results) {
+        const linked = await env.PLATFORM_DB.prepare("SELECT call_control_id FROM assistant_telnyx_live_calls WHERE live_call_id=? AND binding_id=? AND state IN ('answering','gathering','streaming','indeterminate')")
+          .bind(call.id, binding.id).first<{ call_control_id: string }>();
+        if (linked && client) await client.callAction(linked.call_control_id, "hangup", `owner_end_${call.id.replace(/[^A-Za-z0-9_-]/g, "_")}`);
+      }
+    } else {
+      const credentials = await resolvePhoneCredentials(env, identity, binding.payer, binding);
+      if (live.results.length && !credentials) throw new Error("phone_access_revoked_carrier_hangup_unconfirmed");
+      for (const call of live.results) await phoneProvider(credentials!, `Calls/${call.call_sid}.json`, "POST", new URLSearchParams({ Status: "completed" }));
+    }
     return { revoked: true };
   }
   if (action === "phone-handler") {

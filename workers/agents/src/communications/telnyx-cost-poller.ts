@@ -10,7 +10,7 @@ export async function sweepTelnyxSmsCosts(env: AgentsEnv, now = Math.floor(Date.
   await env.PLATFORM_DB.prepare(`INSERT OR IGNORE INTO assistant_telnyx_cost_polls(action_id,status,next_at,updated_at)
     SELECT a.id,CASE WHEN a.created_at<datetime('now','-9 days') THEN 'expired' ELSE 'pending' END,?,? FROM assistant_phone_actions a JOIN assistant_phone_bindings b ON b.id=a.binding_id
     JOIN assistant_communication_identities i ON i.id=b.identity_id
-    WHERE b.provider='telnyx' AND b.payer='byo' AND b.status='active' AND i.status='active'
+    WHERE b.provider='telnyx' AND b.status IN ('active','billing_hold','indeterminate') AND i.status='active'
       AND a.kind='sms' AND a.status='sent' AND a.provider_sid IS NOT NULL
       AND NOT EXISTS(SELECT 1 FROM assistant_telnyx_cost_polls p WHERE p.action_id=a.id)
     ORDER BY a.created_at DESC,a.id LIMIT 200`).bind(now, now).run();
@@ -36,7 +36,7 @@ export async function sweepTelnyxSmsCosts(env: AgentsEnv, now = Math.floor(Date.
           .bind(now, action_id, now + 120).run();
         return;
       }
-      const binding = await env.PLATFORM_DB.prepare("SELECT * FROM assistant_phone_bindings WHERE id=? AND provider='telnyx' AND payer='byo' AND status='active'")
+      const binding = await env.PLATFORM_DB.prepare("SELECT * FROM assistant_phone_bindings WHERE id=? AND provider='telnyx' AND status IN ('active','billing_hold','indeterminate')")
         .bind(row.binding_id).first<AssistantPhoneBinding>();
       const identity = binding && await env.PLATFORM_DB.prepare("SELECT * FROM assistant_communication_identities WHERE id=? AND status='active'")
         .bind(binding.identity_id).first<CommunicationIdentity>();

@@ -1,6 +1,7 @@
 import { receiveAssistantEmail } from "./communications/inbound.js";
 import { registerPhoneWebhooks } from "./communications/phone-webhooks.js";
 import { registerTelnyxWebhook } from "./communications/telnyx-webhook.js";
+import { handleTelnyxMediaStream } from "./voice/telnyx-media-bridge.js";
 import { registerCommunicationRoutes } from "./communications/routes.js";
 import { DynamicSandboxDO } from "./do/DynamicSandboxDO.js";
 export { DynamicSandboxDO };
@@ -374,6 +375,18 @@ export interface AgentsEnv extends Cloudflare.Env {
   TWILIO_AUTH_TOKEN?: string;
   TWILIO_WHATSAPP_NUMBER?: string;
   TWILIO_WHATSAPP_JOIN_CODE?: string;
+  /** Naelao-owned Telnyx carrier account. Configure only after the managed-carrier contract,
+   * regulatory registration, and customer price schedule are approved. */
+  TELNYX_MANAGED_API_KEY?: string;
+  TELNYX_MANAGED_PUBLIC_KEY?: string;
+  TELNYX_MANAGED_MESSAGING_PROFILE_ID?: string;
+  TELNYX_MANAGED_CALL_CONTROL_ID?: string;
+  /** Naelao retail quota price per outbound Telnyx SMS segment, expressed in plan credits. */
+  TELNYX_MANAGED_SMS_CREDITS_PER_SEGMENT?: string;
+  /** Naelao retail quota price per managed Telnyx call minute, in plan credits. */
+  TELNYX_MANAGED_CALL_CREDITS_PER_MINUTE?: string;
+  /** Naelao retail quota price for a managed Telnyx phone rental per billing month, in credits. */
+  TELNYX_MANAGED_RENTAL_CREDITS_PER_MONTH?: string;
   /** Platform-app inbound verification secrets, the counterparts to the per-space vaulted ones. */
   TELEGRAM_WEBHOOK_SECRET?: string;
   SLACK_SIGNING_SECRET?: string;
@@ -455,6 +468,9 @@ app.post('/internal/phone-extension-dispatch',async c=>{
 
 registerPhoneWebhooks(app);
 registerTelnyxWebhook(app);
+app.get("/assistant-phone/telnyx-media/:id/:ticket", c => handleTelnyxMediaStream(
+  c.req.raw, c.env, c.req.param("id"), c.req.param("ticket"),
+));
 
 // Product sessions authorize a person, not access to every conversation in a product. Apply
 // ownership before every session-scoped Agents route (runs, status/stream, approvals, context,
@@ -9319,6 +9335,9 @@ export default {
     _ctx.waitUntil((await import("./communications/delivery-policy.js")).sweepAssistantDelivery(env).catch(()=>{console.warn("Assistant deferred delivery sweep postponed");}));
     _ctx.waitUntil((await import("./communications/erasure.js")).sweepAssistantCommunications(env).catch(()=>{console.warn("Assistant communication retention deferred; retry on next sweep");}));
     _ctx.waitUntil((await import("./communications/telnyx-cost-poller.js")).sweepTelnyxSmsCosts(env).catch(()=>{console.warn("Telnyx cost collection postponed");}));
+    _ctx.waitUntil((await import("./communications/managed-carrier-billing.js")).sweepManagedTelnyxRentals(env).catch(()=>{console.warn("Managed Telnyx rental billing postponed");}));
+    _ctx.waitUntil((await import("./communications/managed-carrier-billing.js")).sweepManagedTelnyxCallCharges(env).catch(()=>{console.warn("Managed Telnyx call usage settlement postponed");}));
+    _ctx.waitUntil((await import("./communications/managed-carrier-billing.js")).sweepManagedTelnyxInboundSmsCosts(env).catch(()=>{console.warn("Managed Telnyx inbound usage collection postponed");}));
     await enqueueAgentTicks(env);
   },
   queue: handleWorkerQueue as unknown as ExportedHandlerQueueHandler<AgentsEnv>,

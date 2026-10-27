@@ -35,7 +35,7 @@ export async function authenticatedTelnyxEvent(input: Parameters<typeof verifyTe
   try { body = JSON.parse(input.rawBody); } catch { throw new Error("telnyx_webhook_invalid"); }
   const data = body?.data;
   if (!data || typeof data.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(data.id)
-    || typeof data.event_type !== "string" || !/^(call|message)\.[a-z0-9_.]{1,100}$/.test(data.event_type)
+    || typeof data.event_type !== "string" || !/^(call|message|streaming)\.[a-z0-9_.]{1,100}$/.test(data.event_type)
     || typeof data.occurred_at !== "string" || data.occurred_at.length > 64 || !Number.isFinite(Date.parse(data.occurred_at))
     || !data.payload || typeof data.payload !== "object" || Array.isArray(data.payload)) throw new Error("telnyx_webhook_invalid");
   return { provider: "telnyx", eventId: data.id, eventType: data.event_type, occurredAt: data.occurred_at, payload: data.payload as Record<string, unknown> };
@@ -48,13 +48,14 @@ export class TelnyxTelephony {
     if (!/^[A-Za-z0-9_-]{16,512}$/.test(credentials.apiKey)) throw new Error("telnyx_credentials_invalid");
     decode(credentials.publicKey, 32);
   }
-  private async request(path: string, method: "GET" | "POST", body?: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async request(path: string, method: "GET" | "POST" | "DELETE", body?: Record<string, unknown>): Promise<Record<string, unknown>> {
     let response: Response;
     try {
       response = await this.fetcher(`https://api.telnyx.com/v2${path}`, { method, redirect: "error", signal: AbortSignal.timeout(12000),
         headers: { authorization: `Bearer ${this.credentials.apiKey}`, "content-type": "application/json" },
         ...(body ? { body: JSON.stringify(body) } : {}) });
     } catch { throw new PhoneProviderError(method !== "GET", "telnyx_provider_outcome_unknown"); }
+    if (method === "DELETE" && (response.status === 204 || response.status === 404)) return {};
     if (!response.ok) throw new PhoneProviderError(method !== "GET" && (response.status >= 500 || response.status === 408), "telnyx_provider_rejected");
     try {
       const value = await readBoundedResponseJson<{ data?: unknown }>(response, 64 * 1024);
@@ -62,10 +63,10 @@ export class TelnyxTelephony {
       return value.data as Record<string, unknown>;
     } catch { throw new PhoneProviderError(method !== "GET", "telnyx_provider_receipt_invalid"); }
   }
-  callAction(callControlId: string, action: "answer" | "hangup", commandId: string) {
+  callAction(callControlId: string, action: "answer" | "hangup" | "gather_using_speak" | "streaming_start", commandId: string, options: Record<string, unknown> = {}) {
     if (!/^(?:v\d+:)?[A-Za-z0-9_+=/-]{1,500}$/.test(callControlId) || !/^[A-Za-z0-9_-]{1,128}$/.test(commandId)
-      || !["answer", "hangup"].includes(action)) throw new Error("telnyx_call_action_invalid");
-    return this.request(`/calls/${encodeURIComponent(callControlId)}/actions/${action}`, "POST", { command_id: commandId });
+      || !["answer", "hangup", "gather_using_speak", "streaming_start"].includes(action)) throw new Error("telnyx_call_action_invalid");
+    return this.request(`/calls/${encodeURIComponent(callControlId)}/actions/${action}`, "POST", { ...options, command_id: commandId });
   }
   sendSms(from: string, to: string, text: string, messagingProfileId?: string) {
     if (!isE164(from) || !isE164(to) || typeof text !== "string" || !text.trim() || text.length > 1600
@@ -81,12 +82,25 @@ export class TelnyxTelephony {
     const number = await this.request(`/phone_numbers/${id}`, "GET");
     if (number.id !== id || typeof number.phone_number !== "string" || !isE164(number.phone_number))
       throw new PhoneProviderError(false, "telnyx_number_receipt_invalid");
-    return { id, phoneNumber: number.phone_number, messagingProfileId: typeof number.messaging_profile_id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(number.messaging_profile_id) && number.messaging_profile_id !== "UNAVAILABLE" ? number.messaging_profile_id : null };
+    return { id, phoneNumber: number.phone_number,
+      messagingProfileId: typeof number.messaging_profile_id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(number.messaging_profile_id) && number.messaging_profile_id !== "UNAVAILABLE" ? number.messaging_profile_id : null,
+      callControlId: typeof number.connection_id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(number.connection_id) ? number.connection_id : null };
+  }
+  releasePhoneNumber(id: string) {
+    if (!/^\d{1,32}$/.test(id)) throw new Error("telnyx_number_id_invalid");
+    return this.request(`/phone_numbers/${id}`, "DELETE");
   }
   async inspectMessagingProfile(id: string) {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("telnyx_profile_id_invalid");
     const profile = await this.request(`/messaging_profiles/${encodeURIComponent(id)}`, "GET");
     if (profile.id !== id || profile.enabled !== true || typeof profile.webhook_url !== "string" || profile.webhook_api_version !== "2") throw new Error("telnyx_messaging_profile_invalid");
     return { webhookUrl: profile.webhook_url };
+  }
+  async inspectCallControlApplication(id: string) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("telnyx_call_control_id_invalid");
+    const app = await this.request(`/call_control_applications/${encodeURIComponent(id)}`, "GET");
+    if (app.id !== id || app.active !== true || typeof app.webhook_event_url !== "string" || app.webhook_api_version !== "2")
+      throw new Error("telnyx_call_control_application_invalid");
+    return { webhookUrl: app.webhook_event_url };
   }
 }

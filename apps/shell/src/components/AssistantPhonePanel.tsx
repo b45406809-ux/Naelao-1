@@ -30,6 +30,7 @@ type Row = {
   status: string;
   provider_sid?: string;
   cost_collection_status?: string | null;
+  managed_charge_credits?: number | null;
 };
 export function AssistantPhonePanel({
   spaceId,
@@ -39,6 +40,9 @@ export function AssistantPhonePanel({
   const [state, setState] = React.useState<{
       phone: Phone | null;
       enabled: boolean;
+      managed_available?: boolean;
+      managed_reason?: string;
+      managed_rates?: { rental_credits_per_month: number; sms_credits_per_segment: number; call_credits_per_minute: number } | null;
       telnyx_webhook_url?: string | null;
       extension_lines?:Array<{id:string;phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
       legacy_numbers?:Array<{id:string;phone_number:string;provider_number_sid:string;status:string}>;
@@ -98,6 +102,9 @@ export function AssistantPhonePanel({
       const result = await call<{
         phone: Phone | null;
         enabled: boolean;
+        managed_available?: boolean;
+        managed_reason?: string;
+        managed_rates?: { rental_credits_per_month: number; sms_credits_per_segment: number; call_credits_per_minute: number } | null;
         telnyx_webhook_url?: string | null;
         extension_lines?: Array<{
           id: string;
@@ -189,7 +196,7 @@ export function AssistantPhonePanel({
       if (action === "phone-credentials") setSecret("");
       if (["phone-telnyx-configure", "phone-telnyx-status", "phone-telnyx-remove"].includes(action)) {
         setTelnyxKey("");
-        setTelnyxSetup(result.configured ? `Telnyx account verified for ${String(result.phone_number)}. Calling and messaging activation is pending.` : "No Telnyx account configured.");
+        setTelnyxSetup(result.configured ? `Telnyx account verified for ${String(result.phone_number)}. Messaging and eligible call control can be activated after webhook verification.` : "No Telnyx account configured.");
       }
       if (action === "phone-telnyx-cost") setTelnyxCost(result.status === "observed" ? `Carrier-reported cost: ${String(result.amount)} ${String(result.currency)}. Telnyx bills your account.` : "Carrier cost is not final yet.");
       await refresh();
@@ -231,18 +238,17 @@ export function AssistantPhonePanel({
         {state?.phone ? ` · ${state.phone.provider ?? "twilio"}` : ""}
       </p>
       <p>
-        Phone is optional for Space and Project assistants. Enable it in
-        assistant channel settings first. Your carrier bills your account directly for
-        rental, calls, SMS/MMS and other carrier charges. Managed Naelao numbers
-        are not available yet.
+        Phone is optional for Space and Project assistants. Enable it in assistant channel settings first.
+        {state?.phone?.payer === "managed" ? " Naelao bills rental and usage to the space plan using the configured carrier price schedule." : " Your carrier bills your account directly for rental, calls, SMS/MMS and other carrier charges."}
       </p>
+      {state?.phone?.payer === "managed" && state.managed_rates && <p>Current plan rates: {state.managed_rates.rental_credits_per_month} credits/month, {state.managed_rates.sms_credits_per_segment} credits/SMS segment, {state.managed_rates.call_credits_per_minute} credits/call minute.</p>}
       {error && <p role="alert">{error}</p>}
       <button type="button" disabled={busy} onClick={() => void refresh()}>
         Refresh phone
       </button>
       <details style={{ marginTop: 12 }}>
-        <summary>Telnyx account preparation</summary>
-        <p>Verify an existing Telnyx number and store account credentials securely. Telnyx calling and messaging are awaiting integration; your active phone provider stays in place.</p>
+        <summary>Telnyx setup</summary>
+        <p>Connect a Telnyx number. A managed number uses Naelao’s configured carrier account and is billed to the space plan; a BYO number is billed by Telnyx directly.</p>
         <fieldset disabled={busy || !state?.enabled}>
           <legend>Verify Telnyx account</legend>
           <label>API key <input type="password" autoComplete="new-password" value={telnyxKey} onChange={event => setTelnyxKey(event.target.value)} /></label>
@@ -251,14 +257,18 @@ export function AssistantPhonePanel({
           <button type="button" disabled={!telnyxKey || !telnyxPublicKey || !telnyxNumberId} onClick={() => void act("phone-telnyx-configure", { api_key: telnyxKey, public_key: telnyxPublicKey, number_id: telnyxNumberId })}>Verify and save</button>{" "}
           <button type="button" onClick={() => void act("phone-telnyx-status")}>Check setup status</button>
           {(!state?.phone || ["released", "detached"].includes(state.phone.status)) && <button type="button" onClick={() => { if (window.confirm("Prepare this number for your assistant? Calls and SMS will remain unavailable until its connection is activated.")) void act("phone-telnyx-stage", { confirm: true }); }}>Prepare assistant number</button>}
+          {state?.managed_available && (!state.phone || ["released", "detached"].includes(state.phone.status)) && <div>
+            <p>Naelao managed inventory is available. Enter a number resource ID already assigned to Naelao’s Telnyx messaging profile and call control application.</p>
+            <button type="button" disabled={!telnyxNumberId} onClick={() => void act("phone-telnyx-managed-stage", { number_id: telnyxNumberId, confirm: true })}>Prepare managed Telnyx number</button>
+          </div>}
           {telnyxSetup && <p role="status">{telnyxSetup}</p>}
         </fieldset>
         {state?.phone?.provider === "telnyx" && state.phone.status === "configuring" && <button type="button" disabled={busy} onClick={() => { if (window.confirm("Cancel this unfinished number setup? Telnyx will continue to bill the number.")) void act("phone-telnyx-cancel", { confirm: true }); }}>Cancel number setup</button>}
         {state?.phone?.provider === "telnyx" && state.phone.status === "configuring" && <div>
-          <p>Set the number’s Telnyx messaging profile webhook URL to <code>{state.telnyx_webhook_url ?? "unavailable: public phone endpoint is not configured"}</code> and choose API version 2. Naelao verifies these settings before enabling SMS.</p>
-          <button type="button" disabled={busy || !state.telnyx_webhook_url} onClick={() => void act("phone-telnyx-activate", { confirm: true })}>Verify and enable SMS</button>
+          <p>Set the Telnyx messaging profile and call control application webhook URL to <code>{state.telnyx_webhook_url ?? "unavailable: public phone endpoint is not configured"}</code> with API version 2. Naelao verifies both before enabling the supported channels.</p>
+          <button type="button" disabled={busy || !state.telnyx_webhook_url} onClick={() => void act("phone-telnyx-activate", { confirm: true })}>Verify and enable channels</button>
         </div>}
-        {state?.phone?.provider === "telnyx" && state.phone.status === "active" && <button type="button" disabled={busy} onClick={() => { if (window.confirm("Detach this Telnyx number? Its carrier webhook and rental continue until you change them at Telnyx.")) void act("phone-telnyx-detach", { confirm: true }); }}>Detach Telnyx number</button>}
+        {state?.phone?.provider === "telnyx" && ["active", "billing_hold", "indeterminate"].includes(state.phone.status) && <button type="button" disabled={busy} onClick={() => { const managed = state.phone?.payer === "managed"; if (window.confirm(managed ? "Release this Naelao managed number at Telnyx? The current month rental is not refundable. For a billing hold or uncertain release, first check the Telnyx number record." : "Detach this BYO number? Its carrier webhook and rental continue until you change them at Telnyx.")) void act("phone-telnyx-detach", { confirm: true, ...(state.phone?.status !== "active" ? { provider_checked: true } : {}) }); }}>{state.phone.payer === "managed" ? "Release managed Telnyx number" : "Detach Telnyx number"}</button>}
         <button type="button" disabled={busy} onClick={() => { if (window.confirm("Remove the saved Telnyx account credentials? This does not release numbers at Telnyx.")) void act("phone-telnyx-remove", { confirm: true }); }}>Remove saved Telnyx credentials</button>
       </details>
       {!state?.phone ||
@@ -708,6 +718,7 @@ export function AssistantPhonePanel({
               <li key={a.id}>
                 {a.kind} to {a.recipient}: {a.status}{" "}
                 {state?.phone?.provider === "telnyx" && a.cost_collection_status && <span> · carrier cost: {a.cost_collection_status}</span>}{" "}
+                {a.managed_charge_credits !== null && a.managed_charge_credits !== undefined && <span> · plan charge: {a.managed_charge_credits} credits</span>}{" "}
                 {state?.phone?.provider === "telnyx" && a.kind === "sms" && a.status === "sent" && <button type="button" disabled={busy} onClick={() => void act("phone-telnyx-cost", { id: a.id, confirm: true })}>Check carrier cost</button>}{" "}
                 {a.status === "draft" && (
                   <button

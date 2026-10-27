@@ -5,13 +5,14 @@ import { PhoneProviderError } from "./phone-provider.js";
 import { channelPreferences, readBody, scopeAccess, type CommunicationIdentity, type CommunicationScope } from "./core.js";
 import { resolveTelnyxAccount } from "./telnyx-account.js";
 import { validatePhonePolicy, type AssistantPhoneBinding } from "./phones.js";
+import { carrierUsdToCredits, managedSmsCreditsPerSegment, managedSmsSegments, reserveManagedCarrierCredits, releaseManagedCarrierCredits, settleManagedCarrierCredits } from "./managed-carrier-billing.js";
 
 /** Caller must enforce Space/Project membership, owner authority, explicit approval,
  * phone preferences and egress before this function. Never retry an uncertain send. */
 export async function sendApprovedTelnyxSms(env: AgentsEnv, identity: CommunicationIdentity, binding: AssistantPhoneBinding, actionId: string, scope: CommunicationScope) {
-  if (binding.provider !== "telnyx" || binding.payer !== "byo" || binding.status !== "active" || !binding.phone_number
+  if (binding.provider !== "telnyx" || binding.status !== "active" || !binding.phone_number
     || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)) throw new Error("telnyx_sms_unavailable");
-  const account = await resolveTelnyxAccount(env, identity);
+  const account = await resolveTelnyxAccount(env, identity, binding);
   if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number)
     throw new Error("telnyx_binding_mismatch");
   const row = await env.PLATFORM_DB.prepare("SELECT id,kind,recipient,body_key,status,provider_sid FROM assistant_phone_actions WHERE id=? AND binding_id=?")
@@ -19,22 +20,38 @@ export async function sendApprovedTelnyxSms(env: AgentsEnv, identity: Communicat
   if (!row || row.kind !== "sms") throw new Error("phone_action_not_found");
   if (row.status === "sent") return { id: row.id, status: "sent", provider_sid: row.provider_sid, deduplicated: true };
   if (row.status !== "approved") throw new Error("phone_action_approval_required");
+  const content = await readBody(env, identity, row.id, row.body_key);
+  const text = String(content.text ?? "");
+  if (!text.trim() || text.length > 1600) throw new Error("telnyx_sms_content_invalid");
   const policy = validatePhonePolicy(JSON.parse(binding.policy_json));
   const claim = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_actions SET status='sending',updated_at=datetime('now') WHERE id=? AND binding_id=? AND status='approved' AND (SELECT COUNT(*) FROM assistant_phone_actions WHERE binding_id=? AND status IN ('sending','indeterminate','sent') AND updated_at>=date('now'))<?")
     .bind(row.id, binding.id, binding.id, policy.maxDailyActions).run();
   if (!claim.meta.changes) throw new Error("phone_action_already_claimed_or_daily_limit");
+  let reservationId: string | null = null;
+  let providerAttempted = false;
   try {
-    const content = await readBody(env, identity, row.id, row.body_key);
     if (!(await scopeAccess(env, scope, true)) || !(await channelPreferences(env, scope)).enabled.phone
       || await isSpaceNetworkEgressDenied(env.PLATFORM_DB, scope.spaceId)) throw new PhoneProviderError(false, "phone_access_revoked");
-    const sent = await new TelnyxTelephony(account).sendSms(binding.phone_number, row.recipient, String(content.text ?? ""));
+    if (binding.payer === "managed") {
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${binding.id}:${row.id}`)));
+      reservationId = `telnyx_sms_${[...digest].map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
+      const credits = managedSmsCreditsPerSegment(env) * managedSmsSegments(text);
+      await reserveManagedCarrierCredits(env, scope, reservationId, credits, `managed-phone:${binding.id}`);
+      const stored = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_actions SET carrier_reservation_id=? WHERE id=? AND binding_id=? AND status='sending' AND (carrier_reservation_id IS NULL OR carrier_reservation_id=?)")
+        .bind(reservationId, row.id, binding.id, reservationId).run();
+      if (!stored.meta.changes) throw new Error("managed_carrier_reservation_link_failed");
+    }
+    providerAttempted = true;
+    const sent = await new TelnyxTelephony(account).sendSms(binding.phone_number, row.recipient, text);
     if (typeof sent.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(sent.id)) throw new PhoneProviderError(true, "telnyx_receipt_invalid");
     await env.PLATFORM_DB.prepare("UPDATE assistant_phone_actions SET status='sent',provider_sid=?,updated_at=datetime('now') WHERE id=? AND binding_id=? AND status='sending'")
       .bind(sent.id, row.id, binding.id).run();
     return { id: row.id, status: "sent", provider_sid: sent.id };
   } catch (error) {
+    const definitiveFailure = error instanceof PhoneProviderError && !error.uncertain || !providerAttempted;
+    if (definitiveFailure && reservationId) await releaseManagedCarrierCredits(env, scope, reservationId).catch(() => undefined);
     await env.PLATFORM_DB.prepare("UPDATE assistant_phone_actions SET status=?,error_code=?,updated_at=datetime('now') WHERE id=? AND binding_id=? AND status='sending'")
-      .bind(error instanceof PhoneProviderError && !error.uncertain ? "failed" : "indeterminate", error instanceof PhoneProviderError ? error.code : "phone_send_interrupted", row.id, binding.id).run();
+      .bind(definitiveFailure ? "failed" : "indeterminate", error instanceof PhoneProviderError ? error.code : "phone_send_interrupted", row.id, binding.id).run();
     throw error;
   }
 }
@@ -42,9 +59,9 @@ export async function sendApprovedTelnyxSms(env: AgentsEnv, identity: Communicat
 /** Resolve a lost response only against an actual provider receipt. An absent receipt does
  * not prove the message was never sent and must not reopen the action for retry. */
 export async function reconcileTelnyxSms(env: AgentsEnv, identity: CommunicationIdentity, binding: AssistantPhoneBinding, actionId: string, providerId: string) {
-  if (binding.provider !== "telnyx" || binding.payer !== "byo" || !binding.phone_number || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)
+  if (binding.provider !== "telnyx" || !binding.phone_number || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)
     || !/^[A-Za-z0-9_-]{1,128}$/.test(providerId)) throw new Error("telnyx_reconciliation_invalid");
-  const account = await resolveTelnyxAccount(env, identity);
+  const account = await resolveTelnyxAccount(env, identity, binding);
   if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number) throw new Error("telnyx_binding_mismatch");
   const row = await env.PLATFORM_DB.prepare("SELECT kind,recipient,body_key,status FROM assistant_phone_actions WHERE id=? AND binding_id=?")
     .bind(actionId, binding.id).first<{ kind: string; recipient: string; body_key: string; status: string }>();
@@ -65,11 +82,11 @@ export async function reconcileTelnyxSms(env: AgentsEnv, identity: Communication
 /** Record only finalized carrier-reported costs as decimal strings. Replays are idempotent;
  * a later provider correction becomes a separate observation. This does not charge users. */
 export async function observeTelnyxSmsCost(env: AgentsEnv, identity: CommunicationIdentity, binding: AssistantPhoneBinding, actionId: string) {
-  if (binding.provider !== "telnyx" || binding.payer !== "byo" || !binding.phone_number || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)) throw new Error("telnyx_reconciliation_invalid");
-  const account = await resolveTelnyxAccount(env, identity);
+  if (binding.provider !== "telnyx" || !binding.phone_number || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)) throw new Error("telnyx_reconciliation_invalid");
+  const account = await resolveTelnyxAccount(env, identity, binding);
   if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number) throw new Error("telnyx_binding_mismatch");
-  const row = await env.PLATFORM_DB.prepare("SELECT kind,recipient,body_key,status,provider_sid FROM assistant_phone_actions WHERE id=? AND binding_id=?")
-    .bind(actionId, binding.id).first<{ kind: string; recipient: string; body_key: string; status: string; provider_sid: string | null }>();
+  const row = await env.PLATFORM_DB.prepare("SELECT kind,recipient,body_key,status,provider_sid,carrier_reservation_id FROM assistant_phone_actions WHERE id=? AND binding_id=?")
+    .bind(actionId, binding.id).first<{ kind: string; recipient: string; body_key: string; status: string; provider_sid: string | null; carrier_reservation_id: string | null }>();
   if (!row || row.kind !== "sms" || row.status !== "sent" || !row.provider_sid) throw new Error("telnyx_message_receipt_required");
   const content = await readBody(env, identity, actionId, row.body_key);
   const receipt = await new TelnyxTelephony(account).inspectMessage(row.provider_sid);
@@ -87,5 +104,18 @@ export async function observeTelnyxSmsCost(env: AgentsEnv, identity: Communicati
   const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
   await env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_telnyx_usage_receipts(receipt_hash,binding_id,action_id,provider_message_id,amount,currency,provider_completed_at) VALUES(?,?,?,?,?,?,?)")
     .bind(hash, binding.id, actionId, row.provider_sid, cost.amount, cost.currency, receipt.completed_at).run();
-  return { status: "observed" as const, amount: cost.amount, currency: cost.currency, provider_completed_at: receipt.completed_at, billed_by: "telnyx" as const };
+  let tenantChargeCredits: number | undefined;
+  if (binding.payer === "managed") {
+    if (cost.currency !== "USD" || !row.carrier_reservation_id) throw new Error("managed_telnyx_cost_not_billable");
+    tenantChargeCredits = carrierUsdToCredits(cost.amount);
+    const reserved = managedSmsCreditsPerSegment(env) * managedSmsSegments(String(content.text));
+    if (tenantChargeCredits > reserved) throw new Error("managed_telnyx_cost_exceeds_reservation");
+    const scope: CommunicationScope = { tenantId: identity.tenant_id, spaceId: identity.space_id, userId: identity.owner_user_id,
+      role: "product_end_user", ...(identity.project_id ? { projectId: identity.project_id } : {}) };
+    await settleManagedCarrierCredits(env, scope, row.carrier_reservation_id, tenantChargeCredits);
+    await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_usage_receipts SET managed_charge_credits=? WHERE receipt_hash=? AND managed_charge_credits IS NULL")
+      .bind(tenantChargeCredits, hash).run();
+  }
+  return { status: "observed" as const, amount: cost.amount, currency: cost.currency, provider_completed_at: receipt.completed_at,
+    billed_by: binding.payer === "managed" ? "naelao_plan" as const : "telnyx" as const, ...(tenantChargeCredits !== undefined ? { tenant_charge_credits: tenantChargeCredits } : {}) };
 }

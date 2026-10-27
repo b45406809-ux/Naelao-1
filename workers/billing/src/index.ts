@@ -617,7 +617,12 @@ app.post("/internal/workflows/budget/settle", async (c) => {
   const now = new Date().toISOString();
   const reservation = await c.env.PLATFORM_DB.prepare("SELECT space_id,workflow_id,credits,project_id,installation_id,runtime_tier FROM workflow_budget_reservations WHERE id = ? AND org_id = ? AND status = 'held'")
     .bind(body.reservation_id, orgId).first<{ space_id: string; workflow_id: string; credits: number; project_id: string | null; installation_id: string | null; runtime_tier: number | null }>();
-  if (!reservation) return c.json({ settled: false, reservation_id: body.reservation_id });
+  if (!reservation) {
+    const prior = await c.env.PLATFORM_DB.prepare("SELECT r.status,u.quantity FROM workflow_budget_reservations r LEFT JOIN usage_events u ON u.org_id=r.org_id AND u.run_id=r.workflow_id AND u.event_type='infra_credits' WHERE r.id=? AND r.org_id=?")
+      .bind(body.reservation_id, orgId).first<{ status: string; quantity: number | null }>();
+    if (prior?.status === "settled") return c.json({ settled: true, reservation_id: body.reservation_id, charged: prior.quantity ?? 0, deduplicated: true });
+    return c.json({ settled: false, reservation_id: body.reservation_id });
+  }
   const charged = Math.min(quantity, reservation.credits);
   const batch = await c.env.PLATFORM_DB.batch([
     c.env.PLATFORM_DB.prepare("UPDATE workflow_budget_reservations SET status = 'settled', updated_at = ? WHERE id = ? AND org_id = ? AND status = 'held'").bind(now, body.reservation_id, orgId),

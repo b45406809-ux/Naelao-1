@@ -5,6 +5,7 @@ import { isSpaceNetworkEgressDenied } from "@naelao/security";
 import type { AssistantPhoneBinding } from "./phones.js";
 import { verifyVoiceSession } from "../voice/session-scope.js";
 import { mintOwnerVoiceTicket } from "../voice/voice-ticket.js";
+import { managedCallCreditsPerMinute, reserveManagedCarrierCredits, releaseManagedCarrierCredits } from "./managed-carrier-billing.js";
 
 export interface LiveCall {
   id: string;
@@ -20,6 +21,7 @@ export interface LiveCall {
   status: string;
   expires_at: number;
   deadline: number | null;
+  reserved_credits: number;
 }
 export async function liveCodeHash(
   bindingId: string,
@@ -49,8 +51,6 @@ export async function armLiveCall(
     throw new Error("live_call_session_required");
   if (binding.purpose === "extension")
     throw new Error("internal_assistant_line_required");
-  if (binding.provider !== undefined && binding.provider !== "twilio")
-    throw new Error("phone_provider_live_transport_unavailable");
   if (binding.status !== "active")
     throw new Error("assistant_phone_not_connected");
   if (sessionId === undefined)
@@ -72,12 +72,23 @@ export async function armLiveCall(
   } while (bytes[0]! >= 4_200_000_000);
   const code = String(bytes[0]! % 100_000_000).padStart(8, "0");
   const id = crypto.randomUUID();
-  await env.PLATFORM_DB.batch([
+  const previouslyArmed = await env.PLATFORM_DB.prepare("SELECT id,reserved_credits FROM assistant_live_calls WHERE binding_id=? AND user_id=? AND status='armed'")
+    .bind(binding.id, scope.userId).first<{ id: string; reserved_credits: number }>();
+  let reservedCredits = 0;
+  const isManagedTelnyx = binding.provider === "telnyx" && binding.payer === "managed";
+  if (isManagedTelnyx) {
+    const policy = JSON.parse(binding.policy_json) as { maxCallSeconds?: unknown };
+    const seconds = Number.isSafeInteger(policy.maxCallSeconds) && Number(policy.maxCallSeconds) >= 30 && Number(policy.maxCallSeconds) <= 900 ? Number(policy.maxCallSeconds) : 300;
+    reservedCredits = Math.ceil(seconds / 60) * managedCallCreditsPerMinute(env);
+    await reserveManagedCarrierCredits(env, scope, id, reservedCredits, `managed-phone:${binding.id}`);
+  }
+  try {
+    await env.PLATFORM_DB.batch([
     env.PLATFORM_DB.prepare(
       "UPDATE assistant_live_calls SET status='revoked' WHERE binding_id=? AND user_id=? AND status='armed'"
     ).bind(binding.id, scope.userId),
     env.PLATFORM_DB.prepare(
-      "INSERT INTO assistant_live_calls(id,binding_id,tenant_id,space_id,project_id,user_id,caller_role,session_id,code_hash,status,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,'armed',?,?)"
+      "INSERT INTO assistant_live_calls(id,binding_id,tenant_id,space_id,project_id,user_id,caller_role,session_id,code_hash,status,expires_at,created_at,reserved_credits) VALUES(?,?,?,?,?,?,?,?,?,'armed',?,?,?)"
     ).bind(
       id,
       binding.id,
@@ -89,9 +100,15 @@ export async function armLiveCall(
       actualSessionId,
       await liveCodeHash(binding.id, code),
       now + 180,
-      now
+      now,
+      reservedCredits
     ),
   ]);
+  } catch (error) {
+    if (reservedCredits) await releaseManagedCarrierCredits(env, scope, id).catch(() => undefined);
+    throw error;
+  }
+  if (previouslyArmed?.reserved_credits) await releaseManagedCarrierCredits(env, scope, previouslyArmed.id).catch(() => undefined);
   return {
     live_call_id: id,
     code,
@@ -109,7 +126,6 @@ export async function claimLiveCall(
   maxSeconds: number
 ): Promise<LiveCall | null> {
   if (
-    (binding.provider !== undefined && binding.provider !== "twilio") ||
     binding.purpose === "extension" ||
     !/^CA[a-fA-F0-9]{32}$/.test(callSid) ||
     !/^\d{8}$/.test(code) ||

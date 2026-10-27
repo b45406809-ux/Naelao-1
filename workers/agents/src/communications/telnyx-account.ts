@@ -3,11 +3,20 @@ import type { AgentsEnv } from "../index.js";
 import { TelnyxTelephony, type TelnyxCredentials } from "../voice/telnyx-telephony.js";
 import { generatePhoneCredentialToken, isE164 } from "../voice/twilio-telephony.js";
 import type { CommunicationIdentity, CommunicationScope } from "./core.js";
+import type { AssistantPhoneBinding } from "./phones.js";
 
 const credentialName = (identity: CommunicationIdentity) => `ASSISTANT_PHONE_TELNYX_${identity.id}`;
-type Account = TelnyxCredentials & { verifiedNumberId: string; verifiedPhoneNumber: string };
+type Account = TelnyxCredentials & { verifiedNumberId: string; verifiedPhoneNumber: string; callControlId?: string | null };
 
-export async function resolveTelnyxAccount(env: AgentsEnv, identity: CommunicationIdentity): Promise<Account | null> {
+export async function resolveTelnyxAccount(env: AgentsEnv, identity: CommunicationIdentity, binding?: Pick<AssistantPhoneBinding, "payer" | "provider_number_sid" | "phone_number">): Promise<Account | null> {
+  if (binding?.payer === "managed") {
+    if (!env.TELNYX_MANAGED_API_KEY || !env.TELNYX_MANAGED_PUBLIC_KEY || !binding.provider_number_sid || !binding.phone_number) return null;
+    const account: Account = { apiKey: env.TELNYX_MANAGED_API_KEY, publicKey: env.TELNYX_MANAGED_PUBLIC_KEY,
+      verifiedNumberId: binding.provider_number_sid, verifiedPhoneNumber: binding.phone_number,
+      callControlId: env.TELNYX_MANAGED_CALL_CONTROL_ID ?? null };
+    new TelnyxTelephony(account);
+    return account;
+  }
   if (!env.CREDENTIALS_WORKER) throw new Error("credential_vault_unavailable");
   const response = await env.CREDENTIALS_WORKER.fetch(new Request(
     `http://credentials/v1/internal/spaces/${encodeURIComponent(identity.space_id)}/credentials/${encodeURIComponent(credentialName(identity))}/plaintext`,
@@ -20,7 +29,8 @@ export async function resolveTelnyxAccount(env: AgentsEnv, identity: Communicati
   try {
     const account = JSON.parse(saved.value ?? "") as Account;
     new TelnyxTelephony(account);
-    if (!/^\d{1,32}$/.test(account.verifiedNumberId) || !isE164(account.verifiedPhoneNumber)) throw new Error();
+    if (!/^\d{1,32}$/.test(account.verifiedNumberId) || !isE164(account.verifiedPhoneNumber)
+      || (account.callControlId != null && !/^[A-Za-z0-9_-]{1,128}$/.test(account.callControlId))) throw new Error();
     return account;
   } catch { throw new Error("telnyx_account_record_invalid"); }
 }
@@ -45,7 +55,7 @@ export async function telnyxAccountStatus(env: AgentsEnv, identity: Communicatio
   if (!env.CREDENTIALS_WORKER) return { configured: false, transport_active: false };
   const account = await resolveTelnyxAccount(env, identity);
   if (!account) return { configured: false, transport_active: false };
-  return { configured: true, transport_active: false, number_id: account.verifiedNumberId, phone_number: account.verifiedPhoneNumber };
+  return { configured: true, transport_active: false, voice_available: Boolean(account.callControlId), number_id: account.verifiedNumberId, phone_number: account.verifiedPhoneNumber };
 }
 
 /** Called only after host authorization, phone enablement and egress checks. This stores
@@ -63,8 +73,8 @@ export async function configureTelnyxAccount(env: AgentsEnv, scope: Communicatio
         "x-naelao-user-id": scope.userId, "x-naelao-role": "admin",
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, scope.tenantId) },
       body: JSON.stringify({ name: credentialName(identity), scope: "space", description: "Verified Telnyx assistant carrier candidate",
-        value: JSON.stringify({ ...credentials, verifiedNumberId: number.id, verifiedPhoneNumber: number.phoneNumber }) }),
+        value: JSON.stringify({ ...credentials, verifiedNumberId: number.id, verifiedPhoneNumber: number.phoneNumber, callControlId: number.callControlId }) }),
     }));
   if (!response.ok) throw new Error("credential_store_failed");
-  return { configured: true, transport_active: false, number_id: number.id, phone_number: number.phoneNumber };
+  return { configured: true, transport_active: false, voice_available: Boolean(number.callControlId), number_id: number.id, phone_number: number.phoneNumber };
 }
