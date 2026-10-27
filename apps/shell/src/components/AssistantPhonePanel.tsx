@@ -38,6 +38,7 @@ export function AssistantPhonePanel({
   const [state, setState] = React.useState<{
       phone: Phone | null;
       enabled: boolean;
+      telnyx_webhook_url?: string | null;
       extension_lines?:Array<{id:string;phone_number:string|null;provider_number_sid:string|null;installation_id:string|null;handler_sha256:string|null;handler_status:string|null;status:string}>;
       legacy_numbers?:Array<{id:string;phone_number:string;provider_number_sid:string;status:string}>;
     } | null>(null),
@@ -95,6 +96,7 @@ export function AssistantPhonePanel({
       const result = await call<{
         phone: Phone | null;
         enabled: boolean;
+        telnyx_webhook_url?: string | null;
         extension_lines?: Array<{
           id: string;
           phone_number: string | null;
@@ -226,7 +228,7 @@ export function AssistantPhonePanel({
       </p>
       <p>
         Phone is optional for Space and Project assistants. Enable it in
-        assistant channel settings first. Twilio bills your account directly for
+        assistant channel settings first. Your carrier bills your account directly for
         rental, calls, SMS/MMS and other carrier charges. Managed Naelao numbers
         are not available yet.
       </p>
@@ -248,6 +250,11 @@ export function AssistantPhonePanel({
           {telnyxSetup && <p role="status">{telnyxSetup}</p>}
         </fieldset>
         {state?.phone?.provider === "telnyx" && state.phone.status === "configuring" && <button type="button" disabled={busy} onClick={() => { if (window.confirm("Cancel this unfinished number setup? Telnyx will continue to bill the number.")) void act("phone-telnyx-cancel", { confirm: true }); }}>Cancel number setup</button>}
+        {state?.phone?.provider === "telnyx" && state.phone.status === "configuring" && <div>
+          <p>Set the number’s Telnyx messaging profile webhook URL to <code>{state.telnyx_webhook_url ?? "unavailable: public phone endpoint is not configured"}</code> and choose API version 2. Naelao verifies these settings before enabling SMS.</p>
+          <button type="button" disabled={busy || !state.telnyx_webhook_url} onClick={() => void act("phone-telnyx-activate", { confirm: true })}>Verify and enable SMS</button>
+        </div>}
+        {state?.phone?.provider === "telnyx" && state.phone.status === "active" && <button type="button" disabled={busy} onClick={() => { if (window.confirm("Detach this Telnyx number? Its carrier webhook and rental continue until you change them at Telnyx.")) void act("phone-telnyx-detach", { confirm: true }); }}>Detach Telnyx number</button>}
         <button type="button" disabled={busy} onClick={() => { if (window.confirm("Remove the saved Telnyx account credentials? This does not release numbers at Telnyx.")) void act("phone-telnyx-remove", { confirm: true }); }}>Remove saved Telnyx credentials</button>
       </details>
       {!state?.phone ||
@@ -405,7 +412,7 @@ export function AssistantPhonePanel({
                     onChange={(e) => setKind(e.target.value)}
                   >
                     <option value="sms">SMS</option>
-                    <option value="call">Call with spoken message</option>
+                    {state?.phone?.provider !== "telnyx" && <option value="call">Call with spoken message</option>}
                   </select>
                 </label>
                 <label>
@@ -698,7 +705,7 @@ export function AssistantPhonePanel({
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => void act("phone-approve", { id: a.id })}
+                    onClick={() => void act(state?.phone?.provider === "telnyx" ? "phone-telnyx-approve" : "phone-approve", { id: a.id, ...(state?.phone?.provider === "telnyx" ? { confirm: true } : {}) })}
                   >
                     Approve
                   </button>
@@ -707,7 +714,7 @@ export function AssistantPhonePanel({
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => void act("phone-send", { id: a.id })}
+                    onClick={() => void act(state?.phone?.provider === "telnyx" ? "phone-telnyx-send" : "phone-send", { id: a.id, ...(state?.phone?.provider === "telnyx" ? { confirm: true } : {}) })}
                   >
                     Send approved action
                   </button>

@@ -167,8 +167,14 @@ export async function handlePhoneAction(
 ) {
   if (action === "phone-status") {
     const preferences = await channelPreferences(env, scope);
+    const currentPhone = await assistantPhone(env, identity.id);
+    let telnyxWebhook: string | null = null;
+    if (manager && currentPhone?.provider === "telnyx" && currentPhone.status === "configuring") {
+      try { telnyxWebhook = `${phonePublicOrigin(env)}/assistant-phone/telnyx/${encodeURIComponent(currentPhone.id)}`; } catch { /* Not configured. */ }
+    }
     return {
-      phone: metadata(await assistantPhone(env, identity.id)),
+      phone: metadata(currentPhone),
+      telnyx_webhook_url: telnyxWebhook,
       extension_lines: manager
         ? (
             await env.PLATFORM_DB.prepare(
@@ -196,7 +202,7 @@ export async function handlePhoneAction(
       authority:
         "Phone numbers and caller IDs do not authenticate task commands.",
       billing:
-        "BYO Twilio bills your carrier account directly; rental, calls, messages, taxes and regulatory charges are separate.",
+        `BYO ${currentPhone?.provider === "telnyx" ? "Telnyx" : "Twilio"} bills your carrier account directly; rental, calls, messages, taxes and regulatory charges are separate.`,
     };
   }
   if (
@@ -225,10 +231,45 @@ export async function handlePhoneAction(
       "phone-telnyx-remove",
       "phone-telnyx-status",
       "phone-telnyx-cancel",
+      "phone-telnyx-detach",
     ].includes(action)
   )
     await livePhoneAllowed(env, scope);
   let binding = await assistantPhone(env, identity.id);
+  if (action === "phone-telnyx-activate") {
+    if (body.confirm !== true || !binding || binding.provider !== "telnyx" || binding.status !== "configuring") throw new Error("telnyx_staged_binding_required");
+    const account = await (await import("./telnyx-account.js")).resolveTelnyxAccount(env, identity);
+    if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number) throw new Error("telnyx_binding_mismatch");
+    const client = new (await import("../voice/telnyx-telephony.js")).TelnyxTelephony(account);
+    const number = await client.inspectPhoneNumber(account.verifiedNumberId);
+    if (number.phoneNumber !== account.verifiedPhoneNumber || !number.messagingProfileId) throw new Error("telnyx_messaging_profile_required");
+    const profile = await client.inspectMessagingProfile(number.messagingProfileId);
+    const expected = `${phonePublicOrigin(env)}/assistant-phone/telnyx/${encodeURIComponent(binding.id)}`;
+    if (profile.webhookUrl !== expected) throw new Error("telnyx_webhook_not_configured");
+    await livePhoneAllowed(env, scope);
+    const updated = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='active',capabilities_json=?,updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND status='configuring'")
+      .bind(JSON.stringify({ sms: true, voice: false, mms: false }), binding.id, identity.id).run();
+    if (!updated.meta.changes) throw new Error("telnyx_staged_binding_changed");
+    return { phone: metadata(await assistantPhone(env, identity.id)), sms_active: true, voice_active: false };
+  }
+  if (action === "phone-telnyx-detach") {
+    if (body.confirm !== true || !binding || binding.provider !== "telnyx" || binding.status !== "active") throw new Error("telnyx_active_binding_required");
+    if (await env.PLATFORM_DB.prepare("SELECT id FROM assistant_phone_actions WHERE binding_id=? AND status IN ('sending','indeterminate') LIMIT 1").bind(binding.id).first()) throw new Error("phone_reconciliation_required_before_detach");
+    if (await env.PLATFORM_DB.prepare("SELECT event_id FROM assistant_telnyx_ingress_receipts WHERE binding_id=? AND state IN ('claimed','indeterminate') LIMIT 1").bind(binding.id).first()) throw new Error("phone_ingress_reconciliation_required_before_detach");
+    const updated = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_bindings SET status='detached',updated_at=datetime('now') WHERE id=? AND identity_id=? AND provider='telnyx' AND status='active'")
+      .bind(binding.id, identity.id).run();
+    if (!updated.meta.changes) throw new Error("telnyx_binding_changed");
+    return { detached: true, rental_continues: true, webhook_unchanged: true };
+  }
+  if (action === "phone-draft" && binding?.provider === "telnyx") {
+    const recipient = String(body.to ?? ""), text = String(body.text ?? "");
+    if (binding.status !== "active" || body.kind !== "sms" || !isE164(recipient) || !text.trim() || text.length > 1600 || body.media !== undefined || body.dtmf) throw new Error("telnyx_sms_draft_invalid");
+    const id = `pa_${String(Date.now()).padStart(13, "0")}_${crypto.randomUUID()}`;
+    const key = await storeBody(env, identity, id, { text, dtmf: "" });
+    await env.PLATFORM_DB.prepare("INSERT INTO assistant_phone_actions(id,binding_id,actor_id,kind,recipient,body_key) VALUES(?,?,?,'sms',?,?)")
+      .bind(id, binding.id, scope.userId, recipient, key).run();
+    return { id, status: "draft", requires_approval: true };
+  }
   if (action === "phone-telnyx-stage") {
     if (body.confirm !== true) throw new Error("phone_confirmation_required");
     if (binding && !["released", "detached"].includes(binding.status)) throw new Error("assistant_phone_already_bound");

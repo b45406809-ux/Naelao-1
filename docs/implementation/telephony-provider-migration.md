@@ -3,7 +3,7 @@
 ## Current state
 
 Twilio remains the active assistant phone provider. Meta Direct WhatsApp is separate.
-`voice/telnyx-telephony.ts` implements an inactive Telnyx transport boundary: authenticated
+`voice/telnyx-telephony.ts` implements a Telnyx transport boundary: authenticated
 webhook parsing, answer/hangup with stable command IDs, SMS submission and message inspection.
 It does not provision numbers, mount ingress routes, dispatch assistant tasks, or switch carriers.
 The phone settings panel now supports owner-controlled Telnyx account preparation for Space
@@ -42,13 +42,15 @@ entitlement, country availability, prices, or deployed webhook delivery.
   opaque number ID. Twilio credential resolution, lifecycle, callbacks, quote purchases and
   live-call admission reject other carriers. Deployment checks require the new columns.
   Existing legacy SID-named storage columns remain for compatibility; Telnyx active binding
-  creation and callback configuration remain open.
-- Verified account preparation and scoped Vault storage/removal are implemented. Active
-  number import, quoted purchase, callback migration, detach and release remain open.
+  callback configuration remains a manual provider action.
+- Verified account preparation and scoped Vault storage/removal are implemented. Quoted
+  purchase, automatic callback migration and provider number release remain open.
   A human owner can now stage a verified Telnyx number in an assistant binding after a fresh
   provider lookup. The binding remains `configuring`, reserves the assistant slot and address,
-  and does not modify Telnyx callbacks. Cancellation only detaches the staged local record;
-  provider rental continues. Signed ingress, callback setup and activation are still required.
+  and does not modify Telnyx callbacks. Owners configure the messaging profile webhook at
+  Telnyx; Naelao verifies the exact URL, enabled status and API version before activating
+  SMS. Calls and MMS remain disabled. Owners can detach locally after pending actions and
+  ingress are reconciled; the provider webhook and rental continue.
 - Signed Telnyx SMS ingress is wired for active extension bindings: signature, exact bound
   destination, owner scope, phone preferences, egress policy, handler and daily quota are
   checked before dispatch. Migration 0137 and `telnyx-ingress-journal.ts` provide atomic
@@ -56,7 +58,7 @@ entitlement, country availability, prices, or deployed webhook delivery.
   Extension replies are stored as approval-required drafts. Owner-authorized phone actions
   can approve and send a draft through an active Telnyx binding; a lost response remains
   indeterminate and is not retried. This API path needs an active binding, and phone UI
-  wiring, billing reconciliation, binding activation and calls remain open. Signed assistant
+  billing reconciliation and calls remain open. Signed assistant
   SMS ingress now records paired-sender requests as pending commands requiring authenticated
   review; unknown senders gain no command authority and verification codes stay private.
 - Normalize usage receipts using actual currency and provider identifiers; keep uncertain

@@ -68,6 +68,20 @@ async function phoneFixture() {
 }
 afterEach(() => vi.unstubAllGlobals());
 describe("assistant telephone safety and lifecycle", () => {
+  it("activates Telnyx SMS only after verifying the exact provider webhook", async () => {
+    const f = fixture(); f.env.PUBLIC_AGENTS_URL = "https://phone.example.com";
+    f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));
+    const identity = await ensureIdentity(f.env, scope);
+    f.env.CREDENTIALS_WORKER = { fetch: vi.fn(async () => Response.json({ value: JSON.stringify({ apiKey: "test-api-key-123456", publicKey: btoa("x".repeat(32)), verifiedNumberId: "12345", verifiedPhoneNumber: number }) })) } as unknown as Fetcher;
+    let webhook = "https://wrong.example.com";
+    const provider = vi.fn(async (url: string) => url.includes("messaging_profiles") ? Response.json({ data: { id: "profile-1", enabled: true, webhook_url: webhook, webhook_api_version: "2" } }) : Response.json({ data: { id: "12345", phone_number: number, messaging_profile_id: "profile-1" } }));
+    vi.stubGlobal("fetch", provider);
+    const staged = await handlePhoneAction(f.env, scope, identity, "phone-telnyx-stage", { confirm: true }, true, false) as { phone: { id: string } };
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-activate", { confirm: true }, true, false)).rejects.toThrow("telnyx_webhook_not_configured");
+    webhook = `https://phone.example.com/assistant-phone/telnyx/${staged.phone.id}`;
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-activate", { confirm: true }, true, false)).resolves.toMatchObject({ sms_active: true, voice_active: false, phone: { status: "active", capabilities: { sms: true, voice: false } } });
+    await expect(handlePhoneAction(f.env, scope, identity, "phone-telnyx-detach", { confirm: true }, true, false)).resolves.toMatchObject({ detached: true, webhook_unchanged: true });
+  });
   it("stages only a freshly verified Telnyx number and can cancel without changing the carrier", async () => {
     const f = fixture();
     f.fetch.mockImplementation(async (r: Request) => r.url.includes("assistant-access") ? Response.json({ effective_role: "owner" }) : Response.json({ preferences: { enabled: { phone: true, email: true } } }));

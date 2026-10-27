@@ -81,6 +81,12 @@ export class TelnyxTelephony {
     const number = await this.request(`/phone_numbers/${id}`, "GET");
     if (number.id !== id || typeof number.phone_number !== "string" || !isE164(number.phone_number))
       throw new PhoneProviderError(false, "telnyx_number_receipt_invalid");
-    return { id, phoneNumber: number.phone_number };
+    return { id, phoneNumber: number.phone_number, messagingProfileId: typeof number.messaging_profile_id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(number.messaging_profile_id) && number.messaging_profile_id !== "UNAVAILABLE" ? number.messaging_profile_id : null };
+  }
+  async inspectMessagingProfile(id: string) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("telnyx_profile_id_invalid");
+    const profile = await this.request(`/messaging_profiles/${encodeURIComponent(id)}`, "GET");
+    if (profile.id !== id || profile.enabled !== true || typeof profile.webhook_url !== "string" || profile.webhook_api_version !== "2") throw new Error("telnyx_messaging_profile_invalid");
+    return { webhookUrl: profile.webhook_url };
   }
 }
