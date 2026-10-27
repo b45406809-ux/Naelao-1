@@ -1934,6 +1934,21 @@ app.get("/internal/spaces/:spaceId/blackboard/events/:projectId", async c => {
     ORDER BY e.created_at DESC,e.event_id DESC LIMIT 101`).bind(c.req.header("x-naelao-user-id"),c.req.header("x-naelao-tenant-id"),spaceId,projectId).all();
   return c.json({ events:rows.results.slice(0,100),truncated:rows.results.length>100 });
 });
+app.get("/internal/spaces/:spaceId/blackboard/policy/:projectId", async c => {
+  const space=c.req.param("spaceId"), project=c.req.param("projectId");
+  const denied=await requireReadableAutomationProject(c,space,project); if(denied) return denied;
+  const row=await c.env.PLATFORM_DB.prepare("SELECT wake_enabled,updated_at FROM space_blackboard_policies WHERE tenant_id=? AND space_id=? AND project_id=?").bind(c.req.header("x-naelao-tenant-id"),space,project).first<{wake_enabled:number;updated_at:string}>();
+  return c.json({ wake_enabled:row?.wake_enabled===1, updated_at:row?.updated_at ?? null });
+});
+app.put("/internal/spaces/:spaceId/blackboard/policy/:projectId", async c => {
+  const space=c.req.param("spaceId"), project=c.req.param("projectId");
+  const denied=await requireManageableAutomationProject(c,space,project); if(denied) return denied;
+  let b: { wake_enabled?: unknown }; try { b=JSON.parse(await readBoundedRequestText(c.req.raw,4096)); } catch { return c.json({ error_code:"invalid_policy" },400); }
+  if (!b || typeof b.wake_enabled!=="boolean") return c.json({ error_code:"invalid_policy" },400);
+  await c.env.PLATFORM_DB.prepare("INSERT INTO space_blackboard_policies(tenant_id,space_id,project_id,wake_enabled,authorized_user_id,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO UPDATE SET wake_enabled=excluded.wake_enabled,authorized_user_id=excluded.authorized_user_id,updated_at=excluded.updated_at")
+    .bind(c.req.header("x-naelao-tenant-id"),space,project,b.wake_enabled ? 1 : 0,c.req.header("x-naelao-user-id"),new Date().toISOString()).run();
+  return c.json({ wake_enabled:b.wake_enabled });
+});
 app.post("/internal/spaces/:spaceId/blackboard/events/:projectId/:eventId/read", async c => {
   const spaceId=c.req.param("spaceId"), projectId=c.req.param("projectId"), eventId=c.req.param("eventId"), tenant=c.req.header("x-naelao-tenant-id")!, user=c.req.header("x-naelao-user-id")!;
   const denied=await requireReadableAutomationProject(c,spaceId,projectId); if(denied) return denied;
@@ -1945,10 +1960,10 @@ app.post("/internal/spaces/:spaceId/blackboard/events/:projectId/:eventId/read",
 });
 // Read-only Space extension entry point. The internal handlers retain their user and project
 // authorization checks; the frame never receives an internal service token.
-app.get("/spaces/:spaceId/blackboard/*", async c => {
+app.on(["GET", "PUT"], "/spaces/:spaceId/blackboard/*", async c => {
   let suffix: string;
   try { suffix = decodeURIComponent(c.req.path.split("/blackboard/")[1] ?? ""); } catch { return c.json({ error_code: "not_found" }, 404); }
-  if (!/^(?:cards|requests\/[A-Za-z0-9._:-]{1,160}|events\/[A-Za-z0-9._:-]{1,160})$/.test(suffix)) return c.json({ error_code: "not_found" }, 404);
+  if (!/^(?:cards|requests\/[A-Za-z0-9._:-]{1,160}|events\/[A-Za-z0-9._:-]{1,160}|policy\/[A-Za-z0-9._:-]{1,160})$/.test(suffix) || (c.req.method === "PUT" && !suffix.startsWith("policy/"))) return c.json({ error_code: "not_found" }, 404);
   const url = new URL(c.req.url);
   const [view, projectId] = suffix.split("/");
   url.pathname = `/internal/spaces/${encodeURIComponent(c.req.param("spaceId"))}/blackboard/${view}${projectId ? `/${encodeURIComponent(projectId)}` : ""}`;

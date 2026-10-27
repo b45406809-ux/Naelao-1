@@ -18,11 +18,19 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
       const operation = event.data as { type?: unknown; id?: unknown; capability?: unknown; input?: unknown };
       if (operation?.type === "naelao.extension.operation") {
         if (typeof operation.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(operation.id) || !session || projectScoped
-          || !["blueprint.export", "blueprint.status", "marketplace.graduate", "blackboard.read"].includes(String(operation.capability))
+          || !["blueprint.export", "blueprint.status", "marketplace.graduate", "blackboard.read", "blackboard.policy"].includes(String(operation.capability))
           || !capabilities.includes(String(operation.capability))) return;
         let size = 0;
         try { size = new TextEncoder().encode(JSON.stringify(operation.input ?? {})).byteLength; } catch { return; }
         if (size > (operation.capability === "blueprint.export" ? 4_500_000 : 64_000)) return;
+        if (operation.capability === "blackboard.policy") {
+          const input = operation.input as { projectId?: unknown; wakeEnabled?: unknown } | null;
+          if (!input || typeof input.projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(input.projectId) || typeof input.wakeEnabled !== "boolean") return;
+          if (!window.confirm(`${input.wakeEnabled ? "Enable" : "Disable"} automatic blackboard wake-ups for project ${input.projectId}?`)) {
+            frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: operation.id, ok: false, error: "Cancelled" }, "*");
+            return;
+          }
+        }
         const capability = operation.capability as SpaceExtensionHostCapability;
         void callSpaceSharedExtensionOperation(spaceId, session, capability, operation.input ?? {})
           .then(result => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: operation.id, ok: true, result }, "*"))

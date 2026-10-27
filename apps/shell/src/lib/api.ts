@@ -1549,15 +1549,20 @@ export function removeSpaceSharedExtension(spaceId: string, installationId: stri
 export function setSpaceSharedExtensionEnabled(spaceId: string, installationId: string, session: SessionCredentials, enabled: boolean) {
   return apiFetch<{ instance_id: string; status: "active" | "disabled" }>(`/v1/spaces/${encodeURIComponent(spaceId)}/shared-extension-installations/${encodeURIComponent(installationId)}/lifecycle`, { method: "PATCH", session, body: JSON.stringify({ action: enabled ? "enable" : "disable" }) });
 }
-export type SpaceExtensionHostCapability = "blueprint.export" | "blueprint.status" | "marketplace.graduate" | "blackboard.read";
+export type SpaceExtensionHostCapability = "blueprint.export" | "blueprint.status" | "marketplace.graduate" | "blackboard.read" | "blackboard.policy";
 export function callSpaceSharedExtensionOperation(spaceId: string, session: SessionCredentials, capability: SpaceExtensionHostCapability, input: unknown) {
+  if (capability === "blackboard.policy") {
+    const value = input && typeof input === "object" ? input as { projectId?: unknown; wakeEnabled?: unknown } : {};
+    if (typeof value.projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(value.projectId) || typeof value.wakeEnabled !== "boolean") throw new Error("Invalid blackboard policy");
+    return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blackboard/policy/${encodeURIComponent(value.projectId)}`, { method: "PUT", session, body: JSON.stringify({ wake_enabled: value.wakeEnabled }) });
+  }
   if (capability === "blackboard.read") {
     const value = input && typeof input === "object" ? input as { view?: unknown; projectId?: unknown; after?: unknown } : {};
     if (value.view === "cards") {
       if (value.after !== undefined && (typeof value.after !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(value.after))) throw new Error("Invalid cursor");
       return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blackboard/cards${value.after ? `?after=${encodeURIComponent(value.after as string)}` : ""}`, { session, cache: "no-store" });
     }
-    if ((value.view !== "requests" && value.view !== "events") || typeof value.projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(value.projectId)) throw new Error("Invalid blackboard view");
+    if ((value.view !== "requests" && value.view !== "events" && value.view !== "policy") || typeof value.projectId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(value.projectId)) throw new Error("Invalid blackboard view");
     return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blackboard/${value.view}/${encodeURIComponent(value.projectId)}`, { session, cache: "no-store" });
   }
   if (capability === "blueprint.export") return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/export-template`, { method: "POST", session, body: JSON.stringify(input) });
