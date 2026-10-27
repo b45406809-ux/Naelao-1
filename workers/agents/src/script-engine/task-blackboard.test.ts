@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendAuthenticatedTaskMessage, authorizeTaskMessaging, createTaskMessage, readAuthenticatedTaskMessages, visibleTaskMessages, type TaskMessage, type TaskMessageStore } from "./task-blackboard.js";
+import { appendAuthenticatedTaskMessage, authorizeTaskMessaging, createDurableTaskMessageStore, createTaskMessage, readAuthenticatedTaskMessages, visibleTaskMessages, type TaskMessage, type TaskMessageStore } from "./task-blackboard.js";
 import { issueDelegationContract, type DelegationContract } from "./delegation-contract.js";
 
 describe("task blackboard message boundaries", () => {
@@ -39,5 +39,17 @@ describe("task blackboard message boundaries", () => {
     await expect(appendAuthenticatedTaskMessage({ ...params, contract: { ...contract, workerId: "worker:c" } })).rejects.toThrow();
     await expect(readAuthenticatedTaskMessages({ ...params, scope: { ...scope, rootRunId: "other" } })).rejects.toThrow("scope_denied");
     expect(await readAuthenticatedTaskMessages(params)).toEqual([first]);
+  });
+  it("stores each goal under a separate host-selected durable transaction key", async () => {
+    const values = new Map<string, unknown>();
+    const tx = { get: async (key: string) => values.get(key), put: async (key: string, value: unknown) => { values.set(key, value); } };
+    const storage = { transaction: async (operation: (tx: unknown) => Promise<unknown>) => operation(tx) } as unknown as DurableObjectStorage;
+    const a = createDurableTaskMessageStore(storage, "a".repeat(64));
+    const b = createDurableTaskMessageStore(storage, "b".repeat(64));
+    const message = createTaskMessage(input, "worker:a", members, 123);
+    await a.transact(messages => ({ messages: [...messages, message], result: true }));
+    expect(await b.transact(messages => ({ messages, result: messages }))).toEqual([]);
+    expect(await a.transact(messages => ({ messages, result: messages }))).toEqual([message]);
+    expect(() => createDurableTaskMessageStore(storage, "../other")).toThrow("goal_invalid");
   });
 });

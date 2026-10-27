@@ -61,6 +61,21 @@ export interface TaskMessageStore {
   transact<T>(operation: (messages: TaskMessage[]) => { messages: TaskMessage[]; result: T }): Promise<T>;
 }
 
+/** The goal hash is selected by the host after scope lookup, never by a worker command. */
+export function createDurableTaskMessageStore(storage: DurableObjectStorage, goalHash: string): TaskMessageStore {
+  if (!/^[a-f0-9]{64}$/.test(goalHash)) throw new Error("task_blackboard_goal_invalid");
+  const key = `task-blackboard:messages:${goalHash}`;
+  return {
+    transact: operation => storage.transaction(async tx => {
+      const current = await tx.get<TaskMessage[]>(key) ?? [];
+      if (!Array.isArray(current) || current.length > 500) throw new Error("task_blackboard_storage_invalid");
+      const update = operation(current);
+      if (update.messages !== current) await tx.put(key, update.messages);
+      return update.result;
+    }),
+  };
+}
+
 async function authenticateTaskWorker(contract: DelegationContract, token: string, secret: string, scope: TaskBlackboardScope): Promise<void> {
   await verifyDelegationContract(contract, token, secret);
   if (!contract.tenantId || !contract.spaceId || !contract.rootRunId || !contract.parentDoId
