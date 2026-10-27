@@ -21,6 +21,46 @@ import { decryptAuthenticated, encryptAuthenticated, generateDek, unwrapDek, wra
 import { Hono } from "hono";
 import { authorizeEgressRedirect, authorizeEgressUrl, isSpaceNetworkEgressDenied, readSpaceEgressPolicy, scanAndScrubEgress } from "@naelao/security";
 
+const OPENROUTER_MODEL_ENDPOINTS = new Set([
+  "/api/v1/chat/completions",
+  "/api/v1/completions",
+  "/api/v1/responses",
+  "/api/v1/embeddings",
+  "/api/v1/images/generations",
+  "/api/v1/audio/speech",
+  "/api/v1/audio/transcriptions",
+  "/api/v1/videos",
+]);
+
+/** Model inference must pass through the host model adapter so usage, model policy and
+ * worker-effort limits cannot be bypassed through a generic credential-backed API call. */
+export function isModelProviderInferenceEndpoint(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const path = decodeURIComponent(url.pathname).replace(/\/+$/, "").toLowerCase();
+    if (url.protocol !== "https:") return false;
+    if (url.hostname === "openrouter.ai") return OPENROUTER_MODEL_ENDPOINTS.has(path);
+    if (["api.openai.com", "api.groq.com", "api.mistral.ai", "api.deepseek.com", "api.x.ai", "api.together.xyz", "api.perplexity.ai"].includes(url.hostname)) {
+      return /\/(?:chat\/completions|completions|responses|embeddings|images(?:\/.*)?|audio(?:\/.*)?|videos(?:\/.*)?)$/.test(path);
+    }
+    if (url.hostname === "api.anthropic.com") return /^\/v1\/(?:messages|complete)$/.test(path);
+    if (url.hostname === "api.cohere.com") return /^\/(?:v1\/(?:chat|generate|embed|rerank)|v2\/(?:chat|embed|rerank))$/.test(path);
+    if (url.hostname === "generativelanguage.googleapis.com") {
+      return /\/models\/[^/]+:(?:generatecontent|streamgeneratecontent|embedcontent|batchembedcontents|generateanswer)$/.test(path);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Provider API keys are for host model adapters only. Giving one to generic `api request`
+ * would let a script skip model selection, output caps, usage metering and quota reservations. */
+export function isModelProviderCredentialName(value: string): boolean {
+  const name = value.trim();
+  return /^llm[_-]byok(?:[_:-]|$)/i.test(name) || /^(?:OPENROUTER(?:_API)?_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GOOGLE_AI_STUDIO_API_KEY|GROQ_API_KEY|DEEPSEEK_API_KEY|MISTRAL_API_KEY|XAI_API_KEY)$/i.test(name);
+}
+
 // ── Env ───────────────────────────────────────────────────────────────────────
 
 export interface CredentialsEnv {
@@ -1180,6 +1220,16 @@ app.post("/v1/internal/spaces/:spaceId/outbound", async (c) => {
   }
   if (body.responseMode !== undefined && (tokenCheck.purpose !== "assistant-audio" || !isOpenRouterSpeechStream(body.url, method, body.responseMode)))
     return c.json({ error_code: "egress_audio_destination_denied" }, 403);
+  const hostAudioAdapterRequest = tokenCheck.purpose === "assistant-audio" && (
+    isOpenRouterSpeechStream(body.url, method, body.responseMode) ||
+    (method === "POST" && body.url === "https://openrouter.ai/api/v1/audio/transcriptions")
+  );
+  if ((isModelProviderInferenceEndpoint(body.url) || isModelProviderCredentialName(body.credentialName)) && !hostAudioAdapterRequest) {
+    return c.json({
+      error_code: "egress_model_api_requires_host",
+      message: "Model provider credentials and inference endpoints are restricted to Naelao's host model adapters so model policy and usage limits are enforced",
+    }, 403);
+  }
   const isWrite = method !== "GET" && method !== "HEAD";
   if (isWrite && (typeof body.idempotencyKey !== "string" || !/^[A-Za-z0-9._:-]{1,120}$/.test(body.idempotencyKey))) {
     return c.json({ error_code: "egress_idempotency_required", message: "A valid idempotency key is required for external changes" }, 400);

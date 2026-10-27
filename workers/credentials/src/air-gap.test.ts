@@ -58,6 +58,45 @@ describe("credential egress air-gap boundary", () => {
     expect(outbound).not.toHaveBeenCalled();
   });
 
+  it("blocks raw model calls and generic access to model-provider keys before credential resolution", async () => {
+    const outbound = vi.fn();
+    vi.stubGlobal("fetch", outbound);
+    const runtime = env(true, false);
+    const response = await worker.fetch!(new Request("https://credentials/v1/internal/spaces/s/outbound", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": "tenant",
+        "x-naelao-credential-token": await generateCredentialToken("secret", "s", "agent", undefined, "tenant"),
+      },
+      body: JSON.stringify({
+        credentialName: "llm_byok_openrouter",
+        url: "https://openrouter.ai/api/v1/chat/completions",
+        method: "POST",
+        idempotencyKey: "raw-model-call",
+        body: { model: "vendor/expensive-model", messages: [{ role: "user", content: "run" }] },
+      }),
+    }), runtime, {} as ExecutionContext);
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error_code: "egress_model_api_requires_host" });
+    expect(outbound).not.toHaveBeenCalled();
+    expect(vi.mocked(runtime.PLATFORM_DB.prepare)).not.toHaveBeenCalledWith(expect.stringMatching(/FROM\s+credentials\b/i));
+
+    const credentialOnlyResponse = await worker.fetch!(new Request("https://credentials/v1/internal/spaces/s/outbound", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": "tenant",
+        "x-naelao-credential-token": await generateCredentialToken("secret", "s", "agent", undefined, "tenant"),
+      },
+      body: JSON.stringify({ credentialName: "llm_byok_openrouter", url: "https://api.example.test/v1/account", method: "GET" }),
+    }), runtime, {} as ExecutionContext);
+    expect(credentialOnlyResponse.status).toBe(403);
+    expect(await credentialOnlyResponse.json()).toMatchObject({ error_code: "egress_model_api_requires_host" });
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
   it("rejects legacy tokens without a tenant claim before reading egress policy or credentials", async () => {
     const outbound = vi.fn();
     vi.stubGlobal("fetch", outbound);

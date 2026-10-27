@@ -1,7 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { buildOutboundAuthorization, buildOutboundResponse, headersForEgressRedirect, redactOutboundSecrets } from "./index.js";
+import { buildOutboundAuthorization, buildOutboundResponse, headersForEgressRedirect, isModelProviderCredentialName, isModelProviderInferenceEndpoint, redactOutboundSecrets } from "./index.js";
 
 describe("credential outbound authorization", () => {
+  it("recognizes model keys and inference endpoints without matching unrelated service URLs", () => {
+    for (const name of ["llm_byok_openrouter", "llm-byok:groq", "llm_byok_active::openrouter", "OPENROUTER_API_KEY"]) {
+      expect(isModelProviderCredentialName(name)).toBe(true);
+    }
+    for (const name of ["STRIPE_KEY", "CRM_API_KEY", "OPENROUTER_PROFILE_ID"]) {
+      expect(isModelProviderCredentialName(name)).toBe(false);
+    }
+    for (const endpoint of [
+      "https://openrouter.ai/api/v1/chat/completions",
+      "https://openrouter.ai/api/v1/%63hat/completions/",
+      "https://api.openai.com/v1/responses",
+      "https://api.anthropic.com/v1/messages",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent",
+      "https://api.groq.com/openai/v1/chat/completions",
+    ]) expect(isModelProviderInferenceEndpoint(endpoint)).toBe(true);
+    for (const endpoint of [
+      "https://openrouter.ai.evil.test/api/v1/chat/completions",
+      "http://openrouter.ai/api/v1/chat/completions",
+      "https://openrouter.ai/api/v1/models",
+      "https://api.openai.com/v1/files",
+    ]) expect(isModelProviderInferenceEndpoint(endpoint)).toBe(false);
+  });
+
   it("keeps bearer as the default and builds Basic auth from a vaulted password", () => {
     expect(buildOutboundAuthorization("secret-token")).toBe(`Bearer secret-token`);
     expect(buildOutboundAuthorization("secret-token", { type: "basic", username: "AC123" }))
