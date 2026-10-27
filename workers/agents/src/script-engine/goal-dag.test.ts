@@ -64,6 +64,26 @@ describe("durable goal DAG", () => {
     expect(result.escalations).toEqual([expect.objectContaining({ taskId: "bad", reason: "worker_failed", nextAction: "investigate_failure", blockedTasks: ["blocked"] })]);
     expect(f.host.launch.mock.calls.map(([t]) => t.id)).not.toContain("blocked");
   });
+  it("runs one opt-in fixer for a confirmed failure and retains the original escalation", async () => {
+    const f = fixture(); f.host.fixerEnabled = true;
+    f.host.launch = vi.fn(async (_task, id) => ({ id, ok: false, error: "test failed" }));
+    f.host.fix = vi.fn(async (_task, id) => ({ id, ok: true, output: "repair and checks" }));
+    const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    expect(f.host.fix).toHaveBeenCalledTimes(1);
+    expect(result.fixers?.a).toMatchObject({ status: "completed", workerId: "worker:a:fix" });
+    expect(result.tasks.a?.status).toBe("failed");
+    expect(result.tasks.b?.status).toBe("blocked");
+    const restart = fixture(f.snapshot()); restart.host.fix = vi.fn();
+    await executeGoalDag([task("a"), task("b", ["a"])], restart.host);
+    expect(restart.host.fix).not.toHaveBeenCalled();
+  });
+  it("does not invoke the fixer when a worker's outcome is uncertain", async () => {
+    const f = fixture({ fixerEnabled: true, tasks: { a: { status: "running", workerId: "worker:a" } } });
+    f.host.fix = vi.fn();
+    const result = await executeGoalDag([task("a")], f.host);
+    expect(result.tasks.a?.status).toBe("needs_review");
+    expect(f.host.fix).not.toHaveBeenCalled();
+  });
   it("recovers a completed worker after a lost acknowledgement", async () => {
     const f = fixture({ tasks: { a: { status: "running", workerId: "worker:a" } } });
     f.host.recover = vi.fn(async id => ({ id, ok: true, output: "committed" }));

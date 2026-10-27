@@ -5,7 +5,8 @@ export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; e
 export type GoalTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "needs_review";
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[] }
+export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean }
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
 export interface GoalHandoff { taskId: string; workerId: string; output: string; truncated: boolean }
 export interface GoalDagHost {
@@ -17,6 +18,8 @@ export interface GoalDagHost {
   workerId(taskId: string): string;
   concurrency: number;
   taskBlackboardEnabled?: boolean;
+  fixerEnabled?: boolean;
+  fix?(task: GoalTask, workerId: string, failure: GoalWorkerResult): Promise<GoalWorkerResult>;
 }
 
 function dependencyHandoffs(task: GoalTask, journal: GoalDagJournal): GoalHandoff[] {
@@ -79,7 +82,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   validateGoalDag(tasks);
   if (!Number.isSafeInteger(host.concurrency) || host.concurrency < 1 || host.concurrency > 4) throw new Error("invalid_goal_concurrency");
   const loaded = await host.load();
-  const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
+  const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, fixerEnabled: host.fixerEnabled === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
   // Existing journals created during the initial rollout may already contain messages.
   if (loaded && journal.taskBlackboardEnabled === undefined) journal.taskBlackboardEnabled = Array.isArray(journal.messages);
   if (tasks.some(task => !journal.tasks[task.id]) || Object.keys(journal.tasks).length !== tasks.length) throw new Error("goal_journal_mismatch");
@@ -106,6 +109,33 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     }
     const ready = pending.filter(task => journal.tasks[task.id]!.status === "pending" && (task.dependencies ?? []).every(id => journal.tasks[id]!.status === "completed")).slice(0, host.concurrency);
     if (!ready.length) {
+      if (journal.fixerEnabled && host.fix) {
+        for (const task of tasks) {
+          const state = journal.tasks[task.id]!;
+          if (state.status !== "failed" || !state.result || task.file_paths.length === 0) continue;
+          const fixers = journal.fixers ??= {};
+          let fixer = fixers[task.id];
+          if (fixer?.status === "running") {
+            const recovered = await host.recover(fixer.workerId);
+            fixer.status = recovered ? (recovered.ok ? "completed" : "failed") : "needs_review";
+            if (recovered) fixer.result = recovered;
+            await host.save(journal);
+          }
+          if (fixer) continue;
+          fixer = fixers[task.id] = { workerId: `${state.workerId}:fix`, status: "running" };
+          await host.save(journal);
+          try {
+            const result = await host.fix(task, fixer.workerId, state.result);
+            fixer.result = result;
+            fixer.status = result.ok ? "completed" : "failed";
+          } catch {
+            const recovered = await host.recover(fixer.workerId);
+            fixer.status = recovered ? (recovered.ok ? "completed" : "failed") : "needs_review";
+            if (recovered) fixer.result = recovered;
+          }
+          await host.save(journal);
+        }
+      }
       journal.escalations = collectEscalations(tasks, journal);
       await host.save(journal);
       return journal;
