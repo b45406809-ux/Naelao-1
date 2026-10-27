@@ -49,11 +49,12 @@ entitlement, country availability, prices, or deployed webhook delivery.
   provider lookup. The binding remains `configuring`, reserves the assistant slot and address,
   and does not modify Telnyx callbacks. Cancellation only detaches the staged local record;
   provider rental continues. Signed ingress, callback setup and activation are still required.
-- Signed Telnyx ingress with durable event claims, binding/destination checks and assistant
-  membership verification before entering the existing planner/worker runtime.
-  Migration 0137 and `telnyx-ingress-journal.ts` now provide atomic binding/event claims,
-  payload conflict detection and explicit indeterminate outcomes. This journal is not yet
-  connected to a webhook endpoint or extension dispatcher, and does not activate a number.
+- Signed Telnyx SMS ingress is wired for active extension bindings: signature, exact bound
+  destination, owner scope, phone preferences, egress policy, handler and daily quota are
+  checked before dispatch. Migration 0137 and `telnyx-ingress-journal.ts` provide atomic
+  binding/event claims, payload conflict detection and explicit indeterminate outcomes.
+  Extension replies are stored as approval-required drafts; outbound Telnyx sending and
+  billing are not connected. Binding activation, assistant ingress and call events remain open.
 - Normalize usage receipts using actual currency and provider identifiers; keep uncertain
   usage pending reconciliation. A transport submission is not proof of final billable usage.
 - Connect Telnyx media to authorized durable call sessions and enforce existing duration,
