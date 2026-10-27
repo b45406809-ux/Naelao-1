@@ -144,3 +144,26 @@ Done means an FDE can determine the principal, granted data, UI surface, orchest
 - Define per-external-subject retention defaults, deletion obligations, recording/consent, and the customer-visible disclosure for each provider and jurisdiction.
 - Confirm whether the existing channel handler's captured one-reply contract is enough for the first vertical slice. Do not add tools/retrieval until the host can enforce collection/action grants.
 - Live OAuth, provider delivery, account rate limits, and pricing remain provider/account checks; local tests cannot establish them.
+
+## Marketplace dependency delivery boundary (2026-10-27)
+
+A template's `requiredExtensions`, version pins, and manifest digest identify a dependency; they do not deliver or authorize its executable artifacts. Keep dependency installation a separate, explicit host operation. Do not copy source-space R2 objects into a buyer's Space solely because the template certificate is valid: the current host HMAC proves Naelao accepted a release in one Space, not that the extension publisher authorized cross-tenant redistribution.
+
+### Required registry contract before cross-Space installation
+
+1. Publish an immutable extension release record in a platform marketplace registry. Bind the canonical validated manifest, exact artifact path/source map digest, publisher identity/key ID, publisher signature, license terms, and revocation state. Store artifacts under a platform-owned release namespace rather than a seller Space's private R2 prefix.
+2. Verify the publisher signature against a platform-trusted publisher key at publication and again before installation. A template seller may reference a release only when its license allows redistribution/dependency installation; a template certificate must bind the exact extension ID, version, release digest, and license record ID.
+3. The activation preview must enumerate each dependency's publisher, exact version/digest, requested capabilities, project/space scopes, provider requirements, containers/resources, data grants, license terms, and whether its publisher key or release is revoked. The user must explicitly approve each executable dependency before it is copied or activated.
+4. Stage immutable bytes in the buyer tenant's artifact namespace, recheck the digest and publisher proof, initialize declared primitives, then activate the scoped installation only after setup succeeds. Provider credentials remain separately connected by the buyer. Respect buyer plan quotas before copying or provisioning resources.
+5. Preserve the dependency's publisher attribution and install license. A buyer uninstall must not delete the seller's registry release. Revocation blocks new installs immediately and makes existing installs enter a visible disabled/review state; upgrades remain explicit and version-pinned.
+
+### Acceptance gates
+
+- Cross-tenant artifact ID/path traversal and tenant-prefix isolation tests.
+- Publisher signature, revoked key, revoked release, changed bytes, changed license, and dependency-pin mismatch tests.
+- Preview is read-only; no artifact copies, credential access, runtime initialization, or grants happen before explicit owner approval.
+- Failures during staging or primitive setup leave no active partial install and are retry-safe.
+- Plan-limit/quota denial occurs before artifact copy or container allocation.
+- Marketplace fork/license, extension attribution, uninstall, and publisher revocation lifecycles are covered end to end with real storage bindings before production claims.
+
+Until this exists, marketplace templates may carry exact dependency references for preview and reproducibility, but an extension absent from the host's installable catalog must remain blocked at activation. The exact-version export and verified historical-release install changes do not close cross-tenant artifact delivery.
