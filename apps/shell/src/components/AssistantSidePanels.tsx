@@ -36,6 +36,7 @@ import {
   listScheduledJobRuns,
   listAssistantChannels,
   listSubAgents,
+  listGoalActivity,
   listAgentDefinitions,
   listAssistantFiles,
   listWorkspaceFiles,
@@ -63,6 +64,7 @@ import {
   type ScheduledJobRun,
   type ChannelLink,
   type SubAgentSummary,
+  type GoalActivity,
   type AgentDefinitionSummary,
   type WorkspaceFile,
   type ArtifactSummary,
@@ -947,12 +949,14 @@ function WorkersPanel({
 }) {
   const product = useProduct();
   const [subAgents, setSubAgents] = React.useState<SubAgentSummary[] | null>(null);
+  const [goals, setGoals] = React.useState<GoalActivity[]>([]);
   const [failed, setFailed] = React.useState(false);
   const [definitions, setDefinitions] = React.useState<AgentDefinitionSummary[] | null>(null);
   React.useEffect(() => {
     let cancelled = false;
     let inFlight = false;
     setFailed(false);
+    setGoals([]);
     // sessionId is what points this at the DO that actually ran the spawns — without it the
     // server answers from the space-wide assistant DO, which never saw them (the reported
     // "No sub-agents have run in this conversation" despite a real spawn). An empty
@@ -967,6 +971,7 @@ function WorkersPanel({
         console.error("Failed to load worker activity", error);
         if (!cancelled) setFailed(true);
       }).finally(() => { inFlight = false; });
+      if (lastRunId) listGoalActivity(spaceId, session, lastRunId, { sessionId, agentId }).then(value => { if (!cancelled) setGoals(value); }).catch(() => { if (!cancelled) setGoals([]); });
     };
     refresh();
     const interval = window.setInterval(refresh, 5000);
@@ -1038,6 +1043,18 @@ function WorkersPanel({
           ))}
         </div>
       )}
+      {goals.map(goal => (
+        <details key={goal.id} style={{ margin: "0 12px 10px", fontSize: 11, color: "var(--text2)" }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task coordination ({goal.tasks.length} tasks)</summary>
+          {goal.tasks.map(task => <div key={task.id} style={{ padding: "4px 0" }}>
+            <strong>{task.title}</strong> · {workerActivityLabel(task.status)}
+            {task.dependencies.length > 0 && <div>Depends on: {task.dependencies.join(", ")}</div>}
+            {goal.fixers[task.id] && <div>Fixer: {workerActivityLabel(goal.fixers[task.id]!.status)}</div>}
+          </div>)}
+          {goal.escalations.map(item => <div key={item.taskId} style={{ color: "#dc2626" }}>{item.taskId}: {item.nextAction.replaceAll("_", " ")}</div>)}
+          {goal.messages.length > 0 && <details><summary>Worker messages ({goal.messages.length})</summary>{goal.messages.map(message => <div key={`${message.sender}:${message.id}`} style={{ marginTop: 5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}><strong>{message.kind}</strong>: {message.text}</div>)}</details>}
+        </details>
+      ))}
       <div className="tp-section" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
         <span>{projectId ? "Project workers" : "Installed workers"}</span>
         <span style={{ fontSize: 10, color: "var(--text3)" }}>{installed.length}</span>

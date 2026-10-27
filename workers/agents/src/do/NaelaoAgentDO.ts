@@ -1855,6 +1855,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       if(method==='POST'&&url.pathname==='/internal/worker-view')return this.handleWorkerView(request);
       if(method==='POST'&&url.pathname==='/internal/task-blackboard')return this.handleTaskBlackboard(request);
+      if(method==='GET'&&url.pathname==='/internal/goal-activity')return this.handleGoalActivity(request);
       if(method==='POST'&&url.pathname==='/internal/steer-worker')return this.handleSteerWorker(request);
       if(method==='POST'&&url.pathname==='/internal/steering'){
         const text=await readBoundedRequestText(request,8192);
@@ -3571,6 +3572,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const run = (async () => {
           // Explicit IDs keep dependencies tied to this goal instead of unrelated tasks.
           await hooks.persistGoalTasks!(tasks.map(task => ({ ...task, id: taskId(task.id), dependencies: (task.dependencies ?? []).map(taskId) })));
+          await this.ctx.storage.transaction(async tx => {
+            const indexKey = `goal-activity:index:${parentRunId}`;
+            const hashes = await tx.get<string[]>(indexKey) ?? [];
+            if (!hashes.includes(hash)) await tx.put(indexKey, [...hashes, hash].slice(-10));
+            await tx.put(`goal-activity:metadata:${hash}`, { tenantId, spaceId, actorId: userId ?? null, tasks: tasks.map(task => ({ id: task.id, title: task.title, dependencies: task.dependencies ?? [] })) });
+          });
           const prior = await this.ctx.storage.get<GoalDagJournal>(key);
           const enabled = prior ? (prior.taskBlackboardEnabled ?? Array.isArray(prior.messages)) : this.env.TASK_BLACKBOARD_ENABLED === "true";
           if (enabled && userId) await this.ctx.storage.put(`task-blackboard:scope:${hash}`, {
@@ -4154,6 +4161,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const route=await this.ctx.storage.get<string>(`sub-agent-route:${body.workerId}`);
     if(!route||!this.env.NAELAO_AGENT_DO)return Response.json({error_code:"worker_unavailable"},{status:404});
     return this.env.NAELAO_AGENT_DO.get(this.env.NAELAO_AGENT_DO.idFromName(route)).fetch(new Request("http://agent/internal/steering",{method:"POST",headers:await this.internalHeaders(tenant,{"content-type":"application/json"}),body:JSON.stringify({...body.command,spaceId:body.spaceId,projectId:body.projectId,actorId:body.actorId,workerId:body.workerId})}));
+  }
+
+  private async handleGoalActivity(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET)) return Response.json({ error: "forbidden" }, { status: 403 });
+    const url = new URL(request.url), runId = url.searchParams.get("run_id") ?? "", spaceId = url.searchParams.get("space_id") ?? "", actorId = request.headers.get("x-naelao-user-id") ?? "";
+    if (!runId || runId.length > 192 || !spaceId || spaceId.length > 192 || !actorId) return Response.json({ error: "invalid_request" }, { status: 400 });
+    const hashes = await this.ctx.storage.get<string[]>(`goal-activity:index:${runId}`) ?? [];
+    const goals = [];
+    for (const hash of hashes.slice(-10)) {
+      if (!/^[a-f0-9]{64}$/.test(hash)) continue;
+      const metadata = await this.ctx.storage.get<{ tenantId: string; spaceId: string; actorId: string | null; tasks: Array<{ id: string; title: string; dependencies: string[] }> }>(`goal-activity:metadata:${hash}`);
+      if (!metadata || metadata.tenantId !== tenantId || metadata.spaceId !== spaceId || metadata.actorId !== actorId) continue;
+      const journal = await this.ctx.storage.get<GoalDagJournal>(`goal-dag:${hash}`);
+      if (!journal) continue;
+      const messages = await this.ctx.storage.get<import("../script-engine/task-blackboard.js").TaskMessage[]>(`task-blackboard:messages:${hash}`) ?? [];
+      goals.push({ id: hash, tasks: metadata.tasks.map(task => ({ ...task, status: journal.tasks[task.id]?.status ?? "pending", workerId: journal.tasks[task.id]?.workerId })), escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-100) });
+    }
+    return Response.json({ goals });
   }
 
   private async handleTaskBlackboard(request: Request): Promise<Response> {

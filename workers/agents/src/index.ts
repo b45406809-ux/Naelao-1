@@ -7590,6 +7590,16 @@ app.get("/spaces/:spaceId/assistant/sub-agents", async (c) => {
   return stub.fetch(new Request(`http://agent-do/sub-agents?parent_run_id=${encodeURIComponent(parentRunId)}`));
 });
 
+app.get("/spaces/:spaceId/assistant/goal-activity", async (c) => {
+  const spaceId = c.req.param("spaceId"), tenantId = await requireVerifiedTenant(c);
+  const actorId = getCallerIdentity(c).userId;
+  const sessionId = c.req.query("session_id") ?? "", agentId = c.req.query("agent_id") ?? "", runId = c.req.query("run_id") ?? "";
+  if (!runId || runId.length > 192 || !actorId) throw badRequest("A valid run ID and user are required");
+  if (!(await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId))) throw forbidden("You don't have access to this conversation");
+  const stub = sessionId ? await getAgentDO(c.env, tenantId, agentId ? `${sessionId}:${agentId}` : sessionId, c.get("requestId")) : await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+  return stub.fetch(new Request(`http://agent-do/internal/goal-activity?space_id=${encodeURIComponent(spaceId)}&run_id=${encodeURIComponent(runId)}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": actorId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
+});
+
 // GET /spaces/:spaceId/assistant/files — the Space Assistant's own R2 workspace listing (the
 // Files panel), space-wide (never a project's, which is a different workspacePrefix — the Space
 // Assistant has no projectId). Read-only: names + sizes, never file contents.

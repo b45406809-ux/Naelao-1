@@ -2106,6 +2106,22 @@ export interface SubAgentSummary {
   updated_at: string;
 }
 
+export interface GoalActivity {
+  id: string;
+  tasks: Array<{ id: string; title: string; status: string; dependencies: string[] }>;
+  escalations: Array<{ taskId: string; reason: string; nextAction: string; blockedTasks: string[] }>;
+  fixers: Record<string, { status: string }>;
+  messages: Array<{ id: string; sender: string; recipients: string[]; kind: string; text: string }>;
+}
+
+export async function listGoalActivity(spaceId: string, session: SessionCredentials, runId: string, opts?: { sessionId?: string | null | undefined; agentId?: string | null | undefined }): Promise<GoalActivity[]> {
+  const qs = new URLSearchParams({ run_id: runId });
+  if (opts?.sessionId) qs.set("session_id", opts.sessionId);
+  if (opts?.agentId) qs.set("agent_id", opts.agentId);
+  const result = await apiFetch<{ goals: GoalActivity[] }>(`/v1/spaces/${spaceId}/assistant/goal-activity?${qs.toString()}`, { session });
+  return result.goals;
+}
+
 /**
  * Sub-agents for a conversation. `sessionId` is what makes this work at all: an agent DO is
  * addressed per conversation, so without it the server falls back to the space-wide assistant DO
