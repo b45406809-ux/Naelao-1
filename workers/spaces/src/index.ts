@@ -1943,6 +1943,17 @@ app.post("/internal/spaces/:spaceId/blackboard/events/:projectId/:eventId/read",
   await c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO space_blackboard_event_receipts(tenant_id,space_id,project_id,event_id,user_id,read_at) VALUES(?,?,?,?,?,?)").bind(tenant,spaceId,projectId,eventId,user,new Date().toISOString()).run();
   return c.json({ acknowledged:true,event_id:eventId });
 });
+// Read-only Space extension entry point. The internal handlers retain their user and project
+// authorization checks; the frame never receives an internal service token.
+app.get("/spaces/:spaceId/blackboard/*", async c => {
+  let suffix: string;
+  try { suffix = decodeURIComponent(c.req.path.split("/blackboard/")[1] ?? ""); } catch { return c.json({ error_code: "not_found" }, 404); }
+  if (!/^(?:cards|requests\/[A-Za-z0-9._:-]{1,160}|events\/[A-Za-z0-9._:-]{1,160})$/.test(suffix)) return c.json({ error_code: "not_found" }, 404);
+  const url = new URL(c.req.url);
+  const [view, projectId] = suffix.split("/");
+  url.pathname = `/internal/spaces/${encodeURIComponent(c.req.param("spaceId"))}/blackboard/${view}${projectId ? `/${encodeURIComponent(projectId)}` : ""}`;
+  return app.fetch(new Request(url.toString(), c.req.raw), c.env);
+});
 
 // POST /spaces/:spaceId/registry — internal: seed/refresh the root space row.
 // Called by the provisioner (step 5b) with the manifest tenancy + agency_shell.

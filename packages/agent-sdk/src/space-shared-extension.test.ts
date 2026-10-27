@@ -15,8 +15,9 @@ describe("Space-shared extension client", () => {
     await expect(client.exportBlueprint({ stateDeltaSuite: { fixtures: [] } })).resolves.toEqual({ capability: "blueprint.export", input: { stateDeltaSuite: { fixtures: [] } } });
     await expect(client.exportStatus({ jobId: "job-1" })).resolves.toEqual({ capability: "blueprint.status", input: { jobId: "job-1" } });
     await expect(client.graduate({ conformance_job_id: "job-1" })).resolves.toEqual({ capability: "marketplace.graduate", input: { conformance_job_id: "job-1" } });
-    expect(Object.keys(client)).toEqual(["read", "list", "write", "remove", "storage", "call", "exportBlueprint", "exportStatus", "graduate"]);
+    await expect(client.readBlackboard({ view: "cards" })).resolves.toEqual({ capability: "blackboard.read", input: { view: "cards" } });
+    expect(Object.keys(client)).toEqual(["read", "list", "write", "remove", "storage", "call", "exportBlueprint", "exportStatus", "graduate", "readBlackboard"]);
     expect(request).toHaveBeenCalledTimes(5);
-    expect(operation).toHaveBeenCalledTimes(3);
+    expect(operation).toHaveBeenCalledTimes(4);
   });
 });

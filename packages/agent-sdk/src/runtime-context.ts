@@ -54,7 +54,7 @@ export interface LinkedSpaceGrant { grantId: string; tenantId: string; fromSpace
  * and only exposes the extension's own scoped data actor; it never exposes session credentials. */
 export interface SpaceSharedExtensionTransport {
   request(input: { method: "GET" | "POST" | "DELETE"; path: "/api/data" | "/api/storage" | "/mcp"; query?: Record<string, string>; body?: unknown }): Promise<unknown>;
-  operation(input: { capability: "blueprint.export" | "blueprint.status" | "marketplace.graduate"; input?: unknown }): Promise<unknown>;
+  operation(input: { capability: "blueprint.export" | "blueprint.status" | "marketplace.graduate" | "blackboard.read"; input?: unknown }): Promise<unknown>;
 }
 export function createSpaceSharedExtensionClient(transport: SpaceSharedExtensionTransport) {
   return Object.freeze({
@@ -67,6 +67,7 @@ export function createSpaceSharedExtensionClient(transport: SpaceSharedExtension
     exportBlueprint: (input: unknown) => transport.operation({ capability: "blueprint.export", input }),
     exportStatus: (input: unknown) => transport.operation({ capability: "blueprint.status", input }),
     graduate: (input: unknown) => transport.operation({ capability: "marketplace.graduate", input }),
+    readBlackboard: (input: unknown) => transport.operation({ capability: "blackboard.read", input }),
   });
 }
 

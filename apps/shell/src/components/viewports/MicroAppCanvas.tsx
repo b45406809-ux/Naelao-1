@@ -18,7 +18,7 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
       const operation = event.data as { type?: unknown; id?: unknown; capability?: unknown; input?: unknown };
       if (operation?.type === "naelao.extension.operation") {
         if (typeof operation.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(operation.id) || !session || projectScoped
-          || !["blueprint.export", "blueprint.status", "marketplace.graduate"].includes(String(operation.capability))
+          || !["blueprint.export", "blueprint.status", "marketplace.graduate", "blackboard.read"].includes(String(operation.capability))
           || !capabilities.includes(String(operation.capability))) return;
         let size = 0;
         try { size = new TextEncoder().encode(JSON.stringify(operation.input ?? {})).byteLength; } catch { return; }
