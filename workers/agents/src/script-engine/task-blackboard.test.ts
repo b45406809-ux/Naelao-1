@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTaskMessage, visibleTaskMessages } from "./task-blackboard.js";
+import { authorizeTaskMessaging, createTaskMessage, visibleTaskMessages } from "./task-blackboard.js";
 
 describe("task blackboard message boundaries", () => {
   const members = new Set(["worker:a", "worker:b", "worker:c"]);
@@ -14,5 +14,13 @@ describe("task blackboard message boundaries", () => {
     expect(() => createTaskMessage(input, "outside", members, 123)).toThrow("sender_denied");
     for (const recipients of [[], ["outside"], ["worker:b", "worker:b"]]) expect(() => createTaskMessage({ ...input, recipients }, "worker:a", members, 123)).toThrow("recipients_invalid");
     expect(() => createTaskMessage({ ...input, text: "x".repeat(4001) }, "worker:a", members, 123)).toThrow("message_invalid");
+  });
+  it("binds messaging grants to the signed worker, task, tenant, project and parent", () => {
+    const identity = { tenantId: "t", spaceId: "s", projectId: "p", rootRunId: "r", parentDoId: "parent", workerId: "worker:a" };
+    const scope = { ...identity, members, recipientGrants: new Map([["worker:a", new Set(["worker:b"])]] ) };
+    expect(() => authorizeTaskMessaging(identity, scope, ["worker:b"])).not.toThrow();
+    for (const change of [{ tenantId: "other" }, { spaceId: "other" }, { projectId: "other" }, { rootRunId: "other" }, { parentDoId: "other" }, { workerId: "outside" }])
+      expect(() => authorizeTaskMessaging({ ...identity, ...change }, scope, ["worker:b"])).toThrow("scope_denied");
+    expect(() => authorizeTaskMessaging(identity, scope, ["worker:c"])).toThrow("recipient_denied");
   });
 });

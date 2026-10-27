@@ -28,3 +28,23 @@ export function visibleTaskMessages(messages: readonly TaskMessage[], actor: str
   if (!identifier(actor) || !members.has(actor)) throw new Error("task_blackboard_reader_denied");
   return messages.filter(message => message.sender === actor || message.recipients.includes(actor)).map(message => ({ ...message, recipients: [...message.recipients] }));
 }
+
+/**
+ * Called only after the host verifies the signed delegation contract. The scope must come
+ * from the durable goal journal, not from a worker request. Edges are directed: a sender
+ * may address only recipients explicitly granted by the host's task plan.
+ */
+export function authorizeTaskMessaging(
+  identity: { tenantId: string; spaceId: string; projectId?: string; rootRunId: string; parentDoId: string; workerId: string },
+  scope: { tenantId: string; spaceId: string; projectId?: string; rootRunId: string; parentDoId: string; members: ReadonlySet<string>; recipientGrants: ReadonlyMap<string, ReadonlySet<string>> },
+  recipients: readonly string[],
+): void {
+  if (!identity.tenantId || !identity.spaceId || !identity.rootRunId || !identity.parentDoId
+      || identity.tenantId !== scope.tenantId || identity.spaceId !== scope.spaceId
+      || (identity.projectId ?? null) !== (scope.projectId ?? null)
+      || identity.rootRunId !== scope.rootRunId || identity.parentDoId !== scope.parentDoId
+      || !scope.members.has(identity.workerId)) throw new Error("task_blackboard_scope_denied");
+  const grants = scope.recipientGrants.get(identity.workerId);
+  if (!recipients.length || recipients.some(recipient => !scope.members.has(recipient) || !grants?.has(recipient)))
+    throw new Error("task_blackboard_recipient_denied");
+}
