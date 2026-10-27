@@ -49,6 +49,7 @@ import { eraseBusinessServiceProviders } from "./business-erasure.js";
 import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "./erasure-request-state.js";
 import { previewBlueprintActivation } from "./blueprint-activation.js";
 import { assertExecutionPlanResources, EntitlementsChecker, getExecutionLimits, isPlanTierAtLeast } from "@naelao/entitlements";
+import { findUnsafeProjectExtensionUpgrade } from "./extension-upgrade-guard.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -2411,6 +2412,19 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     publisherPayloadSha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(publisherPayload)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
   } catch { return c.json({ error_code: "extension_publisher_signature_invalid" }, 403); }
   if (!publisherSignatureValid) return c.json({ error_code: "extension_publisher_signature_invalid" }, 403);
+  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
+  if (body.upgrade === true) {
+    const current = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({
+      tenant_id: identity.tenantId, space_id: spaceId, extension_id: bundle.id,
+    })}`));
+    if (!current.ok) return c.json({ error_code: "extension_upgrade_preflight_unavailable" }, 503);
+    const currentInstalls = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string; project_id: string | null;
+      scope: string; instance_key?: string; status: string }> }>(current, 2 * 1024 * 1024);
+    const otherInstances = findUnsafeProjectExtensionUpgrade(currentInstalls.installations ?? [], { extensionId: bundle.id, projectId, instanceKey });
+    if (otherInstances.length) return c.json({ error_code: "extension_upgrade_multiple_instances_unsupported",
+      message: "This extension is installed more than once in the Space. Remove sibling installations before upgrading; per-install release pinning is not available yet.",
+      affected_installations: otherInstances.length }, 409);
+  }
   // Persist immutable files before exposing any mounted app. Repeated installs are idempotent.
   for (const [path, source] of sourceEntries) {
     const key = `spaces/${spaceId}/extensions/${bundle.id}/${bundle.version}/${path.slice(2)}`;
@@ -2421,7 +2435,6 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     }
   }
   const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sourceEntries))))].map(x => x.toString(16).padStart(2, "0")).join("");
-  const stub = await spaceDoStub(c.env, spaceId, identity.tenantId);
   const requiresRuntimeActivation = canvases.length > 0 || gadgets.length > 0;
   const installed = await stub.fetch(new Request("http://space-do/extensions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ manifest, installedBy: identity.userId, tenantId: identity.tenantId, spaceId, projectId, scope: "PROJECT_BOUND", gatekeeperCapabilities: [...requiredCapabilities], artifactSha256: digest, instanceKey,

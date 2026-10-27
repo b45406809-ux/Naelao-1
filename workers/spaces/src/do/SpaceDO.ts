@@ -2956,9 +2956,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/extension-installations" && method === "GET") {
         const extensionId = url.searchParams.get("extension_id") ?? "";
-        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; status: string; installed_at: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          extensionId === "__all__" ? "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at"
-            : "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at",
+        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; manifest_json: string }>(this.ctx.storage.sql as never,
+          extensionId === "__all__" ? "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at"
+            : "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at",
           ...(extensionId === "__all__" ? [url.searchParams.get("tenant_id"), url.searchParams.get("space_id")] : [url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), extensionId]));
         const installations = await Promise.all(rows.map(async ({ manifest_json, ...row }) => {
           try {
