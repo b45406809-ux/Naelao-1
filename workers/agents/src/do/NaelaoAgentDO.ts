@@ -1852,6 +1852,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     try {
       if(method==='POST'&&url.pathname==='/internal/worker-view')return this.handleWorkerView(request);
+      if(method==='POST'&&url.pathname==='/internal/task-blackboard')return this.handleTaskBlackboard(request);
       if(method==='POST'&&url.pathname==='/internal/steer-worker')return this.handleSteerWorker(request);
       if(method==='POST'&&url.pathname==='/internal/steering'){
         const text=await readBoundedRequestText(request,8192);
@@ -3568,6 +3569,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const run = (async () => {
           // Explicit IDs keep dependencies tied to this goal instead of unrelated tasks.
           await hooks.persistGoalTasks!(tasks.map(task => ({ ...task, id: taskId(task.id), dependencies: (task.dependencies ?? []).map(taskId) })));
+          const prior = await this.ctx.storage.get<GoalDagJournal>(key);
+          const enabled = prior ? (prior.taskBlackboardEnabled ?? Array.isArray(prior.messages)) : this.env.TASK_BLACKBOARD_ENABLED === "true";
+          if (enabled && userId) await this.ctx.storage.put(`task-blackboard:scope:${hash}`, {
+            tenantId, spaceId, projectId: projectId ?? null, actorId: userId,
+            rootRunId: runtimeEnv?.rootRunId ?? parentRunId, parentDoId: this.ctx.id.toString(),
+            members: tasks.map(task => taskId(task.id)),
+            grants: tasks.map(task => [taskId(task.id), tasks.filter(candidate => candidate.dependencies?.includes(task.id)).map(candidate => taskId(candidate.id))]),
+          });
           return executeGoalDag(tasks, {
             concurrency: childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true),
             taskBlackboardEnabled: this.env.TASK_BLACKBOARD_ENABLED === "true",
@@ -4131,6 +4140,33 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const route=await this.ctx.storage.get<string>(`sub-agent-route:${body.workerId}`);
     if(!route||!this.env.NAELAO_AGENT_DO)return Response.json({error_code:"worker_unavailable"},{status:404});
     return this.env.NAELAO_AGENT_DO.get(this.env.NAELAO_AGENT_DO.idFromName(route)).fetch(new Request("http://agent/internal/steering",{method:"POST",headers:await this.internalHeaders(tenant,{"content-type":"application/json"}),body:JSON.stringify({...body.command,spaceId:body.spaceId,projectId:body.projectId,actorId:body.actorId,workerId:body.workerId})}));
+  }
+
+  private async handleTaskBlackboard(request: Request): Promise<Response> {
+    try {
+      const body = await request.json<{ contract: DelegationContract; token: string; action: string; input?: Record<string, unknown> }>();
+      const contract = body.contract;
+      await verifyDelegationContract(contract, body.token, this.env.PLATFORM_SECRET);
+      if (contract.parentDoId !== this.ctx.id.toString()) throw new Error("task_blackboard_scope_denied");
+      const match = /^([a-f0-9]{64}):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.exec(contract.workerId);
+      if (!match) throw new Error("task_blackboard_scope_denied");
+      const saved = await this.ctx.storage.get<{ tenantId: string; spaceId: string; projectId: string | null; actorId: string; rootRunId: string; parentDoId: string; members: string[]; grants: Array<[string, string[]]> }>(`task-blackboard:scope:${match[1]}`);
+      if (!saved || saved.actorId !== contract.actorId || !Array.isArray(saved.members) || !Array.isArray(saved.grants)) throw new Error("task_blackboard_scope_denied");
+      if (!await (await import("../communications/core.js")).scopeAccess(this.env as unknown as import("../index.js").AgentsEnv, { tenantId: contract.tenantId, spaceId: contract.spaceId, userId: contract.actorId, role: "product_end_user", ...(contract.projectId ? { projectId: contract.projectId } : {}) }, false)) throw new Error("task_blackboard_scope_denied");
+      const { appendAuthenticatedTaskMessage, readAuthenticatedTaskMessages, createDurableTaskMessageStore } = await import("../script-engine/task-blackboard.js");
+      const scope = { tenantId: saved.tenantId, spaceId: saved.spaceId, ...(saved.projectId ? { projectId: saved.projectId } : {}), rootRunId: saved.rootRunId, parentDoId: saved.parentDoId, members: new Set(saved.members), recipientGrants: new Map(saved.grants.map(([id, recipients]) => [id, new Set(recipients)])) };
+      const params = { contract, token: body.token, secret: this.env.PLATFORM_SECRET, scope, store: createDurableTaskMessageStore(this.ctx.storage, match[1]!) };
+      if (body.action === "read") return Response.json({ messages: await readAuthenticatedTaskMessages(params), untrusted: true });
+      if (body.action === "recipients") {
+        await readAuthenticatedTaskMessages(params);
+        return Response.json({ recipients: [...(scope.recipientGrants.get(contract.workerId) ?? [])] });
+      }
+      if (body.action === "publish") {
+        const input = body.input ?? {};
+        return Response.json({ message: await appendAuthenticatedTaskMessage({ ...params, input: { id: input["id"], recipients: input["recipients"], kind: input["kind"], text: input["text"] }, now: Date.now() }), untrusted: true });
+      }
+      return Response.json({ error: "task_blackboard_action_invalid" }, { status: 400 });
+    } catch { return Response.json({ error: "task_blackboard_denied" }, { status: 403 }); }
   }
 
   private async handleSubAgentSessionUpdate(request: Request): Promise<Response> {
@@ -5360,6 +5396,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           !(UNIVERSAL_PLANNER_PREBUILTS as readonly string[]).includes(name)
           && (delegation?.workerCapabilities === undefined || delegation.workerCapabilities.enabledPrebuilts.includes(name)))
       : config.scripts.prebuilt;
+    if (isLeaf && delegation && this.env.TASK_BLACKBOARD_ENABLED === "true" && /^[a-f0-9]{64}:/.test(delegation.workerId) && !enabledPrebuilts.includes("task-blackboard")) enabledPrebuilts.push("task-blackboard");
     const fallbackRole: UniversalAgentRole = body.functionalRole ?? "worker";
     const manifest: UniversalAgentManifest = body.manifest
       ? { ...body.manifest, capabilities: { ...body.manifest.capabilities, enabledPrebuilts } }
@@ -5441,6 +5478,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
     if(typeof body.context?.["steering_parent_do_id"]==="string")engineEnv.steeringParentDoId=body.context["steering_parent_do_id"];
     engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort, engineEnv);
+    if (delegation && this.env.TASK_BLACKBOARD_ENABLED === "true" && this.env.NAELAO_AGENT_DO && /^[a-f0-9]{64}:/.test(delegation.workerId)) {
+      const parent = this.env.NAELAO_AGENT_DO.get(this.env.NAELAO_AGENT_DO.idFromString(delegation.parentDoId));
+      engineEnv.orchestration.taskBlackboard = async (action, input) => {
+        const token = await issueDelegationContract(delegation!, this.env.PLATFORM_SECRET);
+        const response = await parent.fetch(new Request("http://agent/internal/task-blackboard", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contract: delegation, token, action, input }) }));
+        if (!response.ok) throw new Error(`task_blackboard_request_failed_${response.status}`);
+        return readBoundedResponseJson(response, 2 * 1024 * 1024);
+      };
+    }
     // Resolve the worker's approved runtime before model execution, but allocate it only when the
     // worker actually invokes a command. Prewarming here would make the model think first and
     // often let the short lease expire, charging idle time without reducing command latency.

@@ -45,6 +45,7 @@ import { schedule } from "./schedule.js";
 import { tasks } from "./tasks.js";
 import { plan } from "./plan.js";
 import { goalPlanner } from "./goal-planner.js";
+import { taskBlackboard } from "./task-blackboard.js";
 import { executiveCabinet } from "./executive-cabinet.js";
 import { modelRaceScript } from "./model-race-script.js";
 import { runtimeDiscovery } from "./runtime-discovery.js";
@@ -168,6 +169,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // can't stop with open steps. Distinct from `tasks` (durable, cross-agent) — see plan.ts.
   [plan.name]: plan,
   [goalPlanner.name]: goalPlanner,
+  [taskBlackboard.name]: taskBlackboard,
   [executiveCabinet.name]: executiveCabinet,
   [modelRaceScript.name]: modelRaceScript,
 };

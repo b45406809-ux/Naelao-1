@@ -536,6 +536,7 @@ export interface TieredCodeRunner {
  * when absent the corresponding prebuilt operations report themselves unavailable.
  */
 export interface OrchestrationHooks {
+  taskBlackboard?(action: "publish" | "read" | "recipients", input: Record<string, unknown>): Promise<unknown>;
   finalizeWorkspace?(): Promise<import("./task-publication.js").TaskPublication | undefined>;
   executeGoalDag?(objective: string, tasks: import("./prebuilt/goal-planner.js").GoalTask[]): Promise<import("./goal-dag.js").GoalDagJournal>;
   persistGoalTasks?(tasks: Array<{ id: string; title: string; subtask_spec: string; assigned_role: string; model?: string; file_paths: string[]; dependencies?: string[]; budget_tokens: number }>): Promise<void>;
