@@ -3,15 +3,14 @@
 /**
  * Connecting a channel.
  *
- * This used to ask a business owner to go and build a bot: open a developer console, create an
+ * This used to ask a Space owner to build a provider app: open a developer console, create an
  * app, find a signing secret, paste it here, then copy a webhook URL back into the provider. Every
  * one of those steps is somewhere a non-technical owner stops, and none of it was work they should
  * ever have been doing — it existed only because the platform had no app of its own.
  *
  * So the default is now a link and a QR of it. Naelao has one app per channel; the owner taps or
- * scans, and their business is connected. The old path is still here, one click away under "Set up
- * your own app", for a business that wants its own branded bot or a workspace we aren't installed
- * in — it's the advanced option, not the only one.
+ * scans, and their workspace is connected. The advanced path remains available for a custom
+ * provider app or a workspace where the Naelao app is not installed.
  */
 
 import * as React from "react";
@@ -998,9 +997,8 @@ export function ChannelConnect({
                   </p>
                 )}
 
-                {/* The old flow, kept for a business that wants its own branded bot — or a
-                    workspace Naelao's app isn't installed in. Collapsed, because for almost
-                    everyone the answer above is the right one. */}
+                {/* Keep custom provider app setup available for workspaces where the Naelao app
+                    cannot be installed. */}
                 <div style={{ marginTop: 14 }}>
                   {advanced !== ch.id ? (
                     <button

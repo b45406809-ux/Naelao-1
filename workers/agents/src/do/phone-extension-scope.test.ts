@@ -23,6 +23,7 @@ function setup(project: string | null) {
               status: "active",
               project_id: project,
               owner_user_id: "owner",
+              provider: "twilio",
             }),
           }),
         }),

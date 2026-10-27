@@ -33,7 +33,10 @@ describe("scoped code composition", () => {
   it("executes composed calls through the production guest facade and returns only the final result", async () => {
     const dispatch = vi.fn(async (_, capability: string) => capability === "tool:source.list" ? [1, 2, 3] : { valid: true });
     const rpc = createScopedCodeRpc({ scope: { tenantId: "t", spaceId: "s", agentId: "a" },
-      capabilities: ["tool:source.list", "tool:source.check"], tools: [{ name: "source.list", description: "List sources" }],
+      capabilities: ["tool:source.list", "tool:source.check"], tools: [
+        { name: "source.list", description: "List sources" },
+        { name: "source.check", description: "Check a source" },
+      ],
       signal: new AbortController().signal, authorize: async () => true, dispatch });
     const source = buildGuestHarness(4096).replace(/^import .*;\n/gm, "").replace("export default", "return");
     const run = async (_: unknown, ctx: { cli: { search(query: string): Promise<unknown>; help(name: string): Promise<unknown>; run(argv: string[]): Promise<unknown> } }) => {

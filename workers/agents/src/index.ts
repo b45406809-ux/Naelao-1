@@ -4511,10 +4511,6 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
     if (!phoneResponse.ok || phone.id !== phoneNumberId) return c.json({ error_code: "whatsapp_phone_number_unavailable" }, 400);
     wabaId = phone.whatsapp_business_account?.id ?? "";
     if (!/^\d{5,32}$/.test(wabaId)) return c.json({ error_code: "whatsapp_business_account_unavailable" }, 400);
-    const subscribeResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(wabaId)}/subscribed_apps`, { method: "POST",
-      headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10_000) });
-    const subscription = await readBoundedProviderJson(subscribeResponse).catch(() => ({} as { success?: boolean })) as { success?: boolean };
-    if (!subscribeResponse.ok || subscription.success !== true) return c.json({ error_code: "whatsapp_webhook_subscription_failed" }, 502);
     accountLabel = `${phone.verified_name ?? "WhatsApp Business"}${phone.display_phone_number ? ` · ${phone.display_phone_number}` : ""}`.slice(0, 120);
   } catch { return c.json({ error_code: "whatsapp_provider_verification_unavailable" }, 503); }
   const handler = await c.env.SCRIPTS_R2?.get(`spaces/${spaceId}/extensions/${installation.manifest.bundle?.id}/${installation.manifest.bundle?.version}/${channel.handlerScript.replace(/^\.\//, "")}`);
@@ -4526,6 +4522,15 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
     .bind(tenantId, spaceId, installationId, connectionId).first<{ credential_name: string }>();
   const stored = await storeConnectorCredential(c.env, { tenantId, spaceId, userId, name: credentialName, value: accessToken, description: `WhatsApp access token for extension ${installationId}/${connectionId}` });
   if (!stored.ok) return c.json({ error_code: "credential_store_failed" }, 502);
+  try {
+    const subscribeResponse = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(wabaId)}/subscribed_apps`, { method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(10_000) });
+    const subscription = await readBoundedProviderJson(subscribeResponse).catch(() => ({} as { success?: boolean })) as { success?: boolean };
+    if (!subscribeResponse.ok || subscription.success !== true) throw new Error("subscription_rejected");
+  } catch {
+    await deleteConnectorCredentialByName(c.env, tenantId, spaceId, credentialName);
+    return c.json({ error_code: "whatsapp_webhook_subscription_failed" }, 502);
+  }
   const now = new Date().toISOString();
   try {
     await c.env.PLATFORM_DB.prepare(`INSERT INTO extension_provider_connections(tenant_id,space_id,project_id,installation_id,connection_id,provider,account_id,account_label,credential_name,handler_sha256,routing_keys_json,granted_scopes_json,status,connected_by,connected_at,last_verified_at,revoked_at,updated_at)

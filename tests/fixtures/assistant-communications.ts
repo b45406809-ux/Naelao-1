@@ -64,6 +64,9 @@ export function fixture() {
   db.db.exec(readFileSync(new URL("../../infra/migrations/0137_telnyx_ingress_receipts.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0138_telnyx_usage_receipts.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0139_telnyx_cost_polling.sql", import.meta.url), "utf8"));
+  for (const migration of ["0140_telnyx_live_calls.sql", "0141_managed_carrier_billing.sql", "0142_managed_phone_rentals.sql", "0143_managed_telnyx_inbound_costs.sql"]) {
+    db.db.exec(readFileSync(new URL(`../../infra/migrations/${migration}`, import.meta.url), "utf8"));
+  }
   const objects = new Map<string, string>();
   const fetch = vi.fn(async (req: Request) =>
     req.url.includes("assistant-access")

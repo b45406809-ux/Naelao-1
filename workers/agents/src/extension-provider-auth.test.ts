@@ -67,4 +67,50 @@ describe("extension provider connection route authorization", () => {
     }
     expect(spaceFetch).not.toHaveBeenCalled();
   });
+
+  it("does not subscribe a WhatsApp account before the installed handler is available", async () => {
+    const secret = "provider-route-auth-test-secret";
+    const token = await mintInternalToken(secret, "tenant-a");
+    const spaceFetch = vi.fn(async () => Response.json({
+      instance: { instance_id: "install-a", tenant_id: "tenant-a", space_id: "space-a", project_id: "project-a", status: "active", scope: "PROJECT_BOUND" },
+      manifest: {
+        id: "ext_mentor",
+        bundle: { id: "ext_mentor", version: "1.0.0", connections: [{ id: "whatsapp-main", provider: "whatsapp" }] },
+        channels: [{ kind: "channel", provider: "whatsapp", connectionId: "whatsapp-main", handlerScript: "./handler.ts" }],
+      },
+      release: { signatureValid: true },
+    }));
+    const providerFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/debug_token")) return Response.json({ data: { is_valid: true, app_id: "meta-app", scopes: ["whatsapp_business_messaging", "whatsapp_business_management"] } });
+      if (url.includes("/123456789")) return Response.json({ id: "123456789", verified_name: "Test", display_phone_number: "+1 555 0100", whatsapp_business_account: { id: "987654321" } });
+      if (url.includes("/subscribed_apps")) return Response.json({ success: true });
+      throw new Error(`Unexpected provider request: ${url}`);
+    });
+    vi.stubGlobal("fetch", providerFetch);
+    const env = {
+      PLATFORM_SECRET: secret,
+      ENVIRONMENT: "test",
+      PUBLIC_AGENTS_URL: "https://agents.naelao.app",
+      CREDENTIALS_WORKER: {},
+      WHATSAPP_APP_ID: "meta-app",
+      WHATSAPP_APP_SECRET: "meta-secret",
+      WHATSAPP_WEBHOOK_VERIFY_TOKEN: "verify-token",
+      SPACES_WORKER: { fetch: spaceFetch },
+      SCRIPTS_R2: { get: async () => null },
+      PLATFORM_DB: { prepare: () => ({ bind: () => ({ first: async () => ({ config_json: "{}" }) }) }) },
+    } as unknown as Env;
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token,
+      "x-naelao-user-id": "owner-a", "x-naelao-role": "owner" };
+    try {
+      const response = await app.request("/spaces/space-a/projects/project-a/extensions/install-a/connections/whatsapp-main/whatsapp/connect", {
+        method: "POST", headers, body: JSON.stringify({ access_token: "x".repeat(64), phone_number_id: "123456789" }),
+      }, env);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error_code: "extension_handler_unavailable" });
+      expect(providerFetch.mock.calls.some(([input]) => String(input).includes("/subscribed_apps"))).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
