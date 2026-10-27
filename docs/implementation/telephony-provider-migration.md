@@ -61,8 +61,11 @@ entitlement, country availability, prices, or deployed webhook delivery.
   an account-scoped Telnyx receipt matching its ID, direction, sender, recipient and body;
   an absent receipt does not establish non-submission. Finalized SMS cost observations use
   exact decimal strings and immutable deduplicated receipts; the owner can query them from
-  the phone panel. They are BYO carrier evidence and do not trigger a Naelao charge. Automated
-  cost collection, managed-carrier billing reconciliation and calls remain open. Signed assistant
+  the phone panel. An hourly bounded collector now claims sent BYO actions with durable leases,
+  checks current scope and egress, and records finalized costs; mismatches are held and older
+  provider records are marked expired. Collection state is visible with each action. These are
+  BYO carrier evidence and do not trigger a Naelao charge. Managed-carrier billing reconciliation
+  and calls remain open. Signed assistant
   SMS ingress now records paired-sender requests as pending commands requiring authenticated
   review; unknown senders gain no command authority and verification codes stay private.
 - Normalize usage receipts using actual currency and provider identifiers; keep uncertain

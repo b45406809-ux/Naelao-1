@@ -74,6 +74,7 @@ jobs:
           npx wrangler d1 execute "$DB_ID" --command="SELECT provider FROM assistant_phone_quotes LIMIT 0" --remote --env=staging
           npx wrangler d1 execute "$DB_ID" --command="SELECT binding_id,event_id FROM assistant_telnyx_ingress_receipts LIMIT 0" --remote --env=staging
           npx wrangler d1 execute "$DB_ID" --command="SELECT receipt_hash FROM assistant_telnyx_usage_receipts LIMIT 0" --remote --env=staging
+          npx wrangler d1 execute "$DB_ID" --command="SELECT action_id FROM assistant_telnyx_cost_polls LIMIT 0" --remote --env=staging
           # The sweeper depends on persisted fairness cursors. Make this newest idempotent
           # migration a required step instead of relying on the legacy best-effort loop above.
           npx wrangler d1 execute "$DB_ID" \

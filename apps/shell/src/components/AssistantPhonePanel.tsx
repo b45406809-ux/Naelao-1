@@ -29,6 +29,7 @@ type Row = {
   sender?: string;
   status: string;
   provider_sid?: string;
+  cost_collection_status?: string | null;
 };
 export function AssistantPhonePanel({
   spaceId,
@@ -706,6 +707,7 @@ export function AssistantPhonePanel({
             {actions.map((a) => (
               <li key={a.id}>
                 {a.kind} to {a.recipient}: {a.status}{" "}
+                {state?.phone?.provider === "telnyx" && a.cost_collection_status && <span> · carrier cost: {a.cost_collection_status}</span>}{" "}
                 {state?.phone?.provider === "telnyx" && a.kind === "sms" && a.status === "sent" && <button type="button" disabled={busy} onClick={() => void act("phone-telnyx-cost", { id: a.id, confirm: true })}>Check carrier cost</button>}{" "}
                 {a.status === "draft" && (
                   <button

@@ -422,7 +422,7 @@ export async function handlePhoneAction(
         ? "assistant_phone_actions"
         : "assistant_phone_events";
     const { results } = await env.PLATFORM_DB.prepare(
-      `SELECT * FROM ${table} WHERE binding_id=? ${cursor ? "AND (created_at<? OR (created_at=? AND id<?))" : ""} ORDER BY created_at DESC,id DESC LIMIT 51`
+      `SELECT *${action === "phone-actions" ? ", (SELECT status FROM assistant_telnyx_cost_polls p WHERE p.action_id=assistant_phone_actions.id) AS cost_collection_status" : ""} FROM ${table} WHERE binding_id=? ${cursor ? "AND (created_at<? OR (created_at=? AND id<?))" : ""} ORDER BY created_at DESC,id DESC LIMIT 51`
     )
       .bind(
         binding?.id ?? "",
