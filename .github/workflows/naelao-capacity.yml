@@ -10,6 +10,10 @@ jobs:
   local-stack:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [core, extended]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -33,10 +37,18 @@ jobs:
           pnpm exec turbo run build --filter='./packages/*' --concurrency=2
       - name: Start extended local stack and sample resources
         shell: bash
+        env:
+          PROBE_PROFILE: ${{ matrix.profile }}
         run: |
           mkdir -p "$RUNNER_TEMP/naelao-probe"
           export PERSIST_DIR="$RUNNER_TEMP/naelao-probe/state"
-          node infra/scripts/start-dev.mjs --extended > "$RUNNER_TEMP/naelao-probe/start.log" 2>&1 &
+          if [ "$PROBE_PROFILE" = core ]; then
+            node infra/scripts/start-dev.mjs --workers-only > "$RUNNER_TEMP/naelao-probe/start.log" 2>&1 &
+            ports='8080 8787 8788 8789 8791'
+          else
+            node infra/scripts/start-dev.mjs --extended > "$RUNNER_TEMP/naelao-probe/start.log" 2>&1 &
+            ports='8080 8787 8788 8789 8791 3000 3100'
+          fi
           stack_pid=$!
           echo "$stack_pid" > "$RUNNER_TEMP/naelao-probe/stack.pid"
           for i in $(seq 1 24); do
@@ -45,7 +57,7 @@ jobs:
             df -h .
             ps -eo rss,comm --sort=-rss | head -20
             docker stats --no-stream --format '{{.Name}} {{.CPUPerc}} {{.MemUsage}}' || true
-            for port in 8080 8787 8788 8789 8791 3000 3100; do
+            for port in $ports; do
               printf '%s=' "$port"
               curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/health" || true
               printf ' '
@@ -55,10 +67,15 @@ jobs:
             sleep 5
           done
           cat "$RUNNER_TEMP/naelao-probe/start.log"
+          if [ -f .dev/logs/agents.log ]; then
+            printf '\nAgent startup diagnostics\n'
+            rg -n -i -m 30 'error|fatal|panic|failed|out of memory|killed|deadlock' .dev/logs/agents.log || true
+            head -100 .dev/logs/agents.log
+          fi
           for log in .dev/logs/*.log; do printf '\n%s\n' "$log"; tail -30 "$log"; done
           docker system df
           ready=1
-          for port in 8080 8787 8788 8789 8791 3000 3100; do
+          for port in $ports; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$port/health" || true)
             if [ "$code" = 000 ]; then ready=0; fi
           done
@@ -69,7 +86,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: naelao-capacity-logs
+          name: naelao-capacity-logs-${{ matrix.profile }}
           path: |
             .dev/logs/*.log
             ${{ runner.temp }}/naelao-probe/start.log
