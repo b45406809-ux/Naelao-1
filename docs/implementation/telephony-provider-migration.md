@@ -47,6 +47,9 @@ entitlement, country availability, prices, or deployed webhook delivery.
   number import, quoted purchase, callback migration, detach and release remain open.
 - Signed Telnyx ingress with durable event claims, binding/destination checks and assistant
   membership verification before entering the existing planner/worker runtime.
+  Migration 0137 and `telnyx-ingress-journal.ts` now provide atomic binding/event claims,
+  payload conflict detection and explicit indeterminate outcomes. This journal is not yet
+  connected to a webhook endpoint or extension dispatcher, and does not activate a number.
 - Normalize usage receipts using actual currency and provider identifiers; keep uncertain
   usage pending reconciliation. A transport submission is not proof of final billable usage.
 - Connect Telnyx media to authorized durable call sessions and enforce existing duration,
