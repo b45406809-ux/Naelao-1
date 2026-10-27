@@ -1834,6 +1834,45 @@ app.get("/internal/spaces/:spaceId/projects/:projectId/automation-access", async
   return denied ?? c.json({ project_id: c.req.param("projectId"), can_manage: true });
 });
 
+// Blackboard publication is explicit. A caller must retain access to both the Space and
+// each project whose shared card is returned; an internal token alone is not a user identity.
+app.use("/internal/spaces/:spaceId/blackboard/*", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
+app.use("/internal/spaces/:spaceId/blackboard/*", async (c, next) => {
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId || !userId || c.req.header("x-naelao-role") !== "product_end_user") return c.json({ error_code: "user_identity_required" }, 403);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(c.req.param("spaceId"), tenantId).first();
+  if (!space) return c.json({ error_code: "space_not_found" }, 404);
+  return next();
+});
+app.put("/internal/spaces/:spaceId/blackboard/cards/:projectId", async c => {
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), tenantId = c.req.header("x-naelao-tenant-id")!;
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  let body: { summary?: unknown; capabilities?: unknown; evidence?: unknown };
+  try { body = JSON.parse(await readBoundedRequestText(c.req.raw, 16384)); } catch { return c.json({ error_code: "invalid_card" }, 400); }
+  const validList = (x: unknown, count: number, length: number): x is string[] => Array.isArray(x) && x.length <= count && x.every(v => typeof v === "string" && v.trim().length > 0 && v.length <= length);
+  if (!body || typeof body.summary !== "string" || !body.summary.trim() || body.summary.length > 4000 || !validList(body.capabilities, 64, 120) || !validList(body.evidence, 32, 512)) return c.json({ error_code: "invalid_card" }, 400);
+  const updatedAt = new Date().toISOString();
+  await c.env.PLATFORM_DB.prepare(`INSERT INTO space_blackboard_cards(tenant_id,space_id,project_id,summary,capabilities_json,evidence_json,updated_at)
+    VALUES(?,?,?,?,?,?,?) ON CONFLICT(tenant_id,space_id,project_id) DO UPDATE SET summary=excluded.summary,capabilities_json=excluded.capabilities_json,evidence_json=excluded.evidence_json,updated_at=excluded.updated_at`)
+    .bind(tenantId, spaceId, projectId, body.summary.trim(), JSON.stringify([...new Set(body.capabilities.map(v => v.trim()))]), JSON.stringify([...new Set(body.evidence.map(v => v.trim()))]), updatedAt).run();
+  return c.json({ published: true, project_id: projectId, updated_at: updatedAt });
+});
+app.delete("/internal/spaces/:spaceId/blackboard/cards/:projectId", async c => {
+  const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId");
+  const denied = await requireManageableAutomationProject(c, spaceId, projectId);
+  if (denied) return denied;
+  await c.env.PLATFORM_DB.prepare("DELETE FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id=?").bind(c.req.header("x-naelao-tenant-id"), spaceId, projectId).run();
+  return c.json({ unpublished: true });
+});
+app.get("/internal/spaces/:spaceId/blackboard/cards", async c => {
+  const spaceId = c.req.param("spaceId"), visible = await visibleAutomationProjectIds(c, spaceId);
+  if (visible instanceof Response) return visible;
+  const cards = await c.env.PLATFORM_DB.prepare("SELECT project_id,summary,capabilities_json,evidence_json,updated_at FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? ORDER BY project_id LIMIT 1001").bind(c.req.header("x-naelao-tenant-id"), spaceId).all<{ project_id: string; summary: string; capabilities_json: string; evidence_json: string; updated_at: string }>();
+  const allowed = new Set(visible);
+  return c.json({ truncated: cards.results.length > 1000, cards: cards.results.slice(0, 1000).filter(card => allowed.has(card.project_id)).map(card => ({ projectId: card.project_id, summary: card.summary, capabilities: JSON.parse(card.capabilities_json), evidence: JSON.parse(card.evidence_json), updatedAt: card.updated_at })) });
+});
+
 // POST /spaces/:spaceId/registry — internal: seed/refresh the root space row.
 // Called by the provisioner (step 5b) with the manifest tenancy + agency_shell.
 // A1.16.9 (layer-3 backstop): the old check was a static "x-naelao-internal === 'provisioner'"

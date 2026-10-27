@@ -981,6 +981,8 @@ export interface PlanState {
 
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
 export interface ScriptEngineEnv {
+  /** Host-verified, exact-card consent; absent until the publication approval bridge is wired. */
+  authorizeBlackboardPublication?: (card: Readonly<Record<string, unknown>>) => Promise<boolean>;
   steeringParentDoId?:string;
   /** Server-resolved per-worker session token ceiling from the tenant's subscription plan. */
   workerTokenBudget?: number;

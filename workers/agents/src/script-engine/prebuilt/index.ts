@@ -32,6 +32,7 @@ import { memory } from "./memory.js";
 import { fabric } from "./fabric.js";
 import { wiki } from "./wiki.js";
 import { projectJournal } from "./project-journal.js";
+import { spaceBlackboard } from "./space-blackboard.js";
 import { conversation } from "./conversation.js";
 import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
@@ -134,6 +135,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // demand (never injected per call) so an assistant can answer "where is this project at"
   // without walking every thread in it.
   [projectJournal.name]: projectJournal,
+  [spaceBlackboard.name]: spaceBlackboard,
   // Search the full uncompacted transcript — the other half of conversation compaction, so a
   // model that is missing detail can look it up instead of answering from a partial record.
   [conversation.name]: conversation,

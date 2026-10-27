@@ -303,6 +303,7 @@ ${BASE_AGENTS_MD}`,
         // platform. The assistant reached for fabric.record instead — Memory OS, a different
         // thing — so a project's own state and standing instructions had nowhere to live.
         "project-journal",
+        "space-blackboard",
         // Self-scheduling (step 12): wake yourself later with a follow-up goal to check back on a
         // long/background task, then end the run instead of blocking. schedule.list is read-only
         // (auto-approved); wake_me/cancel are gated like any other structural write.

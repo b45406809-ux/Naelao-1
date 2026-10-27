@@ -162,7 +162,8 @@ async function hitlGate(
   preApproved: ReadonlyMap<string, ApprovedActionEvidence>,
   currentPolicyFingerprint: string,
 ): Promise<GateOutcome> {
-  if (!alwaysGatedActions.has(actionName) && !isGated(actionName, gatedActions, mode)) return { verdict: "proceed" };
+  // Publishing project content outside its project requires a person to approve the exact card.
+  if (actionName !== "blackboard.publish" && !alwaysGatedActions.has(actionName) && !isGated(actionName, gatedActions, mode)) return { verdict: "proceed" };
   if (!gateway) {
     notes.push(`HITL unavailable: '${actionName}' is gated and cannot run without an approval service`);
     return { verdict: "denied", reason: "approval service unavailable" };
