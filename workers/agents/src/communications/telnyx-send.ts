@@ -9,7 +9,7 @@ import { validatePhonePolicy, type AssistantPhoneBinding } from "./phones.js";
 /** Caller must enforce Space/Project membership, owner authority, explicit approval,
  * phone preferences and egress before this function. Never retry an uncertain send. */
 export async function sendApprovedTelnyxSms(env: AgentsEnv, identity: CommunicationIdentity, binding: AssistantPhoneBinding, actionId: string, scope: CommunicationScope) {
-  if (binding.provider !== "telnyx" || binding.status !== "active" || !binding.phone_number
+  if (binding.provider !== "telnyx" || binding.payer !== "byo" || binding.status !== "active" || !binding.phone_number
     || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)) throw new Error("telnyx_sms_unavailable");
   const account = await resolveTelnyxAccount(env, identity);
   if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number)
@@ -42,7 +42,7 @@ export async function sendApprovedTelnyxSms(env: AgentsEnv, identity: Communicat
 /** Resolve a lost response only against an actual provider receipt. An absent receipt does
  * not prove the message was never sent and must not reopen the action for retry. */
 export async function reconcileTelnyxSms(env: AgentsEnv, identity: CommunicationIdentity, binding: AssistantPhoneBinding, actionId: string, providerId: string) {
-  if (binding.provider !== "telnyx" || !binding.phone_number || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)
+  if (binding.provider !== "telnyx" || binding.payer !== "byo" || !binding.phone_number || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)
     || !/^[A-Za-z0-9_-]{1,128}$/.test(providerId)) throw new Error("telnyx_reconciliation_invalid");
   const account = await resolveTelnyxAccount(env, identity);
   if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number) throw new Error("telnyx_binding_mismatch");
@@ -60,4 +60,32 @@ export async function reconcileTelnyxSms(env: AgentsEnv, identity: Communication
     .bind(providerId, actionId, binding.id).run();
   if (!changed.meta.changes) throw new Error("phone_action_changed");
   return { reconciled: true, status: "sent", provider_sid: providerId };
+}
+
+/** Record only finalized carrier-reported costs as decimal strings. Replays are idempotent;
+ * a later provider correction becomes a separate observation. This does not charge users. */
+export async function observeTelnyxSmsCost(env: AgentsEnv, identity: CommunicationIdentity, binding: AssistantPhoneBinding, actionId: string) {
+  if (binding.provider !== "telnyx" || binding.payer !== "byo" || !binding.phone_number || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)) throw new Error("telnyx_reconciliation_invalid");
+  const account = await resolveTelnyxAccount(env, identity);
+  if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number) throw new Error("telnyx_binding_mismatch");
+  const row = await env.PLATFORM_DB.prepare("SELECT kind,recipient,body_key,status,provider_sid FROM assistant_phone_actions WHERE id=? AND binding_id=?")
+    .bind(actionId, binding.id).first<{ kind: string; recipient: string; body_key: string; status: string; provider_sid: string | null }>();
+  if (!row || row.kind !== "sms" || row.status !== "sent" || !row.provider_sid) throw new Error("telnyx_message_receipt_required");
+  const content = await readBody(env, identity, actionId, row.body_key);
+  const receipt = await new TelnyxTelephony(account).inspectMessage(row.provider_sid);
+  const from = receipt.from as { phone_number?: unknown } | undefined;
+  const to = Array.isArray(receipt.to) ? receipt.to as Array<{ phone_number?: unknown }> : [];
+  if (receipt.id !== row.provider_sid || receipt.direction !== "outbound" || from?.phone_number !== binding.phone_number
+    || to.length !== 1 || to[0]?.phone_number !== row.recipient || typeof content.text !== "string" || receipt.text !== content.text)
+    throw new Error("telnyx_reconciliation_record_mismatch");
+  const cost = receipt.cost as { amount?: unknown; currency?: unknown } | null | undefined;
+  if (receipt.completed_at === null || receipt.completed_at === undefined || cost === null || cost === undefined) return { status: "pending" as const };
+  if (typeof receipt.completed_at !== "string" || receipt.completed_at.length > 64 || !Number.isFinite(Date.parse(receipt.completed_at))
+    || typeof cost.amount !== "string" || !/^\d{1,12}(?:\.\d{1,12})?$/.test(cost.amount)
+    || typeof cost.currency !== "string" || !/^[A-Z]{3}$/.test(cost.currency)) throw new Error("telnyx_cost_receipt_invalid");
+  const canonical = JSON.stringify([binding.id, actionId, row.provider_sid, cost.amount, cost.currency, receipt.completed_at]);
+  const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  await env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO assistant_telnyx_usage_receipts(receipt_hash,binding_id,action_id,provider_message_id,amount,currency,provider_completed_at) VALUES(?,?,?,?,?,?,?)")
+    .bind(hash, binding.id, actionId, row.provider_sid, cost.amount, cost.currency, receipt.completed_at).run();
+  return { status: "observed" as const, amount: cost.amount, currency: cost.currency, provider_completed_at: receipt.completed_at, billed_by: "telnyx" as const };
 }

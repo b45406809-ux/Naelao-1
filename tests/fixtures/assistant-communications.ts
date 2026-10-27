@@ -62,6 +62,7 @@ export function fixture() {
   );
   db.db.exec(readFileSync(new URL("../../infra/migrations/0136_phone_provider_identity.sql", import.meta.url), "utf8"));
   db.db.exec(readFileSync(new URL("../../infra/migrations/0137_telnyx_ingress_receipts.sql", import.meta.url), "utf8"));
+  db.db.exec(readFileSync(new URL("../../infra/migrations/0138_telnyx_usage_receipts.sql", import.meta.url), "utf8"));
   const objects = new Map<string, string>();
   const fetch = vi.fn(async (req: Request) =>
     req.url.includes("assistant-access")

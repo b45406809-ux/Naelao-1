@@ -67,6 +67,7 @@ export function AssistantPhonePanel({
   const [telnyxPublicKey, setTelnyxPublicKey] = React.useState("");
   const [telnyxNumberId, setTelnyxNumberId] = React.useState("");
   const [telnyxSetup, setTelnyxSetup] = React.useState("");
+  const [telnyxCost, setTelnyxCost] = React.useState("");
   const [handlerInstallation, setHandlerInstallation] = React.useState(""),
     [handlerDigest, setHandlerDigest] = React.useState("");
   const [extensionAssignments, setExtensionAssignments] = React.useState<Record<string, { installation: string; digest: string }>>({});
@@ -142,6 +143,7 @@ export function AssistantPhonePanel({
     setTelnyxPublicKey("");
     setTelnyxNumberId("");
     setTelnyxSetup("");
+    setTelnyxCost("");
     setSid("");
     setTo("");
     setText("");
@@ -188,6 +190,7 @@ export function AssistantPhonePanel({
         setTelnyxKey("");
         setTelnyxSetup(result.configured ? `Telnyx account verified for ${String(result.phone_number)}. Calling and messaging activation is pending.` : "No Telnyx account configured.");
       }
+      if (action === "phone-telnyx-cost") setTelnyxCost(result.status === "observed" ? `Carrier-reported cost: ${String(result.amount)} ${String(result.currency)}. Telnyx bills your account.` : "Carrier cost is not final yet.");
       await refresh();
     } catch (e) {
       if (g === generation.current)
@@ -699,9 +702,11 @@ export function AssistantPhonePanel({
             </fieldset>
           )}
           <ul>
+            {telnyxCost && <li role="status">{telnyxCost}</li>}
             {actions.map((a) => (
               <li key={a.id}>
                 {a.kind} to {a.recipient}: {a.status}{" "}
+                {state?.phone?.provider === "telnyx" && a.kind === "sms" && a.status === "sent" && <button type="button" disabled={busy} onClick={() => void act("phone-telnyx-cost", { id: a.id, confirm: true })}>Check carrier cost</button>}{" "}
                 {a.status === "draft" && (
                   <button
                     type="button"

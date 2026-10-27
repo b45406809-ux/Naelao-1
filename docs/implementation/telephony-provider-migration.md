@@ -59,8 +59,10 @@ entitlement, country availability, prices, or deployed webhook delivery.
   can approve and send a draft through an active Telnyx binding; a lost response remains
   indeterminate and is not retried. The phone UI can reconcile an uncertain SMS against
   an account-scoped Telnyx receipt matching its ID, direction, sender, recipient and body;
-  an absent receipt does not establish non-submission. Actual provider cost ingestion,
-  carrier billing reconciliation and calls remain open. Signed assistant
+  an absent receipt does not establish non-submission. Finalized SMS cost observations use
+  exact decimal strings and immutable deduplicated receipts; the owner can query them from
+  the phone panel. They are BYO carrier evidence and do not trigger a Naelao charge. Automated
+  cost collection, managed-carrier billing reconciliation and calls remain open. Signed assistant
   SMS ingress now records paired-sender requests as pending commands requiring authenticated
   review; unknown senders gain no command authority and verification codes stay private.
 - Normalize usage receipts using actual currency and provider identifiers; keep uncertain

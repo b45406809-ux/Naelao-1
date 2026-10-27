@@ -233,6 +233,7 @@ export async function handlePhoneAction(
       "phone-telnyx-cancel",
       "phone-telnyx-detach",
       "phone-telnyx-reconcile",
+      "phone-telnyx-cost",
     ].includes(action)
   )
     await livePhoneAllowed(env, scope);
@@ -321,6 +322,7 @@ export async function handlePhoneAction(
         "phone-telnyx-approve",
         "phone-telnyx-send",
         "phone-telnyx-reconcile",
+        "phone-telnyx-cost",
       ].includes(action)
     )
       throw new Error("human_control_required");
@@ -330,7 +332,7 @@ export async function handlePhoneAction(
       .bind(body.binding_id, identity.id)
       .first<AssistantPhoneBinding>();
   }
-  if (["phone-telnyx-approve", "phone-telnyx-send", "phone-telnyx-reconcile"].includes(action)) {
+  if (["phone-telnyx-approve", "phone-telnyx-send", "phone-telnyx-reconcile", "phone-telnyx-cost"].includes(action)) {
     if (!binding || binding.provider !== "telnyx" || binding.status !== "active" || body.confirm !== true || typeof body.id !== "string")
       throw new Error("telnyx_sms_approval_required");
     if (action === "phone-telnyx-approve") {
@@ -343,6 +345,10 @@ export async function handlePhoneAction(
       if (typeof body.provider_sid !== "string") throw new Error("telnyx_reconciliation_invalid");
       if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, scope.spaceId)) throw new Error("air_gap_egress_denied");
       return (await import("./telnyx-send.js")).reconcileTelnyxSms(env, identity, binding, body.id, body.provider_sid);
+    }
+    if (action === "phone-telnyx-cost") {
+      if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, scope.spaceId)) throw new Error("air_gap_egress_denied");
+      return (await import("./telnyx-send.js")).observeTelnyxSmsCost(env, identity, binding, body.id);
     }
     return (await import("./telnyx-send.js")).sendApprovedTelnyxSms(env, identity, binding, body.id, scope);
   }
