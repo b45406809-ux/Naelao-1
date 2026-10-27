@@ -39,4 +39,23 @@ describe("space blackboard commands", () => {
     expect(new URL(fetch.mock.calls[0]![0].url).searchParams.get("after")).toBe("project-1");
     await expect(spaceBlackboard.operations["blackboard.search"]!({ query: "shipping", after: "../other" }, ctx)).rejects.toThrow("blackboard_cursor_invalid");
   });
+  it("prepares a reviewable journal draft without publishing private instructions or making a network call", async () => {
+    const fetch = vi.fn();
+    const ctx = { env: { projectId: "p", spacesWorker: { fetch } }, run: vi.fn(async () => ({ ok: true, goal: "Improve tracking", status: "In progress", instructions: "private", archive: "private" })) } as unknown as PrebuiltOpContext;
+    const result = await spaceBlackboard.operations["blackboard.prepare_journal"]!({}, ctx) as { draft: { summary: string }; published: boolean };
+    expect(result.published).toBe(false);
+    expect(result.draft.summary).toBe("Goal: Improve tracking\nStatus: In progress");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("uses decision triage only when requested and falls back to lexical candidates on failure", async () => {
+    const score = vi.fn().mockRejectedValue(new Error("unavailable"));
+    const fetch = vi.fn(async () => Response.json({ cards: [{ projectId: "p", summary: "shipment tracking", capabilities: [], evidence: ["private-link"], updatedAt: "2026-01-01T00:00:00Z" }] }));
+    const ctx = { env: { tenantId: "t", spaceId: "s", userId: "u", platformSecret: "secret", spacesWorker: { fetch }, fastDecision: { score } } } as unknown as PrebuiltOpContext;
+    await spaceBlackboard.operations["blackboard.search"]!({ query: "shipment" }, ctx);
+    expect(score).not.toHaveBeenCalled();
+    const result = await spaceBlackboard.operations["blackboard.search"]!({ query: "shipment", model_triage: true }, ctx) as { candidates: unknown[]; triage?: unknown };
+    expect(result.candidates).toHaveLength(1);
+    expect(result.triage).toBeUndefined();
+    expect(JSON.stringify(score.mock.calls[0])).not.toContain("private-link");
+  });
 });

@@ -1927,8 +1927,21 @@ app.post("/internal/spaces/:spaceId/blackboard/requests/:id/transition", async c
 app.get("/internal/spaces/:spaceId/blackboard/events/:projectId", async c => {
   const spaceId=c.req.param("spaceId"), projectId=c.req.param("projectId");
   const denied=await requireReadableAutomationProject(c,spaceId,projectId); if(denied) return denied;
-  const rows=await c.env.PLATFORM_DB.prepare("SELECT event_id,request_id,kind,created_at FROM space_blackboard_events WHERE tenant_id=? AND space_id=? AND project_id=? ORDER BY created_at DESC,event_id DESC LIMIT 101").bind(c.req.header("x-naelao-tenant-id"),spaceId,projectId).all();
+  const unread=c.req.query("unread") === "true";
+  const rows=await c.env.PLATFORM_DB.prepare(`SELECT e.event_id,e.request_id,e.kind,e.created_at,r.read_at FROM space_blackboard_events e
+    LEFT JOIN space_blackboard_event_receipts r ON r.tenant_id=e.tenant_id AND r.space_id=e.space_id AND r.project_id=e.project_id AND r.event_id=e.event_id AND r.user_id=?
+    WHERE e.tenant_id=? AND e.space_id=? AND e.project_id=? ${unread ? "AND r.event_id IS NULL" : ""}
+    ORDER BY e.created_at DESC,e.event_id DESC LIMIT 101`).bind(c.req.header("x-naelao-user-id"),c.req.header("x-naelao-tenant-id"),spaceId,projectId).all();
   return c.json({ events:rows.results.slice(0,100),truncated:rows.results.length>100 });
+});
+app.post("/internal/spaces/:spaceId/blackboard/events/:projectId/:eventId/read", async c => {
+  const spaceId=c.req.param("spaceId"), projectId=c.req.param("projectId"), eventId=c.req.param("eventId"), tenant=c.req.header("x-naelao-tenant-id")!, user=c.req.header("x-naelao-user-id")!;
+  const denied=await requireReadableAutomationProject(c,spaceId,projectId); if(denied) return denied;
+  if(!/^[A-Za-z0-9._:-]{1,200}$/.test(eventId)) return c.json({ error_code:"invalid_event" },400);
+  const event=await c.env.PLATFORM_DB.prepare("SELECT event_id FROM space_blackboard_events WHERE tenant_id=? AND space_id=? AND project_id=? AND event_id=?").bind(tenant,spaceId,projectId,eventId).first();
+  if(!event) return c.json({ error_code:"event_not_found" },404);
+  await c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO space_blackboard_event_receipts(tenant_id,space_id,project_id,event_id,user_id,read_at) VALUES(?,?,?,?,?,?)").bind(tenant,spaceId,projectId,eventId,user,new Date().toISOString()).run();
+  return c.json({ acknowledged:true,event_id:eventId });
 });
 
 // POST /spaces/:spaceId/registry — internal: seed/refresh the root space row.
