@@ -9333,6 +9333,7 @@ export default {
     // serial in-invocation loop. (The old daily "0 2 * * *" trigger drove the retired BusinessDO/
     // ProductDO nightly Whop cycle — removed from wrangler.toml's crons alongside this.)
     _ctx.waitUntil((await import("./communications/delivery-policy.js")).sweepAssistantDelivery(env).catch(()=>{console.warn("Assistant deferred delivery sweep postponed");}));
+    _ctx.waitUntil((await import("./communications/blackboard-delivery.js")).sweepBlackboardDelivery(env).catch(()=>{console.warn("Blackboard notification sweep postponed");}));
     _ctx.waitUntil((await import("./communications/erasure.js")).sweepAssistantCommunications(env).catch(()=>{console.warn("Assistant communication retention deferred; retry on next sweep");}));
     _ctx.waitUntil((await import("./communications/telnyx-cost-poller.js")).sweepTelnyxSmsCosts(env).catch(()=>{console.warn("Telnyx cost collection postponed");}));
     _ctx.waitUntil((await import("./communications/managed-carrier-billing.js")).sweepManagedTelnyxRentals(env).catch(()=>{console.warn("Managed Telnyx rental billing postponed");}));
