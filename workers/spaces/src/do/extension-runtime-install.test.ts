@@ -74,7 +74,7 @@ describe("runtime extension installation", () => {
     const storage = Object.assign(createDOStorage(), { get: async () => undefined }), state = { storage };
     const space = new SpaceDO(state as never, { PLATFORM_DB: planDb, PLATFORM_SECRET: "release-pin-test-secret" } as never);
     await space.fetch(new Request("http://space/container-installations?tenant_id=tenant&space_id=space&user_id=user&project_id=project-a"));
-    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active')");
+    storage.sql.exec("INSERT INTO projects(id,space_id,name,status) VALUES('project-a','space','A','active'),('project-b','space','B','active'),('project-c','space','C','active')");
     const bundleManifest = (version: string) => ({ id: "ext_pinned", type: "extension", declaredPermissions: [], capabilityRequirements: ["channel.invoke"], gadgets: [], daemons: [], commands: [],
       bundle: { schemaVersion: "1.0", kind: "extension_bundle", id: "ext_pinned", version, primitives: [{ schemaVersion: "1.0", kind: "channel", id: "handler", version, permissions: [], capabilityRequirements: [], lifecycle: {}, provider: "whatsapp", handlerScript: "./handler.ts", context: "channel_only", inboundEvents: ["message.received"], outboundEvents: ["message.reply"] }] } });
     const install = (projectId: string, version: string, upgrade = false) => space.fetch(new Request("http://space/extensions", { method: "POST", headers: { "content-type": "application/json" },
@@ -85,6 +85,8 @@ describe("runtime extension installation", () => {
     const lookup = (projectId: string) => space.fetch(new Request("http://space/channel-installations?tenant_id=tenant&space_id=space&project_id=" + projectId));
     expect(await (await lookup("project-a")).json()).toMatchObject({ installations: [{ version: "2.0.0" }] });
     expect(await (await lookup("project-b")).json()).toMatchObject({ installations: [{ version: "1.0.0" }] });
+    expect((await install("project-c", "1.0.0")).status).toBe(201);
+    expect(await (await lookup("project-c")).json()).toMatchObject({ installations: [{ version: "1.0.0" }] });
     const inventory = await space.fetch(new Request("http://space/extension-installations?tenant_id=tenant&space_id=space&extension_id=ext_pinned"));
     expect(await inventory.json()).toMatchObject({ installations: expect.arrayContaining([
       expect.objectContaining({ project_id: "project-a", release_version: "2.0.0" }),

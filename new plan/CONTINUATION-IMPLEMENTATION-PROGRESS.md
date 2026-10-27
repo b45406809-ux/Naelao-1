@@ -1902,3 +1902,10 @@ Template activation follow-up: enforce the installed runtime slot policy in both
 - Added regression coverage showing a project can export v1 after another project's current install advanced to v2, and that an absent historical version is rejected.
 - This makes template requirements reproducible; it does not package or distribute the extension artifact itself. A target Space still needs the pinned dependency installed or available through the host's installable extension catalog. Cross-tenant marketplace dependency delivery remains a separate open capability.
 - Verification: full Spaces suite passed (84 files / 372 tests); focused extension suite passed (20 tests); Spaces and Agent SDK typechecks passed. Local shims only; no Cloudflare deployment/live tenant acceptance.
+
+## Reuse of a verified historical release by a new project install (2026-10-27)
+
+- Closed the project install side of the version-pin path: when an exact bundle version already exists in immutable release history, a new scoped installation may reuse it without changing the Space-wide current manifest. The host requires exact manifest bytes, artifact digest, host HMAC and publisher identity/signature metadata to match the recorded release, and rejects publisher-revoked releases. Normal upgrades remain explicit and forward-only.
+- Extended the sibling-pin regression: project A advances to v2, project B remains on v1, and a new project C can install recorded v1 while the global/current release remains v2. The versioned template export pins that same v1 release and digest.
+- Remaining boundary: this enables a new project install when the historical package is submitted and its exact release record already exists in that Space. Marketplace templates still reference dependencies rather than carrying/distributing cross-tenant extension artifacts; host catalog delivery remains separate.
+- Verification: full Spaces suite passed (84 files / 372 tests); focused extension suite passed (20 tests); Spaces and Agent SDK typechecks passed; `git diff --check` passed. Tests use local SQLite/Worker shims; no live deployment was performed.

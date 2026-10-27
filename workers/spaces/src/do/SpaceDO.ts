@@ -11730,6 +11730,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     const manifestJson = JSON.stringify(manifest);
     const releaseSignature = manifest.bundle ? await this.signExtensionRelease(manifest.id, manifest.bundle.version, manifestJson, artifactSha256) : undefined;
+    let reuseVerifiedHistoricalRelease = false;
+    if (body.scope && !body.upgrade && manifest.bundle) {
+      const previousRelease = queryOne<{ manifest_json: string; artifact_sha256: string; host_signature: string; publisher_id: string | null; publisher_key_id: string | null; publisher_signature: string | null; publisher_payload_sha256: string | null; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
+        "SELECT manifest_json,artifact_sha256,host_signature,publisher_id,publisher_key_id,publisher_signature,publisher_payload_sha256,publisher_revoked_at FROM extension_releases WHERE extension_id=? AND version=?",
+        manifest.id, manifest.bundle.version);
+      reuseVerifiedHistoricalRelease = !!previousRelease && previousRelease.manifest_json === manifestJson
+        && previousRelease.artifact_sha256 === artifactSha256 && previousRelease.host_signature === releaseSignature
+        && previousRelease.publisher_revoked_at === null
+        && previousRelease.publisher_id === (body.publisherId ?? null) && previousRelease.publisher_key_id === (body.publisherKeyId ?? null)
+        && previousRelease.publisher_signature === (body.publisherSignature ?? null)
+        && previousRelease.publisher_payload_sha256 === (body.publisherPayloadSha256 ?? null);
+    }
     try {
       this.ctx.storage.transactionSync(() => {
         if (runtimeSlotLimit !== undefined && body.scope && instanceId) {
@@ -11752,9 +11764,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (existing && existing.manifest_json !== manifestJson) {
           const scoped = queryOne(this.ctx.storage.sql as never, "SELECT instance_id FROM extension_instances WHERE extension_id=? LIMIT 1", manifest.id);
           if (body.scope || scoped) {
-            if (!body.upgrade || !manifest.bundle || !this.isNewerExtensionVersion(existing.manifest_json, manifest.bundle.version)) throw new Error("extension_manifest_conflict_new_id_or_approved_upgrade_required");
+            if (body.upgrade) {
+              if (!manifest.bundle || !this.isNewerExtensionVersion(existing.manifest_json, manifest.bundle.version)) throw new Error("extension_manifest_conflict_new_id_or_approved_upgrade_required");
+            } else if (!reuseVerifiedHistoricalRelease) throw new Error("extension_manifest_conflict_new_id_or_approved_upgrade_required");
           }
-          execute(this.ctx.storage.sql as never,
+          if (!reuseVerifiedHistoricalRelease) execute(this.ctx.storage.sql as never,
             "UPDATE installed_extensions SET manifest_json=?,installed_by=?,updated_at=? WHERE extension_id=?",
             manifestJson, body.installedBy, now, manifest.id);
         } else {
