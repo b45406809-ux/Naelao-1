@@ -35,5 +35,16 @@ describe("Telnyx extension ingress", () => {
     expect(results.filter(result => result.status === 200).length).toBeGreaterThanOrEqual(1);
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect((await request(raw)).status).toBe(200);
+    await f.db.prepare("UPDATE assistant_phone_bindings SET purpose='assistant' WHERE id='binding-1'").run();
+    await f.db.prepare("INSERT INTO assistant_communication_controllers(identity_id,user_id,channel,address,verified_at,status) VALUES(?,'user','phone','+14155550101',datetime('now'),'active')").bind(identity.id).run();
+    const pairedBody = raw.replace("event-1", "event-2");
+    const pairedSignature = sign(null, Buffer.from(`${timestamp}|${pairedBody}`), keys.privateKey).toString("base64");
+    expect((await request(pairedBody, pairedSignature)).status).toBe(200);
+    const unpairedBody = raw.replace("event-1", "event-3").replace("+14155550101", "+14155550103");
+    const unpairedSignature = sign(null, Buffer.from(`${timestamp}|${unpairedBody}`), keys.privateKey).toString("base64");
+    expect((await request(unpairedBody, unpairedSignature)).status).toBe(200);
+    const commands = await f.db.prepare("SELECT controller_user_id,status FROM assistant_communication_commands WHERE identity_id=?").bind(identity.id).all<{ controller_user_id: string; status: string }>();
+    expect(commands.results).toEqual([{ controller_user_id: "user", status: "pending" }]);
+    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 });

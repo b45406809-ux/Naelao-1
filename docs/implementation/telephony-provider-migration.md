@@ -56,7 +56,9 @@ entitlement, country availability, prices, or deployed webhook delivery.
   Extension replies are stored as approval-required drafts. Owner-authorized phone actions
   can approve and send a draft through an active Telnyx binding; a lost response remains
   indeterminate and is not retried. This API path needs an active binding, and phone UI
-  wiring, billing reconciliation, binding activation, assistant ingress and calls remain open.
+  wiring, billing reconciliation, binding activation and calls remain open. Signed assistant
+  SMS ingress now records paired-sender requests as pending commands requiring authenticated
+  review; unknown senders gain no command authority and verification codes stay private.
 - Normalize usage receipts using actual currency and provider identifiers; keep uncertain
   usage pending reconciliation. A transport submission is not proof of final billable usage.
 - Connect Telnyx media to authorized durable call sessions and enforce existing duration,
