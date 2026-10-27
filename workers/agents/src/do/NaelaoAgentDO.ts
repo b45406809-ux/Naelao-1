@@ -40,6 +40,7 @@ import { getDOName } from "@naelao/crypto";
 import { ExecutionSessions } from "../tunnels/execution-sessions.js";
 import { createNamedTunnelGateway } from "../tunnels/host.js";
 import { reserveWorkflowBudget, finalizeWorkflowBudget } from "../workflows/report-infra-usage.js";
+import { validPhoneExtensionEvent } from "../communications/phone-extension-event.js";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
@@ -8659,16 +8660,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }>(new Response(request.body), 16_384);
     if (!this.env.PLATFORM_DB) return Response.json({ error_code: "database_unavailable" }, { status: 503 });
     const row = await this.env.PLATFORM_DB.prepare(
-      "SELECT h.installation_id,h.handler_sha256,h.status,i.project_id FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'"
+      "SELECT h.installation_id,h.handler_sha256,h.status,i.project_id,b.provider FROM assistant_phone_extension_handlers h JOIN assistant_phone_bindings b ON b.id=h.binding_id JOIN assistant_communication_identities i ON i.id=b.identity_id WHERE h.binding_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active' AND b.status='active'"
     ).bind(body.bindingId, tenant, body.spaceId).first<{
-      installation_id: string; handler_sha256: string; status: string; project_id: string | null;
+      installation_id: string; handler_sha256: string; status: string; project_id: string | null; provider: string;
     }>();
     if (!row || await this.tenantSpaceSuspended(tenant, body.spaceId))
       return Response.json({ error_code: "phone_handler_unavailable" }, { status: 403 });
     const event = body.event;
     if (!body.validateOnly && (row.status !== "active" || !event ||
-      !["call.received", "call.digits", "call.speech", "message.received"].includes(event.type) ||
-      !/^(?:CA[a-fA-F0-9]{32}(?::(?:digits|speech):[A-Za-z0-9._-]{1,128})?|(?:SM|MM)[a-fA-F0-9]{32})$/.test(event.id)))
+      !validPhoneExtensionEvent(row.provider, event.type, event.id)))
       return Response.json({ error_code: "phone_event_invalid" }, { status: 400 });
     const handler = await this.loadActiveChannelHandler({
       spaceId: body.spaceId, tenantId: tenant, ...(row.project_id ? { projectId: row.project_id } : {}),
