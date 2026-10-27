@@ -27,6 +27,21 @@ export const spaceBlackboard: PrebuiltScript = {
       return call(ctx, "PUT", `cards/${projectId}`, card);
     },
     "blackboard.unpublish": (_args, ctx) => call(ctx, "DELETE", `cards/${project(ctx)}`),
+    "blackboard.request": async (args, ctx) => {
+      const source = ctx.env.projectId;
+      if (!source) throw new Error("blackboard_project_context_required");
+      if (!ctx.env.authorizeBlackboardAction || !await ctx.env.authorizeBlackboardAction("blackboard.request", args)) throw new Error("blackboard_request_consent_required");
+      return call(ctx, "POST", "requests", { id: args.id, source_project_id: source, target_project_id: args.target_project_id, objective: args.objective, expected_result: args.expected_result, ...(args.deadline ? { deadline: args.deadline } : {}) });
+    },
+    "blackboard.requests": (_args, ctx) => call(ctx, "GET", `requests/${project(ctx)}`),
+    "blackboard.respond": async (args, ctx) => {
+      const id = typeof args.id === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(args.id) ? args.id : null;
+      if (!id) throw new Error("blackboard_request_id_invalid");
+      const projectId = ctx.env.projectId;
+      if (!projectId) throw new Error("blackboard_project_context_required");
+      if (!ctx.env.authorizeBlackboardAction || !await ctx.env.authorizeBlackboardAction("blackboard.respond", args)) throw new Error("blackboard_response_consent_required");
+      return call(ctx, "POST", `requests/${encodeURIComponent(id)}/transition`, { project_id: projectId, action: args.action, ...(args.response !== undefined ? { response: args.response } : {}) });
+    },
     "blackboard.search": async (args, ctx) => {
       const query = typeof args.query === "string" ? args.query.trim() : "";
       if (!query || query.length > 1000) throw new Error("blackboard_query_invalid");
@@ -35,5 +50,7 @@ export const spaceBlackboard: PrebuiltScript = {
     },
   },
   paramHints: { "blackboard.publish": "summary (string), capabilities (string[]), evidence (string[]); shares only the current project.",
-    "blackboard.unpublish": "Removes the current project's shared summary.", "blackboard.search": "query (string); returns accessible shared candidates, not verified conclusions." },
+    "blackboard.unpublish": "Removes the current project's shared summary.", "blackboard.search": "query (string); returns accessible shared candidates, not verified conclusions.",
+    "blackboard.request": "id (unique stable string), target_project_id, objective, expected_result, optional deadline; requires approval.",
+    "blackboard.requests": "Lists requests involving the current project.", "blackboard.respond": "id, action (accept, decline, complete, cancel), optional response; requires approval." },
 };

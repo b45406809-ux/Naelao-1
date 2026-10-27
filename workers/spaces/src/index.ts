@@ -1872,6 +1872,45 @@ app.get("/internal/spaces/:spaceId/blackboard/cards", async c => {
   const allowed = new Set(visible);
   return c.json({ truncated: cards.results.length > 1000, cards: cards.results.slice(0, 1000).filter(card => allowed.has(card.project_id)).map(card => ({ projectId: card.project_id, summary: card.summary, capabilities: JSON.parse(card.capabilities_json), evidence: JSON.parse(card.evidence_json), updatedAt: card.updated_at })) });
 });
+app.post("/internal/spaces/:spaceId/blackboard/requests", async c => {
+  const spaceId = c.req.param("spaceId"), tenant = c.req.header("x-naelao-tenant-id")!, user = c.req.header("x-naelao-user-id")!;
+  let b: Record<string, unknown>;
+  try { b = JSON.parse(await readBoundedRequestText(c.req.raw, 16384)); } catch { return c.json({ error_code: "invalid_request" }, 400); }
+  const validId = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(v);
+  if (!b || !validId(b.id) || !validId(b.source_project_id) || !validId(b.target_project_id) || b.source_project_id === b.target_project_id || typeof b.objective !== "string" || !b.objective.trim() || b.objective.length > 4000 || typeof b.expected_result !== "string" || !b.expected_result.trim() || b.expected_result.length > 2000 || (b.deadline !== undefined && (typeof b.deadline !== "string" || !Number.isFinite(Date.parse(b.deadline))))) return c.json({ error_code: "invalid_request" }, 400);
+  const sourceDenied = await requireManageableAutomationProject(c, spaceId, b.source_project_id); if (sourceDenied) return sourceDenied;
+  const targetDenied = await requireReadableAutomationProject(c, spaceId, b.target_project_id); if (targetDenied) return targetDenied;
+  const card = await c.env.PLATFORM_DB.prepare("SELECT project_id FROM space_blackboard_cards WHERE tenant_id=? AND space_id=? AND project_id=?").bind(tenant,spaceId,b.target_project_id).first();
+  if (!card) return c.json({ error_code: "target_not_shared" }, 409);
+  const now = new Date().toISOString(), deadline = b.deadline ?? null;
+  await c.env.PLATFORM_DB.prepare("INSERT OR IGNORE INTO space_blackboard_requests(tenant_id,space_id,id,source_project_id,target_project_id,objective,expected_result,deadline,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'pending',?,?,?)")
+    .bind(tenant,spaceId,b.id,b.source_project_id,b.target_project_id,b.objective.trim(),b.expected_result.trim(),deadline,user,now,now).run();
+  const row = await c.env.PLATFORM_DB.prepare("SELECT * FROM space_blackboard_requests WHERE tenant_id=? AND space_id=? AND id=?").bind(tenant,spaceId,b.id).first<{source_project_id:string;target_project_id:string;objective:string;expected_result:string;deadline:string|null;created_by:string}>();
+  if (!row || row.source_project_id !== b.source_project_id || row.target_project_id !== b.target_project_id || row.objective !== b.objective.trim() || row.expected_result !== b.expected_result.trim() || row.deadline !== deadline || row.created_by !== user) return c.json({ error_code: "request_id_conflict" }, 409);
+  return c.json({ request: row });
+});
+app.get("/internal/spaces/:spaceId/blackboard/requests/:projectId", async c => {
+  const spaceId=c.req.param("spaceId"), projectId=c.req.param("projectId");
+  const denied=await requireReadableAutomationProject(c,spaceId,projectId); if(denied) return denied;
+  const rows=await c.env.PLATFORM_DB.prepare("SELECT * FROM space_blackboard_requests WHERE tenant_id=? AND space_id=? AND (source_project_id=? OR target_project_id=?) ORDER BY updated_at DESC,id LIMIT 101").bind(c.req.header("x-naelao-tenant-id"),spaceId,projectId,projectId).all();
+  return c.json({ requests: rows.results.slice(0,100), truncated: rows.results.length>100 });
+});
+app.post("/internal/spaces/:spaceId/blackboard/requests/:id/transition", async c => {
+  const spaceId=c.req.param("spaceId"), tenant=c.req.header("x-naelao-tenant-id")!, id=c.req.param("id");
+  let b: Record<string,unknown>; try { b=JSON.parse(await readBoundedRequestText(c.req.raw,8192)); } catch { return c.json({ error_code:"invalid_transition" },400); }
+  if (!b || typeof b.project_id!=="string" || !["accept","decline","complete","cancel"].includes(String(b.action)) || (b.response!==undefined && (typeof b.response!=="string" || b.response.length>4000))) return c.json({ error_code:"invalid_transition" },400);
+  const denied=await requireManageableAutomationProject(c,spaceId,b.project_id); if(denied) return denied;
+  const row=await c.env.PLATFORM_DB.prepare("SELECT source_project_id,target_project_id,status,response FROM space_blackboard_requests WHERE tenant_id=? AND space_id=? AND id=?").bind(tenant,spaceId,id).first<{source_project_id:string;target_project_id:string;status:string;response:string|null}>();
+  if(!row || (b.project_id!==row.source_project_id && b.project_id!==row.target_project_id)) return c.json({ error_code:"request_not_found" },404);
+  const intended=b.action==="accept" && b.project_id===row.target_project_id ? "accepted" : b.action==="decline" && b.project_id===row.target_project_id ? "declined" : b.action==="complete" && b.project_id===row.target_project_id ? "completed" : b.action==="cancel" && b.project_id===row.source_project_id ? "cancelled" : null;
+  const response=typeof b.response==="string" ? b.response.trim() : null;
+  if (intended && row.status===intended && row.response===response) return c.json({ id,status:intended,deduplicated:true });
+  const next=b.action==="accept" && b.project_id===row.target_project_id && row.status==="pending" ? "accepted" : b.action==="decline" && b.project_id===row.target_project_id && row.status==="pending" ? "declined" : b.action==="complete" && b.project_id===row.target_project_id && row.status==="accepted" ? "completed" : b.action==="cancel" && b.project_id===row.source_project_id && ["pending","accepted"].includes(row.status) ? "cancelled" : null;
+  if(!next) return c.json({ error_code:"invalid_transition" },409);
+  const update=await c.env.PLATFORM_DB.prepare("UPDATE space_blackboard_requests SET status=?,response=?,updated_at=? WHERE tenant_id=? AND space_id=? AND id=? AND status=?").bind(next,response,new Date().toISOString(),tenant,spaceId,id,row.status).run();
+  if(!update.meta.changes) return c.json({ error_code:"request_changed" },409);
+  return c.json({ id,status:next });
+});
 
 // POST /spaces/:spaceId/registry — internal: seed/refresh the root space row.
 // Called by the provisioner (step 5b) with the manifest tenancy + agency_shell.

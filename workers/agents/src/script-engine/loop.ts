@@ -163,7 +163,7 @@ async function hitlGate(
   currentPolicyFingerprint: string,
 ): Promise<GateOutcome> {
   // Publishing project content outside its project requires a person to approve the exact card.
-  if (actionName !== "blackboard.publish" && !alwaysGatedActions.has(actionName) && !isGated(actionName, gatedActions, mode)) return { verdict: "proceed" };
+  if (!["blackboard.publish", "blackboard.request", "blackboard.respond"].includes(actionName) && !alwaysGatedActions.has(actionName) && !isGated(actionName, gatedActions, mode)) return { verdict: "proceed" };
   if (!gateway) {
     notes.push(`HITL unavailable: '${actionName}' is gated and cannot run without an approval service`);
     return { verdict: "denied", reason: "approval service unavailable" };
@@ -631,6 +631,9 @@ export async function runScriptLoop(
     finally { if (previous) env.onToolOutput = previous; else delete env.onToolOutput; }
   };
   const gateCurrentPolicy = async (name: string, params: Record<string, unknown>): Promise<GateOutcome> => {
+    // A grant is scoped to one approved invocation and cannot survive the next gate.
+    delete env.authorizeBlackboardPublication;
+    delete env.authorizeBlackboardAction;
     if (opts.refreshApprovalPolicy) {
       try {
         const latest = await opts.refreshApprovalPolicy();
@@ -648,7 +651,27 @@ export async function runScriptLoop(
         notes.push("HITL: current approval policy could not be refreshed; requiring approval");
       }
     }
-    return hitlGate(name, params, gatedActions, approvalMode, alwaysGatedActions, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
+    const outcome = await hitlGate(name, params, gatedActions, approvalMode, alwaysGatedActions, env.hitlGateway, runId, sessionId, notes, preApproved, currentPolicyFingerprint);
+    if (name === "blackboard.publish" && outcome.verdict === "proceed") {
+      const approved = stableStringify({ summary: params.summary, capabilities: params.capabilities ?? [], evidence: params.evidence ?? [] });
+      const projectId = env.projectId;
+      let used = false;
+      env.authorizeBlackboardPublication = async card => {
+        if (used || !projectId || env.projectId !== projectId || stableStringify(card) !== approved) return false;
+        used = true;
+        return true;
+      };
+    }
+    if (["blackboard.request", "blackboard.respond"].includes(name) && outcome.verdict === "proceed") {
+      const approved = stableStringify(params), projectId = env.projectId;
+      let used = false;
+      env.authorizeBlackboardAction = async (action, input) => {
+        if (used || !projectId || env.projectId !== projectId || action !== name || stableStringify(input) !== approved) return false;
+        used = true;
+        return true;
+      };
+    }
+    return outcome;
   };
   const runOnce = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
     const injected = await runBeforeStep(opts.pipeline, env.pipelineRuntime);

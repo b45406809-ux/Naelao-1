@@ -20,4 +20,15 @@ describe("space blackboard commands", () => {
     expect(result.untrusted).toBe(true);
     expect(fetch).toHaveBeenCalledOnce();
   });
+  it("requires host consent before sharing a request and binds its source to the current project", async () => {
+    const fetch = vi.fn(async (_request: Request) => Response.json({ request: { status: "pending" } }));
+    const ctx = { env: { tenantId: "tenant", spaceId: "space", projectId: "source", userId: "user", platformSecret: "secret", spacesWorker: { fetch } } } as unknown as PrebuiltOpContext;
+    const args = { id: "req-1", target_project_id: "target", source_project_id: "forged", objective: "Help", expected_result: "Result" };
+    await expect(spaceBlackboard.operations["blackboard.request"]!(args, ctx)).rejects.toThrow("blackboard_request_consent_required");
+    expect(fetch).not.toHaveBeenCalled();
+    ctx.env.authorizeBlackboardAction = async (action, input) => action === "blackboard.request" && input === args;
+    await spaceBlackboard.operations["blackboard.request"]!(args, ctx);
+    const request = fetch.mock.calls[0]![0] as Request;
+    expect(await request.json()).toMatchObject({ source_project_id: "source", target_project_id: "target" });
+  });
 });
