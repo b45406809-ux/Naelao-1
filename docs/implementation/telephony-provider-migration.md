@@ -57,8 +57,10 @@ entitlement, country availability, prices, or deployed webhook delivery.
   binding/event claims, payload conflict detection and explicit indeterminate outcomes.
   Extension replies are stored as approval-required drafts. Owner-authorized phone actions
   can approve and send a draft through an active Telnyx binding; a lost response remains
-  indeterminate and is not retried. This API path needs an active binding, and phone UI
-  billing reconciliation and calls remain open. Signed assistant
+  indeterminate and is not retried. The phone UI can reconcile an uncertain SMS against
+  an account-scoped Telnyx receipt matching its ID, direction, sender, recipient and body;
+  an absent receipt does not establish non-submission. Actual provider cost ingestion,
+  carrier billing reconciliation and calls remain open. Signed assistant
   SMS ingress now records paired-sender requests as pending commands requiring authenticated
   review; unknown senders gain no command authority and verification codes stay private.
 - Normalize usage receipts using actual currency and provider identifiers; keep uncertain

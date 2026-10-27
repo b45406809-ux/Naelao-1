@@ -655,7 +655,7 @@ export function AssistantPhonePanel({
                 <input
                   value={receipt}
                   onChange={(e) => setReceipt(e.target.value)}
-                  placeholder="CA… or SM…"
+                  placeholder={state?.phone?.provider === "telnyx" ? "Telnyx message ID" : "CA… or SM…"}
                 />
               </label>
               {actions
@@ -666,8 +666,9 @@ export function AssistantPhonePanel({
                     <button
                       type="button"
                       onClick={() =>
-                        void act("phone-reconcile", {
+                        void act(state?.phone?.provider === "telnyx" ? "phone-telnyx-reconcile" : "phone-reconcile", {
                           id: a.id,
+                          confirm: true,
                           provider_checked: true,
                           outcome: "sent",
                           provider_sid: receipt,
@@ -676,7 +677,7 @@ export function AssistantPhonePanel({
                     >
                       Verify submitted receipt
                     </button>{" "}
-                    <button
+                    {state?.phone?.provider !== "telnyx" && <button
                       type="button"
                       onClick={() => {
                         if (
@@ -692,7 +693,7 @@ export function AssistantPhonePanel({
                       }}
                     >
                       Confirmed not submitted
-                    </button>
+                    </button>}
                   </p>
                 ))}
             </fieldset>

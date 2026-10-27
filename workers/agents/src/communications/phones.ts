@@ -232,6 +232,7 @@ export async function handlePhoneAction(
       "phone-telnyx-status",
       "phone-telnyx-cancel",
       "phone-telnyx-detach",
+      "phone-telnyx-reconcile",
     ].includes(action)
   )
     await livePhoneAllowed(env, scope);
@@ -319,6 +320,7 @@ export async function handlePhoneAction(
         "phone-reconcile-number",
         "phone-telnyx-approve",
         "phone-telnyx-send",
+        "phone-telnyx-reconcile",
       ].includes(action)
     )
       throw new Error("human_control_required");
@@ -328,7 +330,7 @@ export async function handlePhoneAction(
       .bind(body.binding_id, identity.id)
       .first<AssistantPhoneBinding>();
   }
-  if (action === "phone-telnyx-approve" || action === "phone-telnyx-send") {
+  if (["phone-telnyx-approve", "phone-telnyx-send", "phone-telnyx-reconcile"].includes(action)) {
     if (!binding || binding.provider !== "telnyx" || binding.status !== "active" || body.confirm !== true || typeof body.id !== "string")
       throw new Error("telnyx_sms_approval_required");
     if (action === "phone-telnyx-approve") {
@@ -336,6 +338,11 @@ export async function handlePhoneAction(
         .bind(scope.userId, body.id, binding.id).run();
       if (!changed.meta.changes) throw new Error("phone_action_not_draft");
       return { id: body.id, status: "approved" };
+    }
+    if (action === "phone-telnyx-reconcile") {
+      if (typeof body.provider_sid !== "string") throw new Error("telnyx_reconciliation_invalid");
+      if (await isSpaceNetworkEgressDenied(env.PLATFORM_DB, scope.spaceId)) throw new Error("air_gap_egress_denied");
+      return (await import("./telnyx-send.js")).reconcileTelnyxSms(env, identity, binding, body.id, body.provider_sid);
     }
     return (await import("./telnyx-send.js")).sendApprovedTelnyxSms(env, identity, binding, body.id, scope);
   }

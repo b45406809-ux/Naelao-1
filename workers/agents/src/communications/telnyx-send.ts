@@ -38,3 +38,26 @@ export async function sendApprovedTelnyxSms(env: AgentsEnv, identity: Communicat
     throw error;
   }
 }
+
+/** Resolve a lost response only against an actual provider receipt. An absent receipt does
+ * not prove the message was never sent and must not reopen the action for retry. */
+export async function reconcileTelnyxSms(env: AgentsEnv, identity: CommunicationIdentity, binding: AssistantPhoneBinding, actionId: string, providerId: string) {
+  if (binding.provider !== "telnyx" || !binding.phone_number || !/^[A-Za-z0-9._:-]{1,160}$/.test(actionId)
+    || !/^[A-Za-z0-9_-]{1,128}$/.test(providerId)) throw new Error("telnyx_reconciliation_invalid");
+  const account = await resolveTelnyxAccount(env, identity);
+  if (!account || account.verifiedNumberId !== binding.provider_number_sid || account.verifiedPhoneNumber !== binding.phone_number) throw new Error("telnyx_binding_mismatch");
+  const row = await env.PLATFORM_DB.prepare("SELECT kind,recipient,body_key,status FROM assistant_phone_actions WHERE id=? AND binding_id=?")
+    .bind(actionId, binding.id).first<{ kind: string; recipient: string; body_key: string; status: string }>();
+  if (!row || row.kind !== "sms" || !["sending", "indeterminate"].includes(row.status)) throw new Error("phone_action_not_indeterminate");
+  const content = await readBody(env, identity, actionId, row.body_key);
+  const receipt = await new TelnyxTelephony(account).inspectMessage(providerId);
+  const from = receipt.from as { phone_number?: unknown } | undefined;
+  const to = Array.isArray(receipt.to) ? receipt.to as Array<{ phone_number?: unknown }> : [];
+  if (receipt.id !== providerId || receipt.direction !== "outbound" || from?.phone_number !== binding.phone_number
+    || to.length !== 1 || to[0]?.phone_number !== row.recipient || typeof content.text !== "string" || receipt.text !== content.text)
+    throw new Error("telnyx_reconciliation_record_mismatch");
+  const changed = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_actions SET status='sent',provider_sid=?,error_code=NULL,updated_at=datetime('now') WHERE id=? AND binding_id=? AND status IN ('sending','indeterminate')")
+    .bind(providerId, actionId, binding.id).run();
+  if (!changed.meta.changes) throw new Error("phone_action_changed");
+  return { reconciled: true, status: "sent", provider_sid: providerId };
+}
