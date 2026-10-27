@@ -84,6 +84,37 @@ describe("durable goal DAG", () => {
     expect(result.tasks.a?.status).toBe("needs_review");
     expect(f.host.fix).not.toHaveBeenCalled();
   });
+  it.each(["awaiting_human_input", "awaiting_planner_input", "outcome_uncertain"])("never fixes a worker suspended in %s", async status => {
+    const f = fixture(); f.host.fixerEnabled = true;
+    f.host.launch = vi.fn(async (_task, id) => ({ id, ok: false, status }));
+    f.host.fix = vi.fn();
+    const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    expect(result.tasks.a?.status).toBe("needs_review");
+    expect(result.tasks.b?.status).toBe("blocked");
+    expect(f.host.fix).not.toHaveBeenCalled();
+  });
+  it("recovers a lost fixer acknowledgement without starting a second fixer", async () => {
+    const f = fixture({ fixerEnabled: true, tasks: { a: { status: "failed", workerId: "worker:a", result: { id: "worker:a", ok: false, error: "failed" } } }, fixers: { a: { status: "running", workerId: "worker:a:fix" } } });
+    f.host.fix = vi.fn(); f.host.recover = vi.fn(async id => ({ id, ok: true, output: "fixed" }));
+    const result = await executeGoalDag([task("a")], f.host);
+    expect(result.fixers?.a?.status).toBe("completed");
+    expect(f.host.fix).not.toHaveBeenCalled();
+  });
+  it("escalates an uncertain recovered failure without launching a fixer", async () => {
+    const f = fixture({ fixerEnabled: true, tasks: { a: { status: "running", workerId: "worker:a" } } });
+    f.host.recover = vi.fn(async id => ({ id, ok: false, status: "outcome_uncertain" }));
+    f.host.fix = vi.fn();
+    const result = await executeGoalDag([task("a")], f.host);
+    expect(result.tasks.a?.status).toBe("needs_review");
+    expect(f.host.fix).not.toHaveBeenCalled();
+  });
+  it("marks a fixer waiting for approval as needing review", async () => {
+    const f = fixture(); f.host.fixerEnabled = true;
+    f.host.launch = vi.fn(async (_task, id) => ({ id, ok: false }));
+    f.host.fix = vi.fn(async (_task, id) => ({ id, ok: false, status: "awaiting_human_input" }));
+    const result = await executeGoalDag([task("a")], f.host);
+    expect(result.fixers?.a?.status).toBe("needs_review");
+  });
   it("recovers a completed worker after a lost acknowledgement", async () => {
     const f = fixture({ tasks: { a: { status: "running", workerId: "worker:a" } } });
     f.host.recover = vi.fn(async id => ({ id, ok: true, output: "committed" }));

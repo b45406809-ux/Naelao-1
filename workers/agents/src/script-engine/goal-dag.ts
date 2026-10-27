@@ -1,7 +1,7 @@
 import { validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task-blackboard.js";
 
-export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string }
+export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string; status?: string }
 export type GoalTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "needs_review";
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" }
@@ -90,7 +90,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     const state = journal.tasks[task.id]!;
     if (state.status === "running") {
       const result = await host.recover(state.workerId);
-      state.status = result ? (result.ok ? "completed" : "failed") : "needs_review";
+      state.status = result ? (result.ok ? "completed" : result.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
       if (result) state.result = result;
       await host.save(journal);
     }
@@ -117,7 +117,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
           let fixer = fixers[task.id];
           if (fixer?.status === "running") {
             const recovered = await host.recover(fixer.workerId);
-            fixer.status = recovered ? (recovered.ok ? "completed" : "failed") : "needs_review";
+            fixer.status = recovered ? (recovered.ok ? "completed" : recovered.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
             if (recovered) fixer.result = recovered;
             await host.save(journal);
           }
@@ -127,10 +127,10 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
           try {
             const result = await host.fix(task, fixer.workerId, state.result);
             fixer.result = result;
-            fixer.status = result.ok ? "completed" : "failed";
+            fixer.status = result.ok ? "completed" : result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" || result.status === "outcome_uncertain" ? "needs_review" : "failed";
           } catch {
             const recovered = await host.recover(fixer.workerId);
-            fixer.status = recovered ? (recovered.ok ? "completed" : "failed") : "needs_review";
+            fixer.status = recovered ? (recovered.ok ? "completed" : recovered.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
             if (recovered) fixer.result = recovered;
           }
           await host.save(journal);
@@ -160,7 +160,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
         result = recovered;
       }
       state.result = result;
-      state.status = result.ok ? "completed" : "failed";
+      state.status = result.ok ? "completed" : result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" || result.status === "outcome_uncertain" ? "needs_review" : "failed";
       recordCompletion(task, tasks, journal);
       await host.save(journal);
       await host.publish(task, state);
