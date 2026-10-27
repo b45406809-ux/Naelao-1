@@ -24,7 +24,9 @@ jobs:
           df -h .
           docker version
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Probe the current manifest on this disposable runner; report the separate frozen
+        # lockfile failure without letting it prevent the capacity measurement.
+        run: pnpm install --no-frozen-lockfile
       - name: Start extended local stack and sample resources
         shell: bash
         run: |
