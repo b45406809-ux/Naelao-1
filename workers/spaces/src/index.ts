@@ -2481,11 +2481,6 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       body: JSON.stringify({ appId, scope: "PROJECT_BOUND", gadgetTier: 2, defaultSchemaSql: gadget.schemaSql ?? "", migrations: gadget.migrations ?? [] }) }));
     if (!init.ok) return stagedFailure("extension_gadget_initialize_failed", 500, await readBoundedResponseText(init, 8 * 1024).catch(() => ""));
   }
-  if (canvases[0]) {
-    const update = await stub.fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(identity.tenantId)}`, { method: "PATCH", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ viewport_config: { component: "CanvasMount", resourceId: runtimeAppId(canvases[0].id) } }) }));
-    if (!update.ok) return stagedFailure("extension_canvas_mount_failed", 500, await readBoundedResponseText(update, 8 * 1024).catch(() => ""));
-  }
   if (requiresRuntimeActivation) {
     const activation = await stub.fetch(new Request("http://space-do/extension-installation/activate", {
       method: "POST",
@@ -2495,6 +2490,11 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
         extensionId: bundle.id, version: bundle.version, artifactSha256: digest, tenantId: identity.tenantId, spaceId, projectId }),
     }));
     if (!activation.ok) return stagedFailure("extension_runtime_activation_failed", 503, await readBoundedResponseText(activation, 8 * 1024).catch(() => ""));
+  }
+  if (canvases[0]) {
+    const update = await stub.fetch(new Request(`http://space-do/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(identity.tenantId)}`, { method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ viewport_config: { component: "CanvasMount", resourceId: runtimeAppId(canvases[0].id) } }) }));
+    if (!update.ok) return c.json({ installed: true, ...installedResult, canvas_mount_warning: "The extension is installed and active, but this Canvas could not be selected as the project default. Select it from the project Canvas menu." }, 201);
   }
   return new Response(installed.body, { status: installed.status, headers: { "content-type": installed.headers.get("content-type") ?? "application/json" } });
 });

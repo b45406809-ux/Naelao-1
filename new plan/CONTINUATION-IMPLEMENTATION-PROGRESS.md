@@ -1872,3 +1872,9 @@ Template activation follow-up: enforce the installed runtime slot policy in both
 - Added the active instance key to the installation inventory projection and a pure policy helper with cases for a single target, sibling projects/named instances, disabled/staging rows, and removed history.
 - Verification: guard/SpaceDO/migration focused set passed 3 files / 25 tests; Spaces TypeScript check passed. The full Spaces suite had passed 83 files / 366 tests immediately before this isolated preflight addition. No live multi-project release upgrade or Cloudflare deployment was run.
 - Next: commit/push this guard and keep both branches aligned; per-install release pinning is still the required path before enabling upgrades across multiple installations.
+
+## Composed extension install ordering follow-up (2026-10-27)
+
+- Reordered project Canvas/Gadget installation so primitive setup completes, then the staged release becomes active, and only then does the host change the project's default Canvas. This prevents a failed activation from leaving the project pointed at an unavailable Canvas.
+- If the package is successfully active but setting the default Canvas fails, the route returns HTTP 201 with `canvas_mount_warning`; the Shell API type and install UI now surface that recoverable outcome. Clearing/retrying an install clears the prior warning.
+- Verification: full Spaces suite passed (84 files / 369 tests); Spaces and Shell TypeScript checks passed; `git diff --check` passed. Tests use local mocks; no live Cloudflare Durable Object acceptance was performed.

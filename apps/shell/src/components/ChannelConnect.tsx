@@ -467,6 +467,7 @@ export function ChannelConnect({
   const [runtimeCatalogueError, setRuntimeCatalogueError] = React.useState<string | null>(null);
   const [installingRuntime, setInstallingRuntime] = React.useState<string | null>(null);
   const [extensionLoadError, setExtensionLoadError] = React.useState<string | null>(null);
+  const [extensionNotice, setExtensionNotice] = React.useState<string | null>(null);
   const [extensionsLoading, setExtensionsLoading] = React.useState(false);
   const [installDialogOpen, setInstallDialogOpen] = React.useState(false);
   const [installManifestDraft, setInstallManifestDraft] = React.useState("");
@@ -619,7 +620,7 @@ export function ChannelConnect({
   async function installChannelExtension(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!projectId || installingExtension || !installManifestDraft.trim()) return;
-    setInstallingExtension(true); setError(null);
+    setInstallingExtension(true); setError(null); setExtensionNotice(null);
     try {
       const manifest = JSON.parse(installManifestDraft) as unknown;
       const handlerSources = installSourcesDraft.trim()
@@ -639,12 +640,13 @@ export function ChannelConnect({
   async function installCanvasBundle(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!projectId || installingExtension || !canvasManifestDraft.trim() || !canvasInstallConfirmed || !canvasPublisherKeyId || !canvasPublisherSignature.trim()) return;
-    setInstallingExtension(true); setError(null);
+    setInstallingExtension(true); setError(null); setExtensionNotice(null);
     try {
       const manifest = JSON.parse(canvasManifestDraft) as unknown;
       const artifacts = JSON.parse(canvasArtifactsDraft) as Record<string, string>;
       const installed = await installProjectCanvasExtension(spaceId, projectId, session, manifest, artifacts, confirmUpgrade, canvasInstanceKey.trim(), { key_id: canvasPublisherKeyId, signature: canvasPublisherSignature.trim() });
       if (!installed.installed) throw new Error(installed.message ?? installed.error_code ?? "Canvas/Gadget package installation failed");
+      setExtensionNotice(installed.canvas_mount_warning ?? null);
       const [channels, all] = await Promise.all([listChannelExtensionInstallations(spaceId, projectId, session), listContainerInstallations(spaceId, session, projectId, true)]);
       setExtensionInstallations(channels);
       const channelInstances = new Set(channels.map(item => item.instance_id));
@@ -737,6 +739,7 @@ export function ChannelConnect({
   return (
     <div>
       {extensionLoadError && <div role="alert" style={{ marginBottom: 10, color: "var(--danger, #b42318)", fontSize: 12 }}>{extensionLoadError}</div>}
+      {extensionNotice && <div role="status" style={{ marginBottom: 10, color: "var(--text2)", fontSize: 12 }}>{extensionNotice}</div>}
       {projectId && canManage && <details style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
         <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Install an approved project runtime</summary>
         <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "8px 0" }}>Only deployment-approved images are installable. Naelao checks your current plan before installation and again before execution. A capability listed by a template does not mean its runtime is installed.</p>

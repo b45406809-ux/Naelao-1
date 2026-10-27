@@ -2060,7 +2060,7 @@ export async function installProjectChannelExtension(
 export async function installProjectCanvasExtension(
   spaceId: string, projectId: string, session: SessionCredentials, manifest: unknown,
   artifacts: Record<string, string>, upgrade = false, instanceKey = "default", publisherSignature?: { key_id: string; signature: string },
-): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string }> {
+): Promise<{ installed?: boolean; installationId?: string; error_code?: string; message?: string; canvas_mount_warning?: string }> {
   return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions`, {
     method: "POST", body: JSON.stringify({ manifest, artifacts, instanceKey, ...(publisherSignature ? { publisherSignature } : {}), ...(upgrade ? { upgrade: true } : {}) }), session,
   });
