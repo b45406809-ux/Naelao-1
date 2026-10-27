@@ -4,7 +4,8 @@ import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task
 export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string }
 export type GoalTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "needs_review";
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean }
+export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" }
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[] }
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
 export interface GoalHandoff { taskId: string; workerId: string; output: string; truncated: boolean }
 export interface GoalDagHost {
@@ -55,6 +56,24 @@ function recordCompletion(task: GoalTask, tasks: GoalTask[], journal: GoalDagJou
   (journal.messages ??= []).push(createTaskMessage({ id: `completion:${task.id}`, recipients, kind: "completion", text }, state.workerId, members, Date.now()));
 }
 
+/** An uncertain external effect always goes to review; never propose an automatic replay. */
+function collectEscalations(tasks: GoalTask[], journal: GoalDagJournal): GoalEscalation[] {
+  return tasks.flatMap(task => {
+    const state = journal.tasks[task.id]!;
+    if (state.status !== "failed" && state.status !== "needs_review") return [];
+    const affected = new Set([task.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const candidate of tasks) if (!affected.has(candidate.id) && candidate.dependencies?.some(id => affected.has(id))) { affected.add(candidate.id); changed = true; }
+    }
+    const error = typeof state.result?.error === "string" ? state.result.error.slice(0, 1000) : undefined;
+    return [{ taskId: task.id, workerId: state.workerId, reason: state.status === "failed" ? "worker_failed" as const : "outcome_uncertain" as const,
+      ...(error ? { detail: error } : {}), blockedTasks: tasks.filter(candidate => candidate.id !== task.id && affected.has(candidate.id)).map(candidate => candidate.id),
+      nextAction: state.status === "failed" ? "investigate_failure" as const : "verify_effects_before_retry" as const }];
+  });
+}
+
 /** Persist before dispatch. A lost acknowledgement must never trigger blind mutation replay. */
 export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Promise<GoalDagJournal> {
   validateGoalDag(tasks);
@@ -86,7 +105,11 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       }
     }
     const ready = pending.filter(task => journal.tasks[task.id]!.status === "pending" && (task.dependencies ?? []).every(id => journal.tasks[id]!.status === "completed")).slice(0, host.concurrency);
-    if (!ready.length) return journal;
+    if (!ready.length) {
+      journal.escalations = collectEscalations(tasks, journal);
+      await host.save(journal);
+      return journal;
+    }
     // One checkpoint for the whole wave, before any external worker effects.
     for (const task of ready) journal.tasks[task.id]!.status = "running";
     await host.save(journal);

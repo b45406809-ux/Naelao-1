@@ -61,6 +61,7 @@ describe("durable goal DAG", () => {
     f.host.launch = vi.fn(async (t, id) => { active++; maximum = Math.max(maximum, active); await Promise.resolve(); active--; return { id, ok: t.id !== "bad" }; });
     const result = await executeGoalDag([task("bad"), task("a"), task("c"), task("blocked", ["bad"])], f.host);
     expect(maximum).toBe(2); expect(result.tasks.blocked?.status).toBe("blocked");
+    expect(result.escalations).toEqual([expect.objectContaining({ taskId: "bad", reason: "worker_failed", nextAction: "investigate_failure", blockedTasks: ["blocked"] })]);
     expect(f.host.launch.mock.calls.map(([t]) => t.id)).not.toContain("blocked");
   });
   it("recovers a completed worker after a lost acknowledgement", async () => {
@@ -73,6 +74,7 @@ describe("durable goal DAG", () => {
     const f = fixture({ tasks: { a: { status: "running", workerId: "worker:a" }, b: { status: "pending", workerId: "worker:b" } } });
     const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
     expect(result.tasks.a?.status).toBe("needs_review"); expect(result.tasks.b?.status).toBe("blocked");
+    expect(result.escalations).toEqual([expect.objectContaining({ taskId: "a", reason: "outcome_uncertain", nextAction: "verify_effects_before_retry", blockedTasks: ["b"] })]);
     expect(f.host.launch).not.toHaveBeenCalled();
   });
   it("checkpoints a wave before any worker effect and preserves it across storage failure", async () => {
