@@ -20,7 +20,9 @@ describe("durable goal DAG", () => {
     const call = f.host.launch.mock.calls.find(([t]) => t.id === "b")!;
     expect(call[2]).toHaveLength(1);
     expect(call[2][0]).toMatchObject({ taskId: "a", workerId: "worker:a", truncated: true });
-    expect(call[2][0].output).toHaveLength(4000);
+    expect(call[2][0].output).toHaveLength(3000);
+    expect(f.snapshot().messages).toHaveLength(1);
+    expect(f.snapshot().messages?.[0]?.recipients).toEqual(["worker:b"]);
   });
   it("reconstructs dependency handoffs after journal recovery", async () => {
     const f = fixture({ tasks: { a: { status: "completed", workerId: "worker:a", result: { id: "worker:a", ok: true, output: "evidence" } }, b: { status: "pending", workerId: "worker:b" } } });

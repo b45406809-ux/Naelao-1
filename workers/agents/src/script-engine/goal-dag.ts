@@ -1,9 +1,10 @@
 import { validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
+import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task-blackboard.js";
 
 export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string }
 export type GoalTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "needs_review";
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState> }
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[] }
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
 export interface GoalHandoff { taskId: string; workerId: string; output: string; truncated: boolean }
 export interface GoalDagHost {
@@ -17,14 +18,32 @@ export interface GoalDagHost {
 }
 
 function dependencyHandoffs(task: GoalTask, journal: GoalDagJournal): GoalHandoff[] {
+  const members = new Set(Object.values(journal.tasks).map(state => state.workerId));
+  const actor = journal.tasks[task.id]!.workerId;
+  const visible = visibleTaskMessages(journal.messages ?? [], actor, members);
   return (task.dependencies ?? []).map(taskId => {
     const state = journal.tasks[taskId]!;
-    let serialized: string;
-    try { serialized = JSON.stringify(state.result?.output ?? null) ?? "null"; }
-    catch { serialized = '"[unavailable: non-serializable output]"'; }
-    const limit = 4000;
-    return { taskId, workerId: state.workerId, output: serialized.slice(0, limit), truncated: serialized.length > limit };
+    const message = visible.find(item => item.id === `completion:${taskId}` && item.sender === state.workerId);
+    if (!message) throw new Error("goal_dependency_message_missing");
+    const value = JSON.parse(message.text) as { output: string; truncated: boolean };
+    return { taskId, workerId: state.workerId, ...value };
   });
+}
+
+function recordCompletion(task: GoalTask, tasks: GoalTask[], journal: GoalDagJournal): void {
+  const state = journal.tasks[task.id]!;
+  if (state.status !== "completed") return;
+  const recipients = tasks.filter(candidate => candidate.dependencies?.includes(task.id)).map(candidate => journal.tasks[candidate.id]!.workerId);
+  if (!recipients.length || (journal.messages ?? []).some(message => message.id === `completion:${task.id}`)) return;
+  let serialized: string;
+  try { serialized = JSON.stringify(state.result?.output ?? null) ?? "null"; }
+  catch { serialized = '"[unavailable: non-serializable output]"'; }
+  // Reserve room for JSON escaping and metadata under the message size limit.
+  let output = serialized.slice(0, 3000);
+  while (JSON.stringify({ output, truncated: serialized.length > output.length }).length > 4000) output = output.slice(0, -100);
+  const text = JSON.stringify({ output, truncated: serialized.length > output.length });
+  const members = new Set(Object.values(journal.tasks).map(item => item.workerId));
+  (journal.messages ??= []).push(createTaskMessage({ id: `completion:${task.id}`, recipients, kind: "completion", text }, state.workerId, members, Date.now()));
 }
 
 /** Persist before dispatch. A lost acknowledgement must never trigger blind mutation replay. */
@@ -41,6 +60,8 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       if (result) state.result = result;
       await host.save(journal);
     }
+    recordCompletion(task, tasks, journal);
+    if (state.status === "completed") await host.save(journal);
     await host.publish(task, state);
   }
   for (;;) {
@@ -75,6 +96,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       }
       state.result = result;
       state.status = result.ok ? "completed" : "failed";
+      recordCompletion(task, tasks, journal);
       await host.save(journal);
       await host.publish(task, state);
     }));
