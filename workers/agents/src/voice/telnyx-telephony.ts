@@ -67,10 +67,10 @@ export class TelnyxTelephony {
       || !["answer", "hangup"].includes(action)) throw new Error("telnyx_call_action_invalid");
     return this.request(`/calls/${encodeURIComponent(callControlId)}/actions/${action}`, "POST", { command_id: commandId });
   }
-  sendSms(from: string, to: string, text: string, messagingProfileId: string) {
+  sendSms(from: string, to: string, text: string, messagingProfileId?: string) {
     if (!isE164(from) || !isE164(to) || typeof text !== "string" || !text.trim() || text.length > 1600
-      || !/^[A-Za-z0-9_-]{1,128}$/.test(messagingProfileId)) throw new Error("telnyx_sms_invalid");
-    return this.request("/messages", "POST", { from, to, text, messaging_profile_id: messagingProfileId });
+      || (messagingProfileId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(messagingProfileId))) throw new Error("telnyx_sms_invalid");
+    return this.request("/messages", "POST", { from, to, text, ...(messagingProfileId ? { messaging_profile_id: messagingProfileId } : {}) });
   }
   inspectMessage(id: string) {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("telnyx_message_id_invalid");

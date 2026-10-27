@@ -53,8 +53,10 @@ entitlement, country availability, prices, or deployed webhook delivery.
   destination, owner scope, phone preferences, egress policy, handler and daily quota are
   checked before dispatch. Migration 0137 and `telnyx-ingress-journal.ts` provide atomic
   binding/event claims, payload conflict detection and explicit indeterminate outcomes.
-  Extension replies are stored as approval-required drafts; outbound Telnyx sending and
-  billing are not connected. Binding activation, assistant ingress and call events remain open.
+  Extension replies are stored as approval-required drafts. Owner-authorized phone actions
+  can approve and send a draft through an active Telnyx binding; a lost response remains
+  indeterminate and is not retried. This API path needs an active binding, and phone UI
+  wiring, billing reconciliation, binding activation, assistant ingress and calls remain open.
 - Normalize usage receipts using actual currency and provider identifiers; keep uncertain
   usage pending reconciliation. A transport submission is not proof of final billable usage.
 - Connect Telnyx media to authorized durable call sessions and enforce existing duration,

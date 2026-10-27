@@ -276,6 +276,8 @@ export async function handlePhoneAction(
         "phone-policy",
         "phone-reconcile",
         "phone-reconcile-number",
+        "phone-telnyx-approve",
+        "phone-telnyx-send",
       ].includes(action)
     )
       throw new Error("human_control_required");
@@ -284,6 +286,17 @@ export async function handlePhoneAction(
     )
       .bind(body.binding_id, identity.id)
       .first<AssistantPhoneBinding>();
+  }
+  if (action === "phone-telnyx-approve" || action === "phone-telnyx-send") {
+    if (!binding || binding.provider !== "telnyx" || binding.status !== "active" || body.confirm !== true || typeof body.id !== "string")
+      throw new Error("telnyx_sms_approval_required");
+    if (action === "phone-telnyx-approve") {
+      const changed = await env.PLATFORM_DB.prepare("UPDATE assistant_phone_actions SET status='approved',approved_by=? WHERE id=? AND binding_id=? AND kind='sms' AND status='draft'")
+        .bind(scope.userId, body.id, binding.id).run();
+      if (!changed.meta.changes) throw new Error("phone_action_not_draft");
+      return { id: body.id, status: "approved" };
+    }
+    return (await import("./telnyx-send.js")).sendApprovedTelnyxSms(env, identity, binding, body.id, scope);
   }
   if (action === "phone-credentials") {
     if (!env.CREDENTIALS_WORKER)
