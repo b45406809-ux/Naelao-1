@@ -4,14 +4,27 @@ export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; e
 export type GoalTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "needs_review";
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult }
 export interface GoalDagJournal { tasks: Record<string, GoalTaskState> }
+/** Dependency results are untrusted data, scoped to an explicitly declared edge. */
+export interface GoalHandoff { taskId: string; workerId: string; output: string; truncated: boolean }
 export interface GoalDagHost {
   load(): Promise<GoalDagJournal | undefined>;
   save(journal: GoalDagJournal): Promise<void>;
-  launch(task: GoalTask, workerId: string): Promise<GoalWorkerResult>;
+  launch(task: GoalTask, workerId: string, handoffs: GoalHandoff[]): Promise<GoalWorkerResult>;
   recover(workerId: string): Promise<GoalWorkerResult | undefined>;
   publish(task: GoalTask, state: GoalTaskState): Promise<void>;
   workerId(taskId: string): string;
   concurrency: number;
+}
+
+function dependencyHandoffs(task: GoalTask, journal: GoalDagJournal): GoalHandoff[] {
+  return (task.dependencies ?? []).map(taskId => {
+    const state = journal.tasks[taskId]!;
+    let serialized: string;
+    try { serialized = JSON.stringify(state.result?.output ?? null) ?? "null"; }
+    catch { serialized = '"[unavailable: non-serializable output]"'; }
+    const limit = 4000;
+    return { taskId, workerId: state.workerId, output: serialized.slice(0, limit), truncated: serialized.length > limit };
+  });
 }
 
 /** Persist before dispatch. A lost acknowledgement must never trigger blind mutation replay. */
@@ -48,7 +61,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       const state = journal.tasks[task.id]!;
       await host.publish(task, state);
       let result: GoalWorkerResult;
-      try { result = await host.launch(task, state.workerId); }
+      try { result = await host.launch(task, state.workerId, dependencyHandoffs(task, journal)); }
       catch (error) {
         // Transport failure may mean a committed worker response was lost.
         const recovered = await host.recover(state.workerId);

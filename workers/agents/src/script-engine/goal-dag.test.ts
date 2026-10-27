@@ -13,6 +13,20 @@ function fixture(initial?: GoalDagJournal) {
   return { host, snapshot: () => saved! };
 }
 describe("durable goal DAG", () => {
+  it("delivers only direct dependency results as bounded untrusted handoffs", async () => {
+    const f = fixture();
+    f.host.launch = vi.fn(async (t, id) => ({ id, ok: true, output: t.id === "a" ? "x".repeat(5000) : t.id }));
+    await executeGoalDag([task("a"), task("other"), task("b", ["a"])], f.host);
+    const call = f.host.launch.mock.calls.find(([t]) => t.id === "b")!;
+    expect(call[2]).toHaveLength(1);
+    expect(call[2][0]).toMatchObject({ taskId: "a", workerId: "worker:a", truncated: true });
+    expect(call[2][0].output).toHaveLength(4000);
+  });
+  it("reconstructs dependency handoffs after journal recovery", async () => {
+    const f = fixture({ tasks: { a: { status: "completed", workerId: "worker:a", result: { id: "worker:a", ok: true, output: "evidence" } }, b: { status: "pending", workerId: "worker:b" } } });
+    await executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    expect(f.host.launch.mock.calls[0]?.[2]).toEqual([{ taskId: "a", workerId: "worker:a", output: '"evidence"', truncated: false }]);
+  });
   it("dispatches prerequisites before dependents and replays completed tasks without workers", async () => {
     const f = fixture(); const tasks = [task("b", ["a"]), task("a")];
     await executeGoalDag(tasks, f.host);
