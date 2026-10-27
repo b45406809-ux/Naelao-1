@@ -1,0 +1,64 @@
+name: Naelao local capacity probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [work]
+    paths: ['.github/workflows/naelao-capacity.yml']
+permissions:
+  contents: read
+jobs:
+  local-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Baseline capacity
+        run: |
+          nproc
+          free -m
+          df -h .
+          docker version
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Start extended local stack and sample resources
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/naelao-probe"
+          export PERSIST_DIR="$RUNNER_TEMP/naelao-probe/state"
+          node infra/scripts/start-dev.mjs --extended > "$RUNNER_TEMP/naelao-probe/start.log" 2>&1 &
+          stack_pid=$!
+          echo "$stack_pid" > "$RUNNER_TEMP/naelao-probe/stack.pid"
+          for i in $(seq 1 24); do
+            printf '\nSample %s at %s\n' "$i" "$(date -u +%FT%TZ)"
+            free -m
+            df -h .
+            ps -eo rss,comm --sort=-rss | head -20
+            docker stats --no-stream --format '{{.Name}} {{.CPUPerc}} {{.MemUsage}}' || true
+            for port in 8080 8787 8788 8789 8791 3000 3100; do
+              printf '%s=' "$port"
+              curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/health" || true
+              printf ' '
+            done
+            printf '\n'
+            if ! kill -0 "$stack_pid" 2>/dev/null; then echo 'Stack exited early'; break; fi
+            sleep 5
+          done
+          cat "$RUNNER_TEMP/naelao-probe/start.log"
+          for log in .dev/logs/*.log; do printf '\n%s\n' "$log"; tail -30 "$log"; done
+          docker system df
+          kill "$stack_pid" 2>/dev/null || true
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naelao-capacity-logs
+          path: |
+            .dev/logs/*.log
+            ${{ runner.temp }}/naelao-probe/start.log
+          retention-days: 2
+          if-no-files-found: ignore
