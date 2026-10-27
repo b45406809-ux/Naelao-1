@@ -877,6 +877,19 @@ async function resolveAgentApiKeyClaims(
   };
 }
 
+async function resolveBuilderApiKeyClaims(env: Env, apiKey: string): Promise<NaelaoJwtClaims | null> {
+  const response = await env.SPACES_WORKER.fetch(new Request("http://spaces/internal/builder-api-keys/verify", {
+    method: "POST", headers: { "content-type": "application/json", "x-naelao-platform-secret": env.PLATFORM_SECRET },
+    body: JSON.stringify({ key: apiKey }),
+  }));
+  if (!response.ok) return null;
+  const verified = await response.json<{ valid?: boolean; tenant_id?: string; scopes?: string[] }>();
+  if (!verified.valid || !verified.tenant_id || !Array.isArray(verified.scopes) || verified.scopes.some(scope => typeof scope !== "string")) return null;
+  const now = Math.floor(Date.now() / 1000);
+  return { sub: "team-api-key", tid: verified.tenant_id, email: "", role: "team_api_key", scopes: verified.scopes,
+    iat: now, exp: now + 300, jti: "" };
+}
+
 /** Coarse action name a mutating agent request maps to for the approval gate —
  *  "METHOD:firstSegmentAfterSpaceId" (e.g. POST /spaces/S/projects -> "POST:projects"). Coarse
  *  by design: matches the granularity agents.md's own requires_approval_for list already uses
@@ -898,6 +911,18 @@ api.use("*", async (c, next) => {
   }
   const authHeader = c.req.header("authorization") ?? (desk ? `Bearer ${desk.token}` : "");
   const headerMatch = /^Bearer\s+(nps_\S+)$/.exec(authHeader);
+  // Builder API keys are accepted only on the team administration surface. The downstream
+  // Spaces worker resolves the key hash, expiry, revocation and exact scope, then independently
+  // pins the tenant to NAELAO_DASHBOARD_TENANT_ID. Do not turn this into a generic API-key auth
+  // path: ordinary Space APIs require a user session or an explicitly scoped agent key.
+  const builderKeyMatch = /^Bearer\s+(nbk_[a-f0-9]{32})$/.exec(authHeader);
+  const authPath = c.req.path.replace(/^\/v1(?=\/|$)/, "") || "/";
+  if (/^\/builder(?:\/|$)/.test(authPath) && builderKeyMatch?.[1]) {
+    const claims = await resolveBuilderApiKeyClaims(c.env, builderKeyMatch[1]);
+    if (!claims) throw unauthorized("Invalid, expired or revoked team API key");
+    c.set("claims", claims);
+    return next();
+  }
   // The browser's native EventSource API cannot set custom headers, so the SSE stream endpoint
   // (.../agent/runs/:runId/stream) has no way to carry a Bearer header. Previously we accepted
   // the full nps_ session token as a query param — but that puts a long-lived credential into

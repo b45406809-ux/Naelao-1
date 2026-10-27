@@ -49,6 +49,9 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   // overrides row (workers/spaces/src/do/SpaceDO.ts), not this RBAC table — fails closed here too
   // (no builder-dashboard permission implied by holding an agent key).
   agent: [],
+  // Team API keys are constrained by their signed per-key scopes in the builder route layer;
+  // they receive no generic tenant RBAC permissions by virtue of this role.
+  team_api_key: [],
 };
 
 export function hasPermission(role: UserRole, permission: Permission): boolean {

@@ -84,7 +84,7 @@ export interface NaelaoJwtClaims {
 // builder's identity. claims.tid is the owning space's tenant (like product_end_user); claims.sub
 // is the agentId. A structurally different population from product_end_user (no platform tenant
 // at all) — an agent key IS scoped to a tenant's space, just not to a human.
-export type UserRole = "owner" | "admin" | "editor" | "viewer" | "product_end_user" | "agent";
+export type UserRole = "owner" | "admin" | "editor" | "viewer" | "product_end_user" | "agent" | "team_api_key";
 
 // ── Plan tiers ───────────────────────────────────────────────────────────────
 export type PlanTier = "free" | "growth" | "business" | "enterprise";

@@ -469,15 +469,16 @@ app.post("/evals", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  const parsed = await readJsonBody<{ name?: unknown; space_id?: unknown; cases?: unknown }>(c.req.raw);
+  const parsed = await readJsonBody<{ name?: unknown; description?: unknown; space_id?: unknown; cases?: unknown }>(c.req.raw);
   if (parsed.tooLarge) return c.json({ error_code: "payload_too_large", message: "Request body exceeds 1 MiB" }, 413);
   if (parsed.invalid) return c.json({ error_code: "bad_request", message: "Expected a JSON request body" }, 400);
   const body = parsed.body;
 
   if (!body || typeof body !== "object" || Array.isArray(body)
       || typeof body.name !== "string" || !body.name.trim() || body.name.length > 200
+      || (body.description !== undefined && (typeof body.description !== "string" || body.description.length > 2_000))
       || typeof body.space_id !== "string" || !body.space_id || !Array.isArray(body.cases) || body.cases.length === 0) {
-    return c.json({ error_code: "bad_request", message: "name, space_id, and cases are required" }, 400);
+    return c.json({ error_code: "bad_request", message: "name, space_id, and cases are required; description must be bounded text" }, 400);
   }
 
   if (body.cases.length > 100) {
@@ -495,11 +496,11 @@ app.post("/evals", async (c) => {
   const now = new Date().toISOString();
 
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO eval_suites (id, name, space_id, tenant_id, cases_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, body.name.trim(), body.space_id, tenantId, JSON.stringify(body.cases), now, now).run();
+    `INSERT INTO eval_suites (id, name, description, space_id, tenant_id, cases_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, body.name.trim(), typeof body.description === "string" ? body.description.trim() : null, body.space_id, tenantId, JSON.stringify(body.cases), now, now).run();
 
-  return c.json({ id, name: body.name.trim(), space_id: body.space_id, case_count: body.cases.length, created_at: now }, 201);
+  return c.json({ id, name: body.name.trim(), description: typeof body.description === "string" ? body.description.trim() : "", space_id: body.space_id, case_count: body.cases.length, run_count: 0, created_at: now }, 201);
 });
 
 // GET /evals — list eval suites for tenant
@@ -512,7 +513,10 @@ app.get("/evals", async (c) => {
   let results: unknown[];
   if (spaceId !== null) {
     const { results: rows } = await c.env.PLATFORM_DB.prepare(
-      `SELECT e.id, e.name, e.space_id, e.created_at FROM eval_suites e
+      `SELECT e.id, e.name, COALESCE(e.description,'') AS description, e.space_id, json_array_length(e.cases_json) AS case_count,
+              (SELECT COUNT(*) FROM eval_runs r WHERE r.suite_id=e.id AND r.tenant_id=e.tenant_id) AS run_count,
+              (SELECT CAST(SUM(r.passed) AS REAL)/NULLIF(SUM(r.total_cases),0) FROM eval_runs r WHERE r.suite_id=e.id AND r.tenant_id=e.tenant_id AND r.status='completed') AS pass_rate,
+              e.created_at FROM eval_suites e
        JOIN spaces s ON s.id = e.space_id AND s.tenant_id = e.tenant_id AND s.status = 'active'
        JOIN orgs o ON o.id = e.tenant_id AND o.status = 'active'
        WHERE e.tenant_id = ? AND e.space_id = ? ORDER BY e.created_at DESC`
@@ -520,7 +524,10 @@ app.get("/evals", async (c) => {
     results = rows;
   } else {
     const { results: rows } = await c.env.PLATFORM_DB.prepare(
-      `SELECT e.id, e.name, e.space_id, e.created_at FROM eval_suites e
+      `SELECT e.id, e.name, COALESCE(e.description,'') AS description, e.space_id, json_array_length(e.cases_json) AS case_count,
+              (SELECT COUNT(*) FROM eval_runs r WHERE r.suite_id=e.id AND r.tenant_id=e.tenant_id) AS run_count,
+              (SELECT CAST(SUM(r.passed) AS REAL)/NULLIF(SUM(r.total_cases),0) FROM eval_runs r WHERE r.suite_id=e.id AND r.tenant_id=e.tenant_id AND r.status='completed') AS pass_rate,
+              e.created_at FROM eval_suites e
        JOIN spaces s ON s.id = e.space_id AND s.tenant_id = e.tenant_id AND s.status = 'active'
        JOIN orgs o ON o.id = e.tenant_id AND o.status = 'active'
        WHERE e.tenant_id = ? ORDER BY e.created_at DESC`
@@ -779,6 +786,18 @@ app.get("/evals/:id/results", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const evalId = c.req.param("id");
+  const runId = c.req.query("run_id");
+
+  if (runId) {
+    const run = await c.env.PLATFORM_DB.prepare("SELECT id,space_id FROM eval_runs WHERE id=? AND suite_id=? AND tenant_id=?")
+      .bind(runId, evalId, tenantId).first<{ id: string; space_id: string }>();
+    if (!run || !await isActiveTenantSpace(c.env.PLATFORM_DB, tenantId, run.space_id)) return c.json({ error_code: "not_found" }, 404);
+    const { results } = await c.env.PLATFORM_DB.prepare(
+      `SELECT id,run_id,case_index,input,expected_output AS expected,actual_output AS actual,passed,score,judge_reasoning,latency_ms
+         FROM eval_results WHERE run_id=? AND suite_id=? AND tenant_id=? ORDER BY case_index LIMIT 100`
+    ).bind(runId, evalId, tenantId).all();
+    return c.json({ data: results });
+  }
 
   // avg_score is computed from the per-case rows rather than stored: AVG() skips NULL scores, so
   // a case the judge failed on is excluded exactly as it is in the live run summary, with no

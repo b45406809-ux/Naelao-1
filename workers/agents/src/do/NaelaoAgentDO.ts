@@ -81,7 +81,7 @@ import {
   approvalPolicyFingerprint,
 } from "../script-engine/index.js";
 import { createTracer, generateTraceId } from "@naelao/tracing";
-import { emitWorkflowReceiptCard, resolveOperatingMode, SystemOneDecisionClient, verifyCapabilityGrant, validateExtensionManifest, validateWidgetHostEvent, type WidgetHostEvent } from "@naelao/agent-sdk";
+import { emitWorkflowReceiptCard, resolveOperatingMode, SystemOneDecisionClient, verifyCapabilityGrant, validateExtensionManifest, validateWidgetHostEvent, validateExtensionWidgetView, type WidgetHostEvent, type ExtensionWidgetView } from "@naelao/agent-sdk";
 import { applyDurableObjectJurisdiction, issueDelegationClaim, verifyDelegationClaim } from "@naelao/security";
 import { routeMentionsWithSentry } from "../script-engine/mention-router.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
@@ -2249,6 +2249,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!this.env.SCRIPTS_R2) return null;
     const env: ScriptEngineEnv = {
       scriptsBucket: this.env.SCRIPTS_R2,
+      widgetHostEvents: [],
       spaceId,
       agentId,
       tenantId,
@@ -2954,6 +2955,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             }),
           }));
           await broadcastSpaceEvent(this.env, tenantId, spaceId, "repository.committed", { project_id: projectId, thread_id: commitContext.threadId, commit_id: commitOid, rollback_commit_id: commitOid });
+        }
+        if (commitContext?.threadId && env.widgetHostEvents && env.widgetHostEvents.length < 64) {
+          try {
+            const type = change.operation === "delete" ? "workspace.file.deleted" : change.created ? "workspace.file.created" : "workspace.file.updated";
+            const eventId = `workspace-${(await workflowHash(JSON.stringify([commitContext.taskId, change.path, change.operation, Date.now()]))).slice(0, 48)}`;
+            env.widgetHostEvents.push(validateWidgetHostEvent({ version: 1, id: eventId, type, spaceId, projectId,
+              conversationId: commitContext.threadId, taskId: commitContext.taskId, occurredAt: new Date().toISOString(),
+              data: { path: change.path.slice(0, 1_500), operation: change.operation, agent_id: agentId, ...(commitOid ? { commit_oid: commitOid } : {}) } }));
+          } catch { /* Chat widgets are optional presentation; workspace writes remain authoritative. */ }
         }
         await spacesWorker.fetch(new Request(
               `http://spaces-worker/internal/spaces/${spaceId}/events/fire`,
@@ -3939,6 +3949,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const now = Date.now();
         const attempt = existing ? existing.attempt + 1 : 1;
         const workspaceBranch = existing?.workspace_branch ?? (typeof t["workspace_branch"] === "string" ? t["workspace_branch"] : null);
+        const recordWorkerWidgetEvent = async (type: "worker.dispatched" | "worker.waiting" | "worker.completed" | "worker.failed", status: string, model?: string) => {
+          if (!runtimeEnv || !parentThreadId || !runtimeEnv.widgetHostEvents || runtimeEnv.widgetHostEvents.length >= 64) return;
+          try {
+            const eventId = `worker-${(await workflowHash(JSON.stringify([parentRunId, subId, attempt, type]))).slice(0, 48)}`;
+            runtimeEnv.widgetHostEvents.push(validateWidgetHostEvent({ version: 1, id: eventId, type, spaceId,
+              ...(projectId ? { projectId } : {}), conversationId: parentThreadId, taskId: subId, occurredAt: new Date().toISOString(),
+              data: { worker_id: subId, role: typeof t["role"] === "string" ? t["role"].slice(0, 80) : "worker", status, ...(model ? { model } : {}), attempt } }));
+          } catch { /* Activity widgets are best-effort; worker state is persisted separately. */ }
+        };
         if (existing) {
           this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='running', attempt=?, error=NULL, updated_at=? WHERE id=?`, attempt, now, subId);
         } else {
@@ -3947,6 +3966,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             subId, parentRunId, goal, budgetTokens, workspaceBranch, now, now
           );
         }
+        await recordWorkerWidgetEvent("worker.dispatched", "running");
         // A subagent is an ephemeral verb. It is never mirrored into the user-facing thread
         // store; only its structured result is handed back to the persistent parent agent.
         if (!goal) {
@@ -4117,6 +4137,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             boundedCheckpointJson(body.pending_worker_question ?? body.pending_question ?? body.result ?? { error: `HTTP ${resp.status}` }),
             ok || awaitingPlanner || awaitingHuman ? null : (body.result?.error ?? `HTTP ${resp.status}`), Date.now(), subId
           );
+          await recordWorkerWidgetEvent(ok ? "worker.completed" : awaitingPlanner || awaitingHuman ? "worker.waiting" : "worker.failed",
+            ok ? "done" : awaitingPlanner ? "awaiting_planner_input" : awaitingHuman ? "awaiting_human_input" : "failed", modelResolution.model);
           return {
             id: subId,
             ok,
@@ -6059,7 +6081,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         if (createdArtifacts.length) answerMetadata["created_artifacts"] = createdArtifacts;
         // Emit only from successful host-observed artifact operations. IDs are stable for a
         // run/artifact pair so a persisted chat turn can be safely re-rendered after reconnect.
-        const widgetEvents: WidgetHostEvent[] = [];
+        const widgetEvents: WidgetHostEvent[] = (engineEnv.widgetHostEvents ?? []).slice(0, 48);
         for (const artifact of createdArtifacts.slice(0, 50)) {
           try {
             const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([runId, artifact.artifact_id])));
@@ -6069,6 +6091,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           } catch { /* Invalid metadata must not prevent the assistant response. */ }
         }
         if (widgetEvents.length) answerMetadata["widget_events"] = widgetEvents;
+        // Event declarations are resolved and re-authorized by the host on every delivery.
+        // Extension code runs as a pure, outbound-disabled isolate with no RPC capabilities;
+        // only a small validated display model is persisted into the conversation.
+        if (widgetEvents.length && userId && this.env.LOADER && this.env.SPACES_WORKER && this.env.SCRIPTS_R2) {
+          const deliveries: Array<{ event_id: string; installation_id: string; extension_id: string; view: ExtensionWidgetView }> = [];
+          for (const event of widgetEvents.slice(0, 16)) {
+            try {
+              deliveries.push(...await this.deliverWidgetEvent({ event, actorId: userId, agentId, runId, tenantId, ...(projectId ? { projectId } : {}),
+                runner: engineEnv.codeRunner!, maxDeliveries: 16 - deliveries.length }));
+            } catch { /* An extension failure must not fail the assistant's completed turn. */ }
+            if (deliveries.length >= 16) break;
+          }
+          if (deliveries.length) answerMetadata["widget_deliveries"] = deliveries;
+        }
         const citations = citationsFromTrace(result.trace ?? []);
         if (citations.length) answerMetadata["citations"] = citations;
         // The run's own id, so a reload can re-fetch this exact run's activity trail (run_traces,
@@ -7023,6 +7059,73 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (channel === "telegram") return { to: scope?.recipientId ?? channelUserId, message: text, ...(scope?.threadId && /^\d{1,20}$/.test(scope.threadId) ? { message_thread_id: scope.threadId } : {}), ...connection };
     if (channel === "whatsapp") return { to: scope?.recipientId ?? channelUserId, message: text, ...connection };
     return { channel: scope?.recipientId ?? channelUserId, message: text, ...(channel === "slack" && scope?.threadId ? { thread_ts: scope.threadId } : {}), ...connection }; // slack / discord
+  }
+
+  /** Resolve, re-authorize, run and validate extension widget handlers for one host event. */
+  private async deliverWidgetEvent(input: { event: WidgetHostEvent; actorId: string; agentId: string; runId: string; tenantId: string; projectId?: string; runner: NonNullable<ScriptEngineEnv["codeRunner"]>; maxDeliveries: number }): Promise<Array<{ event_id: string; installation_id: string; extension_id: string; view: ExtensionWidgetView }>> {
+    if (input.maxDeliveries <= 0 || !this.env.SPACES_WORKER || !this.env.SCRIPTS_R2 || input.actorId === "system") return [];
+    const base = `http://spaces-worker/spaces/${encodeURIComponent(input.event.spaceId)}`;
+    const headers = await this.internalHeaders(input.tenantId, { "x-naelao-user-id": input.actorId });
+    const membershipResponse = await this.env.SPACES_WORKER.fetch(new Request(`${base}/members`, { headers }));
+    if (!membershipResponse.ok) return [];
+    const members = await readBoundedResponseJson<{ data?: Array<{ user_id: string; role?: string }> }>(membershipResponse, 512 * 1024);
+    const member = members.data?.find(row => row.user_id === input.actorId);
+    if (!member) return [];
+    if (input.event.projectId) {
+      const projectResponse = await this.env.SPACES_WORKER.fetch(new Request(`${base}/projects/${encodeURIComponent(input.event.projectId)}/members`, { headers }));
+      if (!projectResponse.ok) return [];
+      const projectMembers = await readBoundedResponseJson<{ data?: Array<{ user_id: string }> }>(projectResponse, 512 * 1024);
+      if (!projectMembers.data?.some(row => row.user_id === input.actorId) && !["owner", "admin"].includes(member.role ?? "")) return [];
+    }
+    const resolver = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${encodeURIComponent(input.event.spaceId)}/widget-event-subscribers`, {
+      method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ event: input.event, actorId: input.actorId }),
+    }));
+    if (!resolver.ok) return [];
+    const candidates = await readBoundedResponseJson<{ subscribers?: Array<{ installationId: string; extensionId: string; scope: string; component: string }> }>(resolver, 256 * 1024);
+    const deliveries: Array<{ event_id: string; installation_id: string; extension_id: string; view: ExtensionWidgetView }> = [];
+    for (const candidate of (candidates.subscribers ?? []).slice(0, input.maxDeliveries)) {
+      try {
+        const installationResponse = await this.env.SPACES_WORKER.fetch(new Request(`${base}/workflow-installations/${encodeURIComponent(candidate.installationId)}`, { headers }));
+        if (!installationResponse.ok) continue;
+        const installation = await readBoundedResponseJson<{
+          instance: { instance_id: string; tenant_id: string; space_id: string; project_id?: string | null; user_id?: string | null; scope: string; status: string };
+          manifest: unknown;
+          release?: { version?: string; artifactSha256?: string; signatureValid?: boolean } | null;
+        }>(installationResponse, 2 * 1024 * 1024);
+        const instance = installation.instance;
+        if (instance.instance_id !== candidate.installationId || instance.tenant_id !== input.tenantId || instance.space_id !== input.event.spaceId
+          || instance.status !== "active" || instance.scope !== candidate.scope) continue;
+        const projectEvent = input.event.projectId;
+        const scopeAllowed = projectEvent
+          ? (["PROJECT_BOUND", "PROJECT_SHARED"].includes(instance.scope) && instance.project_id === projectEvent)
+            || (instance.scope === "PROJECT_USER" && instance.project_id === projectEvent && instance.user_id === input.actorId)
+          : (instance.scope === "SPACE_SHARED" && !instance.project_id && !instance.user_id)
+            || (instance.scope === "SPACE_USER" && !instance.project_id && instance.user_id === input.actorId);
+        if (!scopeAllowed) continue;
+        const manifest = validateExtensionManifest(installation.manifest);
+        if (manifest.id !== candidate.extensionId || !manifest.declaredPermissions.includes("events.subscribe")
+          || !manifest.capabilityRequirements.includes("events.subscribe")) continue;
+        const subscription = manifest.widgetSubscriptions?.find(item => item.event === input.event.type && item.component === candidate.component);
+        const release = installation.release;
+        if (!subscription || !manifest.bundle || manifest.bundle.id !== manifest.id || !release
+          || release.version !== manifest.bundle.version || release.signatureValid !== true || !release.artifactSha256
+          || !await verifyExtensionArtifactSet(this.env.SCRIPTS_R2, { spaceId: input.event.spaceId, extensionId: manifest.id, version: manifest.bundle.version, expectedSha256: release.artifactSha256 })) continue;
+        const sourcePath = subscription.component.replace(/^\.\//, "");
+        const source = await this.env.SCRIPTS_R2.get(`spaces/${input.event.spaceId}/extensions/${manifest.id}/${manifest.bundle.version}/${sourcePath}`);
+        if (!source || source.size > 262_144) continue;
+        const bytes = await source.arrayBuffer();
+        if (bytes.byteLength !== source.size) continue;
+        const code = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+        const result = await input.runner.run({ name: `extension-widget:${manifest.id}`, code, args: { event: input.event }, tier: 2,
+          tenantId: input.tenantId, spaceId: input.event.spaceId, agentId: input.agentId, runId: input.runId,
+          userId: input.actorId, ...(projectEvent ? { projectId: projectEvent } : {}), maxTier: 2,
+          limits: { cpuMs: 1_000, wallMs: 5_000, inputBytes: 32_768, outputBytes: 8_192 } });
+        if (!result.ok) continue;
+        const view = validateExtensionWidgetView(result.output);
+        deliveries.push({ event_id: input.event.id, installation_id: instance.instance_id, extension_id: manifest.id, view });
+      } catch { /* Ignore invalid, revoked, oversized or failing extensions; keep the event turn. */ }
+    }
+    return deliveries;
   }
 
   // Drain the unanswered queue through the script-first loop: the goal asks for a grounded

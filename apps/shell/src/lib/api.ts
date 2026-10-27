@@ -314,6 +314,10 @@ export interface Message {
      *  preview (iframe for HTML + download) at this turn, like Claude showing an artifact. */
     created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
     widget_events?: Array<{ version: 1; id: string; type: string; data: Record<string, string | number | boolean | null> }>;
+    /** Validated display-only output from signed, scoped extension event handlers. */
+    widget_deliveries?: Array<{ event_id: string; installation_id: string; extension_id: string; view: {
+      title: string; body?: string; tone?: "neutral" | "success" | "warning" | "danger"; fields?: Array<{ label: string; value: string }>;
+    } }>;
     /** Versioned immutable citation events emitted by the agent stream. Ordinals are assigned
      * once server-side and are never inferred from render order. */
     citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }>;

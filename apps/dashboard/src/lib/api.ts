@@ -342,6 +342,21 @@ export async function revokeApiKey(id: string): Promise<void> {
   return apiFetch<void>(`/builder/api-keys/${pathSegment(id)}`, { method: "DELETE" });
 }
 
+export interface TeamPrivateSpaceTemplate {
+  visibility: "team_private";
+  template: {
+    id: string;
+    metadata: { name?: string; description?: string };
+    projects: unknown[];
+    requiredExtensions: string[];
+    [key: string]: unknown;
+  };
+}
+export async function listTeamPrivateTemplates(): Promise<TeamPrivateSpaceTemplate[]> {
+  const res = await apiFetch<{ data: TeamPrivateSpaceTemplate[] }>("/builder/templates");
+  return res.data;
+}
+
 // ── Sub-spaces (departments) + cross-space grants ────────────────────────────
 
 export interface SubSpace {

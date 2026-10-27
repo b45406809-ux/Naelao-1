@@ -133,7 +133,7 @@ async function writeFileImpl(
   // write actually succeeded, and never awaited — a listener failing must not turn a successful
   // write into a failed one.
   if (!path.replaceAll("\\", "/").startsWith("/.avos/")) {
-    await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+    await ctx.env.onWorkspaceChange?.({ path, operation: "write", created: expectedHash === null });
   }
   return { ok: true, path, size: new TextEncoder().encode(content).byteLength, hash };
 }
@@ -149,7 +149,7 @@ async function copyBinaryImpl(
   let hash: string;
   try { ({ hash } = await publishWorkspaceBytesCas(ctx.env, bucket(ctx), storageKey, new Uint8Array(bytes), expectedHash)); }
   catch { throw new ConflictError(path); }
-  await ctx.env.onWorkspaceChange?.({ path, operation: "write" });
+  await ctx.env.onWorkspaceChange?.({ path, operation: "write", created: expectedHash === null });
   return { ok: true, path, size: bytes.byteLength, hash };
 }
 

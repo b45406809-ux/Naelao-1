@@ -13,6 +13,8 @@
  *   OBSERVE → FINGERPRINT → FIND → GATE → EXECUTE → VERIFY → DISTILL
  */
 
+import type { WidgetHostEvent } from "@naelao/agent-sdk";
+
 /** Execution tier a script declares (the orchestrator routes script.run by this). */
 export type ExecutionTier = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -982,6 +984,8 @@ export interface PlanState {
 
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
 export interface ScriptEngineEnv {
+  /** Host-observed chat widget events created during this run; handlers execute after the run. */
+  widgetHostEvents?: WidgetHostEvent[];
   /** Host-verified, exact-card consent; absent until the publication approval bridge is wired. */
   authorizeBlackboardPublication?: (card: Readonly<Record<string, unknown>>) => Promise<boolean>;
   authorizeBlackboardAction?: (action: string, params: Readonly<Record<string, unknown>>) => Promise<boolean>;
@@ -1080,6 +1084,8 @@ export interface ScriptEngineEnv {
   onWorkspaceChange?: (change: {
     path: string;
     operation: "write" | "delete";
+    /** True only when the host operation used a create-only CAS (no prior file hash). */
+    created?: boolean;
   }) => Promise<{ commit_oid?: string } | void>;
   /** Set by the host callback and consumed by the loop immediately after the tool completes. */
   lastWorkspaceCommitOid?: string;

@@ -53,6 +53,13 @@ export default function DashboardPage() {
               </Link>
             ) : null}
           </div>
+          <div className="mt-6 border-t border-gray-100 pt-5">
+            <p className="text-sm font-medium text-gray-900">Team tools</p>
+            <div className="mt-3 flex flex-wrap gap-3">
+              <Link href="/dashboard/templates" className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Private Space Templates</Link>
+              <Link href="/dashboard/api-keys" className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Team API keys</Link>
+            </div>
+          </div>
           {!dashboard.product && <p className="mt-6 pt-5 border-t border-gray-100 text-sm text-gray-500">Launchpad has not been initialized for this team yet.</p>}
         </section>
       )}

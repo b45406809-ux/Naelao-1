@@ -32,7 +32,7 @@ interface ApiKeyRow {
 
 const BUILDER_API_KEY_SCOPES = new Set([
   "spaces:read", "spaces:write", "sessions:read", "sessions:write",
-  "kb:read", "kb:write", "agents:read", "agents:write", "analytics:read", "billing:read",
+  "kb:read", "kb:write", "agents:read", "agents:write", "analytics:read", "billing:read", "templates:read",
 ]);
 const MAX_API_KEYS = 1_000;
 

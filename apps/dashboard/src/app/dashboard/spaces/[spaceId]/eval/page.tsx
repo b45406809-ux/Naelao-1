@@ -9,29 +9,43 @@ import { apiFetch } from "@/lib/api";
 interface EvalSuite {
   id: string;
   name: string;
-  description: string;
-  status: "pending" | "running" | "completed" | "failed";
+  description?: string;
+  case_count: number;
   pass_rate?: number;
   run_count: number;
   created_at: string;
 }
 
-interface EvalResult {
+interface EvalRun {
   id: string;
-  suite_id: string;
-  score: number;
+  model: string | null;
+  status: "pending" | "running" | "completed" | "failed";
+  total_cases: number;
+  passed: number;
+  failed: number;
+  avg_score: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+interface EvalCaseResult {
+  id: string;
+  case_index: number;
   passed: boolean;
   input: string;
   expected: string;
   actual: string;
   judge_reasoning: string;
-  created_at: string;
+  score: number | null;
+  latency_ms: number | null;
 }
 
 export default function EvalPage() {
   const params = useParams<{ spaceId: string }>();
   const [suites, setSuites] = useState<EvalSuite[]>([]);
-  const [results, setResults] = useState<EvalResult[]>([]);
+  const [runs, setRuns] = useState<EvalRun[]>([]);
+  const [results, setResults] = useState<EvalCaseResult[]>([]);
+  const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState<string | null>(null);
@@ -51,7 +65,7 @@ export default function EvalPage() {
   async function loadSuites() {
     setLoading(true);
     try {
-      const data = await apiFetch<{ data: EvalSuite[] }>(`/v1/spaces/${params.spaceId}/eval`);
+      const data = await apiFetch<{ data: EvalSuite[] }>(`/v1/evals?space_id=${encodeURIComponent(params.spaceId)}`);
       setSuites(data.data);
     } catch { /* ignore */ } finally { setLoading(false); }
   }
@@ -59,9 +73,18 @@ export default function EvalPage() {
   async function loadResults(suiteId: string) {
     setSelected(suiteId);
     try {
-      const data = await apiFetch<{ data: EvalResult[] }>(`/v1/evals/${suiteId}/results`);
-      setResults(data.data);
+      const data = await apiFetch<{ data: EvalRun[] }>(`/v1/evals/${suiteId}/results`);
+      setRuns(data.data);
+      const latest = data.data[0];
+      if (latest) await loadRunResults(suiteId, latest.id);
+      else { setSelectedRun(null); setResults([]); }
     } catch { /* ignore */ }
+  }
+
+  async function loadRunResults(suiteId: string, runId: string) {
+    const data = await apiFetch<{ data: EvalCaseResult[] }>(`/v1/evals/${suiteId}/results?run_id=${encodeURIComponent(runId)}`);
+    setSelectedRun(runId);
+    setResults(data.data);
   }
 
   async function runEval(suiteId: string) {
@@ -80,6 +103,7 @@ export default function EvalPage() {
       );
       setRunMessage(`Agent run ${result.run_id}: ${result.case_count} cases, average score ${result.avg_score.toFixed(2)}, ${result.agent_errors} agent errors, ${result.judge_errors} judge errors.`);
       await loadSuites();
+      await loadResults(suiteId);
     } catch (error) {
       setRunError(error instanceof Error ? error.message : "Agent evaluation failed.");
     } finally { setRunning(null); }
@@ -88,9 +112,9 @@ export default function EvalPage() {
   async function createSuite() {
     try {
       const testCases = JSON.parse(form.test_cases) as unknown[];
-      await apiFetch(`/v1/spaces/${params.spaceId}/eval`, {
+      await apiFetch(`/v1/evals`, {
         method: "POST",
-        body: JSON.stringify({ name: form.name, description: form.description, test_cases: testCases }),
+        body: JSON.stringify({ name: form.name, description: form.description, space_id: params.spaceId, cases: testCases }),
       });
       setShowNew(false);
       setForm({ name: "", description: "", test_cases: "[]" });
@@ -180,7 +204,7 @@ export default function EvalPage() {
                   <h3 className="font-semibold text-gray-900">{suite.name}</h3>
                   <p className="text-sm text-gray-500 mt-0.5">{suite.description}</p>
                   <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
-                    <span>Runs: {suite.run_count}</span>
+                    <span>{suite.case_count} cases</span><span>Runs: {suite.run_count}</span>
                     {suite.pass_rate !== undefined && (
                       <span>Pass rate: <strong className={suite.pass_rate >= 0.8 ? "text-green-600" : "text-red-600"}>{Math.round(suite.pass_rate * 100)}%</strong></span>
                     )}
@@ -192,7 +216,7 @@ export default function EvalPage() {
                   </button>
                   <button
                     onClick={() => void runEval(suite.id)}
-                    disabled={running === suite.id || suite.status === "running" || !sessionId.trim()}
+                    disabled={running === suite.id || !sessionId.trim()}
                     className="px-3 py-1.5 bg-brand-600 text-white text-xs font-semibold rounded-lg hover:bg-brand-700 disabled:opacity-50"
                   >
                     {running === suite.id ? "Running…" : "Run"}
@@ -202,13 +226,18 @@ export default function EvalPage() {
 
               {selected === suite.id && results.length > 0 && (
                 <div className="mt-4 border-t border-gray-100 pt-4">
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Latest Results</h4>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-medium text-gray-700">Case results</h4>
+                    <label className="text-xs text-gray-500">Run <select value={selectedRun ?? ""} onChange={event => void loadRunResults(suite.id, event.currentTarget.value)} className="ml-1 rounded border border-gray-300 px-2 py-1">
+                      {runs.map(run => <option key={run.id} value={run.id}>{new Date(run.started_at ?? "").toLocaleString()} · {run.passed}/{run.total_cases} passed · {run.model ?? "default model"}</option>)}
+                    </select></label>
+                  </div>
                   <div className="space-y-2 max-h-80 overflow-y-auto">
                     {results.map((r) => (
                       <div key={r.id} className={`text-xs p-3 rounded-lg border ${r.passed ? "border-green-200 bg-green-50" : "border-red-200 bg-red-50"}`}>
                         <div className="flex justify-between mb-1">
                           <span className="font-medium">{r.passed ? "PASS" : "FAIL"}</span>
-                          <span className="text-gray-500">Score: {r.score.toFixed(2)}</span>
+                          <span className="text-gray-500">Score: {r.score === null ? "Judge unavailable" : r.score.toFixed(2)}{r.latency_ms !== null ? ` · ${r.latency_ms}ms` : ""}</span>
                         </div>
                         <p className="text-gray-600"><strong>Input:</strong> {r.input}</p>
                         <p className="text-gray-600"><strong>Expected:</strong> {r.expected}</p>

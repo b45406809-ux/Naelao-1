@@ -22,6 +22,8 @@ export interface ExtensionDaemonManifest {
 
 export interface ExtensionCommandManifest { name: string; scriptPath: string }
 export interface SharedFilesystemGrant { path: string; access: "READ" | "READ_WRITE" }
+/** Pure display handler: `export async function run(args, ctx)` returns a bounded view; host execution
+ * supplies no RPC capabilities and rejects actions, markup, links and unknown output fields. */
 export interface ExtensionWidgetSubscription { event: WidgetEventType; component: string }
 
 /** Compatibility contract for extensions installed before modular manifests were introduced. */
@@ -51,7 +53,7 @@ export interface ExtensionManifest {
   containers?: readonly ContainerContract[];
   /** Opt-in access to the common Space drive. Paths are directory prefixes below /space/shared/. */
   shared_filesystem?: readonly SharedFilesystemGrant[];
-  /** Declarations are inert until the host grants event access and activates delivery. */
+  /** Delivery requires the owner-approved `events.subscribe` install grant and a signed handler artifact. */
   widgetSubscriptions?: readonly ExtensionWidgetSubscription[];
 }
 

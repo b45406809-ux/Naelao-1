@@ -24,6 +24,7 @@ import { createCustomHostname, getCustomHostname, cfSaasConfig, normalizeCustomH
 import type { SpaceTypeProductConfig } from "./do/SpaceTypeRegistryDO.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import type { CreateSpaceEnv } from "./create-space.js";
+import { FOUNDRY_SPACE_TEMPLATE } from "@naelao/agent-sdk";
 
 /** The minimal env shape this file needs — kept local (not imported from index.ts's Env) so
  *  index.ts -> builder-routes.ts -> index.ts never forms a circular import. index.ts's real Env
@@ -81,6 +82,7 @@ interface ResolvedBuilder { tenantId: string; scopes: string[] }
 
 function builderScopeFor(path: string, method: string): string {
   if (path === "/builder/api-keys" || /^\/builder\/api-keys\//.test(path)) return "spaces:write";
+  if (path === "/builder/templates" || /^\/builder\/templates\//.test(path)) return "templates:read";
   if (/\/analytics(?:\/|$)/.test(path)) return "analytics:read";
   if (/\/users\/[^/]+\/conversations$/.test(path)) return "sessions:read";
   if (path === "/builder/billing" || path.startsWith("/builder/billing/")) return "billing:read";
@@ -122,6 +124,11 @@ async function resolveBuilderAuth(
     // The tenant header is a router assertion, not an identity credential by itself.
     // Verify the router's signature so direct Worker access cannot choose another tenant.
     if (!await verifyInternalToken(headers.get("x-naelao-internal-token") ?? undefined, headerTenant, env.PLATFORM_SECRET)) return null;
+    if (headers.get("x-naelao-role") === "team_api_key") {
+      const scopes = (headers.get("x-naelao-scopes") ?? "").split(",").filter(Boolean);
+      if (scopes.some(scope => !/^[a-z][a-z0-9:_-]{0,63}$/.test(scope))) return null;
+      return { tenantId: headerTenant, scopes };
+    }
     return { tenantId: headerTenant, scopes: ["*"] };
   }
 
@@ -185,13 +192,21 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     // Router sessions carry a role derived from the verified JWT (client-supplied role headers
     // are stripped by the router). Keep dashboard administration to team owners/admins; scoped
     // API keys remain usable for automation after an authorized admin creates them.
-    if (c.req.header("x-naelao-tenant-id") && !["owner", "admin"].includes(c.req.header("x-naelao-role") ?? "")) {
+    if (c.req.header("x-naelao-tenant-id") && !["owner", "admin", "team_api_key"].includes(c.req.header("x-naelao-role") ?? "")) {
       return c.json({ error_code: "forbidden", message: "Naelao team administrator access required" }, 403);
     }
     const required = builderScopeFor(c.req.path, c.req.method);
     if (!hasBuilderScope(auth, required)) return c.json({ error_code: "insufficient_scope", required_scope: required }, 403);
     c.set("builderAuth", auth);
     return next();
+  });
+  // Foundry is distributed only inside the Naelao team tenant. Returning the portable blueprint
+  // through this route keeps it out of the public marketplace/catalogue while allowing the team
+  // dashboard and team-scoped API keys to inspect the exact dogfood artifact.
+  app.get("/builder/templates", async (c) => {
+    const auth = await builderAuthFor(c.env as BuilderRoutesEnv, c);
+    if (!auth || auth.tenantId !== (c.env as BuilderRoutesEnv).NAELAO_DASHBOARD_TENANT_ID) return c.json({ error_code: "forbidden" }, 403);
+    return c.json({ data: [{ visibility: "team_private", template: FOUNDRY_SPACE_TEMPLATE }] });
   });
   // ── /builder/api-keys — consolidates onto Phase 1's BuilderAccountDO ─────────────────────────
   app.post("/builder/api-keys", async (c) => {

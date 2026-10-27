@@ -2291,17 +2291,21 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const requiredCapabilities = new Set<string>();
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try {
-    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["extension.project_canvas", "extension.workflow", "channel.invoke"] });
+    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["extension.project_canvas", "extension.workflow", "channel.invoke", "events.subscribe"] });
     const bundle = manifest.bundle;
     const primitives = bundle?.primitives ?? [];
     if (!bundle || !primitives.length || primitives.some(item => !["canvas", "gadget", "channel", "workflow"].includes(item.kind))
-      || manifest.containers?.length || manifest.daemons.length || manifest.commands.length || manifest.declaredPermissions.length)
+      || manifest.containers?.length || manifest.daemons.length || manifest.commands.length
+      || manifest.declaredPermissions.some(permission => permission !== "events.subscribe"))
       throw new Error("project_bundle_primitive_not_supported");
     if (bundle.primitives.some(item => item.kind === "canvas" || item.kind === "gadget")) requiredCapabilities.add("extension.project_canvas");
     if (bundle.primitives.some(item => item.kind === "workflow")) requiredCapabilities.add("extension.workflow");
     if (bundle.primitives.some(item => item.kind === "channel")) requiredCapabilities.add("channel.invoke");
+    if (manifest.widgetSubscriptions?.length) requiredCapabilities.add("events.subscribe");
     if (manifest.capabilityRequirements.length !== requiredCapabilities.size || manifest.capabilityRequirements.some(item => !requiredCapabilities.has(item)))
       throw new Error("project_bundle_capability_declaration_mismatch");
+    if (manifest.widgetSubscriptions?.length ? !manifest.declaredPermissions.includes("events.subscribe") : manifest.declaredPermissions.length > 0)
+      throw new Error("widget_event_permission_declaration_mismatch");
     const workflowIds = new Set(bundle.primitives.filter(item => item.kind === "workflow").map(item => item.id));
     if ((bundle.workerRoles ?? []).some(role => role.principal !== "project_member" || role.execution !== "worker" || !["workflow_step", "tool"].includes(role.invocation)
       || role.primitiveIds.some(id => !workflowIds.has(id)))) throw new Error("extension_worker_role_runtime_not_supported");
@@ -2336,6 +2340,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const gadgets = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "gadget" }> => item.kind === "gadget");
   const channels = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "channel" }> => item.kind === "channel");
   const workflows = bundle.primitives.filter((item): item is Extract<typeof item, { kind: "workflow" }> => item.kind === "workflow");
+  const widgetPaths = new Set((manifest.widgetSubscriptions ?? []).map(item => item.component));
   // v1 runs one isolated execute(step, ctx) entrypoint; it can compose sequential
   // actions with step.do and ctx.tools.call. Additional roles become separate workflow parts.
   const workflowPaths = new Set(workflows.map(item => item.entry));
@@ -2343,12 +2348,12 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     return c.json({ error_code: "extension_artifact_declaration_invalid" }, 400);
   if (!body.artifacts || typeof body.artifacts !== "object" || Array.isArray(body.artifacts)) return c.json({ error_code: "extension_artifacts_required" }, 400);
   const artifacts = body.artifacts as Record<string, unknown>, required = new Set([
-    ...canvases.map(item => item.component), ...channels.map(item => item.handlerScript), ...workflowPaths,
+    ...canvases.map(item => item.component), ...channels.map(item => item.handlerScript), ...workflowPaths, ...widgetPaths,
   ]);
   if (channels.some(channel => !/^\.\/[A-Za-z0-9._-]{1,128}\.(?:ts|js)$/.test(channel.handlerScript))) return c.json({ error_code: "extension_channel_artifact_invalid" }, 400);
   if (Object.keys(artifacts).length !== required.size || Object.keys(artifacts).some(path => !required.has(path))) return c.json({ error_code: "extension_artifacts_must_match_manifest" }, 400);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "extension_artifact_storage_unavailable" }, 503);
-  if ((channels.length || workflows.length) && !c.env.AGENTS_WORKER) return c.json({ error_code: "extension_source_validator_unavailable" }, 503);
+  if ((channels.length || workflows.length || widgetPaths.size) && !c.env.AGENTS_WORKER) return c.json({ error_code: "extension_source_validator_unavailable" }, 503);
   const sourceEntries: Array<[string, string]> = [];
   const publisherArtifacts: Record<string, string> = {};
   let total = 0;
@@ -2370,7 +2375,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       source = compiledSource; size = new TextEncoder().encode(compiledSource).byteLength;
       if (!size || size > 512_000 || total + size > 2_000_000) return c.json({ error_code: "extension_workflow_artifact_size_limit" }, 413);
       total += size;
-    } else if (channels.some(channel => channel.handlerScript === path)) {
+    } else if (channels.some(channel => channel.handlerScript === path) || widgetPaths.has(path)) {
       const validation = await c.env.AGENTS_WORKER!.fetch(new Request("http://agents-worker/internal/channel-extensions/validate-handler", {
         method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": identity.tenantId,
           "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, identity.tenantId) },
@@ -4649,6 +4654,25 @@ app.post("/internal/agent-keys/verify", async (c) => {
   const verified = await res.json<{ valid: boolean; agent_id?: string; approval_mode?: string; auto_approved_actions?: string[] }>();
   if (!verified.valid) return c.json({ valid: false });
   return c.json({ ...verified, tenant_id: space.tenant_id });
+});
+
+// Resolve team-only nbk_ tokens before router middleware checks tenant suspension. The token is
+// still scope checked by builder-routes on every request; this endpoint only returns identity.
+app.post("/internal/builder-api-keys/verify", async c => {
+  if (c.req.header("x-naelao-platform-secret") !== c.env.PLATFORM_SECRET) return c.json({ valid: false }, 403);
+  const body = await c.req.json<{ key?: string }>().catch(() => ({} as { key?: string }));
+  if (typeof body.key !== "string" || !/^nbk_[a-f0-9]{32}$/.test(body.key)) return c.json({ valid: false }, 400);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body.key));
+  const keyHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const row = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM builder_api_key_index WHERE key_hash=?")
+    .bind(keyHash).first<{ tenant_id: string }>();
+  if (!row) return c.json({ valid: false });
+  const stub = await builderAccountDoStub(c.env, row.tenant_id);
+  const response = await stub.fetch(new Request("http://builder-account/api-keys/verify", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: body.key }),
+  }));
+  const verified = await response.json<{ valid?: boolean; scopes?: string[] }>().catch((): { valid?: boolean; scopes?: string[] } => ({}));
+  return verified.valid === true ? c.json({ valid: true, tenant_id: row.tenant_id, scopes: verified.scopes ?? [] }) : c.json({ valid: false });
 });
 
 // Threads (spec-canonical). A sub-agent spawn or a channel session mirrors in here as a

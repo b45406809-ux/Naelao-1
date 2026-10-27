@@ -1,6 +1,6 @@
 export { createScratchpadKey, sealScratchpad, openScratchpad, parseScratchpadCiphertext, MAX_SCRATCHPAD_PLAINTEXT_BYTES } from "./scratchpad.js";
 export { estimateTextTokens, validProviderUsage, MAX_PROVIDER_USAGE_TOKENS } from "./token-accounting.js";
-export { WIDGET_EVENT_TYPES, validateWidgetHostEvent, widgetSubscriptionAllows, type WidgetEventType, type WidgetHostEvent } from "./widget-events.js";
+export { WIDGET_EVENT_TYPES, validateWidgetHostEvent, validateExtensionWidgetView, widgetSubscriptionAllows, type WidgetEventType, type WidgetHostEvent, type ExtensionWidgetView } from "./widget-events.js";
 // Builder-facing SDK for programmatic Space/session access and agent tool building
 
 import type {
@@ -196,6 +196,7 @@ export * from "./tunnel-protocol.js";
 export { parseArtifactLinters, lintArtifact, type ArtifactLinterSpec, type ArtifactDiagnostic } from "./artifact-linters.js";
 
 export * from "./templates/reference-spaces.js";
+export { FOUNDRY_SPACE_TEMPLATE } from "./templates/foundry-space.js";
 export * from "./package-inspection.js";
 
 export { DEFAULT_ASSISTANT_VOICE, validateAssistantVoicePatch, resolveAssistantVoice, createAssistantVoiceClient } from "./assistant-voice.js";

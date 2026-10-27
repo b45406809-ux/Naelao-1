@@ -12,6 +12,7 @@ const ALL_SCOPES = [
   "agents:read", "agents:write",
   "analytics:read",
   "billing:read",
+  "templates:read",
 ];
 
 export default function ApiKeysPage() {

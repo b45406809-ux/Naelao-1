@@ -70,6 +70,7 @@ import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineQuestionCard } from "./InlineQuestionCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
 import { InlineArtifactCard } from "./InlineArtifactCard";
+import { ExtensionWidgetCard } from "./ExtensionWidgetCard";
 import { InlinePullRequestCard } from "./InlinePullRequestCard";
 import { ProjectPullRequestPanel } from "./ProjectPullRequestPanel";
 import { UpgradeDialog } from "./UpgradeDialog";
@@ -1829,6 +1830,9 @@ export function Chat({
                       session={session}
                     />
                   )}
+                  {m.role !== "user" && m.metadata?.widget_deliveries?.map((delivery, index) => (
+                    <ExtensionWidgetCard key={`${delivery.event_id}:${delivery.installation_id}:${index}`} view={delivery.view} />
+                  ))}
                   {/* Step 5/7/11: an artifact the assistant created this turn — inline preview
                       (iframe for HTML) + download, right under the reply, like Claude. */}
                   {m.role !== "user" && m.metadata?.widget_events?.filter(event => event.version === 1 && event.type === "artifact.created" && typeof event.data.artifact_id === "string" && typeof event.data.filename === "string").map((event) => (
