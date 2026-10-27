@@ -20,6 +20,7 @@ import Link from "next/link";
 import { detectRuntimeAnomaly, isJobOverdue } from "@naelao/events";
 import { presentAutonomyPolicy } from "@naelao/agent-sdk";
 import { isWithinScheduledQuietHours } from "@naelao/types";
+import { workerActivityLabel } from "../lib/worker-activity";
 import { ChannelConnect, CHANNELS } from "./ChannelConnect";
 import {
   getAssistantPolicy,
@@ -950,19 +951,26 @@ function WorkersPanel({
   const [definitions, setDefinitions] = React.useState<AgentDefinitionSummary[] | null>(null);
   React.useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
     setFailed(false);
     // sessionId is what points this at the DO that actually ran the spawns — without it the
     // server answers from the space-wide assistant DO, which never saw them (the reported
     // "No sub-agents have run in this conversation" despite a real spawn). An empty
     // parent_run_id then lists this conversation's whole fan-out rather than only the latest
     // turn's, so a reload (which loses lastRunId) still shows everything.
-    listSubAgents(spaceId, session, lastRunId, { sessionId, agentId })
-      .then((s) => { if (!cancelled) setSubAgents(s); })
+    const refresh = () => {
+      if (inFlight) return;
+      inFlight = true;
+      listSubAgents(spaceId, session, lastRunId, { sessionId, agentId })
+      .then((s) => { if (!cancelled) { setSubAgents(s); setFailed(false); } })
       .catch((error) => {
         console.error("Failed to load worker activity", error);
-        if (!cancelled) { setSubAgents([]); setFailed(true); }
-      });
-    return () => { cancelled = true; };
+        if (!cancelled) setFailed(true);
+      }).finally(() => { inFlight = false; });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 5000);
+    return () => { cancelled = true; window.clearInterval(interval); };
   }, [spaceId, session, lastRunId, sessionId, agentId]);
 
   React.useEffect(() => {
@@ -995,14 +1003,14 @@ function WorkersPanel({
         <span>Workers</span>
         <Link href={`/p/${product.slug}/agents`} className="tp-header-btn" aria-label="Manage workers" title="Manage workers">↗</Link>
       </div>
-      {subAgents === null ? (
-        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
-      ) : failed ? (
+      {failed ? (
         // Never report "none" for a request that failed — telling someone no agent ran when the
         // list merely didn't load is the kind of wrong answer that gets acted on.
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
           Couldn&apos;t load sub-agent activity.
         </div>
+      ) : subAgents === null ? (
+        <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
       ) : subAgents.length === 0 ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>
           No workers have run in this conversation.
@@ -1012,14 +1020,14 @@ function WorkersPanel({
           {subAgents.map((sa) => (
             <details className="sub-agent-item" key={sa.id}>
               <summary style={{ cursor: "pointer", listStyle: "none", display: "flex", alignItems: "center", gap: 8 }}>
-              <div className="ws-dot" style={sa.status === "completed" ? { background: "#22c55e", animation: "none" } : undefined} />
+              <div className="ws-dot" style={sa.status === "completed" || sa.status === "done" ? { background: "#22c55e", animation: "none" } : undefined} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text)" }}>{sa.goal}</div>
-                <div style={{ fontSize: 11, color: "var(--text3)" }}>{sa.status}{sa.progress_note ? ` · ${sa.progress_note}` : ""}</div>
+                <div style={{ fontSize: 11, color: "var(--text3)" }}>{workerActivityLabel(sa.status)}{sa.progress_note ? ` · ${sa.progress_note}` : ""}</div>
               </div>
               </summary>
               <div style={{ margin: "7px 0 0 26px", fontSize: 11, color: "var(--text3)", lineHeight: 1.5 }}>
-                <div>Worker run {sa.status === "running" ? "is active" : "has finished"}.</div>
+                <div>{workerActivityLabel(sa.status)}.</div>
                 {sa.progress_note && <div style={{ marginTop: 3 }}>{sa.progress_note}</div>}
                 {sa.error && <div style={{ marginTop: 5, color: "#dc2626" }}>Error: {sa.error}</div>}
                 {sa.result && <pre style={{ margin: "6px 0 0", padding: 7, maxHeight: 150, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 7, background: "var(--surface2)", color: "var(--text2)", font: "10.5px/1.45 var(--font-mono, monospace)" }}>{sa.result}</pre>}
