@@ -1831,7 +1831,17 @@ export function Chat({
                   )}
                   {/* Step 5/7/11: an artifact the assistant created this turn — inline preview
                       (iframe for HTML) + download, right under the reply, like Claude. */}
-                  {m.role !== "user" && m.metadata?.created_artifacts?.map((art) => (
+                  {m.role !== "user" && m.metadata?.widget_events?.filter(event => event.version === 1 && event.type === "artifact.created" && typeof event.data.artifact_id === "string" && typeof event.data.filename === "string").map((event) => (
+                    <InlineArtifactCard
+                      key={event.id}
+                      spaceId={spaceId}
+                      artifactId={event.data.artifact_id as string}
+                      filename={event.data.filename as string}
+                      {...(typeof event.data.content_type === "string" ? { contentType: event.data.content_type } : {})}
+                      session={session}
+                    />
+                  ))}
+                  {m.role !== "user" && m.metadata?.created_artifacts?.filter(art => !m.metadata?.widget_events?.some(event => event.version === 1 && event.type === "artifact.created" && event.data.artifact_id === art.artifact_id && typeof event.data.filename === "string")).map((art) => (
                     <InlineArtifactCard
                       key={art.artifact_id}
                       spaceId={spaceId}

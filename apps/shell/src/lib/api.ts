@@ -313,6 +313,7 @@ export interface Message {
     /** Step 5/7/11: artifacts the assistant CREATED during this run — rendered inline as a
      *  preview (iframe for HTML + download) at this turn, like Claude showing an artifact. */
     created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
+    widget_events?: Array<{ version: 1; id: string; type: string; data: Record<string, string | number | boolean | null> }>;
     /** Versioned immutable citation events emitted by the agent stream. Ordinals are assigned
      * once server-side and are never inferred from render order. */
     citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }>;

@@ -81,7 +81,7 @@ import {
   approvalPolicyFingerprint,
 } from "../script-engine/index.js";
 import { createTracer, generateTraceId } from "@naelao/tracing";
-import { emitWorkflowReceiptCard, resolveOperatingMode, SystemOneDecisionClient, verifyCapabilityGrant, validateExtensionManifest } from "@naelao/agent-sdk";
+import { emitWorkflowReceiptCard, resolveOperatingMode, SystemOneDecisionClient, verifyCapabilityGrant, validateExtensionManifest, validateWidgetHostEvent, type WidgetHostEvent } from "@naelao/agent-sdk";
 import { applyDurableObjectJurisdiction, issueDelegationClaim, verifyDelegationClaim } from "@naelao/security";
 import { routeMentionsWithSentry } from "../script-engine/mention-router.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
@@ -6057,6 +6057,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           }
         }
         if (createdArtifacts.length) answerMetadata["created_artifacts"] = createdArtifacts;
+        // Emit only from successful host-observed artifact operations. IDs are stable for a
+        // run/artifact pair so a persisted chat turn can be safely re-rendered after reconnect.
+        const widgetEvents: WidgetHostEvent[] = [];
+        for (const artifact of createdArtifacts.slice(0, 50)) {
+          try {
+            const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([runId, artifact.artifact_id])));
+            const eventId = `artifact-${[...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
+            const event = validateWidgetHostEvent({ version: 1, id: eventId, type: "artifact.created", spaceId, ...(projectId ? { projectId } : {}), conversationId: sessionId, occurredAt: new Date().toISOString(), data: { artifact_id: artifact.artifact_id, filename: artifact.filename, ...(artifact.content_type ? { content_type: artifact.content_type } : {}) } });
+            if (!widgetEvents.some(existing => existing.id === event.id)) widgetEvents.push(event);
+          } catch { /* Invalid metadata must not prevent the assistant response. */ }
+        }
+        if (widgetEvents.length) answerMetadata["widget_events"] = widgetEvents;
         const citations = citationsFromTrace(result.trace ?? []);
         if (citations.length) answerMetadata["citations"] = citations;
         // The run's own id, so a reload can re-fetch this exact run's activity trail (run_traces,
