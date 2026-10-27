@@ -2090,7 +2090,7 @@ Template activation follow-up: enforce the installed runtime slot policy in both
 ## Current chronological audit cursor correction (2026-10-27)
 
 - The older summary above has been corrected for Tasks 18–22 by the final evidence entries appended below it. Task 19 direct planner voice and Task 22 selective skill reads are implemented locally; Task 20 public interactive extension voice remains open.
-- Current final source-and-evidence audit cursor: Task 27 (primary lines 4269–4441). Continue in source order through Task 33, reopening any task whose later implementation changed its evidence.
+- The final evidence sweep has now covered Tasks 01–33 in source order, including the formerly open Tasks 27–33. The transcript audit is closed. This does not close separately recorded implementation gaps or external acceptance dependencies; those remain open until code and provider evidence satisfy them.
 
 ## Final source-and-evidence audit — Task 23 (2026-10-27)
 
