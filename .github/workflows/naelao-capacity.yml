@@ -80,6 +80,29 @@ jobs:
             if [ "$code" = 000 ]; then ready=0; fi
           done
           if ! kill -0 "$stack_pid" 2>/dev/null; then ready=0; fi
+          if [ "$ready" = 1 ]; then
+            for kind in toolsandboxdo documentsandboxdo mediasandboxdo; do
+              image=$(docker images --format '{{.Repository}}:{{.Tag}}' "cloudflare-dev/$kind" | head -1)
+              if [ -z "$image" ]; then echo "Missing image: $kind"; ready=0; continue; fi
+              case "$kind" in
+                toolsandboxdo) check='node --version && python3 --version' ;;
+                documentsandboxdo) check='soffice --version && pdftotext -v' ;;
+                mediasandboxdo) check='ffmpeg -version | head -1' ;;
+              esac
+              echo "Starting $kind standalone container"
+              if docker run -d --name "capacity-$kind" --entrypoint /bin/sh "$image" -c "$check; result=\$?; sleep 8; exit \$result"; then
+                sleep 3
+                docker stats --no-stream --format '{{.Name}} {{.CPUPerc}} {{.MemUsage}}' "capacity-$kind" || true
+                status=$(timeout 90 docker wait "capacity-$kind" || echo timeout)
+                docker logs "capacity-$kind" 2>&1 | head -12 || true
+                docker rm -f "capacity-$kind" >/dev/null || true
+                echo "$kind exit=$status"
+                if [ "$status" != 0 ]; then ready=0; fi
+                free -m
+                df -h .
+              else ready=0; fi
+            done
+          fi
           kill "$stack_pid" 2>/dev/null || true
           if [ "$ready" = 0 ]; then echo 'Core endpoints did not all become reachable'; exit 1; fi
       - name: Upload diagnostic logs
