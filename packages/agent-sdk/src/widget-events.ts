@@ -22,11 +22,15 @@ export interface WidgetHostEvent {
 /** Safe, display-only output returned by a pure extension widget handler. It has no buttons,
  * links, HTML or tool actions: consequential interactions must go through Naelao's normal
  * permission and approval paths. */
+export type ExtensionWidgetItemStatus = "pending" | "running" | "complete" | "blocked" | "failed";
 export interface ExtensionWidgetView {
   title: string;
   body?: string;
   tone?: "neutral" | "success" | "warning" | "danger";
+  layout?: "summary" | "list" | "table" | "progress";
   fields?: ReadonlyArray<{ label: string; value: string }>;
+  items?: ReadonlyArray<{ title: string; detail?: string; status?: ExtensionWidgetItemStatus }>;
+  progress?: number;
 }
 const id = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,191}$/.test(value);
 const eventTypes = new Set<string>(WIDGET_EVENT_TYPES);
@@ -49,10 +53,12 @@ export function validateWidgetHostEvent(input: unknown): WidgetHostEvent {
 export function validateExtensionWidgetView(input: unknown): ExtensionWidgetView {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("widget_view_invalid");
   const view = input as Record<string, unknown>;
-  if (Object.keys(view).some(key => !["title", "body", "tone", "fields"].includes(key))
+  if (Object.keys(view).some(key => !["title", "body", "tone", "layout", "fields", "items", "progress"].includes(key))
     || typeof view.title !== "string" || !view.title.trim() || view.title.length > 160
     || (view.body !== undefined && (typeof view.body !== "string" || view.body.length > 2_000))
-    || (view.tone !== undefined && !["neutral", "success", "warning", "danger"].includes(String(view.tone)))) throw new Error("widget_view_invalid");
+    || (view.tone !== undefined && !["neutral", "success", "warning", "danger"].includes(String(view.tone)))
+    || (view.layout !== undefined && !["summary", "list", "table", "progress"].includes(String(view.layout)))
+    || (view.progress !== undefined && (!Number.isInteger(view.progress) || Number(view.progress) < 0 || Number(view.progress) > 100))) throw new Error("widget_view_invalid");
   let fields: Array<{ label: string; value: string }> | undefined;
   if (view.fields !== undefined) {
     if (!Array.isArray(view.fields) || view.fields.length > 12) throw new Error("widget_view_invalid");
@@ -65,8 +71,24 @@ export function validateExtensionWidgetView(input: unknown): ExtensionWidgetView
       return { label: item.label, value: item.value };
     });
   }
+  let items: Array<{ title: string; detail?: string; status?: "pending" | "running" | "complete" | "blocked" | "failed" }> | undefined;
+  if (view.items !== undefined) {
+    if (!Array.isArray(view.items) || view.items.length > 16) throw new Error("widget_view_invalid");
+    items = view.items.map(item => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("widget_view_invalid");
+      const row = item as Record<string, unknown>;
+      if (Object.keys(row).some(key => !["title", "detail", "status"].includes(key))
+        || typeof row.title !== "string" || !row.title.trim() || row.title.length > 120
+        || (row.detail !== undefined && (typeof row.detail !== "string" || row.detail.length > 500))
+        || (row.status !== undefined && !["pending", "running", "complete", "blocked", "failed"].includes(String(row.status)))) throw new Error("widget_view_invalid");
+      return { title: row.title.trim(), ...(typeof row.detail === "string" ? { detail: row.detail } : {}),
+        ...(row.status !== undefined ? { status: row.status as ExtensionWidgetItemStatus } : {}) };
+    });
+  }
   return { title: view.title.trim(), ...(typeof view.body === "string" ? { body: view.body } : {}),
-    ...(view.tone !== undefined ? { tone: view.tone as NonNullable<ExtensionWidgetView["tone"]> } : {}), ...(fields ? { fields } : {}) };
+    ...(view.tone !== undefined ? { tone: view.tone as NonNullable<ExtensionWidgetView["tone"]> } : {}),
+    ...(view.layout !== undefined ? { layout: view.layout as NonNullable<ExtensionWidgetView["layout"]> } : {}),
+    ...(fields ? { fields } : {}), ...(items ? { items } : {}), ...(view.progress !== undefined ? { progress: Number(view.progress) } : {}) };
 }
 
 /** Only a host-verified installation scope and its declared event grants may be passed here. */

@@ -316,7 +316,10 @@ export interface Message {
     widget_events?: Array<{ version: 1; id: string; type: string; data: Record<string, string | number | boolean | null> }>;
     /** Validated display-only output from signed, scoped extension event handlers. */
     widget_deliveries?: Array<{ event_id: string; installation_id: string; extension_id: string; view: {
-      title: string; body?: string; tone?: "neutral" | "success" | "warning" | "danger"; fields?: Array<{ label: string; value: string }>;
+      title: string; body?: string; tone?: "neutral" | "success" | "warning" | "danger"; layout?: "summary" | "list" | "table" | "progress";
+      fields?: Array<{ label: string; value: string }>;
+      items?: Array<{ title: string; detail?: string; status?: "pending" | "running" | "complete" | "blocked" | "failed" }>;
+      progress?: number;
     } }>;
     /** Versioned immutable citation events emitted by the agent stream. Ordinals are assigned
      * once server-side and are never inferred from render order. */

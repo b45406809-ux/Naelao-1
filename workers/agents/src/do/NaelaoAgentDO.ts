@@ -3949,7 +3949,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const now = Date.now();
         const attempt = existing ? existing.attempt + 1 : 1;
         const workspaceBranch = existing?.workspace_branch ?? (typeof t["workspace_branch"] === "string" ? t["workspace_branch"] : null);
-        const recordWorkerWidgetEvent = async (type: "worker.dispatched" | "worker.waiting" | "worker.completed" | "worker.failed", status: string, model?: string) => {
+        const recordWorkerWidgetEvent = async (type: "worker.dispatched" | "worker.waiting" | "worker.completed" | "worker.failed" | "task.blocked" | "task.resumed", status: string, model?: string) => {
           if (!runtimeEnv || !parentThreadId || !runtimeEnv.widgetHostEvents || runtimeEnv.widgetHostEvents.length >= 64) return;
           try {
             const eventId = `worker-${(await workflowHash(JSON.stringify([parentRunId, subId, attempt, type]))).slice(0, 48)}`;
@@ -3967,6 +3967,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           );
         }
         await recordWorkerWidgetEvent("worker.dispatched", "running");
+        if (existing && ["awaiting_planner_input", "awaiting_human_input"].includes(existing.status))
+          await recordWorkerWidgetEvent("task.resumed", "running");
         // A subagent is an ephemeral verb. It is never mirrored into the user-facing thread
         // store; only its structured result is handed back to the persistent parent agent.
         if (!goal) {
@@ -4139,6 +4141,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           );
           await recordWorkerWidgetEvent(ok ? "worker.completed" : awaitingPlanner || awaitingHuman ? "worker.waiting" : "worker.failed",
             ok ? "done" : awaitingPlanner ? "awaiting_planner_input" : awaitingHuman ? "awaiting_human_input" : "failed", modelResolution.model);
+          if (!ok && (awaitingPlanner || awaitingHuman)) await recordWorkerWidgetEvent("task.blocked", awaitingPlanner ? "awaiting_planner_input" : "awaiting_human_input", modelResolution.model);
           return {
             id: subId,
             ok,

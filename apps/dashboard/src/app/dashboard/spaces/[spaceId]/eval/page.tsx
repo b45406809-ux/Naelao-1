@@ -24,6 +24,7 @@ interface EvalRun {
   passed: number;
   failed: number;
   avg_score: number | null;
+  avg_latency_ms?: number | null;
   started_at: string | null;
   completed_at: string | null;
 }
@@ -52,6 +53,9 @@ export default function EvalPage() {
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ name: "", description: "", test_cases: "[]" });
   const [sessionId, setSessionId] = useState("");
+  const [modelCandidates, setModelCandidates] = useState("");
+  const [matrixResults, setMatrixResults] = useState<Array<{ model: string; run_id: string; case_count: number; avg_score: number; avg_latency_ms: number | null; agent_errors: number; judge_errors: number }>>([]);
+  const [matrixProgress, setMatrixProgress] = useState("");
   const [runMessage, setRunMessage] = useState("");
   const [runError, setRunError] = useState("");
   const [generatingFixtures, setGeneratingFixtures] = useState(false);
@@ -87,7 +91,7 @@ export default function EvalPage() {
     setResults(data.data);
   }
 
-  async function runEval(suiteId: string) {
+  async function runEval(suiteId: string, model?: string) {
     if (!sessionId.trim()) {
       setRunError("Enter an existing agent session ID to run the suite against the actual agent.");
       setRunMessage("");
@@ -97,15 +101,43 @@ export default function EvalPage() {
     setRunError("");
     setRunMessage("");
     try {
-      const result = await apiFetch<{ run_id: string; mode: string; case_count: number; avg_score: number; agent_errors: number; judge_errors: number }>(
+      const result = await apiFetch<{ run_id: string; mode: string; case_count: number; avg_score: number; avg_latency_ms: number | null; agent_errors: number; judge_errors: number }>(
         `/v1/evals/${suiteId}/run`,
-        { method: "POST", body: JSON.stringify({ mode: "agent", session_id: sessionId.trim() }) },
+        { method: "POST", body: JSON.stringify({ mode: "agent", session_id: sessionId.trim(), ...(model ? { model } : {}) }) },
       );
-      setRunMessage(`Agent run ${result.run_id}: ${result.case_count} cases, average score ${result.avg_score.toFixed(2)}, ${result.agent_errors} agent errors, ${result.judge_errors} judge errors.`);
+      setRunMessage(`Agent run ${result.run_id}${model ? ` · ${model}` : ""}: ${result.case_count} cases, average score ${result.avg_score.toFixed(2)}, average latency ${result.avg_latency_ms === null ? "unavailable" : `${result.avg_latency_ms} ms`}, ${result.agent_errors} agent errors, ${result.judge_errors} judge errors.`);
       await loadSuites();
       await loadResults(suiteId);
     } catch (error) {
       setRunError(error instanceof Error ? error.message : "Agent evaluation failed.");
+    } finally { setRunning(null); }
+  }
+
+  async function runModelMatrix(suiteId: string) {
+    if (!sessionId.trim()) { setRunError("Enter an existing agent session ID before comparing models."); return; }
+    const models = [...new Set(modelCandidates.split(/[\n,]/).map(value => value.trim()).filter(Boolean))];
+    if (!models.length || models.length > 8 || models.some(model => model.length > 200)) {
+      setRunError("Enter 1–8 model IDs. Each model must also be available in the agents worker's approved model catalog.");
+      return;
+    }
+    setRunning(suiteId); setRunError(""); setRunMessage(""); setMatrixResults([]);
+    const completed: typeof matrixResults = [];
+    try {
+      for (const [index, model] of models.entries()) {
+        setMatrixProgress(`Running ${index + 1}/${models.length}: ${model}`);
+        const result = await apiFetch<{ run_id: string; case_count: number; avg_score: number; avg_latency_ms: number | null; agent_errors: number; judge_errors: number }>(
+          `/v1/evals/${suiteId}/run`,
+          { method: "POST", body: JSON.stringify({ mode: "agent", session_id: sessionId.trim(), model }) },
+        );
+        completed.push({ model, run_id: result.run_id, case_count: result.case_count, avg_score: result.avg_score,
+          avg_latency_ms: result.avg_latency_ms, agent_errors: result.agent_errors, judge_errors: result.judge_errors });
+        setMatrixResults([...completed]);
+      }
+      setMatrixProgress("Comparison complete. Runs were sequential and are retained in suite history.");
+      await loadSuites(); await loadResults(suiteId);
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : "Model comparison failed.");
+      setMatrixProgress(`Stopped after ${completed.length} of ${models.length} runs; completed results are retained.`);
     } finally { setRunning(null); }
   }
 
@@ -158,6 +190,17 @@ export default function EvalPage() {
         {runMessage && <p role="status" className="mt-2 text-sm text-green-700">{runMessage}</p>}
         {runError && <p role="alert" className="mt-2 text-sm text-red-700">{runError}</p>}
       </div>
+
+      <section className="mb-6 rounded-xl border border-gray-200 bg-white p-4">
+        <h2 className="font-semibold text-gray-900">Model comparison</h2>
+        <p className="mt-1 text-sm text-gray-500">Run this suite against up to eight approved model IDs, sequentially. Each entry is a real agent run and consumes plan quota.</p>
+        <label className="mt-3 block text-xs text-gray-600">Model IDs, one per line
+          <textarea value={modelCandidates} onChange={event => setModelCandidates(event.currentTarget.value)} className="mt-1 min-h-16 w-full rounded border border-gray-300 px-2 py-2 text-xs font-mono" placeholder="provider/model-id" />
+        </label>
+        {selected && <button onClick={() => void runModelMatrix(selected)} disabled={running === selected || !sessionId.trim()} className="mt-2 rounded bg-brand-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{running === selected ? "Comparing…" : "Run comparison for selected suite"}</button>}
+        {matrixProgress && <p role="status" className="mt-3 text-xs text-gray-500">{matrixProgress}</p>}
+        {!!matrixResults.length && <div className="mt-3 overflow-x-auto"><table className="w-full text-left text-xs"><thead className="text-gray-500"><tr><th className="py-2 pr-3">Model</th><th className="py-2 pr-3">Score</th><th className="py-2 pr-3">Average latency</th><th className="py-2 pr-3">Agent errors</th><th className="py-2 pr-3">Judge errors</th><th className="py-2">Run</th></tr></thead><tbody>{matrixResults.map(result => <tr key={result.run_id} className="border-t border-gray-100"><td className="py-2 pr-3 font-mono">{result.model}</td><td className="py-2 pr-3">{result.avg_score.toFixed(2)}</td><td className="py-2 pr-3">{result.avg_latency_ms === null ? "—" : `${result.avg_latency_ms} ms`}</td><td className="py-2 pr-3">{result.agent_errors}</td><td className="py-2 pr-3">{result.judge_errors}</td><td className="py-2 font-mono">{result.run_id.slice(0, 8)}</td></tr>)}</tbody></table></div>}
+      </section>
 
       {showNew && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
@@ -229,7 +272,7 @@ export default function EvalPage() {
                   <div className="mb-2 flex items-center justify-between gap-3">
                     <h4 className="text-sm font-medium text-gray-700">Case results</h4>
                     <label className="text-xs text-gray-500">Run <select value={selectedRun ?? ""} onChange={event => void loadRunResults(suite.id, event.currentTarget.value)} className="ml-1 rounded border border-gray-300 px-2 py-1">
-                      {runs.map(run => <option key={run.id} value={run.id}>{new Date(run.started_at ?? "").toLocaleString()} · {run.passed}/{run.total_cases} passed · {run.model ?? "default model"}</option>)}
+                      {runs.map(run => <option key={run.id} value={run.id}>{new Date(run.started_at ?? "").toLocaleString()} · {run.passed}/{run.total_cases} passed · {run.model ?? "default model"}{run.avg_latency_ms != null ? ` · ${Math.round(run.avg_latency_ms)} ms` : ""}</option>)}
                     </select></label>
                   </div>
                   <div className="space-y-2 max-h-80 overflow-y-auto">

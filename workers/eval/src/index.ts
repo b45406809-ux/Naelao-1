@@ -804,7 +804,8 @@ app.get("/evals/:id/results", async (c) => {
   // second aggregate to drift out of sync.
   const { results } = await c.env.PLATFORM_DB.prepare(
     `SELECT r.id, r.model, r.status, r.total_cases, r.passed, r.failed, r.started_at, r.completed_at,
-            (SELECT AVG(score) FROM eval_results WHERE run_id = r.id) AS avg_score
+            (SELECT AVG(score) FROM eval_results WHERE run_id = r.id) AS avg_score,
+            (SELECT AVG(latency_ms) FROM eval_results WHERE run_id = r.id) AS avg_latency_ms
        FROM eval_runs r
        JOIN spaces s ON s.id = r.space_id AND s.tenant_id = r.tenant_id AND s.status = 'active'
        JOIN orgs o ON o.id = r.tenant_id AND o.status = 'active'

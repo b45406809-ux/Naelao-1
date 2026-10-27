@@ -1,6 +1,6 @@
 export { createScratchpadKey, sealScratchpad, openScratchpad, parseScratchpadCiphertext, MAX_SCRATCHPAD_PLAINTEXT_BYTES } from "./scratchpad.js";
 export { estimateTextTokens, validProviderUsage, MAX_PROVIDER_USAGE_TOKENS } from "./token-accounting.js";
-export { WIDGET_EVENT_TYPES, validateWidgetHostEvent, validateExtensionWidgetView, widgetSubscriptionAllows, type WidgetEventType, type WidgetHostEvent, type ExtensionWidgetView } from "./widget-events.js";
+export { WIDGET_EVENT_TYPES, validateWidgetHostEvent, validateExtensionWidgetView, widgetSubscriptionAllows, type WidgetEventType, type WidgetHostEvent, type ExtensionWidgetView, type ExtensionWidgetItemStatus } from "./widget-events.js";
 // Builder-facing SDK for programmatic Space/session access and agent tool building
 
 import type {
