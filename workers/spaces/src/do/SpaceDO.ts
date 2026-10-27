@@ -2254,6 +2254,24 @@ const MIGRATIONS: Migration[] = [
     CREATE INDEX idx_extension_instances_project ON extension_instances(space_id, project_id, status);
     CREATE INDEX idx_extension_instances_named ON extension_instances(extension_id,tenant_id,space_id,project_id,instance_key,status);
   ` },
+  { version: 103, description: "pin immutable extension releases to installation instances", up: `
+    ALTER TABLE extension_instances ADD COLUMN release_version TEXT;
+    UPDATE extension_instances
+      SET release_version=(SELECT json_extract(e.manifest_json,'$.bundle.version') FROM installed_extensions e WHERE e.extension_id=extension_instances.extension_id)
+      WHERE EXISTS (
+        SELECT 1 FROM extension_releases r JOIN installed_extensions e ON e.extension_id=r.extension_id
+        WHERE r.extension_id=extension_instances.extension_id
+          AND r.version=json_extract(e.manifest_json,'$.bundle.version')
+      );
+    CREATE INDEX idx_extension_instances_release ON extension_instances(extension_id,release_version,status);
+    CREATE VIEW extension_installation_manifests AS
+      SELECT i.*, CASE WHEN i.release_version IS NOT NULL THEN r.manifest_json ELSE e.manifest_json END AS manifest_json,
+        CASE WHEN i.release_version IS NOT NULL THEN r.artifact_sha256 ELSE NULL END AS pinned_artifact_sha256,
+        e.updated_at AS extension_updated_at
+      FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
+      LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
+      WHERE i.release_version IS NULL OR r.manifest_json IS NOT NULL;
+  ` },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -2927,7 +2945,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           ? [projectId]
           : [projectId, url.searchParams.get("user_id"), projectId, projectId, projectId, url.searchParams.get("user_id")];
         const rows = queryAll<{ manifest_json: string; instance_id: string }>(this.ctx.storage.sql as never,
-          `SELECT i.*, e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND ${statusFilter} AND ${scopeFilter}`,
+          `SELECT i.* FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND ${statusFilter} AND ${scopeFilter}`,
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), ...scopeParams);
         return Response.json({ installations: rows.map(row => { const { manifest_json, ...instance } = row; return { instance, manifest: JSON.parse(manifest_json),
           approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) }; }) });
@@ -2941,7 +2959,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         if (!body.actorId || body.actorId.length > 192) return Response.json({ error_code: "invalid_actor" }, { status: 400 });
         const projectId = event.projectId ?? null;
         const rows = queryAll<{ instance_id: string; extension_id: string; scope: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          `SELECT i.instance_id,i.extension_id,i.scope,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
+          `SELECT i.instance_id,i.extension_id,i.scope,i.manifest_json FROM extension_installation_manifests i
            WHERE i.tenant_id=? AND i.space_id=? AND i.status='active' AND ((i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND i.project_id=?) OR (i.scope='PROJECT_USER' AND i.project_id=? AND i.user_id=?) OR (i.scope='SPACE_SHARED' AND ? IS NULL) OR (i.scope='SPACE_USER' AND ? IS NULL AND i.user_id=?)) ORDER BY i.instance_id LIMIT 128`,
           tenantId, event.spaceId, projectId, projectId, body.actorId, projectId, projectId, body.actorId);
         const subscribers = rows.flatMap(row => {
@@ -2956,14 +2974,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (url.pathname === "/extension-installations" && method === "GET") {
         const extensionId = url.searchParams.get("extension_id") ?? "";
-        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          extensionId === "__all__" ? "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at"
-            : "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at",
+        const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; instance_key: string; status: string; installed_at: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
+          extensionId === "__all__" ? "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at"
+            : "SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.instance_key,i.status,i.installed_at,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.extension_id=? AND i.status IN ('active','disabled','staging') ORDER BY i.installed_at",
           ...(extensionId === "__all__" ? [url.searchParams.get("tenant_id"), url.searchParams.get("space_id")] : [url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), extensionId]));
         const installations = await Promise.all(rows.map(async ({ manifest_json, ...row }) => {
           try {
             const manifest = JSON.parse(manifest_json) as { releaseVersion?: string; version?: string; bundle?: { version?: string } };
-            return { ...row, release_version: manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version ?? null, manifest_sha256: await digestExtensionManifest(JSON.parse(manifest_json) as ExtensionManifest) };
+            return { ...row, release_version: row.release_version ?? manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version ?? null, manifest_sha256: await digestExtensionManifest(JSON.parse(manifest_json) as ExtensionManifest) };
           } catch { return { ...row, release_version: null, manifest_sha256: null }; }
         }));
         return Response.json({ installations });
@@ -2975,8 +2993,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const appId = url.searchParams.get("app_id") ?? "";
         if (!tenantId || !spaceId || !projectId || !appId) return Response.json({ error_code: "extension_runtime_scope_required" }, { status: 400 });
         const rows = queryAll<{ instance_id: string; instance_key: string | null; status: string; extension_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          `SELECT i.instance_id,i.instance_key,i.status,i.extension_id,e.manifest_json FROM extension_instances i
-           JOIN installed_extensions e ON e.extension_id=i.extension_id
+          `SELECT i.instance_id,i.instance_key,i.status,i.extension_id,i.manifest_json FROM extension_installation_manifests i
            WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED')`,
           tenantId, spaceId, projectId);
         let managed = false, active = false, releaseValid = false, publisherKeyId: string | undefined;
@@ -3012,8 +3029,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const statusFilter = url.searchParams.get("include_disabled") === "1"
           ? "i.status IN ('active','disabled')"
           : "i.status='active'";
-        const rows = queryAll<{ instance_id: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          `SELECT i.*, e.manifest_json, e.updated_at AS manifest_updated_at FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND ${statusFilter}`,
+        const rows = queryAll<{ instance_id: string; manifest_json: string; extension_updated_at: string }>(this.ctx.storage.sql as never,
+          `SELECT i.* FROM extension_installation_manifests i WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND ${statusFilter}`,
           url.searchParams.get("instance_id"), url.searchParams.get("tenant_id"), url.searchParams.get("space_id"));
         const row = rows[0];
         if (!row) return Response.json({ error: "installation_not_found" }, { status: 404 });
@@ -3062,14 +3079,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           "SELECT id FROM projects WHERE id=? AND space_id=? AND status='active'", projectId, url.searchParams.get("space_id"))) {
           return Response.json({ error: "project_not_found" }, { status: 404 });
         }
-        const rows = queryAll<{ instance_id: string; extension_id: string; scope: string; status: string; manifest_json: string }>(this.ctx.storage.sql as never,
-          `SELECT i.instance_id,i.extension_id,i.scope,i.status,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND ${statusFilter} ORDER BY i.installed_at`,
+        const rows = queryAll<{ instance_id: string; extension_id: string; scope: string; status: string; manifest_json: string; release_version: string | null }>(this.ctx.storage.sql as never,
+          `SELECT i.instance_id,i.extension_id,i.scope,i.status,i.manifest_json,i.release_version FROM extension_installation_manifests i WHERE i.tenant_id=? AND i.space_id=? AND i.project_id=? AND i.scope IN ('PROJECT_BOUND','PROJECT_SHARED') AND ${statusFilter} ORDER BY i.installed_at`,
           url.searchParams.get("tenant_id"), url.searchParams.get("space_id"), projectId);
         const installations = rows.flatMap(row => {
           const manifest = JSON.parse(row.manifest_json) as { id?: string; bundle?: { version?: string; connections?: Array<{ id?: string; provider?: string; purpose?: string; required?: boolean }> }; channels?: Array<{ kind?: string; id?: string; provider?: string; connectionId?: string; handlerScript?: string; session?: { enabled?: boolean; maxBytes?: number; ttlDays?: number } }> };
           const channels = (manifest.channels ?? []).filter(channel => channel.kind === "channel");
-          const publisherKeyId = manifest.bundle?.version ? queryOne<{ publisher_key_id: string | null }>(this.ctx.storage.sql as never,
-            "SELECT publisher_key_id FROM extension_releases WHERE extension_id=? AND version=?", row.extension_id, manifest.bundle.version)?.publisher_key_id : null;
+          const publisherKeyId = row.release_version ? queryOne<{ publisher_key_id: string | null }>(this.ctx.storage.sql as never,
+            "SELECT publisher_key_id FROM extension_releases WHERE extension_id=? AND version=?", row.extension_id, row.release_version)?.publisher_key_id : null;
           return channels.length ? [{ instance_id: row.instance_id, extension_id: row.extension_id, scope: row.scope, status: row.status, version: manifest.bundle?.version ?? "legacy",
             ...(publisherKeyId ? { publisher_key_id: publisherKeyId } : {}),
             name: manifest.id ?? row.extension_id,
@@ -11489,8 +11506,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!tenantId || !spaceId) return Response.json({ error_code: "extension_scope_required" }, { status: 400 });
     const rows = queryAll<{ extension_id: string; instance_id: string; instance_key: string | null; manifest_json: string; installed_at: string; status: string }>(
       this.ctx.storage.sql as never,
-      `SELECT i.extension_id,i.instance_id,i.instance_key,i.installed_at,i.status,e.manifest_json
-       FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
+      `SELECT i.extension_id,i.instance_id,i.instance_key,i.installed_at,i.status,i.manifest_json
+       FROM extension_installation_manifests i
        WHERE i.tenant_id=? AND i.space_id=? AND i.scope='SPACE_SHARED' AND i.status IN ('active','disabled')
        ORDER BY i.installed_at,i.extension_id`, tenantId, spaceId,
     );
@@ -11555,7 +11572,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     if (!Array.isArray(body.grants) || body.grants.length > 64) return Response.json({ error_code: "shared_filesystem_grants_invalid" }, { status: 400 });
     const row = queryOne<{ extension_id: string; manifest_json: string; scope: string }>(this.ctx.storage.sql as never,
-      `SELECT i.extension_id,i.scope,e.manifest_json FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
+      `SELECT i.extension_id,i.scope,i.manifest_json FROM extension_installation_manifests i
        WHERE i.instance_id=? AND i.tenant_id=? AND i.space_id=? AND i.status='active'`, body.instanceId, body.tenantId, body.spaceId);
     if (!row || row.scope !== "SPACE_SHARED") return Response.json({ error_code: "space_shared_installation_not_found" }, { status: 404 });
     const manifest = JSON.parse(row.manifest_json) as ExtensionManifest;
@@ -11694,14 +11711,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.transactionSync(() => {
         if (runtimeSlotLimit !== undefined && body.scope && instanceId) {
           const rows = queryAll<{ instance_id: string; extension_id: string; project_id: string | null; scope: string; manifest_json: string }>(this.ctx.storage.sql as never,
-            `SELECT i.instance_id,i.extension_id,i.project_id,i.scope,e.manifest_json FROM extension_instances i
-             JOIN installed_extensions e ON e.extension_id=i.extension_id
+            `SELECT i.instance_id,i.extension_id,i.project_id,i.scope,i.manifest_json FROM extension_installation_manifests i
              WHERE i.tenant_id=? AND i.space_id=? AND i.status!='removed'`, body.tenantId, body.spaceId);
           const counts = new Map<string, number>();
           for (const row of rows) {
             if (row.instance_id === instanceId || body.promoteExisting && row.extension_id === manifest.id && row.scope === "PROJECT_SHARED") continue;
-            const count = row.extension_id === manifest.id ? (manifest.containers?.length ?? 0)
-              : ((JSON.parse(row.manifest_json) as ExtensionManifest).containers?.length ?? 0);
+            const count = (JSON.parse(row.manifest_json) as ExtensionManifest).containers?.length ?? 0;
             const key = row.project_id ?? "";
             counts.set(key, (counts.get(key) ?? 0) + count);
           }
@@ -11744,10 +11759,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             || existingInstance.user_id !== (body.userId ?? null) || existingInstance.scope !== body.scope || existingInstance.instance_key !== instanceKey))
             throw new Error("extension_instance_identity_conflict");
           execute(this.ctx.storage.sql as never,
-          `INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,NULL)
-             ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status=excluded.status,removed_at=NULL`,
-            instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, instanceKey, ownerKey, body.installedBy, body.deferActivation ? "staging" : "active", now);
+          `INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at,release_version)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,NULL,?)
+             ON CONFLICT(instance_id) DO UPDATE SET installed_by=excluded.installed_by,status=excluded.status,removed_at=NULL,release_version=excluded.release_version`,
+            instanceId, manifest.id, body.tenantId, body.spaceId, body.projectId ?? null, body.userId ?? null, body.scope, instanceKey, ownerKey, body.installedBy, body.deferActivation ? "staging" : "active", now, manifest.bundle?.version ?? null);
           execute(this.ctx.storage.sql as never, "DELETE FROM extension_shared_filesystem_grants WHERE instance_id=?", instanceId);
           for (const grant of approvedSharedFilesystem) execute(this.ctx.storage.sql as never,
             "INSERT INTO extension_shared_filesystem_grants(instance_id,path,access,approved_by,approved_at) VALUES(?,?,?,?,?)",
@@ -11791,9 +11806,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, body.tenantId, this.env.PLATFORM_SECRET))
       return Response.json({ error_code: "forbidden" }, { status: 403 });
     const row = queryOne<{ status: string; extension_id: string; tenant_id: string; space_id: string; project_id: string | null; manifest_json: string; artifact_sha256: string; publisher_revoked_at: string | null }>(this.ctx.storage.sql as never,
-      `SELECT i.status,i.extension_id,i.tenant_id,i.space_id,i.project_id,e.manifest_json,r.artifact_sha256,r.publisher_revoked_at
-       FROM extension_instances i JOIN installed_extensions e ON e.extension_id=i.extension_id
-       JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=json_extract(e.manifest_json,'$.bundle.version')
+      `SELECT i.status,i.extension_id,i.tenant_id,i.space_id,i.project_id,i.manifest_json,r.artifact_sha256,r.publisher_revoked_at
+       FROM extension_installation_manifests i JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
        WHERE i.instance_id=?`, body.installationId);
     if (!row || row.extension_id !== body.extensionId || row.tenant_id !== body.tenantId || row.space_id !== body.spaceId
       || row.project_id !== body.projectId || row.artifact_sha256 !== body.artifactSha256 || row.publisher_revoked_at)
@@ -11859,7 +11873,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const expected = await this.signExtensionRelease(body.extensionId, body.version, release.manifest_json, release.artifact_sha256);
     if (expected !== release.host_signature) return Response.json({ error: "extension_release_signature_invalid" }, { status: 409 });
     const manifest = JSON.parse(release.manifest_json) as ExtensionManifest;
-    execute(this.ctx.storage.sql as never, "UPDATE installed_extensions SET manifest_json=?,updated_at=datetime('now') WHERE extension_id=?", release.manifest_json, body.extensionId);
+    this.ctx.storage.transactionSync(() => {
+      execute(this.ctx.storage.sql as never, "UPDATE installed_extensions SET manifest_json=?,updated_at=datetime('now') WHERE extension_id=?", release.manifest_json, body.extensionId);
+      execute(this.ctx.storage.sql as never, "UPDATE extension_instances SET release_version=? WHERE extension_id=? AND status IN ('active','disabled','staging')", body.version, body.extensionId);
+    });
     return Response.json({ rolledBack: true, manifest, release: { version: body.version, artifactSha256: release.artifact_sha256, hostSignature: release.host_signature, signer: "naelao-host" } });
   }
 

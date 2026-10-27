@@ -2419,10 +2419,10 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
     })}`));
     if (!current.ok) return c.json({ error_code: "extension_upgrade_preflight_unavailable" }, 503);
     const currentInstalls = await readBoundedResponseJson<{ installations?: Array<{ instance_id: string; extension_id: string; project_id: string | null;
-      scope: string; instance_key?: string; status: string }> }>(current, 2 * 1024 * 1024);
+      scope: string; instance_key?: string; status: string; release_version?: string | null }> }>(current, 2 * 1024 * 1024);
     const otherInstances = findUnsafeProjectExtensionUpgrade(currentInstalls.installations ?? [], { extensionId: bundle.id, projectId, instanceKey });
     if (otherInstances.length) return c.json({ error_code: "extension_upgrade_multiple_instances_unsupported",
-      message: "This extension is installed more than once in the Space. Remove sibling installations before upgrading; per-install release pinning is not available yet.",
+      message: "A legacy sibling installation has no verified pinned release. Remove or migrate it before upgrading this extension.",
       affected_installations: otherInstances.length }, 409);
   }
   // Persist immutable files before exposing any mounted app. Repeated installs are idempotent.

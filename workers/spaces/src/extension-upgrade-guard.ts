@@ -5,11 +5,12 @@ export interface InstalledExtensionInstanceRef {
   scope: string;
   instance_key?: string | null;
   status: string;
+  release_version?: string | null;
 }
 
 /**
- * The SpaceDO currently stores one active manifest per extension ID. Until releases are pinned
- * per installation, an upgrade is safe only when it affects a single project-bound instance.
+ * Versioned installations are pinned independently. Keep this guard for legacy sibling rows that
+ * could not be pinned because their signed release record is missing.
  */
 export function findUnsafeProjectExtensionUpgrade(
   installations: readonly InstalledExtensionInstanceRef[],
@@ -17,7 +18,8 @@ export function findUnsafeProjectExtensionUpgrade(
 ): InstalledExtensionInstanceRef[] {
   return installations.filter((instance) => {
     if (instance.extension_id !== target.extensionId || !["active", "disabled", "staging"].includes(instance.status)) return false;
-    return !(instance.scope === "PROJECT_BOUND" && instance.project_id === target.projectId
-      && (instance.instance_key ?? "default") === target.instanceKey);
+    const isTarget = instance.scope === "PROJECT_BOUND" && instance.project_id === target.projectId
+      && (instance.instance_key ?? "default") === target.instanceKey;
+    return !isTarget && !instance.release_version;
   });
 }

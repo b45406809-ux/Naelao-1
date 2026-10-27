@@ -4,6 +4,28 @@ import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
 import { SPACE_DO_MIGRATIONS } from "./SpaceDO";
 
 describe("SpaceDO migration replay", () => {
+  it("backfills immutable releases onto existing extension installations and leaves legacy records readable", () => {
+    const storage = createDOStorage();
+    const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.filter(migration => migration.version < 103));
+    const pinnedManifest = JSON.stringify({ id: "ext-pinned", bundle: { version: "1.0.0" }, marker: "release-one" });
+    storage.sql.exec("INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at) VALUES(?,?,?,?,?)",
+      "ext-pinned", pinnedManifest, "owner", "2026-01-01", "2026-01-01");
+    storage.sql.exec("INSERT INTO extension_releases(extension_id,version,manifest_json,artifact_sha256,host_signature,created_by,created_at) VALUES(?,?,?,?,?,?,?)",
+      "ext-pinned", "1.0.0", pinnedManifest, "a".repeat(64), "sig", "owner", "2026-01-01");
+    storage.sql.exec("INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "install-pinned", "ext-pinned", "tenant", "space", "project", null, "PROJECT_BOUND", "default", "owner", "owner", "active", "2026-01-01", null);
+    storage.sql.exec("INSERT INTO installed_extensions(extension_id,manifest_json,installed_by,installed_at,updated_at) VALUES(?,?,?,?,?)",
+      "ext-legacy", JSON.stringify({ id: "ext-legacy", version: "old" }), "owner", "2026-01-01", "2026-01-01");
+    storage.sql.exec("INSERT INTO extension_instances(instance_id,extension_id,tenant_id,space_id,project_id,user_id,scope,instance_key,owner_key,installed_by,status,installed_at,removed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "install-legacy", "ext-legacy", "tenant", "space", "project", null, "PROJECT_BOUND", "default", "owner", "owner", "active", "2026-01-01", null);
+
+    applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS);
+    expect(storage.sql.exec("SELECT release_version FROM extension_instances WHERE instance_id='install-pinned'").toArray()).toEqual([{ release_version: "1.0.0" }]);
+    expect(storage.sql.exec("SELECT release_version FROM extension_instances WHERE instance_id='install-legacy'").toArray()).toEqual([{ release_version: null }]);
+    expect(storage.sql.exec("SELECT manifest_json FROM extension_installation_manifests WHERE instance_id='install-pinned'").toArray()).toEqual([{ manifest_json: pinnedManifest }]);
+  });
+
   it("adds assistant and project-bound scopes without dropping older extension grants", () => {
     const storage = createDOStorage();
     const migrationStorage = storage as unknown as { sql: SqlStorage; transactionSync<T>(closure: () => T): T };
