@@ -1051,6 +1051,8 @@ export function processAgentException(
 
 export interface AgentDOEnv {
   ENVIRONMENT?: string;
+  /** Opt in new goal runs to durable, task-scoped completion messages. */
+  TASK_BLACKBOARD_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
   SYSTEM_ONE_MODEL?: string;
   /** Legacy selector accepted during rollout; provider aliases map to Clef Flash. */
@@ -3568,6 +3570,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           await hooks.persistGoalTasks!(tasks.map(task => ({ ...task, id: taskId(task.id), dependencies: (task.dependencies ?? []).map(taskId) })));
           return executeGoalDag(tasks, {
             concurrency: childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true),
+            taskBlackboardEnabled: this.env.TASK_BLACKBOARD_ENABLED === "true",
             workerId: taskId,
             load: () => this.ctx.storage.get<GoalDagJournal>(key),
             save: journal => this.ctx.storage.put(key, structuredClone(journal)),

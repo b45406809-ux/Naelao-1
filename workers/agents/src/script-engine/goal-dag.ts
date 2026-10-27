@@ -4,7 +4,7 @@ import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task
 export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string }
 export type GoalTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "needs_review";
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[] }
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean }
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
 export interface GoalHandoff { taskId: string; workerId: string; output: string; truncated: boolean }
 export interface GoalDagHost {
@@ -15,9 +15,17 @@ export interface GoalDagHost {
   publish(task: GoalTask, state: GoalTaskState): Promise<void>;
   workerId(taskId: string): string;
   concurrency: number;
+  taskBlackboardEnabled?: boolean;
 }
 
 function dependencyHandoffs(task: GoalTask, journal: GoalDagJournal): GoalHandoff[] {
+  if (!journal.taskBlackboardEnabled) return (task.dependencies ?? []).map(taskId => {
+    const state = journal.tasks[taskId]!;
+    let output: string;
+    try { output = JSON.stringify(state.result?.output ?? null) ?? "null"; }
+    catch { output = '"[unavailable: non-serializable output]"'; }
+    return { taskId, workerId: state.workerId, output: output.slice(0, 4000), truncated: output.length > 4000 };
+  });
   const members = new Set(Object.values(journal.tasks).map(state => state.workerId));
   const actor = journal.tasks[task.id]!.workerId;
   const visible = visibleTaskMessages(journal.messages ?? [], actor, members);
@@ -31,6 +39,7 @@ function dependencyHandoffs(task: GoalTask, journal: GoalDagJournal): GoalHandof
 }
 
 function recordCompletion(task: GoalTask, tasks: GoalTask[], journal: GoalDagJournal): void {
+  if (!journal.taskBlackboardEnabled) return;
   const state = journal.tasks[task.id]!;
   if (state.status !== "completed") return;
   const recipients = tasks.filter(candidate => candidate.dependencies?.includes(task.id)).map(candidate => journal.tasks[candidate.id]!.workerId);
@@ -50,7 +59,10 @@ function recordCompletion(task: GoalTask, tasks: GoalTask[], journal: GoalDagJou
 export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Promise<GoalDagJournal> {
   validateGoalDag(tasks);
   if (!Number.isSafeInteger(host.concurrency) || host.concurrency < 1 || host.concurrency > 4) throw new Error("invalid_goal_concurrency");
-  const journal: GoalDagJournal = await host.load() ?? { tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
+  const loaded = await host.load();
+  const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
+  // Existing journals created during the initial rollout may already contain messages.
+  if (loaded && journal.taskBlackboardEnabled === undefined) journal.taskBlackboardEnabled = Array.isArray(journal.messages);
   if (tasks.some(task => !journal.tasks[task.id]) || Object.keys(journal.tasks).length !== tasks.length) throw new Error("goal_journal_mismatch");
   for (const task of tasks) {
     const state = journal.tasks[task.id]!;
@@ -61,7 +73,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       await host.save(journal);
     }
     recordCompletion(task, tasks, journal);
-    if (state.status === "completed") await host.save(journal);
+    if (journal.taskBlackboardEnabled && state.status === "completed") await host.save(journal);
     await host.publish(task, state);
   }
   for (;;) {

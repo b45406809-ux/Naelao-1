@@ -5,7 +5,7 @@ import { MAX_SUB_AGENT_BUDGET_TOKENS } from "./sub-agent-output.js";
 const task = (id: string, dependencies: string[] = []): GoalTask => ({ id, dependencies, title: id, subtask_spec: `do ${id}`, assigned_role: "schema-validator", file_paths: [`src/${id}.ts`], budget_tokens: 1800 });
 function fixture(initial?: GoalDagJournal) {
   let saved = initial;
-  const host: GoalDagHost = { concurrency: 4, workerId: id => `worker:${id}`,
+  const host: GoalDagHost = { concurrency: 4, taskBlackboardEnabled: true, workerId: id => `worker:${id}`,
     load: async () => saved && structuredClone(saved), save: async journal => { saved = structuredClone(journal); },
     publish: vi.fn(async () => undefined), recover: vi.fn(async () => undefined),
     launch: vi.fn(async (_task, id) => ({ id, ok: true })),
@@ -34,9 +34,18 @@ describe("durable goal DAG", () => {
     expect(f.snapshot().messages?.[0]?.recipients).toEqual(["worker:b"]);
   });
   it("reconstructs dependency handoffs after journal recovery", async () => {
-    const f = fixture({ tasks: { a: { status: "completed", workerId: "worker:a", result: { id: "worker:a", ok: true, output: "evidence" } }, b: { status: "pending", workerId: "worker:b" } } });
+    const f = fixture({ taskBlackboardEnabled: true, tasks: { a: { status: "completed", workerId: "worker:a", result: { id: "worker:a", ok: true, output: "evidence" } }, b: { status: "pending", workerId: "worker:b" } } });
     await executeGoalDag([task("a"), task("b", ["a"])], f.host);
     expect(f.host.launch.mock.calls[0]?.[2]).toEqual([{ taskId: "a", workerId: "worker:a", output: '"evidence"', truncated: false }]);
+  });
+  it("keeps a run's rollout choice stable while preserving legacy handoffs", async () => {
+    const f = fixture(); f.host.taskBlackboardEnabled = false;
+    await executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    expect(f.snapshot().taskBlackboardEnabled).toBe(false);
+    expect(f.snapshot().messages).toBeUndefined();
+    expect(f.host.launch.mock.calls.find(([t]) => t.id === "b")?.[2]).toHaveLength(1);
+    const restart = fixture(f.snapshot());
+    expect((await executeGoalDag([task("a"), task("b", ["a"])], restart.host)).taskBlackboardEnabled).toBe(false);
   });
   it("dispatches prerequisites before dependents and replays completed tasks without workers", async () => {
     const f = fixture(); const tasks = [task("b", ["a"]), task("a")];
