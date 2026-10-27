@@ -230,6 +230,9 @@ export async function handlePhoneAction(
   let binding = await assistantPhone(env, identity.id);
   if (["phone-telnyx-configure", "phone-telnyx-status", "phone-telnyx-remove"].includes(action)) {
     const { configureTelnyxAccount, telnyxAccountStatus, removeTelnyxAccount } = await import("./telnyx-account.js");
+    if (action !== "phone-telnyx-status" && await env.PLATFORM_DB.prepare(
+      "SELECT id FROM assistant_phone_bindings WHERE identity_id=? AND provider='telnyx' AND status NOT IN ('released','detached') LIMIT 1"
+    ).bind(identity.id).first()) throw new Error("detach_telnyx_before_changing_credentials");
     if (action === "phone-telnyx-remove") {
       if (body.confirm !== true) throw new Error("phone_confirmation_required");
       return removeTelnyxAccount(env, scope, identity);

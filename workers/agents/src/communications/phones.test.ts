@@ -82,6 +82,12 @@ describe("assistant telephone safety and lifecycle", () => {
     await expect(detachAssistantPhonesForErasure(f.env, f.identity.id)).rejects.toThrow("phone_detachment_required_before_erasure");
     expect(f.provider).not.toHaveBeenCalled();
   });
+  it("preserves Telnyx credentials while a Telnyx number is still attached", async () => {
+    const f = await phoneFixture();
+    await f.db.prepare("UPDATE assistant_phone_bindings SET provider='telnyx' WHERE id=?").bind(f.binding.id).run();
+    await expect(f.act("phone-telnyx-remove", { confirm: true })).rejects.toThrow("detach_telnyx_before_changing_credentials");
+    await expect(f.act("phone-telnyx-configure", {})).rejects.toThrow("detach_telnyx_before_changing_credentials");
+  });
   it("keeps numbers optional and rejects invalid limits and transfer addresses", () => {
     expect(defaultPhonePolicy.voicemail).toBe(false);
     expect(defaultPhonePolicy.greeting).toBe("");
