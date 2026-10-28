@@ -2349,6 +2349,11 @@ export interface SpaceTemplateListing {
   author_name: string;
   price_cents: number;
   pricing_model: string;
+  requirements?: {
+    extensions: Array<{ id: string; version?: string }>;
+    credentials: Array<{ name: string; description: string; required: boolean }>;
+    runtimes: Array<{ project_id: string; id: string; required: boolean; capabilities: string[] }>;
+  };
 }
 
 /** Published, FDE-authored Space Templates from the Naelao marketplace. */

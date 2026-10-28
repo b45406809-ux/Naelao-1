@@ -47,6 +47,7 @@ export default function SpacesPage() {
   const [refreshingPreview, setRefreshingPreview] = React.useState(false);
   const pendingPreviewed = React.useRef(new Set<string>());
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
+  const selectedTemplate = templates.find(template => template.id === templateId);
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
@@ -311,7 +312,19 @@ export default function SpacesPage() {
               {templates.filter((template) => template.price_cents === 0).map((template) => <option key={template.id} value={template.id}>{template.name} · by {template.author_name}</option>)}
             </FormSelect></label>
           )}
-          <p style={{ margin: 0, fontSize: 12, color: "var(--text3)" }}>You can install extensions and configure the Space after it is created.</p>
+          {selectedTemplate && <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 11.5 }}>
+            <strong>Template prerequisites</strong>
+            {selectedTemplate.requirements ? <>
+              <div style={{ marginTop: 5 }}>Required extensions: {selectedTemplate.requirements.extensions.length
+                ? selectedTemplate.requirements.extensions.map(item => `${item.id}${item.version ? ` v${item.version}` : " (version pin missing)"}`).join(", ") : "none declared"}</div>
+              <div>Setup credentials: {selectedTemplate.requirements.credentials.length
+                ? selectedTemplate.requirements.credentials.map(item => `${item.name} (${item.required ? "required" : "optional"}) — ${item.description}`).join("; ") : "none declared"}</div>
+              <div>Project runtimes: {selectedTemplate.requirements.runtimes.length
+                ? selectedTemplate.requirements.runtimes.map(item => `${item.project_id} · ${item.id}${item.required ? " (required)" : " (optional)"}${item.capabilities.length ? ` [${item.capabilities.join(", ")}]` : ""}`).join("; ") : "none declared"}</div>
+            </> : <p style={{ margin: "5px 0 0" }}>This marketplace listing does not include prerequisite details.</p>}
+            <p style={{ margin: "6px 0 0", color: "var(--text3)" }}>This is the template’s declared setup. Naelao checks availability and asks you to review access before activation.</p>
+          </div>}
+          <p style={{ margin: 0, fontSize: 12, color: "var(--text3)" }}>You can install additional extensions and configure the Space after it is created.</p>
           {createError && <p role="alert" style={{ margin: 0, fontSize: 12, color: "#dc2626" }}>{createError}</p>}
           {activationReview && <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, fontSize: 12 }}>
             <strong>{activationReview.preview.ready ? "Ready for your approval" : "Cannot install yet"}</strong>

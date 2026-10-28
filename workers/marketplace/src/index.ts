@@ -36,6 +36,38 @@ function bodyError(c: { json: (body: unknown, status: 400 | 413) => Response }, 
 function parse(raw: string | null, fallback: unknown = null): unknown {
   try { return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
 }
+function publicTemplateRequirements(raw: string | null) {
+  const value = parse(raw);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { extensions: [], credentials: [], runtimes: [] };
+  const blueprint = value as Record<string, unknown>;
+  const extensionIds = Array.isArray(blueprint.requiredExtensions)
+    ? [...new Set(blueprint.requiredExtensions.filter((id): id is string => typeof id === "string" && /^ext_[a-z0-9_-]{2,62}$/.test(id)))].sort()
+    : [];
+  const versions = blueprint.requiredExtensionVersions && typeof blueprint.requiredExtensionVersions === "object" && !Array.isArray(blueprint.requiredExtensionVersions)
+    ? blueprint.requiredExtensionVersions as Record<string, unknown> : {};
+  const extensions = extensionIds.map(id => ({ id, ...(typeof versions[id] === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(versions[id] as string) ? { version: versions[id] as string } : {}) }));
+  const credentials = Array.isArray(blueprint.requiredCredentials) ? blueprint.requiredCredentials.flatMap(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const credential = item as Record<string, unknown>;
+    if (typeof credential.name !== "string" || typeof credential.description !== "string" || typeof credential.required !== "boolean") return [];
+    return [{ name: credential.name.slice(0, 120), description: credential.description.slice(0, 500), required: credential.required }];
+  }).slice(0, 64) : [];
+  const runtimes = Array.isArray(blueprint.projects) ? blueprint.projects.flatMap(project => {
+    if (!project || typeof project !== "object" || Array.isArray(project)) return [];
+    const record = project as Record<string, unknown>;
+    if (!Array.isArray(record.runtimeRequirements)) return [];
+    const projectId = typeof record.id === "string" ? record.id.slice(0, 128) : typeof record.name === "string" ? record.name.slice(0, 128) : "project";
+    return record.runtimeRequirements.flatMap(requirement => {
+      if (!requirement || typeof requirement !== "object" || Array.isArray(requirement)) return [];
+      const runtime = requirement as Record<string, unknown>;
+      if (typeof runtime.id !== "string" || typeof runtime.required !== "boolean" || !Array.isArray(runtime.capabilities)
+        || runtime.capabilities.length > 32 || runtime.capabilities.some(capability => typeof capability !== "string")) return [];
+      return [{ project_id: projectId, id: runtime.id.slice(0, 128), required: runtime.required,
+        capabilities: (runtime.capabilities as string[]).map(capability => capability.slice(0, 64)) }];
+    });
+  }).slice(0, 128) : [];
+  return { extensions, credentials, runtimes };
+}
 function publicListing(row: Listing) {
   // Explicit allowlist: `SELECT *` may acquire internal columns as migrations evolve.
   return {
@@ -59,6 +91,7 @@ function publicListing(row: Listing) {
     tags: parse(row.tags_json, []),
     preview_config: parse(row.preview_config_json),
     planGatedFeatures: parse(row.plan_gated_features_json, []),
+    requirements: publicTemplateRequirements(row.conformance_artifact_json),
   };
 }
 async function certified(env: Env, id: string, artifact: unknown, receipt: unknown) {
