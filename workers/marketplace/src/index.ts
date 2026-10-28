@@ -36,6 +36,12 @@ function bodyError(c: { json: (body: unknown, status: 400 | 413) => Response }, 
 function parse(raw: string | null, fallback: unknown = null): unknown {
   try { return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
 }
+function publicPlanGatedFeatures(raw: string): string[] {
+  const value = parse(raw, []);
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((feature): feature is string => typeof feature === "string")
+    .map(feature => feature.trim().slice(0, 120)).filter(Boolean))].slice(0, 64);
+}
 function publicTemplateRequirements(raw: string | null) {
   const value = parse(raw);
   if (!value || typeof value !== "object" || Array.isArray(value)) return { extensions: [], credentials: [], runtimes: [] };
@@ -90,7 +96,7 @@ function publicListing(row: Listing) {
     updated_at: row.updated_at,
     tags: parse(row.tags_json, []),
     preview_config: parse(row.preview_config_json),
-    planGatedFeatures: parse(row.plan_gated_features_json, []),
+    planGatedFeatures: publicPlanGatedFeatures(row.plan_gated_features_json),
     requirements: publicTemplateRequirements(row.conformance_artifact_json),
   };
 }

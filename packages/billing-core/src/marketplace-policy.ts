@@ -16,6 +16,11 @@ export function validateMarketplacePricing(
   listing: MarketplaceListingPricing
 ): MarketplacePricingValidation {
   const errors: string[] = [];
+  const gates = listing.planGatedFeatures as unknown;
+  if (gates !== undefined && (!Array.isArray(gates) || gates.length > 64 ||
+      gates.some((feature) => typeof feature !== "string" || feature.trim().length === 0 || feature.length > 120))) {
+    errors.push("planGatedFeatures must contain at most 64 non-empty strings of at most 120 characters");
+  }
   if (!Number.isInteger(listing.price_cents) || listing.price_cents < 0) {
     errors.push("price_cents must be a non-negative integer");
   }
