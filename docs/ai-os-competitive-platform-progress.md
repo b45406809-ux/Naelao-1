@@ -11,7 +11,7 @@ This checklist tracks the platform work requested after the Joule comparison. Do
 - [ ] Provide a unified task view with evidence, external action outcomes, approvals, blockers and user-controlled access.
 - [ ] Complete and verify the Foundry build, certification, clean export, fresh-Space installation, upgrade and rollback lifecycle for independent FDEs.
 - [ ] Provide the private team template and scoped benchmarking APIs; measure completion, intervention, latency, cost, failure and duplicate actions.
-- [ ] Create and exercise a domain-neutral reference template with simulated cross-system data, a review canvas, approval, confirmed action and interruption recovery.
+- [ ] Create and exercise a domain-neutral reference template with simulated cross-system data, a review canvas, approval, confirmed action and interruption recovery. (In progress: added a simulation-only reference Space with linked request/order/invoice fixtures, evidence and approval tasks, and an explicit no-live-connection rule. It has no review-canvas extension or executable external action yet, and has not been exercised end to end.)
 - [ ] Perform live acceptance for each supported external provider and document the exact product, version, operations and limitations. SAP support is not implied.
 
 Verification for the completed item: Spaces Worker blueprint activation suite passed (15 tests), including a route-level staged dependency rejection; Spaces Worker typecheck passed. Live deployment and marketplace acceptance were not performed.

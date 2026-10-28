@@ -106,3 +106,73 @@ export const SOFTWARE_DEVELOPMENT_SPACE_TEMPLATE: SpaceBlueprint = {
     },
   ],
 };
+
+/** A simulation-only example of a reviewable cross-system workflow. It ships no connectors,
+ * credentials, or authority to mutate external systems. FDEs can replace the fixture records and
+ * add scoped extensions that provide the real integrations for their own template. */
+export const CROSS_SYSTEM_OPERATIONS_SPACE_TEMPLATE: SpaceBlueprint = {
+  id: "tpl_cross_system_operations_v1",
+  schemaVersion: "2.0",
+  templateCategory: "operations",
+  metadata: {
+    name: "Cross-System Operations (Simulation)",
+    description: "A safe reference workflow for reconciling records, reviewing a proposed action, and resuming interrupted work.",
+    publisher: "naelao",
+    templateVersion: "1.0.0",
+    dogfood: true,
+  },
+  requiredExtensions: [],
+  requiredCredentials: [],
+  projects: [
+    {
+      id: "operations-review",
+      name: "Operations Review",
+      kind: "DualPane",
+      templateMode: "cowork_studio",
+      viewports: {},
+      systemPrompt:
+        "Demonstrate a cross-system workflow using only the simulated fixture records in this project. Cite the record IDs and evidence for every conclusion. Prepare proposed changes as a review packet and wait for explicit approval before any consequential action. This reference Space has no external connections or write capability: never claim that an external system was updated. After interruption, inspect the saved workflow state and resume from the last verified step without repeating completed actions.",
+      initialTasks: [
+        { id: "inspect-fixtures", title: "Inspect the simulated request and source records", status: "pending" },
+        { id: "reconcile-evidence", title: "Reconcile the source records and note conflicts", status: "pending", dependencies: ["inspect-fixtures"] },
+        { id: "prepare-review", title: "Prepare a proposed action with evidence and approval requirements", status: "pending", dependencies: ["reconcile-evidence"] },
+        { id: "record-outcome", title: "After review, record the approved or rejected outcome and resume point", status: "pending", dependencies: ["prepare-review"] },
+      ],
+      starterFiles: [
+        {
+          path: "fixtures/request.json",
+          content: JSON.stringify({
+            fixture_mode: "simulation_only",
+            request_id: "req-demo-001",
+            requester: "Sample User",
+            request: "Reconcile order ORD-1042 with its invoice and prepare a fulfillment decision.",
+            approval_required: true,
+          }, null, 2) + "\n",
+        },
+        {
+          path: "fixtures/source-records.json",
+          content: JSON.stringify({
+            fixture_mode: "simulation_only",
+            order: { record_id: "order-demo-1042", order_id: "ORD-1042", amount_cents: 12500, status: "ready_for_review" },
+            invoice: { record_id: "invoice-demo-771", order_id: "ORD-1042", amount_cents: 12500, status: "unpaid" },
+            customer: { record_id: "customer-demo-205", customer_id: "CUS-205", verification: "simulated_verified" },
+          }, null, 2) + "\n",
+        },
+        {
+          path: "WORKFLOW.md",
+          content:
+            "# Simulated workflow\n\n1. Read the request and source records; retain their record IDs.\n2. Compare order and invoice totals and identify missing or conflicting evidence.\n3. Draft a proposed fulfillment decision. State its evidence, uncertainty, and required approver.\n4. Do not represent a proposal as an external change. This fixture has no live connections.\n5. Record approval or rejection, the evidence reviewed, and the next resumable step. If interrupted, verify saved state before continuing.\n",
+        },
+      ],
+      configuration: {
+        presentation_profile: "guided",
+        reference_template: true,
+        simulation_only: true,
+        external_actions_enabled: false,
+      },
+      roles: [],
+      capabilities: [],
+      executionTier: 1,
+    },
+  ],
+};
