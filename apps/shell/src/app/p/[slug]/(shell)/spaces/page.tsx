@@ -320,9 +320,17 @@ export default function SpacesPage() {
             {activationReview.preview.dependencies.length ? <ul>{activationReview.preview.dependencies.map(item => <li key={item.extension_id}>
               <strong>{item.extension_id}: {item.status}</strong>{item.required_version ? ` (requires ${item.required_version}${item.available_version ? `; available ${item.available_version}` : ""})` : ""}{item.required_digest ? ` · SHA-256 ${item.required_digest.slice(0, 12)}${item.available_digest && item.available_digest !== item.required_digest ? ` (available ${item.available_digest.slice(0, 12)})` : ""}` : ""}
               {item.summary && <div style={{ margin: "4px 0 8px 12px", color: "var(--text3)" }}>
-                {item.summary.primitives.length > 0 && <div>Components: {item.summary.primitives.map(part => `${part.kind} ${part.id}`).join(", ")}</div>}
+                <div>Declared extension surface only; host grants and per-operation checks still control what can run.</div>
+                {item.summary.primitives.length > 0 && <div>Components: {item.summary.primitives.map(part => `${part.kind} ${part.id}${part.scope ? ` [${part.scope}]` : ""}${part.provider ? ` [${part.provider}]` : ""}`).join(", ")}</div>}
+                {item.summary.primitives.map(part => <div key={`${part.kind}:${part.id}`} style={{ marginLeft: 10 }}>
+                  <strong>{part.kind} {part.id}:</strong> {[...(part.tools?.map(tool => `tool ${tool}`) ?? []), ...part.capabilities.map(capability => `capability ${capability}`), ...part.permissions.map(permission => `access ${permission}`), ...(part.inbound_events?.map(event => `in ${event}`) ?? []), ...(part.outbound_events?.map(event => `out ${event}`) ?? [])].join(", ") || "no declared actions"}
+                  {part.resources && ` · ${part.resources.cpu_cores} CPU / ${part.resources.memory_mb} MiB / ${part.resources.timeout_seconds}s`}{part.network_policy && ` · network ${part.network_policy}`}
+                </div>)}
                 {item.summary.capabilities.length > 0 && <div>Capabilities: {item.summary.capabilities.join(", ")}</div>}
                 {item.summary.permissions.length > 0 && <div>Requested access: {item.summary.permissions.join(", ")}</div>}
+                {item.summary.commands.length > 0 && <div>Commands: {item.summary.commands.join(", ")}</div>}
+                {item.summary.background_jobs.length > 0 && <div>Background jobs: {item.summary.background_jobs.map(job => `${job.id}${job.schedule ? ` (${job.schedule})` : ""} · ${job.memory_scope}`).join(", ")}</div>}
+                {item.summary.widgets.length > 0 && <div>Chat widgets: {item.summary.widgets.map(widget => `${widget.event} → ${widget.component}`).join(", ")}</div>}
                 {item.summary.connections.length > 0 && <div>Connections: {item.summary.connections.map(connection => `${connection.provider} (${connection.required ? "required" : "optional"}) — ${connection.purpose}`).join("; ")}</div>}
                 {item.summary.knowledge.length > 0 && <div>Knowledge: {item.summary.knowledge.map(item => `${item.purpose} (${item.access})`).join("; ")}</div>}
                 {item.summary.shared_filesystem.length > 0 && <div>Shared files: {item.summary.shared_filesystem.map(grant => `${grant.path} (${grant.access})`).join(", ")}</div>}
@@ -343,7 +351,7 @@ export default function SpacesPage() {
                     </select>
                   </label>)}
                 </div>}
-                {item.summary.worker_roles.length > 0 && <div>Worker roles: {item.summary.worker_roles.map(role => `${role.id} (${role.execution}/${role.invocation})`).join(", ")}</div>}
+                {item.summary.worker_roles.length > 0 && <div>Worker roles: {item.summary.worker_roles.map(role => `${role.id} (${role.execution}/${role.invocation}; ${role.primitive_ids.join(", ") || "no primitives"}${role.gadget_actions.length ? `; ${role.gadget_actions.map(action => `${action.gadget_id} ${action.operations.join("/")} on ${action.tables.join(",")}`).join("; ")}` : ""})`).join("; ")}</div>}
               </div>}
             </li>)}</ul> : <p>None required</p>}
             <strong>Project runtimes</strong>

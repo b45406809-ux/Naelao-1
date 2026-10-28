@@ -2372,12 +2372,14 @@ export async function activateSpaceTemplate(spaceId: string, blueprintId: string
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
   dependencies: Array<{ extension_id: string; status: "installed" | "disabled" | "not_active" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string; summary?: {
-    primitives: Array<{ kind: string; id: string }>; capabilities: string[]; permissions: string[];
+    primitives: Array<{ kind: string; id: string; capabilities: string[]; permissions: string[]; tools?: string[]; scope?: string; provider?: string; inbound_events?: string[]; outbound_events?: string[]; resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number }; network_policy?: string }>;
+    commands: string[]; background_jobs: Array<{ id: string; schedule?: string; memory_scope: string }>;
+    widgets: Array<{ event: string; component: string }>;
     connections: Array<{ provider: string; purpose: string; required: boolean }>;
     knowledge: Array<{ purpose: string; access: string }>;
     shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
     approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
-    worker_roles: Array<{ id: string; execution: string; invocation: string }>;
+    worker_roles: Array<{ id: string; execution: string; invocation: string; primitive_ids: string[]; gadget_actions: Array<{ gadget_id: string; operations: string[]; tables: string[] }> }>;
   } }>;
   runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;
   setup_credentials: Array<{ name: string; description: string; required: boolean }>;
