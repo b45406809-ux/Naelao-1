@@ -21,7 +21,7 @@ export interface ExtensionActivationSummary {
   commands: string[];
   background_jobs: Array<{ id: string; schedule?: string; memory_scope: string }>;
   widgets: Array<{ event: string; component: string }>;
-  connections: Array<{ provider: string; purpose: string; required: boolean }>;
+  connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;
   knowledge: Array<{ purpose: string; access: string }>;
   shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
   approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
@@ -55,8 +55,8 @@ export function summarizeExtensionForActivation(manifest: ExtensionManifest): Ex
     commands: (manifest.commands ?? []).map(command => command.name).sort(),
     background_jobs: (manifest.daemons ?? []).map(({ id, schedule, memoryScope }) => ({ id, ...(schedule ? { schedule } : {}), memory_scope: memoryScope })).sort((a, b) => a.id.localeCompare(b.id)),
     widgets: (manifest.widgetSubscriptions ?? []).map(({ event, component }) => ({ event, component })).sort((a, b) => `${a.event}:${a.component}`.localeCompare(`${b.event}:${b.component}`)),
-    connections: (bundle?.connections ?? []).map(({ provider, purpose, required }) => ({ provider, purpose, required }))
-      .sort((a, b) => `${a.provider}:${a.purpose}`.localeCompare(`${b.provider}:${b.purpose}`)),
+    connections: (bundle?.connections ?? []).map(({ id, provider, purpose, required }) => ({ id, provider, purpose, required }))
+      .sort((a, b) => `${a.provider}:${a.id}`.localeCompare(`${b.provider}:${b.id}`)),
     knowledge: (bundle?.knowledge ?? []).map(({ purpose, access }) => ({ purpose, access }))
       .sort((a, b) => `${a.access}:${a.purpose}`.localeCompare(`${b.access}:${b.purpose}`)),
     shared_filesystem: (manifest.shared_filesystem ?? []).map(({ path, access }) => ({ path, access })).sort((a, b) => a.path.localeCompare(b.path)),

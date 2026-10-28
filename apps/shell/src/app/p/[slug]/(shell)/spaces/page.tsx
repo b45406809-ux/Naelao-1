@@ -331,7 +331,7 @@ export default function SpacesPage() {
                 {item.summary.commands.length > 0 && <div>Commands: {item.summary.commands.join(", ")}</div>}
                 {item.summary.background_jobs.length > 0 && <div>Background jobs: {item.summary.background_jobs.map(job => `${job.id}${job.schedule ? ` (${job.schedule})` : ""} · ${job.memory_scope}`).join(", ")}</div>}
                 {item.summary.widgets.length > 0 && <div>Chat widgets: {item.summary.widgets.map(widget => `${widget.event} → ${widget.component}`).join(", ")}</div>}
-                {item.summary.connections.length > 0 && <div>Connections: {item.summary.connections.map(connection => `${connection.provider} (${connection.required ? "required" : "optional"}) — ${connection.purpose}`).join("; ")}</div>}
+                {item.summary.connections.length > 0 && <div>Connections: {item.summary.connections.map(connection => `${connection.provider}/${connection.id} (${connection.required ? "required" : "optional"}) — ${connection.purpose}`).join("; ")}</div>}
                 {item.summary.knowledge.length > 0 && <div>Knowledge: {item.summary.knowledge.map(item => `${item.purpose} (${item.access})`).join("; ")}</div>}
                 {item.summary.shared_filesystem.length > 0 && <div>Shared files: {item.summary.shared_filesystem.map(grant => `${grant.path} (${grant.access})`).join(", ")}</div>}
                 {item.summary.approved_shared_filesystem && item.summary.approved_shared_filesystem.length > 0 && <div>Currently approved: {item.summary.approved_shared_filesystem.map(grant => `${grant.path} (${grant.access})`).join(", ")}</div>}
@@ -358,6 +358,10 @@ export default function SpacesPage() {
             {activationReview.preview.runtime_requirements.length ? <ul>{activationReview.preview.runtime_requirements.map(item => <li key={`${item.project_id}:${item.runtime_id}`}>{item.project_id} · {item.runtime_id}: {item.status === "installable" ? "will install after approval" : item.status} ({item.reason}){item.required ? item.status === "installable" ? " · required" : " · required; install is blocked" : " · optional; omitted from this install"}{item.project_slots_required !== undefined && item.project_slots_limit !== undefined ? ` · ${item.project_slots_required} of ${item.project_slots_limit} project container slots planned` : ""}{item.resources ? ` · ${item.resources.cpu_cores} CPU cores / ${item.resources.memory_mb} MiB combined declared resources` : ""}</li>)}</ul> : <p>None declared</p>}
             <strong>Connections to set up</strong>
             {activationReview.preview.setup_credentials.length ? <ul>{activationReview.preview.setup_credentials.map(item => <li key={item.name}>{item.name}{item.required ? " (required)" : " (optional)"}: {item.description}</li>)}</ul> : <p>None required</p>}
+            <strong>Extension provider connections</strong>
+            {activationReview.preview.extension_connections.length ? <ul>{activationReview.preview.extension_connections.map(connection => <li key={`${connection.extension_id}:${connection.connection_id}`}>
+              {connection.extension_id} · {connection.provider}/{connection.connection_id}: {connection.required ? "required" : "optional"} · {connection.required ? "Space-wide provider connection is not supported yet" : "optional provider connection is also unsupported for Space-wide extensions"} — {connection.purpose}
+            </li>)}</ul> : <p>None declared</p>}
             <strong>Template evaluation</strong>
             <p>{activationReview.preview.evaluation.passed}/{activationReview.preview.evaluation.total} checks passed · {activationReview.preview.evaluation.evidence} · issued {new Date(activationReview.preview.evaluation.issued_at).toLocaleDateString()}</p>
             <strong>Cost estimate</strong>

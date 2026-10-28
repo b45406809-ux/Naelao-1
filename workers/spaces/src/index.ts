@@ -685,6 +685,8 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   if (!readiness.ready) {
     const runtimeBlockers = readiness.blockers.filter(blocker => blocker.startsWith("required_runtime_unavailable:"));
     if (runtimeBlockers.length) return c.json({ error_code: "required_runtime_unavailable", runtime_requirements: readiness.runtime_requirements, blockers: runtimeBlockers }, 422);
+    const connectionBlockers = readiness.blockers.filter(blocker => blocker.startsWith("required_space_extension_connection_unsupported:"));
+    if (connectionBlockers.length) return c.json({ error_code: "required_extension_connection_unsupported", extension_connections: readiness.extension_connections, blockers: connectionBlockers }, 422);
     return c.json({ error_code: "required_extension_unavailable", blockers: readiness.blockers }, 422);
   }
   for (const extensionId of blueprint.requiredExtensions ?? []) {
