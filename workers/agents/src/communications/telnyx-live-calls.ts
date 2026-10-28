@@ -79,9 +79,9 @@ export async function dispatchTelnyxVoiceEvent(env: AgentsEnv, binding: Assistan
     await env.PLATFORM_DB.prepare("UPDATE assistant_telnyx_live_calls SET state='gathering',updated_at=? WHERE call_control_id=? AND state='answering'")
       .bind(now, callControlId).run();
     await telnyx.callAction(callControlId, "gather_using_speak", commandId(event.eventId, "code"), {
-      payload: "Enter the eight digit one time call code shown in Naelao.", voice: "female", language: "en-US",
-      minimum_digits: 8, maximum_digits: 8, valid_digits: "0123456789", timeout_secs: 15,
-      inter_digit_timeout_secs: 5, client_state: btoa(JSON.stringify({ bindingId: binding.id, liveCallId: existing.live_call_id })),
+      payload: "Enter the eight digit one time call code shown in Naelao.", voice: "AWS.Polly.Joanna", language: "en-US",
+      minimum_digits: 8, maximum_digits: 8, valid_digits: "0123456789", timeout_millis: 15_000,
+      inter_digit_timeout_millis: 5_000, client_state: btoa(JSON.stringify({ bindingId: binding.id, liveCallId: existing.live_call_id })),
     });
     return { accepted: true, awaiting_code: true };
   }
