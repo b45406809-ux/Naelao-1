@@ -2371,7 +2371,7 @@ export async function activateSpaceTemplate(spaceId: string, blueprintId: string
 
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
-  dependencies: Array<{ extension_id: string; status: "installed" | "disabled" | "not_active" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string; summary?: {
+  dependencies: Array<{ extension_id: string; status: "installed" | "version_unpinned" | "disabled" | "not_active" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string; summary?: {
     primitives: Array<{ kind: string; id: string; capabilities: string[]; permissions: string[]; tools?: string[]; scope?: string; provider?: string; inbound_events?: string[]; outbound_events?: string[]; resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number }; network_policy?: string }>;
     commands: string[]; background_jobs: Array<{ id: string; schedule?: string; memory_scope: string }>;
     widgets: Array<{ event: string; component: string }>;

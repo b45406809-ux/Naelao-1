@@ -4,6 +4,7 @@ export interface BlueprintActivationDependency {
   extension_id: string;
   status:
     | "installed"
+    | "version_unpinned"
     | "disabled"
     | "not_active"
     | "installable"
@@ -70,11 +71,15 @@ export function previewBlueprintActivation(
           ? ("disabled" as const)
           : installed?.status !== "active"
             ? ("not_active" as const)
+          : !requiredVersion
+            ? ("version_unpinned" as const)
           : versionMatches && digestMatches
             ? ("installed" as const)
             : ("version_mismatch" as const)
         : installable
-          ? versionMatches && digestMatches
+          ? !requiredVersion
+            ? ("version_unpinned" as const)
+          : versionMatches && digestMatches
             ? ("installable" as const)
             : ("version_mismatch" as const)
           : ("unavailable" as const);
@@ -93,12 +98,15 @@ export function previewBlueprintActivation(
       (item) =>
         item.status === "unavailable" ||
         item.status === "version_mismatch" ||
+        item.status === "version_unpinned" ||
         item.status === "disabled" ||
         item.status === "not_active"
     )
     .map((item) =>
       item.status === "version_mismatch"
         ? `required_extension_version_mismatch:${item.extension_id}`
+        : item.status === "version_unpinned"
+          ? `required_extension_version_unpinned:${item.extension_id}`
         : item.status === "disabled"
           ? `required_extension_disabled:${item.extension_id}`
           : item.status === "not_active"

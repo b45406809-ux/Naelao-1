@@ -318,7 +318,7 @@ export default function SpacesPage() {
             <p>This preview made no changes and granted no access.</p>
             <strong>Extensions</strong>
             {activationReview.preview.dependencies.length ? <ul>{activationReview.preview.dependencies.map(item => <li key={item.extension_id}>
-              <strong>{item.extension_id}: {item.status}</strong>{item.required_version ? ` (requires ${item.required_version}${item.available_version ? `; available ${item.available_version}` : ""})` : ""}{item.required_digest ? ` · SHA-256 ${item.required_digest.slice(0, 12)}${item.available_digest && item.available_digest !== item.required_digest ? ` (available ${item.available_digest.slice(0, 12)})` : ""}` : ""}
+              <strong>{item.extension_id}: {item.status}</strong>{item.required_version ? ` (requires ${item.required_version}${item.available_version ? `; available ${item.available_version}` : ""})` : item.status === "version_unpinned" ? " (pin an exact release before installing this template)" : ""}{item.required_digest ? ` · SHA-256 ${item.required_digest.slice(0, 12)}${item.available_digest && item.available_digest !== item.required_digest ? ` (available ${item.available_digest.slice(0, 12)})` : ""}` : ""}
               {item.summary && <div style={{ margin: "4px 0 8px 12px", color: "var(--text3)" }}>
                 <div>Declared extension surface only; host grants and per-operation checks still control what can run.</div>
                 {item.summary.primitives.length > 0 && <div>Components: {item.summary.primitives.map(part => `${part.kind} ${part.id}${part.scope ? ` [${part.scope}]` : ""}${part.provider ? ` [${part.provider}]` : ""}`).join(", ")}</div>}
