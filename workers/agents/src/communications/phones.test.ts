@@ -680,4 +680,63 @@ describe("assistant telephone safety and lifecycle", () => {
   expect((await f.act("phone-status") as {extension_lines:unknown[]}).extension_lines).toHaveLength(0);
  });
 
+ it("keeps public extension voice turn-by-turn and returns only host-rendered actions", async () => {
+  const f = await phoneFixture();
+  const dispatchedRequests: Request[] = [];
+  const dispatch = vi.fn(async (request: Request) => {
+   dispatchedRequests.push(request.clone());
+   const body = await request.json() as { validateOnly?: boolean; event?: { type: string; payload: Record<string, unknown> } };
+   if (body.validateOnly) return Response.json({ valid: true });
+   if (body.event?.type === "call.received")
+    return Response.json({ response: { actions: [
+     { type: "say", text: "Welcome to the extension." },
+     { type: "gather", input: "speech", text: "How can I help?" },
+    ] } });
+   return Response.json({ response: { actions: [
+    { type: "say", text: `I heard: ${String(body.event?.payload.speech ?? "")}` },
+    { type: "hangup" },
+   ] } });
+  });
+  f.env.AGENTS_WORKER = { fetch: dispatch } as unknown as Fetcher;
+  await f.act("phone-handler", { installation_id: "extension", handler_sha256: "a".repeat(64), confirm: true });
+  await f.db.prepare("UPDATE assistant_phone_bindings SET policy_json=? WHERE id=?")
+   .bind(JSON.stringify({ ...defaultPhonePolicy, allowSpeechInput: true }), f.binding.id).run();
+
+  const app = new Hono<{ Bindings: AgentsEnv }>();
+  registerPhoneWebhooks(app);
+  const sid = "CA" + "e".repeat(32);
+  const invoke = async (event: "answer" | "menu", extra: Record<string, string> = {}) => {
+   const path = `/assistant-phone/twilio/${f.binding.id}/${event}`;
+   const params = { AccountSid: account, CallSid: sid, From: other, To: number, ...extra };
+   return app.request(path, {
+    method: "POST",
+    headers: {
+     "content-type": "application/x-www-form-urlencoded",
+     "x-twilio-signature": getExpectedTwilioSignature(token, `https://phone.example.com${path}`, params),
+    },
+    body: new URLSearchParams(params).toString(),
+   }, f.env);
+  };
+
+  const first = await invoke("answer");
+  expect(first.status).toBe(200);
+  const firstXml = await first.text();
+  expect(firstXml).toContain("Welcome to the extension.");
+  expect(firstXml).toContain('<Gather input="speech"');
+  expect(firstXml).toContain("/assistant-phone/twilio/");
+  const next = await invoke("menu", { SpeechResult: "Check my order", Confidence: "0.91" });
+  expect(next.status).toBe(200);
+  expect(await next.text()).toContain("I heard: Check my order");
+  const dispatched = dispatchedRequests
+   .filter((request) => request.url.endsWith("/phone-extension-dispatch"));
+  expect(dispatched).toHaveLength(3); // validation plus two voice turns
+  const voiceEvents: string[] = [];
+  for (const request of dispatched.slice(1)) {
+   const body = await request.clone().json() as { event: { type: string; payload: Record<string, unknown> } };
+   voiceEvents.push(body.event.type);
+  }
+  expect(voiceEvents).toEqual(["call.received", "call.speech"]);
+  expect((await dispatched[2]!.clone().json() as { event: { payload: Record<string, unknown> } }).event.payload).toMatchObject({ speech: "Check my order", confidence: 0.91 });
+ });
+
 });
