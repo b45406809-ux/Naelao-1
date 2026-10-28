@@ -42,6 +42,7 @@ import { evaluationPasses, transitionCustomModelLifecycle, validateAdapterEvalua
 import { decodeSpaceArchive, encodeSpaceArchive, readSpaceArchiveObject, spaceArchiveChecksum, spaceArchiveKeyVersion, spaceArchiveKeyringFromBindings, topologicalRestoreOrder, uploadArchiveResumable, type ResumableArchiveUploadState, type SpaceArchivePayload } from "./space-backup.js";
 import { fingerprintRetainedMessages, forecastSpaceStorage, retainedMessageBytes, type RetainedMessageRow } from "./space-retention.js";
 import { decryptTestSet, encryptTestSet, validateCustomModelTestSet } from "./custom-model-test-vault.js";
+import { summarizeExtensionForActivation } from "../extension-activation-summary.js";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -2981,7 +2982,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const installations = await Promise.all(rows.map(async ({ manifest_json, ...row }) => {
           try {
             const manifest = JSON.parse(manifest_json) as { releaseVersion?: string; version?: string; bundle?: { version?: string } };
-            return { ...row, release_version: row.release_version ?? manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version ?? null, manifest_sha256: await digestExtensionManifest(JSON.parse(manifest_json) as ExtensionManifest) };
+            const parsed = JSON.parse(manifest_json) as ExtensionManifest;
+            return { ...row, release_version: row.release_version ?? manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version ?? null,
+              manifest_sha256: await digestExtensionManifest(parsed), activation_summary: summarizeExtensionForActivation(parsed) };
           } catch { return { ...row, release_version: null, manifest_sha256: null }; }
         }));
         return Response.json({ installations });

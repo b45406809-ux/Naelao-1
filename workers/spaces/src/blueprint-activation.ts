@@ -13,6 +13,8 @@ export interface BlueprintActivationDependency {
   available_version?: string;
   required_digest?: string;
   available_digest?: string;
+  /** Declared runtime surface only; it does not imply that the dependency will be granted. */
+  summary?: import("./extension-activation-summary.js").ExtensionActivationSummary;
 }
 
 export interface BlueprintActivationPreview {
@@ -34,11 +36,11 @@ export function previewBlueprintActivation(
   blueprint: SpaceBlueprint,
   installedExtensions: ReadonlyMap<
     string,
-    { version: string | null; digest: string | null; status?: string }
+    { version: string | null; digest: string | null; status?: string; summary?: BlueprintActivationDependency["summary"] }
   >,
   installableExtensions: ReadonlyMap<
     string,
-    { version: string; digest: string }
+    { version: string; digest: string; summary?: BlueprintActivationDependency["summary"] }
   >,
   runtimeInstallability: ReadonlyMap<string, { installable: boolean; reason?: BlueprintActivationPreview["runtime_requirements"][number]["reason"] }> = new Map()
 ): BlueprintActivationPreview {
@@ -57,6 +59,7 @@ export function previewBlueprintActivation(
         ? (installed?.digest ?? undefined)
         : installable?.digest;
       const requiredDigest = blueprint.requiredExtensionDigests?.[extension_id];
+      const summary = isInstalled ? installed?.summary : installable?.summary;
       const versionMatches =
         !requiredVersion || availableVersion === requiredVersion;
       const digestMatches =
@@ -81,6 +84,7 @@ export function previewBlueprintActivation(
         ...(availableVersion ? { available_version: availableVersion } : {}),
         ...(requiredDigest ? { required_digest: requiredDigest } : {}),
         ...(availableDigest ? { available_digest: availableDigest } : {}),
+        ...(summary ? { summary } : {}),
       };
     });
   const blockers = dependencies

@@ -301,11 +301,26 @@ export default function SpacesPage() {
             <strong>{activationReview.preview.ready ? "Ready for your approval" : "Cannot install yet"}</strong>
             <p>This preview made no changes and granted no access.</p>
             <strong>Extensions</strong>
-            {activationReview.preview.dependencies.length ? <ul>{activationReview.preview.dependencies.map(item => <li key={item.extension_id}>{item.extension_id}: {item.status}{item.required_version ? ` (requires ${item.required_version}${item.available_version ? `; available ${item.available_version}` : ""})` : ""}{item.required_digest ? ` · SHA-256 ${item.required_digest.slice(0, 12)}${item.available_digest && item.available_digest !== item.required_digest ? ` (available ${item.available_digest.slice(0, 12)})` : ""}` : ""}</li>)}</ul> : <p>None required</p>}
+            {activationReview.preview.dependencies.length ? <ul>{activationReview.preview.dependencies.map(item => <li key={item.extension_id}>
+              <strong>{item.extension_id}: {item.status}</strong>{item.required_version ? ` (requires ${item.required_version}${item.available_version ? `; available ${item.available_version}` : ""})` : ""}{item.required_digest ? ` · SHA-256 ${item.required_digest.slice(0, 12)}${item.available_digest && item.available_digest !== item.required_digest ? ` (available ${item.available_digest.slice(0, 12)})` : ""}` : ""}
+              {item.summary && <div style={{ margin: "4px 0 8px 12px", color: "var(--text3)" }}>
+                {item.summary.primitives.length > 0 && <div>Components: {item.summary.primitives.map(part => `${part.kind} ${part.id}`).join(", ")}</div>}
+                {item.summary.capabilities.length > 0 && <div>Capabilities: {item.summary.capabilities.join(", ")}</div>}
+                {item.summary.permissions.length > 0 && <div>Requested access: {item.summary.permissions.join(", ")}</div>}
+                {item.summary.connections.length > 0 && <div>Connections: {item.summary.connections.map(connection => `${connection.provider} (${connection.required ? "required" : "optional"}) — ${connection.purpose}`).join("; ")}</div>}
+                {item.summary.knowledge.length > 0 && <div>Knowledge: {item.summary.knowledge.map(item => `${item.purpose} (${item.access})`).join("; ")}</div>}
+                {item.summary.shared_filesystem.length > 0 && <div>Shared files: {item.summary.shared_filesystem.map(grant => `${grant.path} (${grant.access})`).join(", ")}</div>}
+                {item.summary.worker_roles.length > 0 && <div>Worker roles: {item.summary.worker_roles.map(role => `${role.id} (${role.execution}/${role.invocation})`).join(", ")}</div>}
+              </div>}
+            </li>)}</ul> : <p>None required</p>}
             <strong>Project runtimes</strong>
             {activationReview.preview.runtime_requirements.length ? <ul>{activationReview.preview.runtime_requirements.map(item => <li key={`${item.project_id}:${item.runtime_id}`}>{item.project_id} · {item.runtime_id}: {item.status === "installable" ? "will install after approval" : item.status} ({item.reason}){item.required ? item.status === "installable" ? " · required" : " · required; install is blocked" : " · optional; omitted from this install"}</li>)}</ul> : <p>None declared</p>}
             <strong>Connections to set up</strong>
             {activationReview.preview.setup_credentials.length ? <ul>{activationReview.preview.setup_credentials.map(item => <li key={item.name}>{item.name}{item.required ? " (required)" : " (optional)"}: {item.description}</li>)}</ul> : <p>None required</p>}
+            <strong>Template evaluation</strong>
+            <p>{activationReview.preview.evaluation.passed}/{activationReview.preview.evaluation.total} checks passed · {activationReview.preview.evaluation.evidence} · issued {new Date(activationReview.preview.evaluation.issued_at).toLocaleDateString()}</p>
+            <strong>Cost estimate</strong>
+            <p>Not available in this preview. Provider charges and runtime usage are not calculated here.</p>
             {!activationReview.preview.ready && <><p role="alert">{activationReview.preview.blockers.join(", ")}</p><Button variant="secondary" disabled={refreshingPreview} onClick={() => void recheckTemplateActivation()}>{refreshingPreview ? "Checking…" : "Recheck dependencies"}</Button></>}
           </div>}
         </form>

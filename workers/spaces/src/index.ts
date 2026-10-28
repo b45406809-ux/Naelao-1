@@ -50,6 +50,7 @@ import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasu
 import { previewBlueprintActivation } from "./blueprint-activation.js";
 import { assertExecutionPlanResources, EntitlementsChecker, getExecutionLimits, isPlanTierAtLeast } from "@naelao/entitlements";
 import { findUnsafeProjectExtensionUpgrade } from "./extension-upgrade-guard.js";
+import { summarizeExtensionForActivation, type ExtensionActivationSummary } from "./extension-activation-summary.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { ConformanceSandboxDO, ConformanceState } from "./conformance-state.js";
@@ -277,13 +278,13 @@ function getCallerIdentity(c: { req: { header: (h: string) => string | undefined
   };
 }
 type ExtensionReleasePin = { version: string | null; digest: string | null; status?: string };
-function installedSpaceExtensionPins(rows: Array<{ extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null }>): Map<string, ExtensionReleasePin> {
+function installedSpaceExtensionPins(rows: Array<{ extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; activation_summary?: ExtensionActivationSummary }>): Map<string, ExtensionReleasePin & { summary?: ExtensionActivationSummary }> {
   const pins = new Map<string, ExtensionReleasePin>();
   for (const row of rows) {
     if (row.scope !== "SPACE_SHARED" || typeof row.extension_id !== "string") continue;
     const previous = pins.get(row.extension_id);
     if (previous?.status === "active" || (previous && row.status !== "active")) continue;
-    pins.set(row.extension_id, { version: row.release_version ?? null, digest: row.manifest_sha256 ?? null, ...(row.status ? { status: row.status } : {}) });
+    pins.set(row.extension_id, { version: row.release_version ?? null, digest: row.manifest_sha256 ?? null, ...(row.status ? { status: row.status } : {}), ...(row.activation_summary ? { summary: row.activation_summary } : {}) });
   }
   return pins;
 }
@@ -338,13 +339,13 @@ export function blueprintRuntimeInstallability(blueprint: SpaceBlueprint, images
   }
   return result;
 }
-async function installableSpaceExtensionPins(): Promise<Map<string, { version: string; digest: string }>> {
-  const entries = await Promise.all(Object.entries(DOGFOOD_EXTENSION_BY_ID).filter(([, manifest]) => manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)).map(async ([id, raw]) => {
+async function installableSpaceExtensionPins(): Promise<Map<string, { version: string; digest: string; summary?: ExtensionActivationSummary }>> {
+  const entries: Array<readonly [string, { version: string; digest: string; summary: ExtensionActivationSummary }] | null> = await Promise.all(Object.entries(DOGFOOD_EXTENSION_BY_ID).filter(([, manifest]) => manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3)).map(async ([id, raw]) => {
     const manifest = validateExtensionManifest(raw, { gatekeeperCapabilities: raw.capabilityRequirements });
     const version = manifest.releaseVersion ?? manifest.bundle?.version;
-    return version ? [id, { version, digest: await digestExtensionManifest(manifest) }] as const : null;
+    return version ? [id, { version, digest: await digestExtensionManifest(manifest), summary: summarizeExtensionForActivation(manifest) }] as const : null;
   }));
-  return new Map(entries.filter((entry): entry is readonly [string, { version: string; digest: string }] => entry !== null));
+  return new Map(entries.filter((entry): entry is readonly [string, { version: string; digest: string; summary: ExtensionActivationSummary }] => entry !== null));
 }
 async function authorizeProductEndUserSpace(
   c: { env: Env; req: { header: (h: string) => string | undefined } },
@@ -586,9 +587,13 @@ app.get("/spaces/:spaceId/blueprints/:blueprintId/activation-preview", async c =
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const result = await stub.fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
   if (!result.ok) return c.json({ error_code: "extension_readiness_unavailable" }, 503);
-  const rows = await result.json<{ installations: Array<{ extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null }> }>();
+  const rows = await result.json<{ installations: Array<{ extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; activation_summary?: ExtensionActivationSummary }> }>();
   const preview = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(rows.installations ?? []), await installableSpaceExtensionPins(), runtimeReadiness);
-  return c.json({ ...preview, blueprint_id: blueprint.id, target_space_id: spaceId, security });
+  return c.json({ ...preview, blueprint_id: blueprint.id, target_space_id: spaceId, security,
+    evaluation: { passed: value.conformanceCertificate.passed, total: value.conformanceCertificate.total,
+      evidence: value.conformanceCertificate.evidence ?? "literal-lint", issued_at: value.conformanceCertificate.issuedAt },
+    cost_estimate: { available: false as const, reason: "provider_and_runtime_costs_are_not_calculated_by_template_preview" },
+  });
 });
 
 app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
@@ -645,7 +650,7 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
   const targetId = c.env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET));
   const dependenciesResponse = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: "__all__" })}`));
   if (!dependenciesResponse.ok) return c.json({ error_code: "extension_readiness_unavailable" }, 503);
-  const dependencies = await dependenciesResponse.json<{ installations: Array<{ extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null }> }>();
+  const dependencies = await dependenciesResponse.json<{ installations: Array<{ extension_id?: string; scope?: string; status?: string; release_version?: string | null; manifest_sha256?: string | null; activation_summary?: ExtensionActivationSummary }> }>();
   const readiness = previewBlueprintActivation(blueprint, installedSpaceExtensionPins(dependencies.installations ?? []), await installableSpaceExtensionPins(), runtimeReadiness);
   if (!readiness.ready) {
     const runtimeBlockers = readiness.blockers.filter(blocker => blocker.startsWith("required_runtime_unavailable:"));
