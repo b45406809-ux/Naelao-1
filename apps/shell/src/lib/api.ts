@@ -2374,7 +2374,7 @@ export interface SpaceTemplateActivationPreview {
     shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
     worker_roles: Array<{ id: string; execution: string; invocation: string }>;
   } }>;
-  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted" }>;
+  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;
   setup_credentials: Array<{ name: string; description: string; required: boolean }>;
   blockers: string[]; requires_human_activation: true; installs_or_grants_applied: false;
   security: { publishable: boolean; blockers?: string[] };

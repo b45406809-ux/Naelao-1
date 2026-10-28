@@ -20,7 +20,7 @@ export interface BlueprintActivationDependency {
 export interface BlueprintActivationPreview {
   ready: boolean;
   dependencies: BlueprintActivationDependency[];
-  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted" }>;
+  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;
   setup_credentials: Array<{
     name: string;
     description: string;
@@ -42,7 +42,7 @@ export function previewBlueprintActivation(
     string,
     { version: string; digest: string; summary?: BlueprintActivationDependency["summary"] }
   >,
-  runtimeInstallability: ReadonlyMap<string, { installable: boolean; reason?: BlueprintActivationPreview["runtime_requirements"][number]["reason"] }> = new Map()
+  runtimeInstallability: ReadonlyMap<string, { installable: boolean; reason?: BlueprintActivationPreview["runtime_requirements"][number]["reason"]; projectSlotsRequired?: number; projectSlotsLimit?: number; resources?: { cpuCores: number; memoryMb: number } }> = new Map()
 ): BlueprintActivationPreview {
   const dependencies = [...new Set(blueprint.requiredExtensions ?? [])]
     .sort()
@@ -113,6 +113,9 @@ export function previewBlueprintActivation(
       project_id, runtime_id: requirement.id, required: requirement.required,
       status: (requirement.required ? installable ? "installable" : "unavailable" : "deferred") as "installable" | "unavailable" | "deferred",
       reason: requirement.required ? installable ? "owner_approval_required" as const : availability?.reason ?? "runtime_provisioning_unavailable" as const : "optional_runtime_omitted" as const,
+      ...(requirement.required && availability?.projectSlotsRequired !== undefined ? { project_slots_required: availability.projectSlotsRequired } : {}),
+      ...(requirement.required && availability?.projectSlotsLimit !== undefined ? { project_slots_limit: availability.projectSlotsLimit } : {}),
+      ...(availability?.resources ? { resources: { cpu_cores: availability.resources.cpuCores, memory_mb: availability.resources.memoryMb } } : {}),
     };
   }));
   for (const requirement of runtime_requirements) if (requirement.required && requirement.status === "unavailable")

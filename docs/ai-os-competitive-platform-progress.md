@@ -5,7 +5,7 @@ This checklist tracks the platform work requested after the Joule comparison. Do
 - [x] Block Space Template activation when a required shared extension is staged or has an unknown installation state; expose the state in the preview contract.
 - [ ] Generalize certified extension dependency discovery and installation beyond the first-party dogfood catalog, including explicit grant review, pinned releases, tenant entitlement and upgrade/rollback.
 - [ ] Complete SDK and host capability discovery for connections, tools, workflows, workers, knowledge, canvases and widgets, with per-operation scope and grant enforcement.
-- [ ] Deliver install previews covering supported operations, connection requirements, permissions, plan limits, costs and evaluated limitations without implying unverified readiness. (In progress: extension manifest summaries and signed evaluation counts are shown; provider/runtime cost estimation is explicitly unavailable.)
+- [ ] Deliver install previews covering supported operations, connection requirements, permissions, plan limits, costs and evaluated limitations without implying unverified readiness. (In progress: extension manifest summaries, planned container slots/resources and signed evaluation counts are shown; provider/runtime cost estimation is explicitly unavailable.)
 - [ ] Complete adaptive workspace assembly using approved installed components and persistent user-editable artifacts.
 - [ ] Verify durable Space and Project assistant execution, blackboard policy, worker scope, progress, escalation and channel continuity end to end.
 - [ ] Provide a unified task view with evidence, external action outcomes, approvals, blockers and user-controlled access.

@@ -317,8 +317,8 @@ async function getPlanAwareRuntimeCatalogue(env: Env, tenantId: string): Promise
   return { plan, images };
 }
 type RuntimeReadinessReason = "runtime_provisioning_unavailable" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required";
-export function blueprintRuntimeInstallability(blueprint: SpaceBlueprint, images: readonly RuntimeCatalogueRecord[], plan = "free"): Map<string, { installable: boolean; reason?: RuntimeReadinessReason }> {
-  const result = new Map<string, { installable: boolean; reason?: RuntimeReadinessReason }>();
+export function blueprintRuntimeInstallability(blueprint: SpaceBlueprint, images: readonly RuntimeCatalogueRecord[], plan = "free"): Map<string, { installable: boolean; reason?: RuntimeReadinessReason; projectSlotsRequired: number; projectSlotsLimit: number; resources?: { cpuCores: number; memoryMb: number } }> {
+  const result = new Map<string, { installable: boolean; reason?: RuntimeReadinessReason; projectSlotsRequired: number; projectSlotsLimit: number; resources?: { cpuCores: number; memoryMb: number } }>();
   for (const project of blueprint.projects) for (const requirement of project.runtimeRequirements ?? []) {
     const requiredReleases = new Map<string, number>();
     for (const needed of project.runtimeRequirements ?? []) {
@@ -328,6 +328,16 @@ export function blueprintRuntimeInstallability(blueprint: SpaceBlueprint, images
       requiredReleases.set(manifest?.id ?? needed.id, manifest?.containers?.length ?? 1);
     }
     const requiredSlots = [...requiredReleases.values()].reduce((sum, count) => sum + count, 0);
+    const resourcesByRelease = new Map<string, Array<{ cpuCores?: number; memoryMb?: number }>>();
+    for (const item of project.runtimeRequirements ?? []) {
+      if (!item.required) continue;
+      const release = images.find(candidate => candidate.id === item.id);
+      const manifest = release?.install_manifest as { id?: string; containers?: Array<{ resources?: { cpuCores?: number; memoryMb?: number } }> } | undefined;
+      resourcesByRelease.set(manifest?.id ?? item.id, (manifest?.containers ?? []).map(container => container.resources ?? {}));
+    }
+    const requestedResources = [...resourcesByRelease.values()].flat().filter((value): value is { cpuCores: number; memoryMb: number } =>
+      typeof value.cpuCores === "number" && typeof value.memoryMb === "number")
+      .reduce((total, resources) => ({ cpuCores: total.cpuCores + resources.cpuCores, memoryMb: total.memoryMb + resources.memoryMb }), { cpuCores: 0, memoryMb: 0 });
     const key = `${project.id ?? project.name}:${requirement.id}`, image = images.find(item => item.id === requirement.id);
     let reason: RuntimeReadinessReason | undefined;
     if (!image?.available) reason = "runtime_not_deployed";
@@ -335,7 +345,9 @@ export function blueprintRuntimeInstallability(blueprint: SpaceBlueprint, images
     else if (!image.plan_available) reason = image.plan_reason === "subscription_resource_limit" ? "subscription_resource_limit" : "subscription_plan_required";
     else if (requirement.required && requiredSlots > getExecutionLimits(plan).installedContainersPerWorkspace) reason = "subscription_slot_limit";
     else if ((typeof project.configuration?.executionCeiling === "number" ? project.configuration.executionCeiling : 5) < 6) reason = "project_execution_ceiling_required";
-    result.set(key, reason ? { installable: false, reason } : { installable: true });
+    result.set(key, { installable: !reason, ...(reason ? { reason } : {}), projectSlotsRequired: requiredSlots,
+      projectSlotsLimit: getExecutionLimits(plan).installedContainersPerWorkspace,
+      ...(requirement.required && requestedResources.cpuCores > 0 ? { resources: requestedResources } : {}) });
   }
   return result;
 }
