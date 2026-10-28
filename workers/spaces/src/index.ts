@@ -691,6 +691,17 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     if (pinBlockers.length) return c.json({ error_code: "required_extension_version_unpinned", dependencies: readiness.dependencies, blockers: pinBlockers }, 422);
     return c.json({ error_code: "required_extension_unavailable", blockers: readiness.blockers }, 422);
   }
+  const newlyInstalledDependencies: Array<{ extensionId: string; instanceId: string }> = [];
+  const rollbackNewDependencies = async () => {
+    const failures: string[] = [];
+    for (const dependency of [...newlyInstalledDependencies].reverse()) {
+      const removed = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/extension-installation?${new URLSearchParams({
+        instance_id: dependency.instanceId, tenant_id: tenantId, space_id: spaceId,
+      })}`, { method: "DELETE" }));
+      if (!removed.ok) failures.push(dependency.extensionId);
+    }
+    return failures;
+  };
   for (const extensionId of blueprint.requiredExtensions ?? []) {
     if (readiness.dependencies.some(dependency => dependency.extension_id === extensionId && dependency.status === "installed")) {
       continue;
@@ -698,12 +709,21 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     if (!DOGFOOD_EXTENSION_BY_ID[extensionId]) continue;
     // Do not grant shared filesystem access until the template and its runtimes have installed.
     const installed = await installFirstPartySpaceExtension(c.env, tenantId, spaceId, "naelao-template", extensionId);
-    if (!installed.ok) return c.json({ error_code: "required_extension_install_failed", extension_id: extensionId, reason: installed.error }, 503);
+    if (!installed.ok) {
+      const rollbackFailures = await rollbackNewDependencies();
+      return c.json({ error_code: rollbackFailures.length ? "required_extension_install_rollback_failed" : "required_extension_install_failed",
+        extension_id: extensionId, reason: installed.error, ...(rollbackFailures.length ? { rollback_failures: rollbackFailures } : {}) }, 503);
+    }
+    newlyInstalledDependencies.push({ extensionId, instanceId: installed.installationId });
   }
   const response = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/blueprints/instantiate", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ blueprint, target_space_id: spaceId, activation_key: blueprint.id }),
   }));
-  if (!response.ok) return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  if (!response.ok) {
+    const rollbackFailures = await rollbackNewDependencies();
+    if (rollbackFailures.length) return c.json({ error_code: "template_activation_rollback_failed", rollback_failures: rollbackFailures }, 503);
+    return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  }
   const activation = await response.clone().json<{ projectIds?: string[] }>().catch(() => ({} as { projectIds?: string[] }));
   if (hasRuntimeRequirements) {
     const projectIds = activation.projectIds ?? [];
@@ -774,7 +794,12 @@ async function installFirstPartySpaceExtension(env: Env, tenantId: string, space
     const actor = gadgetActorId(env.MICRO_APP_DO, { scope: "SPACE_SHARED", spaceId, appId: gadget.id });
     const initialized = await env.MICRO_APP_DO.get(actor).fetch(new Request("http://micro-app/initialize", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ appId: gadget.id, scope: "SPACE_SHARED", gadgetTier: 3, defaultSchemaSql: gadget.defaultSchemaSql, migrations: gadget.migrations ?? [], html }) }));
-    if (!initialized.ok) return { ok: false, error: "extension_canvas_initialization_failed" };
+    if (!initialized.ok) {
+      const removed = await spaceStub.fetch(new Request(`http://space-do/extension-installation?${new URLSearchParams({
+        instance_id: result.installationId, tenant_id: tenantId, space_id: spaceId,
+      })}`, { method: "DELETE" }));
+      return { ok: false, error: removed.ok ? "extension_canvas_initialization_failed" : "extension_canvas_initialization_rollback_failed" };
+    }
   }
   return { ok: true, installationId: result.installationId };
 }
