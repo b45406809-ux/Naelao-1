@@ -688,30 +688,12 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
     return c.json({ error_code: "required_extension_unavailable", blockers: readiness.blockers }, 422);
   }
   for (const extensionId of blueprint.requiredExtensions ?? []) {
-    const hasExplicitGrantSelection = approvedFilesystem.has(extensionId);
-    const grants = approvedFilesystem.get(extensionId) ?? [];
-    const existing = installedSpaceExtensionPins(dependencies.installations ?? []).get(extensionId);
-    if (!DOGFOOD_EXTENSION_BY_ID[extensionId]) {
-      if (hasExplicitGrantSelection && existing?.instanceId && readiness.dependencies.some(dependency => dependency.extension_id === extensionId && dependency.status === "installed")) {
-        const updated = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/extension-shared-filesystem-grants", {
-          method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
-          body: JSON.stringify({ tenantId, spaceId, instanceId: existing.instanceId, approvedBy: identity.userId, grants }),
-        }));
-        if (!updated.ok) return c.json({ error_code: "shared_filesystem_approval_failed", extension_id: extensionId }, 422);
-      }
-      continue;
-    }
     if (readiness.dependencies.some(dependency => dependency.extension_id === extensionId && dependency.status === "installed")) {
-      if (hasExplicitGrantSelection && existing?.instanceId) {
-        const updated = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/extension-shared-filesystem-grants", {
-          method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
-          body: JSON.stringify({ tenantId, spaceId, instanceId: existing.instanceId, approvedBy: identity.userId, grants }),
-        }));
-        if (!updated.ok) return c.json({ error_code: "shared_filesystem_approval_failed", extension_id: extensionId }, 422);
-      }
       continue;
     }
-    const installed = await installFirstPartySpaceExtension(c.env, tenantId, spaceId, "naelao-template", extensionId, grants);
+    if (!DOGFOOD_EXTENSION_BY_ID[extensionId]) continue;
+    // Do not grant shared filesystem access until the template and its runtimes have installed.
+    const installed = await installFirstPartySpaceExtension(c.env, tenantId, spaceId, "naelao-template", extensionId);
     if (!installed.ok) return c.json({ error_code: "required_extension_install_failed", extension_id: extensionId, reason: installed.error }, 503);
   }
   const response = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/blueprints/instantiate", {
@@ -751,6 +733,18 @@ app.post("/spaces/:spaceId/blueprints/:blueprintId/activate", async (c) => {
         if (!installResponse.ok) return c.json({ error_code: "required_runtime_install_failed", project_id: projectId, runtime_id: requirement.id }, 503);
       }
     }
+  }
+  for (const [extensionId, grants] of approvedFilesystem) {
+    const latest = await c.env.SPACE_DO.get(targetId).fetch(new Request(`http://space-do/extension-installations?${new URLSearchParams({ tenant_id: tenantId, space_id: spaceId, extension_id: extensionId })}`));
+    if (!latest.ok) return c.json({ error_code: "shared_filesystem_approval_failed", extension_id: extensionId }, 503);
+    const installations = await latest.json<{ installations: Array<{ instance_id?: string; scope?: string; status?: string }> }>();
+    const active = installations.installations?.find(item => item.scope === "SPACE_SHARED" && item.status === "active" && item.instance_id);
+    if (!active?.instance_id) return c.json({ error_code: "shared_filesystem_installation_missing", extension_id: extensionId }, 409);
+    const updated = await c.env.SPACE_DO.get(targetId).fetch(new Request("http://space-do/extension-shared-filesystem-grants", {
+      method: "POST", headers: { "content-type": "application/json", "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+      body: JSON.stringify({ tenantId, spaceId, instanceId: active.instance_id, approvedBy: identity.userId, grants }),
+    }));
+    if (!updated.ok) return c.json({ error_code: "shared_filesystem_approval_failed", extension_id: extensionId }, 422);
   }
   await c.env.PLATFORM_DB.prepare("UPDATE spaces SET config_json=json_remove(COALESCE(config_json,'{}'),'$.pending_blueprint_id') WHERE id=? AND tenant_id=? AND json_extract(config_json,'$.pending_blueprint_id')=?")
     .bind(spaceId, tenantId, blueprint.id).run();
