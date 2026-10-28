@@ -45,6 +45,7 @@ export default function SpacesPage() {
   const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
   const [activatingTemplate, setActivatingTemplate] = React.useState(false);
   const [refreshingPreview, setRefreshingPreview] = React.useState(false);
+  const [openingPendingTemplate, setOpeningPendingTemplate] = React.useState<string | null>(null);
   const pendingPreviewed = React.useRef(new Set<string>());
   const creds = React.useMemo(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session]);
   const selectedTemplate = templates.find(template => template.id === templateId);
@@ -153,6 +154,22 @@ export default function SpacesPage() {
       setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
     } catch (error) { setCreateError(`Could not refresh dependency status: ${error instanceof Error ? error.message : "preview failed"}`); }
     finally { setRefreshingPreview(false); }
+  }
+
+  async function reviewPendingTemplate(space: SpaceSummary) {
+    if (!creds || !space.pending_blueprint_id || openingPendingTemplate) return;
+    setOpeningPendingTemplate(space.id);
+    try {
+      const preview = await previewSpaceTemplateActivation(space.id, space.pending_blueprint_id, creds);
+      setActivationReview({ spaceId: space.id, blueprintId: space.pending_blueprint_id, preview });
+      setCreatedSpaceId(space.id);
+      setCreateError(preview.ready ? null : `Template dependencies need attention: ${preview.blockers.join(", ")}`);
+      setCreateOpen(true);
+    } catch (error) {
+      show(`Template setup review unavailable: ${error instanceof Error ? error.message : "preview failed"}`);
+    } finally {
+      setOpeningPendingTemplate(null);
+    }
   }
 
   React.useEffect(() => { void refresh(); }, [refresh]);
@@ -276,6 +293,21 @@ export default function SpacesPage() {
           </div>
         </>
       )}
+
+      {visibleSpaces.some(space => space.pending_blueprint_id && (space.role === "owner" || space.role === "admin")) && <div style={{ marginTop: 20 }}>
+        <div className="section-label">Template setup to finish</div>
+        <div className="settings-block">
+          {visibleSpaces.filter(space => space.pending_blueprint_id && (space.role === "owner" || space.role === "admin")).map(space => <div key={`${space.id}:${space.pending_blueprint_id}`} className="settings-row">
+            <div style={{ minWidth: 0 }}>
+              <div className="settings-row-label">{space.name}</div>
+              <div className="settings-row-sub">Space created; template activation is waiting for your review.</div>
+            </div>
+            <Button variant="secondary" disabled={openingPendingTemplate !== null} onClick={() => void reviewPendingTemplate(space)}>
+              {openingPendingTemplate === space.id ? "Loading…" : "Review setup"}
+            </Button>
+          </div>)}
+        </div>
+      </div>}
 
       <div className="section-label" style={{ marginTop: 26 }}>Model benchmarks</div>
       <p style={{ fontSize: 12, color: "var(--text3)", margin: "-6px 0 12px" }}>
