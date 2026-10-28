@@ -2367,8 +2367,8 @@ export async function activateSpaceTemplate(spaceId: string, blueprintId: string
 
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
-  dependencies: Array<{ extension_id: string; status: "installed" | "disabled" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string }>;
-  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted" }>;
+  dependencies: Array<{ extension_id: string; status: "installed" | "disabled" | "not_active" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string }>;
+  runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted" }>;
   setup_credentials: Array<{ name: string; description: string; required: boolean }>;
   blockers: string[]; requires_human_activation: true; installs_or_grants_applied: false;
   security: { publishable: boolean; blockers?: string[] };

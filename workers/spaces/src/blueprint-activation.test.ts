@@ -75,9 +75,10 @@ describe("Space Template activation preview", () => {
     const envelope = { blueprint: artifact, conformanceCertificate: certificate };
     const stored = new Map([[`blueprints/tenant-a/${artifact.id}.json`, envelope]]);
     let instantiateCalls = 0;
+    let installations = [{ extension_id: "ext_required", scope: "PROJECT_BOUND", status: "active", release_version: "1.0.0", manifest_sha256: "a".repeat(64) }];
     const stub = { fetch: async (request: Request) => {
       const url = new URL(request.url);
-      if (url.pathname === "/extension-installations") return Response.json({ installations: [{ extension_id: "ext_required", scope: "PROJECT_BOUND", status: "active", release_version: "1.0.0", manifest_sha256: "a".repeat(64) }] });
+      if (url.pathname === "/extension-installations") return Response.json({ installations });
       if (url.pathname === "/blueprints/instantiate") { instantiateCalls++; return Response.json({ projectIds: [], taskCount: 0, fileCount: 0 }, { status: 201 }); }
       return new Response("not found", { status: 404 });
     } };
@@ -95,6 +96,12 @@ describe("Space Template activation preview", () => {
     envelope.conformanceCertificate = certificate;
     const blocked = await worker.fetch(new Request(`https://spaces/spaces/space-a/blueprints/${artifact.id}/activate`, { method: "POST", headers }), env, {} as ExecutionContext);
     expect(blocked.status).toBe(422);
+    expect(instantiateCalls).toBe(0);
+    installations = [{ extension_id: "ext_required", scope: "SPACE_SHARED", status: "staging", release_version: "1.0.0", manifest_sha256: "a".repeat(64) }];
+    const stagedPreview = await worker.fetch(new Request(`https://spaces/spaces/space-a/blueprints/${artifact.id}/activation-preview`, { headers }), env, {} as ExecutionContext);
+    expect(await stagedPreview.json()).toMatchObject({ ready: false, blockers: ["required_extension_not_active:ext_required"] });
+    const stagedActivation = await worker.fetch(new Request(`https://spaces/spaces/space-a/blueprints/${artifact.id}/activate`, { method: "POST", headers }), env, {} as ExecutionContext);
+    expect(stagedActivation.status).toBe(422);
     expect(instantiateCalls).toBe(0);
   });
 
@@ -220,7 +227,7 @@ describe("Space Template activation preview", () => {
   it("reports target dependency state and credential setup without installing or granting", () => {
     const result = previewBlueprintActivation(
       blueprint(),
-      new Map([["ext_installed", { version: "1.0.0", digest: "a".repeat(64) }]]),
+      new Map([["ext_installed", { version: "1.0.0", digest: "a".repeat(64), status: "active" }]]),
       new Map([["ext_supported", { version: "1.0.0", digest: "b".repeat(64) }]])
     );
     expect(result).toMatchObject({
@@ -254,7 +261,7 @@ describe("Space Template activation preview", () => {
 
   it("blocks an installed release that does not match the immutable version pin", () => {
     const pinned = blueprint({ requiredExtensions: ["ext_installed"], requiredExtensionVersions: { ext_installed: "2.0.0" } });
-    const result = previewBlueprintActivation(pinned, new Map([["ext_installed", { version: "1.0.0", digest: "a".repeat(64) }]]), new Map());
+    const result = previewBlueprintActivation(pinned, new Map([["ext_installed", { version: "1.0.0", digest: "a".repeat(64), status: "active" }]]), new Map());
     expect(result.ready).toBe(false);
     expect(result.dependencies[0]).toMatchObject({ status: "version_mismatch", required_version: "2.0.0", available_version: "1.0.0" });
   });
@@ -272,6 +279,16 @@ describe("Space Template activation preview", () => {
     expect(result.ready).toBe(false);
     expect(result.dependencies[0]).toMatchObject({ extension_id: "ext_installed", status: "disabled" });
     expect(result.blockers).toEqual(["required_extension_disabled:ext_installed"]);
+  });
+
+  it("blocks staged or unknown installation states even when the release matches", () => {
+    for (const status of ["staging", "pending", undefined]) {
+      const result = previewBlueprintActivation(blueprint({ requiredExtensions: ["ext_installed"] }),
+        new Map([["ext_installed", { version: "1.0.0", digest: "a".repeat(64), status }]]), new Map());
+      expect(result.ready).toBe(false);
+      expect(result.dependencies[0]).toMatchObject({ extension_id: "ext_installed", status: "not_active" });
+      expect(result.blockers).toEqual(["required_extension_not_active:ext_installed"]);
+    }
   });
 });
 

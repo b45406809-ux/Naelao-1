@@ -5,6 +5,7 @@ export interface BlueprintActivationDependency {
   status:
     | "installed"
     | "disabled"
+    | "not_active"
     | "installable"
     | "unavailable"
     | "version_mismatch";
@@ -63,6 +64,8 @@ export function previewBlueprintActivation(
       const status = isInstalled
         ? installed?.status === "disabled"
           ? ("disabled" as const)
+          : installed?.status !== "active"
+            ? ("not_active" as const)
           : versionMatches && digestMatches
             ? ("installed" as const)
             : ("version_mismatch" as const)
@@ -85,13 +88,16 @@ export function previewBlueprintActivation(
       (item) =>
         item.status === "unavailable" ||
         item.status === "version_mismatch" ||
-        item.status === "disabled"
+        item.status === "disabled" ||
+        item.status === "not_active"
     )
     .map((item) =>
       item.status === "version_mismatch"
         ? `required_extension_version_mismatch:${item.extension_id}`
         : item.status === "disabled"
           ? `required_extension_disabled:${item.extension_id}`
+          : item.status === "not_active"
+            ? `required_extension_not_active:${item.extension_id}`
           : `required_extension_unavailable:${item.extension_id}`
     );
   const runtime_requirements = blueprint.projects.flatMap(project => (project.runtimeRequirements ?? []).map(requirement => {
