@@ -9,6 +9,7 @@ export interface ExtensionActivationSummary {
   connections: Array<{ provider: string; purpose: string; required: boolean }>;
   knowledge: Array<{ purpose: string; access: string }>;
   shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+  approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
   worker_roles: Array<{ id: string; execution: string; invocation: string }>;
 }
 

@@ -42,7 +42,7 @@ export default function SpacesPage() {
   const [creating, setCreating] = React.useState(false);
   const [createError, setCreateError] = React.useState<string | null>(null);
   const [createdSpaceId, setCreatedSpaceId] = React.useState<string | null>(null);
-  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview } | null>(null);
+  const [activationReview, setActivationReview] = React.useState<{ spaceId: string; blueprintId: string; preview: SpaceTemplateActivationPreview; filesystemGrantSelections?: Record<string, Record<string, "KEEP" | "NONE" | "READ" | "READ_WRITE">> } | null>(null);
   const [activatingTemplate, setActivatingTemplate] = React.useState(false);
   const [refreshingPreview, setRefreshingPreview] = React.useState(false);
   const pendingPreviewed = React.useRef(new Set<string>());
@@ -120,7 +120,23 @@ export default function SpacesPage() {
     if (!creds || !activationReview || !activationReview.preview.ready || activatingTemplate) return;
     setActivatingTemplate(true); setCreateError(null);
     try {
-      await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds);
+      const approvedSharedFilesystem = Object.fromEntries(Object.entries(activationReview.filesystemGrantSelections ?? {}).flatMap(([extensionId, paths]) => {
+        const dependency = activationReview.preview.dependencies.find(item => item.extension_id === extensionId);
+        const installed = dependency?.status === "installed";
+        const defaultValue = installed ? "KEEP" : "NONE";
+        if (!Object.values(paths).some(access => access !== defaultValue)) return [];
+        const grants = (dependency?.summary?.shared_filesystem ?? []).flatMap(requested => {
+          const selected = paths[requested.path] ?? defaultValue;
+          if (selected === "NONE") return [];
+          if (selected === "KEEP") {
+            const current = dependency?.summary?.approved_shared_filesystem?.find(grant => grant.path === requested.path);
+            return current ? [current] : [];
+          }
+          return [{ path: requested.path, access: selected }];
+        });
+        return [[extensionId, grants]];
+      }));
+      await activateSpaceTemplate(activationReview.spaceId, activationReview.blueprintId, creds, approvedSharedFilesystem);
       setCreateOpen(false);
       window.location.assign(`/p/${product.slug}/spaces/${activationReview.spaceId}`);
     } catch (error) { setCreateError(`Template was not activated: ${error instanceof Error ? error.message : "activation failed"}`); }
@@ -310,6 +326,23 @@ export default function SpacesPage() {
                 {item.summary.connections.length > 0 && <div>Connections: {item.summary.connections.map(connection => `${connection.provider} (${connection.required ? "required" : "optional"}) — ${connection.purpose}`).join("; ")}</div>}
                 {item.summary.knowledge.length > 0 && <div>Knowledge: {item.summary.knowledge.map(item => `${item.purpose} (${item.access})`).join("; ")}</div>}
                 {item.summary.shared_filesystem.length > 0 && <div>Shared files: {item.summary.shared_filesystem.map(grant => `${grant.path} (${grant.access})`).join(", ")}</div>}
+                {item.summary.approved_shared_filesystem && item.summary.approved_shared_filesystem.length > 0 && <div>Currently approved: {item.summary.approved_shared_filesystem.map(grant => `${grant.path} (${grant.access})`).join(", ")}</div>}
+                {item.summary.shared_filesystem.length > 0 && <div style={{ borderTop: "1px solid var(--border)", marginTop: 6, paddingTop: 6 }}>
+                  <div>{item.status === "installed" ? "Review existing shared-file grants. Existing access stays unless you replace it here." : "Optional shared-file access. Nothing is granted unless selected."}</div>
+                  {item.summary.shared_filesystem.map(grant => <label key={grant.path} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5 }}>
+                    <span style={{ flex: 1 }}>{grant.path}</span>
+                    <select aria-label={`Access for ${item.extension_id} ${grant.path}`} value={activationReview.filesystemGrantSelections?.[item.extension_id]?.[grant.path] ?? (item.status === "installed" ? "KEEP" : "NONE")}
+                      onChange={event => setActivationReview(current => current ? { ...current, filesystemGrantSelections: {
+                        ...current.filesystemGrantSelections,
+                        [item.extension_id]: { ...current.filesystemGrantSelections?.[item.extension_id], [grant.path]: event.target.value as "KEEP" | "NONE" | "READ" | "READ_WRITE" },
+                      } } : current)}>
+                      {item.status === "installed" && <option value="KEEP">Keep current</option>}
+                      <option value="NONE">No access</option>
+                      <option value="READ">Read only</option>
+                      {grant.access === "READ_WRITE" && <option value="READ_WRITE">Read and write</option>}
+                    </select>
+                  </label>)}
+                </div>}
                 {item.summary.worker_roles.length > 0 && <div>Worker roles: {item.summary.worker_roles.map(role => `${role.id} (${role.execution}/${role.invocation})`).join(", ")}</div>}
               </div>}
             </li>)}</ul> : <p>None required</p>}

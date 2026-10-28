@@ -2361,8 +2361,12 @@ export async function forkSpaceTemplate(listingId: string, session: SessionCrede
   return apiFetch(`/v1/marketplace/${encodeURIComponent(listingId)}/fork`, { method: "POST", session });
 }
 
-export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials): Promise<unknown> {
-  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, { method: "POST", session });
+export type SpaceTemplateFilesystemGrant = { path: string; access: "READ" | "READ_WRITE" };
+export async function activateSpaceTemplate(spaceId: string, blueprintId: string, session: SessionCredentials,
+  approvedSharedFilesystem: Record<string, SpaceTemplateFilesystemGrant[]> = {}): Promise<unknown> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(spaceId)}/blueprints/${encodeURIComponent(blueprintId)}/activate`, {
+    method: "POST", session, body: JSON.stringify({ approved_shared_filesystem: approvedSharedFilesystem }),
+  });
 }
 
 export interface SpaceTemplateActivationPreview {
@@ -2372,6 +2376,7 @@ export interface SpaceTemplateActivationPreview {
     connections: Array<{ provider: string; purpose: string; required: boolean }>;
     knowledge: Array<{ purpose: string; access: string }>;
     shared_filesystem: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
+    approved_shared_filesystem?: Array<{ path: string; access: "READ" | "READ_WRITE" }>;
     worker_roles: Array<{ id: string; execution: string; invocation: string }>;
   } }>;
   runtime_requirements: Array<{ project_id: string; runtime_id: string; required: boolean; status: "installable" | "unavailable" | "deferred"; reason: "runtime_provisioning_unavailable" | "owner_approval_required" | "runtime_not_deployed" | "runtime_capability_mismatch" | "subscription_plan_required" | "subscription_resource_limit" | "subscription_slot_limit" | "project_execution_ceiling_required" | "optional_runtime_omitted"; project_slots_required?: number; project_slots_limit?: number; resources?: { cpu_cores: number; memory_mb: number } }>;

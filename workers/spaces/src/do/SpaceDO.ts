@@ -2984,7 +2984,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
             const manifest = JSON.parse(manifest_json) as { releaseVersion?: string; version?: string; bundle?: { version?: string } };
             const parsed = JSON.parse(manifest_json) as ExtensionManifest;
             return { ...row, release_version: row.release_version ?? manifest.releaseVersion ?? manifest.bundle?.version ?? manifest.version ?? null,
-              manifest_sha256: await digestExtensionManifest(parsed), activation_summary: summarizeExtensionForActivation(parsed) };
+              manifest_sha256: await digestExtensionManifest(parsed), activation_summary: { ...summarizeExtensionForActivation(parsed),
+                approved_shared_filesystem: this.listApprovedSharedFilesystemGrants(row.instance_id) } };
           } catch { return { ...row, release_version: null, manifest_sha256: null }; }
         }));
         return Response.json({ installations });
