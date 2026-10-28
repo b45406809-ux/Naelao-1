@@ -346,6 +346,9 @@ export default function SpacesPage() {
           )}
           {selectedTemplate && <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, fontSize: 11.5 }}>
             <strong>Template prerequisites</strong>
+            {selectedTemplate.planGatedFeatures?.length ? <div style={{ marginTop: 5 }}>
+              Plan-gated features: {selectedTemplate.planGatedFeatures.join(", ")}. Availability depends on the Space subscription plan; this preview does not verify the current plan’s entitlement.
+            </div> : null}
             {selectedTemplate.requirements ? <>
               <div style={{ marginTop: 5 }}>Required extensions: {selectedTemplate.requirements.extensions.length
                 ? selectedTemplate.requirements.extensions.map(item => `${item.id}${item.version ? ` v${item.version}` : " (version pin missing)"}`).join(", ") : "none declared"}</div>

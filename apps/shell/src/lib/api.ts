@@ -2349,6 +2349,8 @@ export interface SpaceTemplateListing {
   author_name: string;
   price_cents: number;
   pricing_model: string;
+  /** Marketplace-declared features whose availability can depend on the Space plan. */
+  planGatedFeatures?: string[];
   requirements?: {
     extensions: Array<{ id: string; version?: string }>;
     credentials: Array<{ name: string; description: string; required: boolean }>;
