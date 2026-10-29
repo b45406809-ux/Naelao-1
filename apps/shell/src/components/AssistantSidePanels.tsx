@@ -205,20 +205,30 @@ function taskPendingItems(task: DurableAgentTask, key: "pending_approval" | "pen
   });
 }
 
-function TasksPanel({ spaceId, session, sessionId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined }) {
+function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; lastRunId?: string | null | undefined }) {
   const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
+  const [workers, setWorkers] = React.useState<SubAgentSummary[]>([]);
+  const [goals, setGoals] = React.useState<GoalActivity[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [workerError, setWorkerError] = React.useState(false);
+  const [goalError, setGoalError] = React.useState(false);
   const refresh = React.useCallback(async () => {
-    if (!sessionId) { setTasks([]); setLoading(false); setError("Open a conversation to see its durable tasks."); return; }
-    try {
-      const response = await listDurableTasks(spaceId, sessionId, session);
-      setTasks(response.tasks);
-      setError(null);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Task status is unavailable.");
-    } finally { setLoading(false); }
-  }, [spaceId, sessionId, session.sessionToken, session.endUserId]);
+    if (!sessionId) { setTasks([]); setWorkers([]); setGoals([]); setLoading(false); setError("Open a conversation to see its durable tasks."); setWorkerError(false); setGoalError(false); return; }
+    const scoped = { sessionId, ...(agentId ? { agentId } : {}) };
+    const [taskResult, workerResult, goalResult] = await Promise.allSettled([
+      listDurableTasks(spaceId, sessionId, session),
+      listSubAgents(spaceId, session, "", scoped),
+      lastRunId ? listGoalActivity(spaceId, session, lastRunId, scoped) : Promise.resolve([] as GoalActivity[]),
+    ]);
+    if (taskResult.status === "fulfilled") { setTasks(taskResult.value.tasks); setError(null); }
+    else setError(taskResult.reason instanceof Error ? taskResult.reason.message : "Task status is unavailable.");
+    if (workerResult.status === "fulfilled") { setWorkers(workerResult.value); setWorkerError(false); }
+    else setWorkerError(true);
+    if (goalResult.status === "fulfilled") { setGoals(goalResult.value); setGoalError(false); }
+    else setGoalError(true);
+    setLoading(false);
+  }, [spaceId, sessionId, agentId, lastRunId, session.sessionToken, session.endUserId]);
   React.useEffect(() => {
     let active = true, timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
@@ -248,6 +258,27 @@ function TasksPanel({ spaceId, session, sessionId }: { spaceId: string; session:
       {taskPendingItems(task, "pending_question").map(question => <InlineQuestionCard key={question.approval_id} spaceId={spaceId} question={question} session={session} onAnswered={() => void refresh()} />)}
       <small style={{ color: "var(--text3)" }}>Task record expires {task.expires_at}</small>
     </article>)}
+    <div className="tp-section" style={{ marginTop: 14 }}>Delegated workers</div>
+    {workerError ? <p role="status" className="workspace-tab-empty">Worker activity could not be loaded.</p> : workers.length === 0 ? <p className="workspace-tab-empty">No delegated workers for this conversation.</p> : workers.map(worker => <article className="settings-block" style={{ padding: 12, marginTop: 8 }} key={worker.id}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <strong style={{ overflowWrap: "anywhere" }}>{worker.goal.slice(0, 240)}</strong>
+        <span>{workerActivityLabel(worker.status)}</span>
+      </div>
+      {worker.progress_note && <p style={{ color: "var(--text3)", overflowWrap: "anywhere" }}>{worker.progress_note.slice(0, 400)}</p>}
+      {worker.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{worker.error.slice(0, 400)}</p>}
+      {worker.result && <pre style={{ margin: "6px 0 0", padding: 8, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", borderRadius: 7, background: "var(--surface2)", color: "var(--text2)", font: "11px/1.45 var(--font-mono, monospace)" }}>{worker.result.slice(0, 4000)}</pre>}
+    </article>)}
+    {goalError && <p role="status" className="workspace-tab-empty">Task graph and worker messages could not be loaded.</p>}
+    {goals.map(goal => <details key={goal.id} className="settings-block" style={{ padding: 12, marginTop: 8 }}>
+      <summary style={{ cursor: "pointer", fontWeight: 600 }}>Task graph · {goal.tasks.length} tasks</summary>
+      {goal.tasks.map(task => <div key={task.id} style={{ padding: "6px 0", overflowWrap: "anywhere" }}>
+        <strong>{task.title.slice(0, 240)}</strong> · {workerActivityLabel(task.status)}
+        {task.dependencies.length > 0 && <div style={{ color: "var(--text3)" }}>Depends on: {task.dependencies.map(id => id.slice(0, 100)).join(", ")}</div>}
+        {goal.fixers[task.id] && <div>Fixer: {workerActivityLabel(goal.fixers[task.id]!.status)}</div>}
+      </div>)}
+      {goal.escalations.slice(0, 30).map(item => <div key={item.taskId} style={{ color: "var(--danger, #dc2626)", paddingTop: 4 }}>{item.taskId.slice(0, 120)}: {item.nextAction.replaceAll("_", " ").slice(0, 160)}</div>)}
+      {goal.messages.length > 0 && <details style={{ marginTop: 8 }}><summary>Worker messages ({goal.messages.length})</summary>{goal.messages.slice(-50).map(message => <div key={`${message.sender}:${message.id}`} style={{ marginTop: 5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}><strong>{message.kind.slice(0, 40)}</strong>: {message.text.slice(0, 1000)}</div>)}</details>}
+    </details>)}
   </section>;
 }
 
@@ -1782,7 +1813,7 @@ export function AssistantSidePanelBody({
     case "sub-agents":
       return <WorkersPanel spaceId={spaceId} session={session} lastRunId={lastRunId ?? ""} sessionId={sessionId} agentId={agentId} projectId={projectId} projectAgentIds={projectAgentIds} />;
     case "tasks":
-      return <TasksPanel spaceId={spaceId} session={session} sessionId={sessionId} />;
+      return <TasksPanel spaceId={spaceId} session={session} sessionId={sessionId} agentId={agentId} lastRunId={lastRunId} />;
     case "files":
       return <FilesPanel spaceId={spaceId} projectId={projectId} session={session} />;
     case "artifacts":
