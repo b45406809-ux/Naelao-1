@@ -203,7 +203,49 @@ describe("ConcurrencyDO shared resource queue", () => {
     expect(await call("request", "worker-c")).toMatchObject({ acquired: false, active: 2, capacity: 2 });
     expect(await call("release", "worker-a", a.token as number)).toMatchObject({ released: true });
     expect(await call("request", "worker-c")).toMatchObject({ acquired: true });
-    await expect(call("request", "worker-d", undefined, 5)).resolves.toMatchObject({ error_code: "bad_request" });
+    await expect(call("request", "worker-d", undefined, 26)).resolves.toMatchObject({ error_code: "bad_request" });
+    const planCapacity = await h.instance.fetch(new Request("http://do/resource-queue/request", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resource: "space/worker-execution", holder: "plan-worker", capacity: 25 }),
+    }));
+    expect(planCapacity.status).toBe(200);
+    expect(await planCapacity.json()).toMatchObject({ acquired: true });
+  });
+
+  it("keeps a busy shared runtime within capacity under a burst of queued workers", async () => {
+    const h = harness();
+    const request = async (holder: string) => {
+      const response = await h.instance.fetch(new Request("http://do/resource-queue/request", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ resource: "space/runtime-burst", holder, capacity: 3 }),
+      }));
+      return response.json<{ acquired?: boolean; token?: number; active?: number; position?: number; capacity?: number }>();
+    };
+    const release = (holder: string, token: number) => h.instance.fetch(new Request("http://do/resource-queue/release", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resource: "space/runtime-burst", holder, token }),
+    }));
+    const active: Array<{ holder: string; token: number }> = [];
+    for (let i = 0; i < 3; i++) {
+      const holder = `worker-${i}`;
+      const result = await request(holder);
+      expect(result.acquired).toBe(true);
+      if (typeof result.token !== "number") throw new Error("runtime queue did not return its lease token");
+      active.push({ holder, token: result.token });
+    }
+    for (let i = 3; i < 33; i++) expect(await request(`worker-${i}`)).toMatchObject({ acquired: false });
+    expect(await request("worker-overflow")).toMatchObject({ acquired: false, active: 3, capacity: 3 });
+    for (let i = 3; i < 33; i++) {
+      const previous = active.shift();
+      if (!previous) throw new Error("expected an active runtime lease");
+      expect((await release(previous.holder, previous.token)).status).toBe(200);
+      const nextHolder = `worker-${i}`;
+      const next = await request(nextHolder);
+      expect(next).toMatchObject({ acquired: true });
+      if (typeof next.token !== "number") throw new Error("runtime queue did not return its lease token");
+      active.push({ holder: nextHolder, token: next.token });
+      expect(await request("worker-overflow")).toMatchObject({ acquired: false, active: 3, capacity: 3 });
+    }
   });
 });
 

@@ -796,6 +796,7 @@ export interface DurableAgentTask {
     statuses: { pending: number; running: number; completed: number; failed: number; blocked: number; needs_review: number };
     escalation_count: number;
     fixer_count: number;
+    runtime_workers?: Array<{ graph_id?: string; task_id: string; status: "waiting" | "assigned" | "running" | "completed" | "failed"; capability?: string; queue_position?: number; queue_wait_ms?: number; assigned_at_ms?: number; started_at_ms?: number; execution_ms?: number }>;
   };
   expires_at: string;
 }
@@ -2154,7 +2155,7 @@ export interface SubAgentSummary {
 
 export interface GoalActivity {
   id: string;
-  tasks: Array<{ id: string; title: string; status: string; dependencies: string[] }>;
+  tasks: Array<{ id: string; title: string; status: string; dependencies: string[]; runtime?: { status: "waiting" | "assigned" | "running" | "completed" | "failed"; capability?: string; queuePosition?: number; queuedAt?: number; assignedAt?: number; startedAt?: number; completedAt?: number; queueWaitMs?: number; executionMs?: number } }>;
   escalations: Array<{ taskId: string; reason: string; nextAction: string; blockedTasks: string[] }>;
   fixers: Record<string, { status: string }>;
   messages: Array<{ id: string; sender: string; recipients: string[]; kind: string; text: string }>;

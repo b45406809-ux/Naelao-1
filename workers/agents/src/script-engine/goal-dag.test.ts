@@ -108,6 +108,37 @@ describe("durable goal DAG", () => {
     await run;
     expect(launched).toContain("container-b");
   });
+  it("runs workers assigned to different containers concurrently and records scheduling state", async () => {
+    const f = fixture(); f.host.concurrency = 2;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let bothStarted!: () => void;
+    const both = new Promise<void>(resolve => { bothStarted = resolve; });
+    const started: string[] = [];
+    f.host.acquireResources = vi.fn(async (t, _holder, report) => {
+      const queuedAt = Date.now();
+      await report?.({ status: "waiting", capability: t.runtime_capability, queuedAt, queuePosition: 1 });
+      await report?.({ status: "assigned", capability: t.runtime_capability, queuedAt, assignedAt: Date.now(), queueWaitMs: 4 });
+      return async () => {};
+    });
+    f.host.launch = vi.fn(async (t, id) => {
+      started.push(t.id);
+      if (started.length === 2) bothStarted();
+      await gate;
+      return { id, ok: true };
+    });
+    const aKey = `runtime.project.${"a".repeat(40)}`;
+    const bKey = `runtime.project.${"b".repeat(40)}`;
+    const a = { ...task("a"), runtime_capability: "media.ffmpeg", runtime_resource_key: aKey, resource_keys: [aKey] };
+    const b = { ...task("b"), runtime_capability: "browser.chrome", runtime_resource_key: bKey, resource_keys: [bKey] };
+    const run = executeGoalDag([a, b], f.host);
+    await both;
+    expect(started).toEqual(["a", "b"]);
+    release();
+    const result = await run;
+    expect(result.tasks.a?.runtime).toMatchObject({ status: "completed", capability: "media.ffmpeg", queueWaitMs: 4 });
+    expect(result.tasks.b?.runtime).toMatchObject({ status: "completed", capability: "browser.chrome" });
+  });
   it("runs one opt-in fixer for a confirmed failure and retains the original escalation", async () => {
     const f = fixture(); f.host.fixerEnabled = true;
     f.host.launch = vi.fn(async (_task, id) => ({ id, ok: false, error: "test failed" }));

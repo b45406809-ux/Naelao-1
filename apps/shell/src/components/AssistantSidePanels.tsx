@@ -400,6 +400,13 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
           {task.coordination_summary.escalation_count > 0 && <span>Escalations: {task.coordination_summary.escalation_count}</span>}
           {task.coordination_summary.fixer_count > 0 && <span>Fixers: {task.coordination_summary.fixer_count}</span>}
         </div>
+        {(task.coordination_summary.runtime_workers ?? []).map((worker, index) => <div key={`${worker.graph_id ?? index}:${worker.task_id}`} style={{ display: "flex", flexWrap: "wrap", gap: 7, paddingTop: 5, fontSize: 11, color: "var(--text3)" }}>
+          <code>{worker.graph_id ? `${worker.graph_id} · ` : ""}{worker.task_id.slice(0, 20)}</code><span>{worker.capability ?? "worker runtime"}</span><span>{worker.status.replaceAll("_", " ")}</span>
+          {worker.status === "waiting" && worker.queue_position !== undefined && <span>Queue position {worker.queue_position}</span>}
+          {worker.queue_wait_ms !== undefined && <span>Waited {formatElapsedTime(worker.queue_wait_ms)}</span>}
+          {worker.started_at_ms !== undefined && <span>Started {new Date(worker.started_at_ms).toLocaleTimeString()}</span>}
+          {worker.execution_ms !== undefined && <span>Runtime {formatElapsedTime(worker.execution_ms)}</span>}
+        </div>)}
       </details>}
       {sessionId && task.status === "processing" && <StopDurableTaskButton spaceId={spaceId} sessionId={sessionId} taskId={task.task_id} session={session} onStopped={() => void refresh()} />}
       {sessionId && taskCreatedArtifacts(task).map(artifact => <InlineArtifactCard key={artifact.artifact_id} spaceId={spaceId} artifactId={artifact.artifact_id} filename={artifact.filename} {...(artifact.content_type ? { contentType: artifact.content_type } : {})} session={session} />)}
@@ -433,6 +440,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       {goal.tasks.map(task => <div key={task.id} style={{ padding: "6px 0", overflowWrap: "anywhere" }}>
         <strong>{task.title.slice(0, 240)}</strong> · {workerActivityLabel(task.status)}
         {task.dependencies.length > 0 && <div style={{ color: "var(--text3)" }}>Depends on: {task.dependencies.map(id => id.slice(0, 100)).join(", ")}</div>}
+        {task.runtime && <div style={{ color: "var(--text3)", fontSize: 11 }}>Runtime: {task.runtime.capability ?? "worker execution"} · {task.runtime.status}{task.runtime.status === "waiting" && task.runtime.queuePosition !== undefined ? ` · queue position ${task.runtime.queuePosition}` : ""}{task.runtime.queueWaitMs !== undefined ? ` · waited ${formatElapsedTime(task.runtime.queueWaitMs)}` : ""}{task.runtime.executionMs !== undefined ? ` · ran ${formatElapsedTime(task.runtime.executionMs)}` : ""}</div>}
         {goal.fixers[task.id] && <div>Fixer: {workerActivityLabel(goal.fixers[task.id]!.status)}</div>}
       </div>)}
       {goal.escalations.slice(0, 30).map(item => <div key={item.taskId} style={{ color: "var(--danger, #dc2626)", paddingTop: 4 }}>{item.taskId.slice(0, 120)}: {item.nextAction.replaceAll("_", " ").slice(0, 160)}</div>)}

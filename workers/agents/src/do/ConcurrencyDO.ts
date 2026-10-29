@@ -158,7 +158,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
     const body = await request.json<{ resource?: unknown; holder?: unknown; token?: unknown; priority?: unknown; capacity?: unknown }>().catch(() => ({} as { resource?: unknown; holder?: unknown; token?: unknown; priority?: unknown; capacity?: unknown }));
     if (typeof body.resource !== "string" || !/^[A-Za-z0-9._:/-]{1,256}$/.test(body.resource) ||
         typeof body.holder !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(body.holder)
-        || body.capacity !== undefined && (!Number.isSafeInteger(body.capacity) || (body.capacity as number) < 1 || (body.capacity as number) > 4)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+        || body.capacity !== undefined && (!Number.isSafeInteger(body.capacity) || (body.capacity as number) < 1 || (body.capacity as number) > 25)) return Response.json({ error_code: "bad_request" }, { status: 400 });
     const resource = body.resource, holder = body.holder;
     const storageKey = `resource-queue:${resource}`;
     const result = await this.ctx.storage.transaction(async tx => {

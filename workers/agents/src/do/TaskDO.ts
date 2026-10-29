@@ -230,28 +230,43 @@ export class TaskDO extends DurableObject {
       const taskId = coordinationMatch[1];
       const body = await request.json<{
         graph_id?: unknown; task_count?: unknown; statuses?: unknown;
-        escalation_count?: unknown; fixer_count?: unknown;
-      }>().catch((): { graph_id?: unknown; task_count?: unknown; statuses?: unknown; escalation_count?: unknown; fixer_count?: unknown } => ({}));
+        escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown;
+      }>().catch((): { graph_id?: unknown; task_count?: unknown; statuses?: unknown; escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown } => ({}));
       const statusKeys = ["pending", "running", "completed", "failed", "blocked", "needs_review"] as const;
       const statuses = body.statuses && typeof body.statuses === "object" && !Array.isArray(body.statuses)
         ? body.statuses as Record<string, unknown>
         : undefined;
+      const runtimeWorkers = body.runtime_workers === undefined ? []
+        : Array.isArray(body.runtime_workers) && body.runtime_workers.length <= 200
+          ? body.runtime_workers as Array<Record<string, unknown>> : undefined;
+      const runtimeStatuses = new Set(["waiting", "assigned", "running", "completed", "failed"]);
+      const invalidRuntimeWorkers = !runtimeWorkers || runtimeWorkers.some(worker =>
+        typeof worker.task_id !== "string" || worker.task_id.length > 64 ||
+        typeof worker.status !== "string" || !runtimeStatuses.has(worker.status) ||
+        worker.capability !== undefined && (typeof worker.capability !== "string" || worker.capability.length > 96) ||
+        worker.queue_position !== undefined && (!Number.isSafeInteger(worker.queue_position) || (worker.queue_position as number) < 1 || (worker.queue_position as number) > 100) ||
+        worker.queue_wait_ms !== undefined && (!Number.isSafeInteger(worker.queue_wait_ms) || (worker.queue_wait_ms as number) < 0 || (worker.queue_wait_ms as number) > 86_400_000) ||
+        worker.execution_ms !== undefined && (!Number.isSafeInteger(worker.execution_ms) || (worker.execution_ms as number) < 0 || (worker.execution_ms as number) > 86_400_000) ||
+        worker.assigned_at_ms !== undefined && (!Number.isSafeInteger(worker.assigned_at_ms) || (worker.assigned_at_ms as number) < 0) ||
+        worker.started_at_ms !== undefined && (!Number.isSafeInteger(worker.started_at_ms) || (worker.started_at_ms as number) < 0));
       if (typeof body.graph_id !== "string" || !/^[a-f0-9]{64}$/.test(body.graph_id) ||
           !Number.isSafeInteger(body.task_count) || (body.task_count as number) < 0 || (body.task_count as number) > 200 ||
           !Number.isSafeInteger(body.escalation_count) || (body.escalation_count as number) < 0 || (body.escalation_count as number) > 200 ||
           !Number.isSafeInteger(body.fixer_count) || (body.fixer_count as number) < 0 || (body.fixer_count as number) > 200 ||
           !statuses || Object.keys(statuses).some(key => !statusKeys.includes(key as typeof statusKeys[number])) ||
-          statusKeys.some(key => !Number.isSafeInteger(statuses[key]) || (statuses[key] as number) < 0 || (statuses[key] as number) > 200))
+          statusKeys.some(key => !Number.isSafeInteger(statuses[key]) || (statuses[key] as number) < 0 || (statuses[key] as number) > 200) ||
+          invalidRuntimeWorkers)
         return Response.json({ error: "invalid_coordination_summary" }, { status: 400 });
       const rows = this.ctx.storage.sql.exec("SELECT coordination_json, expires_at FROM tasks WHERE id = ?", taskId).toArray() as Array<{ coordination_json: string | null; expires_at: number }>;
       if (!rows[0] || rows[0].expires_at <= Date.now()) return Response.json({ error: "not_found" }, { status: 404 });
-      let summaries: Record<string, { task_count: number; statuses: Record<string, number>; escalation_count: number; fixer_count: number }> = {};
+      let summaries: Record<string, { task_count: number; statuses: Record<string, number>; escalation_count: number; fixer_count: number; runtime_workers?: Array<Record<string, unknown>> }> = {};
       try { summaries = JSON.parse(rows[0].coordination_json ?? "{}"); } catch { /* replace corrupt summary state */ }
       summaries[body.graph_id] = {
         task_count: body.task_count as number,
         statuses: Object.fromEntries(statusKeys.map(key => [key, statuses[key] as number])),
         escalation_count: body.escalation_count as number,
         fixer_count: body.fixer_count as number,
+        runtime_workers: runtimeWorkers ?? [],
       };
       const graphIds = Object.keys(summaries);
       for (const oldId of graphIds.slice(0, Math.max(0, graphIds.length - 20))) delete summaries[oldId];
@@ -333,9 +348,10 @@ export class TaskDO extends DurableObject {
     const elapsedMs = typeof task.created_at_ms === "number" && Number.isSafeInteger(task.created_at_ms) && elapsedEnd >= task.created_at_ms
       ? elapsedEnd - task.created_at_ms
       : undefined;
-    let coordinationSummary: Record<string, number | Record<string, number>> | undefined;
+    let coordinationSummary: Record<string, unknown> | undefined;
     try {
-      const graphs = Object.values(JSON.parse(task.coordination_json ?? "{}")) as Array<{ task_count?: number; statuses?: Record<string, number>; escalation_count?: number; fixer_count?: number }>;
+      const graphEntries = Object.entries(JSON.parse(task.coordination_json ?? "{}")) as Array<[string, { task_count?: number; statuses?: Record<string, number>; escalation_count?: number; fixer_count?: number; runtime_workers?: Array<Record<string, unknown>> }]>;
+      const graphs = graphEntries.map(([, graph]) => graph);
       if (graphs.length) {
         const statuses = { pending: 0, running: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
         for (const graph of graphs) for (const key of Object.keys(statuses) as Array<keyof typeof statuses>) {
@@ -348,6 +364,7 @@ export class TaskDO extends DurableObject {
           statuses,
           escalation_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.escalation_count) && graph.escalation_count! >= 0 ? graph.escalation_count! : 0), 0),
           fixer_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.fixer_count) && graph.fixer_count! >= 0 ? graph.fixer_count! : 0), 0),
+          runtime_workers: graphEntries.flatMap(([graphId, graph]) => (graph.runtime_workers ?? []).map(worker => ({ ...worker, graph_id: graphId.slice(0, 8) }))).slice(0, 200),
         };
       }
     } catch { /* old or malformed snapshots remain unavailable */ }

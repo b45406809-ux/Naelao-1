@@ -47,7 +47,7 @@ import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 import { tokensToCredits, tokensToCreditsAtPrice, estimateRequestCostCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, UTILITY_MODEL, isValidEffortLevel, resolveEscalationModel, BILLING_CORE_RATE_CARD_VERSION, type EffortLevel } from "@naelao/billing-core";
-import { getPlanLimits } from "@naelao/entitlements";
+import { getExecutionLimits, getPlanLimits } from "@naelao/entitlements";
 import { externalAnswerCredits, releaseExternalAnswerSpend, settleExternalAnswerSpend } from "./external-channel-spend.js";
 import { channelConnectorCallUsageEvent, consumerLlmUsageEvent, projectLlmUsageEvent } from "./project-llm-usage.js";
 import { enqueueUsageEvent, flushUsageEventOutbox, initUsageEventOutbox, type UsageEventOutboxSql } from "./usage-event-outbox.js";
@@ -3615,7 +3615,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             await tx.put(`goal-activity:metadata:${hash}`, { tenantId, spaceId, actorId: userId ?? null, tasks: tasks.map(task => ({ id: task.id, title: task.title, dependencies: task.dependencies ?? [] })) });
           });
           const prior = await this.ctx.storage.get<GoalDagJournal>(key);
-          const enabled = prior ? (prior.taskBlackboardEnabled ?? Array.isArray(prior.messages)) : this.env.TASK_BLACKBOARD_ENABLED === "true";
+          const taskBlackboardEnabled = this.env.TASK_BLACKBOARD_ENABLED !== "false";
+          const enabled = prior ? (prior.taskBlackboardEnabled ?? Array.isArray(prior.messages)) : taskBlackboardEnabled;
+          // Resolve the account's current execution ceiling once per goal. If billing is
+          // unavailable, use the free-plan ceiling; worker fan-out must never fail open.
+          let planTier = "free";
+          if (this.env.BILLING_WORKER) {
+            try {
+              const response = await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/internal/usage/infra-credits/check", {
+                headers: await this.internalHeaders(tenantId),
+              }));
+              if (response.ok) {
+                const quota = await readBoundedResponseJson<{ plan_tier?: string }>(response, 64 * 1024);
+                if (typeof quota.plan_tier === "string") planTier = quota.plan_tier;
+              }
+            } catch { /* planTier remains the restrictive free ceiling */ }
+          }
+          const planWorkerConcurrency = getExecutionLimits(planTier).concurrency;
+          // The existing per-space worker-tree admission is three. Do not advertise a wider
+          // runtime gate than the downstream worker dispatcher can actually honor.
+          const workerExecutionCapacity = Math.min(planWorkerConcurrency, MAX_CONCURRENT_SUB_AGENT_TREES);
           if (enabled && userId) await this.ctx.storage.put(`task-blackboard:scope:${hash}`, {
             tenantId, spaceId, projectId: projectId ?? null, actorId: userId,
             rootRunId: runtimeEnv?.rootRunId ?? parentRunId, parentDoId: this.ctx.id.toString(),
@@ -3629,7 +3648,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             for (const state of Object.values(journal.tasks)) {
               if (Object.hasOwn(statuses, state.status)) statuses[state.status as keyof typeof statuses]++;
             }
-            const summary = { graph_id: hash, task_count: Object.keys(journal.tasks).length, statuses,
+            const runtime_workers = Object.entries(journal.tasks).flatMap(([taskId, state]) => state.runtime ? [{
+              task_id: taskId.slice(hash.length + 1, hash.length + 65), status: state.runtime.status,
+              ...(state.runtime.capability ? { capability: state.runtime.capability } : {}),
+              ...(state.runtime.queuePosition !== undefined ? { queue_position: state.runtime.queuePosition } : {}),
+              ...(state.runtime.queueWaitMs !== undefined ? { queue_wait_ms: state.runtime.queueWaitMs } : {}),
+              ...(state.runtime.assignedAt !== undefined ? { assigned_at_ms: state.runtime.assignedAt } : {}),
+              ...(state.runtime.startedAt !== undefined ? { started_at_ms: state.runtime.startedAt } : {}),
+              ...(state.runtime.executionMs !== undefined ? { execution_ms: state.runtime.executionMs } : {}),
+            }] : []).slice(0, 200);
+            const summary = { graph_id: hash, task_count: Object.keys(journal.tasks).length, statuses, runtime_workers,
               escalation_count: journal.escalations?.length ?? 0, fixer_count: Object.keys(journal.fixers ?? {}).length };
             const serialized = JSON.stringify(summary);
             if (serialized === lastCoordinationSummary) return;
@@ -3643,8 +3671,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             } catch { /* coordination telemetry must not fail the user's task */ }
           };
           const journal = await executeGoalDag(tasks, {
-            concurrency: childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true),
-            taskBlackboardEnabled: this.env.TASK_BLACKBOARD_ENABLED === "true",
+            concurrency: Math.min(childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true), workerExecutionCapacity, 4),
+            taskBlackboardEnabled,
             fixerEnabled: this.env.TASK_FIXER_ENABLED === "true",
             workerId: taskId,
             load: () => this.ctx.storage.get<GoalDagJournal>(key),
@@ -3669,8 +3697,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               if (!result) throw new Error("goal_fixer_acknowledgement_unavailable");
               return !result.ok && !result.status && !result.failure_confirmed ? { ...result, status: "outcome_uncertain" } : result;
             },
-            acquireResources: async (task, holderId) => {
-              const resources = [...new Set(task.resource_keys ?? [])].sort();
+            acquireResources: async (task, holderId, onRuntimeState) => {
+              const resources = [...new Set([...(task.resource_keys ?? []), "worker.execution"])].sort();
               if (!resources.length) return async () => {};
               if (!this.env.CONCURRENCY_DO) throw new Error("shared_resource_queue_unavailable");
               const leases: Array<{ stub: DurableObjectStub; resource: string; token: number; holder: string }> = [];
@@ -3683,6 +3711,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 ? resolveContainerCapabilities([task.runtime_capability], runtimeInventory.installed, { tenantId, spaceId, projectId, userId })
                 : undefined;
               const runtimeConcurrency = containerWorkerConcurrency(runtimeInstallation, Boolean(projectId && runtimeEnv && this.env.ARTIFACT_WORKER));
+              const queuedAt = Date.now();
+              let lastQueueState = "";
+              let lastQueueReportAt = 0;
+              const reportQueueState = async (status: "waiting" | "assigned", queuePosition?: number) => {
+                const stateKey = `${status}:${queuePosition ?? ""}`;
+                if (stateKey === lastQueueState) return;
+                if (status === "waiting" && lastQueueReportAt && Date.now() - lastQueueReportAt < 1_000) return;
+                lastQueueState = stateKey;
+                const timestamp = Date.now();
+                lastQueueReportAt = timestamp;
+                await onRuntimeState?.({ status, ...(task.runtime_capability ? { capability: task.runtime_capability } : {}),
+                  queuedAt, ...(status === "waiting" && queuePosition !== undefined ? { queuePosition } : {}),
+                  ...(status === "assigned" ? { assignedAt: timestamp, queueWaitMs: Math.max(0, timestamp - queuedAt) } : {}) });
+              };
+              await reportQueueState("waiting");
               try {
                 for (const resource of resources) {
                   // Resource ids are host-produced hashes; partition follows runtime scope.
@@ -3692,15 +3735,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                   const deadline = Date.now() + 300_000;
                   let token: number | undefined;
                   while (!token && Date.now() < deadline) {
-                    const capacity = resource === task.runtime_resource_key ? runtimeConcurrency : 1;
+                    const capacity = resource === "worker.execution" ? workerExecutionCapacity
+                      : resource === task.runtime_resource_key ? Math.min(runtimeConcurrency, workerExecutionCapacity) : 1;
                     const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder, priority: task.priority ?? 0, capacity }) }));
-                    const state = await response.json<{ acquired?: boolean; token?: number; queue_full?: boolean; reconciliation_required?: boolean }>();
+                    const state = await response.json<{ acquired?: boolean; token?: number; position?: number; queue_full?: boolean; reconciliation_required?: boolean }>();
                     if (!response.ok || state.queue_full || state.reconciliation_required) {
                       await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder }) })).catch(() => undefined);
                       throw new Error("shared_resource_queue_unavailable");
                     }
                     if (state.acquired && Number.isSafeInteger(state.token)) token = state.token;
-                    else await new Promise(resolve => setTimeout(resolve, 250));
+                    else {
+                      if (resource === task.runtime_resource_key || resource === "worker.execution") await reportQueueState("waiting", state.position);
+                      await new Promise(resolve => setTimeout(resolve, 250));
+                    }
                   }
                   if (!token) {
                     await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder }) })).catch(() => undefined);
@@ -3708,6 +3755,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                   }
                   leases.push({ stub, resource: scoped, token, holder: queueHolder });
                 }
+                await reportQueueState("assigned");
+                try {
+                  this.env.ANALYTICS?.writeDataPoint({
+                    blobs: ["worker.runtime.scheduling", task.runtime_capability ?? "none", "assigned", ""],
+                    doubles: [Math.max(0, Date.now() - queuedAt), workerExecutionCapacity, runtimeConcurrency, 1],
+                  });
+                } catch { /* queue telemetry must never affect execution */ }
               } catch (error) {
                 for (const lease of leases.reverse()) await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: lease.holder, token: lease.token }) })).catch(() => undefined);
                 throw error;
@@ -3728,6 +3782,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 }
                 if (renewalFailure || releaseFailed) throw renewalFailure ?? new Error("shared_resource_release_failed");
               };
+            },
+            recordRuntimeMetrics: event => {
+              try {
+                this.env.ANALYTICS?.writeDataPoint({
+                  blobs: ["worker.runtime.execution", event.capability ?? "none", event.status, ""],
+                  doubles: [event.queueWaitMs ?? 0, event.executionMs ?? 0, workerExecutionCapacity, 1],
+                });
+              } catch { /* runtime telemetry must not affect task completion */ }
             },
             publish: async (task, state) => {
               const response = await this.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/tasks/${encodeURIComponent(taskId(task.id))}`, {
@@ -4327,7 +4389,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const journal = await this.ctx.storage.get<GoalDagJournal>(`goal-dag:${hash}`);
       if (!journal) continue;
       const messages = await this.ctx.storage.get<import("../script-engine/task-blackboard.js").TaskMessage[]>(`task-blackboard:messages:${hash}`) ?? [];
-      goals.push({ id: hash, tasks: metadata.tasks.map(task => ({ ...task, status: journal.tasks[task.id]?.status ?? "pending", workerId: journal.tasks[task.id]?.workerId })), escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
+      goals.push({ id: hash, tasks: metadata.tasks.map(task => ({ ...task, status: journal.tasks[task.id]?.status ?? "pending", workerId: journal.tasks[task.id]?.workerId, ...(journal.tasks[task.id]?.runtime ? { runtime: journal.tasks[task.id]!.runtime } : {}) })), escalations: (journal.escalations ?? []).map(({ taskId, reason, nextAction, blockedTasks }) => ({ taskId, reason, nextAction, blockedTasks })), fixers: Object.fromEntries(Object.entries(journal.fixers ?? {}).map(([id, fixer]) => [id, { status: fixer.status }])), messages: messages.slice(-40) });
     }
     return Response.json({ goals: history ? goals.reverse() : goals });
   }

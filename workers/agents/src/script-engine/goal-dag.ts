@@ -3,7 +3,18 @@ import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task
 
 export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string; status?: string }
 export type GoalTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "needs_review";
-export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult }
+export interface GoalTaskRuntimeState {
+  status: "waiting" | "assigned" | "running" | "completed" | "failed";
+  capability?: string;
+  queuePosition?: number;
+  queuedAt?: number;
+  assignedAt?: number;
+  startedAt?: number;
+  completedAt?: number;
+  queueWaitMs?: number;
+  executionMs?: number;
+}
+export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
 export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean }
@@ -20,7 +31,8 @@ export interface GoalDagHost {
   taskBlackboardEnabled?: boolean;
   fixerEnabled?: boolean;
   fix?(task: GoalTask, workerId: string, failure: GoalWorkerResult): Promise<GoalWorkerResult>;
-  acquireResources?(task: GoalTask, holderId: string): Promise<() => Promise<void>>;
+  acquireResources?(task: GoalTask, holderId: string, onRuntimeState?: (state: GoalTaskRuntimeState) => Promise<void>): Promise<() => Promise<void>>;
+  recordRuntimeMetrics?(event: { capability?: string; status: "completed" | "failed"; queueWaitMs?: number; executionMs?: number }): void;
 }
 
 function dependencyHandoffs(task: GoalTask, journal: GoalDagJournal): GoalHandoff[] {
@@ -101,6 +113,12 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       const result = await host.recover(state.workerId);
       state.status = result ? (result.ok ? "completed" : result.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
       if (result) state.result = result;
+      if (state.runtime && result) {
+        const completedAt = Date.now();
+        const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);
+        state.runtime = { ...state.runtime, status: result.ok ? "completed" : "failed", completedAt, ...(executionMs !== undefined ? { executionMs } : {}) };
+        host.recordRuntimeMetrics?.({ ...(state.runtime.capability ? { capability: state.runtime.capability } : {}), status: result.ok ? "completed" : "failed", ...(state.runtime.queueWaitMs !== undefined ? { queueWaitMs: state.runtime.queueWaitMs } : {}), ...(executionMs !== undefined ? { executionMs } : {}) });
+      }
       await save();
     }
     recordCompletion(task, tasks, journal);
@@ -174,12 +192,21 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       let result: GoalWorkerResult;
       let release: (() => Promise<void>) | undefined;
       try {
-        release = await host.acquireResources?.(task, state.workerId) ?? (async () => {});
+        release = await host.acquireResources?.(task, state.workerId, async runtime => {
+          state.runtime = runtime;
+          await save();
+        }) ?? (async () => {});
+        if (state.runtime) {
+          const { queuePosition: _queuePosition, ...runtime } = state.runtime;
+          state.runtime = { ...runtime, status: "running", startedAt: Date.now() };
+          await save();
+        }
       }
       catch (error) {
         // Admission failed before the external worker was launched, so this outcome is known.
         state.result = { id: state.workerId, ok: false, error: String(error).slice(0, 1000) };
         state.status = "failed";
+        if (state.runtime) state.runtime = { ...state.runtime, status: "failed" };
         recordCompletion(task, tasks, journal);
         await save();
         await host.publish(task, state);
@@ -201,6 +228,12 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       }
       state.result = result;
       state.status = result.ok ? "completed" : result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" || result.status === "outcome_uncertain" ? "needs_review" : "failed";
+      if (state.runtime) {
+        const completedAt = Date.now();
+        const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);
+        state.runtime = { ...state.runtime, status: result.ok ? "completed" : "failed", completedAt, ...(executionMs !== undefined ? { executionMs } : {}) };
+        host.recordRuntimeMetrics?.({ ...(state.runtime.capability ? { capability: state.runtime.capability } : {}), status: result.ok ? "completed" : "failed", ...(state.runtime.queueWaitMs !== undefined ? { queueWaitMs: state.runtime.queueWaitMs } : {}), ...(executionMs !== undefined ? { executionMs } : {}) });
+      }
       recordCompletion(task, tasks, journal);
       await save();
       await host.publish(task, state);
