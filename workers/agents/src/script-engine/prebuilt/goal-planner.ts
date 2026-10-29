@@ -122,7 +122,7 @@ export const goalPlanner: PrebuiltScript = {
             if (!recommendation?.capability) continue;
             task.runtime_capability = recommendation.capability;
             task.runtime_confidence = recommendation.confidence;
-            const resource = `runtime.capability.${recommendation.capability.toLowerCase().replace(/[^a-z0-9.-]/g, "-")}`;
+            const resource = recommendation.resourceKey ?? `runtime.capability.${recommendation.capability.toLowerCase().replace(/[^a-z0-9.-]/g, "-")}`;
             task.resource_keys = [...new Set([...(task.resource_keys ?? []), resource])].slice(0, 8);
             task.subtask_spec += `\nHost runtime recommendation (advisory, confidence ${recommendation.confidence.toFixed(2)}): ${recommendation.capability}. Use this only for commands that need it. Keep dependent commands in one environment/session when state must carry across commands; the runtime still enforces installed grants and availability.`;
           }

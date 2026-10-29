@@ -1120,7 +1120,7 @@ export interface ScriptEngineEnv {
   /** Host-side resolver for worker-board runtime labels; never accepts model-selected images. */
   resolveContainerCapabilities?: (required: readonly string[]) => Promise<import("./container-policy.js").InstalledContainer | undefined>;
   /** System One classifies all worker board items together after an edit transaction closes. */
-  classifyPlanRuntimes?: (input: { steps: readonly PlanStep[]; availableTools: readonly string[] }) => Promise<Array<{ stepId: string; capability?: string; confidence: number }>>;
+  classifyPlanRuntimes?: (input: { steps: readonly PlanStep[]; availableTools: readonly string[] }) => Promise<Array<{ stepId: string; capability?: string; confidence: number; resourceKey?: string }>>;
   /** Names/descriptions of this worker's installed domain skills; never sent to its parent planner. */
   planWorkerCapabilities?: string[];
   /** The current agent's configured prebuilt set; leaf workers may only receive a signed subset. */

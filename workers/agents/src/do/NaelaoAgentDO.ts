@@ -7,6 +7,7 @@ import { validateContainerScope, type ContainerInvocationScope } from "../script
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.js";
+import { resourceQueuePartition } from "../script-engine/resource-queue-scope.js";
 import { publishCompletedTask, type TaskPublication } from "../script-engine/task-publication.js";
 import { scheduleToolOutputExpiry } from "../script-engine/tool-output-expiry.js";
 import { attachmentToolsForRun } from "../media/attachment-capabilities.js";
@@ -2635,12 +2636,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const installations = await installedContainers();
       const owner = { tenantId, spaceId, projectId, userId };
       const candidates = new Map<string, { capability: string; description: string }>();
+      const resourceKeys = new Map<string, string>();
       for (const installation of installations) {
         for (const capability of installation.contract.exportedBinaries) {
           try {
             const unique = resolveContainerCapabilities([capability], installations, owner);
             if (unique?.installationId === installation.installationId) {
               candidates.set(capability, { capability, description: `Container '${installation.extensionId}/${installation.contract.id}' provides command '${capability}'. Declared capabilities: ${installation.contract.capabilityRequirements.join(", ") || "none"}.` .slice(0, 500) });
+              const scope = installation.scope ?? "PROJECT_BOUND";
+              const scopeKey = ["SPACE_SHARED", "SPACE_ASSISTANT"].includes(scope) ? "space"
+                : scope === "SPACE_USER" ? "user"
+                : ["PROJECT_USER"].includes(scope) ? "project-user" : "project";
+              const ownerKey = scopeKey === "user" ? (installation.userId ?? userId) ?? "_" : scopeKey === "project-user" ? (installation.userId ?? userId) ?? "_" : "_";
+              const runtimeId = await workflowHash(JSON.stringify([installation.installationId, ownerKey]));
+              resourceKeys.set(capability, `runtime.${scopeKey}.${runtimeId.slice(0, 40)}`);
             }
           } catch { /* ambiguous installed providers are intentionally omitted */ }
         }
@@ -2650,7 +2659,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         availableTools: [...new Set([...availableTools, ...(env.planWorkerCapabilities ?? [])])].slice(0, 200),
         runtimes: [...candidates.values()].slice(0, 40),
       });
-      return result.filter(item => item.confidence >= 0.8).map(item => ({ stepId: item.itemId, ...(item.capability ? { capability: item.capability } : {}), confidence: item.confidence }));
+      return result.filter(item => item.confidence >= 0.8).map(item => {
+        const resourceKey = item.capability ? resourceKeys.get(item.capability) : undefined;
+        return { stepId: item.itemId, ...(item.capability ? { capability: item.capability } : {}), ...(resourceKey ? { resourceKey } : {}), confidence: item.confidence };
+      });
     };
     env.activatePlanRuntime = async capability => {
       if (!capability) { delete env.planContainerInstallationId; return; }
@@ -3664,7 +3676,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const queueHolder = await shortHash(`${tenantId}:${spaceId}:${holderId}`);
               try {
                 for (const resource of resources) {
-                  const scoped = `worker-resource:${await shortHash(`${tenantId}:${spaceId}:${projectId ?? "_"}:${resource}`)}`;
+                  // Resource ids are host-produced hashes; partition follows runtime scope.
+                  const partition = resourceQueuePartition(projectId, resource);
+                  const scoped = `worker-resource:${await shortHash(`${tenantId}:${spaceId}:${partition}:${resource}`)}`;
                   const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(scoped));
                   const deadline = Date.now() + 300_000;
                   let token: number | undefined;
