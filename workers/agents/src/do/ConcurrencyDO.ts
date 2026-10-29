@@ -155,34 +155,46 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
 
   /** FIFO admission primitive. Expired holders require reconciliation before the next grant. */
   private async resourceQueue(request: Request, action: string): Promise<Response> {
-    const body = await request.json<{ resource?: unknown; holder?: unknown; token?: unknown; priority?: unknown }>().catch(() => ({} as { resource?: unknown; holder?: unknown; token?: unknown; priority?: unknown }));
+    const body = await request.json<{ resource?: unknown; holder?: unknown; token?: unknown; priority?: unknown; capacity?: unknown }>().catch(() => ({} as { resource?: unknown; holder?: unknown; token?: unknown; priority?: unknown; capacity?: unknown }));
     if (typeof body.resource !== "string" || !/^[A-Za-z0-9._:/-]{1,256}$/.test(body.resource) ||
-        typeof body.holder !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(body.holder)) return Response.json({ error_code: "bad_request" }, { status: 400 });
+        typeof body.holder !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(body.holder)
+        || body.capacity !== undefined && (!Number.isSafeInteger(body.capacity) || (body.capacity as number) < 1 || (body.capacity as number) > 4)) return Response.json({ error_code: "bad_request" }, { status: 400 });
     const resource = body.resource, holder = body.holder;
     const storageKey = `resource-queue:${resource}`;
     const result = await this.ctx.storage.transaction(async tx => {
-      type Queue = { fence: number; active?: { holder: string; token: number; expiresAt: number }; waiters: Array<{ holder: string; expiresAt: number; priority: number; enqueuedAt: number }> };
+      type Lease = { holder: string; token: number; expiresAt: number };
+      type Queue = { fence: number; capacity?: number; active?: Lease; activeLeases?: Lease[]; waiters: Array<{ holder: string; expiresAt: number; priority: number; enqueuedAt: number }> };
       const state = await tx.get<Queue>(storageKey) ?? { fence: 0, waiters: [] };
       const now = Date.now();
-      state.waiters = state.waiters.filter(item => item.expiresAt > now && item.holder !== state.active?.holder);
+      const activeLeases = state.activeLeases ?? (state.active ? [state.active] : []);
+      delete state.active;
+      state.activeLeases = activeLeases;
+      const requestedCapacity = action === "request" && typeof body.capacity === "number" ? body.capacity : state.capacity ?? 1;
+      if (state.capacity === undefined) state.capacity = activeLeases.length ? 1 : requestedCapacity;
+      else if (action === "request" && !activeLeases.length && !state.waiters.length) state.capacity = requestedCapacity;
+      else state.capacity = Math.min(state.capacity, requestedCapacity);
+      state.waiters = state.waiters.filter(item => item.expiresAt > now && !activeLeases.some(active => active.holder === item.holder));
       if (action === "renew") {
-        if (!state.active || state.active.holder !== holder || body.token !== state.active.token || state.active.expiresAt <= now) return { renewed: false, reconciliation_required: Boolean(state.active?.holder === holder) };
-        state.active.expiresAt = now + 30_000;
+        const active = activeLeases.find(item => item.holder === holder);
+        if (!active || body.token !== active.token || active.expiresAt <= now) return { renewed: false, reconciliation_required: Boolean(active) };
+        active.expiresAt = now + 30_000;
         await tx.put(storageKey, state);
-        return { renewed: true, token: state.active.token, expiresAt: state.active.expiresAt };
+        return { renewed: true, token: active.token, expiresAt: active.expiresAt };
       }
       if (action === "cancel") {
-        if (state.active?.holder === holder) return { cancelled: false, active: true };
+        if (activeLeases.some(item => item.holder === holder)) return { cancelled: false, active: true };
         const before = state.waiters.length;
         state.waiters = state.waiters.filter(item => item.holder !== holder);
         await tx.put(storageKey, state);
         return { cancelled: state.waiters.length < before };
       }
       if (action === "release") {
-        if (!state.active || state.active.holder !== holder || body.token !== state.active.token) return { released: false };
-        delete state.active;
-      } else if (state.active?.holder === holder) {
-        return state.active.expiresAt > now ? { acquired: true, token: state.active.token, expiresAt: state.active.expiresAt } : { acquired: false, reconciliation_required: true };
+        const index = activeLeases.findIndex(item => item.holder === holder && body.token === item.token);
+        if (index < 0) return { released: false };
+        activeLeases.splice(index, 1);
+      } else if (activeLeases.some(item => item.holder === holder)) {
+        const active = activeLeases.find(item => item.holder === holder)!;
+        return active.expiresAt > now ? { acquired: true, token: active.token, expiresAt: active.expiresAt } : { acquired: false, reconciliation_required: true };
       } else if (!state.waiters.some(item => item.holder === holder)) {
         if (state.waiters.length >= 100) return { acquired: false, queue_full: true };
         const priority = Number.isSafeInteger(body.priority) ? Math.max(-10, Math.min(10, body.priority as number)) : 0;
@@ -190,15 +202,17 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       } else {
         state.waiters.find(item => item.holder === holder)!.expiresAt = now + 300_000;
       }
-      if (!state.active && state.waiters.length) {
+      while (activeLeases.length < state.capacity && state.waiters.length) {
         state.waiters.sort((a, b) => (b.priority + Math.floor((now - b.enqueuedAt) / 30_000)) - (a.priority + Math.floor((now - a.enqueuedAt) / 30_000)) || a.enqueuedAt - b.enqueuedAt);
         const next = state.waiters.shift()!;
-        state.active = { holder: next.holder, token: ++state.fence, expiresAt: now + 30_000 };
+        activeLeases.push({ holder: next.holder, token: ++state.fence, expiresAt: now + 30_000 });
       }
       await tx.put(storageKey, state);
       if (action === "release") return { released: true };
-      if (state.active?.holder === holder) return { acquired: true, token: state.active.token, expiresAt: state.active.expiresAt };
-      return { acquired: false, position: state.waiters.findIndex(item => item.holder === holder) + 1, reconciliation_required: Boolean(state.active && state.active.expiresAt <= now) };
+      const active = activeLeases.find(item => item.holder === holder);
+      if (active) return active.expiresAt > now ? { acquired: true, token: active.token, expiresAt: active.expiresAt } : { acquired: false, reconciliation_required: true };
+      return { acquired: false, position: state.waiters.findIndex(item => item.holder === holder) + 1,
+        reconciliation_required: activeLeases.some(item => item.expiresAt <= now), active: activeLeases.length, capacity: state.capacity };
     });
     return Response.json(result);
   }

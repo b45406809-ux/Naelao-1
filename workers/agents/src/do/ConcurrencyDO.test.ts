@@ -185,6 +185,26 @@ describe("ConcurrencyDO shared resource queue", () => {
     expect(await call("release", "worker-a", token)).toMatchObject({ released: true });
     expect(await call("request", "worker-c")).toMatchObject({ acquired: true });
   });
+
+  it("honors a host-supplied bounded capacity while keeping independent fencing leases", async () => {
+    const h = harness();
+    const call = async (action: string, holder: string, token?: number, capacity = 2) => {
+      const response = await h.instance.fetch(new Request(`http://do/resource-queue/${action}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ resource: "runtime/project/isolated", holder, capacity, ...(token === undefined ? {} : { token }) }),
+      }));
+      return response.json<Record<string, unknown>>();
+    };
+    const a = await call("request", "worker-a");
+    const b = await call("request", "worker-b");
+    expect(a).toMatchObject({ acquired: true });
+    expect(b).toMatchObject({ acquired: true });
+    expect(b.token).not.toBe(a.token);
+    expect(await call("request", "worker-c")).toMatchObject({ acquired: false, active: 2, capacity: 2 });
+    expect(await call("release", "worker-a", a.token as number)).toMatchObject({ released: true });
+    expect(await call("request", "worker-c")).toMatchObject({ acquired: true });
+    await expect(call("request", "worker-d", undefined, 5)).resolves.toMatchObject({ error_code: "bad_request" });
+  });
 });
 
 describe("ConcurrencyDO appointment slot holds", () => {

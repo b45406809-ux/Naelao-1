@@ -3,7 +3,7 @@ import {receiveSteering,drainSteering} from "../script-engine/worker-steering.js
 import { createContainerWorkspaceGateway } from "../script-engine/container-workspace.js";
 import { dynamicSandboxNamespace } from "../script-engine/dynamic-containers.js";
 import { sandboxInstanceName } from "../script-engine/sandbox-routing.js";
-import { validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
+import { containerWorkerConcurrency, validateContainerScope, type ContainerInvocationScope } from "../script-engine/container-policy.js";
 import { childFanout, issueDelegationContract, verifyDelegationContract, type DelegationContract } from "../script-engine/delegation-contract.js";
 import { BASH_HARNESS } from "../script-engine/prebuilt/code-exec.js";
 import { executeGoalDag, type GoalDagJournal } from "../script-engine/goal-dag.js";
@@ -2671,14 +2671,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!installation) throw new Error("planned_container_runtime_unavailable");
       env.planContainerInstallationId = installation.installationId;
     };
-    env.prewarmPlanRuntime = async capability => {
-      if (!capability || airGappedOnly || env.localModelMachine || !userId || !env.runId || !env.codeRunner || (env.maxTier ?? 0) < 6) return { warmed: false };
+    env.prewarmPlanRuntime = async (capability, target) => {
+      const prewarmRunId = target?.runId ?? env.runId;
+      const prewarmBranch = target?.workspaceBranch ?? env.workspaceBranch;
+      if (!capability || airGappedOnly || env.localModelMachine || !userId || !prewarmRunId || !env.codeRunner || (env.maxTier ?? 0) < 6) return { warmed: false };
       const installation = await resolveContainerCapabilities([capability], await installedContainers(), { tenantId, spaceId, projectId, userId });
       if (!installation) return { warmed: false, error: "planned_container_runtime_unavailable" };
       const result = await env.codeRunner.run({ name: "container.prewarm", code: "", args: {}, tier: 6,
-        tenantId, spaceId, agentId, ...(projectId ? { projectId } : {}), userId, runId: env.runId,
+        tenantId, spaceId, agentId, ...(projectId ? { projectId } : {}), userId, runId: prewarmRunId,
         installationId: installation.installationId, containerImage: installation.contract.image,
-        ...(env.workspaceBranch ? { workspaceBranch: env.workspaceBranch } : {}), ...(env.executionSignal ? { signal: env.executionSignal } : {}), maxTier: env.maxTier ?? 6 });
+        ...(prewarmBranch ? { workspaceBranch: prewarmBranch } : {}), ...(env.executionSignal ? { signal: env.executionSignal } : {}), maxTier: env.maxTier ?? 6 });
       return result.ok ? { warmed: true } : { warmed: false, error: result.error ?? "planned_container_prewarm_failed" };
     };
     env.containerRuntimeInventory = async () => ({ installed: await installedContainers(),
@@ -3674,6 +3676,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const leases: Array<{ stub: DurableObjectStub; resource: string; token: number; holder: string }> = [];
               const shortHash = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
               const queueHolder = await shortHash(`${tenantId}:${spaceId}:${holderId}`);
+              const runtimeInventory = task.runtime_capability && projectId && userId
+                ? await runtimeEnv?.containerRuntimeInventory?.()
+                : undefined;
+              const runtimeInstallation = task.runtime_capability && projectId && userId && runtimeInventory
+                ? resolveContainerCapabilities([task.runtime_capability], runtimeInventory.installed, { tenantId, spaceId, projectId, userId })
+                : undefined;
+              const runtimeConcurrency = containerWorkerConcurrency(runtimeInstallation, Boolean(projectId && runtimeEnv && this.env.ARTIFACT_WORKER));
               try {
                 for (const resource of resources) {
                   // Resource ids are host-produced hashes; partition follows runtime scope.
@@ -3683,7 +3692,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                   const deadline = Date.now() + 300_000;
                   let token: number | undefined;
                   while (!token && Date.now() < deadline) {
-                    const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder, priority: task.priority ?? 0 }) }));
+                    const capacity = resource === task.runtime_resource_key ? runtimeConcurrency : 1;
+                    const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder, priority: task.priority ?? 0, capacity }) }));
                     const state = await response.json<{ acquired?: boolean; token?: number; queue_full?: boolean; reconciliation_required?: boolean }>();
                     if (!response.ok || state.queue_full || state.reconciliation_required) {
                       await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder }) })).catch(() => undefined);
@@ -3701,12 +3711,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               } catch (error) {
                 for (const lease of leases.reverse()) await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: lease.holder, token: lease.token }) })).catch(() => undefined);
                 throw error;
-              }
-              // Only warm after obtaining this runtime's shared lease; parallel workers that
-              // predict the same capability queue here instead of stampeding the sidecar.
-              // Prewarm is latency-only and never changes runtime authorization/selection.
-              if (task.runtime_capability && runtimeEnv?.prewarmPlanRuntime) {
-                await runtimeEnv.prewarmPlanRuntime(task.runtime_capability).catch(() => ({ warmed: false }));
               }
               let renewalFailure: Error | undefined;
               const renewal = setInterval(() => {
@@ -4178,6 +4182,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           await this.ctx.storage.put(`sub-agent-route:${subId}`, route);
           const doId = agentDO.idFromName(route);
           const stub = agentDO.get(doId);
+          // Warm the exact branch-scoped sidecar the child will address. Warming in the
+          // planner's branch would create a different Container DO and provide no benefit.
+          if (contract.runtimeCapability && workspaceBranch && runtimeEnv.prewarmPlanRuntime) {
+            await runtimeEnv.prewarmPlanRuntime(contract.runtimeCapability, { runId: subId, workspaceBranch }).catch(() => ({ warmed: false }));
+          }
           const cancelChild = () => {
             void stub.fetch(new Request("http://agent-do/cancel", { method: "POST" })).catch(() => undefined);
           };

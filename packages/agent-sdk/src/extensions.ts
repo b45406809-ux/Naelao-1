@@ -333,6 +333,9 @@ export interface ContainerContract extends ExtensionContractBase {
   image: string;
   resources: { memoryMb: number; cpuCores: number; timeoutSeconds: number };
   exportedBinaries: readonly string[];
+  /** Opt into concurrent worker runs only when the host creates a separate container instance
+   *  and workspace for each worker branch. Omitted contracts remain single-slot. */
+  parallelExecution?: { isolation: "worker_branch"; maxConcurrentWorkers: number };
   mounts?: readonly { path: "/workspace" | "/tmp" | "/home/runtime"; writable: boolean }[];
   networkPolicy?: "none" | "approved_proxy";
   webContainerCompatible?: boolean;
@@ -405,7 +408,7 @@ const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "p
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
 function rejectUnknownContractKeys(raw: Record<string, unknown>, allowed: Set<string>): void { for (const key of Object.keys(raw)) contractAssert(allowed.has(key), `unknown_field:${key}`); }
 function validateContractBase(raw: Record<string, unknown>, kind: ExtensionPrimitiveKind): void {
-  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage", "gadgetReads"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "entry", "steps", "toolNames"];
+  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage", "gadgetReads"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "parallelExecution", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "entry", "steps", "toolNames"];
   rejectUnknownContractKeys(raw, new Set([...CONTRACT_BASE_KEYS, ...specific]));
   contractAssert(raw.schemaVersion === "1.0", `unsupported_schema_version:${String(raw.schemaVersion)}`);
   contractAssert(raw.kind === kind, `kind_mismatch:${kind}`);
@@ -516,6 +519,13 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
     for (const [key, limit] of [["memoryMb", 32768], ["cpuCores", 16], ["timeoutSeconds", 60]] as const)
       contractAssert(typeof resources[key] === "number" && Number.isFinite(resources[key]) && Number(resources[key]) > 0 && Number(resources[key]) <= limit, "invalid_resource_value:" + key);
     contractAssert(Array.isArray(raw.exportedBinaries) && raw.exportedBinaries.length > 0 && raw.exportedBinaries.length <= 64 && new Set(raw.exportedBinaries).size === raw.exportedBinaries.length && raw.exportedBinaries.every(item => typeof item === "string" && /^[a-zA-Z][a-zA-Z0-9._-]{0,63}$/.test(item)), "invalid_exports");
+    if (raw.parallelExecution !== undefined) {
+      contractAssert(raw.parallelExecution !== null && typeof raw.parallelExecution === "object" && !Array.isArray(raw.parallelExecution), "invalid_parallel_execution");
+      const parallel = raw.parallelExecution as Record<string, unknown>;
+      rejectUnknownContractKeys(parallel, new Set(["isolation", "maxConcurrentWorkers"]));
+      contractAssert(parallel.isolation === "worker_branch", "container_parallel_isolation_unsupported");
+      contractAssert(Number.isInteger(parallel.maxConcurrentWorkers) && Number(parallel.maxConcurrentWorkers) >= 2 && Number(parallel.maxConcurrentWorkers) <= 4, "container_parallel_limit_exceeded");
+    }
     contractAssert(raw.networkPolicy === undefined || raw.networkPolicy === "none" || raw.networkPolicy === "approved_proxy", "invalid_network_policy");
     contractAssert(raw.webContainerCompatible === undefined || typeof raw.webContainerCompatible === "boolean", "invalid_browser_compatibility");
     if (raw.mounts !== undefined) {

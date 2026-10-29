@@ -1,9 +1,18 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { isSharedFilesystemPathAllowed, parseExtensionBundle, validateExtensionManifest } from "./extensions.js";
+import { isSharedFilesystemPathAllowed, parseExtensionBundle, parseExtensionPrimitive, validateExtensionManifest } from "./extensions.js";
 
 const valid = { id: "ext_safe", type: "extension", declaredPermissions: ["repo.read"], capabilityRequirements: ["repo.read"], gadgets: [], daemons: [], commands: [] };
 describe("immutable extension kernel", () => {
+  it("accepts bounded branch-isolated container parallelism and rejects unsupported claims", () => {
+    const container = { schemaVersion: "1.0", kind: "container", id: "media_runtime", version: "1.0.0",
+      permissions: [{ scope: "PROJECT_BOUND", actions: ["execute"], resource: "container" }], capabilityRequirements: ["native-execution"], lifecycle: {},
+      image: "registry.example/media@sha256:" + "a".repeat(64), resources: { memoryMb: 1024, cpuCores: 1, timeoutSeconds: 30 }, exportedBinaries: ["ffmpeg"],
+      parallelExecution: { isolation: "worker_branch", maxConcurrentWorkers: 3 } };
+    expect(parseExtensionPrimitive(container)).toMatchObject({ parallelExecution: { isolation: "worker_branch", maxConcurrentWorkers: 3 } });
+    expect(() => parseExtensionPrimitive({ ...container, parallelExecution: { isolation: "shared_workspace", maxConcurrentWorkers: 3 } })).toThrow("container_parallel_isolation_unsupported");
+    expect(() => parseExtensionPrimitive({ ...container, parallelExecution: { isolation: "worker_branch", maxConcurrentWorkers: 9 } })).toThrow("container_parallel_limit_exceeded");
+  });
   it("requires explicit read and write capabilities for shared-drive grants", () => {
     const grant = { path: "/space/shared/dropzones/audio/", access: "READ_WRITE" };
     expect(() => validateExtensionManifest({ ...valid, capabilityRequirements: ["space.shared.read"], shared_filesystem: [grant] }))

@@ -174,7 +174,7 @@ describe("Batch 04 universal kernel", () => {
     });
     expect(classifyPlanRuntimes).toHaveBeenCalledOnce();
     expect(executeGoalDag.mock.calls[0]?.[1][0]).toMatchObject({
-      runtime_capability: "ffmpeg", runtime_confidence: 0.93, resource_keys: ["runtime.space.abc"],
+      runtime_capability: "ffmpeg", runtime_confidence: 0.93, runtime_resource_key: "runtime.space.abc", resource_keys: ["runtime.space.abc"],
     });
     expect(executeGoalDag.mock.calls[0]?.[1][0]?.subtask_spec).toContain("Host runtime recommendation");
     expect(executeGoalDag.mock.calls[0]?.[1][1]).not.toHaveProperty("resource_keys");

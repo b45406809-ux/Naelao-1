@@ -11,17 +11,21 @@ for a busy environment can yield capacity to other ready work while dependencies
 workspace affinity remain authoritative.
 
 Select from host-verified environment cards describing scope, installed capabilities, workspace
-and session affinity, health, capacity, cost and proven isolation. Credentials and logged-in
-profiles stay attached to their existing environment and do not grant access to another worker.
-Models may rank eligible choices or summarize bounded blackboard updates; deterministic host
-checks enforce permissions, subscription limits, admission, quotas and isolation. Model failure
-falls back to a deterministic queue.
+and session affinity, health, capacity, cost and proven isolation. Goal task graphs are classified
+against the current worker tools and approved container catalogue; high-confidence recommendations
+are bound into the signed child delegation, selected by the managed execution tools, and pinned to
+the execution session. Credentials and logged-in profiles stay attached to their existing
+environment and do not grant access to another worker. Model failure falls back to a deterministic
+single-slot queue.
 
-If three workers require one environment, run them concurrently only when the runtime proves
-separate execution and workspace isolation. Otherwise reserve it for one execution and schedule
-other ready work while requests wait. Use bounded priority with aging. Keep dependent commands in
-the same environment when they require local state, or transfer explicit versioned artifacts
-through an authorized workspace with conflict detection.
+If multiple workers require one installation, the default is one active worker. A container may
+opt into at most four concurrent workers by declaring `parallelExecution` with
+`isolation: "worker_branch"`; the host enables that limit only for project workers because each
+worker branch maps to a distinct sidecar Durable Object and container filesystem. The shared queue
+uses the validated installed contract's limit, not planner input. Missing branch isolation,
+ambiguous or unavailable runtime, and undeclared parallelism all stay single-slot. Use bounded
+priority with aging. Keep dependent commands in the same environment when they require local state,
+or transfer explicit versioned artifacts through an authorized workspace with conflict detection.
 
 Prewarming is advisory and must follow permission checks, atomic plan quota reservation, a
 per-Space budget and short expiry. Deduplicate requests, cancel stale predictions and measure
@@ -29,10 +33,8 @@ useful prewarms, wasted idle time, queue wait, latency and cost. A prewarm never
 Evaluate ScaleDown and decision models for prediction and ranking only after checking availability,
 retention and incremental cost; do not assume a specific latency or price.
 
-Outstanding implementation: a durable cross-worker reservation queue, rolling DAG dispatch,
-verified environment cards, quota-backed speculative prewarm, state-affinity enforcement and
-recovery after lease expiry. The existing fixed-wave dispatcher and best-effort prewarm do not yet
-provide those capabilities.
+Still open: quota-backed speculative prewarm, live provider measurements, and richer multi-resource
+prediction. Resource lease expiry remains fail-closed pending reconciliation.
 
 ## Acceptance checklist
 
@@ -40,7 +42,7 @@ provide those capabilities.
 - [x] Deterministic eligibility before decision-model ranking; explicit external capability/fallback consent, no policy/budget bypass. Host-derived fallback requires no compatible managed target or an unavailable managed provider.
 - [x] Durable execution sessions bind environment and command identity; uncertain outcomes never migrate or replay. Managed cross-run restoration is explicitly blocked until implemented.
 - [x] Scoped content-addressed workspace artifact publish/restore with destination revision checks; explicit machine import/export for files up to 16 MiB in resumable 8 KiB chunks, with per-chunk tunnel request IDs, source version checks, digest verification and create-only destination publication.
-- [ ] Unified subscription limits, atomic reservations, usage reconciliation and bounded prewarming.
+- [ ] Unified subscription limits, atomic reservations, usage reconciliation and quota-backed prewarming.
 - [x] Template runtime requirements, dependency/order validation, reduced-plan preview and required-component blocking. Owner-approved activation now resolves approved runtime images and installs required runtimes into their newly created projects; optional runtimes stay deferred.
 - [x] Activation preview reports required runtimes as installable only when deployed image, requested capabilities, plan tier/resources, and project execution ceiling all permit installation; missing or ineligible required runtimes block activation.
 - [x] Installation UI displays the deployment-approved runtime catalogue, plan capacity, install state and server-side rejection; template preview continues to show required/optional runtime blockers truthfully.
@@ -49,6 +51,7 @@ provide those capabilities.
 - [ ] Native OS adapters and browser/desktop integration remain open. Linux bubblewrap is implemented; macOS/Windows now support an opt-in Docker Desktop sandbox using a pinned preloaded image and scoped folder mounts. App/browser profile access is deliberately absent; live OS-specific acceptance is still required.
 - [x] Connected personal computers keep their own filesystem; execution is restricted to the intersection of a current host grant and the computer owner's local consent (Linux bubblewrap adapter).
 - [ ] Adversarial routing/session tests, scoped integration tests, provider and machine acceptance.
+- [x] Runtime requirement prediction, signed worker handoff and managed environment pinning; installed container opt-in for bounded branch-isolated parallelism, with single-slot fallback and cross-project Space-runtime queue scope.
 
 ## Rules
 

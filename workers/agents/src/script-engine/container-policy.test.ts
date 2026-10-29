@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveContainerBinary, resolveContainerCapabilities, sidecarKey, validateContainerScope, type ContainerInvocationScope, type InstalledContainer } from "./container-policy.js";
+import { containerWorkerConcurrency, resolveContainerBinary, resolveContainerCapabilities, sidecarKey, validateContainerScope, type ContainerInvocationScope, type InstalledContainer } from "./container-policy.js";
 
 const installation = (overrides: Partial<InstalledContainer> = {}): InstalledContainer => ({
   tenantId: "tenant", spaceId: "space", projectId: "project", installationId: "install-a", extensionId: "media_tools",
@@ -13,6 +13,12 @@ const installation = (overrides: Partial<InstalledContainer> = {}): InstalledCon
 
 describe("container capability resolution", () => {
   const owner = { tenantId: "tenant", spaceId: "space", projectId: "project", userId: "person" };
+
+  it("keeps containers single-slot unless the opt-in contract and isolated branch are both present", () => {
+    expect(containerWorkerConcurrency(installation(), true)).toBe(1);
+    expect(containerWorkerConcurrency(installation({ contract: { ...installation().contract, parallelExecution: { isolation: "worker_branch", maxConcurrentWorkers: 3 } } }), false)).toBe(1);
+    expect(containerWorkerConcurrency(installation({ contract: { ...installation().contract, parallelExecution: { isolation: "worker_branch", maxConcurrentWorkers: 3 } } }), true)).toBe(3);
+  });
 
   it("resolves only an exact authorized installation satisfying every requested capability", () => {
     const selected = installation();

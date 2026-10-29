@@ -28,6 +28,8 @@ export interface GoalTask {
   /** System One recommendation from the installed, host-approved runtime catalogue. */
   runtime_capability?: string;
   runtime_confidence?: number;
+  /** Host-generated exact lock associated with the approved runtime; planner input is discarded. */
+  runtime_resource_key?: string;
   /** Bounded queue priority; host caps and ages it to prevent starvation. */
   priority?: number;
   file_paths: string[];
@@ -47,6 +49,7 @@ export function validateGoalDag(tasks: GoalTask[]): void {
     if (task.resource_keys !== undefined && (!Array.isArray(task.resource_keys) || task.resource_keys.length > 8 || task.resource_keys.some(key => typeof key !== "string" || !/^[a-z][a-z0-9._:-]{0,95}$/.test(key)) || new Set(task.resource_keys).size !== task.resource_keys.length)) throw new Error(`task '${task.id}' has invalid resource_keys`);
     if (task.runtime_capability !== undefined && (typeof task.runtime_capability !== "string" || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(task.runtime_capability))) throw new Error(`task '${task.id}' has an invalid runtime_capability`);
     if (task.runtime_confidence !== undefined && (!Number.isFinite(task.runtime_confidence) || task.runtime_confidence < 0 || task.runtime_confidence > 1)) throw new Error(`task '${task.id}' has an invalid runtime_confidence`);
+    if (task.runtime_resource_key !== undefined && (typeof task.runtime_resource_key !== "string" || !/^runtime\.[a-z-]+\.[a-f0-9]{40}$/.test(task.runtime_resource_key))) throw new Error(`task '${task.id}' has an invalid runtime_resource_key`);
     if (task.priority !== undefined && (!Number.isSafeInteger(task.priority) || task.priority < -10 || task.priority > 10)) throw new Error(`task '${task.id}' priority must be within -10..10`);
     for (const dependency of task.dependencies ?? []) if (!ids.has(dependency) || dependency === task.id) throw new Error(`task '${task.id}' has invalid dependency '${dependency}'`);
   }
@@ -123,6 +126,7 @@ export const goalPlanner: PrebuiltScript = {
             task.runtime_capability = recommendation.capability;
             task.runtime_confidence = recommendation.confidence;
             const resource = recommendation.resourceKey ?? `runtime.capability.${recommendation.capability.toLowerCase().replace(/[^a-z0-9.-]/g, "-")}`;
+            if (recommendation.resourceKey) task.runtime_resource_key = recommendation.resourceKey;
             task.resource_keys = [...new Set([...(task.resource_keys ?? []), resource])].slice(0, 8);
             task.subtask_spec += `\nHost runtime recommendation (advisory, confidence ${recommendation.confidence.toFixed(2)}): ${recommendation.capability}. Use this only for commands that need it. Keep dependent commands in one environment/session when state must carry across commands; the runtime still enforces installed grants and availability.`;
           }

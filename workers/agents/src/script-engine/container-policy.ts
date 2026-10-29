@@ -12,6 +12,13 @@ export interface InstalledContainer {
   installationId: string; extensionId: string; contract: ContainerContract; scope?: InstallationScope | undefined;
   sharedFilesystemGrants?: readonly { path: string; access: "READ" | "READ_WRITE" }[];
 }
+/** The installed contract can request concurrency, but the host enables it only when each
+ *  worker has a distinct project branch that maps to its own Container DO instance. */
+export function containerWorkerConcurrency(item: InstalledContainer | undefined, hasIsolatedWorkerBranch: boolean): number {
+  if (!item || !hasIsolatedWorkerBranch || !item.projectId || item.contract.parallelExecution?.isolation !== "worker_branch") return 1;
+  const requested = item.contract.parallelExecution.maxConcurrentWorkers;
+  return Number.isSafeInteger(requested) ? Math.max(1, Math.min(4, requested)) : 1;
+}
 export interface ApprovedContainerImage {
   image: string; binding: "DOCUMENT_SANDBOX" | "MEDIA_SANDBOX" | "TOOL_SANDBOX";
   memoryMb: number; cpuCores: number;

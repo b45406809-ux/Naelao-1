@@ -1147,7 +1147,7 @@ export interface ScriptEngineEnv {
   /** Host resolves advisory capability labels to the current authorized installation. */
   activatePlanRuntime?: (capability?: string) => Promise<void>;
   /** Best-effort exact prewarm for the next planned worker step; never authorizes execution. */
-  prewarmPlanRuntime?: (capability?: string) => Promise<{ warmed: boolean; error?: string }>;
+  prewarmPlanRuntime?: (capability?: string, target?: { runId?: string; workspaceBranch?: string }) => Promise<{ warmed: boolean; error?: string }>;
   /** Runtime pin selected by the host from a classified worker-board step. */
   planContainerInstallationId?: string;
   /** Signed host recommendation applied to this worker's managed environment selection. */
