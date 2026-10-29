@@ -235,6 +235,22 @@ function taskCitations(task: DurableAgentTask): Array<{ version: 1; ordinal: num
   }).slice(0, 50);
 }
 
+function taskHostActions(task: DurableAgentTask): Array<{ sequence: number; tool_name: string; call_status: "succeeded" | "failed"; observed_at?: number; duration_ms?: number }> {
+  if (!task.result || typeof task.result !== "object" || Array.isArray(task.result)) return [];
+  const value = (task.result as Record<string, unknown>).host_actions;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const action = item as Record<string, unknown>;
+    if (!Number.isSafeInteger(action.sequence) || typeof action.tool_name !== "string"
+        || (action.call_status !== "succeeded" && action.call_status !== "failed")) return [];
+    const callStatus: "succeeded" | "failed" = action.call_status === "succeeded" ? "succeeded" : "failed";
+    return [{ sequence: action.sequence as number, tool_name: action.tool_name.slice(0, 160), call_status: callStatus,
+      ...(typeof action.observed_at === "number" && Number.isSafeInteger(action.observed_at) ? { observed_at: action.observed_at } : {}),
+      ...(typeof action.duration_ms === "number" && Number.isFinite(action.duration_ms) && action.duration_ms >= 0 ? { duration_ms: action.duration_ms } : {}) }];
+  }).slice(0, 40);
+}
+
 function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; lastRunId?: string | null | undefined; projectId?: string | null | undefined }) {
   const product = useProduct();
   const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
@@ -291,6 +307,13 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
       {sessionId && taskCreatedArtifacts(task).map(artifact => <InlineArtifactCard key={artifact.artifact_id} spaceId={spaceId} artifactId={artifact.artifact_id} filename={artifact.filename} {...(artifact.content_type ? { contentType: artifact.content_type } : {})} session={session} />)}
       {projectId && taskCitations(task).length > 0 && <CitationBadges citations={taskCitations(task)} spaceId={spaceId} projectId={projectId} session={session} />}
+      {taskHostActions(task).length > 0 && <details style={{ marginTop: 8 }}>
+        <summary style={{ cursor: "pointer", color: "var(--text2)" }}>Observed tool calls ({taskHostActions(task).length})</summary>
+        <p style={{ color: "var(--text3)", fontSize: 11 }}>These records report whether Naelao&apos;s tool call succeeded. They do not independently confirm that an external service committed the change.</p>
+        {taskHostActions(task).map(action => <div key={`${action.sequence}:${action.tool_name}`} style={{ display: "flex", gap: 8, justifyContent: "space-between", padding: "4px 0", fontSize: 11, overflowWrap: "anywhere" }}>
+          <code>{action.tool_name}</code><span style={{ color: action.call_status === "succeeded" ? "var(--accent)" : "var(--danger, #dc2626)" }}>{action.call_status === "succeeded" ? "Tool call succeeded" : "Tool call failed"}{action.duration_ms !== undefined ? ` · ${action.duration_ms} ms` : ""}</span>
+        </div>)}
+      </details>}
       {sessionId && taskPendingItems(task, "pending_approval").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
       {sessionId && taskPendingItems(task, "deferred_approvals").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
       {sessionId && taskPendingItems(task, "pending_question").map(question => <InlineQuestionCard key={question.approval_id} spaceId={spaceId} question={question} session={session} onAnswered={() => void refresh()} />)}

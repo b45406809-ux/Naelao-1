@@ -151,6 +151,7 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
   deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
   created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
   citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }>;
+  host_actions?: Array<{ sequence: number; tool_name: string; call_status: "succeeded" | "failed"; observed_at?: number; duration_ms?: number }>;
 } {
   const r = raw as {
     result?: { ok?: boolean; output?: unknown; error?: unknown };
@@ -187,7 +188,18 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
       ...(citation.label ? { label: citation.label.slice(0, 200) } : {}),
     }));
   } catch { /* a malformed trace must not turn a completed task into a failure */ }
-  const evidence = { ...(createdArtifacts.length ? { created_artifacts: createdArtifacts } : {}), ...(citations.length ? { citations } : {}) };
+  const hostActions = trace.flatMap(step => {
+    if (step.phase !== "run" || typeof step.name !== "string" || step.ok === undefined
+        || !/(?:send|create|update|delete|transfer|refund|purchase|submit|publish|book|cancel|invite|charge|pay|deploy|merge|approve)(?:$|[._-])/i.test(step.name)) return [];
+    return [{ sequence: step.seq, tool_name: step.name.slice(0, 160), call_status: step.ok ? "succeeded" as const : "failed" as const,
+      ...(Number.isSafeInteger(step.ts) && step.ts >= 0 ? { observed_at: step.ts } : {}),
+      ...(typeof step.duration_ms === "number" && Number.isFinite(step.duration_ms) && step.duration_ms >= 0 ? { duration_ms: step.duration_ms } : {}) }];
+  }).slice(-40);
+  const evidence = {
+    ...(createdArtifacts.length ? { created_artifacts: createdArtifacts } : {}),
+    ...(citations.length ? { citations } : {}),
+    ...(hostActions.length ? { host_actions: hostActions } : {}),
+  };
 
   if (r?.pending_question) {
     const question = r.pending_question.question;
