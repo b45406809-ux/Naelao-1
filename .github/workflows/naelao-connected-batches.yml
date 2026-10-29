@@ -58,3 +58,41 @@ jobs:
           name: binding-probe
           path: ${{ runner.temp }}/probe/*
           if-no-files-found: ignore
+  router-dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm exec turbo run build --filter='./packages/*' --concurrency=2
+      - name: Verify router calls auth and spaces
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/router-probe"
+          export WRANGLER_SEND_METRICS=false
+          pnpm exec wrangler dev --local -c workers/router/wrangler.toml -c workers/auth/wrangler.toml -c workers/spaces/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/router-probe/state" > "$RUNNER_TEMP/router-probe/wrangler.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          ok=0
+          for i in $(seq 1 60); do
+            sleep 3
+            echo "sample=$i"; free -m; df -m .; ps -eo pid,ppid,rss,comm --sort=-rss | head -15
+            if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18800/health/dependencies > "$RUNNER_TEMP/router-probe/response.json"; then
+              cat "$RUNNER_TEMP/router-probe/response.json"
+              if node -e 'const x=require(process.argv[1]); process.exit(x.ok && ["auth","spaces"].every(n => x.services.some(s => s.service === n && s.status === 200 && s.ok)) ? 0 : 1)' "$RUNNER_TEMP/router-probe/response.json"; then ok=1; break; fi
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+          done
+          cat "$RUNNER_TEMP/router-probe/wrangler.log"
+          test "$ok" = 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: router-dependencies
+          path: ${{ runner.temp }}/router-probe/*
+          if-no-files-found: ignore
