@@ -3663,11 +3663,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                   while (!token && Date.now() < deadline) {
                     const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: holderId }) }));
                     const state = await response.json<{ acquired?: boolean; token?: number; queue_full?: boolean; reconciliation_required?: boolean }>();
-                    if (!response.ok || state.queue_full || state.reconciliation_required) throw new Error("shared_resource_queue_unavailable");
+                    if (!response.ok || state.queue_full || state.reconciliation_required) {
+                      await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: holderId }) })).catch(() => undefined);
+                      throw new Error("shared_resource_queue_unavailable");
+                    }
                     if (state.acquired && Number.isSafeInteger(state.token)) token = state.token;
                     else await new Promise(resolve => setTimeout(resolve, 250));
                   }
-                  if (!token) throw new Error("shared_resource_queue_timeout");
+                  if (!token) {
+                    await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: holderId }) })).catch(() => undefined);
+                    throw new Error("shared_resource_queue_timeout");
+                  }
                   leases.push({ stub, resource: scoped, token });
                 }
               } catch (error) {

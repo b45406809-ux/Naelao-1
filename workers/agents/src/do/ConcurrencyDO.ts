@@ -118,7 +118,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
         return this.releaseLock(request);
       }
       if (request.method === "POST" && url.pathname === "/locks/renew") return this.renewLock(request);
-      if (request.method === "POST" && ["/resource-queue/request", "/resource-queue/release", "/resource-queue/renew"].includes(url.pathname)) {
+      if (request.method === "POST" && ["/resource-queue/request", "/resource-queue/release", "/resource-queue/renew", "/resource-queue/cancel"].includes(url.pathname)) {
         return this.resourceQueue(request, url.pathname.split("/").at(-1)!);
       }
       if (request.method === "POST" && url.pathname === "/workspace/publish") {
@@ -170,6 +170,13 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
         state.active.expiresAt = now + 30_000;
         await tx.put(storageKey, state);
         return { renewed: true, token: state.active.token, expiresAt: state.active.expiresAt };
+      }
+      if (action === "cancel") {
+        if (state.active?.holder === holder) return { cancelled: false, active: true };
+        const before = state.waiters.length;
+        state.waiters = state.waiters.filter(item => item.holder !== holder);
+        await tx.put(storageKey, state);
+        return { cancelled: state.waiters.length < before };
       }
       if (action === "release") {
         if (!state.active || state.active.holder !== holder || body.token !== state.active.token) return { released: false };
