@@ -99,3 +99,50 @@ jobs:
           name: router-dependencies
           path: ${{ runner.temp }}/router-probe/*
           if-no-files-found: ignore
+  agent-authorization:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm exec turbo run build --filter='./packages/*' --concurrency=2
+      - name: Prepare sandbox dependencies
+        run: |
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module'; import { dirname, join, resolve } from 'node:path'; import { cpSync, mkdirSync } from 'node:fs';
+          const root=process.cwd(), req=createRequire(join(root,'workers/agents/package.json')), target=join(root,'workers/agents/container/.vendor/node_modules'), platform=`@esbuild/${process.platform}-${process.arch}`;
+          mkdirSync(join(target,'@esbuild'),{recursive:true}); cpSync(dirname(req.resolve('esbuild/package.json')),join(target,'esbuild'),{recursive:true,dereference:true}); cpSync(resolve(root,'node_modules/.pnpm/node_modules',platform),join(target,platform),{recursive:true,dereference:true});
+          NODE
+      - name: Verify unauthorized agent requests are rejected
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/agent-test"
+          export WRANGLER_SEND_METRICS=false
+          pnpm exec wrangler dev --local -c workers/agents/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/agent-test/worker.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          status=000
+          for i in $(seq 1 80); do
+            sleep 3
+            status=$(curl -s -o "$RUNNER_TEMP/agent-test/no-identity.json" -w '%{http_code}' --max-time 3 -X POST -H 'content-type: application/json' --data '{"goal":"test"}' http://127.0.0.1:18800/spaces/test/sessions/test/agent/run || true)
+            echo "sample=$i status=$status"; free -m; df -m .
+            if [ "$status" != 000 ]; then break; fi
+            kill -0 "$pid" 2>/dev/null || break
+          done
+          cat "$RUNNER_TEMP/agent-test/worker.log"
+          test "$status" = 401
+          status=$(curl -s -o "$RUNNER_TEMP/agent-test/forged.json" -w '%{http_code}' --max-time 10 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-internal-token: forged' --data '{"goal":"test"}' http://127.0.0.1:18800/spaces/test/sessions/test/agent/run)
+          echo "forged_status=$status"
+          cat "$RUNNER_TEMP/agent-test/forged.json"
+          test "$status" = 401
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-authorization
+          path: ${{ runner.temp }}/agent-test/*
+          if-no-files-found: ignore
