@@ -2884,8 +2884,19 @@ app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
   if (!space) throw notFound("Space");
 
   const timeout = c.req.query("timeout") ?? "0";
+  if (!/^(0|[1-9][0-9]?)$/.test(timeout) || Number(timeout) > 30) return c.json({ error: "invalid_timeout" }, 400);
   const stub = getTaskDO(c.env, spaceId);
-  return stub.fetch(`http://task-do/tasks/${taskId}?timeout=${timeout}`);
+  // Resolve and authorize the task before entering a potentially long-polling request; otherwise
+  // guessed task IDs could hold open unauthenticated waits and consume Worker/DO capacity.
+  const initialResponse = await stub.fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}?timeout=0`);
+  if (!initialResponse.ok) return initialResponse;
+  const task = await initialResponse.json<{ session_id?: unknown; status?: unknown }>().catch((): { session_id?: unknown; status?: unknown } => ({}));
+  if (typeof task.session_id !== "string" || !await requireBusinessMembershipOrSessionAccess(c, spaceId, task.session_id)) {
+    // Do not reveal whether a task in another conversation exists.
+    return c.json({ error: "not_found" }, 404);
+  }
+  if (timeout === "0" || task.status === "complete" || task.status === "failed") return c.json(task);
+  return stub.fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}?timeout=${encodeURIComponent(timeout)}`);
 });
 
 // Internal route: AgentTaskWorkflow calls this to execute the agent synchronously.
