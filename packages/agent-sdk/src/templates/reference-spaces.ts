@@ -159,9 +159,28 @@ export const CROSS_SYSTEM_OPERATIONS_SPACE_TEMPLATE: SpaceBlueprint = {
           }, null, 2) + "\n",
         },
         {
+          path: "workflow-state.json",
+          content: JSON.stringify({
+            fixture_mode: "simulation_only",
+            status: "not_started",
+            current_step: "inspect-fixtures",
+            completed_steps: [],
+            last_verified_records: [],
+            review_packet_id: null,
+            approval: { status: "not_requested", actor: null, recorded_at: null },
+            simulated_effects: [],
+            retry_key: "simulation:req-demo-001:fulfillment-decision:v1",
+          }, null, 2) + "\n",
+        },
+        {
+          path: "REVIEW-PACKET.md",
+          content:
+            "# Proposed action review\n\n- Fixture request ID:\n- Related source record IDs:\n- Proposed action:\n- Evidence checked:\n- Conflicts or missing evidence:\n- Consequence if approved:\n- Required approver:\n- Approval decision and timestamp:\n- Verified outcome:\n- Resume step after interruption:\n\nThis packet is simulated. Recording an approval here does not authorize or perform a real external action.\n",
+        },
+        {
           path: "WORKFLOW.md",
           content:
-            "# Simulated workflow\n\n1. Read the request and source records; retain their record IDs.\n2. Compare order and invoice totals and identify missing or conflicting evidence.\n3. Draft a proposed fulfillment decision. State its evidence, uncertainty, and required approver.\n4. Do not represent a proposal as an external change. This fixture has no live connections.\n5. Record approval or rejection, the evidence reviewed, and the next resumable step. If interrupted, verify saved state before continuing.\n",
+            "# Simulated workflow\n\n1. Read the request and source records; retain their record IDs.\n2. Compare order and invoice totals and identify missing or conflicting evidence.\n3. Draft the review packet and persist the current step in `workflow-state.json`.\n4. Wait for a recorded decision before moving to the simulated outcome.\n5. Use the stable retry key in `workflow-state.json` to avoid duplicating a simulated effect.\n6. Do not represent a proposal as an external change. This fixture has no live connections.\n7. If interrupted, verify saved state and record versions before continuing.\n",
         },
       ],
       configuration: {
