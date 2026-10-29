@@ -3663,7 +3663,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                   const deadline = Date.now() + 300_000;
                   let token: number | undefined;
                   while (!token && Date.now() < deadline) {
-                    const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder }) }));
+                    const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder, priority: task.priority ?? 0 }) }));
                     const state = await response.json<{ acquired?: boolean; token?: number; queue_full?: boolean; reconciliation_required?: boolean }>();
                     if (!response.ok || state.queue_full || state.reconciliation_required) {
                       await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder }) })).catch(() => undefined);

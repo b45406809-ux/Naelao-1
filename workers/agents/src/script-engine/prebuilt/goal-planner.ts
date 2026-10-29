@@ -25,6 +25,8 @@ export interface GoalTask {
   planner?: boolean;
   /** Scheduling hint for a shared mutable environment; host controls remain authoritative. */
   resource_keys?: string[];
+  /** Bounded queue priority; host caps and ages it to prevent starvation. */
+  priority?: number;
   file_paths: string[];
   dependencies?: string[];
   budget_tokens: number;
@@ -40,6 +42,7 @@ export function validateGoalDag(tasks: GoalTask[]): void {
     if (typeof task.assigned_role !== "string" || !task.assigned_role.trim() || task.assigned_role.length > 128) throw new Error(`task '${task.id}' has an invalid assigned_role`);
     if (!Number.isSafeInteger(task.budget_tokens) || task.budget_tokens < 1 || task.budget_tokens > MAX_SUB_AGENT_BUDGET_TOKENS) throw new Error(`task '${task.id}' budget_tokens must be within 1..${MAX_SUB_AGENT_BUDGET_TOKENS}`);
     if (task.resource_keys !== undefined && (!Array.isArray(task.resource_keys) || task.resource_keys.length > 8 || task.resource_keys.some(key => typeof key !== "string" || !/^[a-z][a-z0-9._:-]{0,95}$/.test(key)) || new Set(task.resource_keys).size !== task.resource_keys.length)) throw new Error(`task '${task.id}' has invalid resource_keys`);
+    if (task.priority !== undefined && (!Number.isSafeInteger(task.priority) || task.priority < -10 || task.priority > 10)) throw new Error(`task '${task.id}' priority must be within -10..10`);
     for (const dependency of task.dependencies ?? []) if (!ids.has(dependency) || dependency === task.id) throw new Error(`task '${task.id}' has invalid dependency '${dependency}'`);
   }
   const visiting = new Set<string>(), visited = new Set<string>();
@@ -75,6 +78,7 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
       ...(typeof task.agent_id === "string" ? { agent_id: task.agent_id } : {}),
       ...(task.planner === true ? { planner: true } : {}),
       ...(Array.isArray(task.resource_keys) ? { resource_keys: task.resource_keys.map(String) } : {}),
+      ...(typeof task.priority === "number" ? { priority: task.priority } : {}),
       file_paths: filePaths,
       dependencies: Array.isArray(task.dependencies) ? task.dependencies.map(String) : [],
       budget_tokens: Math.min(planBudget, requestedBudget),
@@ -86,7 +90,7 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
 export const goalPlanner: PrebuiltScript = {
   name: "goal-planner", domain: "orchestration", requires_tier: 2,
   description: "Persist a frontier-planned task DAG and concurrently dispatch isolated edge workers.",
-  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
+  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
   operations: {
     async "engine.coordination_patterns"() {
       return { patterns: structuredClone(COORDINATION_PATTERNS), advisory: true };

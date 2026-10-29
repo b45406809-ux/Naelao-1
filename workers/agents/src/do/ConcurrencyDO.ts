@@ -155,13 +155,13 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
 
   /** FIFO admission primitive. Expired holders require reconciliation before the next grant. */
   private async resourceQueue(request: Request, action: string): Promise<Response> {
-    const body = await request.json<{ resource?: unknown; holder?: unknown; token?: unknown }>().catch(() => ({} as { resource?: unknown; holder?: unknown; token?: unknown }));
+    const body = await request.json<{ resource?: unknown; holder?: unknown; token?: unknown; priority?: unknown }>().catch(() => ({} as { resource?: unknown; holder?: unknown; token?: unknown; priority?: unknown }));
     if (typeof body.resource !== "string" || !/^[A-Za-z0-9._:/-]{1,256}$/.test(body.resource) ||
         typeof body.holder !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(body.holder)) return Response.json({ error_code: "bad_request" }, { status: 400 });
     const resource = body.resource, holder = body.holder;
     const storageKey = `resource-queue:${resource}`;
     const result = await this.ctx.storage.transaction(async tx => {
-      type Queue = { fence: number; active?: { holder: string; token: number; expiresAt: number }; waiters: Array<{ holder: string; expiresAt: number }> };
+      type Queue = { fence: number; active?: { holder: string; token: number; expiresAt: number }; waiters: Array<{ holder: string; expiresAt: number; priority: number; enqueuedAt: number }> };
       const state = await tx.get<Queue>(storageKey) ?? { fence: 0, waiters: [] };
       const now = Date.now();
       state.waiters = state.waiters.filter(item => item.expiresAt > now && item.holder !== state.active?.holder);
@@ -185,11 +185,13 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
         return state.active.expiresAt > now ? { acquired: true, token: state.active.token, expiresAt: state.active.expiresAt } : { acquired: false, reconciliation_required: true };
       } else if (!state.waiters.some(item => item.holder === holder)) {
         if (state.waiters.length >= 100) return { acquired: false, queue_full: true };
-        state.waiters.push({ holder, expiresAt: now + 300_000 });
+        const priority = Number.isSafeInteger(body.priority) ? Math.max(-10, Math.min(10, body.priority as number)) : 0;
+        state.waiters.push({ holder, expiresAt: now + 300_000, priority, enqueuedAt: now });
       } else {
         state.waiters.find(item => item.holder === holder)!.expiresAt = now + 300_000;
       }
       if (!state.active && state.waiters.length) {
+        state.waiters.sort((a, b) => (b.priority + Math.floor((now - b.enqueuedAt) / 30_000)) - (a.priority + Math.floor((now - a.enqueuedAt) / 30_000)) || a.enqueuedAt - b.enqueuedAt);
         const next = state.waiters.shift()!;
         state.active = { holder: next.holder, token: ++state.fence, expiresAt: now + 30_000 };
       }
