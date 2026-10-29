@@ -107,6 +107,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     await host.publish(task, state);
   }
   const inFlight = new Map<string, Promise<{ id: string; error?: unknown }>>();
+  const activeResources = new Set<string>();
   for (;;) {
     const pending = tasks.filter(task => journal.tasks[task.id]!.status === "pending");
     for (const task of pending) {
@@ -151,8 +152,19 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     }
     // Claim and persist each available slot before starting its external worker effects.
     const slots = Math.max(0, host.concurrency - inFlight.size);
-    const dispatch = ready.slice(0, slots);
-    for (const task of dispatch) journal.tasks[task.id]!.status = "running";
+    const dispatch: GoalTask[] = [];
+    const claimedResources = new Set(activeResources);
+    for (const task of ready) {
+      if (dispatch.length >= slots) break;
+      const resources = task.resource_keys ?? [];
+      if (resources.some(key => claimedResources.has(key))) continue;
+      dispatch.push(task);
+      for (const key of resources) claimedResources.add(key);
+    }
+    for (const task of dispatch) {
+      journal.tasks[task.id]!.status = "running";
+      for (const key of task.resource_keys ?? []) activeResources.add(key);
+    }
     if (dispatch.length) await save();
     for (const task of dispatch) {
       const execution = (async () => {
@@ -182,6 +194,8 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     if (inFlight.size) {
       const finished = await Promise.race(inFlight.values());
       inFlight.delete(finished.id);
+      const finishedTask = tasks.find(task => task.id === finished.id);
+      for (const key of finishedTask?.resource_keys ?? []) activeResources.delete(key);
       if (finished.error !== undefined) {
         const remaining = await Promise.all(inFlight.values());
         for (const item of remaining) inFlight.delete(item.id);

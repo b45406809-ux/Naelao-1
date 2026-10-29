@@ -85,6 +85,29 @@ describe("durable goal DAG", () => {
     releaseSlow();
     await run;
   });
+  it("lets unrelated ready work pass a task waiting for the same shared environment", async () => {
+    const f = fixture(); f.host.concurrency = 2;
+    let releaseContainer!: () => void;
+    const containerGate = new Promise<void>(resolve => { releaseContainer = resolve; });
+    let containerStarted!: () => void;
+    const started = new Promise<void>(resolve => { containerStarted = resolve; });
+    const launched: string[] = [];
+    f.host.launch = vi.fn(async (t, id) => {
+      launched.push(t.id);
+      if (t.id === "container-a") { containerStarted(); await containerGate; }
+      return { id, ok: true };
+    });
+    const containerA = { ...task("container-a"), resource_keys: ["project.container"] };
+    const containerB = { ...task("container-b"), resource_keys: ["project.container"] };
+    const run = executeGoalDag([containerA, containerB, task("docs")], f.host);
+    await started;
+    for (let i = 0; i < 20 && !launched.includes("docs"); i++) await Promise.resolve();
+    expect(launched).toContain("docs");
+    expect(launched).not.toContain("container-b");
+    releaseContainer();
+    await run;
+    expect(launched).toContain("container-b");
+  });
   it("runs one opt-in fixer for a confirmed failure and retains the original escalation", async () => {
     const f = fixture(); f.host.fixerEnabled = true;
     f.host.launch = vi.fn(async (_task, id) => ({ id, ok: false, error: "test failed" }));
