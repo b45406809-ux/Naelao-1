@@ -11,4 +11,27 @@ This example is simulation-first and is not yet a portable marketplace dependenc
 - `manifest.json` declares the canvas, Gadget, and exact read-only table grant.
 - `index.html` renders bounded records and emits planner actions through the host canvas bridge.
 
+When the canvas is built with the SDK, use its typed host client instead of hand-writing the
+`postMessage` protocol:
+
+```ts
+import { createExtensionCanvasClient } from "@naelao/agent-sdk";
+
+const canvas = createExtensionCanvasClient(projectId);
+const records = await canvas.readGadget({
+  gadgetId: "review_store",
+  operation: "list",
+  table: "review_records",
+  limit: 25,
+});
+canvas.emitAction("review.simulated_decision", {
+  decision: "approve",
+  simulation_only: true,
+});
+// Call canvas.dispose() when the view is torn down.
+```
+
+The host rechecks the signed installation and per-canvas table grant. The SDK client only sends
+read requests and planner actions; it exposes no Gadget write operation.
+
 The outer `extension.gadget.read` capability is required when a canvas declares `gadgetReads`. The capability grants only the manifest allowlist, and the host independently enforces that allowlist at runtime.

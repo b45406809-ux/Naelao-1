@@ -96,6 +96,101 @@ export function acceptCanvasEvent(event: Pick<MessageEvent, "origin" | "data">, 
   return parseCanvasMessage(event.data, projectId);
 }
 
+export interface CanvasGadgetReadRequest {
+  gadgetId: string;
+  operation: "list" | "get";
+  table: string;
+  id?: string;
+  limit?: number;
+}
+
+export interface ExtensionCanvasClient {
+  /** Read only the rows granted to this canvas in its installed manifest. */
+  readGadget(request: CanvasGadgetReadRequest): Promise<unknown>;
+  /** Send a data-only request to the project assistant; it does not execute an external action. */
+  emitAction(action: string, payload: Record<string, string | number | boolean | null>): void;
+  dispose(): void;
+}
+
+/** Browser-side bridge for an extension canvas hosted in Naelao's sandboxed iframe. The host
+ * revalidates the installation and table grant on every read; this client is not an authority. */
+export function createExtensionCanvasClient(projectId: string, options: {
+  window?: Window;
+  timeoutMs?: number;
+} = {}): ExtensionCanvasClient {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw new Error("invalid canvas project id");
+  const target = options.window ?? window;
+  if (target.parent === target) throw new Error("extension canvas must run in a hosted frame");
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) throw new Error("invalid canvas bridge timeout");
+  const prefix = `g${crypto.randomUUID().replaceAll("-", "")}`;
+  let sequence = 0;
+  let disposed = false;
+  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: number }>();
+  const receive = (event: MessageEvent<unknown>) => {
+    if (event.source !== target.parent || !event.data || typeof event.data !== "object") return;
+    const message = event.data as { type?: unknown; id?: unknown; ok?: unknown; result?: unknown; error?: unknown };
+    if (message.type !== "naelao.extension.rpc.result" || typeof message.id !== "string") return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id);
+    target.clearTimeout(request.timer);
+    if (message.ok === true) {
+      const envelope = message.result as { error?: { message?: unknown }; result?: { isError?: unknown; structuredContent?: unknown; content?: unknown } } | null;
+      if (envelope && typeof envelope === "object" && envelope.error) {
+        request.reject(new Error(typeof envelope.error.message === "string" ? envelope.error.message.slice(0, 300) : "Canvas Gadget read failed"));
+      } else if (envelope?.result?.isError === true) {
+        const content = Array.isArray(envelope.result.content) ? envelope.result.content as Array<{ text?: unknown }> : [];
+        request.reject(new Error(typeof content[0]?.text === "string" ? content[0].text.slice(0, 300) : "Canvas Gadget read failed"));
+      } else request.resolve(envelope?.result && "structuredContent" in envelope.result ? envelope.result.structuredContent : message.result);
+    }
+    else request.reject(new Error(typeof message.error === "string" ? message.error.slice(0, 300) : "Canvas host request failed"));
+  };
+  target.addEventListener("message", receive);
+
+  const sendRequest = (message: Record<string, unknown>): Promise<unknown> => {
+    if (disposed) return Promise.reject(new Error("canvas host client disposed"));
+    const id = `${prefix}_${++sequence}`;
+    return new Promise((resolve, reject) => {
+      const timer = target.setTimeout(() => {
+        pending.delete(id);
+        reject(new Error("Canvas host request timed out"));
+      }, timeoutMs);
+      pending.set(id, { resolve, reject, timer });
+      target.parent.postMessage({ ...message, id }, "*");
+    });
+  };
+
+  return {
+    readGadget(request) {
+      if (!/^[a-z][a-z0-9._-]{1,63}$/.test(request.gadgetId) || !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(request.table)
+        || !(request.operation === "list" || request.operation === "get")
+        || request.operation === "get" && (typeof request.id !== "string" || request.id.length < 1 || request.id.length > 256)
+        || request.operation === "list" && request.id !== undefined
+        || request.limit !== undefined && (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 25)) {
+        return Promise.reject(new Error("invalid canvas Gadget read"));
+      }
+      return sendRequest({ type: "naelao.extension.gadget.read", gadgetId: request.gadgetId, operation: request.operation,
+        table: request.table, ...(request.id !== undefined ? { recordId: request.id } : {}), ...(request.limit !== undefined ? { limit: request.limit } : {}) });
+    },
+    emitAction(action, payload) {
+      const message = parseCanvasMessage({ type: "canvas.action", projectId, action, payload }, projectId);
+      if (disposed) throw new Error("canvas host client disposed");
+      target.parent.postMessage(message, "*");
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      target.removeEventListener("message", receive);
+      for (const request of pending.values()) {
+        target.clearTimeout(request.timer);
+        request.reject(new Error("canvas host client disposed"));
+      }
+      pending.clear();
+    },
+  };
+}
+
 export interface StructuralDiagnostic { ruleId: string; message: string; path?: string; }
 export type StructuralRule<T> = (candidate: T) => readonly StructuralDiagnostic[];
 export type CorrectionAttempt<T> = (candidate: T, diagnostics: readonly StructuralDiagnostic[], attempt: number) => Promise<T>;
