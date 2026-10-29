@@ -172,12 +172,23 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       const state = journal.tasks[task.id]!;
       await host.publish(task, state);
       let result: GoalWorkerResult;
+      let release: (() => Promise<void>) | undefined;
       try {
-        const release = await host.acquireResources?.(task, state.workerId) ?? (async () => {});
-        try { result = await host.launch(task, state.workerId, dependencyHandoffs(task, journal)); }
-        finally { await release(); }
+        release = await host.acquireResources?.(task, state.workerId) ?? (async () => {});
       }
       catch (error) {
+        // Admission failed before the external worker was launched, so this outcome is known.
+        state.result = { id: state.workerId, ok: false, error: String(error).slice(0, 1000) };
+        state.status = "failed";
+        recordCompletion(task, tasks, journal);
+        await save();
+        await host.publish(task, state);
+        return;
+      }
+      try {
+        try { result = await host.launch(task, state.workerId, dependencyHandoffs(task, journal)); }
+        finally { await release(); }
+      } catch (error) {
         // Transport failure may mean a committed worker response was lost.
         const recovered = await host.recover(state.workerId);
         if (!recovered) {
