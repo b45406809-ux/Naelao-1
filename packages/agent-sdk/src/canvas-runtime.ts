@@ -109,7 +109,7 @@ export interface ExtensionCanvasClient {
   /** Read only the rows granted to this canvas in its installed manifest. */
   readGadget(request: CanvasGadgetReadRequest): Promise<unknown>;
   /** Send a data-only request to the project assistant and await its queued/completed/failed result. */
-  emitAction(action: string, payload: Record<string, string | number | boolean | null>): Promise<"queued" | "completed">;
+  emitAction(action: string, payload: Record<string, string | number | boolean | null>): Promise<{ status: "queued" | "completed"; runId?: string }>;
   dispose(): void;
 }
 
@@ -144,11 +144,14 @@ export function createExtensionCanvasClient(projectId: string, options: {
     if (message.type === "naelao.extension.action.result" && typeof message.id === "string") {
       const request = pending.get(message.id);
       if (!request) return;
-      const result = message.result as { status?: unknown; error?: unknown } | undefined;
+      const result = message.result as { status?: unknown; error?: unknown; run_id?: unknown } | undefined;
       if (result?.status === "accepted") return;
       pending.delete(message.id);
       target.clearTimeout(request.timer);
-      if (result?.status === "queued" || result?.status === "completed") request.resolve(result.status);
+      if (result?.status === "queued" || result?.status === "completed") request.resolve({
+        status: result.status,
+        ...(typeof result.run_id === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(result.run_id) ? { runId: result.run_id } : {}),
+      });
       else request.reject(new Error(typeof result?.error === "string" ? result.error.slice(0, 300) : "Canvas action failed"));
       return;
     }
@@ -204,7 +207,7 @@ export function createExtensionCanvasClient(projectId: string, options: {
           pending.delete(requestId);
           reject(new Error("Canvas action result timed out"));
         }, timeoutMs);
-        pending.set(requestId, { resolve: value => resolve(value as "queued" | "completed"), reject, timer });
+        pending.set(requestId, { resolve: value => resolve(value as { status: "queued" | "completed"; runId?: string }), reject, timer });
         target.parent.postMessage(message, "*");
       });
     },

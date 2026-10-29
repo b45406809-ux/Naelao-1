@@ -28,7 +28,8 @@ const outcome = await canvas.emitAction("review.simulated_decision", {
   decision: "approve",
   simulation_only: true,
 });
-// outcome is "queued" or "completed"; failures reject with the host result.
+// outcome.status is "queued" or "completed"; queued outcomes include runId when available.
+// Failures reject with the host result.
 // Call canvas.dispose() when the view is torn down.
 ```
 
