@@ -3649,6 +3649,48 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               if (!result) throw new Error("goal_fixer_acknowledgement_unavailable");
               return !result.ok && !result.status && !result.failure_confirmed ? { ...result, status: "outcome_uncertain" } : result;
             },
+            acquireResources: async (task, holderId) => {
+              const resources = [...new Set(task.resource_keys ?? [])].sort();
+              if (!resources.length) return async () => {};
+              if (!this.env.CONCURRENCY_DO) throw new Error("shared_resource_queue_unavailable");
+              const leases: Array<{ stub: DurableObjectStub; resource: string; token: number }> = [];
+              try {
+                for (const resource of resources) {
+                  const scoped = `worker-resource:${tenantId}:${spaceId}:${projectId ?? "_"}:${resource}`;
+                  const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(scoped));
+                  const deadline = Date.now() + 300_000;
+                  let token: number | undefined;
+                  while (!token && Date.now() < deadline) {
+                    const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: holderId }) }));
+                    const state = await response.json<{ acquired?: boolean; token?: number; queue_full?: boolean; reconciliation_required?: boolean }>();
+                    if (!response.ok || state.queue_full || state.reconciliation_required) throw new Error("shared_resource_queue_unavailable");
+                    if (state.acquired && Number.isSafeInteger(state.token)) token = state.token;
+                    else await new Promise(resolve => setTimeout(resolve, 250));
+                  }
+                  if (!token) throw new Error("shared_resource_queue_timeout");
+                  leases.push({ stub, resource: scoped, token });
+                }
+              } catch (error) {
+                for (const lease of leases.reverse()) await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: holderId, token: lease.token }) })).catch(() => undefined);
+                throw error;
+              }
+              let renewalFailure: Error | undefined;
+              const renewal = setInterval(() => {
+                void Promise.all(leases.map(async lease => {
+                  const response = await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/renew", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: holderId, token: lease.token }) }));
+                  if (!response.ok || !(await response.json<{ renewed?: boolean }>()).renewed) renewalFailure = new Error("shared_resource_lease_lost");
+                })).catch(() => { renewalFailure = new Error("shared_resource_lease_lost"); });
+              }, 10_000);
+              return async () => {
+                clearInterval(renewal);
+                let releaseFailed = false;
+                for (const lease of leases.reverse()) {
+                  const response = await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: holderId, token: lease.token }) })).catch(() => undefined);
+                  if (!response?.ok || !(await response.json<{ released?: boolean }>().catch(() => ({ released: false }))).released) releaseFailed = true;
+                }
+                if (renewalFailure || releaseFailed) throw renewalFailure ?? new Error("shared_resource_release_failed");
+              };
+            },
             publish: async (task, state) => {
               const response = await this.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/tasks/${encodeURIComponent(taskId(task.id))}`, {
                 method: "PATCH", headers: await this.internalHeaders(tenantId, { "content-type": "application/json", ...(userId ? { "x-naelao-user-id": userId, "x-naelao-role": runtimeEnv?.effectiveRole ?? "viewer" } : {}) }),
