@@ -73,6 +73,7 @@ import {
   type AssistantCapabilities,
   type AppNotification,
   type DurableAgentTask,
+  type RunPendingApproval,
   type SpaceAnalytics,
   type SessionSummary,
   type LocalGrant,
@@ -84,6 +85,8 @@ import { canManageSpaceSettings } from "@/lib/roles";
 import { FileViewer } from "@/components/FileViewer";
 import { HtmlPreviewFrame } from "@/components/HtmlPreviewFrame";
 import { ApprovedActionsEditor, type OperationGroup } from "./ApprovedActionsEditor";
+import { InlineApprovalCard } from "./InlineApprovalCard";
+import { InlineQuestionCard } from "./InlineQuestionCard";
 
 export type SidePanelTab =
   | "config"
@@ -158,6 +161,50 @@ function taskOutcomePreview(task: DurableAgentTask): string {
   return "No result recorded yet.";
 }
 
+function taskApprovalParams(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>).slice(0, 24);
+  if (!entries.length) return undefined;
+  return Object.fromEntries(entries.map(([key, item]) => {
+    let display: string;
+    try {
+      display = typeof item === "string" ? item : JSON.stringify(item) ?? String(item);
+    } catch {
+      display = String(item);
+    }
+    return [key.slice(0, 100), display.slice(0, 1000)];
+  }));
+}
+
+function taskPendingItems(task: DurableAgentTask, key: "pending_approval" | "pending_question" | "deferred_approvals"): RunPendingApproval[] {
+  if (!task.result || typeof task.result !== "object" || Array.isArray(task.result)) return [];
+  const value = (task.result as Record<string, unknown>)[key];
+  const candidates = Array.isArray(value) ? value : value ? [value] : [];
+  return candidates.flatMap(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const request = item as Record<string, unknown>;
+    const id = typeof request.approval_id === "string" ? request.approval_id : typeof request.question_id === "string" ? request.question_id : "";
+    if (!id || id.length > 160) return [];
+    const params = taskApprovalParams(request.params);
+    return [{
+      approval_id: id,
+      action_name: typeof request.action_name === "string" ? request.action_name.slice(0, 160) : key === "pending_question" ? "question" : "action",
+      ...(params ? { params } : {}),
+      ...(typeof request.expires_at === "number" ? { expires_at: request.expires_at } : {}),
+      ...(key === "pending_question" ? { kind: "question" as const } : {}),
+      ...(typeof request.question_id === "string" ? { question_id: request.question_id } : {}),
+      ...(typeof request.question === "string" ? { question: request.question.slice(0, 2000) } : {}),
+      ...(Array.isArray(request.options) ? { options: request.options.filter((option): option is string => typeof option === "string").slice(0, 20) } : {}),
+      ...(Array.isArray(request.questions) ? { questions: request.questions.flatMap(entry => {
+        if (!entry || typeof entry !== "object" || typeof (entry as { question?: unknown }).question !== "string") return [];
+        const item = entry as { question: string; options?: unknown };
+        const options = Array.isArray(item.options) ? item.options.filter((option): option is string => typeof option === "string").slice(0, 20).map(option => option.slice(0, 200)) : undefined;
+        return [{ question: item.question.slice(0, 2000), ...(options?.length ? { options } : {}) }];
+      }).slice(0, 5) } : {}),
+    }];
+  });
+}
+
 function TasksPanel({ spaceId, session, sessionId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined }) {
   const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -196,6 +243,9 @@ function TasksPanel({ spaceId, session, sessionId }: { spaceId: string; session:
       <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {task.created_at}</p>
       {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskOutcomePreview(task)}</p>}
       {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
+      {taskPendingItems(task, "pending_approval").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
+      {taskPendingItems(task, "deferred_approvals").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
+      {taskPendingItems(task, "pending_question").map(question => <InlineQuestionCard key={question.approval_id} spaceId={spaceId} question={question} session={session} onAnswered={() => void refresh()} />)}
       <small style={{ color: "var(--text3)" }}>Task record expires {task.expires_at}</small>
     </article>)}
   </section>;
