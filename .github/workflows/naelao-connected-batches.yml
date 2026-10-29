@@ -34,6 +34,7 @@ jobs:
           binding = "TARGET"
           service = "naelao-notifications"
           TOML
+          printf "RESEND_API_KEY=test-only-not-a-real-key\nWEBHOOK_SIGNING_SECRET=test-only-signing-secret\n" > workers/notifications/.dev.vars
           export WRANGLER_SEND_METRICS=false
           pnpm exec wrangler dev --local -c .probe/wrangler.toml -c workers/notifications/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/probe/state" > "$RUNNER_TEMP/probe/wrangler.log" 2>&1 &
           pid=$!
@@ -45,7 +46,7 @@ jobs:
             free -m; df -m .; ps -eo pid,ppid,rss,comm --sort=-rss | head -15
             if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:18800/ > "$RUNNER_TEMP/probe/response.json"; then
               cat "$RUNNER_TEMP/probe/response.json"
-              if node -e 'const v=require(process.argv[1]); process.exit(v.targetStatus === 200 ? 0 : 1)' "$RUNNER_TEMP/probe/response.json"; then ok=1; break; fi
+              if node -e 'const v=require(process.argv[1]); process.exit(v.targetStatus === 404 ? 0 : 1)' "$RUNNER_TEMP/probe/response.json"; then ok=1; break; fi
             fi
             if ! kill -0 "$pid" 2>/dev/null; then break; fi
           done
