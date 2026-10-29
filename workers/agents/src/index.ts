@@ -2912,6 +2912,7 @@ app.get("/spaces/:spaceId/tasks", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.query("session_id") ?? "";
   const projectId = c.req.query("project_id") ?? "";
+  const cursor = c.req.query("cursor") ?? "";
   const { role } = getCallerIdentity(c);
   // Product users may only list tasks tied to an authorized conversation. Omitting the session
   // filter is allowed only with an explicitly authorized Project scope; it must never expose
@@ -2929,7 +2930,7 @@ app.get("/spaces/:spaceId/tasks", async (c) => {
   if (!space) throw notFound("Space");
 
   const stub = getTaskDO(c.env, spaceId);
-  const query = new URLSearchParams({ space_id: spaceId, ...(sessionId ? { session_id: sessionId } : {}), ...(projectId ? { project_id: projectId } : {}) });
+  const query = new URLSearchParams({ space_id: spaceId, ...(sessionId ? { session_id: sessionId } : {}), ...(projectId ? { project_id: projectId } : {}), ...(cursor ? { cursor } : {}) });
   return stub.fetch(`http://task-do/tasks?${query}`);
 });
 
