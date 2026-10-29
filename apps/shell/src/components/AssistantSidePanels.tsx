@@ -173,6 +173,15 @@ function taskOutcomePreview(task: DurableAgentTask): string {
   return "No result recorded yet.";
 }
 
+function taskProgressHint(status: DurableAgentTask["status"]): string | null {
+  switch (status) {
+    case "queued": return "Queued for background execution.";
+    case "processing": return "Working in the background. Progress refreshes every five seconds.";
+    case "awaiting_approval": return "Waiting for approval. The task resumes after you respond.";
+    default: return null;
+  }
+}
+
 function taskApprovalParams(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const entries = Object.entries(value as Record<string, unknown>).slice(0, 24);
@@ -374,7 +383,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       </div>
       {projectId && !sessionId && <p style={{ color: "var(--text3)", fontSize: 11 }}>Conversation: <Link href={`/p/${product.slug}/sessions/${encodeURIComponent(task.session_id)}`}>{task.session_id.slice(0, 24)}</Link></p>}
       <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {task.created_at}{typeof task.elapsed_ms === "number" && Number.isFinite(task.elapsed_ms) && task.elapsed_ms >= 0 ? ` · Elapsed ${formatElapsedTime(task.elapsed_ms)} (includes approval waits)` : ""}</p>
-      {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskOutcomePreview(task)}</p>}
+      {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskProgressHint(task.status) ?? taskOutcomePreview(task)}</p>}
       {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
       {sessionId && task.status === "processing" && <StopDurableTaskButton spaceId={spaceId} sessionId={sessionId} taskId={task.task_id} session={session} onStopped={() => void refresh()} />}
       {sessionId && taskCreatedArtifacts(task).map(artifact => <InlineArtifactCard key={artifact.artifact_id} spaceId={spaceId} artifactId={artifact.artifact_id} filename={artifact.filename} {...(artifact.content_type ? { contentType: artifact.content_type } : {})} session={session} />)}
