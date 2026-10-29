@@ -2154,6 +2154,14 @@ export async function listGoalActivity(spaceId: string, session: SessionCredenti
   return result.goals;
 }
 
+/** Recent task graphs for one authorized conversation; the host verifies its session and actor. */
+export async function listConversationGoalActivity(spaceId: string, session: SessionCredentials, opts: { sessionId: string; agentId?: string | null | undefined }): Promise<GoalActivity[]> {
+  const qs = new URLSearchParams({ history: "true", session_id: opts.sessionId });
+  if (opts.agentId) qs.set("agent_id", opts.agentId);
+  const result = await apiFetch<{ goals: GoalActivity[] }>(`/v1/spaces/${spaceId}/assistant/goal-activity?${qs.toString()}`, { session });
+  return result.goals;
+}
+
 /**
  * Sub-agents for a conversation. `sessionId` is what makes this work at all: an agent DO is
  * addressed per conversation, so without it the server falls back to the space-wide assistant DO

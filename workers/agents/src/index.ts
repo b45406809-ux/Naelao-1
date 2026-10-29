@@ -7617,10 +7617,12 @@ app.get("/spaces/:spaceId/assistant/goal-activity", async (c) => {
   const spaceId = c.req.param("spaceId"), tenantId = await requireVerifiedTenant(c);
   const actorId = getCallerIdentity(c).userId;
   const sessionId = c.req.query("session_id") ?? "", agentId = c.req.query("agent_id") ?? "", runId = c.req.query("run_id") ?? "";
-  if (!runId || runId.length > 192 || !actorId) throw badRequest("A valid run ID and user are required");
+  const history = c.req.query("history") === "true";
+  if ((!history && (!runId || runId.length > 192)) || !actorId) throw badRequest("A valid run ID or conversation history request and user are required");
   if (!(await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId))) throw forbidden("You don't have access to this conversation");
   const stub = sessionId ? await getAgentDO(c.env, tenantId, agentId ? `${sessionId}:${agentId}` : sessionId, c.get("requestId")) : await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
-  return stub.fetch(new Request(`http://agent-do/internal/goal-activity?space_id=${encodeURIComponent(spaceId)}&run_id=${encodeURIComponent(runId)}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": actorId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
+  const query = new URLSearchParams({ space_id: spaceId, ...(runId ? { run_id: runId } : {}), ...(history ? { history: "true" } : {}) });
+  return stub.fetch(new Request(`http://agent-do/internal/goal-activity?${query}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": actorId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
 });
 
 // GET /spaces/:spaceId/assistant/files — the Space Assistant's own R2 workspace listing (the

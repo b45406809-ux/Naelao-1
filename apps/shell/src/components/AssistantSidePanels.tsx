@@ -37,6 +37,7 @@ import {
   listAssistantChannels,
   listSubAgents,
   listGoalActivity,
+  listConversationGoalActivity,
   listAgentDefinitions,
   listAssistantFiles,
   listWorkspaceFiles,
@@ -216,17 +217,21 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId }: { space
   const refresh = React.useCallback(async () => {
     if (!sessionId) { setTasks([]); setWorkers([]); setGoals([]); setLoading(false); setError("Open a conversation to see its durable tasks."); setWorkerError(false); setGoalError(false); return; }
     const scoped = { sessionId, ...(agentId ? { agentId } : {}) };
-    const [taskResult, workerResult, goalResult] = await Promise.allSettled([
+    const [taskResult, workerResult, historyGoalResult, latestGoalResult] = await Promise.allSettled([
       listDurableTasks(spaceId, sessionId, session),
       listSubAgents(spaceId, session, "", scoped),
+      listConversationGoalActivity(spaceId, session, scoped),
       lastRunId ? listGoalActivity(spaceId, session, lastRunId, scoped) : Promise.resolve([] as GoalActivity[]),
     ]);
     if (taskResult.status === "fulfilled") { setTasks(taskResult.value.tasks); setError(null); }
     else setError(taskResult.reason instanceof Error ? taskResult.reason.message : "Task status is unavailable.");
     if (workerResult.status === "fulfilled") { setWorkers(workerResult.value); setWorkerError(false); }
     else setWorkerError(true);
-    if (goalResult.status === "fulfilled") { setGoals(goalResult.value); setGoalError(false); }
-    else setGoalError(true);
+    const historyGoals = historyGoalResult.status === "fulfilled" ? historyGoalResult.value : [];
+    const latestGoals = latestGoalResult.status === "fulfilled" ? latestGoalResult.value : [];
+    const combinedGoals = [...historyGoals, ...latestGoals.filter(goal => !historyGoals.some(item => item.id === goal.id))];
+    setGoals(combinedGoals);
+    setGoalError(historyGoalResult.status === "rejected" && latestGoalResult.status === "rejected");
     setLoading(false);
   }, [spaceId, sessionId, agentId, lastRunId, session.sessionToken, session.endUserId]);
   React.useEffect(() => {
