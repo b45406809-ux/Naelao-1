@@ -83,6 +83,14 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   if (!Number.isSafeInteger(host.concurrency) || host.concurrency < 1 || host.concurrency > 4) throw new Error("invalid_goal_concurrency");
   const loaded = await host.load();
   const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, fixerEnabled: host.fixerEnabled === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
+  // Worker completions can checkpoint concurrently. Serialize immutable snapshots so a slow
+  // earlier write cannot replace a newer journal with stale task states.
+  let saveTail: Promise<void> = Promise.resolve();
+  const save = (): Promise<void> => {
+    const snapshot = structuredClone(journal);
+    saveTail = saveTail.then(() => host.save(snapshot));
+    return saveTail;
+  };
   // Existing journals created during the initial rollout may already contain messages.
   if (loaded && journal.taskBlackboardEnabled === undefined) journal.taskBlackboardEnabled = Array.isArray(journal.messages);
   if (tasks.some(task => !journal.tasks[task.id]) || Object.keys(journal.tasks).length !== tasks.length) throw new Error("goal_journal_mismatch");
@@ -92,23 +100,24 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       const result = await host.recover(state.workerId);
       state.status = result ? (result.ok ? "completed" : result.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
       if (result) state.result = result;
-      await host.save(journal);
+      await save();
     }
     recordCompletion(task, tasks, journal);
-    if (journal.taskBlackboardEnabled && state.status === "completed") await host.save(journal);
+    if (journal.taskBlackboardEnabled && state.status === "completed") await save();
     await host.publish(task, state);
   }
+  const inFlight = new Map<string, Promise<{ id: string; error?: unknown }>>();
   for (;;) {
     const pending = tasks.filter(task => journal.tasks[task.id]!.status === "pending");
     for (const task of pending) {
       if ((task.dependencies ?? []).some(id => ["failed", "blocked", "needs_review"].includes(journal.tasks[id]!.status))) {
         journal.tasks[task.id]!.status = "blocked";
-        await host.save(journal);
+        await save();
         await host.publish(task, journal.tasks[task.id]!);
       }
     }
-    const ready = pending.filter(task => journal.tasks[task.id]!.status === "pending" && (task.dependencies ?? []).every(id => journal.tasks[id]!.status === "completed")).slice(0, host.concurrency);
-    if (!ready.length) {
+    const ready = pending.filter(task => journal.tasks[task.id]!.status === "pending" && (task.dependencies ?? []).every(id => journal.tasks[id]!.status === "completed"));
+    if (!ready.length && inFlight.size === 0) {
       if (journal.fixerEnabled && host.fix) {
         for (const task of tasks) {
           const state = journal.tasks[task.id]!;
@@ -119,11 +128,11 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
             const recovered = await host.recover(fixer.workerId);
             fixer.status = recovered ? (recovered.ok ? "completed" : recovered.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
             if (recovered) fixer.result = recovered;
-            await host.save(journal);
+            await save();
           }
           if (fixer) continue;
           fixer = fixers[task.id] = { workerId: `${state.workerId}:fix`, status: "running" };
-          await host.save(journal);
+          await save();
           try {
             const result = await host.fix(task, fixer.workerId, state.result);
             fixer.result = result;
@@ -133,17 +142,20 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
             fixer.status = recovered ? (recovered.ok ? "completed" : recovered.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
             if (recovered) fixer.result = recovered;
           }
-          await host.save(journal);
+          await save();
         }
       }
       journal.escalations = collectEscalations(tasks, journal);
-      await host.save(journal);
+      await save();
       return journal;
     }
-    // One checkpoint for the whole wave, before any external worker effects.
-    for (const task of ready) journal.tasks[task.id]!.status = "running";
-    await host.save(journal);
-    const wave = await Promise.allSettled(ready.map(async task => {
+    // Claim and persist each available slot before starting its external worker effects.
+    const slots = Math.max(0, host.concurrency - inFlight.size);
+    const dispatch = ready.slice(0, slots);
+    for (const task of dispatch) journal.tasks[task.id]!.status = "running";
+    if (dispatch.length) await save();
+    for (const task of dispatch) {
+      const execution = (async () => {
       const state = journal.tasks[task.id]!;
       await host.publish(task, state);
       let result: GoalWorkerResult;
@@ -153,7 +165,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
         const recovered = await host.recover(state.workerId);
         if (!recovered) {
           state.status = "needs_review";
-          await host.save(journal);
+          await save();
           await host.publish(task, state);
           return;
         }
@@ -162,10 +174,19 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       state.result = result;
       state.status = result.ok ? "completed" : result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" || result.status === "outcome_uncertain" ? "needs_review" : "failed";
       recordCompletion(task, tasks, journal);
-      await host.save(journal);
+      await save();
       await host.publish(task, state);
-    }));
-    const failed = wave.find(result => result.status === "rejected");
-    if (failed?.status === "rejected") throw failed.reason;
+      })().then(() => ({ id: task.id }), error => ({ id: task.id, error }));
+      inFlight.set(task.id, execution);
+    }
+    if (inFlight.size) {
+      const finished = await Promise.race(inFlight.values());
+      inFlight.delete(finished.id);
+      if (finished.error !== undefined) {
+        const remaining = await Promise.all(inFlight.values());
+        for (const item of remaining) inFlight.delete(item.id);
+        throw finished.error;
+      }
+    }
   }
 }
