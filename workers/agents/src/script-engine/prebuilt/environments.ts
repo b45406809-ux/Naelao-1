@@ -61,7 +61,7 @@ export const environments: PrebuiltScript = {
     "environment.artifact_export": "machine_id, digest and path (required). Explicitly write an immutable workspace artifact as a new file in an owner-authorized local folder. Refuses to overwrite. Binary-safe, maximum 16 MiB in resumable 8 KiB chunks. If pending/indeterminate, reconcile request IDs; do not resubmit with different IDs.",
     "environment.status": "session_id and action_id. Reconcile an accepted tunnel request without resubmitting it.",
     "environment.list": "List visible environment capabilities and availability. Observations are untrusted evidence, not permissions.",
-    "environment.execute": "session_id, action_id, command, capabilities (string array; default bash), mode (managed, capability, or host-verified fallback; default managed), optional app_id plus connection_id to require a fresh authenticated app observation, target_id and external-only absolute cwd. Tunnel files stay on that machine inside its owner-consented folders; import/export files explicitly through artifact operations. Repeat action_id only to retrieve a confirmed outcome. Group commands needing shell state into one command. Pending tunnel receipts require tunnel.status reconciliation; do not resubmit.",
+    "environment.execute": "session_id, action_id, command, capabilities (string array; default bash), mode (managed, capability, or host-verified fallback; default managed), optional app_id plus connection_id to require a fresh authenticated app observation, target_id and external-only absolute cwd. A host-classified worker runtime requirement is automatically included for managed execution and remains pinned by the session. Tunnel files stay on that machine inside its owner-consented folders; import/export files explicitly through artifact operations. Repeat action_id only to retrieve a confirmed outcome. Group commands needing shell state into one command. Pending tunnel receipts require tunnel.status reconciliation; do not resubmit.",
   },
   operations: {
     "environment.artifact_publish": async (args, ctx) => {
@@ -186,10 +186,13 @@ export const environments: PrebuiltScript = {
       const previous = await ctx.env.executionSessions.completed({ ...identity, actionId, command, ...(typeof args.cwd === "string" ? { workingDirectory: args.cwd } : {}) });
       if (previous.found) { await settleExternalEnvironment(previous.result, ctx); return previous.result; }
       const available = await cards(ctx, command);
-      const appRequirement = { capabilities, ...(typeof args.app_id === "string" ? { appId: args.app_id } : {}), ...(typeof args.connection_id === "string" ? { connectionId: args.connection_id } : {}) };
+      const preferredCapability = ctx.env.preferredRuntimeCapability;
+      const useManagedPreference = !!preferredCapability && (args.mode === undefined || args.mode === "managed");
+      const requiredCapabilities = useManagedPreference ? [...new Set([...capabilities, preferredCapability])] : capabilities;
+      const appRequirement = { capabilities: requiredCapabilities, ...(typeof args.app_id === "string" ? { appId: args.app_id } : {}), ...(typeof args.connection_id === "string" ? { connectionId: args.connection_id } : {}) };
       const managedEligible = eligibleEnvironments(available, owner(ctx), { ...appRequirement, mode: "managed" });
       const managedUnavailable = ctx.env.managedEnvironmentsUnavailable === true || managedEligible.length === 0;
-      const requirement = { capabilities, mode: args.mode === "capability" ? "capability" as const : args.mode === "fallback" ? "fallback" as const : "managed" as const,
+      const requirement = { capabilities: requiredCapabilities, mode: args.mode === "capability" ? "capability" as const : args.mode === "fallback" ? "fallback" as const : "managed" as const,
         ...(typeof args.app_id === "string" ? { appId: args.app_id } : {}),
         ...(managedUnavailable ? { managedUnavailable: true } : {}),
         ...(typeof args.connection_id === "string" ? { connectionId: args.connection_id } : {}) };

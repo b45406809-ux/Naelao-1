@@ -12,7 +12,7 @@ describe("host-signed worker identity", () => {
     const longRunToken = await issueDelegationContract(longRun, "test-host-secret");
     await verifyDelegationContract(longRun, longRunToken, "test-host-secret");
     for (const patch of [{ actorId: "other" }, { projectId: undefined }, { agentId: "other" }, { maxTokens: 2_000_001 },
-      { depth: 3, planner: false }, { parentDoId: "other" }, { maxTier: 6 }, { localOnly: false }, { localModelMachine: "other" }, { filePaths: ["src/other.ts"] },
+      { depth: 3, planner: false }, { parentDoId: "other" }, { maxTier: 6 }, { localOnly: false }, { localModelMachine: "other" }, { filePaths: ["src/other.ts"] }, { runtimeCapability: "other-runtime" },
       { workerCapabilities: { enabledPrebuilts: ["code-exec"], selectedSkills: [] } }]) {
       await expect(verifyDelegationContract({ ...contract, ...patch } as DelegationContract, token, "test-host-secret")).rejects.toThrow();
     }
@@ -26,6 +26,7 @@ describe("host-signed worker identity", () => {
     await expect(issueDelegationContract({ ...contract, maxTokens: 2_000_001 }, "test-host-secret")).rejects.toThrow();
     await expect(issueDelegationContract({ ...contract, filePaths: ["../secret"] }, "test-host-secret")).rejects.toThrow("workspace_path_traversal");
     await expect(issueDelegationContract({ ...contract, workerCapabilities: { enabledPrebuilts: ["../escape"], selectedSkills: [] } }, "test-host-secret")).rejects.toThrow("delegation_worker_capabilities_invalid");
+    await expect(issueDelegationContract({ ...contract, runtimeCapability: "../unapproved" }, "test-host-secret")).rejects.toThrow("delegation_budget_or_depth_invalid");
   });
 });
 

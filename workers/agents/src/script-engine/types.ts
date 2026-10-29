@@ -1150,6 +1150,8 @@ export interface ScriptEngineEnv {
   prewarmPlanRuntime?: (capability?: string) => Promise<{ warmed: boolean; error?: string }>;
   /** Runtime pin selected by the host from a classified worker-board step. */
   planContainerInstallationId?: string;
+  /** Signed host recommendation applied to this worker's managed environment selection. */
+  preferredRuntimeCapability?: string;
   containerRuntimeInventory?: () => Promise<{ installed: import("./container-policy.js").InstalledContainer[]; catalogue: import("./container-catalogue.js").ContainerImageManifest[] }>;
   /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
    *  has initialized its memory tables. Absent in environments that haven't wired it yet. */
