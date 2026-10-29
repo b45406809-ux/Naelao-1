@@ -3603,13 +3603,36 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             members: tasks.map(task => taskId(task.id)),
             grants: tasks.map(task => [taskId(task.id), tasks.filter(candidate => candidate.dependencies?.includes(task.id)).map(candidate => taskId(candidate.id))]),
           });
+          let lastCoordinationSummary = "";
+          const publishCoordinationSummary = async (journal: GoalDagJournal) => {
+            if (!this.env.TASK_DO) return;
+            const statuses = { pending: 0, running: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
+            for (const state of Object.values(journal.tasks)) {
+              if (Object.hasOwn(statuses, state.status)) statuses[state.status as keyof typeof statuses]++;
+            }
+            const summary = { graph_id: hash, task_count: Object.keys(journal.tasks).length, statuses,
+              escalation_count: journal.escalations?.length ?? 0, fixer_count: Object.keys(journal.fixers ?? {}).length };
+            const serialized = JSON.stringify(summary);
+            if (serialized === lastCoordinationSummary) return;
+            try {
+              const taskDoId = this.env.TASK_DO.idFromName(`tasks:${spaceId}`);
+              const taskDo = this.env.TASK_DO.get(taskDoId);
+              const response = await taskDo.fetch(`http://task-do/tasks/${encodeURIComponent(parentRunId)}/coordination-summary`, {
+                method: "PUT", headers: { "content-type": "application/json" }, body: serialized,
+              });
+              if (response.ok) lastCoordinationSummary = serialized;
+            } catch { /* coordination telemetry must not fail the user's task */ }
+          };
           const journal = await executeGoalDag(tasks, {
             concurrency: childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true),
             taskBlackboardEnabled: this.env.TASK_BLACKBOARD_ENABLED === "true",
             fixerEnabled: this.env.TASK_FIXER_ENABLED === "true",
             workerId: taskId,
             load: () => this.ctx.storage.get<GoalDagJournal>(key),
-            save: journal => this.ctx.storage.put(key, structuredClone(journal)),
+            save: async journal => {
+              await this.ctx.storage.put(key, structuredClone(journal));
+              await publishCoordinationSummary(journal);
+            },
             recover: async (workerId) => {
               const recovered = await this.receiveFromSubAgentImpl(workerId) as { status?: string; output?: unknown; error?: string };
               if (recovered.status !== "done" && recovered.status !== "failed") return undefined;
@@ -3647,24 +3670,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               return !result.ok && !result.status && !result.failure_confirmed ? { ...result, status: "outcome_uncertain" } : result;
             },
           });
-          // Project members can already see the task record. Publish only aggregate counters
-          // there; task text, outputs and blackboard messages remain scoped to the conversation.
-          if (this.env.TASK_DO) {
-            const statuses = { pending: 0, running: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
-            for (const state of Object.values(journal.tasks)) {
-              if (Object.hasOwn(statuses, state.status)) statuses[state.status as keyof typeof statuses]++;
-            }
-            try {
-              const taskDoId = this.env.TASK_DO.idFromName(`tasks:${spaceId}`);
-              const taskDo = this.env.TASK_DO.get(taskDoId);
-              await taskDo.fetch(`http://task-do/tasks/${encodeURIComponent(parentRunId)}/coordination-summary`, {
-                method: "PUT",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ graph_id: hash, task_count: Object.keys(journal.tasks).length, statuses,
-                  escalation_count: journal.escalations?.length ?? 0, fixer_count: Object.keys(journal.fixers ?? {}).length }),
-              });
-            } catch { /* coordination telemetry must not fail the user's task */ }
-          }
+          // Ensure a final projection exists even when the durable DAG restored without transitions.
+          await publishCoordinationSummary(journal);
           return journal;
         })();
         this.activeGoalDags.set(key, run);
