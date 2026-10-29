@@ -118,8 +118,8 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
         return this.releaseLock(request);
       }
       if (request.method === "POST" && url.pathname === "/locks/renew") return this.renewLock(request);
-      if (request.method === "POST" && (url.pathname === "/resource-queue/request" || url.pathname === "/resource-queue/release")) {
-        return this.resourceQueue(request, url.pathname.endsWith("/release"));
+      if (request.method === "POST" && ["/resource-queue/request", "/resource-queue/release", "/resource-queue/renew"].includes(url.pathname)) {
+        return this.resourceQueue(request, url.pathname.split("/").at(-1)!);
       }
       if (request.method === "POST" && url.pathname === "/workspace/publish") {
         const publish = () => this.publishWorkspaceMutation(request);
@@ -154,7 +154,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
   }
 
   /** FIFO admission primitive. Expired holders require reconciliation before the next grant. */
-  private async resourceQueue(request: Request, release: boolean): Promise<Response> {
+  private async resourceQueue(request: Request, action: string): Promise<Response> {
     const body = await request.json<{ resource?: unknown; holder?: unknown; token?: unknown }>().catch(() => ({} as { resource?: unknown; holder?: unknown; token?: unknown }));
     if (typeof body.resource !== "string" || !/^[A-Za-z0-9._:/-]{1,256}$/.test(body.resource) ||
         typeof body.holder !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(body.holder)) return Response.json({ error_code: "bad_request" }, { status: 400 });
@@ -165,7 +165,13 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
       const state = await tx.get<Queue>(storageKey) ?? { fence: 0, waiters: [] };
       const now = Date.now();
       state.waiters = state.waiters.filter(item => item.expiresAt > now && item.holder !== state.active?.holder);
-      if (release) {
+      if (action === "renew") {
+        if (!state.active || state.active.holder !== holder || body.token !== state.active.token || state.active.expiresAt <= now) return { renewed: false, reconciliation_required: Boolean(state.active?.holder === holder) };
+        state.active.expiresAt = now + 30_000;
+        await tx.put(storageKey, state);
+        return { renewed: true, token: state.active.token, expiresAt: state.active.expiresAt };
+      }
+      if (action === "release") {
         if (!state.active || state.active.holder !== holder || body.token !== state.active.token) return { released: false };
         delete state.active;
       } else if (state.active?.holder === holder) {
@@ -181,7 +187,7 @@ export class ConcurrencyDO extends DurableObject<ConcurrencyDOEnv> {
         state.active = { holder: next.holder, token: ++state.fence, expiresAt: now + 30_000 };
       }
       await tx.put(storageKey, state);
-      if (release) return { released: true };
+      if (action === "release") return { released: true };
       if (state.active?.holder === holder) return { acquired: true, token: state.active.token, expiresAt: state.active.expiresAt };
       return { acquired: false, position: state.waiters.findIndex(item => item.holder === holder) + 1, reconciliation_required: Boolean(state.active && state.active.expiresAt <= now) };
     });

@@ -20,6 +20,7 @@ export interface GoalDagHost {
   taskBlackboardEnabled?: boolean;
   fixerEnabled?: boolean;
   fix?(task: GoalTask, workerId: string, failure: GoalWorkerResult): Promise<GoalWorkerResult>;
+  acquireResources?(task: GoalTask, holderId: string): Promise<() => Promise<void>>;
 }
 
 function dependencyHandoffs(task: GoalTask, journal: GoalDagJournal): GoalHandoff[] {
@@ -171,7 +172,11 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       const state = journal.tasks[task.id]!;
       await host.publish(task, state);
       let result: GoalWorkerResult;
-      try { result = await host.launch(task, state.workerId, dependencyHandoffs(task, journal)); }
+      try {
+        const release = await host.acquireResources?.(task, state.workerId) ?? (async () => {});
+        try { result = await host.launch(task, state.workerId, dependencyHandoffs(task, journal)); }
+        finally { await release(); }
+      }
       catch (error) {
         // Transport failure may mean a committed worker response was lost.
         const recovered = await host.recover(state.workerId);
