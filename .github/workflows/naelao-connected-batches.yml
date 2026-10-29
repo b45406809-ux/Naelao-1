@@ -123,7 +123,9 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/agent-test"
           export WRANGLER_SEND_METRICS=false
-          pnpm exec wrangler dev --local -c workers/agents/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/agent-test/worker.log" 2>&1 &
+          printf 'JWT_SECRET=local-test-secret\nPLATFORM_SECRET=local-test-secret\n' > workers/spaces/.dev.vars
+          pnpm exec wrangler d1 execute naelao-platform --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --command "CREATE TABLE IF NOT EXISTS orgs (id TEXT PRIMARY KEY, status TEXT); CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, tenant_id TEXT, status TEXT); INSERT INTO orgs VALUES ('test-tenant','active'); INSERT INTO spaces VALUES ('test-space','test-tenant','active');"
+          pnpm exec wrangler dev --local -c workers/agents/wrangler.toml -c workers/spaces/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/agent-test/worker.log" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           status=000
@@ -140,6 +142,11 @@ jobs:
           echo "forged_status=$status"
           cat "$RUNNER_TEMP/agent-test/forged.json"
           test "$status" = 401
+          token=$(node -e 'const c=require("node:crypto"), t=Date.now().toString(), sig=c.createHmac("sha256","local-test-secret").update(`internal:test-tenant:${t}`).digest("hex"); process.stdout.write(`t=${t},v1=${sig}`)')
+          status=$(curl -s -o "$RUNNER_TEMP/agent-test/signed.json" -w '%{http_code}' --max-time 20 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H "x-naelao-internal-token: $token" --data '{"goal":"test"}' http://127.0.0.1:18800/spaces/test-space/sessions/missing-session/agent/run)
+          echo "signed_status=$status"; cat "$RUNNER_TEMP/agent-test/signed.json"
+          test "$status" = 404
+          node -e 'const x=require(process.argv[1]); if(x.error_code !== "session_unavailable") process.exit(1)' "$RUNNER_TEMP/agent-test/signed.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
