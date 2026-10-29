@@ -2439,6 +2439,12 @@ app.post(
 
     if (!space) throw notFound("Space");
 
+    if (!await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId)) {
+      // A run id is only meaningful inside its authorized conversation. Do not let a valid Space
+      // member stop another person's background work by guessing its id.
+      throw forbidden("You don't have access to this conversation");
+    }
+
     const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
     let doResponse = await stub.fetch(
       new Request(`http://agent-do/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" })

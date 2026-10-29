@@ -52,6 +52,7 @@ import {
   listNotifications,
   markNotificationRead,
   listDurableTasks,
+  cancelRun,
   listLocalGrants,
   createLocalGrant,
   deleteLocalGrant,
@@ -251,6 +252,28 @@ function taskHostActions(task: DurableAgentTask): Array<{ sequence: number; tool
   }).slice(0, 40);
 }
 
+function StopDurableTaskButton({ spaceId, sessionId, taskId, session, onStopped }: { spaceId: string; sessionId: string; taskId: string; session: SessionCredentials; onStopped: () => void }) {
+  const [busy, setBusy] = React.useState(false);
+  const [requested, setRequested] = React.useState(false);
+  const [message, setMessage] = React.useState("");
+  async function stop() {
+    setBusy(true);
+    setMessage("");
+    try {
+      await cancelRun(spaceId, sessionId, taskId, session);
+      setRequested(true);
+      setMessage("Stop requested; the worker will stop at its next safe boundary.");
+      onStopped();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not request stop.");
+    } finally { setBusy(false); }
+  }
+  return <div style={{ marginTop: 6 }}>
+    <button type="button" className="btn btn-ghost btn-sm" onClick={() => void stop()} disabled={busy || requested}>{busy ? "Requesting stop…" : requested ? "Stop requested" : "Stop task"}</button>
+    {message && <p role="status" style={{ color: "var(--text3)", fontSize: 11 }}>{message}</p>}
+  </div>;
+}
+
 function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; lastRunId?: string | null | undefined; projectId?: string | null | undefined }) {
   const product = useProduct();
   const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
@@ -345,6 +368,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {task.created_at}</p>
       {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskOutcomePreview(task)}</p>}
       {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
+      {sessionId && task.status === "processing" && <StopDurableTaskButton spaceId={spaceId} sessionId={sessionId} taskId={task.task_id} session={session} onStopped={() => void refresh()} />}
       {sessionId && taskCreatedArtifacts(task).map(artifact => <InlineArtifactCard key={artifact.artifact_id} spaceId={spaceId} artifactId={artifact.artifact_id} filename={artifact.filename} {...(artifact.content_type ? { contentType: artifact.content_type } : {})} session={session} />)}
       {projectId && taskCitations(task).length > 0 && <CitationBadges citations={taskCitations(task)} spaceId={spaceId} projectId={projectId} session={session} />}
       {taskHostActions(task).length > 0 && <details style={{ marginTop: 8 }}>
