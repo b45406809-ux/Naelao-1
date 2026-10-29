@@ -27,7 +27,8 @@ import { fetchOpenRouterCatalog, isOpenRouterPlannerCandidate, type OpenRouterMo
 import { runOpenRouterEntitlementPreflight } from "./shared/openrouter-entitlement.js";
 import { recommendOpenRouterModels } from "./shared/openrouter-model-recommendations.js";
 import { parseMentions, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
-import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE } from "./do/NaelaoAgentDO.js";
+import { NaelaoAgentDO, ASSISTANT_MEMORY_SCOPE, citationsFromTrace } from "./do/NaelaoAgentDO.js";
+import type { TraceStep } from "./script-engine/types.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
@@ -148,14 +149,45 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
   pending_question?: { question_id: string; question: string; options?: string[]; questions?: Array<{ question: string; options?: string[] }>; expires_at?: number };
   /** Actions the run parked and carried on around — it has a real answer AND outstanding work. */
   deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
+  created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
+  citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }>;
 } {
   const r = raw as {
     result?: { ok?: boolean; output?: unknown; error?: unknown };
+    trace?: TraceStep[];
     error?: string;
   pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
   pending_question?: { question_id: string; question: string; options?: string[]; questions?: Array<{ question: string; options?: string[] }>; expires_at?: number };
     deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
   } | null;
+
+  const trace = Array.isArray(r?.trace) ? r.trace : [];
+  const createdArtifacts: Array<{ artifact_id: string; filename: string; content_type?: string }> = [];
+  const seenArtifacts = new Set<string>();
+  for (const step of trace) {
+    if (step.phase !== "run" || step.name !== "artifacts.create" || step.ok !== true || typeof step.output !== "string") continue;
+    try {
+      const output = JSON.parse(step.output) as Record<string, unknown>;
+      const artifactId = output.artifact_id ?? output.id;
+      const filename = output.filename;
+      if (typeof artifactId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(artifactId)
+          || typeof filename !== "string" || !filename.trim() || filename.length > 255 || seenArtifacts.has(artifactId)) continue;
+      seenArtifacts.add(artifactId);
+      createdArtifacts.push({ artifact_id: artifactId, filename, ...(typeof output.content_type === "string" ? { content_type: output.content_type.slice(0, 160) } : {}) });
+      if (createdArtifacts.length >= 20) break;
+    } catch { /* malformed tool output is not evidence */ }
+  }
+  let citations: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }> = [];
+  try {
+    citations = citationsFromTrace(trace).slice(0, 50).map(citation => ({
+      ...citation,
+      document_id: citation.document_id.slice(0, 200),
+      chunk_id: citation.chunk_id.slice(0, 200),
+      identity: `${citation.document_id.slice(0, 200)}:${citation.chunk_id.slice(0, 200)}`,
+      ...(citation.label ? { label: citation.label.slice(0, 200) } : {}),
+    }));
+  } catch { /* a malformed trace must not turn a completed task into a failure */ }
+  const evidence = { ...(createdArtifacts.length ? { created_artifacts: createdArtifacts } : {}), ...(citations.length ? { citations } : {}) };
 
   if (r?.pending_question) {
     const question = r.pending_question.question;
@@ -167,6 +199,7 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
       final_answer: answer,
       reactSteps: [],
       pending_question: r.pending_question,
+      ...evidence,
     };
   }
 
@@ -183,6 +216,7 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
       final_answer: `Waiting for your approval to run '${action}'. Nothing has been executed yet — approve it and I'll carry on from here.`,
       reactSteps: [],
       pending_approval: r.pending_approval,
+      ...evidence,
     };
   }
 
@@ -217,6 +251,7 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
           })),
         }
       : {}),
+    ...evidence,
   };
 }
 

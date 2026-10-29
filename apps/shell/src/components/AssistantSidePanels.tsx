@@ -88,6 +88,8 @@ import { HtmlPreviewFrame } from "@/components/HtmlPreviewFrame";
 import { ApprovedActionsEditor, type OperationGroup } from "./ApprovedActionsEditor";
 import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineQuestionCard } from "./InlineQuestionCard";
+import { InlineArtifactCard } from "./InlineArtifactCard";
+import { CitationBadges } from "./CitationBadge";
 
 export type SidePanelTab =
   | "config"
@@ -206,7 +208,34 @@ function taskPendingItems(task: DurableAgentTask, key: "pending_approval" | "pen
   });
 }
 
-function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; lastRunId?: string | null | undefined }) {
+function taskCreatedArtifacts(task: DurableAgentTask): Array<{ artifact_id: string; filename: string; content_type?: string }> {
+  if (!task.result || typeof task.result !== "object" || Array.isArray(task.result)) return [];
+  const value = (task.result as Record<string, unknown>).created_artifacts;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const artifact = item as Record<string, unknown>;
+    if (typeof artifact.artifact_id !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(artifact.artifact_id)
+        || typeof artifact.filename !== "string" || !artifact.filename.trim() || artifact.filename.length > 255) return [];
+    return [{ artifact_id: artifact.artifact_id, filename: artifact.filename, ...(typeof artifact.content_type === "string" ? { content_type: artifact.content_type.slice(0, 160) } : {}) }];
+  }).slice(0, 20);
+}
+
+function taskCitations(task: DurableAgentTask): Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }> {
+  if (!task.result || typeof task.result !== "object" || Array.isArray(task.result)) return [];
+  const value = (task.result as Record<string, unknown>).citations;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const citation = item as Record<string, unknown>;
+    if (citation.version !== 1 || !Number.isSafeInteger(citation.ordinal) || typeof citation.document_id !== "string" || !citation.document_id
+        || typeof citation.chunk_id !== "string" || !citation.chunk_id) return [];
+    const documentId = citation.document_id.slice(0, 200), chunkId = citation.chunk_id.slice(0, 200);
+    return [{ version: 1 as const, ordinal: citation.ordinal as number, identity: `${documentId}:${chunkId}`, document_id: documentId, chunk_id: chunkId, ...(typeof citation.label === "string" ? { label: citation.label.slice(0, 200) } : {}) }];
+  }).slice(0, 50);
+}
+
+function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; lastRunId?: string | null | undefined; projectId?: string | null | undefined }) {
   const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
   const [workers, setWorkers] = React.useState<SubAgentSummary[]>([]);
   const [goals, setGoals] = React.useState<GoalActivity[]>([]);
@@ -258,6 +287,8 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId }: { space
       <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {task.created_at}</p>
       {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskOutcomePreview(task)}</p>}
       {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
+      {taskCreatedArtifacts(task).map(artifact => <InlineArtifactCard key={artifact.artifact_id} spaceId={spaceId} artifactId={artifact.artifact_id} filename={artifact.filename} {...(artifact.content_type ? { contentType: artifact.content_type } : {})} session={session} />)}
+      {projectId && taskCitations(task).length > 0 && <CitationBadges citations={taskCitations(task)} spaceId={spaceId} projectId={projectId} session={session} />}
       {taskPendingItems(task, "pending_approval").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
       {taskPendingItems(task, "deferred_approvals").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
       {taskPendingItems(task, "pending_question").map(question => <InlineQuestionCard key={question.approval_id} spaceId={spaceId} question={question} session={session} onAnswered={() => void refresh()} />)}
@@ -1818,7 +1849,7 @@ export function AssistantSidePanelBody({
     case "sub-agents":
       return <WorkersPanel spaceId={spaceId} session={session} lastRunId={lastRunId ?? ""} sessionId={sessionId} agentId={agentId} projectId={projectId} projectAgentIds={projectAgentIds} />;
     case "tasks":
-      return <TasksPanel spaceId={spaceId} session={session} sessionId={sessionId} agentId={agentId} lastRunId={lastRunId} />;
+      return <TasksPanel spaceId={spaceId} session={session} sessionId={sessionId} agentId={agentId} lastRunId={lastRunId} projectId={projectId} />;
     case "files":
       return <FilesPanel spaceId={spaceId} projectId={projectId} session={session} />;
     case "artifacts":

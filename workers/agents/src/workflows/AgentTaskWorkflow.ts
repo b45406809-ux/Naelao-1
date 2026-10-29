@@ -170,6 +170,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     let runResult: {
       final_answer: string | undefined; error: string | undefined; error_code: string | undefined; status: string | undefined;
       pending_approval_json: string | undefined; pending_question_json: string | undefined; deferred_approvals_json: string | undefined;
+      created_artifacts_json: string | undefined; citations_json: string | undefined;
     };
     try {
       runResult = await step.do("run-agent", { retries: { limit: 0, delay: 0 } }, async () => {
@@ -275,6 +276,8 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
             pending_approval_json: pendingApprovalJson,
             pending_question_json: pendingQuestionJson,
             deferred_approvals_json: deferredApprovalsJson,
+            created_artifacts_json: undefined,
+            citations_json: undefined,
           };
         }
 
@@ -297,6 +300,8 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           // approval genuinely existed (visible in HITLApprovalDO/the /approvals page) while the chat
           // UI showed nothing about it whatsoever.
           deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
+          created_artifacts?: Array<{ artifact_id: string; filename: string; content_type?: string }>;
+          citations?: Array<{ version: 1; ordinal: number; identity: string; document_id: string; chunk_id: string; label?: string }>;
         }>();
         return {
           final_answer: body.finalAnswer ?? body.final_answer,
@@ -312,6 +317,8 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           pending_approval_json: body.pending_approval ? JSON.stringify(body.pending_approval) : undefined,
           pending_question_json: body.pending_question ? JSON.stringify(body.pending_question) : undefined,
           deferred_approvals_json: body.deferred_approvals?.length ? JSON.stringify(body.deferred_approvals) : undefined,
+          created_artifacts_json: body.created_artifacts?.length ? JSON.stringify(body.created_artifacts) : undefined,
+          citations_json: body.citations?.length ? JSON.stringify(body.citations) : undefined,
         };
       });
     } catch (err) {
@@ -323,6 +330,8 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         pending_approval_json: undefined,
         pending_question_json: undefined,
         deferred_approvals_json: undefined,
+        created_artifacts_json: undefined,
+        citations_json: undefined,
       };
     }
 
@@ -359,7 +368,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           // subscription_inactive/quota_exceeded) got only the raw error TEXT, with no reliable
           // way to render an "upgrade" path instead of a bare error banner — error_code carries
           // through even on a hard error now, for exactly the same reason deferred_approvals does.
-      result: (hasError && !runResult.deferred_approvals_json && !runResult.pending_question_json && !runResult.error_code) ? null : JSON.stringify({
+      result: (hasError && !runResult.deferred_approvals_json && !runResult.pending_question_json && !runResult.error_code && !runResult.created_artifacts_json && !runResult.citations_json) ? null : JSON.stringify({
             ...(hasError ? {} : { final_answer: runResult.final_answer }),
             // Re-parsed here (a plain step-3 callback, not the run-agent step itself, so the
             // Serializable<T> constraint that made the pre-stringify necessary doesn't apply).
@@ -367,6 +376,8 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
             ...(runResult.pending_approval_json ? { pending_approval: JSON.parse(runResult.pending_approval_json) } : {}),
             ...(runResult.pending_question_json ? { pending_question: JSON.parse(runResult.pending_question_json) } : {}),
             ...(runResult.deferred_approvals_json ? { deferred_approvals: JSON.parse(runResult.deferred_approvals_json) } : {}),
+            ...(runResult.created_artifacts_json ? { created_artifacts: JSON.parse(runResult.created_artifacts_json) } : {}),
+            ...(runResult.citations_json ? { citations: JSON.parse(runResult.citations_json) } : {}),
           }),
           error: runResult.error ?? null,
         }),
@@ -397,6 +408,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
   ): Promise<{
     final_answer: string | undefined; error: string | undefined; error_code: string | undefined; status: string | undefined;
     pending_approval_json: string | undefined; pending_question_json: string | undefined; deferred_approvals_json: string | undefined;
+    created_artifacts_json: string | undefined; citations_json: string | undefined;
   } | null> {
     try {
       const stub = this.env.TASK_DO.get(this.env.TASK_DO.idFromName(p.taskDoName));
@@ -413,12 +425,18 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       let errorCode: string | undefined;
       if (task.result) {
         try {
-          const parsed = JSON.parse(task.result) as { final_answer?: string; error_code?: string };
+          const parsed = JSON.parse(task.result) as { final_answer?: string; error_code?: string; created_artifacts?: unknown; citations?: unknown };
           answer = parsed.final_answer;
           errorCode = parsed.error_code;
+          return {
+            final_answer: answer, error: task.error ?? undefined, error_code: errorCode, status: task.status,
+            pending_approval_json: undefined, pending_question_json: undefined, deferred_approvals_json: undefined,
+            created_artifacts_json: Array.isArray(parsed.created_artifacts) ? JSON.stringify(parsed.created_artifacts) : undefined,
+            citations_json: Array.isArray(parsed.citations) ? JSON.stringify(parsed.citations) : undefined,
+          };
         } catch { /* a result we can't parse is still proof the run happened */ }
       }
-      return { final_answer: answer, error: task.error ?? undefined, error_code: errorCode, status: task.status, pending_approval_json: undefined, pending_question_json: undefined, deferred_approvals_json: undefined };
+      return { final_answer: answer, error: task.error ?? undefined, error_code: errorCode, status: task.status, pending_approval_json: undefined, pending_question_json: undefined, deferred_approvals_json: undefined, created_artifacts_json: undefined, citations_json: undefined };
     } catch (error) {
       throw new Error("workflow_task_ledger_unavailable", { cause: error });
     }
