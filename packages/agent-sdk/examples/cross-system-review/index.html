@@ -34,6 +34,7 @@
     (() => {
       const requestId = `g${crypto.randomUUID().replaceAll("-", "")}`;
       const pending = new Map();
+      const pendingActions = new Map();
       const recordsRoot = document.querySelector("#records");
       const status = document.querySelector("#status");
       const buttons = [...document.querySelectorAll("button")];
@@ -63,7 +64,19 @@
         }
       }
       addEventListener("message", event => {
-        if (event.source !== parent || !event.data || event.data.type !== "naelao.extension.rpc.result" || typeof event.data.id !== "string") return;
+        if (event.source !== parent || !event.data || typeof event.data.id !== "string") return;
+        if (event.data.type === "naelao.extension.action.result") {
+          const item = pendingActions.get(event.data.id); if (!item) return;
+          const result = event.data.result || {};
+          if (result.status === "accepted") { status.textContent = "The project assistant accepted the decision and is working on it…"; return; }
+          pendingActions.delete(event.data.id); clearTimeout(item.timer);
+          if (result.status === "queued") status.textContent = `Decision queued for the project assistant${result.run_id ? ` (run ${result.run_id})` : ""}.`;
+          else if (result.status === "completed") status.textContent = "The project assistant completed the simulated review step.";
+          else status.textContent = `The project assistant could not handle the decision: ${String(result.error || "unknown error")}.`;
+          for (const button of buttons) button.disabled = false;
+          return;
+        }
+        if (event.data.type !== "naelao.extension.rpc.result") return;
         const item = pending.get(event.data.id); if (!item) return;
         pending.delete(event.data.id);
         if (!event.data.ok) item.reject(new Error(String(event.data.error ?? "Gadget read failed.")));
@@ -75,8 +88,14 @@
         const pieces = location.pathname.split("/").filter(Boolean), projectAt = pieces.indexOf("projects");
         const projectId = projectAt >= 0 ? decodeURIComponent(pieces[projectAt + 1] ?? "") : "";
         if (!projectId) { status.textContent = "Could not determine the active project."; for (const button of buttons) button.disabled = false; return; }
-        parent.postMessage({ type: "canvas.action", projectId, action: "review.simulated_decision", payload: { decision, simulation_only: true } }, "*");
-        status.textContent = `Sent the ${decision} decision to the project assistant. No external action was performed.`;
+        const actionId = `a${crypto.randomUUID().replaceAll("-", "")}`;
+        const timer = setTimeout(() => {
+          pendingActions.delete(actionId); status.textContent = "No response arrived. Check the project task before trying again.";
+          for (const button of buttons) button.disabled = false;
+        }, 60_000);
+        pendingActions.set(actionId, { timer });
+        parent.postMessage({ type: "canvas.action", projectId, action: "review.simulated_decision", payload: { decision, simulation_only: true }, requestId: actionId }, "*");
+        status.textContent = `Sent the ${decision} decision for processing. No external action was performed.`;
       }
       document.querySelector("#approve").addEventListener("click", () => submit("approve"));
       document.querySelector("#reject").addEventListener("click", () => submit("reject"));

@@ -24,10 +24,11 @@ const records = await canvas.readGadget({
   table: "review_records",
   limit: 25,
 });
-canvas.emitAction("review.simulated_decision", {
+const outcome = await canvas.emitAction("review.simulated_decision", {
   decision: "approve",
   simulation_only: true,
 });
+// outcome is "queued" or "completed"; failures reject with the host result.
 // Call canvas.dispose() when the view is torn down.
 ```
 

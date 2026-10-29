@@ -4,7 +4,7 @@ import * as React from "react";
 import { parseCanvasMessage } from "@naelao/agent-sdk";
 import { callProjectExtensionCanvasGadgetRead, callSpaceSharedExtensionApi, callSpaceSharedExtensionOperation, type SessionCredentials, type SpaceExtensionHostCapability } from "@/lib/api";
 
-export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScoped = false, extensionInstallationId, extensionCanvasId, readableGadgets = [], session, capabilities = [], onAction }: { spaceId: string; appId: string; projectId?: string; projectScoped?: boolean; extensionInstallationId?: string; extensionCanvasId?: string; readableGadgets?: Array<{ gadgetId: string; tables: string[] }>; session?: SessionCredentials; capabilities?: string[]; onAction(action: string, payload?: Record<string, unknown>): void }) {
+export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScoped = false, extensionInstallationId, extensionCanvasId, readableGadgets = [], session, capabilities = [], onAction }: { spaceId: string; appId: string; projectId?: string; projectScoped?: boolean; extensionInstallationId?: string; extensionCanvasId?: string; readableGadgets?: Array<{ gadgetId: string; tables: string[] }>; session?: SessionCredentials; capabilities?: string[]; onAction(action: string, payload?: Record<string, unknown>, requestId?: string): void }) {
   const frame = React.useRef<HTMLIFrameElement>(null);
   const src = projectScoped
     ? `/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/apps/${encodeURIComponent(appId)}/app`
@@ -80,7 +80,7 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
       }
       try {
         const message = parseCanvasMessage(event.data, projectId);
-        if (message.type === "canvas.action") onAction(message.action, message.payload);
+        if (message.type === "canvas.action") onAction(message.action, message.payload, message.requestId);
         return;
       } catch { /* compatibility envelope below remains data-only and project-bound */ }
       const data = event.data as { type?: unknown; projectId?: unknown; action?: unknown; payload?: unknown };
@@ -94,7 +94,16 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
       try {
         const message = parseCanvasMessage((event as CustomEvent).detail, projectId);
         if (message.type === "canvas.state") frame.current?.contentWindow?.postMessage(message, "*");
+        return;
       } catch { /* Only bounded, project-scoped canvas.state crosses into the opaque iframe. */ }
+      const result = (event as CustomEvent).detail as { type?: unknown; action?: unknown; request_id?: unknown; error?: unknown; run_id?: unknown };
+      if (result && typeof result === "object" && typeof result.type === "string" && result.type.startsWith("mcp.ui_action.")
+        && typeof result.request_id === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(result.request_id)) {
+        const status = result.type === "mcp.ui_action.queued" ? "queued" : result.type === "mcp.ui_action.completed" ? "completed"
+          : result.type === "mcp.ui_action.accepted" ? "accepted" : "failed";
+        frame.current?.contentWindow?.postMessage({ type: "naelao.extension.action.result", id: result.request_id,
+          result: { status, ...(typeof result.error === "string" ? { error: result.error } : {}), ...(typeof result.run_id === "string" ? { run_id: result.run_id } : {}) } }, "*");
+      }
     };
     window.addEventListener("naelao:mcp-ui-result", relay);
     return () => { window.removeEventListener("message", receive); window.removeEventListener("naelao:mcp-ui-result", relay); };

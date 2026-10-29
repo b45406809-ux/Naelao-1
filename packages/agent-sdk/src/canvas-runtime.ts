@@ -70,7 +70,7 @@ export function isCanvasMountDescriptor(value: unknown): value is CanvasMountDes
 export type CanvasMessage =
   | { type: "canvas.ready"; projectId: string; protocolVersion?: 1 }
   | { type: "canvas.state"; projectId: string; revision: number; data: Record<string, string | number | boolean | null> }
-  | { type: "canvas.action"; projectId: string; action: string; payload: Record<string, string | number | boolean | null>; baseRevision?: number };
+  | { type: "canvas.action"; projectId: string; action: string; payload: Record<string, string | number | boolean | null>; baseRevision?: number; requestId?: string };
 
 /** Parse the versioned, data-only host/Canvas bridge. It never accepts executable payloads. */
 export function parseCanvasMessage(value: unknown, expectedProjectId: string): CanvasMessage {
@@ -88,6 +88,7 @@ export function parseCanvasMessage(value: unknown, expectedProjectId: string): C
   const entries = Object.entries(v.payload as Record<string, unknown>);
   if (entries.length > 128 || entries.some(([key, item]) => key.length > 128 || (item !== null && !["string", "number", "boolean"].includes(typeof item)) || (typeof item === "string" && item.length > 16_384) || (typeof item === "number" && !Number.isFinite(item)))) throw new Error("invalid canvas payload");
   if (v.baseRevision !== undefined && (!Number.isSafeInteger(v.baseRevision) || Number(v.baseRevision) < 0)) throw new Error("invalid canvas revision");
+  if (v.requestId !== undefined && (typeof v.requestId !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(v.requestId))) throw new Error("invalid canvas request id");
   return v as unknown as CanvasMessage;
 }
 
@@ -107,8 +108,8 @@ export interface CanvasGadgetReadRequest {
 export interface ExtensionCanvasClient {
   /** Read only the rows granted to this canvas in its installed manifest. */
   readGadget(request: CanvasGadgetReadRequest): Promise<unknown>;
-  /** Send a data-only request to the project assistant; it does not execute an external action. */
-  emitAction(action: string, payload: Record<string, string | number | boolean | null>): void;
+  /** Send a data-only request to the project assistant and await its queued/completed/failed result. */
+  emitAction(action: string, payload: Record<string, string | number | boolean | null>): Promise<"queued" | "completed">;
   dispose(): void;
 }
 
@@ -140,6 +141,17 @@ export function createExtensionCanvasClient(projectId: string, options: {
   const receive = (event: CanvasBridgeMessageEvent) => {
     if (event.source !== target.parent || !event.data || typeof event.data !== "object") return;
     const message = event.data as { type?: unknown; id?: unknown; ok?: unknown; result?: unknown; error?: unknown };
+    if (message.type === "naelao.extension.action.result" && typeof message.id === "string") {
+      const request = pending.get(message.id);
+      if (!request) return;
+      const result = message.result as { status?: unknown; error?: unknown } | undefined;
+      if (result?.status === "accepted") return;
+      pending.delete(message.id);
+      target.clearTimeout(request.timer);
+      if (result?.status === "queued" || result?.status === "completed") request.resolve(result.status);
+      else request.reject(new Error(typeof result?.error === "string" ? result.error.slice(0, 300) : "Canvas action failed"));
+      return;
+    }
     if (message.type !== "naelao.extension.rpc.result" || typeof message.id !== "string") return;
     const request = pending.get(message.id);
     if (!request) return;
@@ -184,9 +196,17 @@ export function createExtensionCanvasClient(projectId: string, options: {
         table: request.table, ...(request.id !== undefined ? { recordId: request.id } : {}), ...(request.limit !== undefined ? { limit: request.limit } : {}) });
     },
     emitAction(action, payload) {
-      const message = parseCanvasMessage({ type: "canvas.action", projectId, action, payload }, projectId);
       if (disposed) throw new Error("canvas host client disposed");
-      target.parent.postMessage(message, "*");
+      const requestId = `${prefix}_${++sequence}`;
+      const message = parseCanvasMessage({ type: "canvas.action", projectId, action, payload, requestId }, projectId);
+      return new Promise((resolve, reject) => {
+        const timer = target.setTimeout(() => {
+          pending.delete(requestId);
+          reject(new Error("Canvas action result timed out"));
+        }, timeoutMs);
+        pending.set(requestId, { resolve: value => resolve(value as "queued" | "completed"), reject, timer });
+        target.parent.postMessage(message, "*");
+      });
     },
     dispose() {
       if (disposed) return;

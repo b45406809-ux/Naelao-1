@@ -56,6 +56,7 @@ interface UiActionEvent {
   action?: unknown;
   payload?: unknown;
   projectId?: unknown;
+  requestId?: unknown;
 }
 
 function actionIsDocumentMutation(action: unknown): boolean {
@@ -117,8 +118,11 @@ export class WsHubDO extends DurableObject<Env> {
    * observation back to the originating socket. The accepted event is intentionally
    * separate from the result so the UI can show a running state while the planner works. */
   private async dispatchUiAction(ws: WebSocket, meta: WsSessionMeta, event: UiActionEvent): Promise<void> {
+    const requestId = typeof event.requestId === "string" ? event.requestId : undefined;
+    const sendResult = (type: string, fields: Record<string, unknown> = {}) => ws.send(JSON.stringify({ type, action: event.action,
+      ...(requestId ? { request_id: requestId } : {}), ...fields }));
     if (!this.env.AGENTS_WORKER) {
-      ws.send(JSON.stringify({ type: "mcp.ui_action.failed", action: event.action, error: "agent_worker_unavailable" }));
+      sendResult("mcp.ui_action.failed", { error: "agent_worker_unavailable" });
       return;
     }
 
@@ -131,12 +135,12 @@ export class WsHubDO extends DurableObject<Env> {
         body: JSON.stringify({ tenant_id: meta.tenantId, space_id: meta.spaceId, project_id: event.projectId, node_id: nodeId, holder_id: meta.userId, holder_type: "HUMAN" }),
       }));
       if (!leaseResponse.ok) {
-        ws.send(JSON.stringify({ type: "mcp.ui_action.failed", action: event.action, error: "node_lease_check_unavailable" }));
+        sendResult("mcp.ui_action.failed", { error: "node_lease_check_unavailable" });
         return;
       }
       const status = await leaseResponse.json<{ active?: boolean; holder_type?: string; holder_id?: string }>();
       if (blocksNodeEdit(status, meta.userId!)) {
-        ws.send(JSON.stringify({ type: "mcp.ui_action.blocked", action: event.action, error: "document_node_locked", node_id: nodeId }));
+        sendResult("mcp.ui_action.blocked", { error: "document_node_locked", node_id: nodeId });
         return;
       }
     }
@@ -156,16 +160,14 @@ export class WsHubDO extends DurableObject<Env> {
     }));
     const body = await runResponse.json<unknown>().catch(() => null);
     if (!runResponse.ok) {
-      ws.send(JSON.stringify({ type: "mcp.ui_action.failed", action, status: runResponse.status, error: "agent_action_failed" }));
+      sendResult("mcp.ui_action.failed", { status: runResponse.status, error: "agent_action_failed" });
       return;
     }
     const record = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
-    ws.send(JSON.stringify({
-      type: runResponse.status === 202 ? "mcp.ui_action.queued" : "mcp.ui_action.completed",
-      action,
+    sendResult(runResponse.status === 202 ? "mcp.ui_action.queued" : "mcp.ui_action.completed", {
       run_id: typeof record.run_id === "string" ? record.run_id : typeof record.id === "string" ? record.id : undefined,
       result: body,
-    }));
+    });
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -304,10 +306,11 @@ export class WsHubDO extends DurableObject<Env> {
       if (parsed !== null && typeof parsed === "object" && (parsed as { type?: unknown }).type === "mcp.ui_action") {
         const meta = this.restoreSession(ws);
         const event = parsed as UiActionEvent;
-        if (!meta?.spaceId || !meta.userId || !meta.agentId || !meta.sessionId || typeof event.action !== "string" || !event.action) { ws.send(JSON.stringify({ error: "ui_action_context_required" })); return; }
-        ws.send(JSON.stringify({ type: "mcp.ui_action.accepted", action: event.action }));
+        if (!meta?.spaceId || !meta.userId || !meta.agentId || !meta.sessionId || typeof event.action !== "string" || !event.action
+          || event.requestId !== undefined && (typeof event.requestId !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(event.requestId))) { ws.send(JSON.stringify({ error: "ui_action_context_required" })); return; }
+        ws.send(JSON.stringify({ type: "mcp.ui_action.accepted", action: event.action, ...(typeof event.requestId === "string" ? { request_id: event.requestId } : {}) }));
         void this.dispatchUiAction(ws, meta, event).catch(() => {
-          try { ws.send(JSON.stringify({ type: "mcp.ui_action.failed", action: event.action, error: "agent_action_failed" })); } catch { /* closed socket */ }
+          try { ws.send(JSON.stringify({ type: "mcp.ui_action.failed", action: event.action, ...(typeof event.requestId === "string" ? { request_id: event.requestId } : {}), error: "agent_action_failed" })); } catch { /* closed socket */ }
         });
       }
     }

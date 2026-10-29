@@ -119,11 +119,16 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
     const url = new URL("/ws", base); url.searchParams.set("spaceId", spaceId); url.searchParams.set("userId", creds.endUserId); url.searchParams.set("agentId", project.default_agent_id ?? "naelao-agent"); url.searchParams.set("sessionId", `canvas:${project.id}`);
     const ws = new WebSocket(url); socket.current = ws;
     ws.onopen = () => setConnected(true); ws.onclose = () => setConnected(false);
-    ws.onmessage = event => { let message: { type?: string; line?: string } = {}; try { message = JSON.parse(String(event.data)); } catch { return; } if (message.type === "container.output" && message.line) setTerminalLines(lines => [...lines.slice(-999), message.line!]); else window.setTimeout(() => void refresh().catch(() => {}), 100); };
+    ws.onmessage = event => { let message: { type?: string; line?: string } = {}; try { message = JSON.parse(String(event.data)); } catch { return; } if (message.type === "container.output" && message.line) setTerminalLines(lines => [...lines.slice(-999), message.line!]); else { if (message.type?.startsWith("mcp.ui_action.")) window.dispatchEvent(new CustomEvent("naelao:mcp-ui-result", { detail: message })); window.setTimeout(() => void refresh().catch(() => {}), 100); } };
     return () => { socket.current = null; ws.close(); };
   }, [spaceId, project.id, project.default_agent_id, creds.endUserId, refresh]);
   const onSelect = React.useCallback((path: string) => { void readWorkspaceFile(spaceId, project.id, path, creds).then(setSelected); }, [spaceId, project.id, creds.sessionToken, creds.endUserId]);
-  const onAction = React.useCallback((action: string, payload: Record<string, unknown> = {}) => { const event = { type: "mcp.ui_action", projectId: project.id, user: creds.endUserId, action, payload }; window.dispatchEvent(new CustomEvent("naelao:mcp-ui-action", { detail: event })); if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(event)); }, [project.id, creds.endUserId]);
+  const onAction = React.useCallback((action: string, payload: Record<string, unknown> = {}, requestId?: string) => {
+    const event = { type: "mcp.ui_action", projectId: project.id, user: creds.endUserId, action, payload, ...(requestId ? { requestId } : {}) };
+    window.dispatchEvent(new CustomEvent("naelao:mcp-ui-action", { detail: event }));
+    if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(event));
+    else if (requestId) window.dispatchEvent(new CustomEvent("naelao:mcp-ui-result", { detail: { type: "mcp.ui_action.failed", action, request_id: requestId, error: "action_transport_unavailable" } }));
+  }, [project.id, creds.endUserId]);
   const onLease = React.useCallback(async (operation: "claim" | "renew" | "release", nodeId: string) => {
     try { return await updateDocumentNodeLease(spaceId, project.id, nodeId, operation, creds); }
     catch (error) {
