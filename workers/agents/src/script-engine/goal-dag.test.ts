@@ -64,6 +64,27 @@ describe("durable goal DAG", () => {
     expect(result.escalations).toEqual([expect.objectContaining({ taskId: "bad", reason: "worker_failed", nextAction: "investigate_failure", blockedTasks: ["blocked"] })]);
     expect(f.host.launch.mock.calls.map(([t]) => t.id)).not.toContain("blocked");
   });
+  it("dispatches a newly unblocked task while an unrelated worker still occupies a slot", async () => {
+    const f = fixture(); f.host.concurrency = 2;
+    let releaseSlow!: () => void;
+    const slow = new Promise<void>(resolve => { releaseSlow = resolve; });
+    let slowStarted!: () => void;
+    const started = new Promise<void>(resolve => { slowStarted = resolve; });
+    let slowCompleted = false;
+    const launched: string[] = [];
+    f.host.launch = vi.fn(async (t, id) => {
+      launched.push(t.id);
+      if (t.id === "slow") { slowStarted(); await slow; slowCompleted = true; }
+      return { id, ok: true };
+    });
+    const run = executeGoalDag([task("slow"), task("fast"), task("dependent", ["fast"])], f.host);
+    await started;
+    for (let i = 0; i < 20 && !launched.includes("dependent"); i++) await Promise.resolve();
+    expect(launched).toContain("dependent");
+    expect(slowCompleted).toBe(false);
+    releaseSlow();
+    await run;
+  });
   it("runs one opt-in fixer for a confirmed failure and retains the original escalation", async () => {
     const f = fixture(); f.host.fixerEnabled = true;
     f.host.launch = vi.fn(async (_task, id) => ({ id, ok: false, error: "test failed" }));
