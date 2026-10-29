@@ -190,7 +190,7 @@ export function registerGadgetMcpRoutes(app: Hono<{ Bindings: Env }>): void {
     const args: Record<string, unknown> = { table };
     if (operation === "get") args.id = rowId;
     else {
-      const limit = Number(c.req.query("limit") ?? "100");
+      const limit = Number(c.req.query("limit") ?? "25");
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 25) return c.json({ error_code: "canvas_gadget_read_limit_invalid" }, 400);
       args.limit = limit;
     }

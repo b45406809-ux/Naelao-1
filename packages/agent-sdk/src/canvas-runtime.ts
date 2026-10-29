@@ -112,14 +112,24 @@ export interface ExtensionCanvasClient {
   dispose(): void;
 }
 
+interface CanvasBridgeMessageEvent { source: unknown; data: unknown; }
+interface CanvasBridgeWindow {
+  parent: CanvasBridgeWindow;
+  addEventListener(type: "message", listener: (event: CanvasBridgeMessageEvent) => void): void;
+  removeEventListener(type: "message", listener: (event: CanvasBridgeMessageEvent) => void): void;
+  postMessage(message: unknown, targetOrigin: string): void;
+  setTimeout(callback: () => void, delay: number): number;
+  clearTimeout(handle: number): void;
+}
+
 /** Browser-side bridge for an extension canvas hosted in Naelao's sandboxed iframe. The host
  * revalidates the installation and table grant on every read; this client is not an authority. */
 export function createExtensionCanvasClient(projectId: string, options: {
-  window?: Window;
+  window?: CanvasBridgeWindow;
   timeoutMs?: number;
 } = {}): ExtensionCanvasClient {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) throw new Error("invalid canvas project id");
-  const target = options.window ?? window;
+  const target = options.window ?? globalThis as unknown as CanvasBridgeWindow;
   if (target.parent === target) throw new Error("extension canvas must run in a hosted frame");
   const timeoutMs = options.timeoutMs ?? 10_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) throw new Error("invalid canvas bridge timeout");
@@ -127,7 +137,7 @@ export function createExtensionCanvasClient(projectId: string, options: {
   let sequence = 0;
   let disposed = false;
   const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: number }>();
-  const receive = (event: MessageEvent<unknown>) => {
+  const receive = (event: CanvasBridgeMessageEvent) => {
     if (event.source !== target.parent || !event.data || typeof event.data !== "object") return;
     const message = event.data as { type?: unknown; id?: unknown; ok?: unknown; result?: unknown; error?: unknown };
     if (message.type !== "naelao.extension.rpc.result" || typeof message.id !== "string") return;
