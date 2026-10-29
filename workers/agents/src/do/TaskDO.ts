@@ -76,6 +76,8 @@ interface TaskRow {
   result: string | null;
   error: string | null;
   created_at: string;
+  created_at_ms: number | null;
+  finished_at_ms: number | null;
   expires_at: number;
   callback_url: string | null;
 }
@@ -97,6 +99,8 @@ export class TaskDO extends DurableObject {
         result       TEXT,
         error        TEXT,
         created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at_ms INTEGER,
+        finished_at_ms INTEGER,
         expires_at   INTEGER NOT NULL,
         callback_url TEXT
       );
@@ -104,6 +108,8 @@ export class TaskDO extends DurableObject {
     `);
     const columns = this.ctx.storage.sql.exec("PRAGMA table_info(tasks)").toArray() as Array<{ name: string }>;
     if (!columns.some(column => column.name === "project_id")) this.ctx.storage.sql.exec("ALTER TABLE tasks ADD COLUMN project_id TEXT");
+    if (!columns.some(column => column.name === "created_at_ms")) this.ctx.storage.sql.exec("ALTER TABLE tasks ADD COLUMN created_at_ms INTEGER");
+    if (!columns.some(column => column.name === "finished_at_ms")) this.ctx.storage.sql.exec("ALTER TABLE tasks ADD COLUMN finished_at_ms INTEGER");
     this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_tasks_space ON tasks(space_id, created_at DESC)");
     this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(space_id, project_id, created_at DESC)");
     this.initialized = true;
@@ -147,10 +153,10 @@ export class TaskDO extends DurableObject {
 
       const expiresAt = Date.now() + TASK_TTL_MS;
       this.ctx.storage.sql.exec(
-        `INSERT INTO tasks (id, space_id, session_id, project_id, tenant_id, goal, status, created_at, expires_at, callback_url)
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', datetime('now'), ?, ?)`,
+        `INSERT INTO tasks (id, space_id, session_id, project_id, tenant_id, goal, status, created_at, created_at_ms, expires_at, callback_url)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', datetime('now'), ?, ?, ?)`,
         body.id, body.space_id, body.session_id, body.project_id ?? null, body.tenant_id,
-        body.goal, expiresAt, callbackUrl
+        body.goal, Date.now(), expiresAt, callbackUrl
       );
 
       // Schedule cleanup alarm
@@ -252,10 +258,11 @@ export class TaskDO extends DurableObject {
         return Response.json({ error: "invalid_task_transition", current_status: current }, { status: 409 });
 
       this.ctx.storage.sql.exec(
-        `UPDATE tasks SET status = ?, result = ?, error = ? WHERE id = ?`,
+        `UPDATE tasks SET status = ?, result = ?, error = ?, finished_at_ms = ? WHERE id = ?`,
         status,
         body.result ?? null,
         body.error ?? null,
+        status === "complete" || status === "failed" ? Date.now() : null,
         taskId
       );
 
@@ -284,6 +291,10 @@ export class TaskDO extends DurableObject {
   }
 
   private taskToApi(task: TaskRow): Record<string, unknown> {
+    const elapsedEnd = task.finished_at_ms ?? Date.now();
+    const elapsedMs = typeof task.created_at_ms === "number" && Number.isSafeInteger(task.created_at_ms) && elapsedEnd >= task.created_at_ms
+      ? elapsedEnd - task.created_at_ms
+      : undefined;
     return {
       task_id: task.id,
       space_id: task.space_id,
@@ -293,6 +304,7 @@ export class TaskDO extends DurableObject {
       result: task.result ? JSON.parse(task.result) : null,
       error: task.error,
       created_at: task.created_at,
+      ...(elapsedMs !== undefined ? { elapsed_ms: elapsedMs } : {}),
       expires_at: new Date(task.expires_at).toISOString(),
     };
   }

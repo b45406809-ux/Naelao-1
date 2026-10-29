@@ -787,6 +787,8 @@ export interface DurableAgentTask {
   result: unknown;
   error: string | null;
   created_at: string;
+  /** Elapsed wall time; includes time spent waiting for user approval. */
+  elapsed_ms?: number;
   expires_at: string;
 }
 

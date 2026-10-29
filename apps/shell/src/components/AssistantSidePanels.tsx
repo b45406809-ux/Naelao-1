@@ -152,6 +152,14 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatElapsedTime(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 function taskOutcomePreview(task: DurableAgentTask): string {
   if (task.error) return task.error.slice(0, 400);
   if (typeof task.result === "string") return task.result.slice(0, 400);
@@ -365,7 +373,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
         <code style={{ fontSize: 10 }}>{task.task_id.slice(0, 12)}</code>
       </div>
       {projectId && !sessionId && <p style={{ color: "var(--text3)", fontSize: 11 }}>Conversation: <Link href={`/p/${product.slug}/sessions/${encodeURIComponent(task.session_id)}`}>{task.session_id.slice(0, 24)}</Link></p>}
-      <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {task.created_at}</p>
+      <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {task.created_at}{typeof task.elapsed_ms === "number" && Number.isFinite(task.elapsed_ms) && task.elapsed_ms >= 0 ? ` · Elapsed ${formatElapsedTime(task.elapsed_ms)} (includes approval waits)` : ""}</p>
       {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskOutcomePreview(task)}</p>}
       {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
       {sessionId && task.status === "processing" && <StopDurableTaskButton spaceId={spaceId} sessionId={sessionId} taskId={task.task_id} session={session} onStopped={() => void refresh()} />}
