@@ -257,9 +257,20 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
   const [workers, setWorkers] = React.useState<SubAgentSummary[]>([]);
   const [goals, setGoals] = React.useState<GoalActivity[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [loadingMore, setLoadingMore] = React.useState(false);
+  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
+  const [loadedOlder, setLoadedOlder] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [workerError, setWorkerError] = React.useState(false);
   const [goalError, setGoalError] = React.useState(false);
+  const scopeKey = JSON.stringify([spaceId, sessionId ?? null, projectId ?? null]);
+  const taskScopeRef = React.useRef(scopeKey);
+  React.useEffect(() => {
+    taskScopeRef.current = scopeKey;
+    setTasks([]);
+    setNextCursor(null);
+    setLoadedOlder(false);
+  }, [scopeKey]);
   const refresh = React.useCallback(async () => {
     if (!sessionId && !projectId) { setTasks([]); setWorkers([]); setGoals([]); setLoading(false); setError("Open a conversation or project to see its durable tasks."); setWorkerError(false); setGoalError(false); return; }
     const scoped = { sessionId, ...(agentId ? { agentId } : {}) };
@@ -269,7 +280,16 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       sessionId ? listConversationGoalActivity(spaceId, session, scoped as { sessionId: string; agentId?: string | null | undefined }) : Promise.resolve([] as GoalActivity[]),
       sessionId && lastRunId ? listGoalActivity(spaceId, session, lastRunId, scoped) : Promise.resolve([] as GoalActivity[]),
     ]);
-    if (taskResult.status === "fulfilled") { setTasks(taskResult.value.tasks); setError(null); }
+    if (taskScopeRef.current !== scopeKey) return;
+    if (taskResult.status === "fulfilled") {
+      setTasks(current => {
+        const merged = new Map(current.filter(task => Date.parse(task.expires_at) > Date.now()).map(task => [task.task_id, task]));
+        for (const task of taskResult.value.tasks) merged.set(task.task_id, task);
+        return [...merged.values()].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.task_id.localeCompare(a.task_id));
+      });
+      if (!loadedOlder) setNextCursor(taskResult.value.next_cursor);
+      setError(null);
+    }
     else setError(taskResult.reason instanceof Error ? taskResult.reason.message : "Task status is unavailable.");
     if (workerResult.status === "fulfilled") { setWorkers(workerResult.value); setWorkerError(false); }
     else setWorkerError(true);
@@ -279,7 +299,27 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
     setGoals(combinedGoals);
     setGoalError(historyGoalResult.status === "rejected" && latestGoalResult.status === "rejected");
     setLoading(false);
-  }, [spaceId, sessionId, agentId, lastRunId, session.sessionToken, session.endUserId]);
+  }, [spaceId, sessionId, agentId, lastRunId, projectId, scopeKey, loadedOlder, session.sessionToken, session.endUserId]);
+  const loadMore = React.useCallback(async () => {
+    if (!nextCursor || loadingMore || (!sessionId && !projectId)) return;
+    const requestedScope = scopeKey;
+    setLoadingMore(true);
+    try {
+      const page = await listDurableTasks(spaceId, session, { ...(sessionId ? { sessionId } : {}), ...(projectId ? { projectId } : {}) }, nextCursor);
+      if (taskScopeRef.current !== requestedScope) return;
+      setTasks(current => {
+        const merged = new Map(current.map(task => [task.task_id, task]));
+        for (const task of page.tasks) merged.set(task.task_id, task);
+        return [...merged.values()].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.task_id.localeCompare(a.task_id));
+      });
+      setNextCursor(page.next_cursor);
+      setLoadedOlder(true);
+    } catch (cause) {
+      if (taskScopeRef.current === requestedScope) setError(cause instanceof Error ? cause.message : "More task history is unavailable.");
+    } finally {
+      if (taskScopeRef.current === requestedScope) setLoadingMore(false);
+    }
+  }, [nextCursor, loadingMore, sessionId, projectId, scopeKey, spaceId, session.sessionToken, session.endUserId]);
   React.useEffect(() => {
     let active = true, timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
@@ -319,6 +359,7 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       {sessionId && taskPendingItems(task, "pending_question").map(question => <InlineQuestionCard key={question.approval_id} spaceId={spaceId} question={question} session={session} onAnswered={() => void refresh()} />)}
       <small style={{ color: "var(--text3)" }}>Task record expires {task.expires_at}</small>
     </article>)}
+    {nextCursor && <button type="button" className="btn btn-ghost btn-sm" onClick={() => void loadMore()} disabled={loadingMore} style={{ marginTop: 8 }}>{loadingMore ? "Loading…" : "Load older tasks"}</button>}
     <div className="tp-section" style={{ marginTop: 14 }}>Delegated workers</div>
     {workerError ? <p role="status" className="workspace-tab-empty">Worker activity could not be loaded.</p> : workers.length === 0 ? <p className="workspace-tab-empty">No delegated workers for this conversation.</p> : workers.map(worker => <article className="settings-block" style={{ padding: 12, marginTop: 8 }} key={worker.id}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>

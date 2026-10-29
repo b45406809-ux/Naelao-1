@@ -44,6 +44,21 @@ function parseCallbackUrl(value: unknown): string | null | undefined {
   } catch { return undefined; }
 }
 
+function encodeTaskCursor(task: Pick<TaskRow, "created_at" | "id">): string {
+  return btoa(JSON.stringify({ created_at: task.created_at, id: task.id })).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function parseTaskCursor(value: string | null): { created_at: string; id: string } | null | undefined {
+  if (value === null) return null;
+  if (!/^[A-Za-z0-9_-]{1,512}$/.test(value)) return undefined;
+  try {
+    const binary = atob(value.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - value.length % 4) % 4));
+    const parsed = JSON.parse(binary) as { created_at?: unknown; id?: unknown };
+    if (typeof parsed.created_at !== "string" || parsed.created_at.length > 40 || !validTaskId(parsed.id)) return undefined;
+    return { created_at: parsed.created_at, id: parsed.id };
+  } catch { return undefined; }
+}
+
 /** `awaiting_approval` is a real, non-terminal state, not a flavour of complete: the run stopped
  *  at a human-in-the-loop gate with its work intact and will continue once someone answers.
  *  Treating it as terminal would fire the completion callback for something that hasn't
@@ -180,18 +195,24 @@ export class TaskDO extends DurableObject {
       const spaceId = url.searchParams.get("space_id");
       const sessionId = url.searchParams.get("session_id");
       const projectId = url.searchParams.get("project_id");
+      const cursor = parseTaskCursor(url.searchParams.get("cursor"));
       if (!spaceId) return Response.json({ error: "space_id required" }, { status: 400 });
       if (spaceId.length > 256) return Response.json({ error: "invalid_space_id" }, { status: 400 });
       if (sessionId !== null && (!sessionId.trim() || sessionId.length > 512)) return Response.json({ error: "invalid_session_id" }, { status: 400 });
       if (projectId !== null && (!projectId.trim() || projectId.length > 256)) return Response.json({ error: "invalid_project_id" }, { status: 400 });
+      if (cursor === undefined) return Response.json({ error: "invalid_cursor" }, { status: 400 });
       const filters = ["space_id = ?", "expires_at > ?"];
       const values: Array<string | number> = [spaceId, Date.now()];
       if (sessionId) { filters.push("session_id = ?"); values.push(sessionId); }
       if (projectId) { filters.push("project_id = ?"); values.push(projectId); }
+      if (cursor) { filters.push("(created_at < ? OR (created_at = ? AND id < ?))"); values.push(cursor.created_at, cursor.created_at, cursor.id); }
       const rows = this.ctx.storage.sql
-        .exec(`SELECT * FROM tasks WHERE ${filters.join(" AND ")} ORDER BY created_at DESC LIMIT 50`, ...values)
+        .exec(`SELECT * FROM tasks WHERE ${filters.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT 51`, ...values)
         .toArray() as unknown as TaskRow[];
-      return Response.json({ tasks: rows.map(r => this.taskToApi(r)) });
+      const hasMore = rows.length > 50;
+      const page = rows.slice(0, 50);
+      return Response.json({ tasks: page.map(r => this.taskToApi(r)), has_more: hasMore,
+        next_cursor: hasMore && page.length ? encodeTaskCursor(page[page.length - 1]!) : null });
     }
 
     // PUT /tasks/:id/status — update task status (internal, called by AgentTaskWorkflow)

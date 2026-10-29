@@ -791,11 +791,12 @@ export interface DurableAgentTask {
 }
 
 /** List durable background runs for one authorized conversation. */
-export async function listDurableTasks(spaceId: string, session: SessionCredentials, scope: { sessionId?: string | null | undefined; projectId?: string | null | undefined }) {
+export async function listDurableTasks(spaceId: string, session: SessionCredentials, scope: { sessionId?: string | null | undefined; projectId?: string | null | undefined }, cursor?: string | null) {
   const query = new URLSearchParams();
   if (scope.sessionId) query.set("session_id", scope.sessionId);
   if (scope.projectId) query.set("project_id", scope.projectId);
-  return apiFetch<{ tasks: DurableAgentTask[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/tasks?${query}`, { session, cache: "no-store" });
+  if (cursor) query.set("cursor", cursor);
+  return apiFetch<{ tasks: DurableAgentTask[]; has_more: boolean; next_cursor: string | null }>(`/v1/spaces/${encodeURIComponent(spaceId)}/tasks?${query}`, { session, cache: "no-store" });
 }
 
 
