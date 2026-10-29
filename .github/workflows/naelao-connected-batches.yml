@@ -125,6 +125,14 @@ jobs:
           export WRANGLER_SEND_METRICS=false
           printf 'JWT_SECRET=local-test-secret\nPLATFORM_SECRET=local-test-secret\n' > workers/spaces/.dev.vars
           pnpm exec wrangler d1 execute naelao-platform --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --command "CREATE TABLE IF NOT EXISTS orgs (id TEXT PRIMARY KEY, status TEXT); CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, tenant_id TEXT, status TEXT); INSERT INTO orgs VALUES ('test-tenant','active'); INSERT INTO spaces VALUES ('test-space','test-tenant','active');"
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import re
+          for name in ('agents', 'spaces'):
+              source = Path(f'workers/{name}/wrangler.toml').read_text()
+              source = re.sub(r'(?m)^\[ai\]\s*\nbinding\s*=\s*"AI"\s*\n', '', source)
+              Path(f'workers/{name}/wrangler.ci.toml').write_text(source)
+          PYCODE
           mkdir -p .agent-probe
           cat > .agent-probe/index.mjs <<'JS'
           export default { fetch(request, env) { const url = new URL(request.url); const target = url.pathname.startsWith('/agent/') ? env.AGENTS : env.SPACES; url.pathname = url.pathname.replace(/^\/(agent|space)/, ''); return target.fetch(new Request(url, request)); } };
@@ -141,7 +149,7 @@ jobs:
           service = "naelao-spaces"
           TOML
           printf 'JWT_SECRET=local-test-secret\nPLATFORM_SECRET=local-test-secret\n' > workers/agents/.dev.vars
-          pnpm exec wrangler dev --local -c .agent-probe/wrangler.toml -c workers/agents/wrangler.toml -c workers/spaces/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/agent-test/worker.log" 2>&1 &
+          pnpm exec wrangler dev --local -c .agent-probe/wrangler.toml -c workers/agents/wrangler.ci.toml -c workers/spaces/wrangler.ci.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/agent-test/worker.log" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           status=000
