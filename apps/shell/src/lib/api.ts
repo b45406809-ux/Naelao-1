@@ -778,6 +778,23 @@ export async function pollRun(
   };
 }
 
+export interface DurableAgentTask {
+  task_id: string;
+  space_id: string;
+  session_id: string;
+  status: "queued" | "processing" | "awaiting_approval" | "complete" | "failed" | string;
+  result: unknown;
+  error: string | null;
+  created_at: string;
+  expires_at: string;
+}
+
+/** List durable background runs for one authorized conversation. */
+export async function listDurableTasks(spaceId: string, sessionId: string, session: SessionCredentials) {
+  const query = new URLSearchParams({ session_id: sessionId });
+  return apiFetch<{ tasks: DurableAgentTask[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/tasks?${query}`, { session, cache: "no-store" });
+}
+
 
 // ── Approvals — the things an agent is waiting on you for ────────────────────
 //

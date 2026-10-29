@@ -172,10 +172,15 @@ export class TaskDO extends DurableObject {
     // GET /tasks — list tasks for a space
     if (method === "GET" && url.pathname === "/tasks") {
       const spaceId = url.searchParams.get("space_id");
+      const sessionId = url.searchParams.get("session_id");
       if (!spaceId) return Response.json({ error: "space_id required" }, { status: 400 });
       if (spaceId.length > 256) return Response.json({ error: "invalid_space_id" }, { status: 400 });
+      if (sessionId !== null && (!sessionId.trim() || sessionId.length > 512)) return Response.json({ error: "invalid_session_id" }, { status: 400 });
       const rows = this.ctx.storage.sql
-        .exec(`SELECT * FROM tasks WHERE space_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 50`, spaceId, Date.now())
+        .exec(sessionId
+          ? `SELECT * FROM tasks WHERE space_id = ? AND session_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 50`
+          : `SELECT * FROM tasks WHERE space_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 50`,
+          ...(sessionId ? [spaceId, sessionId, Date.now()] : [spaceId, Date.now()]))
         .toArray() as unknown as TaskRow[];
       return Response.json({ tasks: rows.map(r => this.taskToApi(r)) });
     }

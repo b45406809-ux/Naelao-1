@@ -50,6 +50,7 @@ import {
   inheritSkills,
   listNotifications,
   markNotificationRead,
+  listDurableTasks,
   listLocalGrants,
   createLocalGrant,
   deleteLocalGrant,
@@ -71,6 +72,7 @@ import {
   type ArtifactContent,
   type AssistantCapabilities,
   type AppNotification,
+  type DurableAgentTask,
   type SpaceAnalytics,
   type SessionSummary,
   type LocalGrant,
@@ -90,6 +92,7 @@ export type SidePanelTab =
   | "channels"
   | "heartbeats"
   | "sub-agents"
+  | "tasks"
   | "files"
   | "artifacts"
   | "skills"
@@ -106,6 +109,7 @@ const ALL_SIDE_PANEL_TABS: { key: SidePanelTab; label: string; assistantOnly?: b
   // doesn't run on its own heartbeat cycle the way the Space Assistant does. Assistant-view only.
   { key: "heartbeats", label: "Heartbeats", assistantOnly: true },
   { key: "sub-agents", label: "Workers" },
+  { key: "tasks", label: "Tasks" },
   { key: "files", label: "Files" },
   // Phase 5: agent-authored deliverables, distinct from Files (the agent's own scratch
   // workspace) — replaces Chat.tsx's old hardcoded "Coming soon." placeholder tab. Space-wide
@@ -139,6 +143,62 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function taskOutcomePreview(task: DurableAgentTask): string {
+  if (task.error) return task.error.slice(0, 400);
+  if (typeof task.result === "string") return task.result.slice(0, 400);
+  if (task.result && typeof task.result === "object") {
+    const result = task.result as Record<string, unknown>;
+    for (const key of ["final_answer", "summary", "message", "answer"]) {
+      if (typeof result[key] === "string") return (result[key] as string).slice(0, 400);
+    }
+    try { return JSON.stringify(result).slice(0, 400); } catch { /* result stays opaque */ }
+  }
+  return "No result recorded yet.";
+}
+
+function TasksPanel({ spaceId, session, sessionId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined }) {
+  const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const refresh = React.useCallback(async () => {
+    if (!sessionId) { setTasks([]); setLoading(false); setError("Open a conversation to see its durable tasks."); return; }
+    try {
+      const response = await listDurableTasks(spaceId, sessionId, session);
+      setTasks(response.tasks);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Task status is unavailable.");
+    } finally { setLoading(false); }
+  }, [spaceId, sessionId, session.sessionToken, session.endUserId]);
+  React.useEffect(() => {
+    let active = true, timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      if (!active) return;
+      await refresh();
+      if (active) timer = setTimeout(tick, 5000);
+    };
+    void tick();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [refresh]);
+  return <section aria-label="Durable tasks">
+    <div className="tp-section">Conversation tasks</div>
+    <p className="workspace-tab-empty">Background work remains available after leaving this page. Status refreshes every five seconds.</p>
+    {loading && <p className="workspace-tab-empty">Loading task history…</p>}
+    {error && <p role="status" className="workspace-tab-empty">{error}</p>}
+    {!loading && !error && tasks.length === 0 && <p className="workspace-tab-empty">No durable tasks for this conversation yet.</p>}
+    {tasks.map(task => <article className="settings-block" style={{ padding: 12, marginTop: 8 }} key={task.task_id}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <strong>{task.status === "awaiting_approval" ? "Waiting for approval" : task.status.replaceAll("_", " ")}</strong>
+        <code style={{ fontSize: 10 }}>{task.task_id.slice(0, 12)}</code>
+      </div>
+      <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {task.created_at}</p>
+      {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskOutcomePreview(task)}</p>}
+      {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
+      <small style={{ color: "var(--text3)" }}>Task record expires {task.expires_at}</small>
+    </article>)}
+  </section>;
 }
 
 /** Config tab: a run's OWN agent's policy override when one is selected in a project thread
@@ -1671,6 +1731,8 @@ export function AssistantSidePanelBody({
       return <HeartbeatsPanel spaceId={spaceId} session={session} />;
     case "sub-agents":
       return <WorkersPanel spaceId={spaceId} session={session} lastRunId={lastRunId ?? ""} sessionId={sessionId} agentId={agentId} projectId={projectId} projectAgentIds={projectAgentIds} />;
+    case "tasks":
+      return <TasksPanel spaceId={spaceId} session={session} sessionId={sessionId} />;
     case "files":
       return <FilesPanel spaceId={spaceId} projectId={projectId} session={session} />;
     case "artifacts":

@@ -2856,6 +2856,12 @@ app.patch("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) => {
 app.get("/spaces/:spaceId/tasks", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.query("session_id") ?? "";
+  const { role } = getCallerIdentity(c);
+  // Product users may only list tasks tied to an authorized conversation. Omitting the session
+  // filter is reserved for platform/team operators; it must never expose every task in a Space.
+  if (role === "product_end_user" && !sessionId) return c.json({ error_code: "task_session_scope_required" }, 400);
+  if (sessionId && !await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId)) return c.json({ error_code: "forbidden" }, 403);
 
   const space = await c.env.PLATFORM_DB.prepare(
     "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
@@ -2863,7 +2869,8 @@ app.get("/spaces/:spaceId/tasks", async (c) => {
   if (!space) throw notFound("Space");
 
   const stub = getTaskDO(c.env, spaceId);
-  return stub.fetch(`http://task-do/tasks?space_id=${spaceId}`);
+  const query = new URLSearchParams({ space_id: spaceId, ...(sessionId ? { session_id: sessionId } : {}) });
+  return stub.fetch(`http://task-do/tasks?${query}`);
 });
 
 app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
