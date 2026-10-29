@@ -75,7 +75,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/router-probe"
           export WRANGLER_SEND_METRICS=false
-          pnpm exec wrangler dev --local -c workers/router/wrangler.toml -c workers/auth/wrangler.toml -c workers/spaces/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/router-probe/state" > "$RUNNER_TEMP/router-probe/wrangler.log" 2>&1 &
+          pnpm exec wrangler dev --local -c workers/router/wrangler.toml -c workers/auth/wrangler.toml -c workers/spaces/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/router-probe/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/router-probe/wrangler.log" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           ok=0
