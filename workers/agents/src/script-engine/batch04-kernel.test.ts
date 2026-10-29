@@ -158,4 +158,25 @@ describe("Batch 04 universal kernel", () => {
     expect(result).not.toHaveProperty("tasks.0.image");
     expect(() => validateGoalDag([{ ...task, container_capabilities: ["../escape"] } as never])).not.toThrow();
   });
+
+  it("predicts installed runtime requirements for whole task graphs and locks shared runtimes", async () => {
+    const executeGoalDag = vi.fn(async () => ({ tasks: { media: { status: "completed", workerId: "media" }, verify: { status: "completed", workerId: "verify" } } }));
+    const classifyPlanRuntimes = vi.fn(async ({ steps }: { steps: Array<{ id: string }> }) =>
+      steps.filter(step => step.id === "media").map(step => ({ stepId: step.id, capability: "ffmpeg", confidence: 0.93 })));
+    const tasks = [
+      { id: "media", title: "Transcode", subtask_spec: "Convert video", assigned_role: "DEV_OPERATOR", file_paths: ["a.mp4"], budget_tokens: 500 },
+      { id: "verify", title: "Inspect", subtask_spec: "Review output", assigned_role: "DEV_OPERATOR", file_paths: [], budget_tokens: 500 },
+    ];
+    await goalPlanner.operations["engine.plan_and_delegate_goal"]!({ objective: "media", tasks }, {
+      env: { classifyPlanRuntimes, orchestration: { persistGoalTasks: vi.fn(), spawnSubAgent: vi.fn(), executeGoalDag } } as never,
+      commands: new Map([ ["environment.execute", {}] ]) as never,
+      run: vi.fn(),
+    });
+    expect(classifyPlanRuntimes).toHaveBeenCalledOnce();
+    expect(executeGoalDag.mock.calls[0]?.[1][0]).toMatchObject({
+      runtime_capability: "ffmpeg", runtime_confidence: 0.93, resource_keys: ["runtime.capability.ffmpeg"],
+    });
+    expect(executeGoalDag.mock.calls[0]?.[1][0]?.subtask_spec).toContain("Host runtime recommendation");
+    expect(executeGoalDag.mock.calls[0]?.[1][1]).not.toHaveProperty("resource_keys");
+  });
 });

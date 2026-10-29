@@ -25,6 +25,9 @@ export interface GoalTask {
   planner?: boolean;
   /** Scheduling hint for a shared mutable environment; host controls remain authoritative. */
   resource_keys?: string[];
+  /** System One recommendation from the installed, host-approved runtime catalogue. */
+  runtime_capability?: string;
+  runtime_confidence?: number;
   /** Bounded queue priority; host caps and ages it to prevent starvation. */
   priority?: number;
   file_paths: string[];
@@ -42,6 +45,8 @@ export function validateGoalDag(tasks: GoalTask[]): void {
     if (typeof task.assigned_role !== "string" || !task.assigned_role.trim() || task.assigned_role.length > 128) throw new Error(`task '${task.id}' has an invalid assigned_role`);
     if (!Number.isSafeInteger(task.budget_tokens) || task.budget_tokens < 1 || task.budget_tokens > MAX_SUB_AGENT_BUDGET_TOKENS) throw new Error(`task '${task.id}' budget_tokens must be within 1..${MAX_SUB_AGENT_BUDGET_TOKENS}`);
     if (task.resource_keys !== undefined && (!Array.isArray(task.resource_keys) || task.resource_keys.length > 8 || task.resource_keys.some(key => typeof key !== "string" || !/^[a-z][a-z0-9._:-]{0,95}$/.test(key)) || new Set(task.resource_keys).size !== task.resource_keys.length)) throw new Error(`task '${task.id}' has invalid resource_keys`);
+    if (task.runtime_capability !== undefined && (typeof task.runtime_capability !== "string" || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(task.runtime_capability))) throw new Error(`task '${task.id}' has an invalid runtime_capability`);
+    if (task.runtime_confidence !== undefined && (!Number.isFinite(task.runtime_confidence) || task.runtime_confidence < 0 || task.runtime_confidence > 1)) throw new Error(`task '${task.id}' has an invalid runtime_confidence`);
     if (task.priority !== undefined && (!Number.isSafeInteger(task.priority) || task.priority < -10 || task.priority > 10)) throw new Error(`task '${task.id}' priority must be within -10..10`);
     for (const dependency of task.dependencies ?? []) if (!ids.has(dependency) || dependency === task.id) throw new Error(`task '${task.id}' has invalid dependency '${dependency}'`);
   }
@@ -72,9 +77,6 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
     }
     const subtaskSpec = String(task.subtask_spec ?? "");
     const declaredResources = Array.isArray(task.resource_keys) ? task.resource_keys.map(String) : undefined;
-    const inferredResources = !declaredResources && /\b(?:run|execute|invoke)\s+(?:the\s+)?(?:shell|bash|command|terminal)|\b(?:npm|pnpm|yarn|pytest|cargo|make)\s+(?:test|build|run|check)\b|\bcompile\s+(?:the\s+)?(?:project|code|application)\b/i.test(subtaskSpec)
-      ? ["project.container"]
-      : undefined;
     return {
       id: String(task.id ?? `task-${index + 1}`), title: String(task.title ?? ""),
       subtask_spec: subtaskSpec,
@@ -82,7 +84,7 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
       context_affinity: contextAffinity,
       ...(typeof task.agent_id === "string" ? { agent_id: task.agent_id } : {}),
       ...(task.planner === true ? { planner: true } : {}),
-      ...(declaredResources ? { resource_keys: declaredResources } : inferredResources ? { resource_keys: inferredResources } : {}),
+      ...(declaredResources ? { resource_keys: declaredResources } : {}),
       ...(typeof task.priority === "number" ? { priority: task.priority } : {}),
       file_paths: filePaths,
       dependencies: Array.isArray(task.dependencies) ? task.dependencies.map(String) : [],
@@ -105,6 +107,27 @@ export const goalPlanner: PrebuiltScript = {
       if (!objective) throw new Error("objective is required");
       const planBudget = ctx.env.workerTokenBudget ?? DEFAULT_SUB_AGENT_BUDGET_TOKENS;
       const tasks = parseTasks(args.tasks, planBudget);
+      // Predict runtime needs against the host's current worker tools and approved runtime
+      // catalogue. The model recommends only a declared capability; grants and execution remain
+      // host-controlled. This replaces brittle keyword matching with task-graph classification.
+      if (ctx.env.classifyPlanRuntimes) {
+        try {
+          const classified = await ctx.env.classifyPlanRuntimes({
+            steps: tasks.map(task => ({ id: task.id, text: `${task.title}\n${task.subtask_spec}`.slice(0, 2_000), done: false, status: "pending" as const })),
+            availableTools: [...(ctx.commands?.keys() ?? [])],
+          });
+          const byId = new Map(classified.filter(item => item.confidence >= 0.8 && item.capability).map(item => [item.stepId, item]));
+          for (const task of tasks) {
+            const recommendation = byId.get(task.id);
+            if (!recommendation?.capability) continue;
+            task.runtime_capability = recommendation.capability;
+            task.runtime_confidence = recommendation.confidence;
+            const resource = `runtime.capability.${recommendation.capability.toLowerCase().replace(/[^a-z0-9.-]/g, "-")}`;
+            task.resource_keys = [...new Set([...(task.resource_keys ?? []), resource])].slice(0, 8);
+            task.subtask_spec += `\nHost runtime recommendation (advisory, confidence ${recommendation.confidence.toFixed(2)}): ${recommendation.capability}. Use this only for commands that need it. Keep dependent commands in one environment/session when state must carry across commands; the runtime still enforces installed grants and availability.`;
+          }
+        } catch { /* Prediction is best-effort; execution does not depend on the model. */ }
+      }
       const persist = ctx.env.orchestration?.persistGoalTasks;
       const spawn = ctx.env.orchestration?.spawnSubAgent;
       if (!persist || !spawn) throw new Error("goal orchestration is unavailable");

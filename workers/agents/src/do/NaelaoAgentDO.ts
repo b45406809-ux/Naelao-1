@@ -3682,6 +3682,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 for (const lease of leases.reverse()) await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: lease.holder, token: lease.token }) })).catch(() => undefined);
                 throw error;
               }
+              // Only warm after obtaining this runtime's shared lease; parallel workers that
+              // predict the same capability queue here instead of stampeding the sidecar.
+              // Prewarm is latency-only and never changes runtime authorization/selection.
+              if (task.runtime_capability && runtimeEnv?.prewarmPlanRuntime) {
+                await runtimeEnv.prewarmPlanRuntime(task.runtime_capability).catch(() => ({ warmed: false }));
+              }
               let renewalFailure: Error | undefined;
               const renewal = setInterval(() => {
                 void Promise.all(leases.map(async lease => {
