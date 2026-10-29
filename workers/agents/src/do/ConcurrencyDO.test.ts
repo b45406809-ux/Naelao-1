@@ -8,6 +8,7 @@ function harness() {
   const pacers = new Map<string, number>();
   const holds = new Map<string, { holder_id: string; acquired_at: number; expires_at: number; confirmed: number }>();
   const nodeLeases = new Map<string, { resource_key: string; node_id: string; holder_type: "HUMAN" | "AGENT"; holder_id: string; acquired_at: number; expires_at: number }>();
+  const durable = new Map<string, unknown>();
   let alarm: number | null = null;
   const sql = {
     exec(query: string, ...args: unknown[]) {
@@ -94,7 +95,7 @@ function harness() {
       return { toArray };
     },
   };
-  const ctx = { storage: { sql, getAlarm: async () => alarm, setAlarm: async (value: number) => { alarm = value; }, deleteAlarm: async () => { alarm = null; } } };
+  const ctx = { storage: { sql, transaction: async <T>(fn: (tx: { get: <V>(key: string) => Promise<V | undefined>; put: (key: string, value: unknown) => Promise<void> }) => Promise<T>) => fn({ get: async <V>(key: string) => durable.get(key) as V | undefined, put: async (key, value) => { durable.set(key, structuredClone(value)); } }), getAlarm: async () => alarm, setAlarm: async (value: number) => { alarm = value; }, deleteAlarm: async () => { alarm = null; } } };
   return { instance: new ConcurrencyDO(ctx as never, {}), locks, holds, nodeLeases, pacers, getAlarm: () => alarm };
 }
 
@@ -161,6 +162,28 @@ describe("ConcurrencyDO file mutexes", () => {
     }));
     expect(force.status).toBe(404);
     expect(h.locks.get("protected")?.holder_id).toBe("owner");
+  });
+});
+
+describe("ConcurrencyDO shared resource queue", () => {
+  it("grants FIFO order, renews leases, and removes cancelled waiters", async () => {
+    const h = harness();
+    const call = async (action: string, holder: string, token?: number) => {
+      const response = await h.instance.fetch(new Request(`http://do/resource-queue/${action}`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ resource: "space/project/container", holder, ...(token === undefined ? {} : { token }) }),
+      }));
+      return response.json<Record<string, unknown>>();
+    };
+    const first = await call("request", "worker-a");
+    expect(first).toMatchObject({ acquired: true });
+    const token = first.token as number;
+    expect(await call("request", "worker-b")).toMatchObject({ acquired: false, position: 1 });
+    expect(await call("request", "worker-c")).toMatchObject({ acquired: false, position: 2 });
+    expect(await call("cancel", "worker-b")).toMatchObject({ cancelled: true });
+    expect(await call("renew", "worker-a", token)).toMatchObject({ renewed: true });
+    expect(await call("release", "worker-a", token)).toMatchObject({ released: true });
+    expect(await call("request", "worker-c")).toMatchObject({ acquired: true });
   });
 });
 
