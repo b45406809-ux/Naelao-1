@@ -15,6 +15,7 @@ export interface ExtensionActivationSummary {
     outbound_events?: string[];
     resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number };
     network_policy?: string;
+    gadget_reads?: Array<{ gadget_id: string; tables: string[] }>;
   }>;
   capabilities: string[];
   permissions: string[];
@@ -49,6 +50,7 @@ export function summarizeExtensionForActivation(manifest: ExtensionManifest): Ex
       ...("outboundEvents" in primitive ? { outbound_events: [...primitive.outboundEvents].sort() } : {}),
       ...("resources" in primitive ? { resources: { cpu_cores: primitive.resources.cpuCores, memory_mb: primitive.resources.memoryMb, timeout_seconds: primitive.resources.timeoutSeconds } } : {}),
       ...("networkPolicy" in primitive && primitive.networkPolicy ? { network_policy: primitive.networkPolicy } : {}),
+      ...("gadgetReads" in primitive && primitive.gadgetReads ? { gadget_reads: primitive.gadgetReads.map(grant => ({ gadget_id: grant.gadgetId, tables: [...grant.tables].sort() })) } : {}),
     })).sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`)),
     capabilities: [...new Set(manifest.capabilityRequirements)].sort(),
     permissions: [...new Set(manifest.declaredPermissions)].sort(),

@@ -280,7 +280,14 @@ export interface ExtensionContractBase {
 }
 export interface ExtensionSqlMigration { version: number; description: string; up: string; }
 export interface GadgetContract extends ExtensionContractBase { kind: "gadget"; scope: GadgetScope; schemaSql?: string; migrations?: readonly ExtensionSqlMigration[]; }
-export interface CanvasContract extends ExtensionContractBase { kind: "canvas"; layout: CanvasLayout | "CanvasMount"; component: string; dynamicPage: boolean; }
+export interface CanvasContract extends ExtensionContractBase {
+  kind: "canvas";
+  layout: CanvasLayout | "CanvasMount";
+  component: string;
+  dynamicPage: boolean;
+  /** Read-only Gadget tables this canvas may render. Mutations still go through worker/tool grants. */
+  gadgetReads?: readonly { gadgetId: string; tables: readonly string[] }[];
+}
 /**
  * A channel primitive is invoked for untrusted external events. Its host context is deliberately
  * distinct from member initiated workflows: it contains only the normalized channel event and
@@ -398,7 +405,7 @@ const CONTRACT_BASE_KEYS = new Set(["schemaVersion", "kind", "id", "version", "p
 function contractAssert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(`invalid_extension_contract:${message}`); }
 function rejectUnknownContractKeys(raw: Record<string, unknown>, allowed: Set<string>): void { for (const key of Object.keys(raw)) contractAssert(allowed.has(key), `unknown_field:${key}`); }
 function validateContractBase(raw: Record<string, unknown>, kind: ExtensionPrimitiveKind): void {
-  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "entry", "steps", "toolNames"];
+  const specific = kind === "gadget" ? ["scope", "schemaSql", "migrations"] : kind === "canvas" ? ["layout", "component", "dynamicPage", "gadgetReads"] : kind === "channel" ? ["provider", "connectionId", "handlerScript", "context", "inboundEvents", "outboundEvents", "knowledgeCollections", "session"] : kind === "container" ? ["image", "resources", "exportedBinaries", "mounts", "networkPolicy", "webContainerCompatible"] : kind === "linter" ? ["mode", "entry", "failureMode"] : ["executionMode", "entry", "steps", "toolNames"];
   rejectUnknownContractKeys(raw, new Set([...CONTRACT_BASE_KEYS, ...specific]));
   contractAssert(raw.schemaVersion === "1.0", `unsupported_schema_version:${String(raw.schemaVersion)}`);
   contractAssert(raw.kind === kind, `kind_mismatch:${kind}`);
@@ -448,6 +455,21 @@ export function parseExtensionPrimitive(value: unknown): ExtensionPrimitiveManif
     contractAssert(["DualPane.Document", "DualPane.DataGrid", "CanvasMount"].includes(String(raw.layout)), "invalid_canvas_layout");
     contractAssert(typeof raw.component === "string" && CONTRACT_PATH.test(raw.component), "invalid_canvas_component");
     contractAssert(typeof raw.dynamicPage === "boolean", "invalid_canvas_dynamic_page");
+    if (raw.gadgetReads !== undefined) {
+      contractAssert(Array.isArray(raw.gadgetReads) && raw.gadgetReads.length <= 32, "invalid_canvas_gadget_reads");
+      const seenGadgets = new Set<string>();
+      for (const item of raw.gadgetReads as unknown[]) {
+        contractAssert(item !== null && typeof item === "object" && !Array.isArray(item), "invalid_canvas_gadget_read");
+        const grant = item as Record<string, unknown>;
+        rejectUnknownContractKeys(grant, new Set(["gadgetId", "tables"]));
+        contractAssert(typeof grant.gadgetId === "string" && CONTRACT_ID.test(grant.gadgetId) && !seenGadgets.has(grant.gadgetId), "invalid_canvas_gadget_id");
+        contractAssert(Array.isArray(grant.tables) && grant.tables.length > 0 && grant.tables.length <= 64
+          && new Set(grant.tables).size === grant.tables.length
+          && (grant.tables as unknown[]).every(table => typeof table === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(table)), "invalid_canvas_gadget_tables");
+        seenGadgets.add(grant.gadgetId);
+      }
+      contractAssert((raw.gadgetReads as unknown[]).length === 0 || (raw.capabilityRequirements as unknown[]).includes("extension.gadget.read"), "canvas_gadget_read_capability_required");
+    }
   }
   if (kind === "channel") {
     // Public channel handlers execute for unauthenticated external senders. Their authority is
@@ -532,6 +554,10 @@ export function parseExtensionBundle(value: unknown): ExtensionBundleManifest {
   for (const primitive of primitives) {
     contractAssert(!primitiveIds.has(primitive.id), "duplicate_bundle_primitive_id");
     primitiveIds.add(primitive.id);
+  }
+  const gadgetPrimitives = new Map(primitives.filter((item): item is GadgetContract => item.kind === "gadget").map(item => [item.id, item]));
+  for (const canvas of primitives.filter((item): item is CanvasContract => item.kind === "canvas")) {
+    for (const grant of canvas.gadgetReads ?? []) contractAssert(gadgetPrimitives.get(grant.gadgetId)?.scope === "PROJECT_BOUND", "canvas_read_gadget_not_project_bound");
   }
   const workerRoles = raw.workerRoles;
   if (workerRoles !== undefined) {

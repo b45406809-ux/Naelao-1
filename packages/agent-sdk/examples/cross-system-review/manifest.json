@@ -1,0 +1,43 @@
+{
+  "id": "ext_cross_system_review",
+  "type": "extension",
+  "declaredPermissions": [],
+  "capabilityRequirements": ["extension.project_canvas", "extension.gadget.read"],
+  "gadgets": [],
+  "daemons": [],
+  "commands": [],
+  "bundle": {
+    "schemaVersion": "1.0",
+    "kind": "extension_bundle",
+    "id": "ext_cross_system_review",
+    "version": "1.0.0",
+    "primitives": [
+      {
+        "schemaVersion": "1.0",
+        "kind": "canvas",
+        "id": "review_canvas",
+        "version": "1.0.0",
+        "permissions": [],
+        "capabilityRequirements": ["extension.gadget.read"],
+        "lifecycle": {},
+        "layout": "CanvasMount",
+        "component": "./index.html",
+        "dynamicPage": false,
+        "gadgetReads": [
+          { "gadgetId": "review_store", "tables": ["review_records"] }
+        ]
+      },
+      {
+        "schemaVersion": "1.0",
+        "kind": "gadget",
+        "id": "review_store",
+        "version": "1.0.0",
+        "permissions": [],
+        "capabilityRequirements": [],
+        "lifecycle": {},
+        "scope": "PROJECT_BOUND",
+        "schemaSql": "CREATE TABLE IF NOT EXISTS review_records (id TEXT PRIMARY KEY, record_type TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
+      }
+    ]
+  }
+}

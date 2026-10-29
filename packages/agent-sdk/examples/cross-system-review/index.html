@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cross-System Review</title>
+  <style>
+    :root { color-scheme: light; font: 14px system-ui, sans-serif; color: #202635; background: #f6f7fa; }
+    body { margin: 0; padding: 20px; }
+    h1 { margin: 0 0 6px; font-size: 21px; }
+    p { color: #5d6677; line-height: 1.5; }
+    .banner, .record { margin: 12px 0; padding: 13px; border: 1px solid #dce1e9; border-radius: 9px; background: white; }
+    .banner { border-color: #e7ce83; background: #fff9e8; }
+    .record h2 { margin: 0 0 8px; font-size: 15px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 12px; }
+    .actions { display: flex; gap: 8px; margin-top: 14px; }
+    button { border: 0; border-radius: 7px; padding: 9px 12px; background: #3458d4; color: white; font: inherit; cursor: pointer; }
+    button.secondary { background: #5d6677; }
+    button:disabled { opacity: .55; cursor: default; }
+    #status { min-height: 20px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Cross-System Review</h1>
+  <p>Review the records and send a decision to the project assistant. This canvas does not perform the external action.</p>
+  <div class="banner"><strong>Simulation only</strong><br>Sample records and decisions do not update any connected system.</div>
+  <div id="records" aria-live="polite"><p>Loading the explicitly allowed review records…</p></div>
+  <div class="actions">
+    <button id="approve" type="button">Approve simulated action</button>
+    <button id="reject" type="button" class="secondary">Reject simulated action</button>
+  </div>
+  <p id="status" role="status"></p>
+  <script>
+    (() => {
+      const requestId = `g${crypto.randomUUID().replaceAll("-", "")}`;
+      const pending = new Map();
+      const recordsRoot = document.querySelector("#records");
+      const status = document.querySelector("#status");
+      const buttons = [...document.querySelectorAll("button")];
+      function readRecords() {
+        return new Promise((resolve, reject) => {
+          const id = `${requestId}_${Date.now()}`;
+          pending.set(id, { resolve, reject });
+          parent.postMessage({ type: "naelao.extension.gadget.read", id, gadgetId: "review_store", operation: "list", table: "review_records", limit: 25 }, "*");
+          setTimeout(() => { if (pending.delete(id)) reject(new Error("Review records did not load.")); }, 10000);
+        });
+      }
+      function render(records) {
+        recordsRoot.replaceChildren();
+        if (!Array.isArray(records) || records.length === 0) {
+          const empty = document.createElement("p");
+          empty.textContent = "No review records yet. Ask the planner to prepare the simulated request and evidence packet.";
+          recordsRoot.append(empty);
+          return;
+        }
+        for (const record of records) {
+          const card = document.createElement("section"); card.className = "record";
+          const title = document.createElement("h2"); title.textContent = String(record.record_type ?? "Review record");
+          const detail = document.createElement("pre");
+          try { detail.textContent = JSON.stringify(JSON.parse(String(record.payload_json)), null, 2); }
+          catch { detail.textContent = "Record payload is not valid JSON."; }
+          card.append(title, detail); recordsRoot.append(card);
+        }
+      }
+      addEventListener("message", event => {
+        if (event.source !== parent || !event.data || event.data.type !== "naelao.extension.rpc.result" || typeof event.data.id !== "string") return;
+        const item = pending.get(event.data.id); if (!item) return;
+        pending.delete(event.data.id);
+        if (!event.data.ok) item.reject(new Error(String(event.data.error ?? "Gadget read failed.")));
+        else item.resolve(event.data.result?.result?.structuredContent);
+      });
+      readRecords().then(render).catch(error => { recordsRoot.textContent = error.message; });
+      function submit(decision) {
+        for (const button of buttons) button.disabled = true;
+        const pieces = location.pathname.split("/").filter(Boolean), projectAt = pieces.indexOf("projects");
+        const projectId = projectAt >= 0 ? decodeURIComponent(pieces[projectAt + 1] ?? "") : "";
+        if (!projectId) { status.textContent = "Could not determine the active project."; for (const button of buttons) button.disabled = false; return; }
+        parent.postMessage({ type: "canvas.action", projectId, action: "review.simulated_decision", payload: { decision, simulation_only: true } }, "*");
+        status.textContent = `Sent the ${decision} decision to the project assistant. No external action was performed.`;
+      }
+      document.querySelector("#approve").addEventListener("click", () => submit("approve"));
+      document.querySelector("#reject").addEventListener("click", () => submit("reject"));
+    })();
+  </script>
+</body>
+</html>

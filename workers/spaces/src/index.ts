@@ -2374,7 +2374,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const requiredCapabilities = new Set<string>();
   let manifest: ReturnType<typeof validateExtensionManifest>;
   try {
-    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["extension.project_canvas", "extension.workflow", "channel.invoke", "events.subscribe"] });
+    manifest = validateExtensionManifest(body.manifest, { gatekeeperCapabilities: ["extension.project_canvas", "extension.gadget.read", "extension.workflow", "channel.invoke", "events.subscribe"] });
     const bundle = manifest.bundle;
     const primitives = bundle?.primitives ?? [];
     if (!bundle || !primitives.length || primitives.some(item => !["canvas", "gadget", "channel", "workflow"].includes(item.kind))
@@ -2382,6 +2382,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
       || manifest.declaredPermissions.some(permission => permission !== "events.subscribe"))
       throw new Error("project_bundle_primitive_not_supported");
     if (bundle.primitives.some(item => item.kind === "canvas" || item.kind === "gadget")) requiredCapabilities.add("extension.project_canvas");
+    if (bundle.primitives.some(item => item.kind === "canvas" && (item.gadgetReads?.length ?? 0) > 0)) requiredCapabilities.add("extension.gadget.read");
     if (bundle.primitives.some(item => item.kind === "workflow")) requiredCapabilities.add("extension.workflow");
     if (bundle.primitives.some(item => item.kind === "channel")) requiredCapabilities.add("channel.invoke");
     if (manifest.widgetSubscriptions?.length) requiredCapabilities.add("events.subscribe");

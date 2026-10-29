@@ -1491,7 +1491,7 @@ export async function listRuntimeCatalogue(spaceId: string, session: SessionCred
 }
 export interface ContainerInstallation {
   instance: { instance_id?: string; extension_id: string; instance_key?: string; project_id: string | null; scope: string; status: string; installed_at: string };
-  manifest: { id?: string; name?: string; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string }> } };
+  manifest: { id?: string; name?: string; containers?: Array<{ id?: string }>; bundle?: { version?: string; primitives?: Array<{ kind?: string; id?: string; gadgetReads?: Array<{ gadgetId: string; tables: string[] }> }> } };
 }
 export async function listContainerInstallations(spaceId: string, session: SessionCredentials, projectId?: string, includeDisabled = false) {
   const params = new URLSearchParams();
@@ -1591,6 +1591,13 @@ export function callSpaceSharedExtensionApi(spaceId: string, appId: string, sess
   return apiFetch<unknown>(`/v1/spaces/${encodeURIComponent(spaceId)}/apps/${encodeURIComponent(appId)}${request.path}${query.size ? `?${query}` : ""}`, {
     method: request.method, session, ...(request.body !== undefined ? { body: JSON.stringify(request.body) } : {}), cache: "no-store",
   });
+}
+
+export function callProjectExtensionCanvasGadgetRead(spaceId: string, projectId: string, installationId: string, canvasId: string, gadgetId: string, session: SessionCredentials, request: { operation: "list" | "get"; table: string; id?: string; limit?: number }) {
+  const query = new URLSearchParams({ operation: request.operation, table: request.table });
+  if (request.id !== undefined) query.set("id", request.id);
+  if (request.limit !== undefined) query.set("limit", String(request.limit));
+  return apiFetch<unknown>(`/v1/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/extensions/${encodeURIComponent(installationId)}/canvases/${encodeURIComponent(canvasId)}/gadgets/${encodeURIComponent(gadgetId)}/records?${query}`, { session, cache: "no-store" });
 }
 
 /** AVOS plan step 5 — the capability-firewall archetype presets a custom agent can opt into. */
@@ -2379,7 +2386,8 @@ export async function activateSpaceTemplate(spaceId: string, blueprintId: string
 export interface SpaceTemplateActivationPreview {
   ready: boolean; blueprint_id: string; target_space_id: string;
   dependencies: Array<{ extension_id: string; status: "installed" | "version_unpinned" | "disabled" | "not_active" | "installable" | "unavailable" | "version_mismatch"; required_version?: string; available_version?: string; required_digest?: string; available_digest?: string; summary?: {
-    primitives: Array<{ kind: string; id: string; capabilities: string[]; permissions: string[]; tools?: string[]; scope?: string; provider?: string; inbound_events?: string[]; outbound_events?: string[]; resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number }; network_policy?: string }>;
+    primitives: Array<{ kind: string; id: string; capabilities: string[]; permissions: string[]; tools?: string[]; scope?: string; provider?: string; inbound_events?: string[]; outbound_events?: string[]; resources?: { cpu_cores: number; memory_mb: number; timeout_seconds: number }; network_policy?: string; gadget_reads?: Array<{ gadget_id: string; tables: string[] }> }>;
+    capabilities: string[]; permissions: string[];
     commands: string[]; background_jobs: Array<{ id: string; schedule?: string; memory_scope: string }>;
     widgets: Array<{ event: string; component: string }>;
     connections: Array<{ id: string; provider: string; purpose: string; required: boolean }>;

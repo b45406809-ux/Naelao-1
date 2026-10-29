@@ -11,7 +11,7 @@ import { VirtualDesktopGuiCanvas } from "./viewports/VirtualDesktopGuiCanvas";
 
 type Creds = { sessionToken: string; endUserId: string };
 type HeaderTab = "canvases" | "files" | "details";
-type ExtensionCanvasChoice = { resourceId: string; label: string };
+type ExtensionCanvasChoice = { resourceId: string; canvasId: string; installationId: string; gadgetReads: Array<{ gadgetId: string; tables: string[] }>; label: string };
 export type CanvasView = "deliverable" | "code" | "micro-app" | "terminal" | "gui";
 type HydrationAction = { id: string; label: string; kind: "open_file" | "review_file"; path: string } | { id: string; label: string; kind: "open_channel_settings"; channel: "whatsapp" };
 
@@ -65,7 +65,7 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
         return manifest.bundle.primitives.filter(primitive => primitive.kind === "canvas" && typeof primitive.id === "string")
           .map(primitive => {
             const resourceId = instance.instance_key && instance.instance_key !== "default" ? `${instance.instance_key}_${primitive.id}` : primitive.id!;
-            return /^[a-z][a-z0-9_-]{1,63}$/.test(resourceId) ? { resourceId, label: `${manifest.id ?? instance.extension_id} · ${primitive.id}` } : null;
+            return /^[a-z][a-z0-9_-]{1,63}$/.test(resourceId) ? { resourceId, canvasId: primitive.id!, installationId: instance.instance_id!, gadgetReads: primitive.gadgetReads ?? [], label: `${manifest.id ?? instance.extension_id} · ${primitive.id}` } : null;
           }).filter((item): item is ExtensionCanvasChoice => item !== null);
       });
       setExtensionCanvases(choices); setCanvasProjectId(project.id);
@@ -138,6 +138,8 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
   if (hasContainer) views.push({ id: "terminal", label: "💻 Terminal" }, { id: "gui", label: "🖥️ GUI Display" });
   const props = { files, selected, onSelect, onAction, onLease, bare: standalone };
   const component = project.viewport_config?.component;
+  const activeExtensionCanvas = extensionCanvases.find(choice => choice.resourceId === selectedExtensionCanvas);
+  const extensionCanvasProps = activeExtensionCanvas ? { extensionInstallationId: activeExtensionCanvas.installationId, extensionCanvasId: activeExtensionCanvas.canvasId, readableGadgets: activeExtensionCanvas.gadgetReads } : {};
   const deliverable = component === "DocumentRedlineCanvas" ? <DocumentRedlineCanvas {...props} /> : component === "SpreadsheetFormulaGrid" ? <SpreadsheetFormulaGrid {...props} /> : <CodeCanvas {...props} />;
   const activeView = canvasView ?? view;
   const desktopUrl = typeof project.channel_config?.desktop_stream_url === "string" ? project.channel_config.desktop_stream_url : null;
@@ -158,7 +160,7 @@ export function CanvasContainer({ project, spaceId, creds, maximized = false, on
     </section>}
     {canvasLoadError && <div role="status" className="canvas-error">Installed Canvas list unavailable: {canvasLoadError}</div>}
     {activeView === "micro-app" && extensionCanvases.length > 1 && <label className="canvas-extension-select">Extension Canvas <select aria-label="Active extension Canvas" value={appId} onChange={event => selectExtensionCanvas(event.target.value)}>{extensionCanvases.map(choice => <option key={choice.resourceId} value={choice.resourceId}>{choice.label}</option>)}</select></label>}
-    {activeView === "deliverable" && (hasCanvasMount ? <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} projectScoped onAction={onAction} /> : deliverable)}{activeView === "code" && <CodeCanvas {...props} />}{activeView === "micro-app" && <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} projectScoped={hasCanvasMount} onAction={onAction} />}{activeView === "terminal" && <ContainerTerminalCanvas lines={terminalLines} connected={connected} />}{activeView === "gui" && <VirtualDesktopGuiCanvas {...(desktopUrl ? { streamUrl: desktopUrl } : {})} />}</div>;
+    {activeView === "deliverable" && (hasCanvasMount ? <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} projectScoped session={creds} {...extensionCanvasProps} onAction={onAction} /> : deliverable)}{activeView === "code" && <CodeCanvas {...props} />}{activeView === "micro-app" && <MicroAppCanvas spaceId={spaceId} appId={appId} projectId={project.id} projectScoped={hasCanvasMount} session={creds} {...extensionCanvasProps} onAction={onAction} />}{activeView === "terminal" && <ContainerTerminalCanvas lines={terminalLines} connected={connected} />}{activeView === "gui" && <VirtualDesktopGuiCanvas {...(desktopUrl ? { streamUrl: desktopUrl } : {})} />}</div>;
   if (standalone) return <section className={`canvas-container canvas-standalone${maximized ? " maximized" : ""}`} aria-label={canvasView === "code" ? "Code canvas" : "Canvas"} data-testid="canvas-container">{canvas}</section>;
   return <section className={`canvas-container${maximized ? " maximized" : ""}`} aria-label="Canvas container" data-testid="canvas-container">
     <header className="canvas-header"><nav aria-label="Canvas sections">{(["canvases", "files", "details"] as HeaderTab[]).map(id => <button key={id} type="button" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{id === "canvases" ? "📄 Canvases" : id === "files" ? "📁 Files" : "ℹ️ Details"}</button>)}</nav><button type="button" className="canvas-maximize" onClick={onMaximize} aria-label={maximized ? "Restore canvas" : "Maximize canvas"}>{maximized ? "⤡ Restore" : "⤢ Maximize"}</button></header>

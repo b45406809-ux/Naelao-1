@@ -2,9 +2,9 @@
 
 import * as React from "react";
 import { parseCanvasMessage } from "@naelao/agent-sdk";
-import { callSpaceSharedExtensionApi, callSpaceSharedExtensionOperation, type SessionCredentials, type SpaceExtensionHostCapability } from "@/lib/api";
+import { callProjectExtensionCanvasGadgetRead, callSpaceSharedExtensionApi, callSpaceSharedExtensionOperation, type SessionCredentials, type SpaceExtensionHostCapability } from "@/lib/api";
 
-export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScoped = false, session, capabilities = [], onAction }: { spaceId: string; appId: string; projectId?: string; projectScoped?: boolean; session?: SessionCredentials; capabilities?: string[]; onAction(action: string, payload?: Record<string, unknown>): void }) {
+export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScoped = false, extensionInstallationId, extensionCanvasId, readableGadgets = [], session, capabilities = [], onAction }: { spaceId: string; appId: string; projectId?: string; projectScoped?: boolean; extensionInstallationId?: string; extensionCanvasId?: string; readableGadgets?: Array<{ gadgetId: string; tables: string[] }>; session?: SessionCredentials; capabilities?: string[]; onAction(action: string, payload?: Record<string, unknown>): void }) {
   const frame = React.useRef<HTMLIFrameElement>(null);
   const src = projectScoped
     ? `/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/apps/${encodeURIComponent(appId)}/app`
@@ -16,6 +16,24 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
       if (event.source !== frame.current?.contentWindow || event.origin !== "null") return;
       const rpc = event.data as { type?: unknown; id?: unknown; method?: unknown; path?: unknown; query?: unknown; body?: unknown };
       const operation = event.data as { type?: unknown; id?: unknown; capability?: unknown; input?: unknown };
+      const gadgetRead = event.data as { type?: unknown; id?: unknown; gadgetId?: unknown; operation?: unknown; table?: unknown; recordId?: unknown; limit?: unknown };
+      if (gadgetRead?.type === "naelao.extension.gadget.read") {
+        if (typeof gadgetRead.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(gadgetRead.id) || !session || !projectScoped
+          || !extensionInstallationId || !extensionCanvasId || typeof gadgetRead.gadgetId !== "string" || typeof gadgetRead.table !== "string"
+          || !readableGadgets.some(grant => grant.gadgetId === gadgetRead.gadgetId && grant.tables.includes(gadgetRead.table as string))) return;
+        const readOperation = gadgetRead.operation;
+        if (!(readOperation === "list" || readOperation === "get")
+          || readOperation === "get" && (typeof gadgetRead.recordId !== "string" || gadgetRead.recordId.length > 256)
+          || readOperation === "list" && gadgetRead.recordId !== undefined
+          || gadgetRead.limit !== undefined && (!Number.isSafeInteger(gadgetRead.limit) || Number(gadgetRead.limit) < 1 || Number(gadgetRead.limit) > 25)) return;
+        void callProjectExtensionCanvasGadgetRead(spaceId, projectId, extensionInstallationId, extensionCanvasId, gadgetRead.gadgetId, session, {
+          operation: readOperation, table: gadgetRead.table,
+          ...(typeof gadgetRead.recordId === "string" ? { id: gadgetRead.recordId } : {}),
+          ...(typeof gadgetRead.limit === "number" ? { limit: gadgetRead.limit } : {}),
+        }).then(result => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: gadgetRead.id, ok: true, result }, "*"))
+          .catch(error => frame.current?.contentWindow?.postMessage({ type: "naelao.extension.rpc.result", id: gadgetRead.id, ok: false, error: error instanceof Error ? error.message.slice(0, 300) : "Gadget read failed" }, "*"));
+        return;
+      }
       if (operation?.type === "naelao.extension.operation") {
         if (typeof operation.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(operation.id) || !session || projectScoped
           || !["blueprint.export", "blueprint.status", "marketplace.graduate", "blackboard.read", "blackboard.policy", "blackboard.sharing"].includes(String(operation.capability))
@@ -80,6 +98,6 @@ export function MicroAppCanvas({ spaceId, appId, projectId = appId, projectScope
     };
     window.addEventListener("naelao:mcp-ui-result", relay);
     return () => { window.removeEventListener("message", receive); window.removeEventListener("naelao:mcp-ui-result", relay); };
-  }, [onAction, projectId, projectScoped, session, spaceId, appId, capabilities]);
+  }, [onAction, projectId, projectScoped, extensionInstallationId, extensionCanvasId, readableGadgets, session, spaceId, appId, capabilities]);
   return <iframe ref={frame} data-testid="micro-app-canvas" title="Micro-app" src={src} sandbox="allow-forms allow-modals allow-popups allow-scripts" className="micro-app-frame" />;
 }
