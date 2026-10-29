@@ -3653,37 +3653,39 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               const resources = [...new Set(task.resource_keys ?? [])].sort();
               if (!resources.length) return async () => {};
               if (!this.env.CONCURRENCY_DO) throw new Error("shared_resource_queue_unavailable");
-              const leases: Array<{ stub: DurableObjectStub; resource: string; token: number }> = [];
+              const leases: Array<{ stub: DurableObjectStub; resource: string; token: number; holder: string }> = [];
+              const shortHash = async (value: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+              const queueHolder = await shortHash(`${tenantId}:${spaceId}:${holderId}`);
               try {
                 for (const resource of resources) {
-                  const scoped = `worker-resource:${tenantId}:${spaceId}:${projectId ?? "_"}:${resource}`;
+                  const scoped = `worker-resource:${await shortHash(`${tenantId}:${spaceId}:${projectId ?? "_"}:${resource}`)}`;
                   const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(scoped));
                   const deadline = Date.now() + 300_000;
                   let token: number | undefined;
                   while (!token && Date.now() < deadline) {
-                    const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: holderId }) }));
+                    const response = await stub.fetch(new Request("http://concurrency-do/resource-queue/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder }) }));
                     const state = await response.json<{ acquired?: boolean; token?: number; queue_full?: boolean; reconciliation_required?: boolean }>();
                     if (!response.ok || state.queue_full || state.reconciliation_required) {
-                      await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: holderId }) })).catch(() => undefined);
+                      await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder }) })).catch(() => undefined);
                       throw new Error("shared_resource_queue_unavailable");
                     }
                     if (state.acquired && Number.isSafeInteger(state.token)) token = state.token;
                     else await new Promise(resolve => setTimeout(resolve, 250));
                   }
                   if (!token) {
-                    await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: holderId }) })).catch(() => undefined);
+                    await stub.fetch(new Request("http://concurrency-do/resource-queue/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: scoped, holder: queueHolder }) })).catch(() => undefined);
                     throw new Error("shared_resource_queue_timeout");
                   }
-                  leases.push({ stub, resource: scoped, token });
+                  leases.push({ stub, resource: scoped, token, holder: queueHolder });
                 }
               } catch (error) {
-                for (const lease of leases.reverse()) await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: holderId, token: lease.token }) })).catch(() => undefined);
+                for (const lease of leases.reverse()) await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: lease.holder, token: lease.token }) })).catch(() => undefined);
                 throw error;
               }
               let renewalFailure: Error | undefined;
               const renewal = setInterval(() => {
                 void Promise.all(leases.map(async lease => {
-                  const response = await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/renew", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: holderId, token: lease.token }) }));
+                  const response = await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/renew", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: lease.holder, token: lease.token }) }));
                   if (!response.ok || !(await response.json<{ renewed?: boolean }>()).renewed) renewalFailure = new Error("shared_resource_lease_lost");
                 })).catch(() => { renewalFailure = new Error("shared_resource_lease_lost"); });
               }, 10_000);
@@ -3691,7 +3693,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 clearInterval(renewal);
                 let releaseFailed = false;
                 for (const lease of leases.reverse()) {
-                  const response = await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: holderId, token: lease.token }) })).catch(() => undefined);
+                  const response = await lease.stub.fetch(new Request("http://concurrency-do/resource-queue/release", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ resource: lease.resource, holder: lease.holder, token: lease.token }) })).catch(() => undefined);
                   if (!response?.ok || !(await response.json<{ released?: boolean }>().catch(() => ({ released: false }))).released) releaseFailed = true;
                 }
                 if (renewalFailure || releaseFailed) throw renewalFailure ?? new Error("shared_resource_release_failed");
