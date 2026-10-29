@@ -31,6 +31,21 @@ jobs:
       - run: pnpm install --no-frozen-lockfile
       - name: Build packages
         run: pnpm exec turbo run build --filter='./packages/*' --concurrency=2
+      - name: Stage agent container dependencies
+        if: matrix.worker == 'agents'
+        run: |
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          import { dirname, join, resolve } from 'node:path';
+          import { cpSync, mkdirSync } from 'node:fs';
+          const root = process.cwd();
+          const require = createRequire(join(root, 'workers/agents/package.json'));
+          const target = join(root, 'workers/agents/container/.vendor/node_modules');
+          const platform = `@esbuild/${process.platform}-${process.arch}`;
+          mkdirSync(join(target, '@esbuild'), { recursive: true });
+          cpSync(dirname(require.resolve('esbuild/package.json')), join(target, 'esbuild'), { recursive: true, dereference: true });
+          cpSync(resolve(root, 'node_modules/.pnpm/node_modules', platform), join(target, platform), { recursive: true, dereference: true });
+          NODE
       - name: Start Worker and sample resources
         env:
           WORKER: ${{ matrix.worker }}
