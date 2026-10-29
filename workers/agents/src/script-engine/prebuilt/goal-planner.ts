@@ -70,14 +70,19 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
       || requestedBudget < 1 || requestedBudget > MAX_SUB_AGENT_BUDGET_TOKENS) {
       throw new Error(`task '${String(task.id ?? index + 1)}' has an invalid budget_tokens`);
     }
+    const subtaskSpec = String(task.subtask_spec ?? "");
+    const declaredResources = Array.isArray(task.resource_keys) ? task.resource_keys.map(String) : undefined;
+    const inferredResources = !declaredResources && /\b(?:run|execute|invoke)\s+(?:the\s+)?(?:shell|bash|command|terminal)|\b(?:npm|pnpm|yarn|pytest|cargo|make)\s+(?:test|build|run|check)\b|\bcompile\s+(?:the\s+)?(?:project|code|application)\b/i.test(subtaskSpec)
+      ? ["project.container"]
+      : undefined;
     return {
       id: String(task.id ?? `task-${index + 1}`), title: String(task.title ?? ""),
-      subtask_spec: String(task.subtask_spec ?? ""),
+      subtask_spec: subtaskSpec,
       assigned_role: String(task.assigned_role ?? "worker") as UniversalAgentRole,
       context_affinity: contextAffinity,
       ...(typeof task.agent_id === "string" ? { agent_id: task.agent_id } : {}),
       ...(task.planner === true ? { planner: true } : {}),
-      ...(Array.isArray(task.resource_keys) ? { resource_keys: task.resource_keys.map(String) } : {}),
+      ...(declaredResources ? { resource_keys: declaredResources } : inferredResources ? { resource_keys: inferredResources } : {}),
       ...(typeof task.priority === "number" ? { priority: task.priority } : {}),
       file_paths: filePaths,
       dependencies: Array.isArray(task.dependencies) ? task.dependencies.map(String) : [],
