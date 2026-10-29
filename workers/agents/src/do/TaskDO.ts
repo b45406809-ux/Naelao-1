@@ -78,6 +78,7 @@ interface TaskRow {
   created_at: string;
   created_at_ms: number | null;
   finished_at_ms: number | null;
+  coordination_json: string | null;
   expires_at: number;
   callback_url: string | null;
 }
@@ -101,6 +102,7 @@ export class TaskDO extends DurableObject {
         created_at   TEXT NOT NULL DEFAULT (datetime('now')),
         created_at_ms INTEGER,
         finished_at_ms INTEGER,
+        coordination_json TEXT,
         expires_at   INTEGER NOT NULL,
         callback_url TEXT
       );
@@ -110,6 +112,7 @@ export class TaskDO extends DurableObject {
     if (!columns.some(column => column.name === "project_id")) this.ctx.storage.sql.exec("ALTER TABLE tasks ADD COLUMN project_id TEXT");
     if (!columns.some(column => column.name === "created_at_ms")) this.ctx.storage.sql.exec("ALTER TABLE tasks ADD COLUMN created_at_ms INTEGER");
     if (!columns.some(column => column.name === "finished_at_ms")) this.ctx.storage.sql.exec("ALTER TABLE tasks ADD COLUMN finished_at_ms INTEGER");
+    if (!columns.some(column => column.name === "coordination_json")) this.ctx.storage.sql.exec("ALTER TABLE tasks ADD COLUMN coordination_json TEXT");
     this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_tasks_space ON tasks(space_id, created_at DESC)");
     this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(space_id, project_id, created_at DESC)");
     this.initialized = true;
@@ -221,6 +224,41 @@ export class TaskDO extends DurableObject {
         next_cursor: hasMore && page.length ? encodeTaskCursor(page[page.length - 1]!) : null });
     }
 
+    // PUT /tasks/:id/coordination-summary — store a bounded, content-free DAG projection.
+    const coordinationMatch = url.pathname.match(/^\/tasks\/([^/]+)\/coordination-summary$/);
+    if (method === "PUT" && coordinationMatch?.[1]) {
+      const taskId = coordinationMatch[1];
+      const body = await request.json<{
+        graph_id?: unknown; task_count?: unknown; statuses?: unknown;
+        escalation_count?: unknown; fixer_count?: unknown;
+      }>().catch((): { graph_id?: unknown; task_count?: unknown; statuses?: unknown; escalation_count?: unknown; fixer_count?: unknown } => ({}));
+      const statusKeys = ["pending", "running", "completed", "failed", "blocked", "needs_review"] as const;
+      const statuses = body.statuses && typeof body.statuses === "object" && !Array.isArray(body.statuses)
+        ? body.statuses as Record<string, unknown>
+        : undefined;
+      if (typeof body.graph_id !== "string" || !/^[a-f0-9]{64}$/.test(body.graph_id) ||
+          !Number.isSafeInteger(body.task_count) || (body.task_count as number) < 0 || (body.task_count as number) > 200 ||
+          !Number.isSafeInteger(body.escalation_count) || (body.escalation_count as number) < 0 || (body.escalation_count as number) > 200 ||
+          !Number.isSafeInteger(body.fixer_count) || (body.fixer_count as number) < 0 || (body.fixer_count as number) > 200 ||
+          !statuses || Object.keys(statuses).some(key => !statusKeys.includes(key as typeof statusKeys[number])) ||
+          statusKeys.some(key => !Number.isSafeInteger(statuses[key]) || (statuses[key] as number) < 0 || (statuses[key] as number) > 200))
+        return Response.json({ error: "invalid_coordination_summary" }, { status: 400 });
+      const rows = this.ctx.storage.sql.exec("SELECT coordination_json, expires_at FROM tasks WHERE id = ?", taskId).toArray() as Array<{ coordination_json: string | null; expires_at: number }>;
+      if (!rows[0] || rows[0].expires_at <= Date.now()) return Response.json({ error: "not_found" }, { status: 404 });
+      let summaries: Record<string, { task_count: number; statuses: Record<string, number>; escalation_count: number; fixer_count: number }> = {};
+      try { summaries = JSON.parse(rows[0].coordination_json ?? "{}"); } catch { /* replace corrupt summary state */ }
+      summaries[body.graph_id] = {
+        task_count: body.task_count as number,
+        statuses: Object.fromEntries(statusKeys.map(key => [key, statuses[key] as number])),
+        escalation_count: body.escalation_count as number,
+        fixer_count: body.fixer_count as number,
+      };
+      const graphIds = Object.keys(summaries);
+      for (const oldId of graphIds.slice(0, Math.max(0, graphIds.length - 20))) delete summaries[oldId];
+      this.ctx.storage.sql.exec("UPDATE tasks SET coordination_json = ? WHERE id = ?", JSON.stringify(summaries), taskId);
+      return Response.json({ ok: true });
+    }
+
     // PUT /tasks/:id/status — update task status (internal, called by AgentTaskWorkflow)
     const statusMatch = url.pathname.match(/^\/tasks\/([^/]+)\/status$/);
     if (method === "PUT" && statusMatch?.[1]) {
@@ -295,6 +333,24 @@ export class TaskDO extends DurableObject {
     const elapsedMs = typeof task.created_at_ms === "number" && Number.isSafeInteger(task.created_at_ms) && elapsedEnd >= task.created_at_ms
       ? elapsedEnd - task.created_at_ms
       : undefined;
+    let coordinationSummary: Record<string, number | Record<string, number>> | undefined;
+    try {
+      const graphs = Object.values(JSON.parse(task.coordination_json ?? "{}")) as Array<{ task_count?: number; statuses?: Record<string, number>; escalation_count?: number; fixer_count?: number }>;
+      if (graphs.length) {
+        const statuses = { pending: 0, running: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
+        for (const graph of graphs) for (const key of Object.keys(statuses) as Array<keyof typeof statuses>) {
+          const count = graph.statuses?.[key];
+          statuses[key] += Number.isSafeInteger(count) && count! >= 0 ? count! : 0;
+        }
+        coordinationSummary = {
+          graph_count: graphs.length,
+          task_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.task_count) && graph.task_count! >= 0 ? graph.task_count! : 0), 0),
+          statuses,
+          escalation_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.escalation_count) && graph.escalation_count! >= 0 ? graph.escalation_count! : 0), 0),
+          fixer_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.fixer_count) && graph.fixer_count! >= 0 ? graph.fixer_count! : 0), 0),
+        };
+      }
+    } catch { /* old or malformed snapshots remain unavailable */ }
     return {
       task_id: task.id,
       space_id: task.space_id,
@@ -305,6 +361,7 @@ export class TaskDO extends DurableObject {
       error: task.error,
       created_at: task.created_at,
       ...(elapsedMs !== undefined ? { elapsed_ms: elapsedMs } : {}),
+      ...(coordinationSummary ? { coordination_summary: coordinationSummary } : {}),
       expires_at: new Date(task.expires_at).toISOString(),
     };
   }

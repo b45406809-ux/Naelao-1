@@ -392,6 +392,15 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
       <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {formatTaskStartTime(task.created_at)}{typeof task.elapsed_ms === "number" && Number.isFinite(task.elapsed_ms) && task.elapsed_ms >= 0 ? ` · Elapsed ${formatElapsedTime(task.elapsed_ms)} (includes approval waits)` : ""}</p>
       {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskProgressHint(task.status) ?? taskOutcomePreview(task)}</p>}
       {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
+      {task.coordination_summary && <details style={{ marginTop: 8 }}>
+        <summary style={{ cursor: "pointer", color: "var(--text2)" }}>Worker coordination · {task.coordination_summary.graph_count} graphs · {task.coordination_summary.task_count} steps</summary>
+        <p style={{ color: "var(--text3)", fontSize: 11 }}>Aggregate status only. Worker instructions, results and messages remain in the task conversation.</p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 11 }}>
+          {Object.entries(task.coordination_summary.statuses).map(([status, count]) => count > 0 && <span key={status}>{status.replaceAll("_", " ")}: {count}</span>)}
+          {task.coordination_summary.escalation_count > 0 && <span>Escalations: {task.coordination_summary.escalation_count}</span>}
+          {task.coordination_summary.fixer_count > 0 && <span>Fixers: {task.coordination_summary.fixer_count}</span>}
+        </div>
+      </details>}
       {sessionId && task.status === "processing" && <StopDurableTaskButton spaceId={spaceId} sessionId={sessionId} taskId={task.task_id} session={session} onStopped={() => void refresh()} />}
       {sessionId && taskCreatedArtifacts(task).map(artifact => <InlineArtifactCard key={artifact.artifact_id} spaceId={spaceId} artifactId={artifact.artifact_id} filename={artifact.filename} {...(artifact.content_type ? { contentType: artifact.content_type } : {})} session={session} />)}
       {projectId && taskCitations(task).length > 0 && <CitationBadges citations={taskCitations(task)} spaceId={spaceId} projectId={projectId} session={session} />}

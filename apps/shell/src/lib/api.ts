@@ -789,6 +789,14 @@ export interface DurableAgentTask {
   created_at: string;
   /** Elapsed wall time; includes time spent waiting for user approval. */
   elapsed_ms?: number;
+  /** Content-free aggregate; safe to show in a project-wide task list. */
+  coordination_summary?: {
+    graph_count: number;
+    task_count: number;
+    statuses: { pending: number; running: number; completed: number; failed: number; blocked: number; needs_review: number };
+    escalation_count: number;
+    fixer_count: number;
+  };
   expires_at: string;
 }
 

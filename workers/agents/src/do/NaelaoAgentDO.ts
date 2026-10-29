@@ -1091,6 +1091,8 @@ export interface AgentDOEnv {
   /** Credentials worker — used by the wallet prebuilt's check_bypass op to detect whether a
    *  business has its own credential for a known third-party payment provider. */
   CREDENTIALS_WORKER?: Fetcher;
+  /** Durable task ledger; used to publish content-free project-visible DAG counters. */
+  TASK_DO?: DurableObjectNamespace;
   /** Phase 5: artifact worker — agent-authored deliverables (a rendered HTML page, a report),
    *  distinct from r2-workspace's own scratch storage. Optional: the `artifacts` prebuilt
    *  degrades honestly ("artifacts unavailable") when unbound, same posture as every other
@@ -3601,7 +3603,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             members: tasks.map(task => taskId(task.id)),
             grants: tasks.map(task => [taskId(task.id), tasks.filter(candidate => candidate.dependencies?.includes(task.id)).map(candidate => taskId(candidate.id))]),
           });
-          return executeGoalDag(tasks, {
+          const journal = await executeGoalDag(tasks, {
             concurrency: childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true),
             taskBlackboardEnabled: this.env.TASK_BLACKBOARD_ENABLED === "true",
             fixerEnabled: this.env.TASK_FIXER_ENABLED === "true",
@@ -3645,6 +3647,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               return !result.ok && !result.status && !result.failure_confirmed ? { ...result, status: "outcome_uncertain" } : result;
             },
           });
+          // Project members can already see the task record. Publish only aggregate counters
+          // there; task text, outputs and blackboard messages remain scoped to the conversation.
+          if (this.env.TASK_DO) {
+            const statuses = { pending: 0, running: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
+            for (const state of Object.values(journal.tasks)) {
+              if (Object.hasOwn(statuses, state.status)) statuses[state.status as keyof typeof statuses]++;
+            }
+            try {
+              const taskDoId = this.env.TASK_DO.idFromName(`tasks:${spaceId}`);
+              const taskDo = this.env.TASK_DO.get(taskDoId);
+              await taskDo.fetch(`http://task-do/tasks/${encodeURIComponent(parentRunId)}/coordination-summary`, {
+                method: "PUT",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ graph_id: hash, task_count: Object.keys(journal.tasks).length, statuses,
+                  escalation_count: journal.escalations?.length ?? 0, fixer_count: Object.keys(journal.fixers ?? {}).length }),
+              });
+            } catch { /* coordination telemetry must not fail the user's task */ }
+          }
+          return journal;
         })();
         this.activeGoalDags.set(key, run);
         try { return await run; } finally { this.activeGoalDags.delete(key); }
