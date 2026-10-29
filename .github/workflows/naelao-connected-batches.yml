@@ -7,14 +7,9 @@ on:
 permissions:
   contents: read
 jobs:
-  connected:
+  binding-probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        batch: [identity-notifications, workspace-core, agent-execution, api-edge]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -24,48 +19,41 @@ jobs:
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm exec turbo run build --filter='./packages/*' --concurrency=2
-      - name: Stage agent dependencies
-        if: contains(fromJSON('["agent-execution","api-edge"]'), matrix.batch)
-        run: |
-          node --input-type=module <<'NODE'
-          import { createRequire } from 'node:module'; import { dirname, join, resolve } from 'node:path'; import { cpSync, mkdirSync } from 'node:fs';
-          const root=process.cwd(), req=createRequire(join(root,'workers/agents/package.json')), target=join(root,'workers/agents/container/.vendor/node_modules'), platform=`@esbuild/${process.platform}-${process.arch}`;
-          mkdirSync(join(target,'@esbuild'),{recursive:true}); cpSync(dirname(req.resolve('esbuild/package.json')),join(target,'esbuild'),{recursive:true,dereference:true}); cpSync(resolve(root,'node_modules/.pnpm/node_modules',platform),join(target,platform),{recursive:true,dereference:true});
-          NODE
-      - name: Start bound workers and capture bindings
-        env:
-          BATCH: ${{ matrix.batch }}
+      - name: Probe a real service binding
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/connected"
-          export PERSIST_DIR="$RUNNER_TEMP/connected/state"
-          case "$BATCH" in
-            identity-notifications) workers='notifications auth credentials' ;;
-            workspace-core) workers='notifications ws-gateway billing agents knowledge spaces' ;;
-            agent-execution) workers='notifications ws-gateway billing credentials artifact browser mcp-hub agents knowledge spaces' ;;
-            api-edge) workers='notifications ws-gateway billing credentials artifact browser mcp-hub agents knowledge spaces auth analytics eval marketplace portal-router router' ;;
-          esac
-          pids=''
-          for w in $workers; do
-            port=18$(printf '%02d' $(( $(echo "$workers" | tr ' ' '\n' | grep -n "^$w$" | cut -d: -f1) + 1 )))
-            pnpm exec wrangler dev --local --config "workers/$w/wrangler.toml" --port "$port" --inspector-port "$((port+10000))" --persist-to "$PERSIST_DIR" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/connected/$w.log" 2>&1 &
-            pids="$pids $!"
-          done
-          ready=0
+          mkdir -p .probe "$RUNNER_TEMP/probe"
+          cat > .probe/index.mjs <<'JS'
+          export default { async fetch(request, env) { const response = await env.TARGET.fetch('http://internal/health'); return new Response(JSON.stringify({targetStatus: response.status, targetBody: await response.text()}), {headers: {'content-type':'application/json'}}); } };
+          JS
+          cat > .probe/wrangler.toml <<'TOML'
+          name = "naelao-binding-probe"
+          main = "index.mjs"
+          compatibility_date = "2026-09-29"
+          [[services]]
+          binding = "TARGET"
+          service = "naelao-notifications"
+          TOML
+          export WRANGLER_SEND_METRICS=false
+          pnpm exec wrangler dev --local -c .probe/wrangler.toml -c workers/notifications/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/probe/state" > "$RUNNER_TEMP/probe/wrangler.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          ok=0
           for i in $(seq 1 60); do
-            sleep 5
-            echo "sample=$i batch=$BATCH"
-            free -m; df -m .; ps -eo pid,ppid,rss,comm --sort=-rss | head -20
-            rg -n 'Worker \[connected\]|Worker \[not connected\]|Ready on|ERROR|failed to build' "$RUNNER_TEMP/connected"/*.log || true
-            alive=1; for p in $pids; do kill -0 "$p" 2>/dev/null || alive=0; done
-            if [ "$alive" = 1 ] && [ "$i" -ge 5 ]; then ready=1; break; fi
+            sleep 3
+            echo "sample=$i"
+            free -m; df -m .; ps -eo pid,ppid,rss,comm --sort=-rss | head -15
+            if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:18800/ > "$RUNNER_TEMP/probe/response.json"; then
+              cat "$RUNNER_TEMP/probe/response.json"
+              if node -e 'const v=require(process.argv[1]); process.exit(v.targetStatus === 200 ? 0 : 1)' "$RUNNER_TEMP/probe/response.json"; then ok=1; break; fi
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
           done
-          for p in $pids; do kill "$p" 2>/dev/null || true; done
-          for f in "$RUNNER_TEMP/connected"/*.log; do echo "--- $f"; tail -80 "$f"; done
-          test "$ready" = 1
+          cat "$RUNNER_TEMP/probe/wrangler.log"
+          test "$ok" = 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: connected-${{ matrix.batch }}
-          path: ${{ runner.temp }}/connected/*.log
+          name: binding-probe
+          path: ${{ runner.temp }}/probe/*
           if-no-files-found: ignore
