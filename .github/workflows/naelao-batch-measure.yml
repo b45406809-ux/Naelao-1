@@ -1,0 +1,64 @@
+name: Naelao batch measurements
+on:
+  push:
+    branches: [work]
+    paths: ['.github/workflows/naelao-batch-measure.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        worker: [auth, notifications, artifact, knowledge, spaces, billing, credentials, ws-gateway, agents, router, browser, mcp-hub]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Runner capacity
+        run: |
+          nproc
+          free -h
+          df -h .
+          docker info --format '{{.ServerVersion}}'
+      - run: pnpm install --no-frozen-lockfile
+      - name: Build packages
+        run: pnpm exec turbo run build --filter='./packages/*' --concurrency=2
+      - name: Start Worker and sample resources
+        env:
+          WORKER: ${{ matrix.worker }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/measure"
+          export WRANGLER_SEND_METRICS=false
+          pnpm exec wrangler dev --local --config "workers/$WORKER/wrangler.toml" --port 18800 --inspector-port 28800 --persist-to "$RUNNER_TEMP/measure/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/measure/worker.log" 2>&1 &
+          pid=$!
+          ready=0
+          for i in $(seq 1 30); do
+            sleep 5
+            echo "sample=$i"
+            free -m
+            df -m .
+            ps -eo pid,ppid,rss,comm --sort=-rss | head -25
+            docker stats --no-stream || true
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:18800/health || true)
+            echo "health=$code"
+            if [ "$code" != 000 ]; then ready=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+          done
+          kill "$pid" 2>/dev/null || true
+          cat "$RUNNER_TEMP/measure/worker.log"
+          test "$ready" = 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: batch-measure-${{ matrix.worker }}
+          path: ${{ runner.temp }}/measure/worker.log
+          if-no-files-found: ignore
