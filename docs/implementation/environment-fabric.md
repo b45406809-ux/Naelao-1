@@ -2,6 +2,38 @@
 
 Requested 2026-10-26. The planner/worker architecture and three workspace boundaries remain authoritative.
 
+## Blackboard-aware scheduling
+
+The planner supplies outcomes, dependencies and permitted capabilities. A host scheduler should
+dispatch ready work as capacity becomes available rather than waiting for a whole parallel wave.
+It must persist dispatch claims and reconcile uncertain outcomes before retrying. Workers waiting
+for a busy environment can yield capacity to other ready work while dependencies and explicit
+workspace affinity remain authoritative.
+
+Select from host-verified environment cards describing scope, installed capabilities, workspace
+and session affinity, health, capacity, cost and proven isolation. Credentials and logged-in
+profiles stay attached to their existing environment and do not grant access to another worker.
+Models may rank eligible choices or summarize bounded blackboard updates; deterministic host
+checks enforce permissions, subscription limits, admission, quotas and isolation. Model failure
+falls back to a deterministic queue.
+
+If three workers require one environment, run them concurrently only when the runtime proves
+separate execution and workspace isolation. Otherwise reserve it for one execution and schedule
+other ready work while requests wait. Use bounded priority with aging. Keep dependent commands in
+the same environment when they require local state, or transfer explicit versioned artifacts
+through an authorized workspace with conflict detection.
+
+Prewarming is advisory and must follow permission checks, atomic plan quota reservation, a
+per-Space budget and short expiry. Deduplicate requests, cancel stale predictions and measure
+useful prewarms, wasted idle time, queue wait, latency and cost. A prewarm never grants execution.
+Evaluate ScaleDown and decision models for prediction and ranking only after checking availability,
+retention and incremental cost; do not assume a specific latency or price.
+
+Outstanding implementation: a durable cross-worker reservation queue, rolling DAG dispatch,
+verified environment cards, quota-backed speculative prewarm, state-affinity enforcement and
+recovery after lease expiry. The existing fixed-wave dispatcher and best-effort prewarm do not yet
+provide those capabilities.
+
 ## Acceptance checklist
 
 - [x] Environment cards: scoped managed runtimes and named tunnels, timestamped capability/app observations; never credentials.
