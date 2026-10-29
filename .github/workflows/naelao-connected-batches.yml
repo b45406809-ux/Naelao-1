@@ -38,6 +38,7 @@ jobs:
           export WRANGLER_SEND_METRICS=false
           pnpm exec wrangler dev --local -c .probe/wrangler.toml -c workers/notifications/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/probe/state" > "$RUNNER_TEMP/probe/wrangler.log" 2>&1 &
           pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
           ok=0
           for i in $(seq 1 60); do
             sleep 3
