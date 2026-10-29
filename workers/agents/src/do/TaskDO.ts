@@ -54,6 +54,7 @@ interface TaskRow {
   id: string;
   space_id: string;
   session_id: string;
+  project_id: string | null;
   tenant_id: string;
   goal: string;
   status: TaskStatus;
@@ -74,6 +75,7 @@ export class TaskDO extends DurableObject {
         id           TEXT PRIMARY KEY,
         space_id     TEXT NOT NULL,
         session_id   TEXT NOT NULL,
+        project_id   TEXT,
         tenant_id    TEXT NOT NULL,
         goal         TEXT NOT NULL,
         status       TEXT NOT NULL DEFAULT 'queued',
@@ -83,9 +85,12 @@ export class TaskDO extends DurableObject {
         expires_at   INTEGER NOT NULL,
         callback_url TEXT
       );
-      CREATE INDEX IF NOT EXISTS idx_tasks_space ON tasks(space_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tasks_expire ON tasks(expires_at);
     `);
+    const columns = this.ctx.storage.sql.exec("PRAGMA table_info(tasks)").toArray() as Array<{ name: string }>;
+    if (!columns.some(column => column.name === "project_id")) this.ctx.storage.sql.exec("ALTER TABLE tasks ADD COLUMN project_id TEXT");
+    this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_tasks_space ON tasks(space_id, created_at DESC)");
+    this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(space_id, project_id, created_at DESC)");
     this.initialized = true;
   }
 
@@ -112,6 +117,7 @@ export class TaskDO extends DurableObject {
       if (!validTaskId(body.id) || typeof body.space_id !== "string" || !body.space_id.trim() || body.space_id.length > 256 ||
           typeof body.tenant_id !== "string" || !body.tenant_id.trim() || body.tenant_id.length > 256 ||
           typeof body.session_id !== "string" || !body.session_id.trim() || body.session_id.length > 512 ||
+          (body.project_id !== undefined && body.project_id !== null && (typeof body.project_id !== "string" || !body.project_id.trim() || body.project_id.length > 256)) ||
           typeof body.goal !== "string" || !body.goal.trim() || body.goal.length > MAX_TASK_TEXT_LENGTH ||
           callbackUrl === undefined) {
         return Response.json({ error: "id, space_id, tenant_id, and goal are required" }, { status: 400 });
@@ -126,9 +132,9 @@ export class TaskDO extends DurableObject {
 
       const expiresAt = Date.now() + TASK_TTL_MS;
       this.ctx.storage.sql.exec(
-        `INSERT INTO tasks (id, space_id, session_id, tenant_id, goal, status, created_at, expires_at, callback_url)
-         VALUES (?, ?, ?, ?, ?, 'queued', datetime('now'), ?, ?)`,
-        body.id, body.space_id, body.session_id, body.tenant_id,
+        `INSERT INTO tasks (id, space_id, session_id, project_id, tenant_id, goal, status, created_at, expires_at, callback_url)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', datetime('now'), ?, ?)`,
+        body.id, body.space_id, body.session_id, body.project_id ?? null, body.tenant_id,
         body.goal, expiresAt, callbackUrl
       );
 
@@ -173,14 +179,17 @@ export class TaskDO extends DurableObject {
     if (method === "GET" && url.pathname === "/tasks") {
       const spaceId = url.searchParams.get("space_id");
       const sessionId = url.searchParams.get("session_id");
+      const projectId = url.searchParams.get("project_id");
       if (!spaceId) return Response.json({ error: "space_id required" }, { status: 400 });
       if (spaceId.length > 256) return Response.json({ error: "invalid_space_id" }, { status: 400 });
       if (sessionId !== null && (!sessionId.trim() || sessionId.length > 512)) return Response.json({ error: "invalid_session_id" }, { status: 400 });
+      if (projectId !== null && (!projectId.trim() || projectId.length > 256)) return Response.json({ error: "invalid_project_id" }, { status: 400 });
+      const filters = ["space_id = ?", "expires_at > ?"];
+      const values: Array<string | number> = [spaceId, Date.now()];
+      if (sessionId) { filters.push("session_id = ?"); values.push(sessionId); }
+      if (projectId) { filters.push("project_id = ?"); values.push(projectId); }
       const rows = this.ctx.storage.sql
-        .exec(sessionId
-          ? `SELECT * FROM tasks WHERE space_id = ? AND session_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 50`
-          : `SELECT * FROM tasks WHERE space_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 50`,
-          ...(sessionId ? [spaceId, sessionId, Date.now()] : [spaceId, Date.now()]))
+        .exec(`SELECT * FROM tasks WHERE ${filters.join(" AND ")} ORDER BY created_at DESC LIMIT 50`, ...values)
         .toArray() as unknown as TaskRow[];
       return Response.json({ tasks: rows.map(r => this.taskToApi(r)) });
     }
@@ -258,6 +267,7 @@ export class TaskDO extends DurableObject {
       task_id: task.id,
       space_id: task.space_id,
       session_id: task.session_id,
+      project_id: task.project_id ?? null,
       status: task.status,
       result: task.result ? JSON.parse(task.result) : null,
       error: task.error,

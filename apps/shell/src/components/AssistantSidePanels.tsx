@@ -236,6 +236,7 @@ function taskCitations(task: DurableAgentTask): Array<{ version: 1; ordinal: num
 }
 
 function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId }: { spaceId: string; session: SessionCredentials; sessionId?: string | null | undefined; agentId?: string | null | undefined; lastRunId?: string | null | undefined; projectId?: string | null | undefined }) {
+  const product = useProduct();
   const [tasks, setTasks] = React.useState<DurableAgentTask[]>([]);
   const [workers, setWorkers] = React.useState<SubAgentSummary[]>([]);
   const [goals, setGoals] = React.useState<GoalActivity[]>([]);
@@ -244,13 +245,13 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
   const [workerError, setWorkerError] = React.useState(false);
   const [goalError, setGoalError] = React.useState(false);
   const refresh = React.useCallback(async () => {
-    if (!sessionId) { setTasks([]); setWorkers([]); setGoals([]); setLoading(false); setError("Open a conversation to see its durable tasks."); setWorkerError(false); setGoalError(false); return; }
+    if (!sessionId && !projectId) { setTasks([]); setWorkers([]); setGoals([]); setLoading(false); setError("Open a conversation or project to see its durable tasks."); setWorkerError(false); setGoalError(false); return; }
     const scoped = { sessionId, ...(agentId ? { agentId } : {}) };
     const [taskResult, workerResult, historyGoalResult, latestGoalResult] = await Promise.allSettled([
-      listDurableTasks(spaceId, sessionId, session),
-      listSubAgents(spaceId, session, "", scoped),
-      listConversationGoalActivity(spaceId, session, scoped),
-      lastRunId ? listGoalActivity(spaceId, session, lastRunId, scoped) : Promise.resolve([] as GoalActivity[]),
+      listDurableTasks(spaceId, session, { ...(sessionId ? { sessionId } : {}), ...(projectId ? { projectId } : {}) }),
+      sessionId ? listSubAgents(spaceId, session, "", scoped) : Promise.resolve([] as SubAgentSummary[]),
+      sessionId ? listConversationGoalActivity(spaceId, session, scoped as { sessionId: string; agentId?: string | null | undefined }) : Promise.resolve([] as GoalActivity[]),
+      sessionId && lastRunId ? listGoalActivity(spaceId, session, lastRunId, scoped) : Promise.resolve([] as GoalActivity[]),
     ]);
     if (taskResult.status === "fulfilled") { setTasks(taskResult.value.tasks); setError(null); }
     else setError(taskResult.reason instanceof Error ? taskResult.reason.message : "Task status is unavailable.");
@@ -274,24 +275,25 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
     return () => { active = false; if (timer) clearTimeout(timer); };
   }, [refresh]);
   return <section aria-label="Durable tasks">
-    <div className="tp-section">Conversation tasks</div>
-    <p className="workspace-tab-empty">Background work remains available after leaving this page. Status refreshes every five seconds.</p>
+    <div className="tp-section">{projectId && !sessionId ? "Project activity" : "Conversation tasks"}</div>
+    <p className="workspace-tab-empty">{projectId && !sessionId ? "Most recent background tasks in this project. Open a task’s conversation to answer approvals or questions." : "Background work remains available after leaving this page. Status refreshes every five seconds."}</p>
     {loading && <p className="workspace-tab-empty">Loading task history…</p>}
     {error && <p role="status" className="workspace-tab-empty">{error}</p>}
-    {!loading && !error && tasks.length === 0 && <p className="workspace-tab-empty">No durable tasks for this conversation yet.</p>}
+    {!loading && !error && tasks.length === 0 && <p className="workspace-tab-empty">No durable tasks for this {projectId && !sessionId ? "project" : "conversation"} yet.</p>}
     {tasks.map(task => <article className="settings-block" style={{ padding: 12, marginTop: 8 }} key={task.task_id}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
         <strong>{task.status === "awaiting_approval" ? "Waiting for approval" : task.status.replaceAll("_", " ")}</strong>
         <code style={{ fontSize: 10 }}>{task.task_id.slice(0, 12)}</code>
       </div>
+      {projectId && !sessionId && <p style={{ color: "var(--text3)", fontSize: 11 }}>Conversation: <Link href={`/p/${product.slug}/sessions/${encodeURIComponent(task.session_id)}`}>{task.session_id.slice(0, 24)}</Link></p>}
       <p style={{ color: "var(--text3)", fontSize: 11 }}>Started {task.created_at}</p>
       {!task.error && <p style={{ overflowWrap: "anywhere" }}>{taskOutcomePreview(task)}</p>}
       {task.error && <p role="alert" style={{ color: "var(--danger, #dc2626)", overflowWrap: "anywhere" }}>{task.error.slice(0, 400)}</p>}
-      {taskCreatedArtifacts(task).map(artifact => <InlineArtifactCard key={artifact.artifact_id} spaceId={spaceId} artifactId={artifact.artifact_id} filename={artifact.filename} {...(artifact.content_type ? { contentType: artifact.content_type } : {})} session={session} />)}
+      {sessionId && taskCreatedArtifacts(task).map(artifact => <InlineArtifactCard key={artifact.artifact_id} spaceId={spaceId} artifactId={artifact.artifact_id} filename={artifact.filename} {...(artifact.content_type ? { contentType: artifact.content_type } : {})} session={session} />)}
       {projectId && taskCitations(task).length > 0 && <CitationBadges citations={taskCitations(task)} spaceId={spaceId} projectId={projectId} session={session} />}
-      {taskPendingItems(task, "pending_approval").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
-      {taskPendingItems(task, "deferred_approvals").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
-      {taskPendingItems(task, "pending_question").map(question => <InlineQuestionCard key={question.approval_id} spaceId={spaceId} question={question} session={session} onAnswered={() => void refresh()} />)}
+      {sessionId && taskPendingItems(task, "pending_approval").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
+      {sessionId && taskPendingItems(task, "deferred_approvals").map(approval => <InlineApprovalCard key={approval.approval_id} spaceId={spaceId} approval={approval} session={session} onResolved={() => void refresh()} />)}
+      {sessionId && taskPendingItems(task, "pending_question").map(question => <InlineQuestionCard key={question.approval_id} spaceId={spaceId} question={question} session={session} onAnswered={() => void refresh()} />)}
       <small style={{ color: "var(--text3)" }}>Task record expires {task.expires_at}</small>
     </article>)}
     <div className="tp-section" style={{ marginTop: 14 }}>Delegated workers</div>

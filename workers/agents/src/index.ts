@@ -790,25 +790,23 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const sessionId = c.req.param("sessionId");
   if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
 
-  // The product-session middleware above already checked ownership for end users. Resolve scope
-  // here for builder/internal callers too so a private encrypted scratchpad can never be passed to
-  // a model run, even if its message routes remain client-only.
-  if (callerRole !== "product_end_user") {
-    if (!c.env.SPACES_WORKER) return c.json({ error_code: "session_scope_unavailable" }, 503);
-    const scopeResponse = await c.env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`,
-      { headers: {
-        "x-naelao-tenant-id": tenantId,
-        "x-naelao-user-id": userId,
-        "x-naelao-role": callerRole,
-        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
-      } },
-    ));
-    if (!scopeResponse.ok) return c.json({ error_code: "session_unavailable" }, 404);
-    const scope = await scopeResponse.json<{ private_scratchpad?: boolean }>().catch(() => null);
-    if (!scope) return c.json({ error_code: "session_scope_unavailable" }, 503);
-    if (scope.private_scratchpad) return c.json({ error_code: "private_scratchpad_client_only" }, 403);
-  }
+  // Session scope is authoritative for all callers, including builder and product sessions.
+  // The result later binds durable task records to the Project owning this conversation.
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "session_scope_unavailable" }, 503);
+  const scopeResponse = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`,
+    { headers: {
+      "x-naelao-tenant-id": tenantId,
+      "x-naelao-user-id": userId,
+      "x-naelao-role": callerRole,
+      "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+    } },
+  ));
+  if (!scopeResponse.ok) return c.json({ error_code: "session_unavailable" }, 404);
+  const canonicalScope = await scopeResponse.json<{ project_id?: string | null; private_scratchpad?: boolean }>().catch(() => null);
+  if (!canonicalScope) return c.json({ error_code: "session_scope_unavailable" }, 503);
+  if (canonicalScope.private_scratchpad) return c.json({ error_code: "private_scratchpad_client_only" }, 403);
+  const verifiedProjectId = canonicalScope.project_id ?? undefined;
 
   // A product end user can be the OWNER of their own business, not just a customer of it. Without
   // resolving that, the F-36 clamp downgraded yolo for them unconditionally — so an owner who set
@@ -831,6 +829,8 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }
   const body = { ...rawBody, goal: resolvedGoal };
 
+  if (rawBody.project_id !== undefined && rawBody.project_id !== verifiedProjectId) return c.json({ error_code: "project_session_scope_mismatch" }, 403);
+
   let attachmentProjectId: string | undefined;
   if (rawBody.upload_names?.length) {
     const identity = getCallerIdentity(c);
@@ -844,7 +844,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
       fetchSpaces: (request) => c.env.SPACES_WORKER.fetch(request),
     });
     if (!uploadScope) return c.json({ error_code: "chat_attachment_scope_unavailable" }, 404);
-    if (rawBody.project_id !== undefined && rawBody.project_id !== uploadScope.projectId) {
+    if (verifiedProjectId !== uploadScope.projectId) {
       return c.json({ error_code: "chat_attachment_project_scope_mismatch" }, 403);
     }
     attachmentProjectId = uploadScope.projectId;
@@ -1067,7 +1067,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
             method: "POST",
             headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
             body: JSON.stringify({
-              space_id: spaceId, project_id: rawBody.project_id ?? null, thread_id: sessionId,
+              space_id: spaceId, project_id: verifiedProjectId ?? null, thread_id: sessionId,
               agent_id: agentId, signal_type: signal.signal_type, detail: signal.detail,
             }),
           }))
@@ -1105,7 +1105,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const voiceFollowup=c.req.header("x-naelao-voice-followup")==="1";
   let voiceParentDoId:string|undefined;
   if(voiceFollowup){
-    try{await (await import("./voice/session-scope.js")).verifyVoiceSession(c.env.SPACES_WORKER,c.env.PLATFORM_SECRET,{tenantId,spaceId,userId,role:callerRole,...rawBody.project_id?{projectId:rawBody.project_id}:{}},sessionId);}catch{return c.json({error_code:"voice_followup_scope_denied"},403);}
+    try{await (await import("./voice/session-scope.js")).verifyVoiceSession(c.env.SPACES_WORKER,c.env.PLATFORM_SECRET,{tenantId,spaceId,userId,role:callerRole,...verifiedProjectId?{projectId:verifiedProjectId}:{}},sessionId);}catch{return c.json({error_code:"voice_followup_scope_denied"},403);}
     const parent=await getAgentDO(c.env,tenantId,sessionId);voiceParentDoId=parent.id.toString();
   }
   const voiceExecutionKey=voiceFollowup?`${sessionId}:voice-control`:undefined;
@@ -1174,6 +1174,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         id: taskId,
         space_id: spaceId,
         session_id: sessionId,
+        project_id: verifiedProjectId ?? null,
         tenant_id: tenantId,
         goal: body.goal,
         callback_url: callbackUrl ?? null,
@@ -1202,7 +1203,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         // Go-live audit A-1/A-2: threaded through to /internal/tasks/:taskId/run's own
         // http://agent-do/script/run call — see that route's own comment.
         userId,
-        projectId: rawBody.project_id,
+        projectId: verifiedProjectId,
         callerRole,
         businessRole,
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
@@ -1279,7 +1280,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         agentId,
         tenantId,
         userId,
-        projectId: rawBody.project_id,
+        projectId: verifiedProjectId,
         apiKey: c.env.ANTHROPIC_API_KEY ?? "",
         model: rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL,
         // The public, non-secret capability snapshot validated above. Rechecked at the actual
@@ -2892,11 +2893,17 @@ app.get("/spaces/:spaceId/tasks", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.query("session_id") ?? "";
+  const projectId = c.req.query("project_id") ?? "";
   const { role } = getCallerIdentity(c);
   // Product users may only list tasks tied to an authorized conversation. Omitting the session
-  // filter is reserved for platform/team operators; it must never expose every task in a Space.
-  if (role === "product_end_user" && !sessionId) return c.json({ error_code: "task_session_scope_required" }, 400);
+  // filter is allowed only with an explicitly authorized Project scope; it must never expose
+  // every task in a Space.
+  if (role === "product_end_user" && !sessionId && !projectId) return c.json({ error_code: "task_session_or_project_scope_required" }, 400);
   if (sessionId && !await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId)) return c.json({ error_code: "forbidden" }, 403);
+  if (projectId) {
+    try { await requireProjectAccessForManagedProfile(c, spaceId, projectId, false); }
+    catch { return c.json({ error_code: "forbidden" }, 403); }
+  }
 
   const space = await c.env.PLATFORM_DB.prepare(
     "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
@@ -2904,7 +2911,7 @@ app.get("/spaces/:spaceId/tasks", async (c) => {
   if (!space) throw notFound("Space");
 
   const stub = getTaskDO(c.env, spaceId);
-  const query = new URLSearchParams({ space_id: spaceId, ...(sessionId ? { session_id: sessionId } : {}) });
+  const query = new URLSearchParams({ space_id: spaceId, ...(sessionId ? { session_id: sessionId } : {}), ...(projectId ? { project_id: projectId } : {}) });
   return stub.fetch(`http://task-do/tasks?${query}`);
 });
 
@@ -2925,8 +2932,14 @@ app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
   // guessed task IDs could hold open unauthenticated waits and consume Worker/DO capacity.
   const initialResponse = await stub.fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}?timeout=0`);
   if (!initialResponse.ok) return initialResponse;
-  const task = await initialResponse.json<{ session_id?: unknown; status?: unknown }>().catch((): { session_id?: unknown; status?: unknown } => ({}));
-  if (typeof task.session_id !== "string" || !await requireBusinessMembershipOrSessionAccess(c, spaceId, task.session_id)) {
+  const task = await initialResponse.json<{ session_id?: unknown; project_id?: unknown; status?: unknown }>().catch((): { session_id?: unknown; project_id?: unknown; status?: unknown } => ({}));
+  const sessionAccess = typeof task.session_id === "string" && await requireBusinessMembershipOrSessionAccess(c, spaceId, task.session_id);
+  let projectAccess = false;
+  if (!sessionAccess && typeof task.project_id === "string" && task.project_id) {
+    try { await requireProjectAccessForManagedProfile(c, spaceId, task.project_id, false); projectAccess = true; }
+    catch { projectAccess = false; }
+  }
+  if (!sessionAccess && !projectAccess) {
     // Do not reveal whether a task in another conversation exists.
     return c.json({ error: "not_found" }, 404);
   }

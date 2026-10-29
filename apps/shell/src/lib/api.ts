@@ -782,6 +782,7 @@ export interface DurableAgentTask {
   task_id: string;
   space_id: string;
   session_id: string;
+  project_id?: string | null;
   status: "queued" | "processing" | "awaiting_approval" | "complete" | "failed" | string;
   result: unknown;
   error: string | null;
@@ -790,8 +791,10 @@ export interface DurableAgentTask {
 }
 
 /** List durable background runs for one authorized conversation. */
-export async function listDurableTasks(spaceId: string, sessionId: string, session: SessionCredentials) {
-  const query = new URLSearchParams({ session_id: sessionId });
+export async function listDurableTasks(spaceId: string, session: SessionCredentials, scope: { sessionId?: string | null | undefined; projectId?: string | null | undefined }) {
+  const query = new URLSearchParams();
+  if (scope.sessionId) query.set("session_id", scope.sessionId);
+  if (scope.projectId) query.set("project_id", scope.projectId);
   return apiFetch<{ tasks: DurableAgentTask[] }>(`/v1/spaces/${encodeURIComponent(spaceId)}/tasks?${query}`, { session, cache: "no-store" });
 }
 
