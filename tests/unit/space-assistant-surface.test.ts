@@ -2,27 +2,12 @@ import { describe, it, expect, vi } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
+import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
-// WS-2: the Space Assistant surface's read-only panels (Memory/Channels/Sub-agents/Files) — a
-// product_end_user is allowed through ONLY when they're actually a member of the target business
-// (or it's their own product root), verified via a cross-worker call to the spaces worker's
-// /internal/business-role. A builder JWT role skips this check entirely (additive-only, matching
-// every other end-user floor in this codebase).
+// The Space Assistant's read-only panels are available to members of the requested Space.
+// Keep this test on the generic Space membership model used by the spaces worker.
 
 const SECRET = "test-platform-secret";
-
-function makeSpacesWorkerStub(businessRoleOk: boolean): Fetcher {
-  return {
-    fetch: async (input: RequestInfo) => {
-      const req = input as Request;
-      const url = new URL(typeof input === "string" ? input : req.url);
-      if (url.pathname === "/internal/business-role") {
-        return businessRoleOk ? Response.json({ role: "member" }) : Response.json({ error_code: "forbidden" }, { status: 404 });
-      }
-      return new Response("not found", { status: 404 });
-    },
-  } as unknown as Fetcher;
-}
 
 function makeAgentDoStub() {
   const calls: string[] = [];
@@ -38,6 +23,15 @@ function makeAgentDoStub() {
 
 function makeEnv(opts: { spacesOk: boolean; withR2?: boolean }): AgentsEnv & { __calls: string[] } {
   const { agentDoStub, calls } = makeAgentDoStub();
+  const membershipDb = createFakeD1([
+    `CREATE TABLE spaces (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active')`,
+    `CREATE TABLE space_members (space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, role TEXT NOT NULL, suspended_at TEXT, PRIMARY KEY (space_id, end_user_id))`,
+    `CREATE TABLE channel_links (space_id TEXT NOT NULL, channel TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT, project_id TEXT, model_override TEXT, extension_instance_id TEXT)`,
+  ]);
+  membershipDb.db.exec("INSERT INTO spaces (id, status) VALUES ('space1', 'active')");
+  if (opts.spacesOk) {
+    membershipDb.db.exec("INSERT INTO space_members (space_id, end_user_id, role) VALUES ('space1', 'user-allowed', 'member')");
+  }
   const r2Objects = [
     { key: "spaces/space1/workspace/.keep", size: 0, uploaded: new Date() },
     { key: "spaces/space1/workspace/notes.txt", size: new TextEncoder().encode("hello from R2").byteLength, uploaded: new Date() },
@@ -49,17 +43,8 @@ function makeEnv(opts: { spacesOk: boolean; withR2?: boolean }): AgentsEnv & { _
   return {
     ANTHROPIC_API_KEY: "test-anthropic-key",
     PLATFORM_SECRET: SECRET,
-    WHOP_API_KEY: "test-whop-key",
-    NAELAO_WHOP_COMPANY_ID: "test-company",
     NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },
-    SPACES_WORKER: makeSpacesWorkerStub(opts.spacesOk),
-    PLATFORM_DB: {
-      prepare: () => ({
-        bind: () => ({
-          all: async () => ({ results: [{ channel: "slack", enabled: 1, created_at: "2026-01-01" }] }),
-        }),
-      }),
-    } as unknown as D1Database,
+    PLATFORM_DB: membershipDb as unknown as D1Database,
     ...(opts.withR2 ? {
       SCRIPTS_R2: {
         head: async (key: string) => {
@@ -94,7 +79,7 @@ async function req(path: string, headers: Record<string, string>, method = "GET"
   return new Request(`https://agents.naelao.com${path}`, { method, headers: withToken });
 }
 
-describe("WS-2 — Space Assistant surface routes require business membership for product_end_user", () => {
+describe("Space Assistant surface routes require Space membership for product_end_user", () => {
   const ROUTES = [
     "/spaces/space1/assistant/memory",
     "/spaces/space1/assistant/channels",
@@ -111,11 +96,11 @@ describe("WS-2 — Space Assistant surface routes require business membership fo
 
     it(`${path}: allows a product_end_user who IS a member`, async () => {
       const env = makeEnv({ spacesOk: true, withR2: true });
-      const res = await app.fetch(await req(path, { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-1" }), env);
+      const res = await app.fetch(await req(path, { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-allowed" }), env);
       expect(res.status).toBe(200);
     });
 
-    it(`${path}: allows a builder JWT role without any business-role check`, async () => {
+    it(`${path}: allows a platform team role without an end-user membership lookup`, async () => {
       const env = makeEnv({ spacesOk: false, withR2: true }); // spacesOk:false proves the check is skipped
       const res = await app.fetch(await req(path, { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner", "x-naelao-user-id": "owner-1" }), env);
       expect(res.status).toBe(200);

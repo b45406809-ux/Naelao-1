@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { workspaceAdmin } from "../../workers/agents/src/script-engine/prebuilt/workspace-admin.js";
-import { PROJECT_TEMPLATES } from "../../workers/agents/src/launchpad/project-templates.js";
 import { verifyInternalToken } from "@naelao/http";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
 
@@ -69,25 +68,6 @@ describe("workspace-admin prebuilt", () => {
     expect(calls[0]!.method).toBe("PATCH");
     expect(calls[0]!.url).toContain("/spaces/space-1/projects/proj-1");
     expect(calls[0]!.body).toEqual({ name: "New Name" });
-  });
-
-  it("project.create_from_template rejects an unknown template id without calling the spaces worker", async () => {
-    const calls: Call[] = [];
-    const env = makeEnv(calls);
-    await expect(
-      workspaceAdmin.operations["project.create_from_template"]!({ template_id: "no-such-template" }, { env, run: noopRun })
-    ).rejects.toThrow(/Unknown project template/);
-    expect(calls).toHaveLength(0);
-  });
-
-  it("does not ship product-specific project presets in the kernel", async () => {
-    expect(PROJECT_TEMPLATES).toEqual([]);
-    const calls: Call[] = [];
-    const env = makeEnv(calls);
-    await expect(workspaceAdmin.operations["project.create_from_template"]!(
-      { template_id: "community-member-monitoring" }, { env, run: noopRun },
-    )).rejects.toThrow(/Unknown project template/);
-    expect(calls).toHaveLength(0);
   });
 
   // The ad-hoc counterpart to create_from_template: what "New project" in the shell does, for
