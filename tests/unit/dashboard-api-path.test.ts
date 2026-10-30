@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiFetch, getSpace, listBuilderProductsPage, updateProduct } from "../../apps/dashboard/src/lib/api";
+import { apiFetch, getSpace, listBuilderProductsPage, updateBuilderProduct } from "../../apps/dashboard/src/lib/api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -32,10 +32,10 @@ describe("dashboard API path identifiers", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await updateProduct("space/a", "product b", { name: "updated" });
+    await updateBuilderProduct("product b", { name: "updated" });
 
     const requested = new URL(fetchMock.mock.calls[0]![0] as string);
-    expect(requested.pathname).toBe("/spaces/space%2Fa/products/product%20b");
+    expect(requested.pathname).toBe("/builder/products/product%20b");
   });
 
   it("passes a page number when fetching builder products", async () => {

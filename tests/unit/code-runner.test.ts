@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { runInNewContext } from "node:vm";
 import { createScopedCodeRpc } from "@naelao/agent-sdk";
 import { buildCodeRunner, type WorkerLoaderBinding, type WorkerLoaderModuleConfig } from "../../workers/agents/src/script-engine/code-runner.js";
 
@@ -15,8 +16,10 @@ function fakeLoader(): WorkerLoaderBinding {
               const main = config.modules["main.js"];
               if (typeof source !== "string" || typeof main !== "string") throw new Error("guest module missing");
               const guestBody = source.replace(/\bexport\s+(?=(async\s+)?function\s+run\b)/g, "");
-              // eslint-disable-next-line no-new-func
-              const run = new Function(`${guestBody}; return run;`)() as (args: unknown, ctx: Record<string, any>) => Promise<unknown>;
+              // Worker Loader isolates do not inherit Node's ambient fetch. Execute the guest in
+              // a separate VM context so this mock models the production network boundary instead
+              // of accidentally giving untrusted code the test runner's global fetch.
+              const run = runInNewContext(`${guestBody}; run`, { fetch: undefined }) as (args: unknown, ctx: Record<string, any>) => Promise<unknown>;
               const mainBody = main
                 .replace(/^import .* from ['"]\.\/policy\.js['"];\s*$/m, "")
                 .replace(/^import .* from ['"]\.\/guest\.js['"];\s*$/m, "")

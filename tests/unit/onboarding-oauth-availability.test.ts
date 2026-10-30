@@ -1,13 +1,5 @@
-// Whether a setup wizard leads with a connect path that actually works on this deployment.
-//
-// One-click connect needs a registered OAuth app (client id + secret + a public callback origin).
-// A deployment without one — self-hosted, or simply not configured yet — could still render a
-// "Connect Whop" button whose only possible outcome was
-// `503 "Whop OAuth is not configured on this deployment"`: platform-internal language, shown to a
-// business owner who cannot act on it, at the one setup step they are not allowed to skip. The
-// key-paste fallback existed the whole time, collapsed behind a text link they had no reason to
-// click. Reporting configuration up front is what lets the wizard lead with the path that works.
-
+// Domain connection setup belongs to the installed Space Template/extension. The kernel's
+// generic bootstrap must not reintroduce the retired hardcoded Whop and business questionnaires.
 import { describe, it, expect } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
@@ -21,7 +13,6 @@ function makeEnv(overrides: Record<string, string | undefined> = {}): AgentsEnv 
   const space = {
     id: SPACE,
     tenant_id: TENANT,
-    // A whop-seller business mid-setup: the template is recorded, nothing is answered yet.
     config_json: JSON.stringify({
       template_id: "whop-seller",
       onboarding: { template_id: "whop-seller", template_ids: ["whop-seller"], status: "awaiting_setup" },
@@ -37,7 +28,6 @@ function makeEnv(overrides: Record<string, string | undefined> = {}): AgentsEnv 
   return {
     PLATFORM_SECRET: SECRET,
     PLATFORM_DB: { prepare: () => stmt } as unknown as D1Database,
-    // No connectors registered, so every connection prompt reads as unsatisfied.
     MCP_HUB: { fetch: async () => Response.json({ servers: [] }) },
     ANALYTICS: { writeDataPoint() {} },
     ...overrides,
@@ -53,49 +43,22 @@ async function bootstrap(env: AgentsEnv) {
       },
     }),
     env as never,
-    { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext
+    { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext,
   );
   expect(res.status).toBe(200);
-  return (await res.json()) as {
-    prompts: Array<{ id: string; type: string; connector?: string; oauth_available?: boolean; connect_method?: string; connection_available?: boolean }>;
-  };
+  return (await res.json()) as { template_ids: string[]; templates: Array<{ id: string; connectors: string[] }>; prompts: unknown[] };
 }
 
-describe("onboarding reports whether one-click connect actually works here", () => {
-  it("says manual when hosted connector credentials are absent", async () => {
+describe("generic space bootstrap", () => {
+  it("does not revive a removed built-in business template", async () => {
     const body = await bootstrap(makeEnv());
-    const connection = body.prompts.find((p) => p.type === "connection" && p.connector === "whop");
-    expect(connection).toBeDefined();
-    expect(connection!.connection_available).toBe(false);
+    expect(body.template_ids).toEqual(["whop-seller"]); // preserved for migration visibility
+    expect(body.templates).toEqual([{ id: "whop-seller", name: "whop-seller", description: null, connectors: [] }]);
+    expect(body.prompts).toEqual([]);
   });
 
-  it("selects Composio once its key AND public callback origin are present", async () => {
-    const body = await bootstrap(
-      makeEnv({
-        COMPOSIO_API_KEY: "composio-test-key",
-        PUBLIC_AGENTS_URL: "https://agents.naelao.com",
-      })
-    );
-    const connection = body.prompts.find((p) => p.type === "connection" && p.connector === "whop");
-    expect(connection!.connection_available).toBe(true);
-    expect(connection!.connect_method).toBe("composio");
-  });
-
-  it("stays manual when the callback origin is missing — the flow cannot complete without it", async () => {
-    // The redirect target is half the flow: with credentials but no public origin, the authorize
-    // URL has nowhere to come back to, so reporting "available" would send someone into a
-    // redirect that dead-ends.
-    const body = await bootstrap(
-      makeEnv({ COMPOSIO_API_KEY: "composio-test-key" })
-    );
-    const connection = body.prompts.find((p) => p.type === "connection" && p.connector === "whop");
-    expect(connection!.connection_available).toBe(false);
-  });
-
-  it("is false for a prompt with no connector at all", async () => {
-    const body = await bootstrap(makeEnv());
-    const nonConnection = body.prompts.find((p) => p.type !== "connection" && p.type !== "credential");
-    expect(nonConnection).toBeDefined();
-    expect(nonConnection!.connection_available).toBe(false);
+  it("does not inject domain onboarding prompts based on environment credentials", async () => {
+    const body = await bootstrap(makeEnv({ COMPOSIO_API_KEY: "configured", PUBLIC_AGENTS_URL: "https://agents.naelao.com" }));
+    expect(body.prompts).toEqual([]);
   });
 });
