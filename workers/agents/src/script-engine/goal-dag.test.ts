@@ -13,6 +13,24 @@ function fixture(initial?: GoalDagJournal) {
   return { host, snapshot: () => saved! };
 }
 describe("durable goal DAG", () => {
+  it("blocks dependent work when verification fails and does not run a worker-failure fixer", async () => {
+    const f = fixture(); f.host.fixerEnabled = true;
+    f.host.verify = vi.fn(async () => ({ outcome: "failed" as const, reason: "missing evidence" }));
+    f.host.fix = vi.fn(async (_task, id) => ({ id, ok: true }));
+    const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    expect(result.tasks.a).toMatchObject({ status: "failed", verification: { outcome: "failed" } });
+    expect(result.tasks.b?.status).toBe("blocked");
+    expect(f.host.fix).not.toHaveBeenCalled();
+    expect(result.escalations?.[0]?.detail).toBe("missing evidence");
+  });
+  it("requires review when verification was interrupted", async () => {
+    const f = fixture({ tasks: { a: { status: "verifying", workerId: "worker:a", result: { id: "worker:a", ok: true } }, b: { status: "pending", workerId: "worker:b" } } });
+    f.host.verify = vi.fn(async () => ({ outcome: "passed" as const, reason: "verified" }));
+    const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    expect(result.tasks.a?.status).toBe("needs_review");
+    expect(result.tasks.b?.status).toBe("blocked");
+    expect(f.host.verify).not.toHaveBeenCalled();
+  });
   it("records shadow assessments without blocking dependencies and does not repeat them on resume", async () => {
     const f = fixture();
     f.host.observeVerification = vi.fn(async () => ({ outcome: "failed" as const, reason: "needs review" }));

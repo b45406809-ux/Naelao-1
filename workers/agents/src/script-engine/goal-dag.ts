@@ -85,7 +85,7 @@ function collectEscalations(tasks: GoalTask[], journal: GoalDagJournal): GoalEsc
       changed = false;
       for (const candidate of tasks) if (!affected.has(candidate.id) && candidate.dependencies?.some(id => affected.has(id))) { affected.add(candidate.id); changed = true; }
     }
-    const error = typeof state.result?.error === "string" ? state.result.error.slice(0, 1000) : undefined;
+    const error = state.verification?.reason ?? (typeof state.result?.error === "string" ? state.result.error.slice(0, 1000) : undefined);
     return [{ taskId: task.id, workerId: state.workerId, reason: state.status === "failed" ? "worker_failed" as const : "outcome_uncertain" as const,
       ...(error ? { detail: error } : {}), blockedTasks: tasks.filter(candidate => candidate.id !== task.id && affected.has(candidate.id)).map(candidate => candidate.id),
       nextAction: state.status === "failed" ? "investigate_failure" as const : "verify_effects_before_retry" as const }];
@@ -172,7 +172,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       if (journal.fixerEnabled && host.fix) {
         for (const task of tasks) {
           const state = journal.tasks[task.id]!;
-          if (state.status !== "failed" || !state.result || task.file_paths.length === 0) continue;
+          if (state.status !== "failed" || !state.result || state.result.ok || task.file_paths.length === 0) continue;
           const fixers = journal.fixers ??= {};
           let fixer = fixers[task.id];
           if (fixer?.status === "running") {
