@@ -46,7 +46,7 @@ function validProfile(value: unknown): value is PresentationProfile {
 
 export function PresentationProfileProvider({ children }: { children: React.ReactNode }) {
   const { session } = useProductAuth();
-  const { activeSpaceId } = useActiveSpace();
+  const { activeSpaceId, isChildSpace, isHydrated } = useActiveSpace();
   const creds = React.useMemo<SessionCredentials | null>(() => session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null, [session?.session_token, session?.end_user_id]);
   const [defaultProfile, setDefaultProfile] = React.useState<PresentationProfile>("guided");
   const [override, setOverride] = React.useState<PresentationProfile | null>(null);
@@ -56,7 +56,10 @@ export function PresentationProfileProvider({ children }: { children: React.Reac
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!creds || !activeSpaceId) return;
+    if (!creds || !activeSpaceId || !isHydrated || !isChildSpace) {
+      setLoading(false);
+      return;
+    }
     let live = true;
     setLoading(true);
     setError(null);
@@ -79,7 +82,7 @@ export function PresentationProfileProvider({ children }: { children: React.Reac
       }
     }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [activeSpaceId, creds]);
+  }, [activeSpaceId, creds, isChildSpace, isHydrated]);
 
   const profile = override ?? defaultProfile;
   const saveProfile = React.useCallback(async (next: PresentationProfile) => {

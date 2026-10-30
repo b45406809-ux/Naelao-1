@@ -95,6 +95,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const [projectThreads, setProjectThreads] = React.useState<ThreadSummary[]>([]);
   const [spaces, setSpaces] = React.useState<SpaceSummary[]>([]);
   const [spacesLoaded, setSpacesLoaded] = React.useState(false);
+  const [spacesError, setSpacesError] = React.useState(false);
   // How many actions an agent has paused on, waiting for this person. A parked action is
   // invisible otherwise — the agent carries on with the rest of the task, which is exactly what
   // makes it easy to miss that something needs a decision.
@@ -148,40 +149,56 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
+  // Launchpad is the product identity; conversations belong to a user's Space.
+  React.useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    setSpacesLoaded(false);
+    setSpacesError(false);
+    listMySpaces(product.space_id, { sessionToken: session.session_token, endUserId: session.end_user_id })
+      .then((items) => { if (!cancelled) { setSpaces(items); setSpacesLoaded(true); } })
+      .catch(() => { if (!cancelled) { setSpacesError(true); setSpacesLoaded(true); } });
+    return () => { cancelled = true; };
+  }, [session?.session_token, session?.end_user_id, product.space_id]);
+
+  React.useEffect(() => {
+    if (!activeSpaceHydrated || !spacesLoaded || spacesError) return;
+    if (spaces.some((space) => space.id === activeSpaceId)) return;
+    const first = spaces.find((space) => space.space_status === "active");
+    if (first) setActiveSpace(first.id, first.name);
+    else if (pathname !== `/p/${product.slug}/spaces`) router.replace(`/p/${product.slug}/spaces`);
+  }, [activeSpaceHydrated, spacesLoaded, spacesError, spaces, activeSpaceId, setActiveSpace, pathname, product.slug, router]);
+
   // Every data call below reads `activeSpaceId` (the selected Space,
   // or the product root by default) — NOT `product.space_id` directly. Previously these were all
   // pinned to the product root regardless of the switcher, so switching a space let you
   // access it (via /spaces/:id) but never actually work inside it.
   React.useEffect(() => {
     if (!creds) return;
+    getMe(product.space_id, creds).then(setMe).catch(() => {});
+    if (!spacesLoaded || spacesError || !spaces.some((space) => space.id === activeSpaceId)) return;
     getShellManifest(activeSpaceId, creds).then((m) => {
       setManifest(m);
       setSupportContact(m.legal?.support_contact ?? null);
     }).catch(() => show("Couldn't load workspace"));
     // …with one deliberate exception: `me` is the PERSON, not the workspace. A ProductUserDO is
     // one instance per (root Space × endUserId), so profile lookup stays on the product root.
-    getMe(product.space_id, creds).then(setMe).catch(() => {});
     listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
-    // The switcher's own entry list is always the product-root's Spaces, regardless of which
-    // one is currently active — deliberately NOT activeSpaceId.
-    listMySpaces(product.space_id, creds)
-      .then((items) => { setSpaces(items); setSpacesLoaded(true); })
-      .catch(() => setSpacesLoaded(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, activeSpaceId, product.space_id, product.slug]);
+  }, [session, activeSpaceId, product.space_id, product.slug, spacesLoaded, spacesError, spaces]);
 
   // Keep both recent conversation groups live while the shell stays mounted. Chat dispatches this
   // event immediately after lazy session creation, so the new session appears without a reload;
   // the project-thread list is refreshed at the same time because a newly opened project thread
   // should be available in the adjacent group immediately as well.
   const refreshSidebarConversations = React.useCallback(() => {
-    if (!session) return;
+    if (!session || !spacesLoaded || spacesError || !spaces.some((space) => space.id === activeSpaceId)) return;
     const sidebarCreds = { sessionToken: session.session_token, endUserId: session.end_user_id };
     listSessions(activeSpaceId, sidebarCreds, SIDEBAR_RECENT_SESSIONS).then(setSessions).catch(() => {});
     listThreads(activeSpaceId, sidebarCreds)
       .then(setProjectThreads)
       .catch(() => {});
-  }, [activeSpaceId, session?.session_token, session?.end_user_id]);
+  }, [activeSpaceId, session?.session_token, session?.end_user_id, spacesLoaded, spacesError, spaces]);
 
   React.useEffect(() => {
     refreshSidebarConversations();
@@ -224,12 +241,18 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     router.push(`/p/${product.slug}/new`);
   }
 
-  if (!isHydrated || !isAuthenticated) {
+  if (!isHydrated || !isAuthenticated || !activeSpaceHydrated || !spacesLoaded) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <span style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</span>
       </div>
     );
+  }
+
+  if (spacesError) return <div role="alert" style={{ padding: 24 }}>Could not load your Spaces. <button onClick={() => window.location.reload()}>Try again</button></div>;
+  const selectedSpaceAvailable = spaces.some((space) => space.id === activeSpaceId);
+  if (!selectedSpaceAvailable && pathname !== `/p/${product.slug}/spaces`) {
+    return <div style={{ padding: 24 }}>Opening your Spaces…</div>;
   }
 
   const hidden = new Set(manifest?.ui.hidden_core_items ?? []);
@@ -245,7 +268,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   // (the "new session" button and the recent list below it are its entry points), so neither
   // should light up a nav entry.
   const activeKey = rawKey === "sessions" ? "new" : rawKey;
-  const canUseWorkspace = true;
+  const canUseWorkspace = selectedSpaceAvailable;
   const recentProjectThreads = projectThreads
     .filter((thread) => Boolean(thread.project_id) && !thread.parent_thread_id && thread.thread_kind !== "private")
     .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
@@ -300,7 +323,6 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
         spaceSwitcher={{
           current: currentEntry,
           entries: [
-            { id: product.space_id, name: product.product_name, meta: "Space assistant" },
             ...spaces.map((space) => ({ id: space.id, name: space.name, meta: `${space.role} · ${space.space_status}` })),
           ],
           open: switcherOpen,

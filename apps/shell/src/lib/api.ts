@@ -829,20 +829,14 @@ export interface PendingApprovalWithSpace extends PendingApproval {
  *  another: no badge and no entry in the approvals list.
  *
  *  A small parallel fan-out is appropriate here because the user can only create a plan-limited
- *  number of Spaces. The product root is included too, so approvals there remain visible. */
-/*
- *  Legacy note: this used to enumerate businesses. The Space list is now generic.
- */
+ *  number of Spaces. Launchpad's product root is an account entry point, not a user Space. */
 export async function listAllApprovals(
-  productSpaceId: string,
-  productName: string,
+  _productSpaceId: string,
+  _productName: string,
   spaces: SpaceSummary[],
   session: SessionCredentials
 ): Promise<PendingApprovalWithSpace[]> {
-  const targets = [
-    { id: productSpaceId, name: productName },
-    ...spaces.map((space) => ({ id: space.id, name: space.name })),
-  ];
+  const targets = spaces.map((space) => ({ id: space.id, name: space.name }));
   const results = await Promise.allSettled(
     targets.map(async (t) => {
       const items = await listApprovals(t.id, session);

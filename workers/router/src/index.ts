@@ -623,6 +623,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/my-spaces$/,
   /^\/spaces\/([^/]+)\/spaces$/,
   /^\/spaces\/([^/]+)\/memberships$/,
+  /^\/spaces\/([^/]+)\/preferences$/,
   /^\/spaces\/([^/]+)\/template-listings\/([^/]+)\/fork$/,
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
   /^\/spaces\/([^/]+)\/product-users\/me$/,

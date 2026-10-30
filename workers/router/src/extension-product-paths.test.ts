@@ -52,6 +52,13 @@ describe("product session routes for self-service data rights", () => {
   });
 });
 
+describe("Space presentation preferences", () => {
+  it("routes the exact preferences endpoint through product-session authorization", () => {
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/preferences"))).toBe(true);
+    expect(PRODUCT_END_USER_PATH_PATTERNS.some(pattern => pattern.test("/spaces/s/preferences/admin"))).toBe(false);
+  });
+});
+
 describe("Space Template activation and shared-extension lifecycle routing", () => {
   it.each([
     "/spaces/s/blueprints/tpl_demo/activation-preview",
