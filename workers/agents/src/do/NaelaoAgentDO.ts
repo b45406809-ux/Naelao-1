@@ -1027,6 +1027,7 @@ export interface AgentDOEnv {
   TASK_BLACKBOARD_ENABLED?: string;
   /** Opt in to one bounded worker repair attempt after a confirmed goal task failure. */
   TASK_FIXER_ENABLED?: string;
+  GOAL_VERIFICATION_SHADOW_ENABLED?: string;
   DATA_JURISDICTION?: "eu";
   SYSTEM_ONE_MODEL?: string;
   /** Legacy selector accepted during rollout; provider aliases map to Clef Flash. */
@@ -3645,6 +3646,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             concurrency: Math.min(childFanout(runtimeEnv?.delegationDepth ?? 1, runtimeEnv?.delegationPlanner ?? true), workerExecutionCapacity, 4),
             taskBlackboardEnabled,
             fixerEnabled: this.env.TASK_FIXER_ENABLED === "true",
+            ...(this.env.GOAL_VERIFICATION_SHADOW_ENABLED === "true" && runtimeEnv?.fastDecision ? {
+              observeVerification: async (task, result) => {
+                const { assessGoalResult } = await import("../script-engine/goal-verification.js");
+                return assessGoalResult(runtimeEnv.fastDecision!, task, result);
+              },
+            } : {}),
             workerId: taskId,
             load: () => this.ctx.storage.get<GoalDagJournal>(key),
             save: async journal => {

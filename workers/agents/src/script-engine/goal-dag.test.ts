@@ -13,6 +13,17 @@ function fixture(initial?: GoalDagJournal) {
   return { host, snapshot: () => saved! };
 }
 describe("durable goal DAG", () => {
+  it("records shadow assessments without blocking dependencies and does not repeat them on resume", async () => {
+    const f = fixture();
+    f.host.observeVerification = vi.fn(async () => ({ outcome: "failed" as const, reason: "needs review" }));
+    const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    expect(result.tasks.a).toMatchObject({ status: "completed", shadowVerification: { outcome: "failed" } });
+    expect(result.tasks.b?.status).toBe("completed");
+    const resumed = fixture(f.snapshot());
+    resumed.host.observeVerification = vi.fn(async () => ({ outcome: "uncertain" as const, reason: "review" }));
+    await executeGoalDag([task("a"), task("b", ["a"])], resumed.host);
+    expect(resumed.host.observeVerification).not.toHaveBeenCalled();
+  });
   it("exposes versioned coordination patterns as advisory, valid task graphs", async () => {
     const result = await goalPlanner.operations["engine.coordination_patterns"]!({}, {} as never) as { advisory: boolean; patterns: unknown[] };
     expect(result.advisory).toBe(true);

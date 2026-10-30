@@ -14,7 +14,7 @@ export interface GoalTaskRuntimeState {
   queueWaitMs?: number;
   executionMs?: number;
 }
-export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string } }
+export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
 export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean }
@@ -31,6 +31,7 @@ export interface GoalDagHost {
   taskBlackboardEnabled?: boolean;
   fixerEnabled?: boolean;
   verify?(task: GoalTask, result: GoalWorkerResult): Promise<{ outcome: "passed" | "failed" | "uncertain"; reason: string }>;
+  observeVerification?(task: GoalTask, result: GoalWorkerResult): Promise<{ outcome: "failed" | "uncertain"; reason: string }>;
   fix?(task: GoalTask, workerId: string, failure: GoalWorkerResult): Promise<GoalWorkerResult>;
   acquireResources?(task: GoalTask, holderId: string, onRuntimeState?: (state: GoalTaskRuntimeState) => Promise<void>): Promise<() => Promise<void>>;
   recordRuntimeMetrics?(event: { capability?: string; status: "completed" | "failed"; queueWaitMs?: number; executionMs?: number }): void;
@@ -120,6 +121,17 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     }
     await save();
   };
+  const observeResult = async (task: GoalTask, state: GoalTaskState): Promise<void> => {
+    if (!state.result?.ok || !host.observeVerification || state.shadowVerification) return;
+    try {
+      const observation = await host.observeVerification(task, state.result);
+      if (!observation || !["failed", "uncertain"].includes(observation.outcome) || typeof observation.reason !== "string" || !observation.reason.trim()) throw new Error("invalid_shadow_verification");
+      state.shadowVerification = { outcome: observation.outcome, reason: observation.reason.slice(0, 2000) };
+    } catch {
+      state.shadowVerification = { outcome: "uncertain", reason: "Shadow verification unavailable or invalid" };
+    }
+    await save();
+  };
   // Existing journals created during the initial rollout may already contain messages.
   if (loaded && journal.taskBlackboardEnabled === undefined) journal.taskBlackboardEnabled = Array.isArray(journal.messages);
   if (tasks.some(task => !journal.tasks[task.id]) || Object.keys(journal.tasks).length !== tasks.length) throw new Error("goal_journal_mismatch");
@@ -139,6 +151,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     }
     if (state.status === "verifying") { state.status = "needs_review"; state.verification = { outcome: "uncertain", reason: "Verification interrupted" }; await save(); }
     else if (state.status === "completed" && state.result?.ok && !state.verification && host.verify) await verifyResult(task, state);
+    if (state.status === "completed") await observeResult(task, state);
     recordCompletion(task, tasks, journal);
     if (journal.taskBlackboardEnabled && state.status === "completed") await save();
     await host.publish(task, state);
@@ -247,6 +260,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       state.result = result;
       state.status = result.ok ? "completed" : result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" || result.status === "outcome_uncertain" ? "needs_review" : "failed";
       if (result.ok) await verifyResult(task, state);
+      if (state.status === "completed") await observeResult(task, state);
       if (state.runtime) {
         const completedAt = Date.now();
         const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);
