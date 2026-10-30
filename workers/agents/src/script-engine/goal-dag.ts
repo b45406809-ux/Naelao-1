@@ -140,7 +140,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     const state = journal.tasks[task.id]!;
     if (state.status === "running") {
       const result = await host.recover(state.workerId);
-      state.status = result ? (result.ok ? "completed" : result.status === "outcome_uncertain" ? "needs_review" : "failed") : "needs_review";
+      state.status = result ? (result.ok ? "completed" : result.status === "outcome_uncertain" || result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" ? "needs_review" : "failed") : "needs_review";
       if (result) state.result = result;
       if (state.runtime && result) {
         const completedAt = Date.now();

@@ -13,6 +13,16 @@ function fixture(initial?: GoalDagJournal) {
   return { host, snapshot: () => saved! };
 }
 describe("durable goal DAG", () => {
+  it.each(["awaiting_planner_input", "awaiting_human_input", "outcome_uncertain"])("does not retry or fix a recovered worker in %s", async status => {
+    const f = fixture({ fixerEnabled: true, tasks: { a: { status: "running", workerId: "worker:a" }, b: { status: "pending", workerId: "worker:b" } } });
+    f.host.recover = vi.fn(async id => ({ id, ok: false, status }));
+    f.host.fix = vi.fn(async (_task, id) => ({ id, ok: true }));
+    const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    expect(result.tasks.a?.status).toBe("needs_review");
+    expect(result.tasks.b?.status).toBe("blocked");
+    expect(f.host.fix).not.toHaveBeenCalled();
+    expect(f.host.launch).not.toHaveBeenCalled();
+  });
   it("accepts bounded task acceptance criteria and rejects invalid criteria", () => {
     expect(() => validateGoalDag([{ ...task("a"), acceptance_criteria: ["Tests pass", "Cite sources"] }])).not.toThrow();
     for (const acceptance_criteria of [[], [""], ["x".repeat(501)], Array(9).fill("criterion"), [42]]) {
