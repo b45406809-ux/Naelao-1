@@ -53,27 +53,57 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/measure"
           export WRANGLER_SEND_METRICS=false
+          started_ms=$(date +%s%3N)
+          baseline_rss_kb=$(ps -eo rss=,comm= | awk '$2 == "node" || $2 == "workerd" {sum += $1} END {print sum+0}')
           pnpm exec wrangler dev --local --config "workers/$WORKER/wrangler.toml" --port 18800 --inspector-port 28800 --persist-to "$RUNNER_TEMP/measure/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/measure/worker.log" 2>&1 &
           pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
           ready=0
+          peak_rss_kb=0
+          peak_used_kb=0
+          peak_disk_used_bytes=0
+          disk_total_bytes=$(df -B1 --output=size . | tail -1 | tr -d ' ')
+          sample_count=0
+          health_code=000
+          startup_ms=0
           for i in $(seq 1 30); do
             sleep 5
-            echo "sample=$i"
+            sample_count=$i
+            used_kb=$(awk '/^MemTotal:/ {total=$2} /^MemAvailable:/ {available=$2} END {print total-available}' /proc/meminfo)
+            total_rss_kb=$(ps -eo rss=,comm= | awk '$2 == "node" || $2 == "workerd" {sum += $1} END {print sum+0}')
+            rss_kb=$(( total_rss_kb > baseline_rss_kb ? total_rss_kb - baseline_rss_kb : 0 ))
+            disk_used_bytes=$(df -B1 --output=used . | tail -1 | tr -d ' ')
+            (( used_kb > peak_used_kb )) && peak_used_kb=$used_kb
+            (( rss_kb > peak_rss_kb )) && peak_rss_kb=$rss_kb
+            (( disk_used_bytes > peak_disk_used_bytes )) && peak_disk_used_bytes=$disk_used_bytes
+            elapsed_ms=$(( $(date +%s%3N) - started_ms ))
+            echo "sample=$i elapsed_ms=$elapsed_ms system_used_kb=$used_kb added_node_workerd_rss_kb=$rss_kb disk_used_bytes=$disk_used_bytes"
             free -m
-            df -m .
+            df -B1 .
             ps -eo pid,ppid,rss,comm --sort=-rss | head -25
             docker stats --no-stream || true
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:18800/health || true)
-            echo "health=$code"
-            if [ "$code" != 000 ]; then ready=1; break; fi
+            health_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:18800/health || true)
+            echo "http_status=$health_code"
+            if [ "$health_code" != 000 ]; then
+              ready=1
+              startup_ms=$(( $(date +%s%3N) - started_ms ))
+              break
+            fi
             if ! kill -0 "$pid" 2>/dev/null; then break; fi
           done
           kill "$pid" 2>/dev/null || true
           cat "$RUNNER_TEMP/measure/worker.log"
+          finished_ms=$(date +%s%3N)
+          env WORKER="$WORKER" CI_CPUS="$(nproc)" CI_MEMORY_KB="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)" \
+            STARTUP_MS="$startup_ms" ELAPSED_MS="$((finished_ms - started_ms))" \
+            SAMPLE_COUNT="$sample_count" PEAK_USED_KB="$peak_used_kb" PEAK_RSS_KB="$peak_rss_kb" \
+            DISK_TOTAL_BYTES="$disk_total_bytes" PEAK_DISK_USED_BYTES="$peak_disk_used_bytes" \
+            HTTP_STATUS="$health_code" READY="$ready" METRICS_FILE="$RUNNER_TEMP/measure/metrics.json" \
+            node -e 'const fs=require("node:fs");const status=Number(process.env.HTTP_STATUS);const m={worker:process.env.WORKER,runner:{cpus:Number(process.env.CI_CPUS),memory_total_kb:Number(process.env.CI_MEMORY_KB),disk_total_bytes:Number(process.env.DISK_TOTAL_BYTES)},startup_ms:Number(process.env.STARTUP_MS),elapsed_ms:Number(process.env.ELAPSED_MS),samples:Number(process.env.SAMPLE_COUNT),peak_system_used_kb:Number(process.env.PEAK_USED_KB),peak_added_node_workerd_rss_kb:Number(process.env.PEAK_RSS_KB),peak_disk_used_bytes:Number(process.env.PEAK_DISK_USED_BYTES),responding:process.env.READY==="1",http_status:process.env.HTTP_STATUS,health_endpoint_ok:status===200};fs.writeFileSync(process.env.METRICS_FILE,JSON.stringify(m,null,2)+"\n");console.log(JSON.stringify(m));'
           test "$ready" = 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: batch-measure-${{ matrix.worker }}
-          path: ${{ runner.temp }}/measure/worker.log
+          path: ${{ runner.temp }}/measure/*
           if-no-files-found: ignore
