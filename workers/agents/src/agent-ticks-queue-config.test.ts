@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const config = readFileSync("wrangler.toml", "utf8");
+const config = readFileSync(fileURLToPath(new URL("../wrangler.toml", import.meta.url)), "utf8");
 
 describe("Agents tick queue consumer limits", () => {
   it("isolates long-running agent work into one-message invocations in every environment", () => {
