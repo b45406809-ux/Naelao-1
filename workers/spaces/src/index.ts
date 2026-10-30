@@ -14,6 +14,7 @@ import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
+import { ensureLaunchpad } from "./launchpad-bootstrap.js";
 import { dispatchPendingProvisioningOutbox } from "./provisioning-outbox.js";
 import type { ProvisionMessage } from "./create-space.js";
 import { requireSpaceMembership, resolveEndUserSpaceRole } from "./space-auth.js";
@@ -68,6 +69,7 @@ export interface Env {
   CONFORMANCE_EXECUTOR?: Fetcher;
   BLUEPRINT_CONFORMANCE_WORKFLOW?: Workflow<BlueprintConformanceParams>;
   ENVIRONMENT: string;
+  NAELAO_DASHBOARD_TENANT_ID?: string;
   DATA_JURISDICTION?: "eu";
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
@@ -415,60 +417,9 @@ app.get("/spaces", async (c) => {
   return c.json({ data: results, count: results.length });
 });
 
-// ── POST /spaces — create a space ───────────────────────────────────────────
-app.post("/spaces", async (c) => {
-  const { tenantId, userId, role } = getCallerIdentity(c);
-  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  if (!["owner", "admin", "editor"].includes(role)) return c.json({ error_code: "forbidden" }, 403);
-
-  let bodyBytes: Uint8Array;
-  try {
-    bodyBytes = await readBoundedRequestBytes(c.req.raw, 64 * 1024);
-  } catch (err) {
-    if (err instanceof RequestBodyTooLargeError) return c.json({ error_code: "payload_too_large" }, 413);
-    return c.json({ error_code: "invalid_request_body" }, 400);
-  }
-  let bodyValue: unknown;
-  try {
-    bodyValue = JSON.parse(new TextDecoder().decode(bodyBytes));
-  } catch {
-    return c.json({ error_code: "invalid_request_body" }, 400);
-  }
-  if (!bodyValue || typeof bodyValue !== "object" || Array.isArray(bodyValue)) {
-    return c.json({ error_code: "invalid_request_body" }, 400);
-  }
-  const body = bodyValue as {
-    name: string;
-    spacetype_id?: string;
-    /** Optional marketplace Space Template to apply during provisioning. */
-    template_id?: string;
-    config_overrides?: Record<string, unknown>;
-    parent_space_id?: string;
-    depth?: number;
-  };
-
-  if (body.spacetype_id !== undefined && body.spacetype_id !== "launchpad" && body.spacetype_id !== "workspace") {
-    return c.json({ error_code: "unsupported_product", message: "Spaces are created in Launchpad" }, 400);
-  }
-  try {
-    const result = await createSpaceRecord(c.env, {
-      tenantId,
-      ...(userId ? { userId } : {}),
-      name: body.name,
-      spacetypeId: "launchpad",
-      ...(body.parent_space_id ? { parentSpaceId: body.parent_space_id } : {}),
-      ...(body.depth !== undefined ? { depth: body.depth } : {}),
-      ...(body.template_id ? { templateId: body.template_id } : {}),
-      ...(body.config_overrides ? { configOverrides: body.config_overrides } : {}),
-    });
-    return c.json({ id: result.id, name: body.name, status: result.status, product_slug: result.product_slug, created_at: result.created_at }, 201);
-  } catch (err) {
-    if (err instanceof SpaceCreationError) {
-      return c.json({ error_code: err.error_code, message: err.message, ...(err.errors ? { errors: err.errors } : {}) }, err.status as 400 | 402 | 404 | 409 | 429 | 503);
-    }
-    throw err;
-  }
-});
+// Root product creation has moved to the configured Launchpad bootstrap. Users create
+// their own Spaces through /spaces/:spaceId/spaces using their product session.
+app.post("/spaces", (c) => c.json({ error_code: "product_creation_retired", message: "Create Spaces inside Launchpad" }, 410));
 
 // Product-session users create isolated, generic Spaces under the authenticated root. A
 // Space Template is optional; when selected it arrives as a tenant-owned marketplace fork and
@@ -5410,6 +5361,10 @@ async function loadEffectiveProductConfig(
 // config (pricing, commerce, adminFeatures, etc).
 app.get("/products/by-slug/:slug", async (c) => {
   const slug = c.req.param("slug");
+  if (slug === "launchpad" && c.env.NAELAO_DASHBOARD_TENANT_ID) {
+    try { await ensureLaunchpad(c.env); }
+    catch (error) { console.error("Launchpad bootstrap failed", error); return c.json({ error_code: "launchpad_unavailable" }, 503); }
+  }
   const space = await c.env.PLATFORM_DB.prepare(
     "SELECT id, name, spacetype_id, config_json FROM spaces WHERE product_slug = ? AND status = 'active'"
   ).bind(slug).first<{ id: string; name: string; spacetype_id: string; config_json: string | null }>();
@@ -5692,6 +5647,10 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    if (env.NAELAO_DASHBOARD_TENANT_ID) {
+      try { await ensureLaunchpad(env); }
+      catch (error) { console.error("Launchpad bootstrap failed", error); }
+    }
     if (env.PROVISION_QUEUE) {
       const provisions = await dispatchPendingProvisioningOutbox(env.PLATFORM_DB, env.PROVISION_QUEUE);
       console.log(`[provisioning-outbox] sent=${provisions.sent} deferred=${provisions.deferred}`);

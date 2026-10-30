@@ -44,7 +44,10 @@ PRODUCT_SHELL_URL = "https://naelao-shell.pages.dev"
 
 # The internal product dashboard is restricted to this org/tenant ID. Configure the same value
 # in each deployed environment (and the matching local .dev.vars) before granting dashboard
-# access. The worker fails closed when this identifier is missing.
+# access. Launchpad bootstrap also uses this tenant: set it to an existing active org.
+# On a fresh database the worker creates the Launchpad root on the first Launchpad lookup or
+# scheduled run. Existing differently named roots require an explicit migration first.
+# Production also requires the provisioning queue. Bootstrap never claims an unrelated root.
 #   wrangler secret put NAELAO_DASHBOARD_TENANT_ID
 
 # Cloudflare for SaaS custom-hostname provisioning (storefront custom domains).

@@ -139,6 +139,14 @@ function authedReq(path: string, headers: Record<string, string> = {}, init?: Re
   });
 }
 
+describe("Launchpad product creation", () => {
+  it("retires the legacy root creation endpoint", async () => {
+    const res = await spacesWorker.fetch(authedReq("/spaces", {}, { method: "POST" }), makeEnv() as never, execCtx);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toMatchObject({ error_code: "product_creation_retired" });
+  });
+});
+
 describe("GET /spaces/:spaceId/shell/manifest", () => {
   it("returns a safe projection for an authenticated (tenant-matched) caller", async () => {
     const env = makeEnv();
