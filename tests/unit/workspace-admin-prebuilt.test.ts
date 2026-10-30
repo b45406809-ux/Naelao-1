@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { workspaceAdmin } from "../../workers/agents/src/script-engine/prebuilt/workspace-admin.js";
+import { PROJECT_TEMPLATES } from "../../workers/agents/src/launchpad/project-templates.js";
 import { verifyInternalToken } from "@naelao/http";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
 
-// §A1.17 Phase G: lets the Launchpad business-builder assistant actually scaffold a business —
+// Generic workspace administration lets the Space Assistant scaffold projects —
 // create/list/configure projects, and read the agent roster — as thin, HMAC-verified wrappers
 // over the spaces worker's existing project routes. Mirrors the commerce prebuilt's verified-
 // token precedent (tests/unit/commerce-prebuilt-hmac.test.ts).
@@ -79,31 +80,14 @@ describe("workspace-admin prebuilt", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("project.create_from_template runs the full create → configure → rules → scheduled_jobs sequence for a real template", async () => {
+  it("does not ship product-specific project presets in the kernel", async () => {
+    expect(PROJECT_TEMPLATES).toEqual([]);
     const calls: Call[] = [];
-    const env = makeEnv(calls, (call) => {
-      if (call.method === "POST" && call.url.endsWith("/spaces/space-1/projects")) {
-        return { id: "proj-new", name: "Support Bot" };
-      }
-      return {};
-    });
-    const result = await workspaceAdmin.operations["project.create_from_template"]!(
-      { template_id: "community-member-monitoring" },
-      { env, run: noopRun }
-    );
-    expect(result).toMatchObject({ id: "proj-new" });
-
-    // Step 1: create.
-    const createCall = calls.find((c) => c.method === "POST" && c.url.endsWith("/spaces/space-1/projects"));
-    expect(createCall).toBeTruthy();
-    // Step 2: configure (kind/execution_ceiling/spend cap set from the template).
-    const configureCall = calls.find((c) => c.method === "PATCH" && c.url.includes("/projects/proj-new"));
-    expect(configureCall).toBeTruthy();
-    expect((configureCall!.body as { kind: string }).kind).toBe("workspace");
-    // Every call carries a verified internal token, not a forgeable static header.
-    for (const call of calls) {
-      expect(await verifyInternalToken(call.headers["x-naelao-internal-token"], "tenant-1", PLATFORM_SECRET)).toBe(true);
-    }
+    const env = makeEnv(calls);
+    await expect(workspaceAdmin.operations["project.create_from_template"]!(
+      { template_id: "community-member-monitoring" }, { env, run: noopRun },
+    )).rejects.toThrow(/Unknown project template/);
+    expect(calls).toHaveLength(0);
   });
 
   // The ad-hoc counterpart to create_from_template: what "New project" in the shell does, for
@@ -202,14 +186,6 @@ describe("workspace-admin prebuilt", () => {
       const env = { ...makeEnv(calls, () => ({ id: "p" })), userId: "end-user-7" } as ScriptEngineEnv;
       await workspaceAdmin.operations["project.create"]!({ name: "Mine" }, { env, run: noopRun });
       expect(calls[0]!.headers["x-naelao-user-id"]).toBe("end-user-7");
-    });
-
-    it("forwards it on every call of a multi-step create_from_template too", async () => {
-      const calls: Call[] = [];
-      const env = { ...makeEnv(calls, () => ({ id: "proj-new", name: "Support" })), userId: "end-user-7" } as ScriptEngineEnv;
-      await workspaceAdmin.operations["project.create_from_template"]!({ template_id: "community-member-monitoring" }, { env, run: noopRun });
-      expect(calls.length).toBeGreaterThan(1);
-      for (const call of calls) expect(call.headers["x-naelao-user-id"]).toBe("end-user-7");
     });
 
     it("omits the header for a system run (provisioning/cron) — unchanged from before", async () => {
