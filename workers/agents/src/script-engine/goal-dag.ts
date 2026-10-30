@@ -15,7 +15,7 @@ export interface GoalTaskRuntimeState {
   executionMs?: number;
 }
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
-export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" }
+export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
 export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean }
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
@@ -86,9 +86,10 @@ function collectEscalations(tasks: GoalTask[], journal: GoalDagJournal): GoalEsc
       for (const candidate of tasks) if (!affected.has(candidate.id) && candidate.dependencies?.some(id => affected.has(id))) { affected.add(candidate.id); changed = true; }
     }
     const error = state.verification?.reason ?? (typeof state.result?.error === "string" ? state.result.error.slice(0, 1000) : undefined);
-    return [{ taskId: task.id, workerId: state.workerId, reason: state.status === "failed" ? "worker_failed" as const : "outcome_uncertain" as const,
+    const verificationReason = state.verification?.outcome === "failed" ? "verification_failed" as const : state.verification?.outcome === "uncertain" ? "verification_uncertain" as const : undefined;
+    return [{ taskId: task.id, workerId: state.workerId, reason: verificationReason ?? (state.status === "failed" ? "worker_failed" as const : "outcome_uncertain" as const),
       ...(error ? { detail: error } : {}), blockedTasks: tasks.filter(candidate => candidate.id !== task.id && affected.has(candidate.id)).map(candidate => candidate.id),
-      nextAction: state.status === "failed" ? "investigate_failure" as const : "verify_effects_before_retry" as const }];
+      nextAction: verificationReason ? "review_verification" as const : state.status === "failed" ? "investigate_failure" as const : "verify_effects_before_retry" as const }];
   });
 }
 

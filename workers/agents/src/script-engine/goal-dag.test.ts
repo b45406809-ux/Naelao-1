@@ -28,6 +28,7 @@ describe("durable goal DAG", () => {
     expect(result.tasks.b?.status).toBe("blocked");
     expect(f.host.fix).not.toHaveBeenCalled();
     expect(result.escalations?.[0]?.detail).toBe("missing evidence");
+    expect(result.escalations?.[0]).toMatchObject({ reason: "verification_failed", nextAction: "review_verification" });
   });
   it("requires review when verification was interrupted", async () => {
     const f = fixture({ tasks: { a: { status: "verifying", workerId: "worker:a", result: { id: "worker:a", ok: true } }, b: { status: "pending", workerId: "worker:b" } } });
@@ -35,6 +36,7 @@ describe("durable goal DAG", () => {
     const result = await executeGoalDag([task("a"), task("b", ["a"])], f.host);
     expect(result.tasks.a?.status).toBe("needs_review");
     expect(result.tasks.b?.status).toBe("blocked");
+    expect(result.escalations?.[0]).toMatchObject({ reason: "verification_uncertain", nextAction: "review_verification" });
     expect(f.host.verify).not.toHaveBeenCalled();
   });
   it("records shadow assessments without blocking dependencies and does not repeat them on resume", async () => {
