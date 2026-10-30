@@ -47,12 +47,6 @@ export async function getOpenRouterWorkerModelCards(spaceId: string): Promise<Op
   return result.models ?? [];
 }
 
-export interface CreateSpaceInput {
-  name: string;
-  config_overrides?: Record<string, unknown>;
-  template_id?: string;
-}
-
 export interface KbDocument {
   id: string;
   title: string;
@@ -215,13 +209,6 @@ export async function listSpaces(): Promise<Space[]> {
   const res = await apiFetch<{ data: Space[] } | Space[]>("/spaces");
   if (Array.isArray(res)) return res;
   return (res as { data: Space[] }).data ?? [];
-}
-
-export async function createSpace(data: CreateSpaceInput): Promise<{ id: string; name: string; status: string; created_at: string }> {
-  return apiFetch<{ id: string; name: string; status: string; created_at: string }>("/spaces", {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
 }
 
 export async function getSpace(id: string): Promise<Space> {
