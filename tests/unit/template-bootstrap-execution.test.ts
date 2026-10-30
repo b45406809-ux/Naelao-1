@@ -106,51 +106,10 @@ describe("seedTemplateProjects — the structural bootstrap the provisioner now 
   });
 });
 
-describe("whop-seller — the populated template", () => {
-  const tpl = getLaunchpadTemplate("whop-seller")!;
-
-  it("is the live template (not coming_soon) and installs support + content agents", () => {
-    expect(tpl.coming_soon).toBeFalsy();
-    expect(tpl.agents).toContain("launchpad-support-v1");
-    expect(tpl.agents).toContain("launchpad-content-v1");
-  });
-
-  it("leads with the real click-through Whop connect flow, not a pasted API key", () => {
-    const connect = tpl.bootstrap!.prompts.find((p) => p.id === "whop_connection")!;
-    expect(connect.type).toBe("connection");
-    expect(connect.connector).toBe("whop");
-    expect(connect.required).toBe(true);
-
-    // Credentials are collected by the hosted MCP provider flow, not pasted into template setup.
-    const pasted = tpl.bootstrap!.prompts.find((p) => p.id === "whop_api_key");
-    expect(pasted).toBeUndefined();
-  });
-
-  it("asks where the assistant should reach the owner, and how autonomous it should be", () => {
-    const channel = tpl.bootstrap!.prompts.find((p) => p.id === "owner_channel")!;
-    expect(channel.type).toBe("channel");
-    expect(channel.required).toBe(true);
-    expect(channel.options).toContain("email");
-
-    const autonomy = tpl.bootstrap!.prompts.find((p) => p.id === "autonomy")!;
-    expect(autonomy.required).toBe(true);
-    expect(autonomy.options).toHaveLength(3);
-  });
-
-  it("ships a first-contact plan without creating a hardcoded customer-bot preset", () => {
-    expect(tpl.bootstrap!.project_templates ?? []).not.toContain("discord-community-bot");
-    const goal = tpl.bootstrap!.first_contact!.goal;
-    // The instruction must tell the assistant to LOOK before it plans — a first contact that
-    // invents numbers it never checked is exactly the failure mode this wording guards against.
-    expect(goal).toMatch(/mcp-connector|Whop account/i);
-    expect(goal).toMatch(/autonomy/i);
-  });
-
-  it("every prompt is written for a non-technical owner (required ones carry help text)", () => {
-    for (const p of tpl.bootstrap!.prompts) {
-      expect(p.question.length).toBeGreaterThan(0);
-      if (p.required) expect(p.help, `prompt '${p.id}' is required but has no help text`).toBeTruthy();
-    }
+describe("default SpaceType template boundary", () => {
+  it("does not ship a business template or a hardcoded assistant persona", () => {
+    expect(LAUNCHPAD_TEMPLATES).toEqual([]);
+    expect(getLaunchpadTemplate("whop-seller")).toBeNull();
   });
 });
 
@@ -161,8 +120,12 @@ describe("template validation catches misconfiguration at module load", () => {
 
   it("rejects a connect prompt naming a connector the template never wires", () => {
     const broken = {
-      ...LAUNCHPAD_TEMPLATES[0]!,
       id: "broken-connector",
+      name: "Broken connector",
+      description: "",
+      agents: [],
+      skills: [],
+      free_tier_eligible: true,
       connectors: ["whop"],
       bootstrap: {
         prompts: [{ id: "x", type: "connection" as const, connector: "stripe", question: "Connect Stripe" }],
@@ -175,8 +138,12 @@ describe("template validation catches misconfiguration at module load", () => {
 
   it("rejects a choice prompt that offers no options (an unanswerable question)", () => {
     const broken = {
-      ...LAUNCHPAD_TEMPLATES[0]!,
       id: "broken-choice",
+      name: "Broken choice",
+      description: "",
+      agents: [],
+      skills: [],
+      free_tier_eligible: true,
       connectors: [],
       bootstrap: { prompts: [{ id: "x", type: "choice" as const, question: "Pick one" }] },
     };
