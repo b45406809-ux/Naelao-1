@@ -1,0 +1,90 @@
+name: Naelao full test inventory
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 2 * * 1'
+permissions:
+  contents: read
+jobs:
+  suites:
+    name: ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        suite: [repository, workspace, node, conformance, typecheck, security-lint]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install dependencies
+        id: install
+        continue-on-error: true
+        run: pnpm install --no-frozen-lockfile
+      - name: Build prerequisites
+        id: build
+        if: steps.install.outcome == 'success' && matrix.suite != 'security-lint'
+        continue-on-error: true
+        run: pnpm exec turbo run build --filter='./packages/*' --concurrency=2
+      - name: Run suite
+        id: test
+        if: steps.install.outcome == 'success' && (matrix.suite == 'security-lint' || steps.build.outcome == 'success')
+        continue-on-error: true
+        env:
+          SUITE: ${{ matrix.suite }}
+        shell: bash
+        run: |
+          case "$SUITE" in
+            repository) pnpm exec vitest run --config tests/vitest.config.ts ;;
+            workspace) pnpm exec vitest run --workspace vitest.workspace.ts ;;
+            node) node --test infra/scripts/*.test.mjs tests/unit/local-agent-client.node.test.mjs packages/bridge/test/*.test.mjs ;;
+            conformance) pnpm test:conformance ;;
+            typecheck) pnpm --recursive --workspace-concurrency=2 typecheck ;;
+            security-lint) pnpm exec biome lint . --only=security --max-diagnostics=0 ;;
+          esac
+      - name: Record outcome
+        if: always()
+        env:
+          SUITE: ${{ matrix.suite }}
+          INSTALL: ${{ steps.install.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          TEST: ${{ steps.test.outcome }}
+        run: |
+          mkdir -p results
+          node -e 'const fs=require("fs");const e=process.env;let state=e.INSTALL!=="success"?"blocked: install":e.SUITE!=="security-lint"&&e.BUILD!=="success"?"blocked: build":e.TEST==="success"?"passed":e.TEST==="failure"?"failed":"blocked: job interrupted";fs.writeFileSync(`results/${e.SUITE}.json`,JSON.stringify({suite:e.SUITE,state,install:e.INSTALL,build:e.BUILD,test:e.TEST}));'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: suite-${{ matrix.suite }}
+          path: results/*.json
+          if-no-files-found: warn
+  connected:
+    uses: ./.github/workflows/naelao-connected-batches.yml
+  summary:
+    if: always()
+    needs: [suites, connected]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: suite-*
+          path: results
+          merge-multiple: true
+      - name: Summarize results and enforce outcome
+        env:
+          MATRIX_RESULT: ${{ needs.suites.result }}
+          CONNECTED_RESULT: ${{ needs.connected.result }}
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs=require('fs'); const expected=['repository','workspace','node','conformance','typecheck','security-lint'];
+          let rows=expected.map(s=>{try{return JSON.parse(fs.readFileSync(`results/${s}.json`,'utf8'))}catch{return {suite:s,state:'blocked: missing result'}}});
+          let text='## Naelao test inventory\n\n| Suite | Result |\n|---|---|\n'+rows.map(x=>`| ${x.suite} | ${x.state} |`).join('\n')+`\n| Connected worker checks | ${process.env.CONNECTED_RESULT} |\n\nNot yet covered by this run: successful planner/worker completion, browser user journeys, sidecar runtime integration, restart recovery, stress testing, live Cloudflare and external providers. A queued or failed agent task is not a successful agent execution.\n`;
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,text);console.log(text);
+          if(rows.some(x=>x.state!=='passed')||process.env.MATRIX_RESULT!=='success'||process.env.CONNECTED_RESULT!=='success')process.exitCode=1;
+          NODE

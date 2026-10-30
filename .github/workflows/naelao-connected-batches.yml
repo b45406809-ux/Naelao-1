@@ -5,6 +5,7 @@ on:
     branches: [work]
     paths: ['.github/workflows/naelao-connected-batches.yml']
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -203,6 +204,7 @@ jobs:
             sleep 5
           done
           echo "observed_task_state=$state"
+          test "$state" = complete
       - uses: actions/upload-artifact@v4
         if: always()
         with:
