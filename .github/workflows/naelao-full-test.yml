@@ -3,7 +3,10 @@ on:
   workflow_dispatch:
   push:
     branches: [work]
-    paths: ['.github/workflows/naelao-full-test.yml']
+    paths:
+      - '.github/workflows/naelao-full-test.yml'
+      - '.github/workflows/naelao-connected-batches.yml'
+      - '.github/workflows/naelao-capacity.yml'
   schedule:
     - cron: '17 2 * * 1'
 permissions:
@@ -87,7 +90,7 @@ jobs:
           node <<'NODE'
           const fs=require('fs'); const expected=['repository','workspace','node','conformance','typecheck','security-lint'];
           let rows=expected.map(s=>{try{return JSON.parse(fs.readFileSync(`results/${s}.json`,'utf8'))}catch{return {suite:s,state:'blocked: missing result'}}});
-          let text='## Naelao test inventory\n\n| Suite | Result |\n|---|---|\n'+rows.map(x=>`| ${x.suite} | ${x.state} |`).join('\n')+`\n| Connected worker checks | ${process.env.CONNECTED_RESULT} |\n\nNot yet covered by this run: successful planner/worker completion, browser user journeys, sidecar runtime integration, restart recovery, stress testing, live Cloudflare and external providers. A queued or failed agent task is not a successful agent execution.\n`;
+          let text='## Naelao test inventory\n\n| Suite | Result |\n|---|---|\n'+rows.map(x=>`| ${x.suite} | ${x.state} |`).join('\n')+`\n| Connected worker checks | ${process.env.CONNECTED_RESULT} |\n\nThe agent-authorization batch verifies authorization, durable task admission/polling, and local billing admission. This run has no model-provider credential, so a provider-backed successful completion is not claimed. Also not covered: browser user journeys, sidecar runtime integration, restart recovery, stress testing, or live Cloudflare and external-provider acceptance.\n`;
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,text);console.log(text);
           if(rows.some(x=>x.state!=='passed')||process.env.MATRIX_RESULT!=='success'||process.env.CONNECTED_RESULT!=='success')process.exitCode=1;
           NODE
