@@ -227,10 +227,10 @@ describe("Write — same store as write_file", () => {
   });
 
   it("fires onWorkspaceChange like write_file does", async () => {
-    const events: Array<{ path: string; operation: string }> = [];
+    const events: Array<{ path: string; operation: string; created?: boolean }> = [];
     const ctx = makeCtx(makeR2({}), { onWorkspaceChange: (e) => events.push(e) });
     await Write({ path: "a.txt", content: "x", expectedHash: null }, ctx);
-    expect(events).toEqual([{ path: "a.txt", operation: "write" }]);
+    expect(events).toEqual([{ path: "a.txt", operation: "write", created: true }]);
   });
 });
 
@@ -396,10 +396,10 @@ describe("gating — reads are safe/auto-approved, writes/exec stay gated", () =
     expect(isReadSafeOperation("Bash")).toBe(false);
   });
 
-  it("Read/Grep/Glob are in the guided-mode default auto-approved list; Edit/Write/Bash are not", () => {
-    expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).toContain("Read");
-    expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).toContain("Grep");
-    expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).toContain("Glob");
+  it("keeps default auto-approved actions on the generic scoped assistant API", () => {
+    expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).toContain("project.list");
+    expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).toContain("memory.recall");
+    expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).toContain("conversation.search");
     expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).not.toContain("Edit");
     expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).not.toContain("Write");
     expect(LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED).not.toContain("Bash");

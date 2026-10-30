@@ -159,7 +159,10 @@ async function registerAgentIndex(
   if (!response.ok) throw new Error(`agent_index_registration_failed:${await responseErrorDetail(response)}`);
 }
 
-async function seedOwnerMember(env: Env, spaceId: string, tenantId: string, userId: string): Promise<boolean> {
+export async function seedOwnerMember(env: Env, spaceId: string, tenantId: string, userId: string): Promise<boolean> {
+  // Older queued provision messages can still omit the creator. Do not make an unscoped
+  // membership request or turn that legacy shape into a provisioning failure.
+  if (!userId) return false;
   const response = await env.SPACES_WORKER.fetch(new Request(
     `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/members`,
     {

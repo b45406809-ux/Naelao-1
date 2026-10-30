@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { createScopedCodeRpc } from "@naelao/agent-sdk";
 import { buildCodeRunner, type WorkerLoaderBinding, type WorkerLoaderModuleConfig } from "../../workers/agents/src/script-engine/code-runner.js";
 
 /** Execute just the compiled guest module. The trusted harness remains exercised through its
@@ -72,13 +73,14 @@ describe("code-runner isolate boundary", () => {
 
   it("allows only explicitly granted RPC capabilities and forwards operation payload", async () => {
     const dispatch = vi.fn(async (_scope, capability: string, input: unknown) => ({ capability, input }));
-    const createRpcBinding = vi.fn(async ({ dispatch: invoke }: any) => ({
-      binding: { call: async (name: string, input: unknown) => invoke({} as never, name, input) }, close: vi.fn(),
+    const createRpcBinding = vi.fn(async (options: any) => ({
+      binding: { call: createScopedCodeRpc(options) }, close: vi.fn(),
     }));
     const runner = buildCodeRunner({
       loader: fakeLoader(), createRpcBinding, authorizeCodeCapability: async (_scope, cap) => cap === "tool:search", dispatchCodeCapability: dispatch,
+      codeTools: () => [{ name: "search", description: "Search authorized messages" }],
     });
-    const allowed = await runner.run({ ...scope, name: "search", code: "export async function run(args, ctx) { return ctx.tools.call('search', { q: args.q }); }", tier: 2, args: { q: "old messages" }, capabilities: ["tool:search"] });
+    const allowed = await runner.run({ ...scope, name: "search", code: "export async function run(args, ctx) { return ctx.cli.run(['search', '--params', JSON.stringify({ q: args.q })]); }", tier: 2, args: { q: "old messages" }, capabilities: ["tool:search"] });
     expect(allowed.ok).toBe(true);
     expect(allowed.output).toEqual({ capability: "tool:search", input: { q: "old messages" } });
 

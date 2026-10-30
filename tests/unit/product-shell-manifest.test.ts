@@ -242,7 +242,7 @@ describe("GET /spaces/:spaceId/shell/manifest", () => {
     expect(body.template_catalog).toEqual([{
       id: "whop-seller", name: "Whop Seller", description: "d", coming_soon: false,
       free_tier_eligible: false, connectors: ["whop"], template_mode: "ave",
-      vertical: "Digital business",
+      vertical: "Digital business", presentation_profile: "guided",
     }]);
   });
 
