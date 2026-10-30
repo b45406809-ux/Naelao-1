@@ -230,8 +230,8 @@ export class TaskDO extends DurableObject {
       const taskId = coordinationMatch[1];
       const body = await request.json<{
         graph_id?: unknown; task_count?: unknown; statuses?: unknown;
-        escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown;
-      }>().catch((): { graph_id?: unknown; task_count?: unknown; statuses?: unknown; escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown } => ({}));
+        escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown; shadow_review_count?: unknown; shadow_uncertain_count?: unknown;
+      }>().catch((): { graph_id?: unknown; task_count?: unknown; statuses?: unknown; escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown; shadow_review_count?: unknown; shadow_uncertain_count?: unknown } => ({}));
       const statusKeys = ["pending", "running", "verifying", "completed", "failed", "blocked", "needs_review"] as const;
       const statuses = body.statuses && typeof body.statuses === "object" && !Array.isArray(body.statuses)
         ? body.statuses as Record<string, unknown>
@@ -255,17 +255,20 @@ export class TaskDO extends DurableObject {
           !Number.isSafeInteger(body.fixer_count) || (body.fixer_count as number) < 0 || (body.fixer_count as number) > 200 ||
           !statuses || Object.keys(statuses).some(key => !statusKeys.includes(key as typeof statusKeys[number])) ||
           statusKeys.some(key => !(key === "verifying" && statuses[key] === undefined) && (!Number.isSafeInteger(statuses[key]) || (statuses[key] as number) < 0 || (statuses[key] as number) > 200)) ||
+          [body.shadow_review_count, body.shadow_uncertain_count].some(count => count !== undefined && (!Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 200)) ||
           invalidRuntimeWorkers)
         return Response.json({ error: "invalid_coordination_summary" }, { status: 400 });
       const rows = this.ctx.storage.sql.exec("SELECT coordination_json, expires_at FROM tasks WHERE id = ?", taskId).toArray() as Array<{ coordination_json: string | null; expires_at: number }>;
       if (!rows[0] || rows[0].expires_at <= Date.now()) return Response.json({ error: "not_found" }, { status: 404 });
-      let summaries: Record<string, { task_count: number; statuses: Record<string, number>; escalation_count: number; fixer_count: number; runtime_workers?: Array<Record<string, unknown>> }> = {};
+      let summaries: Record<string, { task_count: number; statuses: Record<string, number>; escalation_count: number; fixer_count: number; shadow_review_count?: number; shadow_uncertain_count?: number; runtime_workers?: Array<Record<string, unknown>> }> = {};
       try { summaries = JSON.parse(rows[0].coordination_json ?? "{}"); } catch { /* replace corrupt summary state */ }
       summaries[body.graph_id] = {
         task_count: body.task_count as number,
         statuses: Object.fromEntries(statusKeys.map(key => [key, (statuses[key] ?? 0) as number])),
         escalation_count: body.escalation_count as number,
         fixer_count: body.fixer_count as number,
+        shadow_review_count: (body.shadow_review_count ?? 0) as number,
+        shadow_uncertain_count: (body.shadow_uncertain_count ?? 0) as number,
         runtime_workers: runtimeWorkers ?? [],
       };
       const graphIds = Object.keys(summaries);
@@ -350,7 +353,7 @@ export class TaskDO extends DurableObject {
       : undefined;
     let coordinationSummary: Record<string, unknown> | undefined;
     try {
-      const graphEntries = Object.entries(JSON.parse(task.coordination_json ?? "{}")) as Array<[string, { task_count?: number; statuses?: Record<string, number>; escalation_count?: number; fixer_count?: number; runtime_workers?: Array<Record<string, unknown>> }]>;
+      const graphEntries = Object.entries(JSON.parse(task.coordination_json ?? "{}")) as Array<[string, { task_count?: number; statuses?: Record<string, number>; escalation_count?: number; fixer_count?: number; shadow_review_count?: number; shadow_uncertain_count?: number; runtime_workers?: Array<Record<string, unknown>> }]>;
       const graphs = graphEntries.map(([, graph]) => graph);
       if (graphs.length) {
         const statuses = { pending: 0, running: 0, verifying: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
@@ -364,6 +367,8 @@ export class TaskDO extends DurableObject {
           statuses,
           escalation_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.escalation_count) && graph.escalation_count! >= 0 ? graph.escalation_count! : 0), 0),
           fixer_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.fixer_count) && graph.fixer_count! >= 0 ? graph.fixer_count! : 0), 0),
+          shadow_review_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.shadow_review_count) && graph.shadow_review_count! >= 0 ? graph.shadow_review_count! : 0), 0),
+          shadow_uncertain_count: graphs.reduce((total, graph) => total + (Number.isSafeInteger(graph.shadow_uncertain_count) && graph.shadow_uncertain_count! >= 0 ? graph.shadow_uncertain_count! : 0), 0),
           runtime_workers: graphEntries.flatMap(([graphId, graph]) => (graph.runtime_workers ?? []).map(worker => ({ ...worker, graph_id: graphId.slice(0, 8) }))).slice(0, 200),
         };
       }

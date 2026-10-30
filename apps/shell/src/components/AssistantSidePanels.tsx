@@ -399,6 +399,8 @@ function TasksPanel({ spaceId, session, sessionId, agentId, lastRunId, projectId
           {Object.entries(task.coordination_summary.statuses).map(([status, count]) => count > 0 && <span key={status}>{status.replaceAll("_", " ")}: {count}</span>)}
           {task.coordination_summary.escalation_count > 0 && <span>Escalations: {task.coordination_summary.escalation_count}</span>}
           {task.coordination_summary.fixer_count > 0 && <span>Fixers: {task.coordination_summary.fixer_count}</span>}
+          {(task.coordination_summary.shadow_review_count ?? 0) > 0 && <span>Advisory findings: {task.coordination_summary.shadow_review_count}</span>}
+          {(task.coordination_summary.shadow_uncertain_count ?? 0) > 0 && <span>Advisory uncertain: {task.coordination_summary.shadow_uncertain_count}</span>}
         </div>
         {(task.coordination_summary.runtime_workers ?? []).map((worker, index) => <div key={`${worker.graph_id ?? index}:${worker.task_id}`} style={{ display: "flex", flexWrap: "wrap", gap: 7, paddingTop: 5, fontSize: 11, color: "var(--text3)" }}>
           <code>{worker.graph_id ? `${worker.graph_id} · ` : ""}{worker.task_id.slice(0, 20)}</code><span>{worker.capability ?? "worker runtime"}</span><span>{worker.status.replaceAll("_", " ")}</span>

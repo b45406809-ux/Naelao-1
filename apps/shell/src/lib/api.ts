@@ -766,6 +766,8 @@ export interface DurableAgentTask {
     statuses: { pending: number; running: number; verifying?: number; completed: number; failed: number; blocked: number; needs_review: number };
     escalation_count: number;
     fixer_count: number;
+    shadow_review_count?: number;
+    shadow_uncertain_count?: number;
     runtime_workers?: Array<{ graph_id?: string; task_id: string; status: "waiting" | "assigned" | "running" | "completed" | "failed"; capability?: string; queue_position?: number; queue_wait_ms?: number; assigned_at_ms?: number; started_at_ms?: number; execution_ms?: number }>;
   };
   expires_at: string;

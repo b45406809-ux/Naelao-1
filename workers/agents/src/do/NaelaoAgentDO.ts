@@ -3630,6 +3630,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               ...(state.runtime.executionMs !== undefined ? { execution_ms: state.runtime.executionMs } : {}),
             }] : []).slice(0, 200);
             const summary = { graph_id: hash, task_count: Object.keys(journal.tasks).length, statuses, runtime_workers,
+              shadow_review_count: Object.values(journal.tasks).filter(state => state.shadowVerification?.outcome === "failed").length,
+              shadow_uncertain_count: Object.values(journal.tasks).filter(state => state.shadowVerification?.outcome === "uncertain").length,
               escalation_count: journal.escalations?.length ?? 0, fixer_count: Object.keys(journal.fixers ?? {}).length };
             const serialized = JSON.stringify(summary);
             if (serialized === lastCoordinationSummary) return;
