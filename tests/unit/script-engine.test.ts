@@ -191,22 +191,17 @@ describe("ScriptToolSurface — the 6-op surface (spec §3)", () => {
     expect(r2.paramHints!["search_file"]).toMatch(/query/);
   });
 
-  // commerce.create_product/update_product were the exact ops item 108's live trace found
-  // fabricated (the model claimed a product was live when it never called them at all, and
-  // once it could, the risk shifted to a wrong or missing product_id/status). storefront's two
-  // ops share a real footgun of their own (posting kind='storefront' where 'custom_domain' was
-  // meant silently drops the domain — see that script's own header) — both get explicit hints.
-  it("surfaces the commerce and storefront paramHints added to close known footguns", () => {
+  it("surfaces parameter guidance for currently installed generic operations", () => {
     const env = makeEnv();
-    const tools = new ScriptToolSurface(env, ["commerce", "storefront"]);
+    const tools = new ScriptToolSurface(env, ["project-journal", "r2-workspace"]);
     const groups = tools.availableOperationsGrouped();
 
-    const commerce = groups.find((g) => g.script === "commerce")!;
-    expect(commerce.paramHints!["commerce.create_product"]).toMatch(/name/);
-    expect(commerce.paramHints!["commerce.update_product"]).toMatch(/product_id/);
+    const journal = groups.find((g) => g.script === "project-journal")!;
+    expect(journal.operations).toContain("project_journal.update");
+    expect(journal.paramHints!["project_journal.update"]).toMatch(/goal|todos|rules/);
 
-    const storefront = groups.find((g) => g.script === "storefront")!;
-    expect(storefront.paramHints!["storefront.set_custom_domain"]).toMatch(/domain/);
+    const workspace = groups.find((g) => g.script === "r2-workspace")!;
+    expect(workspace.paramHints!["read_file"]).toMatch(/path/);
   });
 });
 

@@ -36,7 +36,7 @@ function makeEnv(overrides: Partial<ScriptEngineEnv> = {}): ScriptEngineEnv {
   return { scriptsBucket: makeR2(), spaceId: "space-1", agentId: "agent-1", tenantId: "tenant-1", ...overrides };
 }
 
-const RICH_SCRIPTS = ["r2-workspace", "memory", "web-search", "notifications", "commerce", "conversation", "project-journal"];
+const RICH_SCRIPTS = ["r2-workspace", "memory", "web-search", "notifications", "conversation", "project-journal"];
 
 describe("disclosureGroups — full vs reduced payload shape", () => {
   it("defaults to full disclosure (flag unset) — byte-identical to availableOperationsGrouped()", () => {
@@ -61,7 +61,7 @@ describe("disclosureGroups — full vs reduced payload shape", () => {
     // tools.search/tools.describe present.
     expect(allShown).toEqual(expect.arrayContaining(["tools.search", "tools.describe"]));
     // Non-core ops from enabled scripts are withheld.
-    expect(allShown).not.toEqual(expect.arrayContaining(["commerce.checkout"]));
+    expect(allShown).not.toEqual(expect.arrayContaining(["project_journal.update"]));
     expect(allShown).not.toEqual(expect.arrayContaining(["list_directory"]));
     expect(allShown).not.toEqual(expect.arrayContaining(["fetch_page"]));
 
@@ -122,20 +122,20 @@ describe("tools.search — never empty, ranks by relevance", () => {
 
 describe("tools.describe — full detail for one named operation", () => {
   it("returns the owning script, tier, and param hint for a known op", async () => {
-    const tools = new ScriptToolSurface(makeEnv(), ["commerce"]);
-    const result = await tools.run("tools.describe", { name: "commerce.checkout" });
+    const tools = new ScriptToolSurface(makeEnv(), ["project-journal"]);
+    const result = await tools.run("tools.describe", { name: "project_journal.update" });
     expect(result.ok).toBe(true);
     expect(result.output).toMatchObject({
-      name: "commerce.checkout",
-      script: "commerce",
-      requires_tier: 2,
-      param_hint: expect.stringContaining("product_id"),
+      name: "project_journal.update",
+      script: "project-journal",
+      requires_tier: 1,
+      param_hint: expect.stringContaining("goal"),
     });
   });
 
   it("gives a helpful 'did you mean' for an unknown name, matching run()'s own suggestions", async () => {
-    const tools = new ScriptToolSurface(makeEnv(), ["commerce"]);
-    const result = await tools.run("tools.describe", { name: "commerce.checkut" });
+    const tools = new ScriptToolSurface(makeEnv(), ["project-journal"]);
+    const result = await tools.run("tools.describe", { name: "project_journal.updat" });
     expect(result.ok).toBe(true); // tools.describe itself succeeds; the payload reports ok:false
     expect(result.output).toMatchObject({ ok: false });
     expect((result.output as { error: string }).error).toMatch(/Did you mean/);
@@ -157,20 +157,20 @@ describe("execution is unrestricted in reduced mode — disclosure only affects 
 describe("automatic full-disclosure fallback on repeated misses", () => {
   it("flips disclosureMode to full after MISS_FALLBACK_THRESHOLD consecutive unknown-op misses", async () => {
     const tools = new ScriptToolSurface(makeEnv({ progressiveToolDisclosure: true }), RICH_SCRIPTS);
-    expect(tools.disclosureGroups().flatMap((g) => g.operations)).not.toContain("commerce.checkout");
+    expect(tools.disclosureGroups().flatMap((g) => g.operations)).not.toContain("project_journal.update");
 
-    const first = await tools.run("thred.create", {}); // a plausible near-miss, not a real op
+    const first = await tools.run("project_journal.updat", {}); // a plausible near-miss, not a real op
     expect(first.ok).toBe(false);
     // Still reduced after just one miss.
-    expect(tools.disclosureGroups().flatMap((g) => g.operations)).not.toContain("commerce.checkout");
+    expect(tools.disclosureGroups().flatMap((g) => g.operations)).not.toContain("project_journal.update");
 
-    const second = await tools.run("thred.send", {});
+    const second = await tools.run("project_journal.updte", {});
     expect(second.ok).toBe(false);
     expect(second.error).toMatch(/Switched to showing every available operation/);
 
     // Now full — the very next call reflects it with no extra plumbing.
     const groups = tools.disclosureGroups();
-    expect(groups.flatMap((g) => g.operations)).toContain("commerce.checkout");
+    expect(groups.flatMap((g) => g.operations)).toContain("project_journal.update");
     expect(groups).toEqual(tools.availableOperationsGrouped());
   });
 
@@ -182,7 +182,7 @@ describe("automatic full-disclosure fallback on repeated misses", () => {
     await tools.run("another-bogus-name", {}); // miss #1 again (not #2)
 
     // Still reduced — two misses never happened consecutively.
-    expect(tools.disclosureGroups().flatMap((g) => g.operations)).not.toContain("commerce.checkout");
+    expect(tools.disclosureGroups().flatMap((g) => g.operations)).not.toContain("project_journal.update");
   });
 
   it("full-disclosure mode (flag unset) never engages the fallback machinery at all", async () => {
