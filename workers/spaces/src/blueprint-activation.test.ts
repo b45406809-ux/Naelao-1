@@ -256,7 +256,7 @@ describe("Space Template activation preview", () => {
     );
     expect(result.ready).toBe(true);
     expect(result.dependencies).toEqual([
-      { extension_id: "ext_supported", status: "installable", available_version: "1.0.0", available_digest: "b".repeat(64) },
+      { extension_id: "ext_supported", status: "installable", required_version: "1.0.0", available_version: "1.0.0", available_digest: "b".repeat(64) },
     ]);
     expect(result.blockers).toEqual([]);
   });
