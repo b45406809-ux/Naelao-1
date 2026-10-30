@@ -8,12 +8,11 @@ import { compileWorkflowPlan } from "@naelao/sdk/workflow";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
-import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
+import { LEGACY_LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST } from "./workspace-manifest.js";
 import { cfSaasConfig, createCustomHostname, deleteCustomHostname, getCustomHostname, normalizeCustomHostname } from "./cf-saas.js";
 import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
-import { registerBusinessRoutes } from "./business-routes.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import { dispatchPendingProvisioningOutbox } from "./provisioning-outbox.js";
 import type { ProvisionMessage } from "./create-space.js";
@@ -107,8 +106,6 @@ export interface Env {
   /** Knowledge Worker — Foundry source-reference checks and grant-authorized document reads. */
   KNOWLEDGE_WORKER?: Fetcher;
   PRODUCT_SHELL_URL?: string;
-  /** Tenant allowed to operate and retain Naelao's single Launchpad root product. */
-  NAELAO_DASHBOARD_TENANT_ID?: string;
   TELEGRAM_BOT_USERNAME?: string;
   WHATSAPP_PHONE_NUMBER?: string;
   /** Either Meta Cloud API or Twilio may deliver passwordless WhatsApp challenges. */
@@ -432,24 +429,12 @@ app.post("/spaces", async (c) => {
   const body = bodyValue as {
     name: string;
     spacetype_id: string;
-    /** For Launchpad: the selected product template (e.g. "creator-store"). */
+    /** Optional marketplace Space Template to apply during provisioning. */
     template_id?: string;
     config_overrides?: Record<string, unknown>;
     parent_space_id?: string;
     depth?: number;
   };
-
-  // A root space is the platform's single Launchpad product. Customer-owned spaces are
-  // departments/businesses under an existing root and use the dedicated parent-scoped flows.
-  // Keep this legacy route aligned with /builder/products so it cannot bypass team-only creation.
-  if (!body.parent_space_id) {
-    if (!c.env.NAELAO_DASHBOARD_TENANT_ID || tenantId !== c.env.NAELAO_DASHBOARD_TENANT_ID) {
-      return c.json({ error_code: "forbidden", message: "Only the Naelao team can create the Launchpad root product" }, 403);
-    }
-    if (body.name !== "Launchpad" || body.spacetype_id !== "launchpad" || body.template_id || body.config_overrides) {
-      return c.json({ error_code: "unsupported_product", message: "The Naelao dashboard creates one centrally configured Launchpad product" }, 400);
-    }
-  }
 
   try {
     const result = await createSpaceRecord(c.env, {
@@ -953,14 +938,6 @@ app.delete("/spaces/:id", async (c) => {
   const { tenantId, role } = getCallerIdentity(c);
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "forbidden" }, 403);
   const spaceId = c.req.param("id");
-  if (tenantId && tenantId === c.env.NAELAO_DASHBOARD_TENANT_ID) {
-    const root = await c.env.PLATFORM_DB.prepare(
-      "SELECT spacetype_id, COALESCE(depth, 0) AS depth FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
-    ).bind(spaceId, tenantId).first<{ spacetype_id: string; depth: number }>();
-    if (root?.spacetype_id === "launchpad" && root.depth === 0) {
-      return c.json({ error_code: "protected_platform_product", message: "The Naelao Launchpad root cannot be deleted" }, 409);
-    }
-  }
   const now = new Date().toISOString();
 
   const result = await c.env.PLATFORM_DB.prepare(
@@ -1245,34 +1222,16 @@ app.all("/internal/spaces/:spaceId/executive/*", async (c) => {
   return forwardToSpaceDO(stub, target, c.req.method, c.req.raw.body);
 });
 
-app.use("/internal/spaces/:spaceId/customer-conversations*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.all("/internal/spaces/:spaceId/customer-conversations*", async (c) => {
-  const spaceId = c.req.param("spaceId");
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const path = new URL(c.req.url).pathname;
-  const suffix = path.slice(`/internal/spaces/${spaceId}/customer-conversations`.length);
-  const query = c.req.method === "GET" ? `?space_id=${encodeURIComponent(spaceId)}` : "";
-  return forwardToSpaceDO(stub, `/internal/customer-conversations${suffix}${query}`, c.req.method, c.req.raw.body);
-});
-
 // ── /internal/business-role ─────────────────────────────────────────────────
-// Cross-worker authorization check: KV and other workers call this to verify
-// a product_end_user has a real business_memberships row for a target space.
-// Returns the caller's role in the business, or 404 if not a member.
-// Gated with requireInternalHmac to authenticate the calling worker.
-// Query params: spaceId, endUserId
+// Temporary compatibility authorization for the still-supported product-user session format.
+// This is not a business feature route; it is an internal identity-to-Space membership check.
 app.use("/internal/business-role", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.get("/internal/business-role", async (c) => {
   const spaceId = c.req.query("spaceId") ?? "";
-  const endUserId = c.req.query("endUserId") ?? "";
-  if (!spaceId || !endUserId) {
-    return c.json({ error_code: "bad_request", message: "spaceId and endUserId are required" }, 400);
-  }
-  const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, endUserId);
-  if (!role) {
-    return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 404);
-  }
+  const userId = c.req.query("endUserId") ?? "";
+  if (!spaceId || !userId) return c.json({ error_code: "bad_request" }, 400);
+  const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+  if (!role) return c.json({ error_code: "forbidden" }, 404);
   return c.json({ role });
 });
 
@@ -2685,18 +2644,8 @@ app.get("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/a
   return active ? c.json({ active: true }) : c.json({ error_code: "project_extension_not_installed" }, 404);
 });
 
-// Step 21: a customer-bot's no-code automation rules ("after the customer says X, this happens")
-// are now editable from the business's own Automation dashboard — opened to a business ADMIN (the
-// person who owns the business), same admin-floor precedent as model-config/assistant-policy/
-// scheduled-jobs. GET is member (any teammate may see how the bot is wired); POST/DELETE are admin.
-// The `:ruleId` DELETE path ALSO gets requireInternalHmac here, closing a pre-existing gap — the
-// bare-`/rules` app.use never matched the `/rules/:ruleId` sub-path, so DELETE had no came-through-
-// router gate at all (harmless in practice — workers_dev=false + never router-allowlisted — but
-// wrong; every sibling item path (members/:userId, local-grants/:grantId) gates both levels).
-app.use("/spaces/:spaceId/projects/:projectId/rules", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/rules", requireBusinessMembership({ GET: "member", POST: "admin" }));
-app.use("/spaces/:spaceId/projects/:projectId/rules/:ruleId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/rules/:ruleId", requireBusinessMembership({ DELETE: "admin" }));
+// External channel behavior is supplied by installed project extensions. There is no built-in
+// project rule editor or customer-agent behavior in the Spaces kernel.
 app.use("/spaces/:spaceId/projects/:projectId/spend", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
 app.use("/spaces/:spaceId/projects/:projectId/usage", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
@@ -3014,7 +2963,7 @@ app.post("/spaces/:spaceId/projects/:projectId/activate-thread", async (c) => {
 
 // §A1.17 Phase U: project-scoped Memory OS Layers 3/4/6 — internal-only (agents worker is the
 // only caller, via project-memory-client.ts's remote MemoryStore), never end-user or builder
-// dashboard reachable, matching /rules and /spend's existing internal-only posture.
+// dashboard reachable, matching project spend's existing internal-only posture.
 app.use("/spaces/:spaceId/projects/:projectId/memory/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
 app.all("/spaces/:spaceId/projects/:projectId/memory/*", async (c) => {
@@ -3059,34 +3008,6 @@ app.patch("/spaces/:spaceId/projects/:projectId", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
-// Project rules — no-code "after the customer says X, this happens" triggers.
-app.get("/spaces/:spaceId/projects/:projectId/rules", async (c) => {
-  const { spaceId, projectId } = c.req.param();
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
-  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/rules`, "GET");
-  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
-});
-
-app.post("/spaces/:spaceId/projects/:projectId/rules", async (c) => {
-  const { spaceId, projectId } = c.req.param();
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
-  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/rules`, "POST", c.req.raw.body);
-  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
-});
-
-app.delete("/spaces/:spaceId/projects/:projectId/rules/:ruleId", async (c) => {
-  const { spaceId, projectId, ruleId } = c.req.param();
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
-  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/rules/${encodeURIComponent(ruleId)}`, "DELETE");
-  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
-});
-
 // F9: authoritative per-project daily spend, single writer (SpaceDO — one DO per space, so
 // every thread's agent DO debits through the SAME instance regardless of how many concurrent
 // threads a customer-bot project has). GET is a pure gate check (credits=0 semantics via
@@ -3122,7 +3043,7 @@ app.post("/spaces/:spaceId/projects/:projectId/external-message-usage", async (c
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
-// Container Marketplace slots (§A1.17 Phase L) — builder/operator-only for now (like rules/
+// Container Marketplace slots (§A1.17 Phase L) — builder/operator-only for now (like spend/
 // spend above): no catalogue image is live yet, so there is nothing for an end user's day-to-day
 // chat to reach here. requireInternalHmac (came-through-the-router gate) stays the only floor;
 // revisit end-user exposure once a real image ships and there's something to actually add.
@@ -5010,19 +4931,16 @@ app.post("/spaces/:spaceId/sub-spaces", async (c) => {
   const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized", message: "Missing authenticated user or tenant" }, 401);
 
-  // Resolve the product (D1) to gate on productConfig + know the parent space_type.
-  const product = await c.env.PLATFORM_DB.prepare(
+  // Resolve the Space (D1) to apply its optional template policy.
+  const parentSpace = await c.env.PLATFORM_DB.prepare(
     "SELECT spacetype_id, config_json, tenancy_mode, depth, parent_space_id FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
   ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null; tenancy_mode: string; depth: number; parent_space_id: string | null }>();
-  if (!product) throw notFound("Space");
-  if (product.depth >= 1 || product.parent_space_id) {
+  if (!parentSpace) throw notFound("Space");
+  if (parentSpace.depth >= 1 || parentSpace.parent_space_id) {
     return c.json({ error_code: "max_depth_exceeded", message: "A department cannot have child spaces" }, 400);
   }
-  if (product.spacetype_id !== "launchpad") {
-    return c.json({ error_code: "invalid_hierarchy", message: "Departments require a Launchpad root" }, 400);
-  }
 
-  const pc = await loadEffectiveProductConfig(c.env, product.spacetype_id, product.config_json);
+  const pc = await loadEffectiveProductConfig(c.env, parentSpace.spacetype_id, parentSpace.config_json);
   if (pc?.userPermissions?.canCreateSubSpaces === false) {
     return c.json({ error_code: "not_allowed", message: "Sub-spaces are disabled for this product" }, 403);
   }
@@ -5321,7 +5239,7 @@ app.post("/internal/space-types/seed", async (c) => {
   }
   const registry = getRegistryDO(c.env);
   const results = [];
-  for (const manifest of [LAUNCHPAD_MANIFEST]) {
+  for (const manifest of [WORKSPACE_MANIFEST, LEGACY_LAUNCHPAD_MANIFEST]) {
     const resp = await registry.fetch(new Request("http://registry/register", {
       method: "POST",
       body: JSON.stringify({ manifest, authorId: "naelao" }),
@@ -5832,8 +5750,6 @@ app.patch("/me/preferences", async (c) => {
 registerBuilderRoutes(app);
 // Three-Tier Platform Model, Phase 6 — public, unauthenticated end-user signup/login.
 registerProductEndUserRoutes(app);
-// Three-Tier Platform Model, Phase C (docs/spec-appendix A1.17) — businesses, space switcher, invites.
-registerBusinessRoutes(app);
 
 app.onError((err, c) => err instanceof RequestBodyTooLargeError
   ? c.json({ error_code: "request_body_too_large", message: "Request body exceeds the 1 MiB limit" }, 413)

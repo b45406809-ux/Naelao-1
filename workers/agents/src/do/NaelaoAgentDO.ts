@@ -65,7 +65,6 @@ import {
   loadAgentConfig,
   writeAgentConfig,
   mergeMissingPrebuilt,
-  triageCustomerMessage,
   DEFAULT_NAELAO_AGENT,
   LAUNCHPAD_ASSISTANT_PROFILE,
   PREBUILT_SCRIPTS,
@@ -123,7 +122,6 @@ import {
 } from "../script-engine/sub-agent-output.js";
 import { handleExecutiveInbound } from "../channels/executive-channel.js";
 import { claimFoundryChannelEvent, parseFoundryChannelCommand, releaseFoundryChannelEvent } from "../channels/foundry-command.js";
-import { persistCustomerConversation } from "../telemetry/customer-telemetry.js";
 
 function boundedCheckpointJson(value: unknown, maxChars = 64_000): string {
   try {
@@ -596,25 +594,8 @@ function safeCalculate(expression: string): number {
   return new ExprParser(expression).parse();
 }
 
-// A customer-bot project's no-code "after the customer says X, this happens" rule
-// (SpaceDO's project_rules table, fetched over SPACES_WORKER).
-interface ProjectRule {
-  id: string;
-  trigger_pattern: string;
-  action: "reply" | "run_script" | "human_takeover";
-  reply_text: string | null;
-  script_name: string | null;
-  enabled: number;
-  priority: number;
-}
-
-// F17 / A1.13: fetchProjectConfig's result, distinguishing a clean 404 ("no project config row
-// — permissive by design") from a genuine fetch/5xx/network error ("we could not verify the
-// project's restrictions"). Collapsing both into `null` (the previous behavior) meant a
-// transient SpaceDO error silently disabled BOTH structural customer-bot controls (execution
-// ceiling and daily spend cap), which A1.13 requires to be un-bypassable. Callers must fail
-// CLOSED on "error" (clamp to the most restrictive tier, treat as spend-capped) and only stay
-// permissive on "not_found".
+// ProjectConfig fetch result distinguishes a missing config from an unavailable policy record.
+// Callers fail closed on an error instead of silently dropping execution and spend limits.
 type ProjectConfigResult =
   | { status: "found"; execution_ceiling: number; daily_spend_cap_credits: number; external_daily_message_cap: number }
   | { status: "not_found" }
@@ -631,16 +612,6 @@ interface ReActLoopResult {
   outputTokens: number;
   tokensUsed: number;
 }
-
-// S0.4: same fail-closed discipline as ProjectConfigResult — fetchProjectRules used to collapse
-// "found, zero rules configured" and "SpaceDO error, rules unknown" into the same `[]`, so a
-// rules-endpoint-only outage (config still loads fine) silently disabled the STOP/UNSUBSCRIBE/
-// human-takeover baseline every no-code project template seeds (A1.13) — the loop would just
-// reply to a customer who texted "STOP". Callers must fail CLOSED (escalate, never run
-// unrestricted) on "error", and only treat an empty list as "no rules configured" on "found".
-type ProjectRulesResult =
-  | { status: "found"; rules: ProjectRule[] }
-  | { status: "error" };
 
 // ── Tool services (injected from DO env) ─────────────────────────────────────
 
@@ -1694,7 +1665,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         id              TEXT PRIMARY KEY,
         channel         TEXT NOT NULL,
         channel_user_id TEXT NOT NULL,
-        project_id      TEXT, -- customer-bot project this channel is bound to (NULL = space default agent)
+        project_id      TEXT, -- project whose approved extension handles the channel (NULL = Space scope)
         channel_extension_instance_id TEXT,
         provider_connection_id TEXT,
         human_takeover  INTEGER NOT NULL DEFAULT 0, -- admin/rule silenced the bot for this thread
@@ -1779,8 +1750,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
 
-    // Per-project daily spend tracking (customer-bot spend caps — G-3664680-style plan
-    // gating, applied here at the project level). "Credits" is a coarse tokens_used proxy,
+    // Per-project daily spend tracking and plan gating. "Credits" is a coarse tokens_used proxy,
     // not a real billing conversion (that lives in the billing worker) — documented as such.
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS project_spend (
@@ -5211,7 +5181,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * the conversation won't eat too much tokens" — the trigger mechanism itself shouldn't
    * cost tokens either). Not gated by the assistant approval policy or requires_approval_for:
    * an admin/assistant already authored this exact (event, script) pairing when they created
-   * the trigger — the same trust level as a customer-bot project_rule's run_script action.
+   * the trigger — the same trust level as an explicitly authorized project command.
    */
   private async handleTriggerFire(request: Request): Promise<Response> {
     const body = await request.json<{
@@ -5612,7 +5582,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // §A1 connector default-vs-personal switch: read once per run, best-effort — a failure or an
     // empty map both mean "resolve as business" (today's implicit default), never blocks the run.
     engineEnv.connectorAccountMode = await this.fetchConnectorAccountMode(spaceId, sessionId, tenantId);
-    // F14: customer-bot daily spend cap was only enforced in the channel-heartbeat drain path
+    // F14: project daily spend cap was only enforced in the channel-heartbeat drain path
     // (handleChannelHeartbeat) — a direct /script/run call with the same projectId bypassed it
     // entirely. Apply the identical cap-then-execution-ceiling gate here.
     // F9: the gate itself now checks through SpaceDO (single writer for the whole project),
@@ -7003,9 +6973,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return Response.json({ targetAgentId: body.targetAgentId, depth: nextDepth, delegationToken });
   }
 
-  // Observability surface for customer-bot projects ("all you do is see what the customers
-  // are doing" — this is that view): project_id + human_takeover so the admin/dashboard can
-  // tell which project a thread belongs to and whether a human has taken it over.
+  // Observability surface for project channel sessions: project_id + human_takeover lets the
+  // Space owner review which conversations need a human.
   private handleListChannelSessions(): Response {
     const rows = this.ctx.storage.sql
       .exec(`SELECT id, channel, channel_user_id, project_id, human_takeover, created_at, last_seen FROM channel_sessions ORDER BY last_seen DESC LIMIT 200`)
@@ -8087,7 +8056,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
-  /** Fetch a customer-bot project's config (execution ceiling, spend cap) from SpaceDO. */
+  /** Fetch a project's config (execution ceiling, spend cap) from SpaceDO. */
   /**
    * Fetch the Space Assistant's approval policy from SpaceDO. Null on any failure (unreachable
    * SPACES_WORKER, not yet configured) — the caller treats null the same as the safe default
@@ -8207,7 +8176,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   /**
    * F9: authoritative spend check+debit, single-writer via SpaceDO — agent DOs are addressed
    * space:project:thread (their own SQLite each), so a purely local tally undercounts spend by
-   * however many concurrent threads/channels a customer-bot project has. Pass credits=0 for a
+   * however many concurrent threads/channels a project has. Pass credits=0 for a
    * pure pre-run gate check; pass the actual post-run token cost to record it. Fails CLOSED:
    * any error (network, non-2xx, missing SPACES_WORKER) is treated as capped, matching the
    * fetchAssistantPolicy precedent — a spend limiter that fails open isn't one.
@@ -8315,7 +8284,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const projectCfg = await this.fetchProjectConfig(spaceId, tenantId, projectId);
       if (projectCfg.status === "error") {
         // F17 / A1.13: a transient SpaceDO error must fail CLOSED, never read as "unrestricted"
-        // — that would silently disable BOTH structural customer-bot controls (execution
+        // — that would silently disable BOTH structural project controls (execution
         // ceiling and daily spend cap) this project depends on being un-bypassable. Clamp to
         // the most restrictive tier and treat the run exactly like a real spend-cap hit.
         return {
@@ -8967,22 +8936,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
-  /** Fetch a customer-bot project's no-code rules (highest priority first) from SpaceDO.
-   *  S0.4: distinguishes "found, possibly zero rules" from "error, rules unknown" — callers
-   *  must fail CLOSED on the latter (see ProjectRulesResult). */
-  private async fetchProjectRules(spaceId: string, tenantId: string, projectId: string): Promise<ProjectRulesResult> {
-    try {
-      const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}/rules`, {
-        headers: await this.internalHeaders(tenantId),
-      }));
-      if (!resp.ok) return { status: "error" };
-      const { data } = await readBoundedResponseJson<{ data: ProjectRule[] }>(resp, 2 * 1024 * 1024);
-      return { status: "found", rules: data.filter((r) => r.enabled !== 0) };
-    } catch {
-      return { status: "error" };
-    }
-  }
-
   /**
    * Mirror a sub-agent spawn or a channel session into SpaceDO's threads table as an ordinary
    * subthread (thread_kind + parent_thread_id) — best-effort: the DO's own sub_agents /
@@ -9013,34 +8966,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch {
       /* best-effort mirror — sub_agents/channel_sessions remain the source of truth */
     }
-  }
-
-  /** Whitespace-delimited word tokens, each stripped of leading/trailing punctuation and
-   *  lowercased — "non-stop" is ONE token ("non-stop"), never split into "non"+"stop", so it
-   *  never collides with a standalone "stop" token. Used by matchProjectRule below. */
-  private static tokenize(text: string): string[] {
-    return text.split(/\s+/).map((t) => t.replace(/^[^\p{L}\p{N}-]+|[^\p{L}\p{N}-]+$/gu, "").toLowerCase()).filter(Boolean);
-  }
-
-  /** First enabled rule (priority order — already sorted by the API) whose trigger_pattern
-   *  matches the inbound text as whole word tokens, case-insensitive. S0.4: previously a naive
-   *  substring `includes`, so a trigger_pattern of "STOP" fired inside "doorstop" (one token,
-   *  no internal boundary) AND "non-stop" (a hyphenated compound — a plain \b-boundary regex
-   *  still matches "stop" inside it, since a hyphen breaks \w). Tokenizing on WHITESPACE only
-   *  (not punctuation) keeps "non-stop" as a single token distinct from "stop", while multi-word
-   *  patterns match as a contiguous token subsequence. A false-positive opt-out trigger is a
-   *  nuisance; a false NEGATIVE (missing a real "STOP") is the actual compliance risk this
-   *  guards against by matching precisely rather than loosely. */
-  private matchProjectRule(rules: ProjectRule[], text: string): ProjectRule | null {
-    const textTokens = NaelaoAgentDO.tokenize(text);
-    for (const r of rules) {
-      const patternTokens = NaelaoAgentDO.tokenize(r.trigger_pattern);
-      if (patternTokens.length === 0) continue;
-      for (let i = 0; i <= textTokens.length - patternTokens.length; i++) {
-        if (patternTokens.every((tok, j) => textTokens[i + j] === tok)) return r;
-      }
-    }
-    return null;
   }
 
   private todaySpendKey(): string {
@@ -9352,12 +9277,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     // Same structural-config-first, agents.md-parse-fallback precedence as handleScriptRun above.
     const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
-    // This queue is exclusively external-channel traffic. Construct a separate allow-listed
-    // surface rather than redacting the internal agent's tools: filesystem, git, vault,
-    // browser and container handlers do not exist in this object at all.
-    // Customer attachments are message-scoped read operations. Copy-to-workspace is intentionally
-    // absent here because the project workspace is shared across customers.
-    const tools = new ScriptToolSurface(engineEnv, ["customer-bot", "customer-attachments", "conversation"]);
+    // Inbound external behavior is provided only by a pinned, approved channel extension.
+    // This host path deliberately does not construct a generic customer-agent tool surface.
     // Kept out of the model-facing surface; only platform code below can dispatch the resulting
     // reply to the same conversation address.
     const deliveryTools = new ScriptToolSurface(engineEnv, ["notifications"]);
@@ -9405,25 +9326,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(body.spaceContext ? { spaceContext: body.spaceContext } : {}),
     });
 
-    // Resolve config + rules once per distinct project among this batch (not per message).
-    // F17 / A1.13: store the FULL ProjectConfigResult (found/not_found/error), not just
-    // successful fetches — a SpaceDO error must be distinguishable from "no config row" so the
-    // per-message loop below can fail closed instead of silently running unrestricted.
+    // Resolve generic project execution limits once per project in this batch.
+    // Preserve found/not_found/error so an unavailable policy record fails closed below.
     const projectIds = [...new Set(pending.map((m) => m.project_id).filter((id): id is string => !!id))];
     const projectConfigs = new Map<string, ProjectConfigResult>();
-    // S0.4: store the FULL ProjectRulesResult (found/error) — same fail-closed discipline as
-    // projectConfigs above. Collapsing to a bare array would silently disable the STOP/opt-out/
-    // human-takeover baseline on a rules-endpoint-only outage.
-    const projectRules = new Map<string, ProjectRulesResult>();
-    for (const pid of projectIds) {
-      const [cfg, rules] = await Promise.all([this.fetchProjectConfig(spaceId, tenantId, pid), this.fetchProjectRules(spaceId, tenantId, pid)]);
-      projectConfigs.set(pid, cfg);
-      projectRules.set(pid, rules);
-    }
+    for (const pid of projectIds) projectConfigs.set(pid, await this.fetchProjectConfig(spaceId, tenantId, pid));
 
     let answered = 0;
     let escalated = 0;
-    let ruleHandled = 0;
     let spendCapped = 0;
 
     for (const msg of pending) {
@@ -9439,12 +9349,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       channelReservation.reserved = false;
       channelReservation.estimatedCredits = 0;
       channelReservation.estimatedTokens = 0;
-      // Untrusted inbound text — moderate before it ever reaches the reasoning prompt or a rule
-      // match. This used to just count "escalated" and continue — the message was silently
-      // dropped with nobody ever told a customer-bot channel (including a business's own inbound
-      // email) had received something that tried to get the low-tier channel agent to do
-      // something unsafe. Now it also flags the session for a human AND raises a real
-      // notification, the same pattern every other genuine escalation in this platform uses.
+      // Moderate untrusted inbound text before an installed channel extension sees it. Unsafe
+      // messages are held for a human and surfaced as notifications.
       if (moderateInput(msg.text).blocked) {
         this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
         void this.createSpaceNotification(spaceId, tenantId, {
@@ -9463,28 +9369,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       const projectCfgResult = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
       const projectCfg = projectCfgResult?.status === "found" ? projectCfgResult : undefined;
-      const rulesResult = msg.project_id ? projectRules.get(msg.project_id) : undefined;
-      // S0.4: a rules-fetch error for a customer-bot project must escalate, never silently run
-      // with an empty ruleset — that would bypass the STOP/UNSUBSCRIBE/human-takeover baseline
-      // exactly when we can least verify it's safe not to. Only a genuinely empty (found) list
-      // means "this project has no rules configured."
-      if (msg.project_id && rulesResult?.status === "error") {
-        this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
-        escalated++;
-        continue;
-      }
-      const rules = rulesResult?.status === "found" ? rulesResult.rules : [];
-
-      // Identity linking (spec: returning customers should be recognized) — a deterministic,
-      // per-space-scoped user id derived from (channel, channel_user_id). Set on the shared
-      // engineEnv before every path that can touch Memory OS for this message, the same way
-      // maxTier is mutated per message below — memory.remember/recall and the surgical-recall
-      // pre-flight then scope to THIS customer, not the space at large, across visits.
+      // Scope channel extension execution to a pseudonymous identity within this Space and
+      // provider connection; this keeps one sender's memory separate from other senders.
       engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}`;
-      // Project-scoped workspace — every customer thread in this customer-bot project shares
-      // the SAME R2 filesystem (e.g. a project-wide ledger.csv a no-code rule's run_script
-      // writes a row into per customer). Mutated per message like maxTier, since one heartbeat
-      // sweep can touch several projects.
+      // Bind each inbound event to its own project workspace; one heartbeat can drain
+      // messages from several projects.
       if (msg.project_id) engineEnv.projectId = msg.project_id;
       else delete engineEnv.projectId;
       // A single heartbeat can drain rows from several projects. Rebind the shared tool surface
@@ -9504,58 +9393,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       engineEnv.loadCurrentConversation = (options) => this.loadChannelTranscript(msg.session_id, options);
       engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}${msg.channel_extension_instance_id ? `:${msg.channel_extension_instance_id}:${msg.provider_connection_id ?? ""}` : ""}`;
 
-      // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
-      //    any reasoning at all. Zero token cost, deterministic, admin-authored.
-      const matchedRule = this.matchProjectRule(rules, msg.text);
-      if (matchedRule && !(matchedRule.action === "run_script" && msg.channel_extension_instance_id && msg.channel_extension_sha256)) {
-        if (matchedRule.action === "human_takeover") {
-          this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
-          ruleHandled++;
-          continue; // message stays unanswered for a human — that's the point
-        }
-        const replyText = matchedRule.action === "reply"
-          ? (matchedRule.reply_text ?? "")
-          : null;
-        if (replyText) {
-          if (await tenantSuspended()) {
-            return stopForSuspension();
-          }
-          const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText,
-            { installationId: msg.channel_extension_instance_id ?? "", providerConnectionId: msg.provider_connection_id, recipientId: msg.recipient_id, threadId: msg.thread_id }));
-          if (deliver.ok) {
-            this.markOutbound(msg.session_id, msg.id, replyText);
-            ruleHandled++;
-            continue;
-          }
-        } else if (matchedRule.action === "run_script" && matchedRule.script_name) {
-          if (projectCfgResult?.status === "error") {
-            // Project limits cannot be verified, so do not let a rule action proceed under a
-            // permissive default. Keep the blocked run visible in the spend-cap counter.
-            engineEnv.maxTier = 1 as ExecutionTier;
-            spendCapped++;
-            continue;
-          }
-          if (!msg.channel_extension_instance_id || !msg.channel_extension_sha256) {
-            this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
-            escalated++;
-            continue;
-          }
-          if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
-          if (await tenantSuspended()) {
-            return stopForSuspension();
-          }
-          const scriptResult = await tools.run(matchedRule.script_name, { text: msg.text, channel_user_id: msg.channel_user_id });
-          if (scriptResult.ok) {
-            this.markOutbound(msg.session_id, msg.id, `(handled by rule → ${matchedRule.script_name})`);
-            ruleHandled++;
-            continue;
-          }
-        }
-        // Rule matched but delivery/script failed — fall through to escalation, not silent drop.
-        escalated++;
-        continue;
-      }
-
       // F17 / A1.13: after safe deterministic rules, hold every remaining project message when
       // structural policy is unavailable. Without this gate a normal inbound message could be
       // escalated for an unrelated missing extension without being recorded as policy-blocked.
@@ -9565,9 +9402,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         continue;
       }
 
-      // 2. Daily spend cap (customer-bot projects only) — protects against a chatty or
-      //    adversarial customer running up an unbounded bill. Once hit, leave the rest of
-      //    today's messages for a human rather than silently dropping them.
+      // Enforce the project's configured daily spend cap before dispatching its channel extension.
       // F9: gate through SpaceDO (single writer for the whole project), not this DO's own
       // local tally — a project can otherwise receive traffic through more than one agent DO
       // (this channel-drain DO AND a direct per-thread /script/run session against the same
@@ -9604,7 +9439,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           });
         };
         if (!msg.project_id || !msg.channel_extension_instance_id || !msg.channel_extension_sha256
-          || projectCfgResult?.status !== "found" || rulesResult?.status !== "found") {
+          || projectCfgResult?.status !== "found") {
           takeover("The project channel handler could not be validated against the current project configuration. Review the channel binding and conversation before replying."); escalated++; continue;
         }
         const priorDispatch = this.ctx.storage.sql.exec(
@@ -9834,148 +9669,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         continue;
       }
 
-      // 3. System One triage, then the full reasoning loop. This is advisory context only:
-      // deterministic moderation/rules above remain authoritative and a sentry outage falls back
-      // to bounded keyword decisions rather than blocking the customer queue.
-      const triage = await triageCustomerMessage(msg.text, engineEnv.fastDecision);
-      const attachmentTaskId = msg.task_id ?? msg.id;
-      let attachmentDescriptors: Array<{ id: string; filename: string; mimeType: string; sizeBytes: number }> = [];
-      if (this.env.AGENTS_WORKER && attachmentTaskId) {
-        try {
-          const response = await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/attachments/list", {
-            method: "POST",
-            headers: { "content-type": "application/json", ...(await this.internalHeaders(tenantId)) },
-            body: JSON.stringify({ tenantId, spaceId, taskId: attachmentTaskId }),
-          }));
-          if (response.ok) {
-            const result = await readBoundedResponseJson<{ attachments?: Array<{ id: string; filename: string; mime_type: string; size_bytes: number }> }>(response, 2 * 1024 * 1024);
-            attachmentDescriptors = (result.attachments ?? []).slice(0, 10).map((row) => ({ id: row.id, filename: row.filename, mimeType: row.mime_type, sizeBytes: row.size_bytes }));
-          }
-        } catch {
-          // A metadata lookup outage must not broaden access or suppress the ordinary reply.
-          attachmentDescriptors = [];
-        }
-      }
-      let attachmentClassification: import("@naelao/agent-sdk").AttachmentClassification | undefined;
-      const availableAttachmentTools = attachmentToolsForRun(config.scripts.prebuilt, engineEnv.airGappedOnly === true);
-      if (attachmentDescriptors.length && availableAttachmentTools.length && !model.startsWith("local/") && engineEnv.fastDecision?.classifyAttachments) {
-        try {
-          attachmentClassification = await engineEnv.fastDecision.classifyAttachments({
-            message: msg.text,
-            attachments: attachmentDescriptors,
-            availableTools: availableAttachmentTools,
-          });
-        } catch {
-          // Classification is advisory; it never grants access or runs a reader.
-          attachmentClassification = undefined;
-        }
-      }
-
-      // 4. Full reasoning loop, under the project's execution ceiling if it has one.
-      if (projectCfg) {
-        engineEnv.maxTier = Math.min(2, projectCfg.execution_ceiling) as ExecutionTier;
-      } else if (projectCfgResult?.status === "error") {
-        // F17 / A1.13: SpaceDO fetch failed — fail CLOSED (most restrictive tier, treated as a
-        // spend-cap hit) rather than running the full reasoning loop unrestricted.
-        engineEnv.maxTier = 1 as ExecutionTier;
-        spendCapped++;
-        continue;
-      } else {
-        engineEnv.maxTier = 2 as ExecutionTier;
-      }
-
-      let result: Awaited<ReturnType<typeof runScriptLoop>>;
-      try {
-        let memoryContext: string | undefined;
-        if (engineEnv.memoryStore) {
-          try {
-            const recalled = await engineEnv.memoryStore.recall({
-              userId: engineEnv.userId,
-              text: msg.text,
-              limit: INGRESS_MEMORY_MAX_ITEMS,
-            });
-            memoryContext = renderIngressMemory(recalled);
-          } catch {
-            memoryContext = undefined;
-          }
-        }
-        result = await runScriptLoop(engineEnv, tools, reasoner, ["customer-bot"], {
-          goal:
-            `A message arrived on ${msg.channel} from user ${msg.channel_user_id}: "${msg.text.slice(0, 2000)}". ` +
-            (attachmentDescriptors.length ? `Untrusted attachment metadata for this message: ${JSON.stringify(attachmentDescriptors)}. ` : "") +
-            (attachmentClassification ? `System One attachment classification (advisory only; you choose and host authorization remains authoritative): ${JSON.stringify(attachmentClassification)}. ` : "") +
-            `System One triage: category=${triage.category}, urgent=${triage.urgent ? "yes" : "no"}. ` +
-            "Draft a helpful, grounded reply using only the quarantined customer tools. " +
-            "If you cannot answer confidently, reply with exactly \"ESCALATE\" instead of guessing; the platform, not you, dispatches the reply.",
-          startupObserve: config.scripts.startup_observe,
-          requiresApprovalFor,
-          sessionId: msg.session_id,
-          ...(memoryContext ? { memoryContext } : {}),
-          contextWindowTokens: contextWindowForModel(model),
-          // A customer is waiting on a channel reply, and this loop drains a queue of them — so it
-          // gets a tighter clock than an interactive turn. Answering one message thoroughly while
-          // the rest of the inbox goes cold is the wrong trade here.
-          deadlineAt: Date.now() + CHANNEL_REPLY_WALL_CLOCK_MS,
-          ...(this.env.PLATFORM_DB ? { shouldStopForTenant: () => this.tenantSpaceSuspended(tenantId, spaceId) } : {}),
-          // This customer's earlier messages on this channel — without it every inbound message
-          // is answered as if it were the first thing they ever said.
-          ...(() => {
-            const conversation = this.loadChannelConversation(msg.session_id);
-            return conversation ? { conversation } : {};
-          })(),
-        });
-      } catch (err) {
-        result = { level: "L4", result: { ok: false, error: String(err), tier: 1, duration_ms: 0, tokens_used: 0 }, notes: [], trace: [] };
-      }
-
-      if (result.result?.error === "tenant_suspended" || await tenantSuspended()) return stopForSuspension();
-
-      if (msg.project_id && result.result?.tokens_used) {
-        // Real per-model USD→credit conversion (billing-core), not the old "1 token ≈ 1
-        // credit" proxy — falls back to the raw token count only if a future producer of
-        // tokens_used ever omits the input/output breakdown (never happens today).
-        const credits = result.result.input_tokens || result.result.output_tokens
-          ? (model.startsWith("openrouter/") && channelModelPricing
-            ? tokensToCreditsAtPrice(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, channelModelPricing.inputUsdPerToken, channelModelPricing.outputUsdPerToken)
-            : tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, model))
-          : result.result.tokens_used;
-        // F9: SpaceDO is the authoritative tally; the local table is kept only as this DO's
-        // own telemetry/cache.
-        this.addProjectSpend(msg.project_id, credits);
-        if (projectCfg && projectCfg.daily_spend_cap_credits > 0) {
-          if (channelReservation.reserved) await this.settleProjectSpendReservation(spaceId, tenantId, msg.project_id, channelReservation.runId, credits);
-          else await this.checkAndDebitProjectSpend(spaceId, tenantId, msg.project_id, credits);
-        }
-      } else if (msg.project_id && projectCfg && projectCfg.daily_spend_cap_credits > 0 && channelReservation.reserved) {
-        await this.settleProjectSpendReservation(spaceId, tenantId, msg.project_id, channelReservation.runId, 0);
-      }
-
-      const deliveredDirectly = result.script_name?.startsWith("notify.") && result.result?.ok;
-      if (deliveredDirectly) {
-        if (await tenantSuspended()) {
-          return stopForSuspension();
-        }
-        this.markOutbound(msg.session_id, msg.id, "(sent via notify)");
-        answered++;
-        continue;
-      }
-
-      const text = typeof result.result?.output === "string" ? result.result.output.trim() : "";
-      if (!result.result?.ok || !text || text === "ESCALATE" || !moderateText(text).allowed) {
-        await this.persistTerminatedCustomerSession(spaceId, tenantId, msg.session_id, msg.channel, msg.channel_user_id, true, true);
-        escalated++;
-        continue;
-      }
-      // The reasoner answered in text rather than calling notify.* itself — deliver it now.
-      if (await tenantSuspended()) {
-        return stopForSuspension();
-      }
-      const deliver = await deliveryTools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, text,
-        { installationId: msg.channel_extension_instance_id ?? "", providerConnectionId: msg.provider_connection_id, recipientId: msg.recipient_id, threadId: msg.thread_id }));
-      if (!deliver.ok) { escalated++; continue; }
-      this.markOutbound(msg.session_id, msg.id, text);
-      await this.persistTerminatedCustomerSession(spaceId, tenantId, msg.session_id, msg.channel, msg.channel_user_id, false, false);
-      answered++;
       } finally {
         // Release the claim for any message that didn't reach a real terminal state this
         // iteration (markOutbound already moved it to 1; human_takeover moved the SESSION out of
@@ -9983,26 +9676,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 0 WHERE id = ? AND answered = 2`, msg.id);
       }
     }
-    return Response.json({ drained: pending.length, answered, escalated, rule_handled: ruleHandled, spend_capped: spendCapped });
+    return Response.json({ drained: pending.length, answered, escalated, spend_capped: spendCapped });
     } finally {
       // The inner per-message finally handles ordinary retries. This outer guard covers failures
       // during batch setup (config, pricing, policy, or wallet lookups) before that loop begins.
       releasePendingClaims();
     }
-  }
-
-  private async persistTerminatedCustomerSession(spaceId: string, tenantId: string, sessionId: string, channel: string, customerId: string, unresolved: boolean, escalated: boolean): Promise<void> {
-    const transcript = this.ctx.storage.sql.exec(
-      "SELECT direction,text,created_at FROM channel_messages WHERE session_id=? ORDER BY created_at,id", sessionId,
-    ).toArray() as Array<{ direction: string; text: string; created_at: number }>;
-    const negative = /\b(angry|awful|hate|terrible|useless|refund|scam|frustrat(?:ed|ing))\b/i;
-    const positive = /\b(thanks|thank you|great|helpful|perfect|love)\b/i;
-    const customerText = transcript.filter((m) => m.direction === "inbound").map((m) => m.text).join(" ");
-    const sentiment = negative.test(customerText) ? -0.8 : positive.test(customerText) ? 0.5 : 0;
-    await persistCustomerConversation(this.env.SPACES_WORKER, tenantId, {
-      id: sessionId, spaceId, channel, customerId, transcript,
-      sentimentScore: sentiment, unresolved, escalated,
-    }, await this.internalHeaders(tenantId));
   }
 
   // ── POST /run ─────────────────────────────────────────────────────────────
@@ -10697,7 +10376,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           content: r.text,
           created_at: new Date(r.created_at).toISOString(),
         }));
-      // No stored summary for channel threads yet: the customer-bot path is cost-sensitive and a
+      // No stored summary for channel threads yet: the extension channel path is cost-sensitive and a
       // per-drain summarisation call would run on every inbound message. Recent history bounded
       // by the same budget is the win; compaction here can come later if threads get long enough
       // to need it.

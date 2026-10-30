@@ -9,7 +9,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { assertTemplateId } from "@naelao/agent-sdk";
-import { LAUNCHPAD_MANIFEST } from "../launchpad-manifest.js";
+import { LEGACY_LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST } from "../workspace-manifest.js";
 
 // ── SpaceType Manifest v2 (spec §61) ─────────────────────────────────────────
 
@@ -400,8 +400,7 @@ export class SpaceTypeRegistryDO extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM native_space_templates WHERE id = ?", "tpl_dev_foundry_v1");
     this.initialized = true;
 
-    // Self-heal: this registry must always carry at least the built-in Naelao
-    // manifests. Seeding was originally a manual, easy-to-forget POST
+    // Self-heal: every registry includes the generic Workspace type. Seeding was originally a manual, easy-to-forget POST
     // /internal/space-types/seed call at deploy time — if that was never run
     // against a fresh/reset instance, every listing (GET /types, the builder
     // wizard's SpaceType step, provisioning's own GET /type/:id) would silently
@@ -409,15 +408,11 @@ export class SpaceTypeRegistryDO extends DurableObject {
     // anything was wrong. Seed inline instead of depending on that step.
     const existing = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM space_types`).toArray() as unknown as { n: number }[];
     if ((existing[0]?.n ?? 0) === 0) {
-      for (const manifest of [LAUNCHPAD_MANIFEST]) {
-        this.registerManifest(manifest, "naelao");
-      }
+      for (const manifest of [WORKSPACE_MANIFEST, LEGACY_LAUNCHPAD_MANIFEST]) this.registerManifest(manifest, "naelao");
     }
-    // Built-in manifests are source-controlled. Refresh the persisted registry so a local dev
-    // session does not keep serving an old onboarding policy after a manifest update.
-    for (const manifest of [LAUNCHPAD_MANIFEST]) {
-      this.registerManifest(manifest, "naelao");
-    }
+    // Keep the default Workspace definition current. Older Launchpad type records remain
+    // resolvable for existing Spaces but are hidden from new installs and catalog discovery.
+    for (const manifest of [WORKSPACE_MANIFEST, LEGACY_LAUNCHPAD_MANIFEST]) this.registerManifest(manifest, "naelao");
   }
 
   private registerManifest(manifest: NaelaoSpaceTypeManifestV2, authorId: string): void {
@@ -425,12 +420,12 @@ export class SpaceTypeRegistryDO extends DurableObject {
     this.ctx.storage.sql.exec(
       `INSERT INTO space_types
          (id, name, description, author, current_version, manifest, status, visible, price_usd, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'approved', 1, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description,
          author=excluded.author, current_version=excluded.current_version, manifest=excluded.manifest,
-         status='approved', visible=1, price_usd=excluded.price_usd, updated_at=excluded.updated_at`,
+         status='approved', visible=excluded.visible, price_usd=excluded.price_usd, updated_at=excluded.updated_at`,
       manifest.id, manifest.name, manifest.description, authorId,
-      manifest.version, JSON.stringify(manifest), manifest.marketplace.priceUsdPerMonth, now
+      manifest.version, JSON.stringify(manifest), manifest.marketplace.visible ? 1 : 0, manifest.marketplace.priceUsdPerMonth, now
     );
     this.ctx.storage.sql.exec(
       `INSERT INTO versions (type_id, version, manifest, change_type, canary_pct, stable, published_at)

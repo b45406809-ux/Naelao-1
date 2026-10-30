@@ -231,13 +231,4 @@ describe("mcp-hub — platform-provided provider keys (G-BF02)", () => {
     expect(body.message).toContain("connection_id");
   });
 
-  it("the reserved money-in tool-name guard still applies to platform-keyed provider calls", async () => {
-    const env = makeEnv({ COMPOSIO_API_KEY: PLATFORM_COMPOSIO_KEY });
-    await seedProviderServer(env, { id: "srv-guarded", provider: "composio" });
-
-    const res = await callTool(env, "srv-guarded", "create_checkout");
-    expect(res.status).toBe(403);
-    const body = await res.json() as { error_code: string };
-    expect(body.error_code).toBe("reserved_capability");
-  });
 });

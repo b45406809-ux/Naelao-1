@@ -61,6 +61,7 @@ export interface CreateSpaceInput {
   name: string;
   spacetype_id: string;
   config_overrides?: Record<string, unknown>;
+  template_id?: string;
 }
 
 export interface KbDocument {
@@ -221,16 +222,6 @@ export async function resetPassword(token: string, newPassword: string): Promise
 
 // ── SpaceTypes ───────────────────────────────────────────────────────────────
 
-export async function listSpaceTypes(): Promise<SpaceType[]> {
-  // F-3: the legacy `/spacetypes` REST route was never implemented by any worker, so the
-  // post-login landing page's Promise.all([listSpaces(), listSpaceTypes()]) 404'd and crashed the
-  // whole dashboard on every login. Point at the REAL registry wrapper (GET /builder/space-types,
-  // which fronts SpaceTypeRegistryDO) — now reachable since F-1 routes /builder/* through the router.
-  const res = await apiFetch<{ data: SpaceType[] } | { types: SpaceType[] } | SpaceType[]>("/builder/space-types");
-  if (Array.isArray(res)) return res;
-  return (res as { data?: SpaceType[]; types?: SpaceType[] }).data ?? (res as { types?: SpaceType[] }).types ?? [];
-}
-
 // ── Spaces ───────────────────────────────────────────────────────────────────
 
 export async function listSpaces(): Promise<Space[]> {
@@ -239,8 +230,8 @@ export async function listSpaces(): Promise<Space[]> {
   return (res as { data: Space[] }).data ?? [];
 }
 
-export async function createSpace(data: CreateSpaceInput): Promise<Space> {
-  return apiFetch<Space>("/spaces", {
+export async function createSpace(data: CreateSpaceInput): Promise<{ id: string; name: string; status: string; created_at: string }> {
+  return apiFetch<{ id: string; name: string; status: string; created_at: string }>("/spaces", {
     method: "POST",
     body: JSON.stringify(data),
   });
@@ -317,7 +308,7 @@ export async function deleteKbDoc(
   });
 }
 
-// ── Builder API keys (/builder/api-keys* is implemented by workers/spaces builder routes) ──
+// ── Naelao team API keys ─────────────────────────────────────────────────────
 
 export async function listApiKeys(): Promise<ApiKey[]> {
   const res = await apiFetch<{ data: ApiKey[] } | ApiKey[]>("/builder/api-keys");
@@ -357,7 +348,7 @@ export async function listTeamPrivateTemplates(): Promise<TeamPrivateSpaceTempla
   return res.data;
 }
 
-// ── Sub-spaces (departments) + cross-space grants ────────────────────────────
+// ── Child Spaces and cross-Space grants ──────────────────────────────────────
 
 export interface SubSpace {
   id: string;
@@ -454,153 +445,7 @@ export async function connectPlatform(
   });
 }
 
-// ── Builder Dashboard API (Three-Tier Platform Model — /builder/*) ───────────────────────────
-// Named `BuilderProduct` (not `Product`) to avoid colliding with the existing `Product` type
-// above, which means a Launchpad commerce item a store sells — a completely different concept
-// from a builder's own product/business (a NaelaoProduct, i.e. a Space with the Phase 1-3
-// fields). See docs/spec-appendix/A1-script-agents-and-space-assistants.md §A1.17.
-
-export interface BuilderProductSummary {
-  id: string;
-  name: string;
-  status: string;
-  spacetype_id: string;
-  product_slug: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface BuilderProductPage {
-  data: BuilderProductSummary[];
-  product_count: number;
-  page: number;
-  page_size: number;
-  page_count: number;
-}
-
-export interface NaelaoLaunchpadDashboard {
-  product: BuilderProductSummary | null;
-  can_initialize: boolean;
-}
-
-export function getNaelaoLaunchpadDashboard(): Promise<NaelaoLaunchpadDashboard> {
-  return apiFetch<NaelaoLaunchpadDashboard>("/builder/launchpad");
-}
-
-export interface BuilderProductConfig {
-  branding?: { brandColor?: string; logoUrl?: string; faviconUrl?: string; productDescription?: string; suppressNaelaoBranding?: boolean };
-  authProvider?: { provider: "naelao-native" | "clerk" | "custom-oidc" | "saml-sso"; requireAdminApproval?: boolean; allowedEmailDomains?: string[] };
-  featureFlags?: Record<string, boolean>;
-  // Phase D (§A1.17) — product mode, limits, and the template catalog. All three already exist
-  // on the backend's SpaceTypeProductConfig (workers/spaces/src/do/SpaceTypeRegistryDO.ts); this
-  // is the first UI to actually read/write them.
-  membershipModel?: "team" | "tenant" | "hybrid";
-  allowPublicSignup?: boolean;
-  allowedChildSpaceTypes?: string[];
-  userPermissions?: {
-    canCreateSpace?: boolean;
-    canCreateSubSpaces?: boolean;
-    canCreateProjects?: boolean;
-    maxThreadsPerUser?: number | null;
-    maxCreditsPerMonth?: number | null;
-  };
-  catalog?: {
-    businessTemplates?: string[];
-    projectTemplates?: string[];
-  };
-  // §A1.28: which LLM this product's agents run on — validated against a curated allowlist at
-  // the PATCH route (workers/spaces/src/builder-routes.ts's ALLOWED_MODELS).
-  modelConfig?: {
-    model?: string;
-  };
-  workerModelPool?: {
-    modelIds: string[];
-    modelsByPlan?: Record<string, string[]>;
-    selectionMode?: "automatic" | "planner";
-    inputUsdPerMillion?: number;
-    outputUsdPerMillion?: number;
-  };
-  // Tier 2/3 follow-up: a proactive daily digest email (agent activity summary) — opt-in, off by
-  // default.
-  notificationsConfig?: {
-    dailyDigestEnabled?: boolean;
-  };
-  legal?: {
-    tosUrl?: string;
-    privacyPolicyUrl?: string;
-    dpaUrl?: string;
-    cookiePolicy?: "none" | "analytics" | "third_party";
-    supportContact?: string;
-  };
-}
-
-export interface BuilderProductDetail extends BuilderProductSummary {
-  tenant_id: string;
-  conversation_access_approved_by: string | null;
-  conversation_access_approved_at: string | null;
-  product_config: BuilderProductConfig;
-}
-
-export interface CreateBuilderProductInput {
-  name: string;
-  spacetype_id: string;
-  template_id?: string;
-  product_slug?: string;
-  product_config?: BuilderProductConfig;
-}
-
-export async function listBuilderProducts(): Promise<BuilderProductSummary[]> {
-  const res = await apiFetch<BuilderProductPage>("/builder/products");
-  return res.data ?? [];
-}
-
-export async function listBuilderProductsPage(page: number): Promise<BuilderProductPage> {
-  return apiFetch<BuilderProductPage>(`/builder/products?page=${encodeURIComponent(String(page))}`);
-}
-
-export async function getBuilderProduct(id: string): Promise<BuilderProductDetail> {
-  return apiFetch<BuilderProductDetail>(`/builder/products/${pathSegment(id)}`);
-}
-
-export async function createBuilderProduct(input: CreateBuilderProductInput): Promise<BuilderProductSummary> {
-  return apiFetch<BuilderProductSummary>("/builder/products", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function updateBuilderProduct(
-  id: string,
-  input: { name?: string; status?: string; product_config?: BuilderProductConfig; legal?: BuilderProductConfig["legal"] }
-): Promise<{ ok: true }> {
-  return apiFetch(`/builder/products/${pathSegment(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function deleteBuilderProduct(id: string): Promise<void> {
-  return apiFetch<void>(`/builder/products/${pathSegment(id)}`, { method: "DELETE" });
-}
-
-export interface BuilderProductDomain {
-  custom_domain: string | null;
-  status: string;
-  ssl_status?: string;
-  dns?: { type: string; name: string; value: string };
-  validation_records?: unknown[];
-}
-
-export async function configureBuilderProductDomain(id: string, customDomain: string): Promise<BuilderProductDomain> {
-  return apiFetch<BuilderProductDomain>(`/builder/products/${pathSegment(id)}/domain`, {
-    method: "POST",
-    body: JSON.stringify({ custom_domain: customDomain }),
-  });
-}
-
-export async function getBuilderProductDomain(id: string): Promise<BuilderProductDomain> {
-  return apiFetch<BuilderProductDomain>(`/builder/products/${pathSegment(id)}/domain`);
-}
+// ── Space, assistant, and execution controls ───────────────────────────────────────────────
 
 // §A1.17 Phase G: the Space Assistant's approval policy — `spaceId` here is the product root
 // space itself (a builder-owned product IS a space), not a `/builder/*` route. Reuses the
@@ -698,99 +543,4 @@ export async function mintLocalTunnelConnectToken(spaceId: string): Promise<Loca
   return apiFetch<LocalTunnelConnectInfo>(`/spaces/${pathSegment(spaceId)}/local-tunnel/connect-token`, {
     method: "POST",
   });
-}
-
-export interface BuilderSpaceTypeListing {
-  id: string;
-  name: string;
-  description: string;
-  author: string;
-  current_version: string;
-  price_usd: number;
-  install_count: number;
-}
-
-/** The real, currently-seeded SpaceTypes a builder can pick (today: just Launchpad — see
- *  docs/spec-appendix A1.17, Phase 4). Deliberately not the same as the legacy, dead
- *  `listSpaceTypes()`/`GET /spacetypes` above, which calls a route no worker implements. */
-export async function listBuilderSpaceTypes(): Promise<BuilderSpaceTypeListing[]> {
-  const res = await apiFetch<{ types: BuilderSpaceTypeListing[] }>("/builder/space-types");
-  return res.types ?? [];
-}
-
-// ── Product Detail management tabs (Three-Tier Platform Model, Phase 5) ──────────────────────
-
-export interface BuilderProductAnalytics {
-  dau: number;
-  mau: number;
-  total_users: number;
-  /** Honestly null, not fabricated — see appendix A1.17 Phase 3: not bulk-aggregatable from D1
-   *  without Analytics Engine wiring this platform hasn't added yet. */
-  credits_consumed: number | null;
-}
-
-export async function getBuilderProductAnalytics(id: string): Promise<BuilderProductAnalytics> {
-  return apiFetch<BuilderProductAnalytics>(`/builder/products/${pathSegment(id)}/analytics`);
-}
-
-export interface BuilderProductRevenue {
-  period: string;
-  gross_revenue_cents: number;
-  naelao_fee_cents: number;
-  net_revenue_cents: number;
-  order_count: number;
-  naelao_wholesale_cost_cents: number;
-}
-
-export async function getBuilderProductRevenue(id: string): Promise<BuilderProductRevenue> {
-  return apiFetch<BuilderProductRevenue>(`/builder/products/${pathSegment(id)}/analytics/revenue`);
-}
-
-export interface BuilderProductEndUser {
-  end_user_id: string;
-  email: string | null;
-  display_name: string | null;
-  first_seen_at: string;
-  last_seen_at: string | null;
-  suspended_at: string | null;
-}
-
-export async function listBuilderProductUsers(id: string): Promise<BuilderProductEndUser[]> {
-  const res = await apiFetch<{ data: BuilderProductEndUser[] }>(`/builder/products/${pathSegment(id)}/users`);
-  return res.data ?? [];
-}
-
-export async function suspendBuilderProductUser(id: string, userId: string): Promise<void> {
-  await apiFetch(`/builder/products/${pathSegment(id)}/users/${pathSegment(userId)}/suspend`, { method: "POST" });
-}
-
-export async function removeBuilderProductUser(id: string, userId: string): Promise<void> {
-  await apiFetch<void>(`/builder/products/${pathSegment(id)}/users/${pathSegment(userId)}`, { method: "DELETE" });
-}
-
-export async function putBuilderProductFeatureFlags(id: string, flags: Record<string, boolean>): Promise<{ feature_flags: Record<string, boolean> }> {
-  return apiFetch(`/builder/products/${pathSegment(id)}/feature-flags`, {
-    method: "PUT",
-    body: JSON.stringify({ flags }),
-  });
-}
-
-export interface BuilderBillingPeriod {
-  period: string;
-  retail: number;
-  wholesale: number;
-  margin: number;
-  events: number;
-}
-
-/** The builder's OWN wholesale statement — tenant-wide, not per-product (reseller_ledger tracks
- *  billing at the tenant level; there is no per-product wholesale breakdown to show here). */
-export async function getBuilderBilling(period?: string): Promise<BuilderBillingPeriod> {
-  const qs = period ? `?period=${encodeURIComponent(period)}` : "";
-  return apiFetch<BuilderBillingPeriod>(`/builder/billing${qs}`);
-}
-
-export async function getBuilderBillingHistory(): Promise<BuilderBillingPeriod[]> {
-  const res = await apiFetch<{ data: BuilderBillingPeriod[] }>("/builder/billing/history");
-  return res.data ?? [];
 }

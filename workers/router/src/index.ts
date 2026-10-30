@@ -614,15 +614,8 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // treatment projects/threads got before being added (see WS-2/the GET route's own comment):
 // resolveEndUserBusinessRole on the spaces worker now does the real per-caller authorization.
 //
-// Phase C (§A1.17) added the business/invite routes. /businesses and /my-businesses are always
-// called with a PRODUCT ROOT :spaceId (no parent_space_id) — safe under the same reasoning as
-// projects/threads above. /invites* and /business-members* are called with a BUSINESS :spaceId
-// (parent_space_id set) — this is the first real exerciser of product-sessions/verify's
-// parent-walk (previously unexercised since no businesses existed yet): the router resolves the
-// caller's identity against the PRODUCT ROOT's ProductUserDO (sessions are product-scoped, not
-// per-business) but the spaces worker's own resolveEndUserBusinessRole is what actually enforces
-// "does this end user belong to THIS specific business" — the router's allowlist only proves
-// identity, never authorization, exactly as documented at the top of this list.
+// Business invite/member and child-business lifecycle APIs were retired with the former
+// Launchpad business surface. Generic platform-member Space creation uses /spaces instead.
 export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/runtime-catalog$/,
   /^\/spaces\/([^/]+)\/runtime-installations$/,
@@ -634,18 +627,10 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/me\/data$/,
   /^\/spaces\/([^/]+)\/projects(\/[^/]+)?$/,
   // Phase T (§A1.17): project collaboration — real per-project membership + the exclusive-mode
-  // thread lock. Additionally gated by requireBusinessMembership on the spaces worker exactly
-  // like every other business-scoped route above (identity here, authorization there); capped so
-  // /rules and /spend still don't match, matching the Phase B precedent for this same route family.
+// thread lock. Additionally gated by the Spaces worker's project membership check; the pattern
+// deliberately excludes admin-only routes and does not match project spend/config operations.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/members(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/activate-thread$/,
-  // Step 21: a customer-bot's no-code automation rules — now editable from the business's own
-  // Automation dashboard by a business ADMIN (GET member / POST+DELETE admin, enforced by
-  // requireBusinessMembership on the spaces worker; identity here, authorization there). Matches
-  // both /rules and /rules/:ruleId (one dynamic leaf after a static suffix — the SAME shape as
-  // /members(\/[^/]+)? above, not the corrupting dynamic-then-static shape). /spend stays OFF this
-  // allowlist deliberately — it's server-to-server agent accounting, never an operator surface.
-  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/rules(\/[^/]+)?$/,
   // F-39: read-only workspace file viewer — a project member browses/views the artifacts their
   // agent wrote to R2. Identity here, real per-project ACL (requireBusinessMembership) on the
   // spaces worker. Read-only GET only; the write side is the agent's, never end-user-reachable.
@@ -670,14 +655,11 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/threads(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
   /^\/spaces\/([^/]+)\/presence$/,
-  /^\/spaces\/([^/]+)\/my-businesses$/,
   /^\/spaces\/([^/]+)\/assistant-communications$/,
   /^\/spaces\/([^/]+)\/assistant-channels$/,
   /^\/spaces\/([^/]+)\/assistant-voice$/,
   /^\/spaces\/([^/]+)\/website-connections$/,
   /^\/spaces\/([^/]+)\/website-browser$/,
-  /^\/spaces\/([^/]+)\/my-spaces$/,
-  /^\/spaces\/([^/]+)\/spaces$/,
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/activate$/,
   /^\/spaces\/([^/]+)\/blueprints\/([^/]+)\/activation-preview$/,
   /^\/spaces\/([^/]+)\/shared-extension-installations\/([^/]+)(?:\/(?:filesystem-grants|lifecycle))?$/,
@@ -691,8 +673,6 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // itself carries no tenant filter to authorize against.
   // Live Market Radar is product-scoped for session verification; the spaces worker creates the
   // launched venture as a child of this product and applies the same authenticated identity.
-  /^\/spaces\/([^/]+)\/invites(\/|$)/,
-  /^\/spaces\/([^/]+)\/business-members(\/|$)/,
   // Phase E (§A1.17): pricing display + checkout initiation. All three are additionally gated by
   // Storefront pricing, business subscriptions, revenue, orders, and personal billing routes
   // were retired with Launchpad's business-commerce surface. Naelao plan billing and FDE

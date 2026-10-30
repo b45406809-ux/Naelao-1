@@ -311,10 +311,7 @@ describe("router — product end-user hybrid auth", () => {
     }
   });
 
-  // Phase C (§A1.17) added the business/invite routes: /businesses, /my-businesses (called with a
-  // PRODUCT ROOT :spaceId) and /invites*, /business-members* (called with a BUSINESS :spaceId —
-  // the first real exerciser of product-sessions/verify's parent-walk).
-  it("a valid nps_ session CAN reach the allowlisted business/invite paths", async () => {
+  it("retired business lifecycle endpoints reject product-user sessions", async () => {
     const env = makeEnv(
       makeSpacesStub({ validSession: true, resolvedTenant: "biz-tenant-1" })
     );
@@ -337,14 +334,11 @@ describe("router — product end-user hybrid auth", () => {
         env as never,
         execCtx
       );
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(401);
     }
   });
 
-  // Phase E (§A1.17) added pricing display + checkout initiation. Same "identity, not
-  // authorization" split — requireBusinessMembership on the spaces worker does the actual
-  // per-business check; this only proves the router will forward a valid end-user session.
-  it("a valid nps_ session CAN reach the allowlisted pricing/checkout paths", async () => {
+  it("does not route retired business checkout paths for external-user sessions", async () => {
     const env = makeEnv(
       makeSpacesStub({ validSession: true, resolvedTenant: "biz-tenant-1" })
     );
@@ -364,7 +358,7 @@ describe("router — product end-user hybrid auth", () => {
         env as never,
         execCtx
       );
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(401);
     }
   });
 
@@ -423,10 +417,7 @@ describe("router — product end-user hybrid auth", () => {
     expect(res.status).toBe(401);
   });
 
-  // Phase N (§A1.17) added the manifest-driven operator-shell routes (Revenue/Orders/Products) —
-  // same "identity, not authorization" split as pricing above; requireBusinessMembership on the
-  // spaces worker does the actual per-business check.
-  it("a valid nps_ session CAN reach the allowlisted products/orders/revenue paths", async () => {
+  it("does not route retired storefront, orders, or business-revenue paths", async () => {
     const env = makeEnv(
       makeSpacesStub({ validSession: true, resolvedTenant: "biz-tenant-1" })
     );
@@ -447,7 +438,7 @@ describe("router — product end-user hybrid auth", () => {
         env as never,
         execCtx
       );
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(401);
     }
   });
 

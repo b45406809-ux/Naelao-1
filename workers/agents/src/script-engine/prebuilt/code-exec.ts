@@ -29,7 +29,6 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { machinePrefix, workspacePrefix, type ExecutionTier } from "../types.js";
-import { assertNoReservedViolation } from "../reserved-capabilities.js";
 import { canRunVirtually, executeVirtualPosix } from "../virtual-posix.js";
 import { parseCliWords, interceptPlatformWords } from "../virtual-cli.js";
 import { parseShell } from "../shell-parser.js";
@@ -340,7 +339,6 @@ async function runBash(
       // Revalidate durable source on every load so restarts and out-of-band writes cannot bypass
       // the JIT compiler's safety contract.
       VirtualCliDispatcher.validateSynthesized(first, source);
-      assertNoReservedViolation({ name: `avos-bin.${first}`, code: source });
       return runTier(ctx, `avos-bin.${first}`, source, 2, {
         argv: parseCliWords(command).slice(1),
       }, undefined, VirtualCliDispatcher.synthesizedCapabilities(source));
@@ -409,13 +407,10 @@ export const codeExec: PrebuiltScript = {
     Bash: runBash,
     // codemode (spec): JS/TS with no file I/O runs at Tier 2 — the agent supplies its own
     // `run(args, ctx)` module body directly (no fixed harness; this *is* the Tier-2 contract).
-    // Same reserved-capability gate as script.create/update applies here too — ad hoc code
-    // bypasses the library, so it must not bypass the money-in guard as well.
     async "code.run_js"(a, c) {
       if (a.capabilities !== undefined && (!Array.isArray(a.capabilities) || a.capabilities.length > 64
         || a.capabilities.some(value => typeof value !== "string" || value.length > 200))) throw new Error("code_capabilities_invalid");
       const adHocCode = String(a["code"] ?? "");
-      assertNoReservedViolation({ name: "code-exec.run_js", code: adHocCode });
       await inspectMutation(adHocCode, {
         // JavaScript semicolons are not SQL statements. Actual RPC mutations still
         // enter their own host guards; retain catastrophic shell-pattern screening here.

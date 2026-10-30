@@ -75,39 +75,6 @@ async function recordPlatformKeyUsage(env: Env, tenantId: string, spaceId: strin
   }
 }
 
-// Hosts that are external payment processors (incl. Naelao's own LS). A connector may never be
-// registered against these — money-in is reserved to the prebuilt commerce script. Mirrors
-// workers/agents/src/script-engine/reserved-capabilities.ts (kept in sync; defense-in-depth).
-const RESERVED_PAYMENT_HOSTS: readonly string[] = [
-  "api.stripe.com", "stripe.com", "js.stripe.com", "checkout.stripe.com",
-  "api.paypal.com", "paypal.com", "paypalobjects.com",
-  "squareup.com", "connect.squareup.com",
-  "api.paddle.com", "paddle.com", "checkout.paddle.com",
-  "braintreegateway.com", "api.braintreegateway.com",
-  "razorpay.com", "api.razorpay.com", "api.checkout.com", "gr4vy.com",
-  "commerce.coinbase.com", "api.coinbase.com",
-  "api.lemonsqueezy.com", "lemonsqueezy.com",
-];
-
-function isReservedPaymentHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  return RESERVED_PAYMENT_HOSTS.some((p) => h === p || h.endsWith(`.${p}`));
-}
-
-// Mirrors workers/agents/src/script-engine/reserved-capabilities.ts's RESERVED_CAPABILITIES +
-// isReservedToolName (kept in sync by hand — same precedent as the payment-host list above).
-const RESERVED_TOOL_CAPABILITIES: readonly string[] = [
-  "collect_payment", "create_checkout", "charge_customer", "subscription_charge",
-  "issue_invoice", "payout", "wallet_withdraw", "wallet_balance", "connect_payment_account",
-];
-
-export function isReservedToolName(toolName: string): boolean {
-  const n = toolName.toLowerCase().replace(/[^a-z]/g, "_");
-  if (RESERVED_TOOL_CAPABILITIES.some((cap) => n.includes(cap))) return true;
-  return /(create|start|new|capture|collect)_?(payment|checkout|charge|invoice|payout|subscription)/.test(n)
-    || /\b(charge|payout|refund|withdraw)\b/.test(toolName.toLowerCase());
-}
-
 /**
  * Short-lived per-request HMAC credential token (mirrors workers/credentials generateCredentialToken).
  * Format: "t=<unix>,aid=<agentId>,v1=<hmac-hex>"; HMAC payload "<spaceId>:<agentId>:<timestamp>".
@@ -312,7 +279,6 @@ app.post("/connectors/composio/execute", async (c) => {
   if (!parsedBody.ok) return c.json({ error_code: parsedBody.errorCode }, parsedBody.status);
   const body = parsedBody.value;
   if (!body.connection_id || !body.action) return c.json({ error_code: "bad_request", message: "connection_id and action are required" }, 400);
-  if (isReservedToolName(body.action)) return c.json({ error_code: "reserved_capability", message: "Money-in actions are reserved to Naelao commerce" }, 403);
   const dlp = scanAndScrubEgress(body.arguments ?? {});
   if (dlp.findings.length) return c.json({ error_code: "egress_dlp_blocked", message: "Connector payload contains protected data" }, 422);
   try {
@@ -562,18 +528,11 @@ app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {
     return c.json({ error_code: "bad_request", message: "name is required" }, 400);
   }
 
-  // SSRF + reserved-payment checks apply only to direct connectors (the provider handles
-  // routing for Composio — we validate the provider API host at deploy time, not here).
+  // SSRF checks apply only to direct connectors (the provider handles routing for Composio).
   if (connectorProvider === "direct") {
     const urlValidation = await validateMcpUrl(url);
     if (!urlValidation.ok) {
       return c.json({ error_code: "bad_request", message: urlValidation.message }, 400);
-    }
-    if (isReservedPaymentHost(urlValidation.url.hostname)) {
-      return c.json({
-        error_code: "reserved_capability",
-        message: "Payment processors cannot be registered as MCP connectors; money-in is reserved to Naelao commerce.",
-      }, 403);
     }
   }
 
@@ -936,18 +895,6 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
   }
   if (!body.tool_name) {
     return c.json({ error_code: "bad_request", message: "tool_name is required" }, 400);
-  }
-
-  // §A1.17 Phase I: this guard previously existed ONLY in the mcp-connector prebuilt (a client
-  // of this route), so any caller that reaches this endpoint directly — e.g. the new ctx.mcp
-  // isolate loopback — bypassed it entirely. Enforced here too so it protects every caller, not
-  // just one; kept in sync with reserved-capabilities.ts's isReservedToolName by hand (same
-  // precedent as isReservedPaymentHost above).
-  if (isReservedToolName(body.tool_name)) {
-    return c.json({
-      error_code: "reserved_capability",
-      message: `Tool '${body.tool_name}' looks like a money-in capability, which is reserved to the prebuilt commerce script.`,
-    }, 403);
   }
 
   // Scan the serialized structure at the final outbound boundary. Fail closed and never log

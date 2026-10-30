@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDOStorage } from "../../../../tests/unit/helpers/sqlite-do-shim";
-import { LAUNCHPAD_MANIFEST } from "../launchpad-manifest.js";
+import { WORKSPACE_MANIFEST } from "../workspace-manifest.js";
 import { SpaceTypeRegistryDO } from "./SpaceTypeRegistryDO.js";
 
 describe("SpaceTypeRegistryDO install accounting", () => {
@@ -9,7 +9,7 @@ describe("SpaceTypeRegistryDO install accounting", () => {
     const registry = new SpaceTypeRegistryDO({ storage } as never, {} as never);
     const record = () => registry.fetch(new Request("https://registry/record-install", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ typeId: "launchpad", spaceId: "space-a", version: LAUNCHPAD_MANIFEST.version }),
+      body: JSON.stringify({ typeId: "workspace", spaceId: "space-a", version: WORKSPACE_MANIFEST.version }),
     }));
 
     expect((await record()).status).toBe(200);
@@ -17,7 +17,7 @@ describe("SpaceTypeRegistryDO install accounting", () => {
     const restarted = new SpaceTypeRegistryDO({ storage } as never, {} as never);
     await restarted.fetch(new Request("https://registry/types"));
     const listing = await (await restarted.fetch(new Request("https://registry/types"))).json() as { types: Array<{ id: string; install_count: number }> };
-    expect(listing.types.find((type) => type.id === "launchpad")?.install_count).toBe(1);
+    expect(listing.types.find((type) => type.id === "workspace")?.install_count).toBe(1);
   });
 
   it("rejects malformed, unsafe, and unknown install records", async () => {
@@ -27,7 +27,7 @@ describe("SpaceTypeRegistryDO install accounting", () => {
     }));
     expect((await post("{" )).status).toBe(400);
     expect((await post(JSON.stringify({ typeId: "../launchpad", spaceId: "space-a", version: "2.1.0" }))).status).toBe(400);
-    expect((await post(JSON.stringify({ typeId: "launchpad", spaceId: "space-a", version: "99.0.0" }))).status).toBe(404);
+    expect((await post(JSON.stringify({ typeId: "workspace", spaceId: "space-a", version: "99.0.0" }))).status).toBe(404);
     const register = (body: string) => registry.fetch(new Request("https://registry/register", {
       method: "POST", headers: { "content-type": "application/json" }, body,
     }));

@@ -7,7 +7,7 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // config row" (a clean 404 — permissive is correct) and "SpaceDO fetch failed" (5xx/network
 // error) into the same `null` value. Both handleScriptRun and handleChannelHeartbeat treated a
 // null config as "no restrictions", so a transient SpaceDO outage silently disabled BOTH
-// structural customer-bot controls (execution ceiling AND daily spend cap) that A1.13 requires
+// project controls (execution ceiling AND daily spend cap) that A1.13 requires
 // to be un-bypassable. Fixed: fetchProjectConfig now returns a found/not_found/error union;
 // only "error" fails closed (clamp to the most restrictive tier, treat as spend-capped) — a
 // clean 404 stays exactly as permissive as before.
@@ -96,7 +96,7 @@ async function heartbeat(doInstance: NaelaoAgentDO) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ spaceId: "space1", agentId: "naelao-agent", tenantId: "tenant1", apiKey: "" }),
   }));
-  return resp.json() as Promise<{ drained: number; answered: number; escalated: number; rule_handled: number; spend_capped: number }>;
+  return resp.json() as Promise<{ drained: number; answered: number; escalated: number; spend_capped: number }>;
 }
 
 describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a clean 404", () => {
@@ -161,7 +161,6 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
         async fetch(input: RequestInfo) {
           const url = new URL(typeof input === "string" ? input : (input as Request).url);
           if (/\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
-          if (/\/rules$/.test(url.pathname)) return Response.json({ data: [], count: 0 });
           if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) throw new Error("network down");
           return new Response("not found", { status: 404 });
         },
@@ -170,7 +169,7 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
       await inbound(spaceDO, "proj1");
 
       const result = await heartbeat(spaceDO);
-      expect(result).toMatchObject({ drained: 1, spend_capped: 1, answered: 0, escalated: 0, rule_handled: 0 });
+      expect(result).toMatchObject({ drained: 1, spend_capped: 1, answered: 0, escalated: 0 });
     });
 
     it("a clean 404 (no project config row) stays permissive — the message falls through to the reasoning loop, not spend_capped", async () => {
@@ -178,7 +177,6 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
         async fetch(input: RequestInfo) {
           const url = new URL(typeof input === "string" ? input : (input as Request).url);
           if (/\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
-          if (/\/rules$/.test(url.pathname)) return Response.json({ data: [], count: 0 });
           return new Response("not found", { status: 404 });
         },
       } as unknown as Fetcher;
@@ -186,32 +184,7 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
       await inbound(spaceDO, "proj1");
 
       const result = await heartbeat(spaceDO);
-      expect(result.spend_capped).toBe(0);
-    });
-
-    it("a rule-triggered run_script action also fails closed on a project config error, rather than running unrestricted", async () => {
-      const spacesWorker = {
-        async fetch(input: RequestInfo) {
-          const url = new URL(typeof input === "string" ? input : (input as Request).url);
-          if (/\/model-policy$/.test(url.pathname)) return Response.json({ policy: null });
-          if (/\/rules$/.test(url.pathname)) {
-            return Response.json({
-              data: [{ id: "r1", trigger_pattern: "hi", action: "run_script", reply_text: null, script_name: "some-script", enabled: 1, priority: 10 }],
-              count: 1,
-            });
-          }
-          if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) throw new Error("network down");
-          return new Response("not found", { status: 404 });
-        },
-      } as unknown as Fetcher;
-      const spaceDO = await makeDO(spacesWorker);
-      await inbound(spaceDO, "proj1");
-
-      const result = await heartbeat(spaceDO);
-      // The rule matched ("hi" is a substring of the message text), but the project-config
-      // error must short-circuit BEFORE the rule's run_script action ever executes — counted
-      // as spend_capped, not rule_handled.
-      expect(result).toMatchObject({ drained: 1, spend_capped: 1, rule_handled: 0 });
+      expect(result).toMatchObject({ spend_capped: 0, escalated: 1 });
     });
   });
 });

@@ -11,14 +11,6 @@
 
 import type { ChannelType } from "./channels.js";
 
-export interface ProjectRuleSeed {
-  trigger_pattern: string;
-  action: "reply" | "run_script" | "human_takeover";
-  reply_text?: string;
-  script_name?: string;
-  priority: number;
-}
-
 /** A cron-scheduled op the template seeds into scheduled_jobs (spec §05 cron-jobs.json), scoped
  *  to the project it's applied to. Deterministic, no-LLM dispatch — see A1.16.7/A1.16.13. */
 export interface ScheduledJobSeed {
@@ -48,9 +40,6 @@ export interface ProjectTemplate {
   default_agent_id?: string;
   /** The thread-level "switch agent" allowlist. Omitted/empty = unrestricted. */
   allowed_agent_ids?: string[];
-  /** Optional no-code triggers seeded by this template. These are configuration, not a
-   *  structural project kind or authorization grant. */
-  rules?: ProjectRuleSeed[];
   /** Cron-scheduled ops seeded into this project on template application. */
   scheduled_jobs?: ScheduledJobSeed[];
 }
@@ -82,14 +71,6 @@ export function validateProjectTemplates(templates: ProjectTemplate[] = PROJECT_
     }
     if (t.default_agent_id && t.allowed_agent_ids && t.allowed_agent_ids.length > 0 && !t.allowed_agent_ids.includes(t.default_agent_id)) {
       throw new Error(`Project template '${t.id}': default_agent_id '${t.default_agent_id}' must be included in allowed_agent_ids`);
-    }
-    for (const r of t.rules ?? []) {
-      if (r.action === "reply" && !r.reply_text) {
-        throw new Error(`Project template '${t.id}': a 'reply' rule requires reply_text`);
-      }
-      if (r.action === "run_script" && !r.script_name) {
-        throw new Error(`Project template '${t.id}': a 'run_script' rule requires script_name`);
-      }
     }
   }
 }

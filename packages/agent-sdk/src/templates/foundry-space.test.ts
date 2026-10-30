@@ -3,7 +3,7 @@ import { FOUNDRY_SPACE_TEMPLATE } from "./foundry-space.js";
 import { DOGFOOD_EXTENSION_BY_ID, DOGFOOD_EXTENSION_CANVASES, digestExtensionManifest, validateExtensionManifest } from "../index.js";
 
 describe("Foundry dogfood Space Template", () => {
-  it("is a portable Launchpad Space blueprint with an isolated Template Studio project", () => {
+  it("is a portable Space blueprint with an isolated Template Studio project", () => {
     expect(FOUNDRY_SPACE_TEMPLATE.id).toBe("tpl_foundry_space_v1");
     expect(FOUNDRY_SPACE_TEMPLATE.schemaVersion).toBe("2.0");
     expect(FOUNDRY_SPACE_TEMPLATE.requiredExtensions).toContain("ext_foundry_catalog");

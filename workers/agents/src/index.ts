@@ -5459,14 +5459,8 @@ async function applyProjectTemplate(
   if (!configResp.ok) return { error: await configResp.text(), status: 502 };
 
   if (!alreadyExisted) {
-    // 3. Seed the template's no-code triggers (for example, STOP/opt-out and human takeover).
-    for (const rule of template.rules ?? []) {
-      await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}/rules`, {
-        method: "POST", headers, body: JSON.stringify(rule),
-      }));
-    }
-
-    // 4. Seed the scheduled jobs (workspace templates' schedule/observation-driven work — e.g.
+    // 3. Seed scheduled jobs. Workspace templates provide schedules; channel behavior belongs to
+    // an installed, permissioned extension rather than a built-in project rule engine.
     //    a weekly community digest). Scoped to this project via project_id.
     for (const job of template.scheduled_jobs ?? []) {
       await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {

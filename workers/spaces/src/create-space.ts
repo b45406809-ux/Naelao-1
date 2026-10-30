@@ -1,9 +1,4 @@
-// Shared space-creation logic — extracted so `/builder/products` (Three-Tier Platform Model,
-// builder-routes.ts) doesn't reimplement a second, incomplete creation path. Phase 3 originally
-// did exactly that (a bare INSERT with no quota check, no config-schema validation, no
-// provisioning-queue enqueue, no template_id support) — a real split-brain with the existing,
-// fully-working `POST /spaces` route this file now backs too. Both routes call the SAME
-// createSpaceRecord(); there is exactly one space-creation code path.
+// Shared Space creation logic used by the generic Spaces API and administrative provisioning.
 
 import { getDOName } from "@naelao/crypto";
 import { checkFreeTierTemplateEligibility } from "./template-catalog.js";
@@ -162,10 +157,10 @@ export interface CreateSpaceParams {
   userId?: string;
   name: string;
   spacetypeId: string;
-  /** Launchpad hierarchy coordinates. Omit both for a root; departments must provide both. */
+  /** Optional hierarchy coordinates for legacy template-managed child Spaces. */
   parentSpaceId?: string;
   depth?: number;
-  /** For Launchpad: the selected product template (e.g. "creator-store"). */
+  /** Optional marketplace Space Template identifier. */
   templateId?: string;
   /** Certified FDE marketplace blueprint to activate after this Space is provisioned. */
   blueprintId?: string;
@@ -256,12 +251,9 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     }
   }
 
-  // Launchpad has one deliberately small hierarchy: product roots (depth 0) and their direct
-  // departments (depth 1). Do not trust a caller to describe ancestry: resolve the parent in D1
-  // and derive the stored depth from that authoritative row.
-  if (params.spacetypeId !== "launchpad") {
-    throw new SpaceCreationError(400, "invalid_hierarchy", "Only Launchpad spaces are supported");
-  }
+  // A Space is generic: its type comes from the requested template/runtime configuration. Keep
+  // ancestry authoritative and bounded for legacy template-managed child Spaces, but do not
+  // require every root Space to be a Launchpad product.
   const requestedDepth = params.depth ?? (params.parentSpaceId ? 1 : 0);
   if (requestedDepth === 0 && params.parentSpaceId) {
     throw new SpaceCreationError(400, "invalid_hierarchy", "A root space cannot have a parent");
@@ -281,8 +273,8 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
       // Deliberately do not disclose whether a parent in another tenant exists.
       throw new SpaceCreationError(404, "parent_not_found", "Parent space not found");
     }
-    if (parent.spacetype_id !== "launchpad" || parent.depth !== 0 || parent.parent_space_id) {
-      throw new SpaceCreationError(400, "invalid_hierarchy", "A department's parent must be a Launchpad root");
+    if (parent.depth !== 0 || parent.parent_space_id) {
+      throw new SpaceCreationError(400, "invalid_hierarchy", "A child Space must have a root Space as its parent");
     }
     derivedDepth = parent.depth + 1;
   }
@@ -317,12 +309,8 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     }
   }
 
-  // A product with no slug is not "a product without a subdomain yet" — it is a product nobody
-  // can reach. The Product Shell resolves every end-user URL as /p/{product_slug}, and nothing
-  // anywhere lets a builder set the slug after creation, so a blank one produced a product that
-  // provisioned successfully, reported `active`, and could never be opened by its owner or by a
-  // single customer. Derived from the name instead, which is always present.
-  // Child Spaces live inside their product URL and do not receive their own subdomain.
+  // Keep a stable address for root Spaces that opt into a hosted shell. Child Spaces inherit
+  // their parent's address and do not receive their own subdomain.
   if (!params.parentSpaceId && !params.productSlug) {
     const derived = await deriveAvailableSlug(env.PLATFORM_DB, params.name);
     if (!derived) {

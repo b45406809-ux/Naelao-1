@@ -48,7 +48,6 @@ function makeR2(): R2Bucket {
 interface FakeProject {
   execution_ceiling: number;
   daily_spend_cap_credits: number;
-  rules: Array<{ trigger_pattern: string; action: string; reply_text?: string; script_name?: string; enabled: number; priority: number }>;
 }
 
 function makeSpacesWorker(projects: Record<string, FakeProject>) {
@@ -56,12 +55,11 @@ function makeSpacesWorker(projects: Record<string, FakeProject>) {
     async fetch(input: RequestInfo) {
       const req = input as Request;
       const url = new URL(typeof input === "string" ? input : req.url);
-      const projectMatch = url.pathname.match(/^\/spaces\/[^/]+\/projects\/([^/]+)(\/rules)?$/);
+      const projectMatch = url.pathname.match(/^\/spaces\/[^/]+\/projects\/([^/]+)$/);
       if (projectMatch) {
-        const [, projectId, rulesSuffix] = projectMatch;
+        const [, projectId] = projectMatch;
         const project = projects[projectId!];
         if (!project) return new Response("not found", { status: 404 });
-        if (rulesSuffix) return Response.json({ data: project.rules, count: project.rules.length });
         return Response.json({ execution_ceiling: project.execution_ceiling, daily_spend_cap_credits: project.daily_spend_cap_credits });
       }
       return new Response("not found", { status: 404 });
@@ -115,7 +113,7 @@ function heartbeat(doInstance: NaelaoAgentDO, spaceId = "space1") {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ spaceId, agentId: "naelao-agent", tenantId: "tenant1", apiKey: "" }),
-  })).then((r) => r.json() as Promise<{ drained: number; answered: number; rule_handled: number }>);
+  })).then((r) => r.json() as Promise<{ drained: number; answered: number; escalated: number }>);
 }
 
 const whatsappMsg = (from: string, id: string, text: string) => ({
@@ -133,9 +131,9 @@ describe("handleChannelInbound — immediate drain (P0-1)", () => {
     expect(body.pending[0]?.text).toContain("Reply for the task");
   });
 
-  it("a message with spaceId+tenantId is answered without any explicit heartbeat call", async () => {
+  it("an unbound channel message is immediately held for a human without a built-in responder", async () => {
     const { spaceDO, waitUntilPromises } = await makeDO({
-      proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0, rules: [{ trigger_pattern: "hours", action: "reply", reply_text: "9-5 Mon-Fri", enabled: 1, priority: 10 }] },
+      proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0 },
     });
     const res = await inbound(spaceDO, whatsappMsg("165", "w1", "what are your hours"), { projectId: "proj1", spaceId: "space1", tenantId: "tenant1" });
     expect(res.status).toBe(200);
@@ -145,24 +143,26 @@ describe("handleChannelInbound — immediate drain (P0-1)", () => {
     await Promise.all(waitUntilPromises);
 
     const again = await heartbeat(spaceDO);
-    expect(again.drained).toBe(0); // already answered by the immediate drain, nothing left
+    expect(again.drained).toBe(0); // already escalated by the immediate drain, nothing left queued
+    const sessions = await spaceDO.fetch(new Request("http://agent-do/channels/unanswered"));
+    expect(sessions.status).toBe(200);
   });
 
   it("does not attempt an immediate drain when spaceId/tenantId are absent (unaffected legacy call shape)", async () => {
     const { spaceDO, waitUntilPromises } = await makeDO({
-      proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0, rules: [{ trigger_pattern: "hours", action: "reply", reply_text: "9-5 Mon-Fri", enabled: 1, priority: 10 }] },
+      proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0 },
     });
     await inbound(spaceDO, whatsappMsg("165", "w1", "what are your hours"), { projectId: "proj1" });
     expect(waitUntilPromises).toHaveLength(0);
 
     // Still drainable by an explicit heartbeat call, exactly as before this change.
     const result = await heartbeat(spaceDO);
-    expect(result.rule_handled).toBe(1);
+    expect(result.escalated).toBe(1);
   });
 
   it("two overlapping handleChannelHeartbeat invocations never double-process the same message", async () => {
     const { spaceDO } = await makeDO({
-      proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0, rules: [{ trigger_pattern: "hours", action: "reply", reply_text: "9-5 Mon-Fri", enabled: 1, priority: 10 }] },
+      proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0 },
     });
     await inbound(spaceDO, whatsappMsg("165", "w1", "what are your hours"), { projectId: "proj1" });
 
@@ -171,13 +171,13 @@ describe("handleChannelInbound — immediate drain (P0-1)", () => {
     // between deterministically reproduces the same interleaving a real concurrent immediate
     // drain + cron sweep (or two simultaneous immediate drains) would hit.
     const [first, second] = await Promise.all([heartbeat(spaceDO), heartbeat(spaceDO)]);
-    const combined = { drained: first.drained + second.drained, rule_handled: first.rule_handled + second.rule_handled };
-    expect(combined).toEqual({ drained: 1, rule_handled: 1 }); // exactly once, not twice
+    const combined = { drained: first.drained + second.drained, escalated: first.escalated + second.escalated };
+    expect(combined).toEqual({ drained: 1, escalated: 1 }); // exactly once, not twice
   });
 
   it("a message left unresolved (spend-capped) reverts its claim so it's retryable, not lost", async () => {
     const { spaceDO } = await makeDO({
-      proj1: { execution_ceiling: 2, daily_spend_cap_credits: 100, rules: [] },
+      proj1: { execution_ceiling: 2, daily_spend_cap_credits: 100 },
     });
     await inbound(spaceDO, whatsappMsg("165", "w1", "hi, question about my order"), { projectId: "proj1" });
 

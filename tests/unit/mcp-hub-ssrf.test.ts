@@ -89,6 +89,21 @@ describe("mcp-hub SSRF — DoH-backed checkSsrf replaces the literal-only blockl
     expect(res.status).toBe(400);
   });
 
+  it("allows a payment provider connector when normal SSRF validation passes", async () => {
+    mockFetchWithDohResolution("93.184.216.34");
+    const env = makeEnv();
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const res = await mcpHubWorker.fetch(
+      req("/v1/spaces/space-1/mcp-servers", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+        body: JSON.stringify({ name: "payments", url: "https://api.stripe.com/mcp" }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(201);
+  });
+
   it("allows registration when the hostname resolves to an ordinary public IP", async () => {
     mockFetchWithDohResolution("93.184.216.34");
     const env = makeEnv();
@@ -274,11 +289,12 @@ describe("mcp-hub Phase P — Composio/Pipedream provider routing", () => {
     expect(body.result).toEqual({ result: "email sent" });
   });
 
-  it("reserved money-in guard still applies on Composio connector calls", async () => {
-    const env = makeEnvP();
+  it("allows a granted extension operation to reach its connected provider", async () => {
+    globalThis.fetch = (async () => Response.json({ successful: true, data: { id: "payment-1" } })) as typeof fetch;
+    const env = makeEnvP({ COMPOSIO_API_KEY: "test-composio-platform-key" });
     await env.PLATFORM_DB.prepare(
       `INSERT INTO mcp_servers (id, space_id, tenant_id, name, url, auth_type, auth_secret_name, enabled, connector_provider, provider_connection_id, created_at, updated_at)
-       VALUES ('srv-c2', 'space-p', 'tenant-p', 'composio-stripe', '', 'bearer', 'COMPOSIO_API_KEY', 1, 'composio', 'conn-abc', ?, ?)`
+       VALUES ('srv-c2', 'space-p', 'tenant-p', 'composio-stripe', '', 'none', NULL, 1, 'composio', 'conn-abc', ?, ?)`
     ).bind(new Date().toISOString(), new Date().toISOString()).run();
 
     const token = await mintInternalToken(PLATFORM_SECRET, "tenant-p");
@@ -290,8 +306,6 @@ describe("mcp-hub Phase P — Composio/Pipedream provider routing", () => {
       }),
       env as never, execCtx
     );
-    expect(res.status).toBe(403);
-    const body = await res.json<{ error_code: string }>();
-    expect(body.error_code).toBe("reserved_capability");
+    expect(res.status).toBe(200);
   });
 });

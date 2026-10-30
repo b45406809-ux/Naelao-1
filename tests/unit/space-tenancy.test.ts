@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { resolveTenancy } from "../../workers/spaces/src/tenancy.js";
-import { LAUNCHPAD_MANIFEST } from "../../workers/spaces/src/launchpad-manifest.js";
+import { WORKSPACE_MANIFEST } from "../../workers/spaces/src/workspace-manifest.js";
 
 // Tenancy is the first-class data-topology dimension (spec G-Y15). It must resolve
 // deterministically from a productConfig — including legacy configs that only set
@@ -43,10 +43,10 @@ describe("resolveTenancy (G-Y15)", () => {
   });
 });
 
-describe("Launchpad default tenancy", () => {
-  it("ships as a SaaS product with isolated child businesses", () => {
-    expect(LAUNCHPAD_MANIFEST.productConfig?.tenancy).toBe("saas");
-    expect(LAUNCHPAD_MANIFEST.productConfig?.agencyShell).toBe(false);
-    expect(resolveTenancy(LAUNCHPAD_MANIFEST.productConfig)).toBe("saas");
+describe("generic Workspace tenancy", () => {
+  it("ships as a team Space with opt-in child Spaces", () => {
+    expect(WORKSPACE_MANIFEST.productConfig?.tenancy).toBe("team");
+    expect(WORKSPACE_MANIFEST.productConfig?.agencyShell).toBe(false);
+    expect(resolveTenancy(WORKSPACE_MANIFEST.productConfig)).toBe("team");
   });
 });

@@ -30,7 +30,7 @@ async function call(doInstance: SpaceDO, path: string, method: string, body?: un
   return { status: resp.status, json };
 }
 
-describe("SpaceDO — generic project layout config", () => {
+describe("SpaceDO — generic project configuration", () => {
   let spaceDO: SpaceDO;
 
   beforeEach(() => {
@@ -129,57 +129,5 @@ describe("SpaceDO — generic project layout config", () => {
     expect(got.status).toBe(404);
     const patched = await call(spaceDO, "/projects/does-not-exist", "PATCH", { kind: "customer_bot" });
     expect(patched.status).toBe(404);
-  });
-});
-
-describe("SpaceDO — project_rules (no-code 'after customer says X' triggers)", () => {
-  let spaceDO: SpaceDO;
-  let projectId: string;
-
-  beforeEach(async () => {
-    spaceDO = makeSpaceDO();
-    const created = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "WhatsApp Bot" });
-    projectId = created.json.id;
-  });
-
-  it("creates a 'reply' rule and lists it back", async () => {
-    const created = await call(spaceDO, `/projects/${projectId}/rules`, "POST", {
-      trigger_pattern: "STOP",
-      action: "reply",
-      reply_text: "You have been unsubscribed.",
-      priority: 100,
-    });
-    expect(created.status).toBe(201);
-
-    const list = await call(spaceDO, `/projects/${projectId}/rules`, "GET");
-    expect(list.json.count).toBe(1);
-    expect(list.json.data[0]).toMatchObject({ trigger_pattern: "STOP", action: "reply", reply_text: "You have been unsubscribed." });
-  });
-
-  it("higher-priority rules are listed first (checked first by the heartbeat)", async () => {
-    await call(spaceDO, `/projects/${projectId}/rules`, "POST", { trigger_pattern: "hours", action: "reply", reply_text: "We're open 9-5.", priority: 1 });
-    await call(spaceDO, `/projects/${projectId}/rules`, "POST", { trigger_pattern: "STOP", action: "human_takeover", priority: 100 });
-    const list = await call(spaceDO, `/projects/${projectId}/rules`, "GET");
-    expect(list.json.data[0].trigger_pattern).toBe("STOP");
-  });
-
-  it("rejects a 'reply' rule with no reply_text, and a 'run_script' rule with no script_name", async () => {
-    const noReply = await call(spaceDO, `/projects/${projectId}/rules`, "POST", { trigger_pattern: "hi", action: "reply" });
-    expect(noReply.status).toBe(400);
-    const noScript = await call(spaceDO, `/projects/${projectId}/rules`, "POST", { trigger_pattern: "hi", action: "run_script" });
-    expect(noScript.status).toBe(400);
-  });
-
-  it("404s creating a rule under a non-existent project", async () => {
-    const result = await call(spaceDO, "/projects/nope/rules", "POST", { trigger_pattern: "x", action: "human_takeover" });
-    expect(result.status).toBe(404);
-  });
-
-  it("deletes a rule", async () => {
-    const created = await call(spaceDO, `/projects/${projectId}/rules`, "POST", { trigger_pattern: "x", action: "human_takeover" });
-    const del = await call(spaceDO, `/projects/${projectId}/rules/${created.json.id}`, "DELETE");
-    expect(del.status).toBe(200);
-    const list = await call(spaceDO, `/projects/${projectId}/rules`, "GET");
-    expect(list.json.count).toBe(0);
   });
 });

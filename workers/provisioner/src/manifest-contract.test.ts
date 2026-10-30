@@ -1,24 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { LAUNCHPAD_MANIFEST } from "../../spaces/src/launchpad-manifest.js";
+import { WORKSPACE_MANIFEST } from "../../spaces/src/workspace-manifest.js";
 import { isProvisionableManifest } from "./manifest-contract.js";
 
-const manifest = LAUNCHPAD_MANIFEST;
+const manifest = WORKSPACE_MANIFEST;
 
 describe("provisioner manifest contract", () => {
   it("accepts a bounded manifest for the requested SpaceType", () => {
-    expect(isProvisionableManifest(manifest, "launchpad")).toBe(true);
+    expect(isProvisionableManifest(manifest, "workspace")).toBe(true);
   });
 
   it.each([
-    [{ ...manifest, id: "other" }, "launchpad"],
-    [{ ...manifest, agentEnvironment: { ...manifest.agentEnvironment, defaultExecutionTier: "unknown" } }, "launchpad"],
-    [{ ...manifest, backend: { ...manifest.backend, platformDOs: "not-an-array" } }, "launchpad"],
-    [{ ...manifest, backend: { ...manifest.backend, r2Prefixes: ["../other-space"] } }, "launchpad"],
-    [{ ...manifest, backend: { ...manifest.backend, r2Prefixes: ["x".repeat(129)] } }, "launchpad"],
-    [{ ...manifest, ui: { ...manifest.ui, externalPortal: { enabled: true, templateId: "", defaultSlug: "bad slug" } } }, "launchpad"],
-    [{ ...manifest, lifecycle: { provisionerWorker: "http://example.com/provision" } }, "launchpad"],
-    [{ ...manifest, lifecycle: { provisionerWorker: "https://user:pass@example.com/provision" } }, "launchpad"],
-    [null, "launchpad"],
+    [{ ...manifest, id: "other" }, "workspace"],
+    [{ ...manifest, agentEnvironment: { ...manifest.agentEnvironment, defaultExecutionTier: "unknown" } }, "workspace"],
+    [{ ...manifest, backend: { ...manifest.backend, platformDOs: "not-an-array" } }, "workspace"],
+    [{ ...manifest, backend: { ...manifest.backend, r2Prefixes: ["../other-space"] } }, "workspace"],
+    [{ ...manifest, backend: { ...manifest.backend, r2Prefixes: ["x".repeat(129)] } }, "workspace"],
+    [{ ...manifest, ui: { ...manifest.ui, externalPortal: { enabled: true, templateId: "", defaultSlug: "bad slug" } } }, "workspace"],
+    [{ ...manifest, lifecycle: { provisionerWorker: "http://example.com/provision" } }, "workspace"],
+    [{ ...manifest, lifecycle: { provisionerWorker: "https://user:pass@example.com/provision" } }, "workspace"],
+    [null, "workspace"],
   ])("rejects malformed provisioning manifest %#", (value, id) => {
     expect(isProvisionableManifest(value, id)).toBe(false);
   });

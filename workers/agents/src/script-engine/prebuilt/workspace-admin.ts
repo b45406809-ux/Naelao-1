@@ -87,12 +87,7 @@ async function createFromTemplate(ctx: PrebuiltOpContext, templateId: string, na
       : {}),
   });
 
-  // 3. Seed starter rules.
-  for (const rule of template.rules ?? []) {
-    await spacesCall(ctx, "POST", `/spaces/${spaceId}/projects/${project.id}/rules`, { ...rule });
-  }
-
-  // 4. Seed scheduled jobs.
+  // 3. Seed scheduled jobs.
   for (const job of template.scheduled_jobs ?? []) {
     await spacesCall(ctx, "POST", `/spaces/${spaceId}/scheduled-jobs`, { ...job, project_id: project.id });
   }
@@ -103,11 +98,10 @@ async function createFromTemplate(ctx: PrebuiltOpContext, templateId: string, na
 export const workspaceAdmin: PrebuiltScript = {
   name: "workspace-admin",
   description:
-    "Scaffold and manage the business's workspace: create a new project (either a plain one, or " +
-    "fully configured from the project-templates catalogue — customer support bots, community " +
-    "monitoring, etc.), list and reconfigure existing projects (including renaming and archiving " +
-    "them), control who can see a private project, and read the space's installed agent roster. " +
-    "Creating or reconfiguring a project is a real structural change to the business — the owner " +
+    "Scaffold and manage a Space workspace: create projects, apply available project presets, " +
+    "schedule project work, list and reconfigure projects (including renaming and archiving them), " +
+    "control private-project membership, and read the Space's installed assistant roster. " +
+    "Creating or reconfiguring a project is a structural change to the Space — a Space manager " +
     "reviews it before it happens.",
   domain: "api",
   requires_tier: 2,

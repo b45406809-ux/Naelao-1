@@ -4,23 +4,26 @@ import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { Sidebar, TopBar, useTheme, type SidebarNavEntry } from "@naelao/ui";
 import { useAuth } from "@/lib/auth-provider";
-import { getNaelaoLaunchpadDashboard } from "@/lib/api";
+import { listApiKeys } from "@/lib/api";
 
 const NAV_ITEMS: SidebarNavEntry[] = [
   { key: "dashboard", icon: "home", label: "Overview" },
-  { key: "launchpad", icon: "spaces", label: "Launchpad" },
+  { key: "spaces", icon: "spaces", label: "Spaces" },
+  { key: "templates", icon: "spaces", label: "Templates" },
   { key: "settings", icon: "settings", label: "Settings" },
 ];
 
 function activeKeyFor(pathname: string | null): string {
-  if (pathname?.startsWith("/dashboard/products")) return "launchpad";
+  if (pathname?.startsWith("/dashboard/spaces")) return "spaces";
+  if (pathname?.startsWith("/dashboard/templates")) return "templates";
   if (pathname?.startsWith("/dashboard/settings") || pathname?.startsWith("/dashboard/api-keys")) return "settings";
   return "dashboard";
 }
 
 const ROUTE_FOR_KEY: Record<string, string> = {
   dashboard: "/dashboard",
-  launchpad: "/dashboard/products",
+  spaces: "/dashboard/spaces",
+  templates: "/dashboard/templates",
   settings: "/dashboard/settings",
 };
 
@@ -38,7 +41,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     if (!isHydrated || !isAuthenticated) return;
     let active = true;
-    getNaelaoLaunchpadDashboard()
+    listApiKeys()
       .then(() => { if (active) setTeamAccess("allowed"); })
       .catch(() => { if (active) setTeamAccess("denied"); });
     return () => { active = false; };

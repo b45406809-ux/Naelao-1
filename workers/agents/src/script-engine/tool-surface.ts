@@ -30,7 +30,6 @@ import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./scrip
 import { markdownSection, markdownTableOfContents, parseSkillReadOptions, skillLineWindow } from "./skill-markdown.js";
 import { classifyExecutionRouteWithSentry, EXECUTION_ENGINES, runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
-import { assertNoReservedViolation } from "./reserved-capabilities.js";
 import { isReadSafeOperation } from "./assistant-access.js";
 import { enforceWriteGuardWithSentry } from "@naelao/agent-sdk";
 import { interceptPlatformCli } from "./virtual-cli.js";
@@ -701,16 +700,6 @@ export class ScriptToolSurface {
     this.assertWritable(`script.create('${input.name}')`);
     this.assertWithinCeiling(input.metadata.requires_tier, `script.create('${input.name}')`);
 
-    // Income-wallet protection: a user/agent script may never collect money. Only the
-    // prebuilt commerce op (Naelao's Lemon Squeezy store) may — that is how the platform
-    // fee is guaranteed. Reject reserved-capability authoring at create time (fail-closed).
-    assertNoReservedViolation({
-      name: input.name,
-      code: input.code,
-      tags: input.metadata.tags,
-      domain: input.metadata.domain,
-    });
-
     // Embed at create time (spec §16) so script.find can retrieve it.
     if (this.env.embedder && !input.metadata.embedding_vector) {
       try {
@@ -738,20 +727,14 @@ export class ScriptToolSurface {
     reason: string
   ): Promise<ScriptMetadata> {
     this.assertWritable(`script.update('${name}')`);
-    // Re-check on update so a benign script can't be edited into a money-in bypass — and so a
-    // ceiling lowered AFTER creation (admin restricts a project) is enforced retroactively.
+    // Re-check the execution ceiling so a project restriction lowered after creation is
+    // enforced retroactively.
     if (patch.metadata?.requires_tier !== undefined) {
       this.assertWithinCeiling(patch.metadata.requires_tier, `script.update('${name}')`);
     } else {
       const existing = await this.library.read(name);
       if (existing) this.assertWithinCeiling(existing.metadata.requires_tier, `script.update('${name}')`);
     }
-    assertNoReservedViolation({
-      name,
-      code: patch.code,
-      tags: patch.metadata?.tags,
-      domain: patch.metadata?.domain,
-    });
     const meta = await this.library.update(name, patch, reason);
     await indexScriptEmbedding(this.env, meta);
     return meta;
@@ -1051,8 +1034,8 @@ export class ScriptToolSurface {
         });
       } catch (err) {
         // Growth-layer "click Install" onboarding (mcp-connector.ts's resolveServerId): a thrown
-        // Error can carry needsConnector/connectorId/connectorName metadata (same precedent as
-        // reserved-capabilities.ts's `reserved` flag) — surfaced as real result fields so the
+        // Error can carry needsConnector/connectorId/connectorName metadata, surfaced as result
+        // fields so the
         // reasoning loop's answer, and any future UI, sees a structured signal rather than only
         // free text buried in the error message.
         const meta = err as unknown as Record<string, unknown>;

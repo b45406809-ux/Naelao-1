@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiFetch, getSpace, listBuilderProductsPage, updateBuilderProduct } from "../../apps/dashboard/src/lib/api";
+import { apiFetch, getSpace, listSpaces } from "../../apps/dashboard/src/lib/api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -25,30 +25,17 @@ describe("dashboard API path identifiers", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("encodes each space and product identifier independently on writes", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "ok" }), {
+  it("loads the tenant's generic Space collection", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await updateBuilderProduct("product b", { name: "updated" });
+    await listSpaces();
 
     const requested = new URL(fetchMock.mock.calls[0]![0] as string);
-    expect(requested.pathname).toBe("/builder/products/product%20b");
-  });
-
-  it("passes a page number when fetching builder products", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      data: [], product_count: 205, page: 2, page_size: 200, page_count: 2,
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await listBuilderProductsPage(2);
-
-    const requested = new URL(fetchMock.mock.calls[0]![0] as string);
-    expect(requested.pathname).toBe("/builder/products");
-    expect(requested.searchParams.get("page")).toBe("2");
+    expect(requested.pathname).toBe("/spaces");
   });
 
   it("does not add JSON Content-Type to bodyless requests", async () => {

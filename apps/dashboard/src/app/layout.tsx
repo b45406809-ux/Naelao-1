@@ -4,7 +4,7 @@ import { AuthProvider } from "@/lib/auth-provider";
 
 export const metadata: Metadata = {
   title: "Naelao Dashboard",
-  description: "Naelao team console for Launchpad and platform operations",
+  description: "Naelao team dashboard for Spaces and platform operations",
   referrer: "no-referrer",
 };
 

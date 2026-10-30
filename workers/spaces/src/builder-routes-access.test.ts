@@ -30,10 +30,10 @@ async function teamHeaders(tenantId: string) {
 }
 
 describe("builder dashboard access boundary", () => {
-  it("denies authenticated non-Naelao tenants across product and API-key routes", async () => {
+  it("denies authenticated non-Naelao tenants across team-only template and API-key routes", async () => {
     const app = appFor();
     const headers = await teamHeaders("customer-tenant");
-    for (const path of ["/builder/launchpad", "/builder/products", "/builder/api-keys"]) {
+    for (const path of ["/builder/templates", "/builder/api-keys"]) {
       const response = await app.request(path, { headers }, envFor("naelao-team"));
       expect(response.status, path).toBe(403);
       expect((await response.json()).error_code).toBe("forbidden");
@@ -41,7 +41,7 @@ describe("builder dashboard access boundary", () => {
   });
 
   it("fails closed when the Naelao dashboard tenant is not configured", async () => {
-    const response = await appFor().request("/builder/launchpad", {
+    const response = await appFor().request("/builder/api-keys", {
       headers: await teamHeaders("naelao-team"),
     }, envFor());
     expect(response.status).toBe(403);
@@ -50,15 +50,15 @@ describe("builder dashboard access boundary", () => {
   it("denies ordinary team members administrative dashboard access", async () => {
     const headers = await teamHeaders("naelao-team");
     headers["x-naelao-role"] = "member";
-    const response = await appFor().request("/builder/launchpad", { headers }, envFor("naelao-team"));
+    const response = await appFor().request("/builder/api-keys", { headers }, envFor("naelao-team"));
     expect(response.status).toBe(403);
   });
 
-  it("allows the configured Naelao tenant to read its singleton Launchpad surface", async () => {
-    const response = await appFor().request("/builder/launchpad", {
+  it("allows the configured Naelao tenant to read its team Space Template", async () => {
+    const response = await appFor().request("/builder/templates", {
       headers: await teamHeaders("naelao-team"),
     }, envFor("naelao-team"));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ product: null, can_initialize: true });
+    expect(await response.json()).toHaveProperty("data");
   });
 });

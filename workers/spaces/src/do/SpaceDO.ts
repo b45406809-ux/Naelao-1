@@ -2273,6 +2273,15 @@ const MIGRATIONS: Migration[] = [
       LEFT JOIN extension_releases r ON r.extension_id=i.extension_id AND r.version=i.release_version
       WHERE i.release_version IS NULL OR r.manifest_json IS NOT NULL;
   ` },
+  {
+    version: 104,
+    description: "remove retired wallet, external revenue, and customer-bot analytics storage",
+    up: `DROP TABLE IF EXISTS wallet_ledger;
+      DROP TABLE IF EXISTS wallet_payouts;
+      DROP TABLE IF EXISTS external_revenue_snapshots;
+      DROP TABLE IF EXISTS customer_conversations;
+      DROP TABLE IF EXISTS project_rules;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -3133,9 +3142,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/internal/executive-contacts") return this.listExecutiveContacts(url);
       if (method === "POST" && url.pathname === "/internal/executive/verify") return this.verifyExecutiveContact(request);
       if (method === "POST" && url.pathname === "/internal/emergency-stop") return this.handleEmergencyStop(request);
-      if (method === "POST" && url.pathname === "/internal/customer-conversations") return this.recordCustomerConversation(request);
-      if (method === "GET" && url.pathname === "/internal/customer-conversations/urgent") return this.listUrgentCustomerConversations(url.searchParams);
-      if (method === "POST" && url.pathname === "/internal/customer-conversations/mark-alerted") return this.markCustomerConversationsAlerted(request);
       if (url.pathname === "/assistant-voice" && (method === "GET" || method === "PATCH")) return assistantVoiceSettings(this.ctx.storage, request);
       if (url.pathname === "/assistant-channels" && (method === "GET" || method === "PATCH")) {
         const userId = url.searchParams.get("user_id"), projectId = url.searchParams.get("project_id");
@@ -3587,29 +3593,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.upsertProjectWikiConcept(projWikiMatch[1], request);
       if (method === "GET" && projWikiMatch?.[1])
         return this.searchProjectWiki(projWikiMatch[1], url.searchParams);
-      // ── project_rules (no-code "after customer says X" triggers) ──────────────
-      const projectRulesMatch = url.pathname.match(
-        /^\/projects\/([^/]+)\/rules$/
-      );
-      if (method === "GET" && projectRulesMatch?.[1]) {
-        return this.listProjectRules(projectRulesMatch[1]);
-      }
-      if (method === "POST" && projectRulesMatch?.[1]) {
-        return this.createProjectRule(projectRulesMatch[1], request);
-      }
-      const projectRuleIdMatch = url.pathname.match(
-        /^\/projects\/([^/]+)\/rules\/([^/]+)$/
-      );
-      if (
-        method === "DELETE" &&
-        projectRuleIdMatch?.[1] &&
-        projectRuleIdMatch?.[2]
-      ) {
-        return this.deleteProjectRule(
-          projectRuleIdMatch[1],
-          projectRuleIdMatch[2]
-        );
-      }
       // ── Authoritative per-project daily spend (F9) ─────────────────────────────
       const projectSpendMatch = url.pathname.match(
         /^\/projects\/([^/]+)\/spend$/
@@ -4521,32 +4504,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         "UPDATE projects SET execution_status='FROZEN_FOR_RFC' WHERE space_id=? AND execution_status='ACTIVE'", body.space_id!);
     });
     return Response.json({ space_status: "FROZEN_BY_OWNER", task_status: "EMERGENCY_STOPPED", frozen_at: now });
-  }
-
-  private async recordCustomerConversation(request: Request): Promise<Response> {
-    const b = await request.json<{ id?: string; space_id?: string; channel?: string; customer_id?: string; transcript_json?: unknown; sentiment_score?: number; unresolved?: boolean; escalated?: boolean }>();
-    if (!b.id || !b.space_id || !b.channel || !b.customer_id || !Array.isArray(b.transcript_json)) return Response.json({ error: "invalid conversation" }, { status: 400 });
-    execute(this.ctx.storage.sql as never,
-      `INSERT OR REPLACE INTO customer_conversations(id,space_id,channel,customer_id,transcript_json,sentiment_score,unresolved,escalated)
-       VALUES (?,?,?,?,?,?,?,?)`, b.id, b.space_id, b.channel, b.customer_id, JSON.stringify(b.transcript_json), Math.max(-1, Math.min(1, b.sentiment_score ?? 0)), b.unresolved ? 1 : 0, b.escalated ? 1 : 0);
-    return Response.json({ recorded: true }, { status: 201 });
-  }
-
-  private listUrgentCustomerConversations(params: URLSearchParams): Response {
-    const rows = queryAll(this.ctx.storage.sql as never,
-      `SELECT id AS conversationId,channel,customer_id AS customerId,sentiment_score AS sentimentScore,unresolved
-       FROM customer_conversations WHERE space_id=? AND analytics_alerted=0 AND (sentiment_score < -0.6 OR unresolved=1)
-       ORDER BY created_at ASC LIMIT 100`, params.get("space_id") ?? "");
-    return Response.json({ conversations: rows });
-  }
-
-  private async markCustomerConversationsAlerted(request: Request): Promise<Response> {
-    const b = await request.json<{ space_id?: string; ids?: string[] }>();
-    const ids = (b.ids ?? []).filter(Boolean).slice(0, 100);
-    if (!b.space_id || !ids.length) return Response.json({ updated: 0 });
-    const result = this.ctx.storage.sql.exec(
-      `UPDATE customer_conversations SET analytics_alerted=1 WHERE space_id=? AND id IN (${ids.map(() => "?").join(",")})`, b.space_id, ...ids);
-    return Response.json({ updated: result.rowsWritten });
   }
 
   private async claimWebhookEvent(request: Request): Promise<Response> {
@@ -7218,7 +7175,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const blockers = [
       ...(project.status !== "active" ? ["Only active projects can graduate."] : []),
       ...(project.subspace_id ? ["Project already belongs to a subspace."] : []),
-      ...(!root || root.status !== "active" || root.depth !== 0 || root.space_type !== "launchpad" ? ["Graduation requires an active Launchpad root space."] : []),
+      ...(!root || root.status !== "active" || root.depth !== 0 ? ["Graduation requires an active root Space."] : []),
       ...(inaccessibleTables.length ? ["One or more local project tables could not be inventoried."] : []),
     ];
     return Response.json({
@@ -7248,7 +7205,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (project.status !== "active") return Response.json({ error_code: "project_not_active" }, { status: 409 });
     const root = queryOne<SpaceRow>(sql,
       "SELECT * FROM spaces WHERE id = ? AND status = 'active' AND depth = 0 AND parent_id IS NULL", project.space_id);
-    if (!root || root.space_type !== "launchpad") return Response.json({ error_code: "subspace_graduation_requires_launchpad_root" }, { status: 409 });
+    if (!root) return Response.json({ error_code: "subspace_graduation_requires_root_space" }, { status: 409 });
     const now = new Date().toISOString();
     const actorId = body.actor_id ?? "";
     if (action === "return-to-parent") {
@@ -8831,126 +8788,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   // Stored-value wallet and external-revenue ledger operations were removed from the host API.
-
-  // ── project_rules — no-code "after the customer says X, this happens" triggers ─────────
-  private listProjectRules(projectId: string): Response {
-    const rows = queryAll<{
-      id: string;
-      project_id: string;
-      trigger_pattern: string;
-      action: string;
-      reply_text: string | null;
-      script_name: string | null;
-      enabled: number;
-      priority: number;
-      created_at: string;
-    }>(
-      this.ctx.storage.sql as never,
-      "SELECT * FROM project_rules WHERE project_id = ? ORDER BY priority DESC, created_at",
-      projectId
-    );
-    return Response.json({ data: rows, count: rows.length });
-  }
-
-  private async createProjectRule(
-    projectId: string,
-    request: Request
-  ): Promise<Response> {
-    const project = queryOne<{ id: string; space_id: string }>(
-      this.ctx.storage.sql as never,
-      "SELECT id, space_id FROM projects WHERE id = ?",
-      projectId
-    );
-    if (!project)
-      return Response.json(
-        { error_code: "not_found", message: "Project not found" },
-        { status: 404 }
-      );
-
-    const body = await request
-      .json<{
-        trigger_pattern: string;
-        action: "reply" | "run_script" | "human_takeover";
-        reply_text?: string;
-        script_name?: string;
-        priority?: number;
-      }>()
-      .catch(() => ({}) as Record<string, never>);
-
-    if (!body.trigger_pattern || !body.action) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message: "trigger_pattern and action are required",
-        },
-        { status: 400 }
-      );
-    }
-    if (!["reply", "run_script", "human_takeover"].includes(body.action)) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message: "action must be 'reply', 'run_script', or 'human_takeover'",
-        },
-        { status: 400 }
-      );
-    }
-    if (body.action === "reply" && !body.reply_text) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message: "reply_text is required when action is 'reply'",
-        },
-        { status: 400 }
-      );
-    }
-    if (body.action === "run_script" && !body.script_name) {
-      return Response.json(
-        {
-          error_code: "bad_request",
-          message: "script_name is required when action is 'run_script'",
-        },
-        { status: 400 }
-      );
-    }
-
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    execute(
-      this.ctx.storage.sql as never,
-      `INSERT INTO project_rules (id, project_id, space_id, trigger_pattern, action, reply_text, script_name, enabled, priority, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-      id,
-      projectId,
-      project.space_id,
-      body.trigger_pattern,
-      body.action,
-      body.reply_text ?? null,
-      body.script_name ?? null,
-      body.priority ?? 0,
-      now
-    );
-    return Response.json(
-      {
-        id,
-        project_id: projectId,
-        trigger_pattern: body.trigger_pattern,
-        action: body.action,
-        created_at: now,
-      },
-      { status: 201 }
-    );
-  }
-
-  private deleteProjectRule(projectId: string, ruleId: string): Response {
-    execute(
-      this.ctx.storage.sql as never,
-      "DELETE FROM project_rules WHERE id = ? AND project_id = ?",
-      ruleId,
-      projectId
-    );
-    return Response.json({ deleted: true });
-  }
 
   // ── Container Marketplace slots (§A1.17 Phase L) ────────────────────────────────────────
   // Catalogue validation (does image_id exist? is it available? does the space's plan allow
@@ -10677,15 +10514,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { status: 400 }
       );
     }
-    if (body.space_type !== "launchpad") {
-      return Response.json(
-        {
-          error_code: "invalid_hierarchy",
-          message: "Only Launchpad spaces are supported",
-        },
-        { status: 400 }
-      );
-    }
     if (body.parent_id || (body.depth !== undefined && body.depth !== 0)) {
       return Response.json(
         {
@@ -10771,24 +10599,6 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
     }
 
-    if (parent.space_type !== "launchpad") {
-      return Response.json(
-        {
-          error_code: "invalid_hierarchy",
-          message: "Departments require a Launchpad parent",
-        },
-        { status: 400 }
-      );
-    }
-    if (body.space_type && body.space_type !== "launchpad") {
-      return Response.json(
-        {
-          error_code: "invalid_hierarchy",
-          message: "Only Launchpad departments are supported",
-        },
-        { status: 400 }
-      );
-    }
     // The hierarchy policy is exactly two levels: root plus direct departments.
     if (parent.depth >= 1 || parent.parent_id !== null) {
       return Response.json(
@@ -11016,13 +10826,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
     if (
       !target ||
-      target.space_type !== "launchpad" ||
       (target.depth === 0) !== (target.parent_id === null)
     ) {
       return Response.json(
         {
           permitted: false,
-          reason: "Target is not a valid Launchpad hierarchy space",
+          reason: "Target is not a valid Space hierarchy entry",
         },
         { status: 404 }
       );

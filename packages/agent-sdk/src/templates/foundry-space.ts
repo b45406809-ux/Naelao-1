@@ -11,7 +11,7 @@ export const FOUNDRY_SPACE_TEMPLATE = Object.freeze({
   schemaVersion: "2.0",
   metadata: Object.freeze({
     name: "Naelao Foundry",
-    description: "A Launchpad Space for building, testing, and publishing Naelao Space Templates.",
+    description: "A Naelao Workspace for building, testing, and publishing Space Templates.",
     publisher: "naelao",
     dogfood: true,
     templateVersion: "1.0.0",

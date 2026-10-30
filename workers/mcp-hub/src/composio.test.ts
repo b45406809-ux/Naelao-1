@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { executeComposioAction } from "./composio.js";
-import { isReservedToolName } from "./index.js";
 
 describe("Composio managed broker", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -26,9 +25,5 @@ describe("Composio managed broker", () => {
     );
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(oversized));
     await expect(executeComposioAction({ COMPOSIO_API_KEY: "platform-key" }, { connectionId: "account", action: "GMAIL_LIST_MESSAGES" })).rejects.toThrow("invalid or oversized response");
-  });
-  it("recognizes reserved money-in actions before provider dispatch", () => {
-    expect(isReservedToolName("stripe_create_checkout_session")).toBe(true);
-    expect(isReservedToolName("GMAIL_SEND_EMAIL")).toBe(false);
   });
 });
