@@ -174,6 +174,12 @@ jobs:
           node -e 'const x=require(process.argv[1]); if(x.error_code !== "session_unavailable") process.exit(1)' "$RUNNER_TEMP/agent-test/signed.json"
           status=$(curl -s -o "$RUNNER_TEMP/agent-test/session.json" -w '%{http_code}' --max-time 20 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"id":"test-session"}' http://127.0.0.1:18800/space/spaces/test-space/sessions)
           echo "create_session_status=$status"; cat "$RUNNER_TEMP/agent-test/session.json"; test "$status" = 201
+          status=$(curl -s -o "$RUNNER_TEMP/agent-test/member.json" -w '%{http_code}' --max-time 20 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"space_id":"test-space","user_id":"test-user","role":"owner"}' http://127.0.0.1:18800/space/spaces/test-space/members)
+          echo "create_member_status=$status"; cat "$RUNNER_TEMP/agent-test/member.json"; test "$status" = 201
+          for file in agents.md system-prompt.md scripts.json skills.json; do
+            case "$file" in *.json) printf '[]' > "$RUNNER_TEMP/agent-test/$file" ;; *) printf 'Test agent' > "$RUNNER_TEMP/agent-test/$file" ;; esac
+            pnpm exec wrangler r2 object put "naelao-agent-scripts/spaces/test-space/agents/naelao-agent/$file" --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --file "$RUNNER_TEMP/agent-test/$file"
+          done
           status=$(curl -s -o "$RUNNER_TEMP/agent-test/valid-session.json" -w '%{http_code}' --max-time 20 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"goal":"test","project_id":"wrong-project"}' http://127.0.0.1:18800/agent/spaces/test-space/sessions/test-session/agent/run)
           echo "valid_session_status=$status"; cat "$RUNNER_TEMP/agent-test/valid-session.json"; test "$status" = 403
           node -e 'const x=require(process.argv[1]); if(x.error_code !== "project_session_scope_mismatch") process.exit(1)' "$RUNNER_TEMP/agent-test/valid-session.json"
