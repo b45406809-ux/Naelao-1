@@ -129,12 +129,12 @@ describe("language preference profile routes", () => {
     expect(await cleared.json()).toMatchObject({ preferred_language: null });
   });
 
-  it("exports the authenticated product user's profile and DO data from the product root when called inside a business", async () => {
+  it("exports the authenticated Space user's profile and active DO data from the Space root", async () => {
     const child = await call("/spaces/business-a/product-users/me/export", "GET", "product_end_user", "user-a");
     expect(child.status).toBe(200);
-    const data = await child.json() as { profile: { end_user_id: string; email: string; phone_e164: string }; product_user_data: { credit_balance: number } };
+    const data = await child.json() as { profile: { end_user_id: string; email: string; phone_e164: string }; product_user_data: { conversations: unknown[]; preferences: Record<string, unknown> } };
     expect(data.profile).toMatchObject({ end_user_id: "user-a", email: "a@example.invalid", phone_e164: "+14155550100" });
-    expect(data.product_user_data).toMatchObject({ credit_balance: 4 });
+    expect(data.product_user_data).toEqual({ conversations: [], preferences: {} });
     expect(env.productUserCalls).toContain("/export");
   });
 

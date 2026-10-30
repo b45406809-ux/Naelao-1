@@ -241,7 +241,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     expect(JSON.parse(final.result!).deferred_approvals[0].approval_id).toBe("appr-1");
   });
 
-  it("a billing-gate 402 (insufficient_credits) carries error_code through into TaskDO's result, not just the raw error text", async () => {
+  it("a subscription quota 402 carries error_code through into TaskDO's result, not just the raw error text", async () => {
     // Live-reported bug (2026-08-11): a caller hitting a billing gate got only the bare error
     // sentence — error_code was parsed here and then silently dropped, so a polling client had no
     // reliable way to render an upgrade dialog instead of a plain error banner. Before the fix,
@@ -264,7 +264,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     expect(final.status).toBe("failed");
     expect(final.error).toContain("subscription quota");
     expect(final.result).not.toBeNull();
-    expect(JSON.parse(final.result!).error_code).toBe("insufficient_credits");
+    expect(JSON.parse(final.result!).error_code).toBe("usage_limit_reached");
   });
 
   it("a plain non-billing failure still carries no error_code at all (result stays null)", async () => {
@@ -301,9 +301,9 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
 describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
   /**
    * This is the DEFAULT dispatch path for every real chat message, and it silently dropped
-   * `businessRole` — declared nowhere on AgentTaskParams, forwarded nowhere in the run-agent step,
+   * `spaceRole` — declared nowhere on AgentTaskParams, forwarded nowhere in the run-agent step,
    * even though /agent/run was already resolving it and passing it in. Without it the F-36 clamp
-   * downgrades `yolo` for every product_end_user, including a business's OWNER: an owner who set
+   * downgrades `yolo` for every product_end_user, including a Space owner: an owner who set
    * their own business to Autonomous still had every action gated with nobody but themself to
    * approve it. Reproduced live before the fix.
    *
@@ -327,7 +327,7 @@ describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
           ...baseParams,
           userId: "user-1",
           callerRole: "product_end_user",
-          businessRole: "owner",
+          spaceRole: "owner",
           projectId: "proj-1",
           spaceContext: { name: "Research Space", setup_status: "complete" },
         },
@@ -337,14 +337,14 @@ describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
     );
 
     // The one that broke: without it, an owner's own Autonomous setting is silently downgraded.
-    expect(forwarded["businessRole"]).toBe("owner");
+    expect(forwarded["spaceRole"]).toBe("owner");
     expect(forwarded["callerRole"]).toBe("product_end_user");
     expect(forwarded["userId"]).toBe("user-1");
     expect(forwarded["projectId"]).toBe("proj-1");
     expect((forwarded["spaceContext"] as { name?: string })?.name).toBe("Research Space");
   });
 
-  it("omits nothing merely because the caller is a builder with no business role", async () => {
+  it("omits no Space role for a platform owner caller", async () => {
     const { stub } = makeFakeTaskDO();
     let forwarded: Record<string, unknown> = {};
     const env = makeEnv({
@@ -360,8 +360,7 @@ describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
       makeFakeStep() as never
     );
 
-    // A builder has no business_memberships row; absent is correct and must not become "member".
-    expect(forwarded["businessRole"]).toBeUndefined();
+    expect(forwarded["spaceRole"]).toBeUndefined();
     expect(forwarded["callerRole"]).toBe("owner");
   });
 });

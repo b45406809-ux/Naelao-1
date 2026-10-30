@@ -32,6 +32,7 @@ function makeEnv(opts: { spacesOk: boolean; withR2?: boolean }): AgentsEnv & { _
   if (opts.spacesOk) {
     membershipDb.db.exec("INSERT INTO space_members (space_id, end_user_id, role) VALUES ('space1', 'user-allowed', 'member')");
   }
+  membershipDb.db.exec("INSERT INTO channel_links (space_id, channel, enabled, created_at) VALUES ('space1', 'slack', 1, '2026-01-01')");
   const r2Objects = [
     { key: "spaces/space1/workspace/.keep", size: 0, uploaded: new Date() },
     { key: "spaces/space1/workspace/notes.txt", size: new TextEncoder().encode("hello from R2").byteLength, uploaded: new Date() },
@@ -185,7 +186,7 @@ describe("GET /spaces/:spaceId/assistant/files/* — per-file content read", () 
     expect(body.path).toBe("notes.txt");
   });
 
-  it("denies a product_end_user who isn't a member of this business", async () => {
+  it("denies a product_end_user who isn't a member of this Space", async () => {
     const env = makeEnv({ spacesOk: false, withR2: true });
     const res = await app.fetch(await req("/spaces/space1/assistant/files/notes.txt", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-1" }), env);
     expect(res.status).toBe(403);
@@ -204,6 +205,12 @@ describe("GET /spaces/:spaceId/assistant/files/* — per-file content read", () 
 describe("GET/DELETE /spaces/:spaceId/assistant/artifacts[/*] — artifact worker proxy", () => {
   function makeArtifactEnv(opts: { spacesOk: boolean; withArtifactWorker?: boolean }): AgentsEnv & { artifactListQueries: string[] } {
     const { agentDoStub } = makeAgentDoStub();
+    const membershipDb = createFakeD1([
+      `CREATE TABLE spaces (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active')`,
+      `CREATE TABLE space_members (space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, role TEXT NOT NULL, suspended_at TEXT, PRIMARY KEY (space_id, end_user_id))`,
+    ]);
+    membershipDb.db.exec("INSERT INTO spaces (id, status) VALUES ('space1', 'active')");
+    if (opts.spacesOk) membershipDb.db.exec("INSERT INTO space_members (space_id, end_user_id, role) VALUES ('space1', 'user-allowed', 'member')");
     const store = new Map<string, { filename: string; content: string; content_type: string }>();
     const artifactListQueries: string[] = [];
     store.set("art-1", { filename: "report.html", content: "<h1>hi</h1>", content_type: "text/html" });
@@ -237,7 +244,7 @@ describe("GET/DELETE /spaces/:spaceId/assistant/artifacts[/*] — artifact worke
     return {
       PLATFORM_SECRET: SECRET,
       NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },
-      SPACES_WORKER: makeSpacesWorkerStub(opts.spacesOk),
+      PLATFORM_DB: membershipDb as unknown as D1Database,
       ...(opts.withArtifactWorker !== false ? { ARTIFACT_WORKER: artifactFetcher } : {}),
       artifactListQueries,
       ANALYTICS: { writeDataPoint() {} },
@@ -283,7 +290,7 @@ describe("GET/DELETE /spaces/:spaceId/assistant/artifacts[/*] — artifact worke
     expect(body.count).toBe(0);
   });
 
-  it("denies a product_end_user who isn't a member of this business", async () => {
+  it("denies a product_end_user who isn't a member of this Space", async () => {
     const env = makeArtifactEnv({ spacesOk: false });
     const res = await app.fetch(await req("/spaces/space1/assistant/artifacts", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-1" }), env);
     expect(res.status).toBe(403);
@@ -336,7 +343,6 @@ describe("assistant/channels — project scoping", () => {
     return {
       PLATFORM_SECRET: SECRET,
       NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => ({ async fetch() { return Response.json({ ok: true }); } }) },
-      SPACES_WORKER: makeSpacesWorkerStub(true),
       PLATFORM_DB: db as unknown as D1Database,
       ANALYTICS: { writeDataPoint() {} },
       __sql: calls,

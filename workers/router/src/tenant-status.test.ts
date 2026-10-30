@@ -5,8 +5,8 @@ import {
   isTenantActive,
 } from "./tenant-status";
 
-function database(status: string | null, resellerStatus = "active") {
-  const first = vi.fn().mockResolvedValue(status ? { status, reseller_status: resellerStatus } : null);
+function database(status: string | null) {
+  const first = vi.fn().mockResolvedValue(status ? { status } : null);
   const prepare = vi.fn(() => ({ bind: vi.fn(() => ({ first })) }));
   return { db: { prepare } as unknown as D1Database, prepare, first };
 }
@@ -35,15 +35,6 @@ describe("tenant suspension gate", () => {
     expect(await isTenantActive(database(null).db, "tenant-missing")).toBe(
       false
     );
-  });
-
-  it("denies tenants suspended or terminated by their reseller", async () => {
-    expect(await isTenantActive(database("active", "active").db, "tenant-reseller-active"))
-      .toBe(true);
-    expect(await isTenantActive(database("active", "suspended").db, "tenant-reseller-suspended"))
-      .toBe(false);
-    expect(await isTenantActive(database("active", "terminated").db, "tenant-reseller-terminated"))
-      .toBe(false);
   });
 
   it("bounds status lookups with a short cache and observes the next status after expiry", async () => {

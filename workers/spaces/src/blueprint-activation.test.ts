@@ -5,20 +5,22 @@ import { mintInternalToken } from "@naelao/http";
 import { previewBlueprintActivation } from "./blueprint-activation.js";
 import { certifyStateDeltaArtifact } from "@naelao/security";
 
-const blueprint = (
-  overrides: Partial<SpaceBlueprint> = {}
-): SpaceBlueprint => ({
-  id: "tpl_test",
-  schemaVersion: "2.0",
-  metadata: { name: "Test" },
-  templateCategory: "other",
-  projects: [],
-  requiredExtensions: ["ext_installed", "ext_supported", "ext_missing"],
-  requiredCredentials: [
-    { name: "Calendar", description: "Connect a calendar", required: true },
-  ],
-  ...overrides,
-});
+const blueprint = (overrides: Partial<SpaceBlueprint> = {}): SpaceBlueprint => {
+  const requiredExtensions = overrides.requiredExtensions ?? ["ext_installed", "ext_supported", "ext_missing"];
+  return {
+    id: "tpl_test",
+    schemaVersion: "2.0",
+    metadata: { name: "Test" },
+    templateCategory: "other",
+    projects: [],
+    requiredExtensions,
+    requiredExtensionVersions: Object.fromEntries(requiredExtensions.map((id) => [id, "1.0.0"])),
+    requiredCredentials: [
+      { name: "Calendar", description: "Connect a calendar", required: true },
+    ],
+    ...overrides,
+  };
+};
 
 describe("Space Template activation preview", () => {
   it("does not imply declared project runtimes are installed when no host provisioner exists", () => {
