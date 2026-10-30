@@ -13,6 +13,24 @@ function fixture(initial?: GoalDagJournal) {
   return { host, snapshot: () => saved! };
 }
 describe("durable goal DAG", () => {
+  it("persists verification before invoking it and waits for acceptance before dispatching a dependent", async () => {
+    const f = fixture();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const verifying = new Promise<void>(resolve => { started = resolve; });
+    f.host.verify = vi.fn(async t => {
+      if (t.id === "a") { expect(f.snapshot().tasks.a?.status).toBe("verifying"); started(); await gate; }
+      return { outcome: "passed" as const, reason: "independent evidence" };
+    });
+    const run = executeGoalDag([task("a"), task("b", ["a"])], f.host);
+    await verifying;
+    expect(f.host.launch.mock.calls.map(([t]) => t.id)).toEqual(["a"]);
+    release();
+    const result = await run;
+    expect(result.tasks.b?.status).toBe("completed");
+    expect(f.host.launch.mock.calls.map(([t]) => t.id)).toEqual(["a", "b"]);
+  });
   it.each(["awaiting_planner_input", "awaiting_human_input", "outcome_uncertain"])("does not retry or fix a recovered worker in %s", async status => {
     const f = fixture({ fixerEnabled: true, tasks: { a: { status: "running", workerId: "worker:a" }, b: { status: "pending", workerId: "worker:b" } } });
     f.host.recover = vi.fn(async id => ({ id, ok: false, status }));
