@@ -1,4 +1,5 @@
 name: Naelao connected service batches
+# Includes tenant-scoped daily budget forwarding.
 on:
   push:
     branches: [work]

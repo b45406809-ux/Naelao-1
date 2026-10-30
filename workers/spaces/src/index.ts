@@ -4400,6 +4400,20 @@ app.patch("/spaces/:spaceId/model-config", async (c) => {
   return c.json({ model: body.model, ...(body.effort ? { effort: body.effort } : {}) });
 });
 
+// Agent runs use this host endpoint to enforce the SpaceDO daily budget.
+app.use("/internal/user-budget/debit", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/user-budget/debit", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{ space_id?: string; user_id?: string; credits?: number }>();
+  if (!tenantId || !body.space_id || !body.user_id || !Number.isFinite(body.credits) || body.credits! < 0) return c.json({ error_code: "bad_request" }, 400);
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT s.id FROM spaces s JOIN orgs o ON o.id = s.tenant_id WHERE s.id = ? AND s.tenant_id = ? AND s.status = 'active' AND o.status = 'active'",
+  ).bind(body.space_id, tenantId).first<{ id: string }>();
+  if (!space) return c.json({ error_code: "not_found" }, 404);
+  const stub = await spaceDoStub(c.env, body.space_id, tenantId);
+  return forwardToSpaceDO(stub, "/internal/user-budget/debit", "POST", JSON.stringify({ space_id: body.space_id, user_id: body.user_id, credits: body.credits }));
+});
+
 // Internal read used by NaelaoAgentDO's final model gate. Public callers are checked at
 // /agent/run, but scheduled/channel/worker dispatches can enter the DO directly; keeping this
 // lookup behind the platform HMAC makes the DO's policy decision independent of its ingress.
