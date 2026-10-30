@@ -22,6 +22,11 @@ export const SPACE_ERASURE_TABLES = [
   // Their external profiles/callbacks are purged before this final scoped database cleanup.
   "assistant_active_voice_endpoints", "assistant_approval_decisions", "assistant_live_calls",
   "assistant_mail_ingress_usage", "assistant_verification_waits", "space_provisioning_outbox",
+  // Blackboard content and delivery state is Space-owned operational data, not retained audit
+  // history. Remove dependent rows before events so deletion also works where FK cascades are off.
+  "space_blackboard_event_receipts", "space_blackboard_delivery", "space_blackboard_wakes",
+  "space_blackboard_policy_uses", "space_blackboard_requests", "space_blackboard_cards",
+  "space_blackboard_policies", "space_blackboard_sharing_policies", "space_blackboard_events",
 ] as const;
 
 /** Stable audit keys make D1 writes idempotent when a Workflow step retries after a lost response. */

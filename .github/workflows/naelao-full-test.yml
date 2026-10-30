@@ -3,10 +3,6 @@ on:
   workflow_dispatch:
   push:
     branches: [work]
-    paths:
-      - '.github/workflows/naelao-full-test.yml'
-      - '.github/workflows/naelao-connected-batches.yml'
-      - '.github/workflows/naelao-capacity.yml'
   schedule:
     - cron: '17 2 * * 1'
 permissions:

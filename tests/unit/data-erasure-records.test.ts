@@ -155,6 +155,52 @@ describe("data erasure D1 records", () => {
       .toEqual([{ space_id: "space-b" }]);
   });
 
+  it("erases all blackboard cards, coordination events, and delivery state with their Space", async () => {
+    const db = createFakeD1(platformMigrations);
+    db.db.prepare("INSERT INTO orgs (id,name,owner_id,plan_tier,status) VALUES(?,?,?,?,?)")
+      .run("tenant-a", "Tenant", "owner", "free", "active");
+    db.db.prepare("INSERT INTO spacetypes (id,org_id,name) VALUES(?,?,?)").run("type-a", "tenant-a", "Default");
+    db.db.prepare("INSERT INTO spaces (id,tenant_id,spacetype_id,name,status) VALUES(?,?,?,?,?)")
+      .run("space-a", "tenant-a", "type-a", "A", "active");
+    db.db.prepare(`INSERT INTO assistant_communication_identities (id,tenant_id,space_id,scope_key,owner_user_id)
+      VALUES(?,?,?,?,?)`).run("identity-a", "tenant-a", "space-a", "space", "owner");
+    db.db.prepare(`INSERT INTO space_blackboard_cards
+      (tenant_id,space_id,project_id,summary,capabilities_json,evidence_json,updated_at) VALUES(?,?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "project-a", "Summary", "[]", "[]", "2026-01-01");
+    db.db.prepare(`INSERT INTO space_blackboard_requests
+      (tenant_id,space_id,id,source_project_id,target_project_id,objective,expected_result,status,created_by,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "request-a", "project-a", "project-b", "Help", "Result", "pending", "owner", "2026-01-01", "2026-01-01");
+    db.db.prepare(`INSERT INTO space_blackboard_events
+      (tenant_id,space_id,event_id,project_id,request_id,kind,created_at) VALUES(?,?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "event-a", "project-a", "request-a", "task.updated", "2026-01-01");
+    db.db.prepare(`INSERT INTO space_blackboard_event_receipts
+      (tenant_id,space_id,project_id,event_id,user_id,read_at) VALUES(?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "project-a", "event-a", "owner", "2026-01-01");
+    db.db.prepare(`INSERT INTO space_blackboard_delivery
+      (tenant_id,space_id,project_id,event_id,identity_id,status,next_at) VALUES(?,?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "project-a", "event-a", "identity-a", "pending", Date.now());
+    db.db.prepare(`INSERT INTO space_blackboard_wakes
+      (tenant_id,space_id,project_id,event_id,status,next_at,updated_at) VALUES(?,?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "project-a", "event-a", "pending", Date.now(), Date.now());
+    db.db.prepare(`INSERT INTO space_blackboard_policies
+      (tenant_id,space_id,project_id,wake_enabled,authorized_user_id,updated_at) VALUES(?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "project-a", 1, "owner", "2026-01-01");
+    db.db.prepare(`INSERT INTO space_blackboard_sharing_policies
+      (tenant_id,space_id,project_id,authorized_user_id,peers_json,daily_limit,updated_at) VALUES(?,?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "project-a", "owner", "[]", 5, "2026-01-01");
+    db.db.prepare(`INSERT INTO space_blackboard_policy_uses
+      (tenant_id,space_id,project_id,action_key,payload_hash,user_id,used_day) VALUES(?,?,?,?,?,?,?)`)
+      .run("tenant-a", "space-a", "project-a", "action-a", "hash", "owner", "2026-01-01");
+
+    await eraseSpaceD1Records(db as never, "space-a");
+
+    for (const table of SPACE_ERASURE_TABLES.filter((name) => name.startsWith("space_blackboard_"))) {
+      expect(db.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE space_id=?`).get("space-a"), table)
+        .toEqual({ count: 0 });
+    }
+  });
+
   it("erases platform assistant sessions and cascading messages by tenant", async () => {
     const db = createFakeD1(platformMigrations);
     db.db.prepare(`INSERT INTO assistant_sessions (id, tenant_id, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`)

@@ -48,7 +48,15 @@ function makeSpacesEnv() {
     BUILDER_ACCOUNT_DO: makeStatefulDoNamespace(BuilderAccountDO),
     PRODUCT_USER_DO: makeStatefulDoNamespace(ProductUserDO),
     NAELAO_CONFIG_KV: { get: async () => null, put: async () => {} },
+    fakeDb,
   };
+}
+
+function seedModelConfigSpace(env: ReturnType<typeof makeSpacesEnv>, id = "space-model-settings") {
+  env.fakeDb.db.prepare(
+    "INSERT INTO spaces (id, tenant_id, name, spacetype_id) VALUES (?, ?, ?, ?)"
+  ).run(id, "tenant-1", "Generic Space", "default");
+  return id;
 }
 
 async function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Promise<Request> {
@@ -65,14 +73,12 @@ async function req(path: string, opts: { method?: string; body?: unknown; tenant
   });
 }
 
-describe("PATCH /builder/products/:id — modelConfig allowlist", () => {
+describe("PATCH /spaces/:spaceId/model-config — model allowlist", () => {
   it("rejects a model not on the curated allowlist", async () => {
     const env = makeSpacesEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
+    const spaceId = seedModelConfigSpace(env);
     const res = await spacesWorker.fetch(
-      await req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "gpt-5-super-mega" } } } }),
+      await req(`/spaces/${spaceId}/model-config`, { method: "PATCH", tenant: "tenant-1", body: { model: "gpt-5-super-mega" } }),
       env as never, execCtx
     );
     expect(res.status).toBe(400);
@@ -80,23 +86,15 @@ describe("PATCH /builder/products/:id — modelConfig allowlist", () => {
 
   it("accepts an allowed model and persists it", async () => {
     const env = makeSpacesEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
+    const spaceId = seedModelConfigSpace(env);
     const ok = await spacesWorker.fetch(
-      await req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "claude-opus-4-8" } } } }),
+      await req(`/spaces/${spaceId}/model-config`, { method: "PATCH", tenant: "tenant-1", body: { model: "claude-opus-4-8" } }),
       env as never, execCtx
     );
     expect(ok.status).toBe(200);
-    const fetched = await (await spacesWorker.fetch(await req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as { product_config: { modelConfig?: { model?: string } } };
-    expect(fetched.product_config.modelConfig?.model).toBe("claude-opus-4-8");
+    const fetched = env.fakeDb.db.prepare("SELECT config_json FROM spaces WHERE id=?").get(spaceId) as { config_json: string };
+    expect(JSON.parse(fetched.config_json).productConfig.modelConfig.model).toBe("claude-opus-4-8");
   });
-
-  // Note: shell/manifest's own `model: pc?.modelConfig?.model ?? null` line is a one-line
-  // projection off the SAME loadEffectiveProductConfig merge already proven above (the PATCH ->
-  // GET /builder/products/:id round trip reads through the identical config_json override path) —
-  // not re-tested here directly since exercising shell/manifest end-to-end needs a full
-  // SpaceTypeRegistryDO-backed manifest fixture that's out of proportion to this one field.
 });
 
 describe("POST /agent/run — resolves the configured model, not the dead spacetypes.model_config column", () => {
@@ -276,11 +274,9 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
   // thinking mode of its own, so ultra must be settable here.
   it("accepts ultra on a model with no native thinking mode", async () => {
     const env = makeSpacesEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
+    const spaceId = seedModelConfigSpace(env);
     const res = await spacesWorker.fetch(
-      await req(`/spaces/${created.id}/model-config`, {
+      await req(`/spaces/${spaceId}/model-config`, {
         method: "PATCH", tenant: "tenant-1",
         body: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", effort: "ultra" },
       }),
@@ -291,11 +287,9 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
 
   it("still rejects an effort value that is not a real level at all", async () => {
     const env = makeSpacesEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
+    const spaceId = seedModelConfigSpace(env);
     const res = await spacesWorker.fetch(
-      await req(`/spaces/${created.id}/model-config`, {
+      await req(`/spaces/${spaceId}/model-config`, {
         method: "PATCH", tenant: "tenant-1",
         body: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", effort: "turbo" },
       }),
@@ -306,11 +300,9 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
 
   it("accepts and persists a valid model+effort pair, readable back from shell/manifest's projection", async () => {
     const env = makeSpacesEnv();
-    const created = await (await spacesWorker.fetch(
-      await req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "Launchpad", spacetype_id: "launchpad" } }), env as never, execCtx
-    )).json() as { id: string };
+    const spaceId = seedModelConfigSpace(env);
     const ok = await spacesWorker.fetch(
-      await req(`/spaces/${created.id}/model-config`, {
+      await req(`/spaces/${spaceId}/model-config`, {
         method: "PATCH", tenant: "tenant-1",
         body: { model: "@cf/openai/gpt-oss-120b", effort: "high" },
       }),
@@ -320,5 +312,7 @@ describe("PATCH /spaces/:spaceId/model-config — effort validated alongside mod
     const body = await ok.json() as { model: string; effort?: string };
     expect(body.model).toBe("@cf/openai/gpt-oss-120b");
     expect(body.effort).toBe("high");
+    const saved = env.fakeDb.db.prepare("SELECT config_json FROM spaces WHERE id=?").get(spaceId) as { config_json: string };
+    expect(JSON.parse(saved.config_json).productConfig.modelConfig).toEqual({ model: "@cf/openai/gpt-oss-120b", effort: "high" });
   });
 });

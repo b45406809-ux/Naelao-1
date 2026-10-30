@@ -16,19 +16,20 @@ describe("project templates — generic project presets", () => {
     }
   });
 
-  it("keeps community monitoring as a generic scheduled workspace preset", () => {
-    const template = getProjectTemplate("community-member-monitoring");
-    expect(template?.default_agent_id).toBeTruthy();
-    expect(template?.suggested_channel).toBeUndefined();
-    expect(template?.scheduled_jobs?.[0]?.cron_expression).toBeTruthy();
+  it("ships no hardcoded domain project presets", () => {
+    expect(PROJECT_TEMPLATES).toEqual([]);
+    expect(getProjectTemplate("community-member-monitoring")).toBeNull();
   });
 });
 
 describe("validateProjectTemplates", () => {
   it("accepts the catalogue and rejects duplicate ids", () => {
     expect(() => validateProjectTemplates()).not.toThrow();
-    const duplicate: ProjectTemplate = { ...PROJECT_TEMPLATES[0]!, name: "Duplicate" };
-    expect(() => validateProjectTemplates([...PROJECT_TEMPLATES, duplicate])).toThrow(/duplicate id/);
+    const template: ProjectTemplate = {
+      id: "fde-template-project", name: "FDE template project", description: "", execution_ceiling: 2,
+      daily_spend_cap_credits: 100,
+    };
+    expect(() => validateProjectTemplates([template, { ...template, name: "Duplicate" }])).toThrow(/duplicate id/);
   });
 
   it("rejects a zero daily spend cap and incomplete reply rules", () => {

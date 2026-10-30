@@ -174,7 +174,11 @@ export class LocalTunnelDO extends DurableObject<LocalTunnelEnv> {
       return Response.json({ error: "not_found" }, { status: 404 });
     } catch (error) {
       const code = error instanceof RequestBodyTooLargeError ? "tunnel_request_limit" : error instanceof Error ? error.message : "tunnel_request_failed";
-      return Response.json({ ok: false, error: code }, { status: error instanceof RequestBodyTooLargeError ? 413 : code === "tunnel_machine_concurrency_limit" ? 429 : 403 });
+      const status = error instanceof RequestBodyTooLargeError ? 413
+        : code === "tunnel_machine_concurrency_limit" ? 429
+        : code === "tunnel_request_conflict" ? 409
+        : 403;
+      return Response.json({ ok: false, error: code }, { status });
     }
   }
   private receipt(record: TunnelRequestRecord): Response {
