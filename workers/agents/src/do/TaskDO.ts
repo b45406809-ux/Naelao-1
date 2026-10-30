@@ -232,7 +232,7 @@ export class TaskDO extends DurableObject {
         graph_id?: unknown; task_count?: unknown; statuses?: unknown;
         escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown;
       }>().catch((): { graph_id?: unknown; task_count?: unknown; statuses?: unknown; escalation_count?: unknown; fixer_count?: unknown; runtime_workers?: unknown } => ({}));
-      const statusKeys = ["pending", "running", "completed", "failed", "blocked", "needs_review"] as const;
+      const statusKeys = ["pending", "running", "verifying", "completed", "failed", "blocked", "needs_review"] as const;
       const statuses = body.statuses && typeof body.statuses === "object" && !Array.isArray(body.statuses)
         ? body.statuses as Record<string, unknown>
         : undefined;
@@ -254,7 +254,7 @@ export class TaskDO extends DurableObject {
           !Number.isSafeInteger(body.escalation_count) || (body.escalation_count as number) < 0 || (body.escalation_count as number) > 200 ||
           !Number.isSafeInteger(body.fixer_count) || (body.fixer_count as number) < 0 || (body.fixer_count as number) > 200 ||
           !statuses || Object.keys(statuses).some(key => !statusKeys.includes(key as typeof statusKeys[number])) ||
-          statusKeys.some(key => !Number.isSafeInteger(statuses[key]) || (statuses[key] as number) < 0 || (statuses[key] as number) > 200) ||
+          statusKeys.some(key => !(key === "verifying" && statuses[key] === undefined) && (!Number.isSafeInteger(statuses[key]) || (statuses[key] as number) < 0 || (statuses[key] as number) > 200)) ||
           invalidRuntimeWorkers)
         return Response.json({ error: "invalid_coordination_summary" }, { status: 400 });
       const rows = this.ctx.storage.sql.exec("SELECT coordination_json, expires_at FROM tasks WHERE id = ?", taskId).toArray() as Array<{ coordination_json: string | null; expires_at: number }>;
@@ -263,7 +263,7 @@ export class TaskDO extends DurableObject {
       try { summaries = JSON.parse(rows[0].coordination_json ?? "{}"); } catch { /* replace corrupt summary state */ }
       summaries[body.graph_id] = {
         task_count: body.task_count as number,
-        statuses: Object.fromEntries(statusKeys.map(key => [key, statuses[key] as number])),
+        statuses: Object.fromEntries(statusKeys.map(key => [key, (statuses[key] ?? 0) as number])),
         escalation_count: body.escalation_count as number,
         fixer_count: body.fixer_count as number,
         runtime_workers: runtimeWorkers ?? [],
@@ -353,7 +353,7 @@ export class TaskDO extends DurableObject {
       const graphEntries = Object.entries(JSON.parse(task.coordination_json ?? "{}")) as Array<[string, { task_count?: number; statuses?: Record<string, number>; escalation_count?: number; fixer_count?: number; runtime_workers?: Array<Record<string, unknown>> }]>;
       const graphs = graphEntries.map(([, graph]) => graph);
       if (graphs.length) {
-        const statuses = { pending: 0, running: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
+        const statuses = { pending: 0, running: 0, verifying: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
         for (const graph of graphs) for (const key of Object.keys(statuses) as Array<keyof typeof statuses>) {
           const count = graph.statuses?.[key];
           statuses[key] += Number.isSafeInteger(count) && count! >= 0 ? count! : 0;

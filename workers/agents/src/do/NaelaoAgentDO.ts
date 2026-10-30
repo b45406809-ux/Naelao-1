@@ -3616,7 +3616,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           let lastCoordinationSummary = "";
           const publishCoordinationSummary = async (journal: GoalDagJournal) => {
             if (!this.env.TASK_DO) return;
-            const statuses = { pending: 0, running: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
+            const statuses = { pending: 0, running: 0, verifying: 0, completed: 0, failed: 0, blocked: 0, needs_review: 0 };
             for (const state of Object.values(journal.tasks)) {
               if (Object.hasOwn(statuses, state.status)) statuses[state.status as keyof typeof statuses]++;
             }
