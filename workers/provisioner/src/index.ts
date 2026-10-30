@@ -369,14 +369,13 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     }
     provisioned.push("agents");
 
-    // Step 8a-bis: every business (templated or blank/"build from scratch") gets one ordinary
+    // Step 8a-bis: every Space (templated or blank/"build from scratch") gets one ordinary
     // "General" project to land in — /projects (bare, no id) redirects straight into it instead
     // of showing a picker first. Deliberately OUTSIDE the `effectiveTemplateIds.length > 0` gate
-    // below (unlike seedTemplateProjects, which only applies to a templated business): a blank
-    // business gets no template-specific projects by design, but should never have ZERO projects
-    // to work in. Best-effort, matching every other convenience seed here (wallet is the one
-    // exception that throws, because agent runs are structurally unusable without a payer —
-    // a missing General project just means a bare product root a little longer, not a broken one).
+    // below (unlike seedTemplateProjects, which only applies to a selected template): a blank
+    // Space gets no template-specific projects by design, but should never have ZERO projects
+    // to work in. This convenience seed is best-effort; a missing General project leaves the
+    // Space Assistant available while the owner can create a project later.
     if (manifest.backend.scriptAgentsEnabled) {
       const postToSpaces = async (path: string, body: unknown) =>
         env.SPACES_WORKER.fetch(

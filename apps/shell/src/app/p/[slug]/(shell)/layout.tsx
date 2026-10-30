@@ -22,20 +22,20 @@ import {
   listProjects,
   listSessions,
   listThreads,
-  listMyBusinesses,
+  listMySpaces,
   listAllApprovals,
   type ShellManifest,
   type ProductUserMe,
   type Project,
   type SessionSummary,
   type ThreadSummary,
-  type Business,
+  type SpaceSummary,
 } from "@/lib/api";
 
 // No "Home" entry: starting a conversation is what the "new session" button does, and having
 // both a button and a nav item pointing at the same surface just made the sidebar ambiguous.
 //
-// "Dashboard" (formerly "Assistant") is a merged business dashboard + assistant dashboard for
+// "Dashboard" (formerly "Assistant") is a merged space dashboard + assistant dashboard for
 // whichever space is currently active — it's the first thing worth seeing, so it leads the list,
 // ahead of Discover.
 /** How many recent conversations the left sidebar keeps. The sidebar collapses past its own
@@ -93,11 +93,8 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
   const [projectThreads, setProjectThreads] = React.useState<ThreadSummary[]>([]);
-  const [businesses, setBusinesses] = React.useState<Business[]>([]);
-  // Distinct from businesses.length === 0 (the empty initial state before the list has even been
-  // fetched) — the business-first gate and default-business auto-select below both need to know
-  // the list has actually SETTLED, not just that it currently reads empty.
-  const [businessesLoaded, setBusinessesLoaded] = React.useState(false);
+  const [spaces, setSpaces] = React.useState<SpaceSummary[]>([]);
+  const [spacesLoaded, setSpacesLoaded] = React.useState(false);
   // How many actions an agent has paused on, waiting for this person. A parked action is
   // invisible otherwise — the agent carries on with the rest of the task, which is exactly what
   // makes it easy to miss that something needs a decision.
@@ -128,11 +125,6 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
       return next;
     });
   }, [sidebarKey]);
-  // hybrid/tenant products (Launchpad) are business-first: nothing chattable exists at the
-  // product root, every thread/project/session belongs to a business. "team" mode is the
-  // universal Journey-1B shell for a non-Launchpad SpaceType, where the product root IS the one
-  // and only workspace (no businesses concept at all) — that stays exactly as before.
-  const requiresBusiness = manifest ? manifest.membership_model !== "team" : false;
   // Cookie consent: shown only when the product's cookiePolicy is "third_party" and the user
   // hasn't already accepted in this browser. localStorage key is per-product-slug so accepting
   // on one product doesn't silently grant consent for another.
@@ -156,10 +148,10 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
-  // The core re-scope fix: every data call below reads `activeSpaceId` (the switched business,
+  // Every data call below reads `activeSpaceId` (the selected Space,
   // or the product root by default) — NOT `product.space_id` directly. Previously these were all
-  // pinned to the product root regardless of the switcher, so switching a business let you
-  // *administer* it (via /spaces/:id) but never actually *work inside* it.
+  // pinned to the product root regardless of the switcher, so switching a space let you
+  // access it (via /spaces/:id) but never actually work inside it.
   React.useEffect(() => {
     if (!creds) return;
     getShellManifest(activeSpaceId, creds).then((m) => {
@@ -167,17 +159,14 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
       setSupportContact(m.legal?.support_contact ?? null);
     }).catch(() => show("Couldn't load workspace"));
     // …with one deliberate exception: `me` is the PERSON, not the workspace. A ProductUserDO is
-    // one instance per (productId × endUserId), so scoping this to a business 404s and the credit
-    // balance renders as 0 forever. Always the product root.
+    // one instance per (root Space × endUserId), so profile lookup stays on the product root.
     getMe(product.space_id, creds).then(setMe).catch(() => {});
     listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
-    // The switcher's own entry list is always the product-root's businesses, regardless of which
+    // The switcher's own entry list is always the product-root's Spaces, regardless of which
     // one is currently active — deliberately NOT activeSpaceId.
-    listMyBusinesses(product.space_id, creds)
-      .then((b) => { setBusinesses(b); setBusinessesLoaded(true); })
-      // Left unset on failure (not "loaded with zero") — a transient load error must not be
-      // mistaken for "this account genuinely has no businesses" and force a redirect loop.
-      .catch(() => {});
+    listMySpaces(product.space_id, creds)
+      .then((items) => { setSpaces(items); setSpacesLoaded(true); })
+      .catch(() => setSpacesLoaded(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, activeSpaceId, product.space_id, product.slug]);
 
@@ -204,19 +193,19 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("naelao:session-created", onSessionCreated);
   }, [activeSpaceId, refreshSidebarConversations]);
 
-  // Live-reported bug: a pending approval is per-BUSINESS (HITLApprovalDO is addressed
-  // `hitl:{spaceId}`), but this used to only ever check `activeSpaceId` — whichever business the
-  // switcher happened to be pointed at. An approval parked under a business you weren't currently
+  // Approvals are scoped to a Space (HITLApprovalDO is addressed `hitl:{spaceId}`), so check the
+  // root and each Space in the switcher rather than only the currently selected one. An approval
+  // parked under a Space you aren't currently
   // viewing was completely invisible: no badge, nothing on the Approvals page, no way to find it
-  // short of switching to every business one at a time and hoping. Now checked across every
-  // business the person belongs to, once the list has actually loaded — not just the active one.
+  // short of switching to every space one at a time and hoping. Now checked across every
+  // Space the person belongs to, once the list has loaded — not just the active one.
   // Separate effect from the one above (rather than folded into it) because it genuinely needs
-  // `businesses` to be populated first, not just kicked off in parallel with it.
+  // `spaces` to be populated first, not just kicked off in parallel with it.
   React.useEffect(() => {
-    if (!creds || !businessesLoaded) return;
+    if (!creds || !spacesLoaded) return;
     const productName = manifest?.space_name ?? product.product_name;
     const refresh = () => {
-      listAllApprovals(product.space_id, productName, businesses, creds)
+      listAllApprovals(product.space_id, productName, spaces, creds)
         .then((a) => setPendingApprovals(a.length))
         .catch(() => {});
     };
@@ -227,38 +216,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     const approvalPoll = window.setInterval(refresh, 30_000);
     return () => window.clearInterval(approvalPoll);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, businessesLoaded, businesses, product.space_id, product.product_name, manifest?.space_name]);
-
-  // Business-first gate: a hybrid/tenant product's Home/Projects/Threads/Assistant/Agents/
-  // Knowledge are meaningless at the product root — everything belongs to a business. A user with
-  // zero businesses is steered to the business-creation hub instead of landing in an empty,
-  // permanently-product-root chat. Exempt: the hub itself (spaces), account-level settings, and
-  // email verification — none of those are "workspace" pages. Gated on both isHydrated flags to
-  // avoid firing on stale default state before the real data (and any persisted active-space
-  // choice) has actually loaded.
-  React.useEffect(() => {
-    if (!isHydrated || !isAuthenticated) return;
-    if (!activeSpaceHydrated) return;
-    if (!manifest || !businessesLoaded) return;
-    if (!requiresBusiness) return;
-    if (businesses.length > 0) return;
-    const segments = pathname?.split("/").filter(Boolean) ?? [];
-    const key = segments[2] ?? "new";
-    if (key === "spaces" || key === "settings" || key === "verify-email") return;
-    router.replace(`/p/${product.slug}/spaces?onboarding=1`);
-  }, [isHydrated, isAuthenticated, activeSpaceHydrated, manifest, businessesLoaded, requiresBusiness, businesses.length, pathname, product.slug, router]);
-
-  // Once a business-first user actually has a business, default them straight into the last valid
-  // business (or the first one). A stale sessionStorage id must never strand the shell on the
-  // product root or on a deleted business.
-  React.useEffect(() => {
-    if (!activeSpaceHydrated || !businessesLoaded || !requiresBusiness) return;
-    if (businesses.length === 0) return;
-    const activeBusiness = businesses.find((b) => b.id === activeSpaceId);
-    if (activeBusiness) return;
-    const next = businesses[0]!;
-    setActiveSpace(next.id, next.name);
-  }, [activeSpaceHydrated, businessesLoaded, requiresBusiness, businesses, activeSpaceId, product.space_id, setActiveSpace]);
+  }, [session, spacesLoaded, spaces, product.space_id, product.product_name, manifest?.space_name]);
 
   // "New session" doesn't create anything — /new IS the new-session surface, and a session is
   // only minted on a real first message (lazy creation). Navigating there is the whole action.
@@ -287,11 +245,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   // (the "new session" button and the recent list below it are its entry points), so neither
   // should light up a nav entry.
   const activeKey = rawKey === "sessions" ? "new" : rawKey;
-  // Belt-and-suspenders alongside the redirect gate above: while a business-first user still has
-  // zero businesses, they're parked on /spaces (the one page the gate exempts) — the sidebar's own
-  // "new thread"/"new project" buttons must not offer to create either against the product root
-  // while they're standing right there looking at "create your first business."
-  const canUseWorkspace = !requiresBusiness || businesses.length > 0;
+  const canUseWorkspace = true;
   const recentProjectThreads = projectThreads
     .filter((thread) => Boolean(thread.project_id) && !thread.parent_thread_id && thread.thread_kind !== "private")
     .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
@@ -299,18 +253,13 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const currentEntry = activeSpaceId === product.space_id
     ? {
         id: product.space_id,
-        // Step 19: in business-first (Launchpad) mode the product root is NOT a navigable
-        // business — the entries list already excludes it, and showing its name ("Launchpad") as
-        // the switcher's current entry made it look like a business the user could sit in. Use a
-        // neutral placeholder instead; in "team" mode the product root IS the workspace, so its
-        // name stays.
-        name: requiresBusiness ? "Select a business" : (manifest?.space_name ?? product.product_name),
-        meta: me ? `${me.credits_balance} credits` : "…",
+        name: manifest?.space_name ?? product.product_name,
+        meta: "Space assistant",
       }
     : {
         id: activeSpaceId,
-        name: businesses.find((b) => b.id === activeSpaceId)?.name ?? manifest?.space_name ?? "Business",
-        meta: me ? `${me.credits_balance} credits` : "…",
+        name: spaces.find((s) => s.id === activeSpaceId)?.name ?? manifest?.space_name ?? "Space",
+        meta: "Workspace",
       };
 
   return (
@@ -351,15 +300,8 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
         spaceSwitcher={{
           current: currentEntry,
           entries: [
-            // In business-first (hybrid/tenant) mode the product itself is NOT a workspace — it
-            // has no chat, no projects and no threads of its own — so listing it among the
-            // businesses only offered a way to land somewhere with nothing in it. Reaching the
-            // business hub is what "+ New business" and the Discover page are for. In "team" mode
-            // this IS the one and only workspace, so there it remains a normal entry.
-            ...(requiresBusiness
-              ? []
-              : [{ id: product.space_id, name: product.product_name, meta: "Product" }]),
-            ...businesses.map((b) => ({ id: b.id, name: b.name, meta: `${b.role} · ${b.space_status}` })),
+            { id: product.space_id, name: product.product_name, meta: "Space assistant" },
+            ...spaces.map((space) => ({ id: space.id, name: space.name, meta: `${space.role} · ${space.space_status}` })),
           ],
           open: switcherOpen,
           onToggle: () => {
@@ -373,24 +315,20 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
           onSwitch: (id) => {
             setSwitcherOpen(false);
             if (id === product.space_id) {
-              if (requiresBusiness) {
-                router.push(`/p/${product.slug}/spaces`);
-                return;
-              }
               setActiveSpace(product.space_id, product.product_name);
             } else {
-              const business = businesses.find((b) => b.id === id);
-              setActiveSpace(id, business?.name ?? null);
+              const space = spaces.find((item) => item.id === id);
+              setActiveSpace(id, space?.name ?? null);
             }
             // Re-scoping happens via context — land on Home, now scoped to the switched space.
-            // The business's own admin/management page is reached from the Spaces list, not here.
+            // Space management is reached from the Spaces list.
             router.push(`/p/${product.slug}`);
           },
           onCreate: () => {
             setSwitcherOpen(false);
             router.push(`/p/${product.slug}/spaces`);
           },
-          canCreate: manifest?.membership_model !== "team",
+          canCreate: true,
         }}
       />
       <div id="main">
@@ -409,8 +347,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
             }}
           >
             <span style={{ color: "#78350f" }}>
-              Verify your email to unlock your free starting credits
-              {me.credits_balance === 0 ? " — your account has 0 credits until then." : "."}
+              Verify your email address to confirm account ownership.
             </span>
             <button
               type="button"

@@ -80,10 +80,11 @@ export default function SpacesPage() {
     try {
       const listing = templateId ? templates.find((item) => item.id === templateId) : undefined;
       if (templateId && !listing) throw new Error("That Space Template is no longer available.");
-      const fork = listing ? await forkSpaceTemplate(listing.id, creds) : null;
+      const fork = listing ? await forkSpaceTemplate(product.space_id, listing.id, creds) : null;
       const created = await createSpace(product.space_id, creds, {
         name: newSpaceName.trim(),
         ...(listing ? { template_listing_id: listing.id } : {}),
+        ...(fork ? { blueprint_id: fork.space_type_id } : {}),
       });
       setNewSpaceName("");
       // Production spaces install the blueprint at the end of background provisioning. Local
@@ -215,7 +216,6 @@ export default function SpacesPage() {
   const visibleSpaces = query.trim()
     ? spaces.filter((space) => space.name.toLowerCase().includes(query.trim().toLowerCase()))
     : spaces;
-  const needsSetup = spaces.filter((space) => space.onboarding_status != null && space.onboarding_status !== "complete").length;
   const totalRuns = activities?.reduce((total, row) => total + row.runs, 0) ?? 0;
 
   return (
@@ -231,7 +231,6 @@ export default function SpacesPage() {
       {!loading && !listFailed && spaces.length > 0 && (
         <div className="grid-3" style={{ marginBottom: 18 }}>
           <div className="card"><div className="card-label">Spaces</div><div className="card-value">{spaces.length}</div></div>
-          <div className="card"><div className="card-label">Needs setup</div><div className="card-value" style={{ color: needsSetup ? "#d97706" : undefined }}>{needsSetup}</div></div>
           <div className="card"><div className="card-label">Agent runs (30d)</div><div className="card-value">{activityLoading && activities === null ? "…" : totalRuns.toLocaleString()}</div></div>
         </div>
       )}
@@ -256,15 +255,15 @@ export default function SpacesPage() {
         ) : (
           <div className="grid-3">
             {visibleSpaces.map((space) => {
-              const setupPending = space.onboarding_status != null && space.onboarding_status !== "complete";
+              const templatePending = Boolean(space.pending_blueprint_id);
               const active = space.space_status === "active";
               return (
-                <Link key={space.id} href={setupPending ? `/p/${product.slug}/spaces/${space.id}/onboarding` : `/p/${product.slug}/spaces/${space.id}`} style={{ textDecoration: "none" }}>
+                <Link key={space.id} href={`/p/${product.slug}/spaces/${space.id}`} style={{ textDecoration: "none" }}>
                   <Card interactive>
                     <CardTitle>{space.name}</CardTitle>
-                    <CardDesc>{setupPending ? "Setup needs to be completed." : `Your role: ${space.role}`}</CardDesc>
+                    <CardDesc>Your role: {space.role}</CardDesc>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {setupPending && <Badge color="amber">Finish setup</Badge>}
+                      {templatePending && <Badge color="amber">Template review</Badge>}
                       <Badge color={active ? "green" : "amber"}>{active ? "active" : space.space_status}</Badge>
                     </div>
                   </Card>

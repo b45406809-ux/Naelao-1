@@ -2282,6 +2282,11 @@ const MIGRATIONS: Migration[] = [
       DROP TABLE IF EXISTS customer_conversations;
       DROP TABLE IF EXISTS project_rules;`,
   },
+  {
+    version: 105,
+    description: "remove retired Space stored-value credits",
+    up: `DROP TABLE IF EXISTS space_credits;`,
+  },
 ];
 
 /** Exported for replay/upgrade tests against SQLite; production applies this same sequence. */
@@ -5745,8 +5750,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       viewport_config: string;
     }>(
       this.ctx.storage.sql as never,
-      // F-40: `kind` is surfaced so the frontend project-page shell can mount the natively-built
-      // panel for that kind (WalletLedgerPanel etc.) via a switch at the mount point.
+      // The generic `kind` field selects one of the supported project layout primitives.
       //
       // ORDER BY created_at DESC (newest first) — this used to omit DESC entirely, which both
       // sorted OLDEST-first (the opposite of the "recents" ordering the Sessions list already
@@ -6971,7 +6975,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // §A1.17 Phase T1: real per-project membership ACL — a routing/authorization table, not just a
   // "who's active" list (that's `presence`). Role gates member management itself: owner/editor
   // can add/remove, viewer cannot (enforced by the caller passing `actingRole`, resolved from
-  // this SAME table one level up, mirroring how `requireBusinessMembership` resolves a role
+  // this SAME table one level up, mirroring how `requireSpaceMembership` resolves a role
   // before checking it against a per-route minimum).
   private listProjectMembers(projectId: string): Response {
     const rows = queryAll<{

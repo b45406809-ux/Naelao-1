@@ -85,30 +85,26 @@ export interface ReasonerDeps {
   /** Authenticated product end user's saved language preference; explicit turn language wins. */
   preferredLanguage?: string;
   /**
-   * The agent's OWN system prompt — who it is, what business it runs, how it is supposed to work
+   * The agent's OWN system prompt — who it is, what the Space is for, and how it should work
    * (script-engine/profiles.ts, persisted as `system-prompt.md` in R2 and loaded by
    * `loadAgentConfig`).
    *
    * This was missing entirely, and it is the single biggest thing that was wrong with the
    * assistant. `loadAgentConfig` read the file on every run and nothing ever passed it here, so the
-   * model's system message was only ever the generic DECISION_INSTRUCTIONS below. Every word of
-   * the Launchpad business-building methodology, the wallet rules, "read the project journal
-   * first", the escalation policy — written, stored, and never delivered. Asked what business it
-   * was running, the assistant answered "that information is not provided in the given context",
-   * which was the literal truth.
+   * model's system message was only ever the generic DECISION_INSTRUCTIONS below. The workspace
+   * rules, project-journal guidance, and escalation policy were written, stored, and never
+   * delivered. The agent could not describe its configured role because it never received that
+   * prompt.
    */
   agentPrompt?: string;
   /** Highest-precedence, versioned human directives loaded from AGENTS.md. */
   founderDirectives?: string;
   /**
-   * WHICH business this run is for — its name, what it sells, and whether setup is finished.
+   * Which Space this run is for and whether its setup is finished.
    *
    * `agentPrompt` above fixed "the agent doesn't know its own role"; this fixes the other half,
-   * found the same way (a real business driven end-to-end on production): the profile is the same
-   * static text for every Launchpad business on the platform, so knowing it tells the agent it is
-   * a business-builder but not that THIS business is a web-design studio called Pixel Forge Studio
-   * whose owner has not finished setup. Absent for a run with no resolvable space row, in which
-   * case nothing is sent rather than a hollow placeholder. See launchpad/business-context.ts.
+   * found the same way: this carries the actual Space name and setup state. Absent for a run with
+   * no resolvable space row, in which case nothing is sent rather than a hollow placeholder.
    */
   spaceContext?: SpaceContext;
   manifest?: UniversalAgentManifest;

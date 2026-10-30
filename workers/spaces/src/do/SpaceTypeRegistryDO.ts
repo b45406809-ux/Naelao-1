@@ -9,7 +9,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { assertTemplateId } from "@naelao/agent-sdk";
-import { LEGACY_LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST } from "../workspace-manifest.js";
+import { LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST } from "../workspace-manifest.js";
 
 // ── SpaceType Manifest v2 (spec §61) ─────────────────────────────────────────
 
@@ -400,7 +400,7 @@ export class SpaceTypeRegistryDO extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM native_space_templates WHERE id = ?", "tpl_dev_foundry_v1");
     this.initialized = true;
 
-    // Self-heal: every registry includes the generic Workspace type. Seeding was originally a manual, easy-to-forget POST
+    // Self-heal: every registry includes the Launchpad product. Seeding was originally a manual, easy-to-forget POST
     // /internal/space-types/seed call at deploy time — if that was never run
     // against a fresh/reset instance, every listing (GET /types, the builder
     // wizard's SpaceType step, provisioning's own GET /type/:id) would silently
@@ -408,11 +408,10 @@ export class SpaceTypeRegistryDO extends DurableObject {
     // anything was wrong. Seed inline instead of depending on that step.
     const existing = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM space_types`).toArray() as unknown as { n: number }[];
     if ((existing[0]?.n ?? 0) === 0) {
-      for (const manifest of [WORKSPACE_MANIFEST, LEGACY_LAUNCHPAD_MANIFEST]) this.registerManifest(manifest, "naelao");
+      for (const manifest of [LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST]) this.registerManifest(manifest, "naelao");
     }
-    // Keep the default Workspace definition current. Older Launchpad type records remain
-    // resolvable for existing Spaces but are hidden from new installs and catalog discovery.
-    for (const manifest of [WORKSPACE_MANIFEST, LEGACY_LAUNCHPAD_MANIFEST]) this.registerManifest(manifest, "naelao");
+    // Keep Launchpad current and resolve the temporary Workspace type for existing records.
+    for (const manifest of [LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST]) this.registerManifest(manifest, "naelao");
   }
 
   private registerManifest(manifest: NaelaoSpaceTypeManifestV2, authorId: string): void {

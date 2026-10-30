@@ -35,10 +35,10 @@ import {
   type ChatUpload,
   getProject,
   listAgentDefinitions,
-  listBusinessMembers,
+  listSpaceMembers,
   getConnectorStatus,
   type AgentDefinitionSummary,
-  type BusinessMember,
+  type SpaceMember,
   type ConnectorInfo,
   getShellManifest,
 } from "@/lib/api";
@@ -97,7 +97,7 @@ const POLL_INTERVAL_MS = 1500;
 // reload/interaction) rather than a red error.
 const STALL_TIMEOUT_MS = 120_000;
 // A run that failed on one of these is not just "an error" — there's something real to DO about
-// it (buy credits, resubscribe, wait for a quota reset), so it gets the UpgradeDialog instead of
+// it (upgrade the Space plan or wait for the quota reset), so it gets the UpgradeDialog instead of
 // a bare red banner. See UpgradeDialog's own doc for what each code offers.
 const BILLING_ERROR_CODES = new Set(["insufficient_credits", "subscription_inactive", "quota_exceeded", "infra_quota_exceeded"]);
 
@@ -273,8 +273,8 @@ export function Chat({
   // Only used to label/scope the composer dock. Compared against the space this Chat was actually
   // given: the dock's member stack must never describe a DIFFERENT space than the conversation
   // belongs to, which is possible during a space switch before this component remounts.
-  const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
-  const dockIsBusinessSpace = isBusinessSpace && activeSpaceId === spaceId;
+  const { activeSpaceId, activeSpaceName, isChildSpace } = useActiveSpace();
+  const dockIsBusinessSpace = isChildSpace && activeSpaceId === spaceId;
   // Existing assistant sessions use the same conversation surface as project threads. The
   // project-only tabs still key off threadId below, but the header/model/composer treatment is
   // shared by both durable conversation routes.
@@ -437,7 +437,7 @@ export function Chat({
   const [lastRun, setLastRun] = React.useState<AgentRun | null>(null);
   const [modelSearch, setModelSearch] = React.useState("");
   const [modelProvider, setModelProvider] = React.useState("all");
-  const [workspaceMembers, setWorkspaceMembers] = React.useState<BusinessMember[] | null>(null);
+  const [workspaceMembers, setWorkspaceMembers] = React.useState<SpaceMember[] | null>(null);
   const [workspaceConnectors, setWorkspaceConnectors] = React.useState<ConnectorInfo[] | null>(null);
   const modelProviders = React.useMemo(() => Array.from(new Set(ALLOWED_MODELS.map(providerForModel))).sort(), []);
   const filteredModels = React.useMemo(() => ALLOWED_MODELS.filter((model) => {
@@ -452,7 +452,7 @@ export function Chat({
       getConnectorStatus(spaceId, session).then((rows) => { if (!cancelled) setWorkspaceConnectors(rows); }).catch(() => { if (!cancelled) setWorkspaceConnectors([]); });
     }
     if (workspaceTabs.includes("members") && dockIsBusinessSpace && workspaceMembers === null) {
-      listBusinessMembers(spaceId, session).then((rows) => { if (!cancelled) setWorkspaceMembers(rows); }).catch(() => { if (!cancelled) setWorkspaceMembers([]); });
+      listSpaceMembers(spaceId, session).then((rows) => { if (!cancelled) setWorkspaceMembers(rows); }).catch(() => { if (!cancelled) setWorkspaceMembers([]); });
     }
     return () => { cancelled = true; };
   }, [workspaceTabs, workspaceConnectors, workspaceMembers, spaceId, session, dockIsBusinessSpace]);
@@ -1021,7 +1021,7 @@ export function Chat({
           } else if (run.status === "failed" || run.status === "cancelled") {
             if (!isUserStoppedError(run.error)) {
               if (run.error_code && BILLING_ERROR_CODES.has(run.error_code)) {
-                setBillingWall({ code: run.error_code, message: run.error ?? "You need to top up or subscribe to keep chatting." });
+                setBillingWall({ code: run.error_code, message: run.error ?? "Your usage limit has been reached. Check your Space plan or wait for the quota reset." });
               } else {
                 setError(userFacingErrorMessage(run.error, run.error_code, "The agent run failed"));
               }
@@ -1134,7 +1134,7 @@ export function Chat({
             } else if (status === "failed" || status === "cancelled") {
               if (!isUserStoppedError(data.error)) {
                 if (data.error_code && BILLING_ERROR_CODES.has(data.error_code)) {
-                  setBillingWall({ code: data.error_code, message: data.error ?? "You need to top up or subscribe to keep chatting." });
+                  setBillingWall({ code: data.error_code, message: data.error ?? "Your usage limit has been reached. Check your Space plan or wait for the quota reset." });
                 } else {
                   setError(userFacingErrorMessage(data.error, data.error_code, "The agent run failed"));
                 }
@@ -2062,7 +2062,7 @@ export function Chat({
               </div>
             ) : null}
             spaceName={activeSpaceName ?? undefined}
-            isBusinessSpace={dockIsBusinessSpace}
+            isChildSpace={dockIsBusinessSpace}
             agentOptions={agentOptions}
             selectedAgentId={selectedAgentId ?? ""}
             onAgentChange={(id) => setSelectedAgentId(id === "" ? null : id)}
@@ -2337,7 +2337,7 @@ export function Chat({
                 // session or it reads the space-wide assistant DO — which never saw this chat's
                 // spawns and therefore always answered "none".
                 sessionId={chatSessionId}
-                isBusinessSpace={dockIsBusinessSpace}
+                isChildSpace={dockIsBusinessSpace}
               />
             )}
           </div>

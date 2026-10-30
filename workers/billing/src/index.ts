@@ -322,7 +322,7 @@ app.post("/billing/usage", async (c) => {
     runtime_tier?: number;
     /** Opaque irreversible digest only; never send provider contact IDs to this ledger. */
     subject_hash?: string;
-    payer_kind?: "consumer_credits" | "plan_quota" | "platform" | "unknown";
+    payer_kind?: "plan_quota" | "platform" | "unknown";
     decision?: "allowed" | "denied" | "charged" | "released" | "failed" | "not_billable";
     // G-AN09: Caller may supply an idempotency key; if absent, one is computed
     idempotency_key?: string;
@@ -418,8 +418,7 @@ app.post("/billing/usage", async (c) => {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "infra_credits");
   }
 
-  // Wallet/consumer-prepaid v2 usage is already charged to that payer and must not become a
-  // second platform subscription meter event. Plan/platform events keep the existing async rail.
+  // Only plan/platform usage is forwarded to subscription metering.
   if (schemaVersion === 1 || body.payer_kind === "plan_quota" || body.payer_kind === "platform" || body.payer_kind === "unknown") await c.env.BILLING_EVENTS.send({
     type: "meter",
     org_id: orgId,

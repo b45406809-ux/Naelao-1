@@ -1,13 +1,13 @@
 "use client";
 
 
-// /projects (bare, no id) is no longer a list — it lands you straight in the business's default
+// /projects (bare, no id) is no longer a list — it lands you straight in the space's default
 // "General" project, the way opening a folder takes you into it rather than showing you every
 // folder that exists first. The full list (and "New project") moved to /projects/all, reachable
 // from inside General's own header.
 //
-// Every business provisioned after this shipped gets a real General project seeded automatically
-// (see seedGeneralProject in workers/agents/src/launchpad/bootstrap.ts) — but an older business,
+// Every space provisioned after this shipped gets a real General project seeded automatically
+// (see seedGeneralProject in workers/agents/src/launchpad/bootstrap.ts) — but an older space,
 // or one whose seed genuinely failed, might not have one yet. Falling back to the list in that
 // case (rather than a dead end) is what makes this safe to ship without a data migration.
 

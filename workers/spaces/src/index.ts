@@ -8,16 +8,15 @@ import { compileWorkflowPlan } from "@naelao/sdk/workflow";
 import type { SpaceModelPolicy } from "@naelao/agent-sdk";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
-import { LEGACY_LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST } from "./workspace-manifest.js";
+import { LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST } from "./workspace-manifest.js";
 import { cfSaasConfig, createCustomHostname, deleteCustomHostname, getCustomHostname, normalizeCustomHostname } from "./cf-saas.js";
 import { validateCronExpression, computeNextRun } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
-import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
+import { registerProductEndUserRoutes } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import { dispatchPendingProvisioningOutbox } from "./provisioning-outbox.js";
 import type { ProvisionMessage } from "./create-space.js";
-import { requireBusinessMembership, resolveEndUserBusinessRole } from "./business-auth.js";
-import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
+import { requireSpaceMembership, resolveEndUserSpaceRole } from "./space-auth.js";
 import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel } from "@naelao/billing-core";
 import { registerProjectMcpRoutes } from "./routes/mcp.js";
 import { registerGadgetMcpRoutes } from "./routes/gadget-mcp.js";
@@ -44,7 +43,7 @@ import { reportExtensionArtifactWrite } from "./extension-storage-usage.js";
 import { eraseAssistantCommunications } from "./assistant-communication-erasure.js";
 import { eraseWebsiteConnections } from "./website-connection-erasure.js";
 import { eraseProductUsersForSpace } from "./product-user-erasure.js";
-import { eraseBusinessServiceProviders } from "./business-erasure.js";
+import { eraseSpaceDomainProviders } from "./space-domain-erasure.js";
 import { cancelPendingErasure, createPendingErasureRequest, dispatchPendingErasureOutbox } from "./erasure-request-state.js";
 import { previewBlueprintActivation } from "./blueprint-activation.js";
 import { assertExecutionPlanResources, EntitlementsChecker, getExecutionLimits, isPlanTierAtLeast } from "@naelao/entitlements";
@@ -210,6 +209,18 @@ app.delete("/internal/tenant/:tenantId/spaces/:spaceId/product-users/erase", asy
   });
   return c.json({ erased: true, space_id: spaceId, users_erased: usersErased });
 });
+app.use("/internal/tenant/:tenantId/spaces/:spaceId/domains/erase", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.delete("/internal/tenant/:tenantId/spaces/:spaceId/domains/erase", async (c) => {
+  const tenantId = c.req.param("tenantId");
+  const spaceId = c.req.param("spaceId");
+  if (c.req.header("x-naelao-tenant-id") !== tenantId) return c.json({ error_code: "tenant_scope_mismatch" }, 403);
+  const config = cfSaasConfig(c.env);
+  const deleted = await eraseSpaceDomainProviders(c.env.PLATFORM_DB, tenantId, spaceId, async (hostnameId) => {
+    if (!config) throw new Error("Cloudflare hostname credentials are unavailable during Space erasure");
+    await deleteCustomHostname(config, hostnameId);
+  });
+  return c.json({ erased: true, space_id: spaceId, provider_domains_deleted: deleted });
+});
 
 registerGadgetMcpRoutes(app);
 registerExtensionGadgetRoutes(app);
@@ -228,7 +239,7 @@ registerDeskDropRoutes(app, {
   async openSession(rawEnv, spaceId, userId) {
     const env = rawEnv as Env;
     // Contact verification never substitutes for fresh business authorization at redemption.
-    const role = await resolveEndUserBusinessRole(env.PLATFORM_DB, spaceId, userId);
+    const role = await resolveEndUserSpaceRole(env.PLATFORM_DB, spaceId, userId);
     if (role !== "owner" && role !== "admin") return null;
     const root = await resolveProductRootSpace(env, spaceId);
     if (!root) return null;
@@ -243,7 +254,7 @@ registerDeskDropRoutes(app, {
   },
   async verifySession(rawEnv, session) {
     const env = rawEnv as Env;
-    if (!await resolveEndUserBusinessRole(env.PLATFORM_DB, session.spaceId, session.userId)) return false;
+    if (!await resolveEndUserSpaceRole(env.PLATFORM_DB, session.spaceId, session.userId)) return false;
     const root = await resolveProductRootSpace(env, session.spaceId);
     if (!root || root.id !== session.productId) return false;
     const response = await (await productUserDoStub(env, root.id, session.userId, root.tenant_id)).fetch(new Request("http://do/sessions/verify", {
@@ -372,7 +383,7 @@ async function authorizeProductEndUserSpace(
     .bind(spaceId).first<{ tenant_id: string; parent_space_id: string | null }>();
   if (!space || space.tenant_id !== tenantId) return null;
   if (space.parent_space_id) {
-    if (!await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)) return null;
+    if (!await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)) return null;
   } else {
     const roster = await c.env.PLATFORM_DB.prepare(
       "SELECT 1 AS active FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL"
@@ -384,7 +395,7 @@ async function authorizeProductEndUserSpace(
 async function canExportBlueprint(c: { env: Env; req: { header(h: string): string | undefined } }, spaceId: string): Promise<boolean> {
   const { role, userId } = getCallerIdentity(c);
   if (role === "product_end_user") {
-    const membership = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+    const membership = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId);
     return membership === "owner" || membership === "admin";
   }
   return role === "owner" || role === "admin";
@@ -453,6 +464,92 @@ app.post("/spaces", async (c) => {
       return c.json({ error_code: err.error_code, message: err.message, ...(err.errors ? { errors: err.errors } : {}) }, err.status as 400 | 402 | 404 | 409 | 429 | 503);
     }
     throw err;
+  }
+});
+
+// Product-session users create isolated, generic Spaces under the authenticated root. A
+// Space Template is optional; when selected it arrives as a tenant-owned marketplace fork and
+// remains pending until the owner reviews its activation requirements.
+app.use("/spaces/:spaceId/my-spaces", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/spaces", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+async function getProductSpaceOwner(c: Context<{ Bindings: Env }>, rootSpaceId: string) {
+  const identity = getCallerIdentity(c);
+  if (identity.role !== "product_end_user" || !identity.userId || !identity.tenantId) return null;
+  const root = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, tenant_id, spacetype_id FROM spaces WHERE id = ? AND tenant_id = ? AND status = 'active' AND parent_space_id IS NULL"
+  ).bind(rootSpaceId, identity.tenantId).first<{ id: string; tenant_id: string; spacetype_id: string }>();
+  if (!root) return null;
+  const user = await c.env.PLATFORM_DB.prepare(
+    "SELECT 1 FROM product_end_users WHERE product_space_id = ? AND end_user_id = ? AND suspended_at IS NULL AND deleted_at IS NULL"
+  ).bind(root.id, identity.userId).first();
+  return user ? { ...identity, root } : null;
+}
+
+app.get("/spaces/:spaceId/my-spaces", async (c) => {
+  const owner = await getProductSpaceOwner(c, c.req.param("spaceId"));
+  if (!owner) return c.json({ error_code: "forbidden", message: "A verified Space account is required" }, 403);
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT s.id, s.name, s.status AS space_status, s.created_at,
+            COALESCE(m.role, 'owner') AS role, COALESCE(m.created_at, s.created_at) AS joined_at,
+            s.config_json
+       FROM spaces s
+       LEFT JOIN space_members m ON m.space_id = s.id AND m.end_user_id = ? AND m.suspended_at IS NULL
+      WHERE s.tenant_id = ? AND s.parent_space_id = ? AND s.status != 'deleted'
+        AND (m.end_user_id = ? OR s.created_by = ?)
+      ORDER BY s.created_at DESC LIMIT 100`
+  ).bind(owner.userId, owner.tenantId, owner.root.id, owner.userId, owner.userId)
+    .all<{ id: string; name: string; space_status: string; created_at: string; role: string; joined_at: string; config_json: string | null }>();
+  const data = results.map(row => {
+    let config: Record<string, unknown> = {};
+    try { const value: unknown = JSON.parse(row.config_json ?? "{}"); if (value && typeof value === "object" && !Array.isArray(value)) config = value as Record<string, unknown>; } catch { /* legacy malformed config is omitted */ }
+    return {
+      id: row.id, name: row.name,
+      role: row.role === "moderator" ? "admin" : row.role,
+      membership_status: "active", space_status: row.space_status, joined_at: row.joined_at,
+      pending_blueprint_id: typeof config.pending_blueprint_id === "string" ? config.pending_blueprint_id : null,
+    };
+  });
+  return c.json({ data, count: data.length });
+});
+
+app.post("/spaces/:spaceId/spaces", async (c) => {
+  const owner = await getProductSpaceOwner(c, c.req.param("spaceId"));
+  if (!owner) return c.json({ error_code: "forbidden", message: "A verified Space account is required" }, 403);
+  let value: unknown;
+  try { value = JSON.parse(await readBoundedRequestText(c.req.raw, 16 * 1024)); }
+  catch (error) {
+    return c.json({ error_code: error instanceof RequestBodyTooLargeError ? "payload_too_large" : "invalid_request_body" }, error instanceof RequestBodyTooLargeError ? 413 : 400);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return c.json({ error_code: "invalid_request_body" }, 400);
+  const body = value as { name?: unknown; blueprint_id?: unknown; template_listing_id?: unknown };
+  if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 100) return c.json({ error_code: "invalid_space_name" }, 400);
+  if (body.blueprint_id !== undefined && (typeof body.blueprint_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.blueprint_id))) return c.json({ error_code: "invalid_blueprint_id" }, 400);
+  if (body.template_listing_id !== undefined && (typeof body.template_listing_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.template_listing_id))) return c.json({ error_code: "invalid_template_listing_id" }, 400);
+  if (body.template_listing_id && !body.blueprint_id) return c.json({ error_code: "template_fork_required" }, 400);
+  if (body.blueprint_id) {
+    const fork = await c.env.PLATFORM_DB.prepare(
+      `SELECT 1 FROM marketplace_forks f JOIN marketplace_listings l ON l.id = f.listing_id
+        WHERE f.tenant_id = ? AND f.blueprint_id = ? AND l.status = 'published'
+          AND (? IS NULL OR l.id = ?) LIMIT 1`
+    ).bind(owner.tenantId, body.blueprint_id, body.template_listing_id ?? null, body.template_listing_id ?? null).first();
+    if (!fork) return c.json({ error_code: "space_template_fork_required" }, 402);
+  }
+  try {
+    const created = await createSpaceRecord(c.env, {
+      tenantId: owner.tenantId,
+      userId: owner.userId,
+      name: body.name,
+      spacetypeId: owner.root.spacetype_id,
+      parentSpaceId: owner.root.id,
+      depth: 1,
+      ...(typeof body.blueprint_id === "string" ? { blueprintId: body.blueprint_id } : {}),
+      initialMembership: { productSpaceId: owner.root.id, endUserId: owner.userId, role: "owner" },
+    });
+    return c.json({ id: created.id, name: body.name, status: created.status,
+      ...(body.blueprint_id ? { pending_blueprint_id: body.blueprint_id } : {}) }, 201);
+  } catch (error) {
+    if (error instanceof SpaceCreationError) return c.json({ error_code: error.error_code, message: error.message }, error.status as 400 | 402 | 404 | 409 | 429 | 503);
+    throw error;
   }
 });
 
@@ -790,7 +887,7 @@ async function installFirstPartySpaceExtension(env: Env, tenantId: string, space
 }
 
 app.use("/spaces/:spaceId/shared-extensions/:extensionId/install", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/shared-extensions/:extensionId/install", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/shared-extensions/:extensionId/install", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/shared-extensions/:extensionId/install", async c => {
   const spaceId = c.req.param("spaceId"), identity = getCallerIdentity(c);
   const owned = await loadOwnedSpace(c, spaceId);
@@ -822,7 +919,7 @@ async function loadOwnedSpace(
 // Generic directory of mounted Space-shared extension canvases. The shell discovers apps from
 // installed manifests instead of maintaining product-specific routes or navigation entries.
 app.use("/spaces/:spaceId/shared-extension-apps", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/shared-extension-apps", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/shared-extension-apps", requireSpaceMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/shared-extension-apps", async c => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
@@ -831,14 +928,14 @@ app.get("/spaces/:spaceId/shared-extension-apps", async c => {
   return forwardToSpaceDO(stub, `/space-shared-extensions?${new URLSearchParams({ tenant_id: owned.tenantId, space_id: spaceId })}`, "GET");
 });
 app.use("/spaces/:spaceId/shared-extension-catalog", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/shared-extension-catalog", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/shared-extension-catalog", requireSpaceMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/shared-extension-catalog", c => c.json({ extensions: Object.values(DOGFOOD_EXTENSION_BY_ID)
   .filter(manifest => manifest.gadgets.some(gadget => gadget.scope === "SPACE_SHARED" && gadget.gadgetTier === 3))
   .map(manifest => ({ id: manifest.id, name: manifest.gadgets.find(gadget => gadget.scope === "SPACE_SHARED")?.name ?? manifest.id,
     requested_shared_filesystem: manifest.shared_filesystem ?? [] })) }));
 
 app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireBusinessMembership({ PATCH: "admin" }));
+app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", requireSpaceMembership({ PATCH: "admin" }));
 app.patch("/spaces/:spaceId/shared-extension-installations/:instanceId/filesystem-grants", async c => {
   const identity = getCallerIdentity(c), spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
@@ -854,7 +951,7 @@ app.patch("/spaces/:spaceId/shared-extension-installations/:instanceId/filesyste
 });
 
 app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/lifecycle", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/lifecycle", requireBusinessMembership({ PATCH: "admin" }));
+app.use("/spaces/:spaceId/shared-extension-installations/:instanceId/lifecycle", requireSpaceMembership({ PATCH: "admin" }));
 app.patch("/spaces/:spaceId/shared-extension-installations/:instanceId/lifecycle", async c => {
   const spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId");
   const owned = await loadOwnedSpace(c, spaceId);
@@ -868,7 +965,7 @@ app.patch("/spaces/:spaceId/shared-extension-installations/:instanceId/lifecycle
 });
 
 app.use("/spaces/:spaceId/shared-extension-installations/:instanceId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/shared-extension-installations/:instanceId", requireBusinessMembership({ DELETE: "admin" }));
+app.use("/spaces/:spaceId/shared-extension-installations/:instanceId", requireSpaceMembership({ DELETE: "admin" }));
 app.delete("/spaces/:spaceId/shared-extension-installations/:instanceId", async c => {
   const spaceId = c.req.param("spaceId"), instanceId = c.req.param("instanceId");
   const owned = await loadOwnedSpace(c, spaceId);
@@ -1084,8 +1181,8 @@ app.post("/spaces/:spaceId/me/injection", async (c) => {
 // product_end_user caller is allowed through for GET only (write methods stay admin-only). Phase
 // C closed a cross-business hole in that check: a flat "any product_end_user may GET" would let
 // one business's end user read another business's agent roster just by changing :spaceId in the
-// URL — resolveEndUserBusinessRole now requires an actual (product-root or business-membership)
-// role before the GET is allowed, same as requireBusinessMembership's other routes.
+// URL — resolveEndUserSpaceRole now requires an actual Space membership
+// role before the GET is allowed, same as requireSpaceMembership's other routes.
 // Gated inline (not via a separate app.use(...)) — see the /internal/space-types-record-install/
 // :id route's comment for the full root-cause writeup: a separate app.use(...) on an overlapping
 // wildcard pattern was found, at this app's route-table scale, to be silently bypassable (a
@@ -1109,8 +1206,8 @@ app.all("/spaces/:spaceId/agent-definitions", async (c) => {
     if (c.req.method !== "GET") {
       return errorResponse(forbidden("product_end_user callers may only read agent definitions"), c.get("requestId") ?? "unknown");
     }
-    const businessRole = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, callerIdentity.userId);
-    if (!businessRole) {
+    const spaceRole = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, callerIdentity.userId);
+    if (!spaceRole) {
       return errorResponse(forbidden("Not a member of this business"), c.get("requestId") ?? "unknown");
     }
   }
@@ -1222,17 +1319,31 @@ app.all("/internal/spaces/:spaceId/executive/*", async (c) => {
   return forwardToSpaceDO(stub, target, c.req.method, c.req.raw.body);
 });
 
-// ── /internal/business-role ─────────────────────────────────────────────────
-// Temporary compatibility authorization for the still-supported product-user session format.
-// This is not a business feature route; it is an internal identity-to-Space membership check.
-app.use("/internal/business-role", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.get("/internal/business-role", async (c) => {
+// ── /internal/space-role ────────────────────────────────────────────────────
+// Internal identity-to-Space membership check used by workers that authorize product sessions.
+app.use("/internal/space-role", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/space-role", async (c) => {
   const spaceId = c.req.query("spaceId") ?? "";
   const userId = c.req.query("endUserId") ?? "";
   if (!spaceId || !userId) return c.json({ error_code: "bad_request" }, 400);
-  const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+  const role = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId);
   if (!role) return c.json({ error_code: "forbidden" }, 404);
   return c.json({ role });
+});
+
+// Product-user roster for this Space. This is the generic membership index used by the shell;
+// platform team collaborators remain in SpaceDO's separate `/members` store.
+app.use("/spaces/:spaceId/memberships", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/memberships", requireSpaceMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/memberships", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const result = await c.env.PLATFORM_DB.prepare(
+    `SELECT end_user_id, email, display_name, role, created_at AS joined_at,
+            CASE WHEN suspended_at IS NULL THEN 'active' ELSE 'suspended' END AS status
+     FROM space_members WHERE space_id = ? AND tenant_id = ? ORDER BY created_at ASC`
+  ).bind(spaceId, tenantId).all();
+  return c.json({ data: result.results ?? [], count: result.results?.length ?? 0 });
 });
 
 // ── SpaceDO session proxy ────────────────────────────────────────────────────
@@ -1268,7 +1379,7 @@ const handleSpaceSessions = async (c: any) => {
 
   // S0.1: For product_end_user callers, verify business membership.
   if (role === "product_end_user" && userId) {
-    const memberRole = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+    const memberRole = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId);
     if (!memberRole) {
       return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
     }
@@ -1409,12 +1520,9 @@ app.all("/spaces/:spaceId/sessions/*", handleSpaceSessions);
 //
 // Two distinct creation flows, deliberately kept separate:
 //  • Departments (in-DO sub-spaces) — POST /spaces/:id/sub-spaces. Rows in the parent's
-//    SpaceDO `spaces` registry, isolated by space_id. depth 1-2. Used by team tenancy and
-//    by departments WITHIN a saas business. Generic across every space type.
-//  • New isolated businesses (saas per-end-user) — POST /reseller/spaces (below). Each gets
-//    its OWN child tenant + OWN SpaceDO (structural isolation, G-Y16). That is how a
-//    wholesaler's customer "starts a business": their own space, never a row in the
-//    wholesaler's DB — so the parent is never over-populated.
+//    SpaceDO `spaces` registry, isolated by space_id. Depth 1-2, available to any Space Template.
+//  • User-created Spaces — POST /spaces/:id/spaces. Each has its own SpaceDO, membership, and
+//    optional FDE-authored Space Template installation.
 
 /** Get the SpaceDO stub for a (spaceId, tenantId), HMAC-named to prevent enumeration. */
 async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
@@ -1487,7 +1595,7 @@ app.get("/spaces/:spaceId/container-installations", async (c) => {
 });
 
 app.use("/spaces/:spaceId/runtime-catalog", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/runtime-catalog", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/runtime-catalog", requireSpaceMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/runtime-catalog", async c => {
   const identity = getCallerIdentity(c);
   const owned = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id=? AND tenant_id=? AND status!='deleted'").bind(c.req.param("spaceId"), identity.tenantId).first();
@@ -1522,7 +1630,7 @@ app.get("/spaces/:spaceId/runtime-catalog", async c => {
 // Explicit human installation. The catalogue is refreshed rather than trusting a cached
 // availability bit or a model-supplied digest. Runtime discovery never invokes this write.
 app.use("/spaces/:spaceId/runtime-installations", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/runtime-installations", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/runtime-installations", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/runtime-installations", async c => {
   const { tenantId, userId } = getCallerIdentity(c), spaceId = c.req.param("spaceId");
   if (!tenantId || !userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
@@ -1617,7 +1725,7 @@ async function resolveGlossarySpace(c: { env: Env; req: { header(name: string): 
   if (!owned) return null;
   if (c.req.header("x-naelao-role") === "product_end_user") {
     const userId = c.req.header("x-naelao-user-id") ?? "";
-    if (!userId || !await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId)) return null;
+    if (!userId || !await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId)) return null;
   }
   return owned;
 }
@@ -1627,7 +1735,7 @@ async function canEditGlossary(c: { env: Env; req: { header(name: string): strin
   if (role !== "product_end_user") return false;
   const userId = c.req.header("x-naelao-user-id") ?? "";
   if (!userId) return false;
-  const membership = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+  const membership = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId);
   return membership === "owner" || membership === "admin";
 }
 app.get("/spaces/:spaceId/domain-glossary", async (c) => {
@@ -1671,7 +1779,7 @@ async function canManageCustomModel(c: { req: { header(name: string): string | u
   if (role !== "product_end_user") return false;
   const userId = c.req.header("x-naelao-user-id") ?? "";
   if (!userId) return false;
-  const membership = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+  const membership = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId);
   return membership === "owner" || membership === "admin";
 }
 async function spaceModelInternalHeaders(secret: string, tenantId: string, extra?: HeadersInit): Promise<Headers> {
@@ -1740,7 +1848,7 @@ app.post("/spaces/:spaceId/custom-models/:modelId/test-sets", async c => {
 
 // Space data lifecycle controls are owner/admin-only. The identity used for audit is derived
 // from verified request claims; the browser cannot select an actor or tenant.
-app.use("/spaces/:spaceId/data-ops", requireBusinessMembership({ GET: "admin", POST: "admin" }));
+app.use("/spaces/:spaceId/data-ops", requireSpaceMembership({ GET: "admin", POST: "admin" }));
 app.get("/spaces/:spaceId/data-ops", async c => {
   const { tenantId, userId } = getCallerIdentity(c), spaceId = c.req.param("spaceId");
   if (!tenantId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
@@ -1793,18 +1901,7 @@ async function productUserDoStub(env: Env, productId: string, endUserId: string,
   return env.PRODUCT_USER_DO.get(doId);
 }
 
-/** Resolve `spaceId` to the PRODUCT ROOT space it belongs to (walking one `parent_space_id` hop —
- *  spec §49's own invariant: a business is never more than one hop below its product root).
- *  ProductUserDO is a PRODUCT-scoped concept (one instance per productId×endUserId — see
- *  productUserDoStub's own doc), so a signed-in end user's session/credits/preferences all live
- *  under the product root's id, never a business's own space id, even while they're actively
- *  inside a business. Mirrors the identical inline walk already done at
- *  /internal/product-sessions/verify, /internal/stream-tickets/issue, and loadPricingCatalog —
- *  extracted here because the credit routes below were found NOT doing this walk: a
- *  business-scoped assistant session (no projectId) called .../credits/balance with the
- *  business's own space id, addressing a DIFFERENT, never-signed-up ProductUserDO with a
- *  permanent 0 balance, even though the end user's real (product-root-keyed) balance was well
- *  above zero — the live-reported "insufficient credits" bug despite a real 5000-credit grant. */
+/** Resolve a child Space to the root Space that owns its product-user session namespace. */
 async function resolveProductRootSpace(
   env: Env,
   spaceId: string
@@ -1851,11 +1948,11 @@ async function requireAutomationProjectAccess(c: any, spaceId: string, projectId
   }
   const identity = getCallerIdentity(c);
   const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
-  const businessRole = identity.role === "product_end_user" && identity.userId
-    ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
+  const spaceRole = identity.role === "product_end_user" && identity.userId
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)
     : null;
   const qs = new URLSearchParams({ space_id: spaceId, user_id: identity.userId ?? "" });
-  if (!identity.userId || businessRole === "admin" || businessRole === "owner") qs.set("space_manager", "1");
+  if (!identity.userId || spaceRole === "admin" || spaceRole === "owner") qs.set("space_manager", "1");
   if (access === "read") qs.set("access", "read");
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const result = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/automation-access?${qs}`, "GET");
@@ -2123,15 +2220,15 @@ app.get("/internal/spaces/:spaceId/action-receipts/verify", async (c) => {
 // already mints the token off verified JWT OR product_end_user claims) or a direct internal
 // caller (NaelaoAgentDO, agents worker — both updated to mint it too), so requireInternalHmac
 // stays the "came through the router" gate for everyone. Phase B (§A1.17): the Product Shell
-// needs list/create/read here for a product_end_user caller — requireBusinessMembership adds the
+// needs list/create/read here for a product_end_user caller — requireSpaceMembership adds the
 // extra floor ONLY for that role (every other role is unaffected). rules/spend stay OFF the
 // router's product_end_user allowlist entirely (server-to-server agent accounting, no-code rule
 // config) — requireInternalHmac alone still fully gates them; no product_end_user request can
 // ever reach them regardless of what's declared below.
 app.use("/spaces/:spaceId/projects", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.use("/spaces/:spaceId/projects", requireSpaceMembership({ GET: "member", POST: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId", requireSpaceMembership({ GET: "member" }));
 registerProjectMcpRoutes(app, requireManageableAutomationProject);
 
 // The LSP indexer is an optional, owner-installed project extension. Templates can name
@@ -2141,10 +2238,10 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/lsp-indexer", async (c
   const denied = await requireManageableAutomationProject(c, spaceId, projectId);
   if (denied) return denied;
   const identity = getCallerIdentity(c);
-  const businessRole = identity.role === "product_end_user" && identity.userId
-    ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
+  const spaceRole = identity.role === "product_end_user" && identity.userId
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)
     : identity.role;
-  if (businessRole !== "owner" && businessRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
+  if (spaceRole !== "owner" && spaceRole !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
   const manifest = DOGFOOD_EXTENSION_BY_ID["ext_lsp_indexer"];
   if (!manifest) return c.json({ error_code: "lsp_extension_unavailable" }, 503);
   const response = await (await spaceDoStub(c.env, spaceId, identity.tenantId)).fetch(new Request("http://space-do/extensions", {
@@ -2159,9 +2256,9 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/lsp-indexer", async (c
 // channel.invoke capability. The separate signed project-bundle installer below supports
 // reviewed Canvas/Gadget/workflow/channel compositions and stages activation around setup.
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/channel-extensions", requireSpaceMembership({ POST: "admin" }));
 app.use("/spaces/:spaceId/channel-extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/channel-extensions", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/channel-extensions", requireSpaceMembership({ POST: "admin" }));
 const installChannelExtension = async (c: Context<{Bindings:Env}>) => {
   const spaceId = c.req.param("spaceId")!, projectId = c.req.param("projectId") || undefined;
   if (projectId) {
@@ -2170,7 +2267,7 @@ const installChannelExtension = async (c: Context<{Bindings:Env}>) => {
   }
   const identity = getCallerIdentity(c);
   const role = identity.role === "product_end_user" && identity.userId
-    ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId)
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId)
     : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
   if (!projectId) {
@@ -2274,7 +2371,7 @@ app.post("/spaces/:spaceId/channel-extensions", installChannelExtension);
 
 // Publisher trust is configured independently from package uploads so a package cannot trust its own key.
 app.use("/spaces/:spaceId/extension-publishers", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/extension-publishers", requireBusinessMembership({ GET: "admin", POST: "admin" }));
+app.use("/spaces/:spaceId/extension-publishers", requireSpaceMembership({ GET: "admin", POST: "admin" }));
 app.get("/spaces/:spaceId/extension-publishers", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "", spaceId = c.req.param("spaceId");
   const result = await c.env.PLATFORM_DB.prepare(`SELECT publisher_id,key_id,algorithm,public_key_b64url,status,created_by,created_at,revoked_by,revoked_at
@@ -2302,7 +2399,7 @@ app.post("/spaces/:spaceId/extension-publishers", async c => {
   return c.json({ registered: true, publisher_id: body.publisher_id, key_id: keyId, algorithm: "ECDSA_P256_SHA256" }, { status: 201 });
 });
 app.use("/spaces/:spaceId/extension-publishers/:keyId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/extension-publishers/:keyId", requireBusinessMembership({ DELETE: "admin" }));
+app.use("/spaces/:spaceId/extension-publishers/:keyId", requireSpaceMembership({ DELETE: "admin" }));
 app.delete("/spaces/:spaceId/extension-publishers/:keyId", async c => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "", spaceId = c.req.param("spaceId"), keyId = c.req.param("keyId"), identity = getCallerIdentity(c);
   if (!/^[a-f0-9]{64}$/.test(keyId) || !tenantId || !identity.userId) return c.json({ error_code: "publisher_key_id_invalid" }, 400);
@@ -2317,14 +2414,14 @@ app.delete("/spaces/:spaceId/extension-publishers/:keyId", async c => {
 // Project bundle installation for Canvas + Gadget + external channel + Durable Workflow
 // compositions. Workflow code uses the host's restricted execute(step,ctx) ABI.
 app.use("/spaces/:spaceId/projects/:projectId/extensions", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/projects/:projectId/extensions", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/extensions", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId");
   const denied = await requireManageableAutomationProject(c, spaceId, projectId);
   if (denied) return denied;
   const identity = getCallerIdentity(c);
   const role = identity.role === "product_end_user" && identity.userId
-    ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
+    ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
   if (role !== "owner" && role !== "admin") return c.json({ error_code: "space_admin_required" }, 403);
   const body = await c.req.json<{ manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }>().catch(() => ({} as { manifest?: unknown; artifacts?: unknown; instanceKey?: string; upgrade?: boolean; publisherSignature?: { key_id?: unknown; signature?: unknown } }));
   const instanceKey = body.instanceKey ?? "default";
@@ -2542,7 +2639,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions", async c => {
 });
 
 app.use("/spaces/:spaceId/extension-releases/rollback", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/extension-releases/rollback", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/extension-releases/rollback", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/extension-releases/rollback", async c => {
   const { tenantId, userId } = getCallerIdentity(c), spaceId = c.req.param("spaceId");
   if (!tenantId || !userId || !await canExportBlueprint(c, spaceId)) return c.json({ error_code: "owner_or_admin_required" }, 403);
@@ -2560,7 +2657,7 @@ app.post("/spaces/:spaceId/extension-releases/rollback", async c => {
 });
 
 app.use("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", requireBusinessMembership({ GET: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", requireSpaceMembership({ GET: "admin" }));
 app.get("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases", async c => {
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), extensionId = c.req.param("extensionId");
   const identity = getCallerIdentity(c);
@@ -2576,7 +2673,7 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:extensionId/releases",
 });
 
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireBusinessMembership({ GET: "admin", DELETE: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", requireSpaceMembership({ GET: "admin", DELETE: "admin" }));
 app.on(["GET", "DELETE"], "/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId/session-state", async c => {
   const { spaceId, projectId, instanceId } = c.req.param();
   const denied = await requireManageableAutomationProject(c, spaceId, projectId);
@@ -2594,7 +2691,7 @@ app.on(["GET", "DELETE"], "/spaces/:spaceId/projects/:projectId/channel-extensio
 });
 
 app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", requireBusinessMembership({ DELETE: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", requireSpaceMembership({ DELETE: "admin" }));
 app.delete("/spaces/:spaceId/projects/:projectId/channel-extensions/:instanceId", async c => {
   const { spaceId, projectId, instanceId } = c.req.param();
   const denied = await requireManageableAutomationProject(c, spaceId, projectId);
@@ -2649,7 +2746,7 @@ app.get("/internal/spaces/:spaceId/projects/:projectId/extensions/:extensionId/a
 app.use("/spaces/:spaceId/projects/:projectId/spend", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
 app.use("/spaces/:spaceId/projects/:projectId/usage", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/usage", requireBusinessMembership({ GET: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/usage", requireSpaceMembership({ GET: "admin" }));
 app.get("/spaces/:spaceId/projects/:projectId/usage", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const denied = await requireManageableAutomationProject(c, spaceId, projectId);
@@ -2707,7 +2804,7 @@ app.post("/spaces/:spaceId/projects", async (c) => {
 
 /** Stamp a canonical drop-in room into an existing SpaceDO. */
 app.use("/spaces/:spaceId/project-templates/:templateId/stamp", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/project-templates/:templateId/stamp", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/project-templates/:templateId/stamp", requireSpaceMembership({ POST: "member" }));
 app.post("/spaces/:spaceId/project-templates/:templateId/stamp", async (c) => {
   const spaceId = c.req.param("spaceId");
   const templateId = c.req.param("templateId");
@@ -2725,29 +2822,29 @@ app.post("/spaces/:spaceId/project-templates/:templateId/stamp", async (c) => {
 // §A1.17 Phase T1: project members (real ACL, not just presence). §A1.17 Phase T3: exclusive-
 // mode thread activation.
 app.use("/spaces/:spaceId/projects/:projectId/members", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/members", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/members", requireSpaceMembership({ GET: "member", POST: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireBusinessMembership({ DELETE: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/members/:userId", requireSpaceMembership({ DELETE: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/activate-thread", requireSpaceMembership({ POST: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId/mode", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/mode", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/mode", requireSpaceMembership({ GET: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId/subspace-migration-preflight", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/subspace-migration-preflight", requireBusinessMembership({ GET: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/subspace-migration-preflight", requireSpaceMembership({ GET: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/graduate-to-subspace", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/graduate-to-subspace", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/graduate-to-subspace", requireSpaceMembership({ POST: "admin" }));
 app.use("/spaces/:spaceId/projects/:projectId/return-to-parent", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/return-to-parent", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/return-to-parent", requireSpaceMembership({ POST: "admin" }));
 for (const route of ["/spaces/:spaceId/sub-spaces/:subId/projects", "/spaces/:spaceId/sub-spaces/:subId/projects/*"]) {
   app.use(route, requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-  app.use(route, requireBusinessMembership({ GET: "member", POST: "member" }));
+  app.use(route, requireSpaceMembership({ GET: "member", POST: "member" }));
 }
 for (const route of ["/spaces/:spaceId/sub-spaces/:subId/members", "/spaces/:spaceId/sub-spaces/:subId/members/*"]) {
   app.use(route, requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-  app.use(route, requireBusinessMembership({ GET: "member", POST: "member", DELETE: "member" }));
+  app.use(route, requireSpaceMembership({ GET: "member", POST: "member", DELETE: "member" }));
 }
 app.use("/spaces/:spaceId/projects/:projectId/promote", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/promote", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/promote", requireSpaceMembership({ POST: "admin" }));
 
 app.get("/spaces/:spaceId/projects/:projectId/members", async (c) => {
   const { spaceId, projectId } = c.req.param();
@@ -2827,7 +2924,7 @@ async function readWorkspaceObject(obj: R2ObjectBody, relative: string): Promise
   return Response.json({ path: relative, size: obj.size, content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes) });
 }
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireSpaceMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const identity = getCallerIdentity(c);
@@ -2854,7 +2951,7 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
 // GET one file — path is the rest after /workspace/files/. Text is returned inline; anything over
 // the byte cap or non-text is reported as too-large/binary (the UI offers a note, not the bytes).
 app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireSpaceMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const identity = getCallerIdentity(c);
@@ -2877,11 +2974,11 @@ app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
 // The visual workflow authoring surface can save only validated workflow source paths. It cannot
 // overwrite arbitrary project artifacts or add capabilities; runtime grants remain authoritative.
 app.use("/spaces/:spaceId/projects/:projectId/workflows/plan", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/workflows/plan", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/projects/:projectId/workflows/plan", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/projects/:projectId/workflows/plan", async c => {
   const { spaceId, projectId } = c.req.param(), identity = getCallerIdentity(c);
   if (!identity.tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
-  const role = identity.role === "product_end_user" ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
+  const role = identity.role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, identity.userId) : identity.role;
   if (!role || !["owner", "admin"].includes(role)) return c.json({ error_code: "forbidden" }, 403);
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return c.json({ error_code: "invalid_project_id" }, 400);
   const body = await c.req.json<{ path?: unknown; plan?: unknown }>().catch(() => ({} as { path?: unknown; plan?: unknown }));
@@ -2922,7 +3019,7 @@ app.post("/spaces/:spaceId/projects/:projectId/workflows/plan", async c => {
 // The space worker authorizes node-level document editing; lease owner identity always comes
 // from the verified shell session, never from a client-supplied holder_id.
 app.use("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", requireSpaceMembership({ POST: "member" }));
 app.post("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", async (c) => {
   const { spaceId, projectId, nodeId } = c.req.param();
   const identity = getCallerIdentity(c);
@@ -2936,7 +3033,7 @@ app.post("/spaces/:spaceId/projects/:projectId/document-nodes/:nodeId/lease", as
 // F-36: the effective role an assistant has in a project when acting for a given user (member GET
 // gate — anyone who can read the member list can read this derived value).
 app.use("/spaces/:spaceId/projects/:projectId/assistant-access", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/assistant-access", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/assistant-access", requireSpaceMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/projects/:projectId/assistant-access", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -3108,16 +3205,16 @@ app.delete("/spaces/:spaceId/projects/:projectId/container-slots/:slotId", async
 // machine in as a grant-checked Tier-5c target. Gated by requireInternalHmac (the SAME token
 // naelao-router's proxyTo mints for every authenticated request it forwards, builder JWT or
 // product_end_user alike — not an exclusively service-to-service check) PLUS
-// requireBusinessMembership for a product_end_user caller specifically, since tenant-match alone
+// requireSpaceMembership for a product_end_user caller specifically, since tenant-match alone
 // would let any end user of ANY business under the same owning tenant reach another business's
 // grants. user_id is ALWAYS derived from the verified caller identity, never a client-supplied
 // field — a caller can only grant/connect their OWN machine, never name someone else's.
 app.use("/spaces/:spaceId/local-grants", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/local-grants/:grantId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/local-tunnel/connect-token", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/local-grants", requireBusinessMembership({ GET: "member", POST: "admin" }));
-app.use("/spaces/:spaceId/local-grants/:grantId", requireBusinessMembership({ DELETE: "admin" }));
-app.use("/spaces/:spaceId/local-tunnel/connect-token", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/local-grants", requireSpaceMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/local-grants/:grantId", requireSpaceMembership({ DELETE: "admin" }));
+app.use("/spaces/:spaceId/local-tunnel/connect-token", requireSpaceMembership({ POST: "member" }));
 
 app.get("/spaces/:spaceId/local-grants", async (c) => {
   const spaceId = c.req.param("spaceId");
@@ -3206,8 +3303,8 @@ app.post("/spaces/:spaceId/local-tunnel/connect-token", async (c) => {
 // Device enrollment/administration requires both router identity and a live space role.
 app.use("/spaces/:spaceId/tunnels", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/tunnels/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/tunnels", requireBusinessMembership({ GET: "member" }));
-app.use("/spaces/:spaceId/tunnels/*", requireBusinessMembership({ GET: "member", POST: "admin", DELETE: "admin" }));
+app.use("/spaces/:spaceId/tunnels", requireSpaceMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/tunnels/*", requireSpaceMembership({ GET: "member", POST: "admin", DELETE: "admin" }));
 app.get("/spaces/:spaceId/tunnels", async c => {
   const identity = getCallerIdentity(c), tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
   if (!tenantId || !identity.userId) return c.json({ error_code: "unauthorized" }, 401);
@@ -3256,7 +3353,7 @@ app.post("/spaces/:spaceId/tunnel-authority", async c => {
 // only check `requireVerifiedTenant` — no per-space ownership check at all, which is fine for a
 // builder (their JWT's tenant owns every one of their own spaces) but NOT safe to open to an end
 // user directly, whose session tenant is the PRODUCT's owning tenant spanning every business under
-// it. This wrapper adds the missing requireBusinessMembership check, then proxies to the
+// it. This wrapper adds the missing requireSpaceMembership check, then proxies to the
 // already-tested agents-worker logic with the space's own owning tenant (not the caller's raw
 // claims), using the verified tenant and internal-token boundary.
 // F-33-class trap (documented repeatedly in this file): a NEW dynamic path segment shape can
@@ -3267,19 +3364,19 @@ app.post("/spaces/:spaceId/tunnel-authority", async c => {
 // than add a second `app.use(dynamicPattern, ...)` registration. `platform` moves to the request
 // body; only "whop" is supported today anyway.
 app.use("/spaces/:spaceId/connectors/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/connectors/status", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/connectors/status", requireSpaceMembership({ GET: "member" }));
 // §A1.18: the floor is now "member", not "admin" — a scope_model='user' connector (a member's
 // OWN personal account, see catalogue.ts's own header) should need no more than membership to
 // connect. The admin requirement for a scope_model='space' connector is enforced downstream, in
 // the agents worker's own connect handler, which is the one place that actually knows a given
-// platform's scope_model — see the x-naelao-business-role forwarding below. Only the GATE moved;
+// platform's scope_model — see the x-naelao-space-role forwarding below. Only the GATE moved;
 // no new route or route-shape changed, so this isn't the class of change that's previously
 // triggered this file's documented Hono route-table corruption (items 40/52/60 were all about
 // adding a NEW dynamic-segment-then-static-suffix route, not loosening an existing gate).
-app.use("/spaces/:spaceId/connectors/connect", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/connectors/connect", requireSpaceMembership({ POST: "member" }));
 
-// Generic authenticated proxy to the agents worker (connectors, and the onboarding wizard's
-// bootstrap routes) — mints a real internal token for the space's OWNING tenant.
+// Generic authenticated proxy to the agents worker (connectors) — mints a real internal token
+// for the Space's owning tenant.
 async function proxyToAgentsWorker(
   c: { env: Env; req: { header: (n: string) => string | undefined } },
   path: string,
@@ -3292,7 +3389,7 @@ async function proxyToAgentsWorker(
   }
   const identity = getCallerIdentity(c);
   // Prefer the already-verified header set by the
-  // router/requireBusinessMembership chain (the space's OWNING tenant), never the raw caller
+  // router/requireSpaceMembership chain (the space's OWNING tenant), never the raw caller
   // identity — an end user's own claims.tid is the product root's tenant, which is what we want
   // here too since a business's connectors are scoped by space_id, not by who's asking.
   const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
@@ -3322,7 +3419,7 @@ app.get("/spaces/:spaceId/connectors/status", async (c) =>
 // still gated by /connectors/provider-connect-start's own admin check. Registered as a static
 // sibling of `status`, deliberately NOT as `/directory/:provider` — a dynamic segment followed by
 // a static suffix is the shape that has repeatedly corrupted this file's route table.
-app.use("/spaces/:spaceId/connectors/directory", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/connectors/directory", requireSpaceMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/connectors/directory", async (c) => {
   const params = new URLSearchParams();
   const q = c.req.query("q");
@@ -3346,15 +3443,15 @@ app.get("/spaces/:spaceId/connectors/directory", async (c) => {
 // dynamic-then-static shape. The KEY is never returned by GET — the agents route projects
 // configured:boolean only.
 app.use("/spaces/:spaceId/llm-byok", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/llm-byok", requireBusinessMembership({ GET: "member", PUT: "admin" }));
+app.use("/spaces/:spaceId/llm-byok", requireSpaceMembership({ GET: "member", PUT: "admin" }));
 app.use("/spaces/:spaceId/llm-byok/models", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/llm-byok/models", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/llm-byok/models", requireSpaceMembership({ GET: "member" }));
 app.use("/spaces/:spaceId/llm-byok/select", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/llm-byok/select", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/llm-byok/select", requireSpaceMembership({ POST: "admin" }));
 app.use("/spaces/:spaceId/llm-byok/remove", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/llm-byok/remove", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/llm-byok/remove", requireSpaceMembership({ POST: "admin" }));
 app.use("/spaces/:spaceId/llm-byok/:provider", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/llm-byok/:provider", requireBusinessMembership({ DELETE: "admin" }));
+app.use("/spaces/:spaceId/llm-byok/:provider", requireSpaceMembership({ DELETE: "admin" }));
 
 app.get("/spaces/:spaceId/llm-byok", async (c) =>
   proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/llm-byok`, "GET")
@@ -3536,28 +3633,28 @@ app.post("/spaces/:spaceId/connectors/connect", async (c) => {
   // §A1.18: the gate above only enforces "member" — the agents worker's own connect handler
   // makes the real admin-vs-any-member decision per the PLATFORM's scope_model, which only it
   // knows. It needs this caller's actual BUSINESS role to do that, which for a product_end_user
-  // is a resolved value (owner/admin/editor/member/viewer via business_memberships), not the raw
+  // is a resolved value from the generic Space membership table, not the raw
   // "product_end_user" JWT role — resolved here, once, and forwarded. Absent for every other
   // caller (a builder's own JWT role isn't a business role and never needs to be): the connect
   // handler treats a missing header as "not an end user, apply today's unchanged behavior".
   const identity = getCallerIdentity(c);
-  let businessRole: string | undefined;
+  let spaceRole: string | undefined;
   if (identity.role === "product_end_user" && identity.userId) {
-    businessRole = (await resolveEndUserBusinessRole(c.env.PLATFORM_DB, c.req.param("spaceId"), identity.userId)) ?? undefined;
+    spaceRole = (await resolveEndUserSpaceRole(c.env.PLATFORM_DB, c.req.param("spaceId"), identity.userId)) ?? undefined;
   }
   return proxyToAgentsWorker(
     c,
     `/connectors/${encodeURIComponent(platform)}/connect`,
     "POST",
     { space_id: c.req.param("spaceId"), api_key: body.api_key },
-    businessRole ? { "x-naelao-business-role": businessRole } : undefined
+    spaceRole ? { "x-naelao-space-role": spaceRole } : undefined
   );
 });
 
 // "Connect with X" OAuth flow — same admin-only gate as the manual-key connect above, same
 // platform-in-body shape (never a URL param) for the same router-corruption reason. Returns
 // {authorize_url}; the frontend does a real browser navigation to it (see oauth.ts's header).
-app.use("/spaces/:spaceId/connectors/oauth-start", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/connectors/oauth-start", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/connectors/oauth-start", async (c) => {
   const body = await c.req.json<{ platform?: string; return_url?: string }>().catch(() => ({}) as Record<string, never>);
   const platform = body.platform ?? "";
@@ -3571,8 +3668,8 @@ app.post("/spaces/:spaceId/connectors/oauth-start", async (c) => {
 
 // Tenant-provided OAuth apps use the same admin boundary as platform OAuth. Forward credentials
 // only to the Agents worker's vault-sealing setup route; they are never echoed to the client.
-app.use("/spaces/:spaceId/connectors/custom-oauth-start", requireBusinessMembership({ POST: "admin" }));
-app.use("/spaces/:spaceId/connectors/custom-oauth-redirect", requireBusinessMembership({ GET: "admin" }));
+app.use("/spaces/:spaceId/connectors/custom-oauth-start", requireSpaceMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/connectors/custom-oauth-redirect", requireSpaceMembership({ GET: "admin" }));
 app.get("/spaces/:spaceId/connectors/custom-oauth-redirect", async (c) => {
   const id = c.req.query("connector_id") ?? "";
   if (!id) return c.json({ error_code: "bad_request", message: "connector_id is required" }, 400);
@@ -3592,7 +3689,7 @@ app.post("/spaces/:spaceId/connectors/custom-oauth-start", async (c) => {
 // platform-in-body shape as oauth-start above (same router-corruption reasoning: never a dynamic
 // :platform URL segment on a spaces-worker route). Returns {connect_url}; the frontend does a real
 // browser navigation to it (see composio.ts's header).
-app.use("/spaces/:spaceId/connectors/provider-connect-start", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/connectors/provider-connect-start", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {
   const body = await c.req.json<{ platform?: string; return_url?: string; preferred_provider?: "composio" | "pipedream" }>().catch(() => ({}) as Record<string, never>);
   const platform = body.platform ?? "";
@@ -3608,7 +3705,7 @@ app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {
 // ── User-configured workers ──────────────────────────────────────────────────
 // Workers are all instances of the shared Naelao agent runtime. Their task-specific
 // instructions, tools, skills, model policy, and project binding are configured at creation.
-app.use("/spaces/:spaceId/agents/custom", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/agents/custom", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/agents/custom", async (c) => {
   const body = await c.req.json<{
     name?: string; description?: string; instructions?: string; system_prompt?: string;
@@ -3620,42 +3717,12 @@ app.post("/spaces/:spaceId/agents/custom", async (c) => {
   return proxyToAgentsWorker(c, "/agents/custom", "POST", { space_id: c.req.param("spaceId"), ...body });
 });
 
-// ── Business setup wizard (first-run onboarding) ─────────────────────────────
-// The end user's own path into the bootstrap the builder dashboard has always driven. Same
-// two-gate pattern as connectors/local-grants above: identity at the router, real per-business
-// authorization here — reading the checklist is member-level, but answering it (connecting the
-// business's Whop account, choosing how autonomous the assistant is) changes how the business
-// operates and is admin-only.
-//
-// ONE route, with POST's `action` carrying the operation, instead of the natural
-// /onboarding/save + /onboarding/complete pair: a dynamic segment followed by a static suffix is
-// the exact shape that has repeatedly triggered this file's documented Hono RegExpRouter
-// route-table-scale corruption (silently 404ing UNRELATED routes elsewhere in the app — see the
-// record-install and connectors comments above).
-app.use("/spaces/:spaceId/onboarding", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/onboarding", requireBusinessMembership({ GET: "member", POST: "admin" }));
-
-app.get("/spaces/:spaceId/onboarding", async (c) =>
-  proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/bootstrap`, "GET")
-);
-
-app.post("/spaces/:spaceId/onboarding", async (c) => {
-  const body = await c.req.json<{ action?: string; answers?: Record<string, unknown> }>().catch(() => ({}) as Record<string, never>);
-  const spaceId = encodeURIComponent(c.req.param("spaceId"));
-  const action = body.action ?? "save";
-  if (action !== "save" && action !== "complete") {
-    return c.json({ error_code: "bad_request", message: "action must be 'save' or 'complete'" }, 400);
-  }
-  const path = action === "complete" ? `/spaces/${spaceId}/bootstrap/complete` : `/spaces/${spaceId}/bootstrap/save`;
-  return proxyToAgentsWorker(c, path, "POST", { answers: body.answers ?? {} });
-});
-
 // Presence (space collaboration, A1.8) — heartbeat: "I'm here" (space-level, or scoped to a
 // project/thread). Callers poll GET periodically to see who's currently active. Phase B
 // (§A1.17): allowlisted for product_end_user callers on the router — the same membership floor
 // as projects/threads above (every other role's access is unchanged).
 app.use("/spaces/:spaceId/presence", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/presence", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.use("/spaces/:spaceId/presence", requireSpaceMembership({ GET: "member", POST: "member" }));
 app.post("/spaces/:spaceId/presence", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -3685,7 +3752,7 @@ app.get("/spaces/:spaceId/presence", async (c) => {
 // Event triggers (@naelao/events) — no-code "after X happens (thread created, project
 // created, ...), run script Y." Automation is always owned by a project.
 app.use("/spaces/:spaceId/event-triggers", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/event-triggers", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/event-triggers", requireSpaceMembership({ GET: "member", POST: "admin" }));
 app.get("/spaces/:spaceId/event-triggers", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -3728,9 +3795,9 @@ app.delete("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {
 // WS-2 (Space Assistant surface): GET is now reachable by a product_end_user viewing their own
 // (or their business's) assistant's Crons panel — loadOwnedSpace is tenant-match-only (no
 // per-caller floor), exactly the footgun the router's PRODUCT_END_USER_PATH_PATTERNS comment
-// warns about, so this adds the same resolveEndUserBusinessRole floor every other end-user-
+// warns about, so this adds the same resolveEndUserSpaceRole floor every other end-user-
 // reachable route in this file already has. POST/PATCH/DELETE were originally un-allowlisted
-// entirely — Phase 3 item 27/28's Crons editing UI (below) added requireBusinessMembership's
+// entirely — Phase 3 item 27/28's Crons editing UI (below) added requireSpaceMembership's
 // admin floor to all three and allowlisted the router for exactly that reason.
 /** computeNextRun throws on a malformed cron_expression — create/update already reject one via
  *  validateCronExpression, but a row could in principle predate that check, and a next-run
@@ -3785,12 +3852,12 @@ async function fireScheduledJobEvent(
 // Phase 3 item 27/28's own Crons editing UI needed real write access for a business's own
 // admin/owner end user — POST used to forbid every product_end_user outright (WS-2's original
 // note below), which left every end-user-created business with no self-serve way to create a
-// job at all, only a JWT builder. requireBusinessMembership's admin floor is what makes this
+// job at all, only a JWT builder. requireSpaceMembership's admin floor is what makes this
 // safe (same precedent as model-config/assistant-policy PATCH): a plain member still can't
 // create/edit one, and a caller who isn't a member of THIS business at all is refused before
 // reaching the handler. GET keeps its existing member floor, just expressed as middleware
 // instead of an inline check so PATCH/DELETE below can share the same convention.
-app.use("/spaces/:spaceId/scheduled-jobs", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/scheduled-jobs", requireSpaceMembership({ GET: "member", POST: "admin" }));
 app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const owned = await loadOwnedSpace(c, c.req.param("spaceId"));
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
@@ -3845,7 +3912,7 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
 // Read-only deterministic portfolio review signals. Project visibility is resolved by the
 // SpaceDO; only those project IDs are used to read routine failure counts from PLATFORM_DB.
 app.use("/spaces/:spaceId/project-steward/reviews", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/project-steward/reviews", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/project-steward/reviews", requireSpaceMembership({ GET: "member" }));
 async function applyProjectStewardDecisions(c: any, spaceId: string, tenantId: string, visibleIds: string[], reviews: ProjectStewardReview[]) {
   const placeholders = visibleIds.map(() => "?").join(",");
   const { results } = await c.env.PLATFORM_DB.prepare(
@@ -3934,7 +4001,7 @@ app.get("/spaces/:spaceId/project-steward/reviews", async (c) => {
 });
 
 app.use("/spaces/:spaceId/project-steward/reviews/decision", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/project-steward/reviews/decision", requireBusinessMembership({ POST: "admin" }));
+app.use("/spaces/:spaceId/project-steward/reviews/decision", requireSpaceMembership({ POST: "admin" }));
 app.post("/spaces/:spaceId/project-steward/reviews/decision", async (c) => {
   const spaceId = c.req.param("spaceId");
   const identity = getCallerIdentity(c);
@@ -4112,7 +4179,7 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
 // assistant-policy PATCH's own precedent for "an end-user-created business's own admin IS its
 // owner." No GET is registered on this path (single-job reads don't exist, only the list), so
 // only PATCH/DELETE need a floor here.
-app.use("/spaces/:spaceId/scheduled-jobs/:jobId", requireBusinessMembership({ PATCH: "admin", DELETE: "admin" }));
+app.use("/spaces/:spaceId/scheduled-jobs/:jobId", requireSpaceMembership({ PATCH: "admin", DELETE: "admin" }));
 app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const jobId = c.req.param("jobId");
@@ -4218,7 +4285,7 @@ app.get("/spaces/:spaceId/scheduled-job-runs", async (c) => {
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
   const callerIdentity = getCallerIdentity(c);
   if (callerIdentity.role === "product_end_user") {
-    const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, callerIdentity.userId);
+    const role = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, callerIdentity.userId);
     if (!role) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
   }
   const jobId = c.req.query("job_id");
@@ -4241,18 +4308,18 @@ app.get("/spaces/:spaceId/scheduled-job-runs", async (c) => {
 // Space Assistant approval policy — "same access as the owning user, ask first unless the
 // user has trusted this action." WS-2: GET is reachable by a product_end_user viewing their own
 // Space Assistant's Status panel (which permissions the assistant currently has) — gated by the
-// same resolveEndUserBusinessRole floor every other end-user-reachable route uses. PATCH used to
+// same resolveEndUserSpaceRole floor every other end-user-reachable route uses. PATCH used to
 // be blocked outright for every product_end_user, on the theory that only a JWT builder could
 // ever be "the owner" — but on a Launchpad business an end user with admin role on their OWN
 // business genuinely IS its owner (§A1.18/item 79: an end-user-created business needs the SAME
 // guided/autonomous toggle a dashboard-created one already has, or "does everything on the
 // user's behalf in yolo mode" has no real control surface for the person who actually runs the
-// business). requireBusinessMembership's admin floor is what makes this safe: a plain member
+// business). requireSpaceMembership's admin floor is what makes this safe: a plain member
 // still cannot change it, and a caller who isn't a member of THIS business at all is refused
 // before reaching here — same precedent as local-grants/pricing's own admin-gated writes. A
 // builder JWT caller (role !== "product_end_user") is untouched, exactly as before.
 app.use("/spaces/:spaceId/assistant-policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/assistant-policy", requireBusinessMembership({ GET: "member", PATCH: "admin" }));
+app.use("/spaces/:spaceId/assistant-policy", requireSpaceMembership({ GET: "member", PATCH: "admin" }));
 app.get("/spaces/:spaceId/assistant-policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -4279,7 +4346,7 @@ app.patch("/spaces/:spaceId/assistant-policy", async (c) => {
 // each business space carries its own productConfig override), merge modelConfig.model in,
 // write back. Same curated-allowlist validation as the builder route, so the two paths can never
 // let a caller pick a model contextWindowForModel/tokensToCredits don't know how to price.
-app.use("/spaces/:spaceId/model-config", requireBusinessMembership({ PATCH: "admin" }));
+app.use("/spaces/:spaceId/model-config", requireSpaceMembership({ PATCH: "admin" }));
 app.patch("/spaces/:spaceId/model-config", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
@@ -4389,7 +4456,7 @@ app.get("/internal/spaces/:spaceId/model-policy", async (c) => {
 // history, cost, why it escalated. NaelaoAgentDO posts one row per run completion/failure and
 // per approval request/resolution to POST /internal/spaces/:spaceId/agent-activity (internal
 // only — see NaelaoAgentDO.logAgentActivity); GET /spaces/:spaceId/agent-activity is the
-// builder-facing read, deliberately builder-only (not requireBusinessMembership like
+// builder-facing read, deliberately builder-only (not requireSpaceMembership like
 // assistant-policy's GET) — this can surface other end users' escalation summaries, which is a
 // builder's own internal audit view, not something to expose to an end user reading their own
 // business.
@@ -4419,7 +4486,7 @@ app.get("/spaces/:spaceId/agent-activity", async (c) => {
 // Space-scoped user preferences. The user id is always derived from verified claims so callers
 // can change only their own presentation and detail-filter preferences.
 app.use("/spaces/:spaceId/preferences", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/preferences", requireBusinessMembership({ GET: "member", PUT: "member" }));
+app.use("/spaces/:spaceId/preferences", requireSpaceMembership({ GET: "member", PUT: "member" }));
 app.get("/spaces/:spaceId/preferences", async (c) => {
   const { tenantId, userId } = getCallerIdentity(c);
   if (!tenantId || !userId) return c.json({ error_code: "unauthorized", message: "Authenticated Space membership required" }, 401);
@@ -4440,7 +4507,7 @@ app.put("/spaces/:spaceId/preferences", async (c) => {
 // ── Notifications inbox ──────────────────────────────────────────────────────
 // Unlike agent-activity (builder-only technical audit trail), this IS end-user-facing — a
 // business admin reading their own business's inbox — so the public route is
-// requireBusinessMembership-gated, not builder-only. Internal-only CREATE (NaelaoAgentDO's
+// requireSpaceMembership-gated, not builder-only. Internal-only CREATE (NaelaoAgentDO's
 // createSpaceNotification) and the heartbeat sweep's undelivered-list/mark_delivered both go
 // through /internal/spaces/:spaceId/notifications instead — same path as agent-activity's own
 // internal/public split, chosen deliberately so this file gains no NEW dynamic-segment-then-
@@ -4463,7 +4530,7 @@ app.get("/internal/spaces/:spaceId/notifications", async (c) => {
 });
 
 app.use("/spaces/:spaceId/notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/notifications", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.use("/spaces/:spaceId/notifications", requireSpaceMembership({ GET: "member", POST: "member" }));
 app.get("/spaces/:spaceId/notifications", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -4491,7 +4558,7 @@ app.post("/spaces/:spaceId/notifications", async (c) => {
 // Browser Web Push: membership is checked here, then the tenant-scoped internal HMAC protects
 // the Notifications Worker storage operation. A user can only enroll/remove their own endpoint.
 app.use("/spaces/:spaceId/push-notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/push-notifications", requireBusinessMembership({ GET: "member", PUT: "member", DELETE: "member" }));
+app.use("/spaces/:spaceId/push-notifications", requireSpaceMembership({ GET: "member", PUT: "member", DELETE: "member" }));
 app.all("/spaces/:spaceId/push-notifications", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   const userId = c.req.header("x-naelao-user-id") ?? "";
@@ -4658,11 +4725,11 @@ app.delete("/spaces/:spaceId/agents/:agentId/api-keys/:keyId", async (c) => {
 // GET/PATCH — an agent's own approval-policy override. Same shape/authorization as
 // assistant-policy above; falls back to the space-wide row when no override exists (SpaceDO's
 // resolveAgentPolicy). Previously builder-JWT-only (tenant-match via getCallerIdentity, no
-// requireBusinessMembership floor at all) — a business admin who owns their own Launchpad
+// requireSpaceMembership floor at all) — a business admin who owns their own Launchpad
 // business had no reachable way to configure a project agent's own approvals, same gap
 // assistant-policy itself had before item 79 relaxed it. Same fix, same precedent.
 app.use("/spaces/:spaceId/agents/:agentId/policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/agents/:agentId/policy", requireBusinessMembership({ GET: "member", PATCH: "admin" }));
+app.use("/spaces/:spaceId/agents/:agentId/policy", requireSpaceMembership({ GET: "member", PATCH: "admin" }));
 app.get("/spaces/:spaceId/agents/:agentId/policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const agentId = c.req.param("agentId");
@@ -4736,12 +4803,12 @@ app.post("/internal/builder-api-keys/verify", async c => {
 // A1.16.10 (layer-3 backstop, bucket A) gated this builder-only (widget/portal never called it —
 // end-user chat transport was /sessions, not /threads). Phase B (§A1.17) changes that: the
 // Product Shell's Projects/Threads views need to list/create/read threads directly (distinct
-// from the chat transport) — requireBusinessMembership adds the product_end_user floor here the
+// from the chat transport) — requireSpaceMembership adds the product_end_user floor here the
 // same way as the projects routes above; every other role's access is unchanged.
 app.use("/spaces/:spaceId/threads", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/threads", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.use("/spaces/:spaceId/threads", requireSpaceMembership({ GET: "member", POST: "member" }));
 app.use("/spaces/:spaceId/threads/:threadId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/threads/:threadId", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/threads/:threadId", requireSpaceMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/threads", async (c) => {
   const spaceId = c.req.param("spaceId");
   const identity = getCallerIdentity(c);
@@ -4790,7 +4857,7 @@ app.get("/spaces/:spaceId/threads/:threadId", async (c) => {
 });
 
 // PATCH /spaces/:spaceId/threads/:threadId — rename and/or archive. There is no hard-delete
-// route: `requireBusinessMembership({ GET: "member" })` above already defaults PATCH to
+// route: `requireSpaceMembership({ GET: "member" })` above already defaults PATCH to
 // "admin" for a product_end_user caller (same convention /projects/:projectId's own PATCH
 // relies on), so archiving someone else's thread out from under them needs the same privilege
 // a rename does.
@@ -4806,13 +4873,13 @@ app.patch("/spaces/:spaceId/threads/:threadId", async (c) => {
 
 // ── tasks (AVOS plan step 4 — a per-project task DAG, agent-facing via the `tasks` prebuilt) ──
 // Same two-gate pattern as /threads above: requireInternalHmac verifies the CALLING WORKER (the
-// agents worker's tasks prebuilt mints this via mintInternalToken); requireBusinessMembership
+// agents worker's tasks prebuilt mints this via mintInternalToken); requireSpaceMembership
 // then checks the ACTING PERSON the agent is running on behalf of (forwarded x-naelao-user-id) —
 // a plain member may read/create/progress tasks, same floor as creating a thread.
 app.use("/spaces/:spaceId/tasks", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/tasks", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.use("/spaces/:spaceId/tasks", requireSpaceMembership({ GET: "member", POST: "member" }));
 app.use("/spaces/:spaceId/tasks/:taskId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/tasks/:taskId", requireBusinessMembership({ PATCH: "member", DELETE: "member" }));
+app.use("/spaces/:spaceId/tasks/:taskId", requireSpaceMembership({ PATCH: "member", DELETE: "member" }));
 
 app.get("/spaces/:spaceId/tasks", async (c) => {
   const spaceId = c.req.param("spaceId");
@@ -4861,7 +4928,7 @@ app.delete("/spaces/:spaceId/tasks/:taskId", async (c) => {
 
 // Review cards are scoped shared-workspace artifacts, reached through verified worker identity.
 app.use("/spaces/:spaceId/pull-request-cards", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/pull-request-cards", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.use("/spaces/:spaceId/pull-request-cards", requireSpaceMembership({ GET: "member", POST: "member" }));
 app.get("/spaces/:spaceId/pull-request-cards", async c => {
   const spaceId = c.req.param("spaceId"), tenantId = c.req.header("x-naelao-tenant-id");
   if (!tenantId || !spaceId) return c.json({ error_code: "unauthorized" }, 401);
@@ -4904,7 +4971,7 @@ app.post("/spaces/:spaceId/pull-request-cards/:cardId/status", async c => {
 
 // Leasing uses the same worker/person boundary as other task mutations.
 app.use("/spaces/:spaceId/tasks/:taskId/lease", requireInternalHmac(c => c.env.PLATFORM_SECRET ?? ""));
-app.use("/spaces/:spaceId/tasks/:taskId/lease", requireBusinessMembership({ POST: "member" }));
+app.use("/spaces/:spaceId/tasks/:taskId/lease", requireSpaceMembership({ POST: "member" }));
 app.post("/spaces/:spaceId/tasks/:taskId/lease", async c => {
   const { spaceId, taskId } = c.req.param();
   const tenantId = c.req.header("x-naelao-tenant-id");
@@ -5047,7 +5114,7 @@ app.get("/spaces/:spaceId/cross-space-check", async (c) => {
 // Aggregate Space usage analytics (runs, credits, and agent activity). This is a generic Space
 // capability; it contains no storefront orders, customer revenue, or commerce accounting.
 app.use("/spaces/:spaceId/agent-analytics", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/agent-analytics", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/agent-analytics", requireSpaceMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/agent-analytics", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -5058,114 +5125,7 @@ app.get("/spaces/:spaceId/agent-analytics", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
-// GET /internal/product-users/:spaceId/:endUserId/credits/balance — metering-enforcement pass:
-// the agents worker calls this BEFORE running the reasoning loop for a non-project (Space
-// Assistant) run by a signed-in product end user, so a zero/negative balance refuses the run
-// instead of the LLM cost already being paid and only THEN discovering the debit 402s (the
-// prior state — /credits/deduct itself was always correct, but it only ran post-hoc).
-app.use("/internal/product-users/:spaceId/:endUserId/credits/balance", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.get("/internal/product-users/:spaceId/:endUserId/credits/balance", async (c) => {
-  const spaceId = c.req.param("spaceId");
-  const endUserId = c.req.param("endUserId");
-  const root = await resolveProductRootSpace(c.env, spaceId);
-  if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-  if (root.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({error_code:"forbidden"},403);
-
-  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
-  const balRes = await stub.fetch(new Request("http://do/credits/balance"));
-  const result = await balRes.json<{ balance_credits: number }>();
-  return c.json(result);
-});
-
-// POST /internal/product-users/:spaceId/:endUserId/credits/deduct — §A1.17 Phase I. The agents
-// worker calls this after a script/reasoning-loop run that consumed real LLM tokens, so a signed-
-// in product end user's OWN credit balance (not the business's) is what pays for their own chat
-// usage. tokensToCredits() is the single conversion (packages/billing-core) — the caller has
-// already converted; this route only debits. Fails closed on insufficient balance (402), matching
-// ProductUserDO's own posture.
-app.use("/internal/product-users/:spaceId/:endUserId/credits/deduct", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.post("/internal/product-users/:spaceId/:endUserId/credits/deduct", async (c) => {
-  const spaceId = c.req.param("spaceId");
-  const endUserId = c.req.param("endUserId");
-  let body: {credits:number;reason?:string;model?:string;idempotency_key?:string};
-  try {body=JSON.parse(await readBoundedRequestText(c.req.raw,16384));} catch {return c.json({error_code:"bad_request"},400);}
-  if (!body || !Number.isSafeInteger(body.credits) || body.credits <= 0
-    || body.idempotency_key !== undefined && (typeof body.idempotency_key !== "string" || body.idempotency_key.length < 1 || body.idempotency_key.length > 200)) {
-    return c.json({error_code:"bad_request",message:"credits must be a positive safe integer and the retry key must be bounded"},400);
-  }
-  const root = await resolveProductRootSpace(c.env, spaceId);
-  if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-  if (root.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({error_code:"forbidden"},403);
-  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
-  const deductRes = await stub.fetch(new Request("http://do/credits/deduct", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ credits: body.credits, reason: body.reason ?? "agent_run", ...(body.model ? { model: body.model } : {}), ...(body.idempotency_key ? {idempotency_key:body.idempotency_key}:{}) }),
-  }));
-  const result = await deductRes.json<{ balance_credits: number; error?: string }>();
-  return c.json(result, deductRes.status as 201 | 402 | 400);
-});
-
-app.use("/internal/product-users/:spaceId/:endUserId/credits/reservations", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.post("/internal/product-users/:spaceId/:endUserId/credits/reservations", async (c) => {
-  const spaceId = c.req.param("spaceId"), endUserId = c.req.param("endUserId");
-  let body: {action?:string;reservation_id?:string;run_id?:string;credits?:number};
-  try {body=JSON.parse(await readBoundedRequestText(c.req.raw,16384));} catch {return c.json({error_code:"bad_request"},400);}
-  if (!body || !body.action || !body.run_id) return c.json({ error_code: "bad_request" }, 400);
-  const root = await resolveProductRootSpace(c.env, spaceId);
-  if (!root) return c.json({ error_code: "not_found" }, 404);
-  if (root.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({error_code:"forbidden"},403);
-  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
-  const response = await stub.fetch(new Request("http://do/credits/reservations", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-  }));
-  return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
-});
-
-// POST /internal/product-users/:spaceId/:endUserId/credits/refresh-monthly — Tier 2 metering
-// follow-up: creditsIncludedPerMonth was builder-configurable but only ever granted ONCE, at
-// signup, despite the field name implying a recurring monthly allowance. Deliberately NOT a new
-// platform-wide cron/sweep (a per-END-USER rather than per-space roster would be a much larger
-// enumeration surface than agents' enqueueAgentTicks rosters, at a platform aiming for millions
-// of end users) — instead lazy, piggybacking on a request that's already happening: NaelaoAgentDO
-// calls this right before every Space-Assistant-scope run by a signed-in end user, so the FIRST
-// run of a new calendar month grants the allowance then. Idempotent via a month-scoped key
-// (credit_ledger's existing idempotency_key uniqueness does the dedup) — concurrent requests on
-// day 1 of the month grant exactly once. Resolves the SAME free-tier default as signup
-// (FREE_TIER_DEFAULT_SIGNUP_CREDITS) so a free/unconfigured product keeps refreshing 100/month
-// rather than lapsing to 0 after the first grant.
-app.use("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.post("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", async (c) => {
-  const spaceId = c.req.param("spaceId");
-  const endUserId = c.req.param("endUserId");
-  const root = await resolveProductRootSpace(c.env, spaceId);
-  if (!root) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-  if (root.tenant_id !== c.req.header("x-naelao-tenant-id")) return c.json({error_code:"forbidden"},403);
-  // Pricing (like the plan/credit-pack catalog — see loadPricingCatalog's own comment) is
-  // authored on the product ROOT, never on a business's own row — read the root's config, not
-  // whatever spaceId was passed in.
-  const rootRow = await c.env.PLATFORM_DB.prepare(
-    "SELECT spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(root.id).first<{ spacetype_id: string; config_json: string | null }>();
-  if (!rootRow) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
-
-  const pc = await loadEffectiveProductConfig(c.env, rootRow.spacetype_id, rootRow.config_json);
-  const pricingConfig = pc?.pricingConfig;
-  const isFreeOrUnconfigured = !pricingConfig || pricingConfig.model === "free";
-  const monthlyCredits = pricingConfig?.creditsIncludedPerMonth
-    ?? (isFreeOrUnconfigured ? FREE_TIER_DEFAULT_SIGNUP_CREDITS : 0);
-  if (monthlyCredits <= 0) return c.json({ granted: false, reason: "no_monthly_allowance" });
-
-  const monthKey = new Date().toISOString().slice(0, 7); // "2026-07" — one grant per calendar month
-  const stub = await productUserDoStub(c.env, root.id, endUserId, root.tenant_id);
-  const grantRes = await stub.fetch(new Request("http://do/credits/grant", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ credits: monthlyCredits, reason: "monthly_refresh", idempotency_key: `monthly-refresh:${monthKey}` }),
-  }));
-  const result = await grantRes.json<{ balance_credits: number; deduplicated?: boolean }>();
-  return c.json({ granted: !result.deduplicated, balance_credits: result.balance_credits });
-});
+// Product-user stored-value credit routes have been retired; usage is billed to the Space plan quota.
 
 // ── Internal: SpaceType manifest registry (spec §62) ────────────────────────
 // These routes are called by the provisioner via SPACES_WORKER service binding.
@@ -5239,7 +5199,7 @@ app.post("/internal/space-types/seed", async (c) => {
   }
   const registry = getRegistryDO(c.env);
   const results = [];
-  for (const manifest of [WORKSPACE_MANIFEST, LEGACY_LAUNCHPAD_MANIFEST]) {
+  for (const manifest of [LAUNCHPAD_MANIFEST, WORKSPACE_MANIFEST]) {
     const resp = await registry.fetch(new Request("http://registry/register", {
       method: "POST",
       body: JSON.stringify({ manifest, authorId: "naelao" }),
@@ -5397,12 +5357,6 @@ async function loadManifest(env: Env, spaceTypeId: string): Promise<NaelaoSpaceT
   return manifest;
 }
 
-// loadTemplateCatalog (Phase F's single source of truth for template data in this worker — a
-// KV-cached call to the agents worker's real GET /templates, never a hand-maintained copy) moved
-// to template-catalog.ts so business-create.ts / create-space.ts can reuse it for the G-BF08
-// free-tier eligibility gate without importing index.ts. The projection now also carries
-// free_tier_eligible, which flows through shell/manifest's template_catalog untouched.
-
 /**
  * §A1.17 Phase L: load the Container Marketplace catalogue from the agents worker's real
  * GET /container-images, KV-cached 1h like loadTemplateCatalog above — this worker never
@@ -5497,17 +5451,6 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
   let spaceConfig: Record<string, unknown> = {};
   try { const parsed: unknown = JSON.parse(space.config_json ?? "{}"); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) spaceConfig = parsed as Record<string, unknown>; } catch { /* malformed legacy config uses product default */ }
 
-  const businessTemplates = pc?.catalog?.businessTemplates ?? [];
-  const fullCatalog = await loadTemplateCatalog(c.env);
-  // Phase F (CLAUDE.md): intersect the real coming_soon-aware catalog with the builder's
-  // narrowing — empty/unset businessTemplates means "every template the SpaceType ships,"
-  // matching business_templates' existing "not configured yet" semantics below.
-  const templateCatalog =
-    businessTemplates.length > 0 ? fullCatalog.filter((t) => businessTemplates.includes(t.id)) : fullCatalog;
-  // Browse-only: what a business comes preconfigured with and who runs it. Same "render from the
-  // real catalogue, never a client-side copy" rule as template_catalog above.
-  const shellCatalog = await loadShellCatalog(c.env);
-
   return c.json({
     space_id: space.id,
     space_type_id: space.spacetype_id,
@@ -5539,26 +5482,7 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
     // null-means-unset convention as model above (the dispatch layer's own default is "low").
     effort: pc?.modelConfig?.effort ?? null,
     sub_space_display: pc?.subSpaceDisplay ?? null,
-    allow_public_signup: pc?.allowPublicSignup ?? false,
     auth_provider: pc?.authProvider?.provider ?? "naelao-native",
-    // Phase C (§A1.17): whether an end user may create their own business at all (membershipModel
-    // "team" never shows a create-business entry point) and, if so, which SpaceTypes it may be.
-    // Both are safe to expose pre-authorization — they gate a UI affordance, not data access; the
-    // actual creation route re-derives and re-checks both server-side regardless of what this says.
-    membership_model: pc?.membershipModel ?? "team",
-    allowed_child_space_types: pc?.allowedChildSpaceTypes ?? [],
-    // Phase D (§A1.17): which business templates a builder actually offers — empty means "every
-    // template the SpaceType ships," so the shell's create-business dialog treats [] the same as
-    // "not configured yet" rather than "none allowed."
-    business_templates: businessTemplates,
-    // Phase F (§A1.17): the real, coming_soon-aware template catalog (id/name only) — the shell's
-    // create-business dialog renders straight from this instead of a hardcoded duplicate list.
-    template_catalog: templateCatalog,
-    // The Discover page's informational catalogues — the project presets a business is set up
-    // with, and the core agents that run it. Static product data (an agent's system_prompt is
-    // never included), safe pre-login exactly like template_catalog.
-    project_template_catalog: shellCatalog.project_templates,
-    agent_catalog: shellCatalog.agents,
     // Legal & support — safe to surface pre-login (ToS/Privacy must be readable before signup).
     // cookiePolicy drives the consent banner; supportContact gives stuck users a path to a human.
     // Unset fields: shell falls back to Naelao's own platform links (naelao.com/legal/*).
@@ -5573,7 +5497,7 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
 });
 
 // GET/PATCH /spaces/:spaceId/product-users/me — a signed-in product end user's own profile +
-// credit balance (topbar meter, Settings' General/Billing tabs). Resolves identity from the
+// account profile. Resolves identity from the
 // caller's OWN claims only (role must be product_end_user; userId is that end user's own
 // end_user_id, set by the router's resolveProductEndUserClaims) — there is deliberately no way
 // to pass a different end_user_id and read someone else's profile through this route.
@@ -5590,10 +5514,6 @@ app.get("/spaces/:spaceId/product-users/me", async (c) => {
   ).bind(root.id, userId).first<{ email: string | null; display_name: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null; preferred_language: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
 
-  const stub = await productUserDoStub(c.env, root.id, userId, root.tenant_id);
-  const balanceRes = await stub.fetch(new Request("http://do/credits/balance"));
-  const balance = await balanceRes.json<{ balance_credits: number }>();
-
   return c.json({
     end_user_id: userId,
     email: row.email,
@@ -5601,10 +5521,7 @@ app.get("/spaces/:spaceId/product-users/me", async (c) => {
     joined_at: row.first_seen_at,
     last_seen_at: row.last_seen_at,
     suspended: row.suspended_at !== null,
-    credits_balance: balance.balance_credits,
-    // Shell follow-up: a signed-up-but-unverified end user previously had no visible signal at
-    // all that a free-credit grant was waiting on email verification — this is what the shell's
-    // persistent banner (and the verify-email page) key off.
+    // The shell uses this state to show the account-verification banner.
     email_verified: row.email_verified_at !== null,
     preferred_language: row.preferred_language,
   });
@@ -5670,8 +5587,8 @@ app.get("/spaces/:spaceId/product-users/me/export", async (c) => {
 // erasure path here, matching the fact this route lives under /product-users/me, not an
 // admin-facing /product-users/:endUserId. Erases ProductUserDO's session/conversation/preference
 // state, then anonymizes (never hard-deletes — see migration 0058's own comment on why) the D1
-// roster row's PII. Deliberately does NOT cascade into business_memberships or SpaceDO's own
-// thread/message history (a separate, older GDPR erasure mechanism — see G-AO31 above) — a real,
+// roster row's PII. The generic membership migration owns cross-Space identity cleanup; this
+// route does not delete SpaceDO's thread/message history — a separate erasure scope (see G-AO31) — a real,
 // documented boundary for a future pass, not silently dropped.
 app.delete("/spaces/:spaceId/product-users/me", async (c) => {
   const spaceId = c.req.param("spaceId");

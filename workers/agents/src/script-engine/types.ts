@@ -1046,7 +1046,7 @@ export interface ScriptEngineEnv {
   billingWorker?: Fetcher;
   /** MCP hub worker — registry + tool proxy for external-platform connectors (mcp-connector). */
   mcpHubWorker?: Fetcher;
-  /** Credentials worker — the wallet prebuilt's check_bypass op reads a business's own
+  /** Credentials worker — a prebuilt operation may inspect the caller's own
    *  credential list to detect a connected third-party payment provider. */
   credentialsWorker?: Fetcher;
   /** Artifact worker — agent-authored deliverables (rendered HTML, a report), space-scoped R2

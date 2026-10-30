@@ -91,9 +91,9 @@ function testEnv() {
     idFromName: (name: string) => name,
     get: () => ({ fetch: async (request: Request) => {
       productUserCalls.push(new URL(request.url).pathname);
-      if (new URL(request.url).pathname === "/export") return Response.json({ credit_ledger: [], credit_balance: 4, conversations: [], preferences: {} });
+      if (new URL(request.url).pathname === "/export") return Response.json({ conversations: [], preferences: {} });
       if (new URL(request.url).pathname === "/erase") return Response.json({ erased_at: "now", sessions_deleted: 1, conversations_deleted: 2 });
-      return Response.json({ balance_credits: 4 });
+      return Response.json({});
     } }),
   };
   return { PLATFORM_DB, PRODUCT_USER_DO, productUserCalls, clearedAuthData, PLATFORM_SECRET: "test-secret" };

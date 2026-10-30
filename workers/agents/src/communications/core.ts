@@ -56,7 +56,7 @@ export async function scopeAccess(
     const member =
       direct ??
       (await env.PLATFORM_DB.prepare(
-        "SELECT role FROM business_memberships WHERE business_space_id=? AND end_user_id=? AND status='active'"
+        "SELECT role FROM space_members WHERE space_id=? AND end_user_id=? AND suspended_at IS NULL"
       )
         .bind(scope.spaceId, scope.userId)
         .first<{ role: string }>());

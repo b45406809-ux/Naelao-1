@@ -75,12 +75,12 @@ describe("fetchRunOrTaskStatus — error_code surfaces through TaskDO polling", 
     const env = makeEnv({
       status: "failed",
       result: { error_code: "insufficient_credits" },
-      error: "insufficient credits — top up or subscribe to keep chatting",
+      error: "subscription quota reached — review your plan or usage limits to continue",
     });
     const { body } = await fetchRunOrTaskStatus(env, "tenant-1", "session-1", "space-1", "task-1");
     expect(body.status).toBe("failed");
     expect(body.error_code).toBe("insufficient_credits");
-    expect(body.error).toContain("insufficient credits");
+    expect(body.error).toContain("subscription quota");
   });
 
   it("is absent for a plain non-billing failure", async () => {

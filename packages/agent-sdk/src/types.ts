@@ -362,7 +362,6 @@ export interface RuntimeSpace {
   readonly id: string;
   createProject(project: Record<string, unknown>): Promise<unknown>;
   listProjects(): Promise<unknown[]>;
-  getWalletBalance(): Promise<unknown>;
   sendNotification(notification: Record<string, unknown>): Promise<unknown>;
 }
 

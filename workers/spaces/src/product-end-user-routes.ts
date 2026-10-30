@@ -123,7 +123,7 @@ async function issueVerificationToken(env: ProductEndUserRoutesEnv, productId: s
     ? `\n\nOr click this link: ${env.PRODUCT_SHELL_URL}/p/${slug}/verify-email?token=${token}`
     : "";
   await sendEmail(env, tenantId, productId, email, "Verify your email",
-    `Verification token: ${token}${link}\n\nThis token expires in 24 hours. Verifying unlocks your free starting credits.`);
+    `Verification token: ${token}${link}\n\nThis token expires in 24 hours. Verifying helps secure your account and confirm email ownership.`);
 }
 
 interface ProductRow {
@@ -134,57 +134,26 @@ interface ProductRow {
   product_slug: string | null;
 }
 
-// Metering enforcement pass, follow-up: a product with pricingConfig.model === "free" (or no
-// pricingConfig at all — a product that never configured pricing is closer to "free" than to any
-// paid model) is an explicit builder signal that end users shouldn't need to pay to use it. Before
-// the pre-run credit gate existed, that "just worked" by accident (every run was unmetered). Now
-// that runs are actually gated on a positive balance, "free" and "0 credits granted" would mean
-// the same thing — instant lockout on message one — unless a builder happens to also fill in
-// creditsIncludedPerMonth (a field the wizard only shows for the "credits" pricing model in the
-// first place). This platform default keeps a "Free" product usable out of the box without
-// reintroducing unmetered/unlimited runs. Deliberately NOT applied to "credits"/"subscription"/
-// "seats" models with an unset or explicit 0 allowance — those models are the builder's own
-// explicit monetization choice ("pay first"), which this default must not override.
-// Exported so index.ts's monthly-refresh route (Tier 2 metering follow-up) resolves the SAME
-// free-tier default this signup grant uses — a free/unconfigured product refreshes 100 credits
-// every month, not just once, without two constants drifting apart.
-export const FREE_TIER_DEFAULT_SIGNUP_CREDITS = 100;
-
 async function loadProductAuthConfig(
   env: ProductEndUserRoutesEnv,
   productId: string
-): Promise<{ product: ProductRow; authConfig: SpaceTypeProductConfig["authProvider"]; signupCredits: number } | null> {
+): Promise<{ product: ProductRow; authConfig: SpaceTypeProductConfig["authProvider"] } | null> {
   const product = await env.PLATFORM_DB.prepare(
     "SELECT id, tenant_id, spacetype_id, config_json, product_slug FROM spaces WHERE id = ? AND status != 'deleted'"
   ).bind(productId).first<ProductRow>();
   if (!product) return null;
 
   let authConfig: SpaceTypeProductConfig["authProvider"] | undefined;
-  let signupCredits = 0;
   if (product.config_json) {
     try {
       const parsed = JSON.parse(product.config_json) as { productConfig?: SpaceTypeProductConfig };
       authConfig = parsed.productConfig?.authProvider;
-      // Metering enforcement pass: `creditsIncludedPerMonth` was builder-configurable through the
-      // product creation wizard but nothing ever read it — every new end user started at a
-      // permanent 0 balance, which (now that agent runs are gated on a positive balance — see
-      // NaelaoAgentDO's pre-run credit check) would otherwise make the free tier unusable from
-      // message one. Granted ONCE at signup, not actually monthly-recurring — a real recurring
-      // top-up would need its own scheduled sweep per end user, which is a separate, larger
-      // feature this fix does not attempt to build.
-      const pricingConfig = parsed.productConfig?.pricingConfig;
-      const isFreeOrUnconfigured = !pricingConfig || pricingConfig.model === "free";
-      signupCredits = pricingConfig?.creditsIncludedPerMonth
-        ?? (isFreeOrUnconfigured ? FREE_TIER_DEFAULT_SIGNUP_CREDITS : 0);
-    } catch { /* malformed config_json — treat as unset, fall through to default below */ }
-  } else {
-    // No config_json at all — same "hasn't configured pricing yet" case as above.
-    signupCredits = FREE_TIER_DEFAULT_SIGNUP_CREDITS;
+    } catch { /* malformed config_json — use the generic default */ }
   }
   // Default to naelao-native when unset — a product that never configured an auth provider is
   // not "no auth allowed," it's "hasn't picked one yet," and naelao-native is the fastest-to-ship
   // default the spec itself names.
-  return { product, authConfig: authConfig ?? { provider: "naelao-native" }, signupCredits };
+  return { product, authConfig: authConfig ?? { provider: "naelao-native" } };
 }
 
 async function productUserDoStub(env: ProductEndUserRoutesEnv, productId: string, endUserId: string, tenantId: string) {
@@ -245,26 +214,11 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     }));
     const session = await sessionRes.json<{ session_token: string; expires_at: string }>();
 
-    // Security audit follow-up: the free-credit grant used to fire immediately at signup, which
-    // is exactly what makes farming free compute as cheap as generating throwaway email
-    // addresses — the pre-auth IP rate limiter (router) bounds that but doesn't eliminate a
-    // slow/distributed farmer. The account and session are usable immediately either way (a
-    // legitimate user isn't blocked from signing in), but the credit grant itself now only
-    // fires from verify-email below — see issueVerificationToken. A product with nothing to
-    // grant (paid pricing model, no allowance) skips sending a verification email entirely,
-    // since there's no farming incentive to close for it.
-    //
-    // Best-effort, same posture as every other post-account-creation side effect in this file
-    // (the credit grant itself, the notify() call): a failure here (e.g. transient D1 issue)
-    // must never fail the signup response — the account and session already exist and are
-    // valid. Worst case, the end user starts unverified and can retry via resend-verification.
-    if (resolved.signupCredits > 0) {
-      try {
-        await issueVerificationToken(env, productId, endUserId, resolved.product.tenant_id, email, resolved.product.product_slug);
-      } catch { /* best-effort */ }
-    }
+    try {
+      await issueVerificationToken(env, productId, endUserId, resolved.product.tenant_id, email, resolved.product.product_slug);
+    } catch { /* account/session creation remains usable if mail delivery is temporarily unavailable */ }
 
-    return c.json({ end_user_id: endUserId, session_token: session.session_token, expires_at: session.expires_at, email_verification_required: resolved.signupCredits > 0 }, 201);
+    return c.json({ end_user_id: endUserId, session_token: session.session_token, expires_at: session.expires_at, email_verification_required: true }, 201);
   });
 
   app.post("/spaces/:spaceId/end-users/login", async (c) => {
@@ -420,16 +374,6 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     ).bind(productId, row.end_user_id, row.phone_e164).run();
 
     const stub = await productUserDoStub(env, productId, row.end_user_id, resolved.product.tenant_id);
-    // A verified phone proves reachability just like email verification. The deterministic key
-    // means a person who later adds email cannot receive the starting allowance twice.
-    if (resolved.signupCredits > 0) {
-      try {
-        await stub.fetch(new Request("http://do/credits/grant", {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ credits: resolved.signupCredits, reason: "signup_allowance", idempotency_key: `signup:${row.end_user_id}` }),
-        }));
-      } catch { /* session creation remains available; credit grant can be retried safely */ }
-    }
     const sessionRes = await stub.fetch(new Request("http://do/sessions", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ auth_provider: "whatsapp" }),
@@ -521,10 +465,7 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     return c.json({ ok: true, message: "Password updated. Sign in with your new password." });
   });
 
-  // Security audit follow-up: closes the free-credit-farming hole at its source — the signup
-  // allowance now only grants once a real inbox is proven reachable. Idempotency_key is the SAME
-  // deterministic `signup:${endUserId}` key the old immediate-grant used, so this can never
-  // double-grant even if verify-email is called twice (e.g. a double-clicked email link).
+  // Verify ownership of the email address with a short-lived, single-use token.
   app.post("/spaces/:spaceId/end-users/verify-email", async (c) => {
     const env = c.env as ProductEndUserRoutesEnv;
     const productId = c.req.param("spaceId");
@@ -550,21 +491,6 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     await env.PLATFORM_DB.prepare(
       "UPDATE product_end_users SET email_verified_at = COALESCE(email_verified_at, datetime('now')) WHERE product_space_id = ? AND end_user_id = ?"
     ).bind(productId, row.end_user_id).run();
-
-    // Grant whatever the product's CURRENT pricing config says a signup should receive — reads
-    // fresh rather than storing the amount at signup time, same "current config wins" posture
-    // loadProductAuthConfig already uses everywhere else. Best-effort: a grant failure must
-    // never fail email verification itself.
-    const resolved = await loadProductAuthConfig(env, productId);
-    if (resolved && resolved.signupCredits > 0) {
-      try {
-        const stub = await productUserDoStub(env, productId, row.end_user_id, resolved.product.tenant_id);
-        await stub.fetch(new Request("http://do/credits/grant", {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ credits: resolved.signupCredits, reason: "signup_allowance", idempotency_key: `signup:${row.end_user_id}` }),
-        }));
-      } catch { /* best-effort */ }
-    }
 
     return c.json({ ok: true, message: "Email verified." });
   });

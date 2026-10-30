@@ -254,8 +254,8 @@ export async function lsListStores(apiKey: string): Promise<LsStoreSummary[]> {
   }));
 }
 
-/** Events a wallet-connection webhook subscribes to (mirror of EVENT_MAP's keys). */
-const LS_WALLET_WEBHOOK_EVENTS = Object.keys(EVENT_MAP);
+/** Events registered for the provider webhook (mirror of EVENT_MAP's keys). */
+const LS_WEBHOOK_EVENTS = Object.keys(EVENT_MAP);
 
 /** Create a webhook on the builder's own store; returns the LS webhook id (for later cleanup). */
 export async function lsCreateWebhook(
@@ -275,7 +275,7 @@ export async function lsCreateWebhook(
     body: JSON.stringify({
       data: {
         type: "webhooks",
-        attributes: { url, secret, events: LS_WALLET_WEBHOOK_EVENTS },
+        attributes: { url, secret, events: LS_WEBHOOK_EVENTS },
         relationships: { store: { data: { type: "stores", id: storeId } } },
       },
     }),

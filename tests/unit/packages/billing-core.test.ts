@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   computeTokenCostMicro, tokensToCredits, CREDITS_PER_USD, contextWindowForModel, MODEL_CONTEXT_WINDOWS,
   capabilityForModel, isValidReasoningLevel, ALLOWED_MODELS, MODEL_CAPABILITIES,
-  PERSONAL_PLAN_LIMITS, isPersonalPlanTier, resolveEffectiveBusinessLimit, canPersonalPlanInvite,
   UTILITY_MODEL, DEFAULT_WORKING_MODEL, capabilityForModel as capFor,
 } from "@naelao/billing-core";
 
@@ -108,36 +107,5 @@ describe("MODEL_CAPABILITIES / capabilityForModel — reasoning-effort capabilit
     expect(isValidReasoningLevel("@cf/openai/gpt-oss-120b", "max")).toBe(false); // that's glm-5.2's level, not this model's
     expect(isValidReasoningLevel("@cf/zai-org/glm-5.2", "max")).toBe(true);
     expect(isValidReasoningLevel("@cf/meta/llama-3.3-70b-instruct-fp8-fast", "high")).toBe(false);
-  });
-});
-
-describe("personal-plan (Phase 4, money) — resolveEffectiveBusinessLimit / canPersonalPlanInvite", () => {
-  it("isPersonalPlanTier accepts only the two real tiers", () => {
-    expect(isPersonalPlanTier("free")).toBe(true);
-    expect(isPersonalPlanTier("plus")).toBe(true);
-    expect(isPersonalPlanTier("enterprise")).toBe(false);
-    expect(isPersonalPlanTier(undefined)).toBe(false);
-    expect(isPersonalPlanTier(null)).toBe(false);
-  });
-
-  it("a free-tier user's effective limit is the SMALLER of the product ceiling and the free-tier cap", () => {
-    // free cap is 3 — a product allowing 10 still squeezes a free user down to 3.
-    expect(resolveEffectiveBusinessLimit("free", 10)).toBe(PERSONAL_PLAN_LIMITS.free.maxBusinessesOwned);
-    expect(resolveEffectiveBusinessLimit("free", 10)).toBe(3);
-  });
-
-  it("a free-tier user is never squeezed BELOW a product ceiling that's already smaller than the free cap", () => {
-    // A builder set maxBusinessesPerEndUser=1 — the personal plan must never claim MORE than that.
-    expect(resolveEffectiveBusinessLimit("free", 1)).toBe(1);
-  });
-
-  it("a 'plus' user gets the FULL product ceiling, never capped by the free-tier number", () => {
-    expect(resolveEffectiveBusinessLimit("plus", 10)).toBe(10);
-    expect(resolveEffectiveBusinessLimit("plus", 999)).toBe(999);
-  });
-
-  it("canPersonalPlanInvite: only 'plus' may invite others", () => {
-    expect(canPersonalPlanInvite("free")).toBe(false);
-    expect(canPersonalPlanInvite("plus")).toBe(true);
   });
 });

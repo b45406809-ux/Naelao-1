@@ -163,96 +163,18 @@ describe("GET /spaces/:spaceId/shell/manifest", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as Record<string, unknown>;
     expect(body.manifest_name).toBe("Launchpad");
-    expect(body.allow_public_signup).toBe(true);
+    expect(body).not.toHaveProperty("allow_public_signup");
   });
 
-  // Phase C (§A1.17): membership_model + allowed_child_space_types tell the shell whether to show
-  // a "Create Business" entry point at all — the manifest's base productConfig is "team", so a
-  // product without a per-space override never shows it.
-  it("exposes membership_model (team, from the manifest base) and an empty allowed_child_space_types", async () => {
-    const env = makeEnv();
-    await seedSpace(env, "prod-1", "tenant-1");
-    const res = await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
-    const body = await res.json() as { membership_model: string; allowed_child_space_types: string[] };
-    expect(body.membership_model).toBe("team");
-    expect(body.allowed_child_space_types).toEqual([]);
-  });
-
-  it("a per-space hybrid override surfaces membership_model + allowed_child_space_types for real", async () => {
-    const env = makeEnv();
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json) VALUES
-       ('prod-hybrid', 'tenant-1', 'launchpad', 'Hybrid Store', 'active', ?)`
-    ).bind(JSON.stringify({ productConfig: { membershipModel: "hybrid", allowedChildSpaceTypes: ["launchpad"] } })).run();
-    const res = await spacesWorker.fetch(authedReq("/spaces/prod-hybrid/shell/manifest"), env as never, execCtx);
-    const body = await res.json() as { membership_model: string; allowed_child_space_types: string[] };
-    expect(body.membership_model).toBe("hybrid");
-    expect(body.allowed_child_space_types).toEqual(["launchpad"]);
-  });
-
-  // Phase D (§A1.17): productConfig.catalog.businessTemplates narrows the shell's create-business
-  // template picker below "every template the SpaceType ships."
-  it("exposes an empty business_templates by default and the configured list when set", async () => {
-    const env = makeEnv();
-    await seedSpace(env, "prod-1", "tenant-1");
-    const defaultRes = await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
-    expect(((await defaultRes.json()) as { business_templates: string[] }).business_templates).toEqual([]);
-
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json) VALUES
-       ('prod-catalog', 'tenant-1', 'launchpad', 'Catalog Store', 'active', ?)`
-    ).bind(JSON.stringify({ productConfig: { catalog: { businessTemplates: ["creator-store", "micro-saas"] } } })).run();
-    const res = await spacesWorker.fetch(authedReq("/spaces/prod-catalog/shell/manifest"), env as never, execCtx);
-    const body = await res.json() as { business_templates: string[] };
-    expect(body.business_templates).toEqual(["creator-store", "micro-saas"]);
-  });
-
-  // Phase F (§A1.17): template_catalog is the real, coming_soon-aware catalog the shell's
-  // create-business dialog and the dashboard's Templates Catalog config both render from —
-  // replacing two hand-maintained, drift-prone hardcoded copies of LAUNCHPAD_TEMPLATES.
-  it("returns an empty template_catalog when no AGENTS_WORKER binding is configured", async () => {
-    const env = makeEnv({ withAgentsWorker: false });
-    await seedSpace(env, "prod-1", "tenant-1");
-    const res = await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
-    const body = await res.json() as { template_catalog: unknown[] };
-    expect(body.template_catalog).toEqual([]);
-  });
-
-  it("fetches the real catalog (with coming_soon) from the agents worker's GET /templates", async () => {
+  it("does not expose retired business catalogs or membership restrictions", async () => {
     const env = makeEnv({ withAgentsWorker: true });
     await seedSpace(env, "prod-1", "tenant-1");
     const res = await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
-    const body = await res.json() as { template_catalog: Array<{ id: string; name: string; coming_soon: boolean }> };
-    expect(body.template_catalog).toHaveLength(3);
-    expect(body.template_catalog.find((t) => t.id === "whop-seller")).toMatchObject({ coming_soon: false });
-    expect(body.template_catalog.find((t) => t.id === "creator-store")).toMatchObject({ coming_soon: true });
-  });
-
-  it("intersects the real catalog with the builder's business_templates narrowing", async () => {
-    const calls: number[] = [];
-    const env = makeEnv({ withAgentsWorker: true, templateFetchCalls: calls });
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json) VALUES
-       ('prod-narrow', 'tenant-1', 'launchpad', 'Narrow Store', 'active', ?)`
-    ).bind(JSON.stringify({ productConfig: { catalog: { businessTemplates: ["whop-seller"] } } })).run();
-    const res = await spacesWorker.fetch(authedReq("/spaces/prod-narrow/shell/manifest"), env as never, execCtx);
-    const body = await res.json() as { template_catalog: Array<{ id: string }> };
-    // G-BF08: free_tier_eligible now flows through the catalogue projection so the shell's
-    // create-business dialog can grey ineligible templates for free-plan products.
-    expect(body.template_catalog).toEqual([{
-      id: "whop-seller", name: "Whop Seller", description: "d", coming_soon: false,
-      free_tier_eligible: false, connectors: ["whop"], template_mode: "ave",
-      vertical: "Digital business", presentation_profile: "guided",
-    }]);
-  });
-
-  it("KV-caches the catalog fetch — a second call does not re-hit the agents worker", async () => {
-    const calls: number[] = [];
-    const env = makeEnv({ withAgentsWorker: true, templateFetchCalls: calls });
-    await seedSpace(env, "prod-1", "tenant-1");
-    await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
-    await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
-    expect(calls).toHaveLength(1);
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    for (const field of ["membership_model", "allowed_child_space_types", "business_templates", "template_catalog"]) {
+      expect(body).not.toHaveProperty(field);
+    }
   });
 
   it("never serializes internal manifest fields (agentEnvironment, backend, lifecycle, marketplace)", async () => {
@@ -283,7 +205,7 @@ describe("GET/PATCH /spaces/:spaceId/product-users/me", () => {
     return res.json() as Promise<{ end_user_id: string; session_token: string }>;
   }
 
-  it("returns the caller's own profile + credit balance", async () => {
+  it("returns the caller's own profile without a stored-value balance", async () => {
     const env = makeEnv();
     await seedSpace(env, "prod-1", "tenant-1");
     const signup = await signupEndUser(env, "prod-1");
@@ -294,14 +216,9 @@ describe("GET/PATCH /spaces/:spaceId/product-users/me", () => {
       env as never, execCtx
     );
     expect(res.status).toBe(200);
-    const body = await res.json() as { email: string; credits_balance: number; end_user_id: string; email_verified: boolean };
+    const body = await res.json() as { email: string; end_user_id: string; email_verified: boolean };
     expect(body.email).toBe("jane@acme.com");
     expect(body.end_user_id).toBe(signup.end_user_id);
-    // Security audit follow-up: the platform free-tier default (100 credits) no longer grants
-    // immediately at signup — it's deferred until the signup verification email is redeemed
-    // (closes the free-credit-farming hole; see product-end-user-routes.ts). 0/unverified is the
-    // correct, expected state immediately after signup, before that redemption happens.
-    expect(body.credits_balance).toBe(0);
     expect(body.email_verified).toBe(false);
   });
 

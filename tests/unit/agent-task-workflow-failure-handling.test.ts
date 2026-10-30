@@ -252,7 +252,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
       taskDoStub: stub,
       agentsWorkerFetch: async () =>
         new Response(
-          JSON.stringify({ error: "insufficient credits — top up or subscribe to keep chatting", error_code: "insufficient_credits" }),
+          JSON.stringify({ error: "subscription quota reached — review your plan or usage limits to continue", error_code: "usage_limit_reached" }),
           { status: 402 }
         ),
     });
@@ -262,7 +262,7 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
 
     const final = tasks.get("task-1")!;
     expect(final.status).toBe("failed");
-    expect(final.error).toContain("insufficient credits");
+    expect(final.error).toContain("subscription quota");
     expect(final.result).not.toBeNull();
     expect(JSON.parse(final.result!).error_code).toBe("insufficient_credits");
   });

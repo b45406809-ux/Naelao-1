@@ -37,24 +37,24 @@ export interface AgentTaskParams {
   controlParentDoId?:string;
   taskDoName: string;  // DO name for TaskDO stub
   // Go-live audit A-1/A-2: carried through to /internal/tasks/:taskId/run so enforceRunGates can
-  // resolve the F-36 clamp / project wallet gate / product_end_user credit gate — previously
+  // resolve the F-36 clamp / project spend-cap gate / tenant quota gate — previously
   // dropped entirely, leaving the async chat path completely unmetered.
   userId?: string;
   projectId?: string;
   callerRole?: string;
   /**
-   * The caller's role in THIS business, resolved server-side from business_memberships by
+   * The caller's role in this Space, resolved server-side from generic Space membership by
    * /agent/run.
    *
    * It was already being passed into this Workflow's params and then silently dropped — declared
    * nowhere here and forwarded nowhere below. The consequence was not subtle: this async path is
-   * the DEFAULT for every real chat message, and without businessRole the F-36 clamp downgrades
+   * the DEFAULT for every real chat message, and without spaceRole the F-36 clamp downgrades
    * `yolo` for every product_end_user, including a business's own OWNER. So an owner who set
    * their business to autonomous still had every single action gated, with nobody but themself to
    * approve it — the exact bug item 93 fixed on the synchronous path and missed here, which is
    * the path that actually runs in production.
    */
-  businessRole?: string;
+  spaceRole?: string;
   // §A1 Harness Excellence Phase HX2: threaded through the same path as the fields above so the
   // async dispatch path's session-budget gate matches the sync path's exactly.
   sessionCreditCeiling?: number;
@@ -214,7 +214,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
               userId: p.userId,
               projectId: p.projectId,
               callerRole: p.callerRole,
-              businessRole: p.businessRole,
+              spaceRole: p.spaceRole,
               sessionCreditCeiling: p.sessionCreditCeiling,
               workerTokenBudget: p.workerTokenBudget,
               spaceContext: p.spaceContext,

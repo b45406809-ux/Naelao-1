@@ -3,14 +3,14 @@
 
 // Settings — space identity, members, connected apps, AI controls, and personal preferences.
 // that's always there regardless of role. Scoped to whichever space is currently active
-// (useActiveSpace) — a business's own settings when one is selected, the product root's own
+// (useActiveSpace) — the selected Space's settings when one is selected, the product root's own
 // (much smaller) settings otherwise.
 //
 // Billing and commerce are managed by platform subscriptions and user-installed extensions, not
-// by a hardcoded business billing surface here.
+// by a product-specific billing surface here.
 //
 // Role gating follows canManageSpaceSettings exactly (the same helper the Dashboard tab uses,
-// itself written after a real bug where an exact "admin" string match locked out a business's own
+// itself written after a real bug where an exact "admin" string match locked out a Space owner
 // owner) — a plain member always gets a real, honest read-only view rather than a hidden tab, since
 // seeing what's configured without being able to change it is not the same bug class as not being
 // told a control exists at all.
@@ -35,11 +35,9 @@ import {
   getMe,
   updateMe,
   deleteMe,
-  listMyBusinesses,
+  listMySpaces,
   getShellManifest,
-  listBusinessMembers,
-  inviteToBusiness,
-  removeBusinessMember,
+  listSpaceMembers,
   getAssistantPolicy,
   updateAssistantPolicy,
   updateModelConfig,
@@ -49,9 +47,9 @@ import {
   deleteByokKey,
   getConnectorStatus,
   type ProductUserMe,
-  type Business,
+  type SpaceSummary,
   type ShellManifest,
-  type BusinessMember,
+  type SpaceMember,
   type AssistantPolicy,
   type ConnectorInfo,
   type ByokProviderStatus,
@@ -104,13 +102,13 @@ export default function SettingsPage() {
   const router = useRouter();
   const creds = useSessionCredentials();
   const { session, signOut } = useProductAuth();
-  const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
+  const { activeSpaceId, activeSpaceName, isChildSpace } = useActiveSpace();
 
   const [tab, setTab] = React.useState<TabId>("general");
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
-  const [business, setBusiness] = React.useState<Business | null>(null);
+  const [space, setSpace] = React.useState<SpaceSummary | null>(null);
   const [manifest, setManifest] = React.useState<ShellManifest | null>(null);
-  const [members, setMembers] = React.useState<BusinessMember[]>([]);
+  const [members, setMembers] = React.useState<SpaceMember[]>([]);
   const [policy, setPolicy] = React.useState<AssistantPolicy | null>(null);
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -125,22 +123,22 @@ export default function SettingsPage() {
       settle(getMe(product.space_id, creds), setMe),
       settle(getShellManifest(activeSpaceId, creds), setManifest),
       settle(getAssistantPolicy(activeSpaceId, creds), setPolicy),
-      isBusinessSpace
+      isChildSpace
         ? settle(
-            listMyBusinesses(product.space_id, creds).then((list) => list.find((b) => b.id === activeSpaceId) ?? null),
-            setBusiness
+            listMySpaces(product.space_id, creds).then((list) => list.find((b) => b.id === activeSpaceId) ?? null),
+            setSpace
           )
         : Promise.resolve(),
-      isBusinessSpace ? settle(listBusinessMembers(activeSpaceId, creds), setMembers) : Promise.resolve(),
-      isBusinessSpace ? settle(getConnectorStatus(activeSpaceId, creds), setConnectors) : Promise.resolve(),
+      isChildSpace ? settle(listSpaceMembers(activeSpaceId, creds), setMembers) : Promise.resolve(),
+      isChildSpace ? settle(getConnectorStatus(activeSpaceId, creds), setConnectors) : Promise.resolve(),
     ]).finally(() => setLoading(false));
-  }, [creds, product.space_id, activeSpaceId, isBusinessSpace]);
+  }, [creds, product.space_id, activeSpaceId, isChildSpace]);
 
   React.useEffect(() => { load(); }, [load]);
 
-  const canManage = canManageSpaceSettings(isBusinessSpace, business?.role);
+  const canManage = canManageSpaceSettings(isChildSpace, space?.role);
 
-  const tabs: TabId[] = isBusinessSpace
+  const tabs: TabId[] = isChildSpace
     ? ["general", "members", "apps", "ai", "personal"]
     : ["general", "ai", "personal"];
 
@@ -168,8 +166,8 @@ export default function SettingsPage() {
         {tab === "general" && creds && <AssistantVoicePanel spaceId={activeSpaceId} session={creds} canManage={canManage} />}
         {tab === "general" && (
           <GeneralTab
-            isBusinessSpace={isBusinessSpace}
-            business={business}
+            isChildSpace={isChildSpace}
+            space={space}
             activeSpaceName={activeSpaceName}
             activeSpaceId={activeSpaceId}
             productName={product.product_name}
@@ -179,18 +177,14 @@ export default function SettingsPage() {
           />
         )}
 
-        {tab === "members" && isBusinessSpace && (
+        {tab === "members" && isChildSpace && (
           <MembersTab
-            spaceId={activeSpaceId}
-            creds={creds}
             members={members}
-            canManage={canManage}
-            onChanged={load}
           />
         )}
 
 
-        {tab === "apps" && isBusinessSpace && (
+        {tab === "apps" && isChildSpace && (
           <AppsTab spaceId={activeSpaceId} connectors={connectors} slug={product.slug} />
         )}
 
@@ -202,10 +196,10 @@ export default function SettingsPage() {
             creds={creds}
             policy={policy}
             canManage={canManage}
-          isBusinessSpace={isBusinessSpace}
+          isChildSpace={isChildSpace}
             onChanged={(p) => setPolicy(p)}
           /></div>
-          {isBusinessSpace && <AttachmentOcrSettings spaceId={activeSpaceId} session={creds} canManage={canManage} />}
+          {isChildSpace && <AttachmentOcrSettings spaceId={activeSpaceId} session={creds} canManage={canManage} />}
           {creds && <div style={{ marginTop: 24 }}><DomainGlossaryPanel spaceId={activeSpaceId} creds={creds} canEdit={canManage} /></div>}
           </>
         )}
@@ -231,8 +225,8 @@ export default function SettingsPage() {
 // ── General ─────────────────────────────────────────────────────────────────
 
 function GeneralTab({
-  isBusinessSpace,
-  business,
+  isChildSpace,
+  space,
   activeSpaceName,
   activeSpaceId,
   productName,
@@ -240,8 +234,8 @@ function GeneralTab({
   session,
   canManage,
 }: {
-  isBusinessSpace: boolean;
-  business: Business | null;
+  isChildSpace: boolean;
+  space: SpaceSummary | null;
   activeSpaceName: string | null;
   activeSpaceId: string;
   productName: string;
@@ -254,35 +248,35 @@ function GeneralTab({
       <PresentationSettings />
       <div className="settings-section-title">General</div>
       <div className="settings-section-sub">
-        {isBusinessSpace ? "Basic information about this business." : "Basic information about this product."}
+        {isChildSpace ? "Basic information about this Space." : "Basic information about this workspace."}
       </div>
       <div className="settings-block">
         <div className="settings-row">
           <div>
-            <div className="settings-row-label">{isBusinessSpace ? "Business name" : "Product name"}</div>
+            <div className="settings-row-label">{isChildSpace ? "Space name" : "Workspace name"}</div>
             <div className="settings-row-sub">Renaming happens from the builder dashboard.</div>
           </div>
           <div style={{ fontSize: 13, fontWeight: 500 }}>{activeSpaceName ?? productName}</div>
         </div>
-        {isBusinessSpace && business && (
+        {isChildSpace && space && (
           <>
             <div className="settings-row">
               <div><div className="settings-row-label">Your role</div></div>
-              <Badge color={business.role === "owner" ? "purple" : business.role === "admin" ? "blue" : "amber"}>{business.role}</Badge>
+              <Badge color={space.role === "owner" ? "purple" : space.role === "admin" ? "blue" : "amber"}>{space.role}</Badge>
             </div>
             <div className="settings-row">
               <div><div className="settings-row-label">Status</div></div>
-              <Badge color={business.space_status === "active" ? "green" : "amber"}>{business.space_status}</Badge>
+              <Badge color={space.space_status === "active" ? "green" : "amber"}>{space.space_status}</Badge>
             </div>
-            {business.template_id && (
+            {space.template_id && (
               <div className="settings-row">
                 <div><div className="settings-row-label">Template</div></div>
-                <code style={{ fontSize: 12, color: "var(--text2)" }}>{business.template_id}</code>
+                <code style={{ fontSize: 12, color: "var(--text2)" }}>{space.template_id}</code>
               </div>
             )}
             <div className="settings-row">
               <div><div className="settings-row-label">Member since</div></div>
-              <div style={{ fontSize: 12.5, color: "var(--text2)" }}>{new Date(business.joined_at).toLocaleDateString()}</div>
+              <div style={{ fontSize: 12.5, color: "var(--text2)" }}>{new Date(space.joined_at).toLocaleDateString()}</div>
             </div>
           </>
         )}
@@ -297,10 +291,9 @@ function GeneralTab({
           </div>
         )}
       </div>
-      {isBusinessSpace && (
+      {isChildSpace && (
         <div className="settings-block" style={{ padding: "12px 16px", fontSize: 12.5, color: "var(--text3)" }}>
-          Deleting a business is a builder-only action today — ask whoever manages the product if
-          this business needs to be removed.
+          Space deletion is managed by the Space owner in the account controls.
         </div>
       )}
       <ArchiveKeyRotationPanel spaceId={activeSpaceId} session={session} canManage={canManage} />
@@ -363,54 +356,13 @@ function PresentationSettings() {
 
 // ── Members ─────────────────────────────────────────────────────────────────
 
-function MembersTab({
-  spaceId,
-  creds,
-  members,
-  canManage,
-  onChanged,
-}: {
-  spaceId: string;
-  creds: { sessionToken: string; endUserId: string } | null;
-  members: BusinessMember[];
-  canManage: boolean;
-  onChanged: () => void;
+function MembersTab({ members }: {
+  members: SpaceMember[];
 }) {
-  const [email, setEmail] = React.useState("");
-  const [role, setRole] = React.useState<"member" | "admin">("member");
-  const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [inviteLink, setInviteLink] = React.useState<string | null>(null);
-
-  async function handleInvite() {
-    if (!creds || !email.trim()) return;
-    setBusy(true);
-    setError(null);
-    setInviteLink(null);
-    try {
-      const res = await inviteToBusiness(spaceId, creds, { email: email.trim(), role });
-      setInviteLink((res as { invite_url?: string }).invite_url ?? null);
-      setEmail("");
-      onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to invite");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleRemove(endUserId: string) {
-    if (!creds) return;
-    try {
-      await removeBusinessMember(spaceId, endUserId, creds);
-      onChanged();
-    } catch { /* surfaced implicitly by the list not changing */ }
-  }
-
   return (
     <div>
       <div className="settings-section-title">Members</div>
-      <div className="settings-section-sub">Who has access to this business.</div>
+      <div className="settings-section-sub">People who have access to this Space.</div>
 
       <div className="settings-block">
         {members.length === 0 ? (
@@ -424,42 +376,12 @@ function MembersTab({
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Badge color={m.role === "owner" ? "purple" : m.role === "admin" ? "blue" : "amber"}>{m.role}</Badge>
-                {canManage && m.role !== "owner" && (
-                  <button className="btn btn-ghost btn-sm" onClick={() => handleRemove(m.end_user_id)}>Remove</button>
-                )}
               </div>
             </div>
           ))
         )}
       </div>
 
-      {canManage && (
-        <div className="settings-block">
-          <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
-            <div className="settings-row-label">Invite a member</div>
-            <div style={{ display: "flex", gap: 8, width: "100%", flexWrap: "wrap" }}>
-              <FormInput
-                type="email"
-                placeholder="email@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                style={{ flex: 1, minWidth: 200 }}
-              />
-              <FormSelect value={role} onChange={(e) => setRole(e.target.value as "member" | "admin")} style={{ minWidth: 120 }}>
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
-              </FormSelect>
-              <Button onClick={handleInvite} disabled={busy || !email.trim()}>{busy ? "Sending…" : "Invite"}</Button>
-            </div>
-            {error && <div style={{ color: "#dc2626", fontSize: 12.5 }}>{error}</div>}
-            {inviteLink && (
-              <div style={{ fontSize: 12, color: "var(--text2)" }}>
-                Invite created. Share this link: <code style={{ fontSize: 11 }}>{inviteLink}</code>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -473,7 +395,7 @@ function AppsTab({ spaceId, connectors, slug }: { spaceId: string; connectors: C
   return (
     <div>
       <div className="settings-section-title">Connected Apps</div>
-      <div className="settings-section-sub">Third-party accounts this business's assistant can use.</div>
+      <div className="settings-section-sub">Third-party accounts this Space assistant can use.</div>
 
       <div className="settings-block">
         <div className="settings-row" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -511,14 +433,14 @@ function AiTab({
   creds,
   policy,
   canManage,
-  isBusinessSpace,
+  isChildSpace,
   onChanged,
 }: {
   spaceId: string;
   creds: { sessionToken: string; endUserId: string } | null;
   policy: AssistantPolicy | null;
   canManage: boolean;
-  isBusinessSpace: boolean;
+  isChildSpace: boolean;
   onChanged: (p: AssistantPolicy) => void;
 }) {
   const [model, setModel] = React.useState<string>("");
@@ -775,7 +697,7 @@ function AiTab({
       </div>
       {byokError && <div style={{ color: "#dc2626", fontSize: 12.5, marginTop: 8 }}>{byokError}</div>}
       {byokNotice && <div style={{ color: "var(--text2)", fontSize: 12.5, marginTop: 8 }}>{byokNotice}</div>}
-      {isBusinessSpace && <>
+      {isChildSpace && <>
         <div className="settings-section-title" style={{ marginTop: 28 }}>Private adapter lifecycle</div>
         <div className="settings-section-sub">Import an existing Space-owned adapter after documenting data rights. Training submission is unavailable. Evaluation records owner-provided results; this screen does not run or verify a benchmark.</div>
         <div className="settings-block" style={{ padding: 16, display: "grid", gap: 12 }}>
@@ -846,7 +768,7 @@ function AiTab({
         </div>
       </>}
       {!canManage && (
-        <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 12 }}>Only business admins and owners can change these.</div>
+        <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 12 }}>Only Space owners and admins can change these.</div>
       )}
     </div>
   );
@@ -930,12 +852,6 @@ function PersonalTab({
           </div>
           <Badge color={me?.email_verified ? "green" : "amber"}>{me?.email_verified ? "Verified" : "Unverified"}</Badge>
         </div>
-        {me && (
-          <div className="settings-row">
-            <div><div className="settings-row-label">Credits</div></div>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{me.credits_balance}</div>
-          </div>
-        )}
         <div className="settings-row">
           <div><div className="settings-row-label">Session</div></div>
           <button className="btn btn-secondary btn-sm" type="button" onClick={signOut}>Sign out</button>

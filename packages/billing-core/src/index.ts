@@ -210,8 +210,7 @@ export function computeTokenCostMicro(
 
 /**
  * The platform-wide credit unit: 1 credit = $0.01 USD (a cent). Coarse enough to store as a
- * plain integer everywhere credits are already tracked (`space_credits.balance_credits`,
- * customer-bot `daily_spend_cap_credits`/`project_spend`), fine-grained enough that a single
+ * plain integer everywhere credits are already tracked (`project_spend` and other plan-metered usage), fine-grained enough that a single
  * Haiku-tier agent turn (a fraction of a cent) still rounds up to a real, non-zero charge
  * rather than disappearing. Single source of truth — every USD↔credit conversion in the
  * platform must go through this constant, not a locally re-derived rate.
@@ -240,6 +239,5 @@ export type { InfraResourceType } from "./credits.js";
 // See the comment near the top of this file — these must come last.
 export * from "./model-benchmarks.js";
 export * from "./effort.js";
-export * from "./personal-plan.js";
 export * from "./plans.js";
 export * from "./marketplace-policy.js";

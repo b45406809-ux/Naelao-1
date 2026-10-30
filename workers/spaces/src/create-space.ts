@@ -1,7 +1,6 @@
 // Shared Space creation logic used by the generic Spaces API and administrative provisioning.
 
 import { getDOName } from "@naelao/crypto";
-import { checkFreeTierTemplateEligibility } from "./template-catalog.js";
 import { scopedInstallationId, type InstallationScope } from "@naelao/agent-sdk";
 import { deliverProvisioningOutboxEntry } from "./provisioning-outbox.js";
 
@@ -37,11 +36,6 @@ export interface CreateSpaceEnv {
   PLATFORM_DB: D1Database;
   ENVIRONMENT?: string;
   PROVISION_QUEUE?: Queue<ProvisionMessage>;
-  /** G-BF08: the free-tier template gate resolves the real catalogue (free_tier_eligible) from
-   *  the agents worker, KV-cached. Both optional — absent (dev/test), the gate degrades open;
-   *  see checkFreeTierTemplateEligibility. */
-  NAELAO_CONFIG_KV?: KVNamespace;
-  AGENTS_WORKER?: Fetcher;
   LOCK_DO?: DurableObjectNamespace;
 }
 
@@ -300,15 +294,6 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     }
   }
 
-  // G-GRW08 (Appendix AJ): on the free plan only free_tier_eligible templates may be
-  // instantiated — the flag existed since Phase F but no creation path ever checked it.
-  if (params.templateId) {
-    const gate = await checkFreeTierTemplateEligibility(env.PLATFORM_DB, env, params.tenantId, [params.templateId]);
-    if (!gate.ok) {
-      throw new SpaceCreationError(gate.status, gate.error_code, gate.message);
-    }
-  }
-
   // Keep a stable address for root Spaces that opt into a hosted shell. Child Spaces inherit
   // their parent's address and do not receive their own subdomain.
   if (!params.parentSpaceId && !params.productSlug) {
@@ -376,9 +361,9 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     const writes = [spaceInsert];
     if (params.initialMembership) {
       writes.push(env.PLATFORM_DB.prepare(
-        `INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status, joined_at)
-         VALUES (?, ?, ?, ?, 'active', datetime('now')) ON CONFLICT(business_space_id, end_user_id) DO NOTHING`
-      ).bind(id, params.initialMembership.productSpaceId, params.initialMembership.endUserId, params.initialMembership.role ?? "owner"));
+        `INSERT INTO space_members (id, space_id, tenant_id, end_user_id, role)
+         VALUES (?, ?, ?, ?, ?) ON CONFLICT(space_id, end_user_id) DO NOTHING`
+      ).bind(crypto.randomUUID(), id, params.tenantId, params.initialMembership.endUserId, params.initialMembership.role ?? "owner"));
     }
     if (useProvisioningQueue) {
       writes.push(env.PLATFORM_DB.prepare(
@@ -393,7 +378,7 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     }
   };
   const checkQuotaAndInsert = async (): Promise<void> => {
-    if (!params.parentSpaceId) await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
+    await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
     try {
       await insertSpace();
     } catch (err) {

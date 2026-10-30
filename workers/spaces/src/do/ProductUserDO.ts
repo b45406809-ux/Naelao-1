@@ -1,9 +1,9 @@
 // Three-Tier Platform Model (spec "Three-Tier Platform Model" / Journey 1B), Phase 2
 // (docs/spec-appendix/A1-script-agents-and-space-assistants.md §A1.17). ONE INSTANCE PER
 // (productId, endUserId) — addressed getDOName("produser", `${productId}:${endUserId}`, tenantId,
-// PLATFORM_SECRET). This is the platform's FIRST persistent, signed-in end-user concept: today a
-// Launchpad end user is an anonymous session id with no durable identity, credit balance, or
-// preferences. A Product end user is fully isolated even across products — the same human logging
+// PLATFORM_SECRET). This stores product-scoped login sessions, preferences, and conversation
+// references for people using a published Space Template. A Product end user is fully isolated
+// even across products — the same human logging
 // into two different builders' products gets two independent ProductUserDO instances (spec: end
 // users' data is never shared across products, and never with Naelao's own platform users).
 //
@@ -20,10 +20,6 @@
 // caller (Phase 3 router/portal wrapper) verifies the provider assertion, derives end_user_id,
 // then asks this DO to open a session. Provider secrets live in the credentials vault.
 //
-// Credit ledger is a LEDGER, not a second source of truth for token→credit conversion: callers
-// pass already-converted credits (the agent runtime owns tokensToCredits(), billing-core's single
-// conversion point — CLAUDE.md #12). This DO only debits/credits and reports the running balance.
-
 import { DurableObject } from "cloudflare:workers";
 import { readBoundedRequestBytes, RequestBodyTooLargeError } from "@naelao/http";
 import { applyMigrations, type Migration } from "@naelao/db";
@@ -37,25 +33,11 @@ interface SessionRow {
   revoked_at: string | null;
 }
 
-interface LedgerRow {
-  id: string;
-  delta_credits: number;
-  reason: string;
-  model: string | null;
-  balance_after: number;
-  created_at: string;
-}
-
 const SESSION_TTL_MS = 30 * 86_400_000; // 30 days, refreshed on each verify
 const MAX_ACTIVE_SESSIONS = 100;
-const MAX_LEDGER_CREDITS = Number.MAX_SAFE_INTEGER;
 const MAX_CONVERSATION_REFS = 10_000;
 const MAX_PREFERENCES = 500;
 const MAX_PENDING_NOTIFICATIONS = 1_000;
-
-function validLedgerAmount(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_LEDGER_CREDITS;
-}
 
 function validOptionalText(value: unknown, maxLength: number): value is string | undefined {
   return value === undefined || (typeof value === "string" && value.length > 0 && value.length <= maxLength);
@@ -84,6 +66,7 @@ const MIGRATIONS: Migration[] = [
       );
       CREATE INDEX IF NOT EXISTS idx_session_token ON session_state(token_hash);
 
+      -- Retained only as a historical schema step; migration 6 removes this retired table.
       CREATE TABLE IF NOT EXISTS credit_ledger (
         id             TEXT PRIMARY KEY,
         delta_credits  INTEGER NOT NULL,
@@ -117,12 +100,9 @@ const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    // Phase E (§A1.17): credit-pack purchases grant credits via a Lemon Squeezy webhook, which
-    // can retry — without a dedupe key, a retry would double-grant. `launchpad_orders` has the
-    // same problem solved with a `provider_event_id` unique partial index (D1); this is the
-    // per-DO-SQLite equivalent for ProductUserDO's own credit_ledger.
+    // Historical schema version retained so deployed Durable Objects can advance in order.
     version: 2,
-    description: "add idempotency_key to credit_ledger for webhook-safe grants",
+    description: "historical stored-value ledger schema",
     up: `
       ALTER TABLE credit_ledger ADD COLUMN idempotency_key TEXT;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_idempotency
@@ -130,16 +110,9 @@ const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    // Phase 4 (money): the end user's own personal-plan tier — gates how many businesses THEY can
-    // own under this product (business-create.ts's maxBusinessesPerEndUser combines with this) and
-    // whether others may accept an invite into a business they own. Deliberately NOT stored in the
-    // general-purpose `preferences` key-value table: preferences is end-user-writable through an
-    // ordinary session-authenticated route, and plan_tier must only ever change via a real checkout
-    // (or the internal grant route a webhook calls) — a separate, protected table makes that
-    // impossible to conflate. Singleton row (id always 1, CHECK-enforced) — one tier per DO
-    // instance, which is already exactly one (productId, endUserId) pair.
+    // Historical schema version retained so deployed Durable Objects can advance in order.
     version: 3,
-    description: "add plan_state for the end user's own personal-plan tier",
+    description: "historical personal entitlement schema",
     up: `
       CREATE TABLE IF NOT EXISTS plan_state (
         id         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -164,11 +137,9 @@ const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    // Personal-plan billing needs an auditable, idempotent record per paid period. Keeping only
-    // plan_tier made catalog month/year intervals permanent and made refunds unable to target one
-    // purchase without revoking a later renewal.
+    // Historical schema version retained so deployed Durable Objects can advance in order.
     version: 5,
-    description: "track personal-plan paid periods and provider lifecycle",
+    description: "historical personal entitlement records",
     up: `
       CREATE TABLE personal_plan_entitlements (
         provider_event_id TEXT PRIMARY KEY,
@@ -185,18 +156,21 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_personal_plan_subscription ON personal_plan_entitlements(subscription_id, status);
     `,
   },
+  {
+    version: 6,
+    description: "remove retired product-user stored-value wallet",
+    up: `DROP TABLE IF EXISTS credit_reservations;
+      DROP TABLE IF EXISTS credit_run_settlements;
+      DROP TABLE IF EXISTS credit_ledger;`,
+  },
+  {
+    version: 7,
+    description: "remove retired personal business-plan entitlements",
+    up: `DROP TABLE IF EXISTS personal_plan_entitlements;
+      DROP TABLE IF EXISTS plan_state;`,
+  },
 ];
 
-function addCalendarInterval(from: Date, interval: "month" | "year"): Date {
-  const result = new Date(from);
-  const day = result.getUTCDate();
-  result.setUTCDate(1);
-  if (interval === "month") result.setUTCMonth(result.getUTCMonth() + 1);
-  else result.setUTCFullYear(result.getUTCFullYear() + 1);
-  const finalDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0)).getUTCDate();
-  result.setUTCDate(Math.min(day, finalDay));
-  return result;
-}
 
 export class ProductUserDO extends DurableObject {
   private initialized = false;
@@ -207,13 +181,7 @@ export class ProductUserDO extends DurableObject {
     this.initialized = true;
   }
 
-  /** Current balance = SUM of every ledger delta (the ledger is the source of truth). */
-  private currentBalance(): number {
-    const rows = this.ctx.storage.sql
-      .exec("SELECT COALESCE(SUM(delta_credits), 0) AS bal FROM credit_ledger")
-      .toArray() as unknown as { bal: number }[];
-    return rows[0]?.bal ?? 0;
-  }
+
 
   override async fetch(request: Request): Promise<Response> {
     if (request.body && request.method !== "GET" && request.method !== "HEAD") {
@@ -300,294 +268,7 @@ export class ProductUserDO extends DurableObject {
       return new Response(null, { status: 204 });
     }
 
-    // ── Credits ───────────────────────────────────────────────────────────────
-    // GET /credits/balance
-    if (method === "GET" && url.pathname === "/credits/balance") {
-      return Response.json({ balance_credits: this.currentBalance() });
-    }
-
-    if (method === "POST" && url.pathname === "/credits/reservations") {
-      const body = await request.json<{ action?: string; reservation_id?: string; run_id?: string; credits?: number }>().catch(() => ({} as any));
-      const action = body.action, runId = body.run_id ?? "", now = new Date().toISOString();
-      if (!runId || runId.length > 128) return Response.json({ error_code: "reservation_invalid" }, { status: 400 });
-      const sql = this.ctx.storage.sql;
-      if (action === "reserve") {
-        const reservationId = body.reservation_id ?? "", credits = body.credits;
-        if (!reservationId || reservationId.length > 200 || !Number.isSafeInteger(credits) || (credits ?? 0) <= 0) return Response.json({ error_code: "reservation_invalid" }, { status: 400 });
-        const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
-        const result = this.ctx.storage.transactionSync(() => {
-          sql.exec("UPDATE credit_reservations SET status='expired',updated_at=? WHERE status='held' AND expires_at<=?", now, now);
-          const prior = sql.exec("SELECT run_id,credits,status FROM credit_reservations WHERE reservation_id=?", reservationId).toArray() as Array<{ run_id: string; credits: number; status: string }>;
-          if (prior[0]) return prior[0].run_id === runId && prior[0].credits === credits && prior[0].status === "held" ? { ok: true, deduplicated: true } : { ok: false, conflict: true };
-          const held = sql.exec("SELECT COALESCE(SUM(credits),0) AS credits FROM credit_reservations WHERE status='held' AND expires_at>?", now).toArray() as Array<{ credits: number }>;
-          const available = this.currentBalance() - (held[0]?.credits ?? 0);
-          if (available < (credits as number)) return { ok: false, insufficient: true, available };
-          sql.exec("INSERT INTO credit_reservations (reservation_id,run_id,credits,status,expires_at,created_at,updated_at) VALUES (?,?,?,'held',?,?,?)", reservationId, runId, credits, expiresAt, now, now);
-          return { ok: true, deduplicated: false, expires_at: expiresAt };
-        });
-        if ("conflict" in result) return Response.json({ error_code: "reservation_id_conflict" }, { status: 409 });
-        if (!result.ok) return Response.json({ error_code: "insufficient_credits", available_credits: result.available }, { status: 402 });
-        return Response.json(result);
-      }
-      if (action === "release_run") {
-        const released = this.ctx.storage.transactionSync(() => sql.exec("UPDATE credit_reservations SET status='released',updated_at=? WHERE run_id=? AND status='held'", now, runId).rowsWritten);
-        return Response.json({ run_id: runId, released });
-      }
-      if (action === "settle_run") {
-        const actual = body.credits;
-        if (!Number.isSafeInteger(actual) || (actual ?? -1) < 0) return Response.json({ error_code: "settlement_invalid" }, { status: 400 });
-        const result = this.ctx.storage.transactionSync(() => {
-          const settled = sql.exec("SELECT actual_credits FROM credit_run_settlements WHERE run_id=?", runId).toArray() as Array<{ actual_credits: number }>;
-          if (settled[0]) return { ok: true, deduplicated: true, actual_credits: settled[0].actual_credits };
-          sql.exec("UPDATE credit_reservations SET status='expired',updated_at=? WHERE status='held' AND expires_at<=?", now, now);
-          const other = sql.exec("SELECT COALESCE(SUM(credits),0) AS credits FROM credit_reservations WHERE status='held' AND run_id!=? AND expires_at>?", runId, now).toArray() as Array<{ credits: number }>;
-          if ((actual as number) > this.currentBalance() - (other[0]?.credits ?? 0)) return { ok: false, insufficient: true };
-          sql.exec("UPDATE credit_reservations SET status='settled',updated_at=? WHERE run_id=? AND status='held'", now, runId);
-          if ((actual as number) > 0) {
-            const balanceAfter = this.currentBalance() - (actual as number);
-            sql.exec("INSERT INTO credit_ledger (id,delta_credits,reason,model,balance_after,idempotency_key) VALUES (?,?,?,NULL,?,?)", crypto.randomUUID(), -(actual as number), "agent_run", balanceAfter, `run:${runId}`);
-          }
-          sql.exec("INSERT INTO credit_run_settlements (run_id,actual_credits,settled_at) VALUES (?,?,?)", runId, actual, now);
-          return { ok: true, deduplicated: false, actual_credits: actual, balance_credits: this.currentBalance() };
-        });
-        if (!result.ok) return Response.json({ error_code: "insufficient_credits" }, { status: 402 });
-        return Response.json(result);
-      }
-      return Response.json({ error_code: "reservation_action_invalid" }, { status: 400 });
-    }
-
-    // GET /plan-tier — Phase 4 (money): the end user's own personal-plan tier. No auth inside the
-    // DO itself (matches this class's own established convention — every route here trusts its
-    // caller, and it's the wrapping workers/spaces/src/index.ts route that gates who can reach
-    // it). Defaults to 'free' when the singleton row hasn't been written yet (a brand-new DO).
-    if (method === "GET" && url.pathname === "/plan-tier") {
-      const now = new Date().toISOString();
-      const entitlement = this.ctx.storage.sql
-        .exec(
-          `SELECT plan_tier, expires_at FROM personal_plan_entitlements
-           WHERE status = 'active' AND expires_at > ? ORDER BY expires_at DESC LIMIT 1`,
-          now
-        )
-        .toArray() as unknown as { plan_tier: string; expires_at: string }[];
-      if (entitlement[0]) {
-        return Response.json({ plan_tier: entitlement[0].plan_tier, expires_at: entitlement[0].expires_at });
-      }
-      const hasPaidHistory = this.ctx.storage.sql
-        .exec("SELECT 1 AS found FROM personal_plan_entitlements LIMIT 1")
-        .toArray().length > 0;
-      const row = this.ctx.storage.sql
-        .exec("SELECT plan_tier FROM plan_state WHERE id = 1")
-        .toArray() as unknown as { plan_tier: string }[];
-      // Legacy direct grants predate expiry records and remain in effect until a paid entitlement
-      // is first recorded. After that point, the entitlement ledger is authoritative.
-      return Response.json({ plan_tier: hasPaidHistory ? "free" : row[0]?.plan_tier ?? "free" });
-    }
-
-    // POST /plan-tier/purchase — webhook-driven, idempotent paid period grant. A renewal extends
-    // from the latest unexpired entitlement; a late renewal starts at now. Multiple purchases
-    // therefore overlap safely and refunding one cannot revoke a later paid period.
-    if (method === "POST" && url.pathname === "/plan-tier/purchase") {
-      const body = await request.json<{
-        plan_tier: string;
-        interval: string;
-        provider: string;
-        provider_event_id: string;
-        amount_cents: number;
-        subscription_id?: string;
-      }>().catch(() => null);
-      if (!body || (body.plan_tier !== "plus" && body.plan_tier !== "free") ||
-          (body.interval !== "month" && body.interval !== "year") ||
-          !["lemon_squeezy", "whop"].includes(body.provider) ||
-          !validOptionalText(body.provider_event_id, 200) || !body.provider_event_id ||
-          !validOptionalText(body.subscription_id, 200) || !Number.isSafeInteger(body.amount_cents) || body.amount_cents <= 0) {
-        return Response.json({ error: "invalid personal-plan purchase" }, { status: 400 });
-      }
-      const existing = this.ctx.storage.sql
-        .exec("SELECT plan_tier, expires_at FROM personal_plan_entitlements WHERE provider_event_id = ?", body.provider_event_id)
-        .toArray() as unknown as { plan_tier: string; expires_at: string }[];
-      if (existing[0]) {
-        return Response.json({ plan_tier: existing[0].plan_tier, expires_at: existing[0].expires_at, deduplicated: true });
-      }
-      const now = new Date();
-      const nowIso = now.toISOString();
-      const prior = this.ctx.storage.sql
-        .exec("SELECT MAX(expires_at) AS expires_at FROM personal_plan_entitlements WHERE status = 'active' AND expires_at > ?", nowIso)
-        .toArray() as unknown as { expires_at: string | null }[];
-      const priorExpiry = prior[0]?.expires_at ? new Date(prior[0].expires_at) : null;
-      const startsAt = priorExpiry && priorExpiry > now ? priorExpiry : now;
-      const expiresAt = addCalendarInterval(startsAt, body.interval as "month" | "year").toISOString();
-      this.ctx.storage.sql.exec(
-        `INSERT INTO personal_plan_entitlements
-          (provider_event_id, provider, subscription_id, plan_tier, amount_cents, starts_at, expires_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
-        body.provider_event_id, body.provider, body.subscription_id ?? null, body.plan_tier, body.amount_cents, startsAt.toISOString(), expiresAt
-      );
-      // A prior manually set tier must not become an indefinite fallback after this paid period ends.
-      this.ctx.storage.sql.exec(
-        `INSERT INTO plan_state (id, plan_tier, updated_at) VALUES (1, 'free', datetime('now'))
-         ON CONFLICT(id) DO UPDATE SET plan_tier = 'free', updated_at = datetime('now')`
-      );
-      return Response.json({ plan_tier: body.plan_tier, expires_at: expiresAt, deduplicated: false });
-    }
-
-    // Refunds and provider expiry target only matching records. Cancellation and failed renewal
-    // deliberately preserve paid access through expires_at; the provider's period end remains the
-    // access boundary. A duplicate/unknown event is a successful no-op.
-    if (method === "POST" && url.pathname === "/plan-tier/refund") {
-      const body = await request.json<{ provider_event_id: string; amount_cents: number }>().catch(() => null);
-      if (!body || !validOptionalText(body.provider_event_id, 200) || !body.provider_event_id || !Number.isSafeInteger(body.amount_cents) || body.amount_cents <= 0) {
-        return Response.json({ error: "provider_event_id and positive amount_cents are required" }, { status: 400 });
-      }
-      const purchase = this.ctx.storage.sql.exec(
-        "SELECT amount_cents FROM personal_plan_entitlements WHERE provider_event_id = ? AND status = 'active'",
-        body.provider_event_id
-      ).toArray() as unknown as { amount_cents: number }[];
-      if (!purchase[0]) return Response.json({ revoked: false });
-      // A partial refund does not remove the full paid entitlement. Full/over refunds are scoped
-      // to this one purchase; later renewals remain valid.
-      if (body.amount_cents < purchase[0].amount_cents) return Response.json({ revoked: false, partial: true });
-      const result = this.ctx.storage.sql.exec(
-        "UPDATE personal_plan_entitlements SET status = 'refunded' WHERE provider_event_id = ? AND status = 'active'",
-        body.provider_event_id
-      );
-      return Response.json({ revoked: result.rowsWritten > 0 });
-    }
-
-    if (method === "POST" && url.pathname === "/plan-tier/expire") {
-      const body = await request.json<{ subscription_id: string; expires_before?: string }>().catch(() => null);
-      if (!body || !validOptionalText(body.subscription_id, 200) || !body.subscription_id ||
-          !validOptionalText(body.expires_before, 40) || (body.expires_before && !Number.isFinite(Date.parse(body.expires_before)))) {
-        return Response.json({ error: "subscription_id and a valid optional expires_before are required" }, { status: 400 });
-      }
-      const result = this.ctx.storage.sql.exec(
-        `UPDATE personal_plan_entitlements SET status = 'expired'
-         WHERE subscription_id = ? AND status = 'active' AND expires_at <= ?`,
-        body.subscription_id, body.expires_before ?? new Date().toISOString()
-      );
-      return Response.json({ expired: result.rowsWritten });
-    }
-
-    // POST /plan-tier/set — internal-only settor. The ONLY caller that should ever reach this is
-    // the spaces worker's HMAC-gated /internal/personal-plan/grant route (after a real checkout,
-    // mirroring /credits/grant's own webhook-driven precedent) — there is deliberately no
-    // end-user-reachable "set my own tier" route anywhere, since that would let anyone grant
-    // themselves the paid tier for free.
-    if (method === "POST" && url.pathname === "/plan-tier/set") {
-      const body = await request.json<{ plan_tier: string }>();
-      if (body.plan_tier !== "free" && body.plan_tier !== "plus") {
-        return Response.json({ error: "plan_tier must be 'free' or 'plus'" }, { status: 400 });
-      }
-      this.ctx.storage.sql.exec(
-        `INSERT INTO plan_state (id, plan_tier, updated_at) VALUES (1, ?, datetime('now'))
-         ON CONFLICT(id) DO UPDATE SET plan_tier = excluded.plan_tier, updated_at = excluded.updated_at`,
-        body.plan_tier
-      );
-      return Response.json({ plan_tier: body.plan_tier });
-    }
-
-    // POST /credits/grant — top-up / initial allocation (positive delta). `idempotency_key` is
-    // optional (internal callers with no retry risk can omit it) but REQUIRED for anything driven
-    // by a webhook that Lemon Squeezy may redeliver (Phase E credit-pack purchases) — a repeat
-    // call with the same key is a no-op, returning the balance as of the original grant.
-    if (method === "POST" && url.pathname === "/credits/grant") {
-      const body = await request.json<{ credits: number; reason?: string; idempotency_key?: string }>().catch(() => null);
-      if (!body || !validLedgerAmount(body.credits) || !validOptionalText(body.reason, 128) || !validOptionalText(body.idempotency_key, 200)) {
-        return Response.json({ error: "credits must be a positive safe integer and metadata must be bounded" }, { status: 400 });
-      }
-      if (body.idempotency_key) {
-        const existing = this.ctx.storage.sql
-          .exec("SELECT balance_after FROM credit_ledger WHERE idempotency_key = ?", body.idempotency_key)
-          .toArray() as unknown as { balance_after: number }[];
-        if (existing[0]) {
-          return Response.json({ balance_credits: existing[0].balance_after, deduplicated: true }, { status: 200 });
-        }
-      }
-      const balanceAfter = this.currentBalance() + Math.floor(body.credits);
-      if (!Number.isSafeInteger(balanceAfter)) return Response.json({ error_code: "credit_balance_limit_reached" }, { status: 409 });
-      this.ctx.storage.sql.exec(
-        `INSERT INTO credit_ledger (id, delta_credits, reason, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?)`,
-        crypto.randomUUID(), Math.floor(body.credits), body.reason ?? "grant", balanceAfter, body.idempotency_key ?? null
-      );
-      return Response.json({ balance_credits: balanceAfter }, { status: 201 });
-    }
-
-    // POST /credits/deduct — debit already-converted credits (caller ran tokensToCredits). Fails
-    // CLOSED: an over-draw is rejected, not silently allowed to go negative.
-    // S0.6: `idempotency_key` is optional (mirrors /credits/grant above) but should be supplied
-    // by any caller that might retry the same debit — NaelaoAgentDO.debitEndUserCredits passes
-    // its runId, so a retried post-run debit (e.g. after a transient network error on the first
-    // attempt got a response back late) is a no-op reusing the original ledger entry, not a
-    // second charge for the same run. Shares the one credit_ledger.idempotency_key unique index
-    // with /credits/grant — callers must use a distinctly-namespaced key (grant keys are already
-    // prefixed e.g. "credit_pack:...."; deduct keys are prefixed "run:") so the two can never
-    // collide with each other.
-    if (method === "POST" && url.pathname === "/credits/deduct") {
-      const body = await request.json<{ credits: number; reason?: string; model?: string; idempotency_key?: string }>().catch(() => null);
-      if (!body || !validLedgerAmount(body.credits) || !validOptionalText(body.reason, 128) || !validOptionalText(body.model, 128) || !validOptionalText(body.idempotency_key, 200)) {
-        return Response.json({ error: "credits must be a positive safe integer and metadata must be bounded" }, { status: 400 });
-      }
-      if (body.idempotency_key) {
-        const existing = this.ctx.storage.sql
-          .exec("SELECT balance_after FROM credit_ledger WHERE idempotency_key = ?", body.idempotency_key)
-          .toArray() as unknown as { balance_after: number }[];
-        if (existing[0]) {
-          return Response.json({ balance_credits: existing[0].balance_after, deduplicated: true }, { status: 200 });
-        }
-      }
-      const debit = Math.ceil(body.credits);
-      const balance = this.currentBalance();
-      const held = this.ctx.storage.sql.exec("SELECT COALESCE(SUM(credits),0) AS credits FROM credit_reservations WHERE status='held' AND expires_at>?", new Date().toISOString()).toArray() as Array<{ credits: number }>;
-      if (debit > balance - (held[0]?.credits ?? 0)) {
-        return Response.json({ error: "insufficient_credits", balance_credits: balance, reserved_credits: held[0]?.credits ?? 0 }, { status: 402 });
-      }
-      const balanceAfter = balance - debit;
-      if (!Number.isSafeInteger(balanceAfter)) return Response.json({ error_code: "credit_balance_limit_reached" }, { status: 409 });
-      // F-47/F-50: the SELECT-then-INSERT above is already atomic within a single DO instance
-      // (DO SQLite .exec is synchronous and there is no `await` between the dedup SELECT and this
-      // INSERT, and a DO processes one request to completion before the next), so the audited
-      // TOCTOU can't actually interleave here. As defense-in-depth against the unique-index path
-      // (and any future refactor that introduces an await), catch a duplicate-key violation and
-      // return the already-recorded balance instead of surfacing an error / double-debiting.
-      try {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO credit_ledger (id, delta_credits, reason, model, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?, ?)`,
-          crypto.randomUUID(), -debit, body.reason ?? "agent_run", body.model ?? null, balanceAfter, body.idempotency_key ?? null
-        );
-      } catch (err) {
-        if (body.idempotency_key) {
-          const raced = this.ctx.storage.sql
-            .exec("SELECT balance_after FROM credit_ledger WHERE idempotency_key = ?", body.idempotency_key)
-            .toArray() as unknown as { balance_after: number }[];
-          if (raced[0]) return Response.json({ balance_credits: raced[0].balance_after, deduplicated: true }, { status: 200 });
-        }
-        throw err;
-      }
-      return Response.json({ balance_credits: balanceAfter }, { status: 201 });
-    }
-
-    // POST /credits/clawback — F-29: reverse a refunded credit-pack grant. Unlike /credits/deduct
-    // this does NOT fail closed on insufficient balance: if the buyer already spent some of the
-    // refunded credits, the balance goes negative (they were refunded the money, so they genuinely
-    // owe the value) rather than leaving free credits behind. Idempotent on idempotency_key.
-    if (method === "POST" && url.pathname === "/credits/clawback") {
-      const body = await request.json<{ credits: number; reason?: string; idempotency_key: string }>().catch(() => null);
-      if (!body || !validLedgerAmount(body.credits) || !validOptionalText(body.reason, 128) || !validOptionalText(body.idempotency_key, 200)) {
-        return Response.json({ error: "credits must be a positive safe integer and idempotency_key is required" }, { status: 400 });
-      }
-      const existing = this.ctx.storage.sql
-        .exec("SELECT balance_after FROM credit_ledger WHERE idempotency_key = ?", body.idempotency_key)
-        .toArray() as unknown as { balance_after: number }[];
-      if (existing[0]) {
-        return Response.json({ balance_credits: existing[0].balance_after, deduplicated: true }, { status: 200 });
-      }
-      const balanceAfter = this.currentBalance() - Math.ceil(body.credits);
-      if (!Number.isSafeInteger(balanceAfter)) return Response.json({ error_code: "credit_balance_limit_reached" }, { status: 409 });
-      this.ctx.storage.sql.exec(
-        `INSERT INTO credit_ledger (id, delta_credits, reason, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?)`,
-        crypto.randomUUID(), -Math.ceil(body.credits), body.reason ?? "refund_clawback", balanceAfter, body.idempotency_key
-      );
-      return Response.json({ balance_credits: balanceAfter }, { status: 201 });
-    }
+    // Stored-value balances are retired. Usage is governed by Space subscription quotas.
 
     // ── Conversation refs (metadata only — the builder's gated conversation access reads these) ──
     if (method === "POST" && url.pathname === "/conversation-refs") {
@@ -693,9 +374,6 @@ export class ProductUserDO extends DurableObject {
       const sessions = this.ctx.storage.sql
         .exec("SELECT session_id, auth_provider, created_at, expires_at, revoked_at FROM session_state")
         .toArray();
-      const ledger = this.ctx.storage.sql
-        .exec("SELECT delta_credits, reason, model, balance_after, created_at FROM credit_ledger ORDER BY created_at ASC")
-        .toArray() as unknown as LedgerRow[];
       const conversations = this.ctx.storage.sql
         .exec("SELECT thread_id, space_id, title, created_at FROM conversation_refs ORDER BY created_at ASC")
         .toArray();
@@ -709,8 +387,6 @@ export class ProductUserDO extends DurableObject {
         exported_at: new Date().toISOString(),
         // Note: sessions exclude token_hash — never export credential material.
         sessions,
-        credit_ledger: ledger,
-        credit_balance: this.currentBalance(),
         conversations,
         preferences,
       });
@@ -718,10 +394,8 @@ export class ProductUserDO extends DurableObject {
 
     // ── GDPR Art. 17 — right to erasure. The direct inverse of /export above: wipes exactly the
     // personal/behavioral data /export reports (sessions, conversation links, preferences).
-    // credit_ledger is deliberately KEPT — it holds no PII (just delta_credits/reason/model/
-    // balance_after/timestamps), and a financial/audit trail has its own legitimate-interest
-    // retention basis distinct from "personal data" under Art. 17(3). This DO has no knowledge of
-    // the caller's real email/display_name — those live in product_end_users (D1), anonymized by
+    // This DO has no knowledge of the caller's real email/display_name — those live in
+    // product_end_users (D1) and are anonymized by the caller.
     // the spaces-worker route that calls this. Idempotent: erasing twice is a no-op the second
     // time, never an error.
     if (method === "DELETE" && url.pathname === "/erase") {
@@ -742,4 +416,4 @@ export class ProductUserDO extends DurableObject {
 }
 
 // Type-only re-exports for consumers that want the row shapes without importing cloudflare:workers.
-export type { SessionRow, LedgerRow };
+export type { SessionRow };

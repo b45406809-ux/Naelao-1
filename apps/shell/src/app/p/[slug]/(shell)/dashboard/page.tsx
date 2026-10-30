@@ -3,9 +3,9 @@
 
 // The Dashboard — a merged BUSINESS dashboard + ASSISTANT dashboard for whichever space is
 // currently active (formerly two separate surfaces: this page used to be assistant-only, and a
-// business's key numbers only lived buried in its own /spaces/:id management page). Renamed from
+// space's key numbers only lived buried in its own /spaces/:id management page). Renamed from
 // "Assistant" and moved to the top of the sidebar, above Discover, since it's the first thing
-// worth seeing when you open a business.
+// worth seeing when you open a space.
 //
 // Built on the real design system (Card/CardLabel/CardValue, .section-label, .settings-block/
 // .settings-row) rather than one-off inline styling, so it reads consistently with the rest of
@@ -13,7 +13,7 @@
 //
 // Every panel is a read-only consumer of an already-built endpoint; nothing here fabricates a
 // number it cannot actually read. Deep management (invites, payout destinations, connecting
-// apps, adding products) stays on the business's own /spaces/:id page — this is an overview with
+// apps, adding products) stays on the space's own /spaces/:id page — this is an overview with
 // a link there, not a re-implementation of it.
 //
 // Authoring — writing a skill, editing the system prompt — is deliberately NOT here. Those are
@@ -39,9 +39,9 @@ import {
   listSessions,
   listAgentDefinitions,
   getMe,
-  listMyBusinesses,
+  listMySpaces,
   getShellManifest,
-  listBusinessMembers,
+  listSpaceMembers,
   getConnectorStatus,
   listApprovals,
   getSpaceAnalytics,
@@ -54,7 +54,7 @@ import {
   type SessionSummary,
   type AgentDefinitionSummary,
   type ProductUserMe,
-  type Business,
+  type SpaceSummary,
   type ConnectorInfo,
   type PendingApproval,
   type SpaceAnalytics,
@@ -144,7 +144,7 @@ function SectionHeading({ children, action }: { children: React.ReactNode; actio
 }
 
 // A boxed list panel — the .settings-block/.settings-row pattern used everywhere else in the
-// shell (business detail, settings), with a small header row added so it can carry a title +
+// shell (space detail, settings), with a small header row added so it can carry a title +
 // count the way the rest of this dashboard's tiles do.
 function Panel({
   title,
@@ -190,7 +190,7 @@ const panelGrid: React.CSSProperties = {
 export default function DashboardPage() {
   const product = useProduct();
   const creds = useSessionCredentials();
-  const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
+  const { activeSpaceId, activeSpaceName, isChildSpace } = useActiveSpace();
 
   // Assistant dashboard state (unchanged from the prior standalone page).
   const [policy, setPolicy] = React.useState<AssistantPolicy | null>(null);
@@ -202,9 +202,9 @@ export default function DashboardPage() {
   const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
   const [agents, setAgents] = React.useState<AgentDefinitionSummary[]>([]);
 
-  // Business dashboard state — only fetched/rendered when the active space is a real business.
+  // Space dashboard state — only fetched/rendered when the active space is a real space.
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
-  const [business, setBusiness] = React.useState<Business | null>(null);
+  const [space, setSpace] = React.useState<SpaceSummary | null>(null);
   const [members, setMembers] = React.useState<{ end_user_id: string; role: string }[]>([]);
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [approvals, setApprovals] = React.useState<PendingApproval[]>([]);
@@ -242,13 +242,11 @@ export default function DashboardPage() {
       settle(listAssistantFiles(activeSpaceId, creds), setFiles),
       settle(listSessions(activeSpaceId, creds), setSessions),
       settle(listAgentDefinitions(activeSpaceId, creds), setAgents),
-      // The PRODUCT root, never the active business. A ProductUserDO instance is one per
-      // (productId × endUserId), so asking for "me" scoped to a business 404s — which is exactly
-      // why "Your credits" sat at "…" forever inside a business. Credits belong to the person at
-      // product level; they are not per-business.
+      // The PRODUCT root, never the active space. A ProductUserDO instance is one per
+      // (productId × endUserId), so asking for "me" scoped to a space 404s — which is exactly
       settle(getMe(product.space_id, creds), setMe),
       settle(listApprovals(activeSpaceId, creds), setApprovals),
-      // Always fetched (not just for a business): this is where the configured model lives for
+      // Always fetched (not just for a space): this is where the configured model lives for
       // any space, and it's what previously silently defaulted to an unreachable Claude id with
       // no visible control anywhere (item 79).
       getShellManifest(activeSpaceId, creds)
@@ -260,17 +258,17 @@ export default function DashboardPage() {
         .catch(() => {}),
     ];
 
-    if (isBusinessSpace) {
+    if (isChildSpace) {
       calls.push(
         settle(
-          listMyBusinesses(product.space_id, creds).then((list) => list.find((b) => b.id === activeSpaceId) ?? null),
-          setBusiness
+          listMySpaces(product.space_id, creds).then((list) => list.find((b) => b.id === activeSpaceId) ?? null),
+          setSpace
         ),
-        settle(listBusinessMembers(activeSpaceId, creds), setMembers),
+        settle(listSpaceMembers(activeSpaceId, creds), setMembers),
         settle(getConnectorStatus(activeSpaceId, creds), setConnectors)
       );
     } else {
-      setBusiness(null);
+      setSpace(null);
       setMembers([]);
       setConnectors([]);
     }
@@ -279,7 +277,7 @@ export default function DashboardPage() {
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [creds, activeSpaceId, isBusinessSpace, product.space_id]);
+  }, [creds, activeSpaceId, isChildSpace, product.space_id]);
 
   const [analyticsRetryTick, setAnalyticsRetryTick] = React.useState(0);
   React.useEffect(() => {
@@ -295,11 +293,11 @@ export default function DashboardPage() {
   }, [creds, activeSpaceId, analyticsWindow, analyticsRetryTick]);
 
   // item 79: the guided/autonomous toggle and model picker are real writes, not display-only —
-  // gated to the same floor requireBusinessMembership enforces server-side. A plain member (or a
-  // non-business/team-mode space, where an end user is never more than "member") sees the same
+  // gated to the same floor requireSpaceMembership enforces server-side. A plain member (or a
+  // non-space/team-mode space, where an end user is never more than "member") sees the same
   // panel read-only. Ranked, not exact-match — see lib/roles.ts for why that distinction is what
   // this pass was reported for.
-  const canManageAssistant = canManageSpaceSettings(isBusinessSpace, business?.role);
+  const canManageAssistant = canManageSpaceSettings(isChildSpace, space?.role);
 
   async function setAutonomy(autonomous: boolean) {
     if (!activeSpaceId || !creds) return;
@@ -383,7 +381,7 @@ export default function DashboardPage() {
   const modeLabel = autonomyPresentation.label;
   const isAutonomous = policy?.approval_mode === "yolo";
 
-  const heading = isBusinessSpace ? (business?.name ?? activeSpaceName ?? "Business") : (activeSpaceName ?? product.product_name);
+  const heading = isChildSpace ? (space?.name ?? activeSpaceName ?? "Space") : (activeSpaceName ?? product.product_name);
   const connectedApps = connectors.filter((c) => c.connected).length;
   const availableApps = connectors.filter((c) => c.status === "available").length;
 
@@ -393,20 +391,20 @@ export default function DashboardPage() {
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div className="page-title" style={{ marginBottom: 0 }}>{heading}</div>
-            {isBusinessSpace && business && (
-              <Badge color={business.space_status === "active" ? "green" : "amber"}>{business.space_status}</Badge>
+            {isChildSpace && space && (
+              <Badge color={space.space_status === "active" ? "green" : "amber"}>{space.space_status}</Badge>
             )}
           </div>
           <div className="page-subtitle">
-            {isBusinessSpace
-              ? `Your role: ${business?.role ?? "…"} — the assistant is always on and works across every project here.`
+            {isChildSpace
+              ? `Your role: ${space?.role ?? "…"} — the assistant is always on and works across every project here.`
               : "Always on. Works across every project in this space, and can be reached over your connected channels."}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-          {isBusinessSpace && (
+          {isChildSpace && (
             <Link href={`/p/${product.slug}/spaces/${activeSpaceId}`} className="btn btn-secondary" style={{ textDecoration: "none" }}>
-              Manage business
+              Manage space
             </Link>
           )}
           <Link href={`/p/${product.slug}/new`} className="btn btn-primary" style={{ textDecoration: "none" }}>
@@ -419,12 +417,11 @@ export default function DashboardPage() {
 
       {/* KPI row — the numbers worth seeing at a glance. */}
       <div style={{ ...panelGrid, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", marginBottom: 8 }}>
-        <Stat label="Your credits" value={me ? String(me.credits_balance) : "…"} />
 
-        {isBusinessSpace && (
+        {isChildSpace && (
           <Stat label="Members" value={String(members.length)} href={`/p/${product.slug}/spaces/${activeSpaceId}`} />
         )}
-        {isBusinessSpace && (
+        {isChildSpace && (
           <Stat
             label="Connected apps"
             value={String(connectedApps)}
@@ -546,7 +543,7 @@ export default function DashboardPage() {
             <div className="card" style={{ cursor: "default" }}>
               <div className="card-label">Projects</div>
               <div className="card-value">{analytics.structure.projects}</div>
-              <div className="card-sub">Workspaces in this business</div>
+              <div className="card-sub">Workspaces in this space</div>
             </div>
             <div className="card" style={{ cursor: "default" }}>
               <div className="card-label">Threads</div>
@@ -624,14 +621,14 @@ export default function DashboardPage() {
         </>
       )}
 
-      {isBusinessSpace && (
+      {isChildSpace && (
         <>
           <SectionHeading action={<Link href={`/p/${product.slug}/spaces/${activeSpaceId}`} style={{ fontSize: 12, color: "var(--accent)" }}>Manage →</Link>}>
-            Business
+            Space
           </SectionHeading>
           <div style={panelGrid}>
             {/* Count the apps actually CONNECTED, which is what the title claims. This used to be
-                connectors.length — the whole catalogue, coming-soon entries included — so a business
+                connectors.length — the whole catalogue, coming-soon entries included — so a space
                 with nothing connected read "Connected apps 33", and it disagreed with the KPI tile
                 above it AND with its own body, which only lists the available ones. */}
             <Panel title="Connected apps" count={connectedApps}>
@@ -762,8 +759,8 @@ export default function DashboardPage() {
           )}
           {!canManageAssistant && (
             <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--text3)" }}>
-              {isBusinessSpace
-                ? "Only the owner or an admin of this business can change autonomy or model."
+              {isChildSpace
+                ? "Only the owner or an admin of this space can change autonomy or model."
                 : "Changed by the space owner in the builder dashboard."}
             </div>
           )}

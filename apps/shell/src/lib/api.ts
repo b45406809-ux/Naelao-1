@@ -156,34 +156,7 @@ export interface ShellManifest {
    *  user first opens the Effort panel; a real, deliberately deferred refinement. */
   effort: string | null;
   sub_space_display: unknown;
-  allow_public_signup: boolean;
   auth_provider: string;
-  /** Phase C: "team" never shows a Create Business entry point; "tenant"/"hybrid" do. */
-  membership_model: "team" | "tenant" | "hybrid";
-  allowed_child_space_types: string[];
-  /** Phase D: which business templates this product actually offers. Empty = every template the
-   *  SpaceType ships (not yet configured by the builder) — the shell falls back to the full list. */
-  business_templates: string[];
-  /** Phase F: the real, coming_soon-aware template catalog — render the create-business dialog
-   *  from this instead of a hardcoded copy of LAUNCHPAD_TEMPLATES. free_tier_eligible was already
-   *  sent by the backend (workers/spaces/src/template-catalog.ts) but missing from this type, so
-   *  the dialog had no way to warn a free-plan user before they hit the server-side
-   *  plan_upgrade_required rejection — see spaces/page.tsx's "Requires upgrade" badge. */
-  template_catalog: Array<{
-    id: string;
-    name: string;
-    description?: string;
-    template_mode?: "ave" | "cowork";
-    vertical?: string;
-    coming_soon: boolean;
-    free_tier_eligible: boolean;
-    presentation_profile?: "guided" | "balanced" | "advanced";
-  }>;
-  /** Browse-only: the project presets a business is configured with, and the core agents that
-   *  run it. Static product data — an agent's system_prompt is never included. Absent on an older
-   *  backend, so both are optional and default to empty. */
-  project_template_catalog?: Array<{ id: string; name: string; description: string; kind: string }>;
-  agent_catalog?: Array<{ id: string; name: string; description: string }>;
   /** Legal & support config — builder-defined; drives the cookie consent banner and the
    *  support contact link on error screens. Absent fields: shell falls back to Naelao defaults. */
   legal: {
@@ -231,9 +204,6 @@ export interface ProductUserMe {
   joined_at: string;
   last_seen_at: string | null;
   suspended: boolean;
-  credits_balance: number;
-  /** Security audit follow-up: a signup credit grant is now deferred until this is true —
-   *  the "Verify your email" banner keys off it, alongside a 0 balance. */
   email_verified: boolean;
   preferred_language: string | null;
 }
@@ -846,40 +816,37 @@ export async function listApprovals(spaceId: string, session: SessionCredentials
   return (res.approvals ?? []).filter((a) => a.status === "pending");
 }
 
-/** An approval tagged with which business it belongs to — see listAllApprovals's own header for
+/** An approval tagged with its Space — see listAllApprovals's own header for
  *  why this exists. */
-export interface PendingApprovalWithBusiness extends PendingApproval {
-  business_id: string;
-  business_name: string;
+export interface PendingApprovalWithSpace extends PendingApproval {
+  space_id: string;
+  space_name: string;
 }
 
-/** Live-reported bug: approvals are per-space (HITLApprovalDO is addressed `hitl:{spaceId}`,
- *  one instance per business), but the sidebar badge and the Approvals page only ever checked
- *  `activeSpaceId` — whichever business the switcher happened to be pointed at. A gated action
- *  parked under Business A was completely invisible while looking at Business B: no badge, no
- *  entry in the Approvals list, nothing — reported live as "the agent said it's waiting for
- *  approval but there's nothing anywhere to approve." Fixed by checking every business the
- *  person belongs to, not just the one currently in view. A handful of businesses per end user
- *  is the normal case (unlike the platform-wide enumeration this codebase deliberately avoids
- *  elsewhere), so a small parallel fan-out here is the right trade, not a scale risk.
+/** Approvals belong to a single Space (HITLApprovalDO is addressed `hitl:{spaceId}`), but the
+ *  sidebar badge and Approvals page should cover every Space the user can access, not just the
+ *  active one. Otherwise a gated action parked in one Space would be invisible while using
+ *  another: no badge and no entry in the approvals list.
  *
- *  `productSpaceId` is included too (tagged with `business_name: "Assistant"`) since a "team"-mode
- *  product (no businesses concept) can itself have pending approvals at the root — and even on a
- *  business-first product, the assistant can still open one there before any business exists. */
+ *  A small parallel fan-out is appropriate here because the user can only create a plan-limited
+ *  number of Spaces. The product root is included too, so approvals there remain visible. */
+/*
+ *  Legacy note: this used to enumerate businesses. The Space list is now generic.
+ */
 export async function listAllApprovals(
   productSpaceId: string,
   productName: string,
-  businesses: Business[],
+  spaces: SpaceSummary[],
   session: SessionCredentials
-): Promise<PendingApprovalWithBusiness[]> {
+): Promise<PendingApprovalWithSpace[]> {
   const targets = [
     { id: productSpaceId, name: productName },
-    ...businesses.map((b) => ({ id: b.id, name: b.name })),
+    ...spaces.map((space) => ({ id: space.id, name: space.name })),
   ];
   const results = await Promise.allSettled(
     targets.map(async (t) => {
       const items = await listApprovals(t.id, session);
-      return items.map((a) => ({ ...a, business_id: t.id, business_name: t.name }));
+      return items.map((a) => ({ ...a, space_id: t.id, space_name: t.name }));
     })
   );
   return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
@@ -1580,7 +1547,7 @@ export async function listArchetypes(spaceId: string, session: SessionCredential
 
 /** A single project agent's own approval-policy override — falls back to the space-wide
  *  assistant_policy row (getAssistantPolicy) when the agent has no override of its own. GET is
- *  member-level, PATCH is business-admin-only (requireBusinessMembership on the spaces worker). */
+ *  member-level, PATCH is business-admin-only (requireSpaceMembership on the spaces worker). */
 export interface AgentPolicy {
   approval_mode: "always_ask" | "yolo";
   auto_approved_actions: string[];
@@ -1625,7 +1592,7 @@ export async function updateAttachmentOcrSettings(spaceId: string, session: Sess
 // item 79: a business admin can now change their OWN business's guided/autonomous policy — this
 // was previously a builder-dashboard-only write (the route 403'd every product_end_user caller
 // outright). Not exposed for a plain member — the caller composing the request enforces that in
-// the UI, and requireBusinessMembership enforces it for real on the backend either way.
+// the UI, and requireSpaceMembership enforces it for real on the backend either way.
 export async function updateAssistantPolicy(
   spaceId: string,
   session: SessionCredentials,
@@ -2293,16 +2260,10 @@ export interface SpaceSummary {
   membership_status: string;
   space_status: string;
   joined_at: string;
-  /** Where this business is in its setup checklist, read from the space's own config. `null` for
-   *  a business created without a template — there is no checklist, so nothing is outstanding. */
-  onboarding_status?: "pending" | "awaiting_setup" | "complete" | null;
   template_id?: string | null;
   /** Certified template awaiting explicit owner/admin activation after provisioning. */
   pending_blueprint_id?: string | null;
 }
-
-/** @deprecated Transitional type alias for callers not yet migrated from the old route naming. */
-export type Business = SpaceSummary;
 
 /** List Spaces owned or joined by the signed-in user inside this product. */
 export async function listMySpaces(productSpaceId: string, session: SessionCredentials): Promise<SpaceSummary[]> {
@@ -2310,15 +2271,12 @@ export async function listMySpaces(productSpaceId: string, session: SessionCrede
   return res.data;
 }
 
-/** @deprecated Use listMySpaces. */
-export const listMyBusinesses = listMySpaces;
-
 /** Create a user-owned Space in the current product. A selected template is optional. */
 export async function createSpace(
   productSpaceId: string,
   session: SessionCredentials,
-  input: { name: string; template_listing_id?: string }
-): Promise<{ id: string; name: string; status: string; template_id?: string | null }> {
+  input: { name: string; template_listing_id?: string; blueprint_id?: string }
+): Promise<{ id: string; name: string; status: string; pending_blueprint_id?: string }> {
   return apiFetch(`/v1/spaces/${productSpaceId}/spaces`, { method: "POST", body: JSON.stringify(input), session });
 }
 
@@ -2345,8 +2303,8 @@ export async function listSpaceTemplates(session: SessionCredentials): Promise<S
   return result.data ?? [];
 }
 
-export async function forkSpaceTemplate(listingId: string, session: SessionCredentials): Promise<{ space_type_id: string }> {
-  return apiFetch(`/v1/marketplace/${encodeURIComponent(listingId)}/fork`, { method: "POST", session });
+export async function forkSpaceTemplate(rootSpaceId: string, listingId: string, session: SessionCredentials): Promise<{ space_type_id: string }> {
+  return apiFetch(`/v1/spaces/${encodeURIComponent(rootSpaceId)}/template-listings/${encodeURIComponent(listingId)}/fork`, { method: "POST", session });
 }
 
 export type SpaceTemplateFilesystemGrant = { path: string; access: "READ" | "READ_WRITE" };
@@ -2402,36 +2360,16 @@ export async function getSpaceAnalytics(spaceId: string, session: SessionCredent
   return apiFetch(`/v1/spaces/${spaceId}/agent-analytics?window=${window}`, { session });
 }
 
-export interface BusinessMember {
+export interface SpaceMember {
   end_user_id: string;
   role: "member" | "admin" | "owner";
   status: string;
   joined_at: string;
 }
 
-export async function listBusinessMembers(businessSpaceId: string, session: SessionCredentials): Promise<BusinessMember[]> {
-  const res = await apiFetch<{ data: BusinessMember[]; count: number }>(`/v1/spaces/${businessSpaceId}/business-members`, { session });
+export async function listSpaceMembers(spaceId: string, session: SessionCredentials): Promise<SpaceMember[]> {
+  const res = await apiFetch<{ data: SpaceMember[]; count: number }>(`/v1/spaces/${spaceId}/memberships`, { session });
   return res.data;
-}
-
-export async function removeBusinessMember(businessSpaceId: string, endUserId: string, session: SessionCredentials): Promise<void> {
-  await apiFetch(`/v1/spaces/${businessSpaceId}/business-members/${encodeURIComponent(endUserId)}`, { method: "DELETE", session });
-}
-
-export async function inviteToBusiness(
-  businessSpaceId: string,
-  session: SessionCredentials,
-  opts: { email: string; role?: "member" | "admin" }
-): Promise<{ id: string; token: string; expires_at: string }> {
-  return apiFetch(`/v1/spaces/${businessSpaceId}/invites`, { method: "POST", body: JSON.stringify(opts), session });
-}
-
-export async function acceptBusinessInvite(
-  businessSpaceId: string,
-  token: string,
-  session: SessionCredentials
-): Promise<{ business_space_id: string; role: string }> {
-  return apiFetch(`/v1/spaces/${businessSpaceId}/invites/${encodeURIComponent(token)}/accept`, { method: "POST", session });
 }
 
 // Legacy business-plan and credit-pack checkout APIs were removed. Platform subscriptions
@@ -2458,7 +2396,7 @@ export async function updateDocumentNodeLease(
 
 // §A1.17 Phase S: local-machine-as-container grants — a business member opting THEIR OWN
 // machine in so the business's assistant can read/write files or run exact commands on it. The
-// spaces worker filters GET to the caller's own grants automatically (requireBusinessMembership
+// spaces worker filters GET to the caller's own grants automatically (requireSpaceMembership
 // + SpaceDO's user_id filter) — never trust a client-supplied user_id for that.
 export interface LocalGrant {
   id: string;
@@ -2880,78 +2818,6 @@ export async function startProviderConnect(
   return apiFetch(`/v1/spaces/${spaceId}/connectors/provider-connect-start`, {
     method: "POST",
     body: JSON.stringify({ platform, return_url: returnUrl, ...(preferredProvider ? { preferred_provider: preferredProvider } : {}) }),
-    session,
-  });
-}
-
-// ── First-run business setup wizard ──────────────────────────────────────────
-// One route on the spaces worker (GET reads, POST's `action` saves or completes) wrapping the
-// agents worker's real bootstrap machinery. Deliberately not a client-side script: the prompt set
-// belongs to the SpaceType template, so the wizard renders whatever the template defines rather
-// than carrying a copy that silently drifts the moment a template is edited.
-
-export interface OnboardingPrompt {
-  id: string;
-  type: "connection" | "credential" | "channel" | "choice" | "text" | "boolean";
-  question: string;
-  help?: string;
-  options?: string[];
-  connector?: string;
-  required?: boolean;
-  /** Never populated for credential/connection prompts — the server doesn't echo secrets back. */
-  answer?: string | null;
-  /** A connection prompt is satisfied by a REAL registered connector, not by a stored string. */
-  satisfied: boolean;
-  /** Whether one-click connect actually works on this deployment (the connector's OAuth app is
-   *  registered). False means the key-paste path is the only one that works — lead with it rather
-   *  than offering a button whose only possible outcome is a platform-internal error. */
-  oauth_available?: boolean;
-  connect_method?: "composio" | "oauth" | "manual";
-  connection_available?: boolean;
-}
-
-export interface OnboardingState {
-  status: "pending" | "awaiting_setup" | "complete";
-  /** The SPACE's own status. A business is created before provisioning finishes, so an empty
-   *  prompt list means "still provisioning, wait" while this is not yet "active" — and genuinely
-   *  "nothing to configure" (a Custom business) once it is. */
-  space_status: string;
-  template_ids: string[];
-  templates: Array<{ id: string; name: string; description: string | null; connectors: string[] }>;
-  prompts: OnboardingPrompt[];
-  projects_created: string[];
-  setup_scripts: string[];
-}
-
-export async function getOnboarding(spaceId: string, session: SessionCredentials): Promise<OnboardingState> {
-  return apiFetch<OnboardingState>(`/v1/spaces/${spaceId}/onboarding`, { session });
-}
-
-/** Persist answers WITHOUT completing. Load-bearing before any connect click: that's a real
- *  browser navigation away from the wizard, so unsaved answers would simply be gone on return. */
-export async function saveOnboarding(
-  spaceId: string,
-  session: SessionCredentials,
-  answers: Record<string, string>
-): Promise<{ ok: boolean }> {
-  return apiFetch(`/v1/spaces/${spaceId}/onboarding`, {
-    method: "POST",
-    body: JSON.stringify({ action: "save", answers }),
-    session,
-  });
-}
-
-/** Finish setup: creates the template's project presets, runs its setup scripts, and wakes the
- *  assistant to introduce itself on the channel just chosen. Rejects with `onboarding_incomplete`
- *  (carrying `missing`) while a required prompt is unmet. */
-export async function completeOnboarding(
-  spaceId: string,
-  session: SessionCredentials,
-  answers: Record<string, string>
-): Promise<{ ok: boolean; projects_created: string[]; first_contact_sent: boolean }> {
-  return apiFetch(`/v1/spaces/${spaceId}/onboarding`, {
-    method: "POST",
-    body: JSON.stringify({ action: "complete", answers }),
     session,
   });
 }

@@ -6,7 +6,7 @@ describe("three workspace SDK boundaries", () => {
     const reads: string[] = [];
     const fs = { read: async (path: string) => { reads.push(path); return path; }, write: async () => undefined,
       edit: async () => undefined, diff: async () => "", grep: async () => [], glob: async () => [] };
-    const space = { createProject: async () => ({}), listProjects: async () => [], getWalletBalance: async () => ({}), sendNotification: async () => ({}) };
+    const space = { createProject: async () => ({}), listProjects: async () => [], sendNotification: async () => ({}) };
     const context = createRuntimeContext({ scope: "SPACE_WIDE", spaceId: "s", services: { fs, sharedDrive: fs, space } as never });
     expect("sharedDrive" in createRuntimeContext({ scope: "SPACE_WIDE", spaceId: "s", services: { fs, space } as never })).toBe(false);
     await context.fs.read("notes.txt");

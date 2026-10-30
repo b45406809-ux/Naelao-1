@@ -21,7 +21,7 @@ export function AgentPolicyPanel({
   spaceId: string;
   agentId: string;
   session: SessionCredentials;
-  /** Whether the CALLER might be able to save a change — the backend (requireBusinessMembership's
+  /** Whether the CALLER might be able to save a change — the backend (requireSpaceMembership's
    *  admin floor) is what actually enforces this; a plain member sees the same panel read-only
    *  rather than the write buttons being pre-hidden AND separately re-checked. */
   canEdit: boolean;

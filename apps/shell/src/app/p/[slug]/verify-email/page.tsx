@@ -1,10 +1,8 @@
 "use client";
 
 
-// Security audit follow-up: signup's free-credit grant is deferred until email verification
-// closes, but the shell previously gave a legitimate user NO visible path to complete it — the
-// verification email itself only ever carried a raw token, not a link, and there was no page to
-// redeem one anyway. This page is reachable two ways: (1) the emailed link, when
+// This page lets a new user verify account ownership before signing in. It is reachable two ways:
+// (1) the emailed link, when
 // PRODUCT_SHELL_URL is configured server-side, carries ?token= and this auto-verifies on load;
 // (2) either from the shell's "Verify now" banner or a stale/manually-typed token, a paste-in
 // form covers the case where no link was ever sent. Deliberately NOT gated behind

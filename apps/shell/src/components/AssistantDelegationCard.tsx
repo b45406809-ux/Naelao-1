@@ -55,7 +55,7 @@ export function AssistantDelegationCard({
         }}
       >
         <span style={{ color: "var(--text3)" }} aria-hidden>{open ? "−" : "+"}</span>
-        <span style={{ fontWeight: 600 }}>Business assistant → {who}</span>
+        <span style={{ fontWeight: 600 }}>Space assistant → {who}</span>
         <span style={{ marginLeft: "auto", color: "var(--text3)" }}>
           {awaiting ? "waiting for a reply" : open ? "hide" : "show exchange"}
         </span>
@@ -64,7 +64,7 @@ export function AssistantDelegationCard({
         <div style={{ padding: "0 10px 10px", fontSize: 12 }}>
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontWeight: 600, color: "var(--text3)", marginBottom: 2 }}>
-              Business assistant · on your behalf
+              Space assistant · on your behalf
             </div>
             <Markdown text={request.content} />
           </div>

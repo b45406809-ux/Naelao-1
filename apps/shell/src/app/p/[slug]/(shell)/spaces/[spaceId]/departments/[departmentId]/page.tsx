@@ -9,7 +9,7 @@ import { useProductAuth } from "@/lib/auth-provider";
 import { listDepartmentProjects, listDepartments, type DepartmentOption, type Project } from "@/lib/api";
 
 export default function DepartmentProjectsPage() {
-  const params = useParams<{ businessId: string; departmentId: string }>();
+  const params = useParams<{ spaceId: string; departmentId: string }>();
   const product = useProduct();
   const { session } = useProductAuth();
   const { activeSpaceId, setActiveSpace } = useActiveSpace();
@@ -27,13 +27,13 @@ export default function DepartmentProjectsPage() {
     setError(null);
     setDepartment(null);
     setProjects([]);
-    if (activeSpaceId !== params.businessId) setActiveSpace(params.businessId);
+    if (activeSpaceId !== params.spaceId) setActiveSpace(params.spaceId);
     Promise.all([
-      listDepartments(params.businessId, creds),
-      listDepartmentProjects(params.businessId, params.departmentId, creds),
+      listDepartments(params.spaceId, creds),
+      listDepartmentProjects(params.spaceId, params.departmentId, creds),
     ]).then(([departments, items]) => {
       if (cancelled) return;
-      const selected = departments.find((item) => item.id === params.departmentId && item.parent_id === params.businessId);
+      const selected = departments.find((item) => item.id === params.departmentId && item.parent_id === params.spaceId);
       if (!selected) throw new Error("Department not found in this space");
       setDepartment(selected);
       setProjects(items);
@@ -43,7 +43,7 @@ export default function DepartmentProjectsPage() {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [activeSpaceId, params.businessId, params.departmentId, creds, setActiveSpace]);
+  }, [activeSpaceId, params.spaceId, params.departmentId, creds, setActiveSpace]);
 
   if (loading) return <div className="page-view">Loading department…</div>;
   if (error || !department) return <main className="page-view"><h1>Department unavailable</h1><output>{error ?? "This department is unavailable."}</output></main>;
@@ -51,7 +51,7 @@ export default function DepartmentProjectsPage() {
   return (
     <main className="page-view">
       <nav aria-label="Breadcrumb" style={{ display: "flex", gap: 8, alignItems: "center", color: "var(--text3)", fontSize: 12, marginBottom: 16 }}>
-        <Link href={`/p/${product.slug}/spaces/${params.businessId}`} style={{ color: "var(--text2)" }}>Space</Link>
+        <Link href={`/p/${product.slug}/spaces/${params.spaceId}`} style={{ color: "var(--text2)" }}>Space</Link>
         <span aria-hidden="true">›</span>
         <span aria-current="page">{department.name}</span>
       </nav>

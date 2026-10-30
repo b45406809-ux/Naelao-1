@@ -4,9 +4,8 @@ export interface QuotaLimits {
   maxSpaces: number;
   maxKbDocs: number;
   maxApiCallsPerMonth: number;
-  // P0-3: a builder's own monthly LLM token usage chatting with their Space Assistant (not
-  // project-scoped, not a signed-in product end user — those have their own separate wallet/
-  // credit gates). Numbers match @naelao/entitlements' PLAN_LIMITS.monthly_tokens exactly so the
+  // Monthly LLM token usage across a tenant's Space Assistants and projects. Numbers match
+  // @naelao/entitlements' PLAN_LIMITS.monthly_tokens exactly so the
   // two systems agree on what each tier is entitled to.
   maxMonthlyTokens: number;
   // §A1.26: the same builder-Space-Assistant scoping as maxMonthlyTokens, but for Cloudflare

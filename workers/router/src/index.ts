@@ -129,11 +129,11 @@ function validateEnv(env: Env): void {
 const app = new Hono<{ Bindings: Env }>();
 
 // Security audit follow-up: CORS_ALLOWLIST was one static platform-wide env var — fine for the
-// two fixed platform frontends (dashboard, portal) but can't scale to arbitrary per-builder
-// custom domains or even the platform's own {slug}.naelao.com product subdomains (which were
+// two fixed platform frontends (dashboard, portal) but can't scale to arbitrary Space
+// custom domains or even the platform's own {slug}.naelao.com subdomains (which were
 // never added to it at all — apps/shell, the Product Shell every end user uses, would have been
 // CORS-blocked in a real deployment). Resolves dynamically against spaces.product_slug and
-// business_services.custom_domain, cached in KV (60s TTL — this platform's own stated KV
+// space_domains.domain, cached in KV (60s TTL — this platform's own stated KV
 // eventual-consistency window) so this doesn't cost a D1 round trip on every single request once
 // warm. Degrades to the static allowlist only when PLATFORM_DB/CONFIG aren't wired (tests, or a
 // deploy that hasn't set them) rather than erroring — CORS denial is already the safe default.
@@ -174,7 +174,7 @@ async function isDynamicOriginAllowed(env: Env, origin: string): Promise<boolean
   }
   if (!allowed) {
     const row = await env.PLATFORM_DB.prepare(
-      "SELECT id FROM business_services WHERE custom_domain = ? AND kind = 'custom_domain' AND status = 'active'"
+      "SELECT id FROM space_domains WHERE domain = ? AND status = 'active'"
     ).bind(hostname).first<{ id: string }>().catch(() => null);
     allowed = !!row;
   }
@@ -425,7 +425,7 @@ app.all("/v1/channels/pair-callback/:channel", async (c) => {
 });
 
 // ── F-2: Public Lemon Squeezy webhook ingress (unauthenticated; the LS HMAC signature is the auth) ──
-// The entire money-in path (orders, subscriptions, credit packs, wallet top-ups, refunds) depends
+// Platform subscriptions and FDE marketplace settlement depend
 // on this: a buyer pays at Lemon Squeezy → LS POSTs the event here → the billing worker verifies
 // the LEMON_SQUEEZY_WEBHOOK_SECRET signature and settles. Without this route the webhook 404'd and
 // every purchase silently never fulfilled. Registered BEFORE the JWT-gated api group, same pattern
@@ -442,9 +442,8 @@ app.all("/v1/webhooks/lemon-squeezy", async (c) => {
 
 // ── Whop platform-plan webhook ingress (unauthenticated; Whop-Signature HMAC is the auth) ──
 // Naelao's OWN normal Whop seller company's webhook (builder Growth/Business plans) — a
-// DIFFERENT Whop company/secret than /v1/webhooks/whop above (that one is the per-business
-// sub-merchant wallet webhook). Was missing entirely until now — the billing worker's own
-// /webhooks/whop-platform-plan route existed with no router path ever proxying to it.
+// Webhook ingress for Naelao's subscription provider. It is separate from generic Whop MCP
+// connections users configure inside their Spaces.
 app.all("/v1/webhooks/whop-platform-plan", async (c) => {
   if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable", message: "Billing worker not configured" }, 503);
   const u = new URL(c.req.url);
@@ -601,7 +600,7 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // outright because each carried a blanket "builder-only, confirmed never end-user-facing"
 // comment with no per-caller floor. Phase B (§A1.17) revisits that: the Product Shell's
 // Projects/Threads views need list/create/read access to exactly those three, so
-// `workers/spaces/src/index.ts` grew a `requireBusinessMembership` gate (business-auth.ts) that
+// `workers/spaces/src/index.ts` grew a `requireSpaceMembership` gate (business-auth.ts) that
 // is additive-only for `product_end_user` — every other role's access is completely unchanged —
 // and per-route/per-method: agent-definitions only allows GET for a product_end_user (never a
 // write); projects/threads allow GET+POST but NOT the admin-only sub-paths (rules, spend,
@@ -612,7 +611,7 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // exactly the footgun warned about above (claims.tid is the space's OWNING tenant, so that gate
 // would silently accept end-user traffic the moment it's allowlisted). It was given the same
 // treatment projects/threads got before being added (see WS-2/the GET route's own comment):
-// resolveEndUserBusinessRole on the spaces worker now does the real per-caller authorization.
+// resolveEndUserSpaceRole on the spaces worker now does the real per-caller authorization.
 //
 // Business invite/member and child-business lifecycle APIs were retired with the former
 // Launchpad business surface. Generic platform-member Space creation uses /spaces instead.
@@ -621,6 +620,10 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/runtime-installations$/,
   /^\/spaces\/([^/]+)\/sessions(\/|$)/,
   /^\/spaces\/([^/]+)\/shell\/manifest$/,
+  /^\/spaces\/([^/]+)\/my-spaces$/,
+  /^\/spaces\/([^/]+)\/spaces$/,
+  /^\/spaces\/([^/]+)\/memberships$/,
+  /^\/spaces\/([^/]+)\/template-listings\/([^/]+)\/fork$/,
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
   /^\/spaces\/([^/]+)\/product-users\/me$/,
   /^\/spaces\/([^/]+)\/me\/export$/,
@@ -632,7 +635,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/members(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/activate-thread$/,
   // F-39: read-only workspace file viewer — a project member browses/views the artifacts their
-  // agent wrote to R2. Identity here, real per-project ACL (requireBusinessMembership) on the
+  // agent wrote to R2. Identity here, real per-project ACL (requireSpaceMembership) on the
   // spaces worker. Read-only GET only; the write side is the agent's, never end-user-reachable.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/workspace\/files(\/.*)?$/,
   // Visual workflow plan drafts are owner/admin writes; Spaces validates and compiles them.
@@ -668,7 +671,7 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // verify), authorization there (the route computes is_mine from the caller's own memberships and
   // never leaks owner identity/revenue). A single dynamic leaf segment, not the corrupting shape.
   // Discover's "what other businesses are doing" showcase — cross-tenant AGGREGATE COUNTS only
-  // (see the route's own header on the spaces worker). No requireBusinessMembership needed: the
+  // (see the route's own header on the spaces worker). No requireSpaceMembership needed: the
   // productSpaceId in the path only identifies which product's session to verify, the query
   // itself carries no tenant filter to authorize against.
   // Live Market Radar is product-scoped for session verification; the spaces worker creates the
@@ -679,12 +682,12 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // marketplace settlement use their dedicated platform endpoints.
   /^\/spaces\/([^/]+)\/agent-analytics$/,
   // Phase S (§A1.17): a business member granting the assistant access to their OWN machine —
-  // additionally gated by requireBusinessMembership on the spaces worker exactly like the
+  // additionally gated by requireSpaceMembership on the spaces worker exactly like the
   // pricing/products routes above (identity here, authorization there).
   /^\/spaces\/([^/]+)\/local-grants(\/|$)/,
   /^\/spaces\/([^/]+)\/local-tunnel\/connect-token$/,
   // Per-business connector connect (BYO Whop account — no Naelao Platforms invite needed):
-  // additionally gated by requireBusinessMembership on the spaces worker exactly like the
+  // additionally gated by requireSpaceMembership on the spaces worker exactly like the
   // routes above (status is member-level read, connect is admin-level write).
   /^\/spaces\/([^/]+)\/connectors\/status$/,
   /^\/spaces\/([^/]+)\/connectors\/connect$/,
@@ -694,60 +697,56 @@ export const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // below, same identity-here-authorization-there split.
   /^\/spaces\/([^/]+)\/connectors\/directory$/,
   // Composio "click Install" hosted-connect flow (G-1/G-3 growth layer): same admin-level write
-  // gate as connect/oauth-start above (requireBusinessMembership on the spaces worker).
+  // gate as connect/oauth-start above (requireSpaceMembership on the spaces worker).
   /^\/spaces\/([^/]+)\/connectors\/provider-connect-start$/,
   /^\/spaces\/([^/]+)\/connector-aliases(\/[^/]+)?$/,
   // Step 28: business-wide BYOK LLM keys and catalog activation. Credential mutations and model
   // activation are re-authorized by their destination worker; key material stays in the vault.
   /^\/spaces\/([^/]+)\/llm-byok(?:\/.*)?$/,
   // Naelao Agent Templates: browsing is member-level, instantiating a real agent from one is
-  // admin-level — both enforced by requireBusinessMembership on the spaces worker.
+  // admin-level — both enforced by requireSpaceMembership on the spaces worker.
   /^\/spaces\/([^/]+)\/agent-templates$/,
   // AVOS plan step 5 — the capability-firewall archetype presets a custom agent can opt into;
   // read-only, member-level, same enforcement split as agent-templates above.
   /^\/spaces\/([^/]+)\/archetypes$/,
-  // First-run business setup wizard — the end user's own path into the template bootstrap the
-  // builder dashboard has always driven. Additionally gated by requireBusinessMembership on the
-  // spaces worker (member GET / admin POST), same identity-here-authorization-there split.
-  /^\/spaces\/([^/]+)\/onboarding$/,
   // WS-2 (Space Assistant surface): the Status/Crons panels — additionally gated by
-  // resolveEndUserBusinessRole on the spaces worker exactly like the routes above. PATCH is now
+  // resolveEndUserSpaceRole on the spaces worker exactly like the routes above. PATCH is now
   // reachable too (a business-admin end user genuinely IS the owner of their own business, see
-  // that route's own comment) — requireBusinessMembership's admin floor does the real gating.
+  // that route's own comment) — requireSpaceMembership's admin floor does the real gating.
   /^\/spaces\/([^/]+)\/assistant-policy$/,
-  // Which model this business's assistant/agents run on — admin-gated by requireBusinessMembership
+  // Which model this business's assistant/agents run on — admin-gated by requireSpaceMembership
   // on the spaces worker, same identity-here-authorization-there split as every route above.
   /^\/spaces\/([^/]+)\/model-config$/,
   // Phase 3 item 27/28: a self-serve Crons editing UI needs write access too, not just the list
   // — the trailing `(\/[^/]+)?` also allows the single-job PATCH/DELETE path (`:jobId`), gated
-  // by requireBusinessMembership's admin floor on the spaces worker exactly like model-config
+  // by requireSpaceMembership's admin floor on the spaces worker exactly like model-config
   // above (identity here, authorization there). This is a single dynamic LEAF segment (no static
   // suffix after it), the same safe shape as /projects(\/[^/]+)? a few entries up — not the
   // dynamic-then-static-suffix shape that has repeatedly corrupted this codebase's Hono route
   // tables (that risk lives in the spaces worker's own route table, not this plain regex list).
   /^\/spaces\/([^/]+)\/scheduled-jobs(\/[^/]+)?$/,
   // Phase 3 item 27/28: recent-fires history for a scheduled job — same auth floor as
-  // scheduled-jobs itself (resolveEndUserBusinessRole on the spaces worker).
+  // scheduled-jobs itself (resolveEndUserSpaceRole on the spaces worker).
   /^\/spaces\/([^/]+)\/scheduled-job-runs$/,
   // The Memory/Channels/Sub-agents/Files panels — additionally gated by
-  // requireEndUserBusinessMembership on the agents worker (same floor, different worker since
+// requireEndUserSpaceMembership on the agents worker (same floor, different worker since
   // these routes live there).
   /^\/spaces\/([^/]+)\/assistant\/(memory|channels|sub-agents|files|capabilities)$/,
   // The same panels' per-item routes. These were unreachable because the pattern above is anchored
   // with `$`: the Files panel could LIST files but opening one 401'd, and the Artifacts panel was
   // never reachable at all. `files` takes an arbitrary nested path; `artifacts` takes an id (and
   // its own list route, which the pattern above never covered). Authorization is unchanged and
-  // still enforced on the agents worker by requireEndUserBusinessMembership — identity here,
+// still enforced on the agents worker by requireEndUserSpaceMembership — identity here,
   // authorization there, exactly like the routes above.
   /^\/spaces\/([^/]+)\/assistant\/files\/.+$/,
   /^\/spaces\/([^/]+)\/assistant\/artifacts(\/[^/]+)?$/,
   // Notifications inbox — end-user-facing (a business admin reading their own business's
-  // notifications), additionally gated by requireBusinessMembership on the spaces worker exactly
+  // notifications), additionally gated by requireSpaceMembership on the spaces worker exactly
   // like the routes above (identity here, authorization there).
   /^\/spaces\/([^/]+)\/notifications$/,
   /^\/spaces\/([^/]+)\/push-notifications$/,
   // A single project agent's own approval-policy override — same identity-here-authorization-
-  // there split as assistant-policy above (requireBusinessMembership: member GET / admin PATCH
+  // there split as assistant-policy above (requireSpaceMembership: member GET / admin PATCH
   // on the spaces worker). Previously builder-JWT-only; a business admin had no reachable way to
   // configure a project agent's own approvals at all.
   /^\/spaces\/([^/]+)\/agents\/[^/]+\/policy$/,
@@ -776,11 +775,25 @@ async function resolveProductEndUserClaims(
   endUserId: string,
   sessionToken: string
 ): Promise<NaelaoJwtClaims | null> {
+  // Sessions belong to the root Space. Child Spaces share the product session but are authorized
+  // independently by their own membership records in the downstream handler.
+  const requested = await env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(productId).first<{ tenant_id: string; parent_space_id: string | null }>();
+  if (!requested) return null;
+  let sessionProductId = productId;
+  if (requested.parent_space_id) {
+    const root = await env.PLATFORM_DB.prepare(
+      "SELECT id FROM spaces WHERE id = ? AND tenant_id = ? AND parent_space_id IS NULL AND status = 'active'"
+    ).bind(requested.parent_space_id, requested.tenant_id).first<{ id: string }>();
+    if (!root) return null;
+    sessionProductId = root.id;
+  }
   const res = await env.SPACES_WORKER.fetch(
     new Request("http://spaces/internal/product-sessions/verify", {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-platform-secret": env.PLATFORM_SECRET },
-      body: JSON.stringify({ productId, endUserId, sessionToken }),
+      body: JSON.stringify({ productId: sessionProductId, endUserId, sessionToken }),
     })
   );
   if (!res.ok) return null;
@@ -1205,6 +1218,16 @@ for (const path of ["/marketplace", "/marketplace/*"]) api.all(path, async c => 
   return proxyTo(c.env.MARKETPLACE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET, true);
 });
 
+api.post("/spaces/:spaceId/template-listings/:listingId/fork", async c => {
+  if (!c.env.MARKETPLACE_WORKER) return c.json({ error_code: "marketplace_unavailable" }, 503);
+  const claims = c.get("claims") as NaelaoJwtClaims | undefined;
+  if (!claims || claims.role !== "product_end_user") return c.json({ error_code: "forbidden" }, 403);
+  const target = new Request(`http://marketplace/v1/marketplace/${encodeURIComponent(c.req.param("listingId"))}/fork`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  return proxyTo(c.env.MARKETPLACE_WORKER, claims, target, c.env.PLATFORM_SECRET, true);
+});
+
 // Portal domain mappings are owner/admin operations. Forward through the signed service binding
 // so the Portal Router never trusts identity headers received directly from a public caller.
 for (const path of ["/domains", "/domains/*", "/subdomains", "/subdomains/*"]) api.all(path, async (c) => {
@@ -1241,7 +1264,7 @@ api.all("/spaces/:spaceId/kb/*", async (c) => {
     const endUserId = claims.sub;
     const token = await mintInternalToken(c.env.PLATFORM_SECRET, claims.tid);
     const res = await c.env.SPACES_WORKER.fetch(
-      new Request(`http://spaces/internal/business-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(endUserId)}`, {
+      new Request(`http://spaces/internal/space-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(endUserId)}`, {
         method: "GET",
         headers: { "x-naelao-tenant-id": claims.tid, "x-naelao-internal-token": token },
       })
@@ -1341,15 +1364,6 @@ api.all("/spaces/:spaceId/sessions", async (c) =>
 );
 
 // First-run bootstrap (create projects + run setup scripts) → agents worker
-api.all("/spaces/:spaceId/bootstrap/*", async (c) =>
-  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
-);
-
-// Apply a customer-bot project template (WhatsApp/Discord/email support bot) → agents worker
-// (it composes the call across the spaces worker's project endpoints + seeds starter rules).
-api.all("/spaces/:spaceId/projects/from-template", async (c) =>
-  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
-);
 
 // Customer-bot channel observability + human-takeover admin control → agents worker
 // (proxies straight through to the space's agent DO).
@@ -1431,11 +1445,6 @@ api.get("/analytics/runtime-economics", async (c) => {
   );
 });
 
-// Founder roadmap catalog (space types + templates, dev-only) → agents worker.
-// (/product/* and /business/* used to proxy here too, for the retired BusinessDO/ProductDO
-// Whop-niche runtime — removed alongside those DOs.)
-api.all("/catalog/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
-
 // External-platform connectors (catalogue + connect flow) → agents worker.
 api.all("/connectors/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/connectors", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
@@ -1448,8 +1457,6 @@ api.all("/templates/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"
 // above, before the JWT gate) → agents worker.
 api.all("/channels/:channel/connect", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
-// Customer-bot project template catalogue → agents worker.
-api.all("/project-templates", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 app.route("/v1", api);
 

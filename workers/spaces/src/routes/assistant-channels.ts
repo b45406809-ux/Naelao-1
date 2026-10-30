@@ -2,7 +2,7 @@ import type { Hono } from "hono";
 import type { Env } from "../index.js";
 import { getDOName } from "@naelao/crypto";
 import { verifyInternalToken, readBoundedRequestText } from "@naelao/http";
-import { resolveEndUserBusinessRole } from "../business-auth.js";
+import { resolveEndUserSpaceRole } from "../space-auth.js";
 export function registerAssistantChannelRoutes(app: Hono<{ Bindings: Env }>) {
   app.get("/internal/spaces/:spaceId/assistant-channels", async (c) => {
     const tenant = c.req.header("x-naelao-tenant-id") ?? "",
@@ -70,7 +70,7 @@ export function registerAssistantChannelRoutes(app: Hono<{ Bindings: Env }>) {
       return c.json({ error_code: "not_found" }, 404);
     const role =
       c.req.header("x-naelao-role") === "product_end_user"
-        ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, space, user)
+        ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, space, user)
         : c.req.header("x-naelao-role");
     if (!role) return c.json({ error_code: "forbidden" }, 403);
     const stub = c.env.SPACE_DO.get(

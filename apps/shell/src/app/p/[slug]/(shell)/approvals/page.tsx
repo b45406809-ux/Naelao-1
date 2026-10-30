@@ -15,10 +15,10 @@ import { useProduct } from "@/lib/product-context";
 import { useActiveSpace } from "@/lib/active-space-context";
 import {
   listAllApprovals,
-  listMyBusinesses,
+  listMySpaces,
   approveAction,
   rejectAction,
-  type PendingApprovalWithBusiness,
+  type PendingApprovalWithSpace,
 } from "@/lib/api";
 
 /** Arguments are shown, not hidden behind a name: approving "commerce.payout" without seeing the
@@ -46,12 +46,12 @@ function timeLeft(expiresAt: number): string {
 export default function ApprovalsPage() {
   const { session } = useProductAuth();
   const product = useProduct();
-  // Kept for "jump to this business" on an item card — no longer used to SCOPE the list itself.
-  // See listAllApprovals's own header: an approval is per-business, and only checking whichever
+  // Kept for "jump to this space" on an item card — no longer used to SCOPE the list itself.
+  // See listAllApprovals's own header: an approval is per-space, and only checking whichever
   // one happens to be active is the exact bug this page exists to not have.
   const { setActiveSpace } = useActiveSpace();
   const { toast, show } = useToast();
-  const [items, setItems] = React.useState<PendingApprovalWithBusiness[]>([]);
+  const [items, setItems] = React.useState<PendingApprovalWithSpace[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [failed, setFailed] = React.useState(false);
   const [busyId, setBusyId] = React.useState<string | null>(null);
@@ -62,8 +62,8 @@ export default function ApprovalsPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const businesses = await listMyBusinesses(product.space_id, creds);
-      setItems(await listAllApprovals(product.space_id, product.product_name, businesses, creds));
+      const spaces = await listMySpaces(product.space_id, creds);
+      setItems(await listAllApprovals(product.space_id, product.product_name, spaces, creds));
       setFailed(false);
     } catch {
       // Distinct from "nothing pending" — telling someone there's nothing to approve when the
@@ -79,14 +79,14 @@ export default function ApprovalsPage() {
     void refresh();
   }, [refresh]);
 
-  async function decide(approval: PendingApprovalWithBusiness, approve: boolean) {
+  async function decide(approval: PendingApprovalWithSpace, approve: boolean) {
     if (!creds) return;
     setBusyId(approval.id);
     try {
-      // The approval's OWN business, not whatever happens to be active in the switcher right now
+      // The approval's OWN space, not whatever happens to be active in the switcher right now
       // — see listAllApprovals's header for why that distinction is the whole point of this page.
-      if (approve) await approveAction(approval.business_id, approval.id, creds);
-      else await rejectAction(approval.business_id, approval.id, "Declined by the owner", creds);
+      if (approve) await approveAction(approval.space_id, approval.id, creds);
+      else await rejectAction(approval.space_id, approval.id, "Declined by the owner", creds);
       show(approve ? "Approved — the agent is picking it back up now." : "Declined.");
       await refresh();
     } catch (err) {
@@ -131,15 +131,15 @@ export default function ApprovalsPage() {
                   <div style={{ minWidth: 0 }}>
                     <button
                       type="button"
-                      onClick={() => setActiveSpace(a.business_id, a.business_name)}
+                      onClick={() => setActiveSpace(a.space_id, a.space_name)}
                       style={{
                         border: "none", background: "none", padding: 0, cursor: "pointer",
                         fontSize: 11, letterSpacing: "0.03em", textTransform: "uppercase",
                         color: "var(--accent)", marginBottom: 4, display: "block",
                       }}
-                      title="Switch to this business"
+                      title="Switch to this space"
                     >
-                      {a.business_name}
+                      {a.space_name}
                     </button>
                     <CardTitle>{a.tool_name}</CardTitle>
                     <CardDesc>{a.action_description}</CardDesc>

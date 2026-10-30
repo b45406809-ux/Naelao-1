@@ -39,7 +39,7 @@ import {
 export default function AgentsPage() {
   const product = useProduct();
   const { session } = useProductAuth();
-  const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
+  const { activeSpaceId, activeSpaceName, isChildSpace } = useActiveSpace();
   const { toast, show } = useToast();
   const [agents, setAgents] = React.useState<AgentDefinitionSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -164,7 +164,7 @@ export default function AgentsPage() {
         <div>
           <div className="page-title">Workers</div>
           <div className="page-subtitle">
-            The specialist workers in {isBusinessSpace && activeSpaceName ? activeSpaceName : product.product_name},
+            The specialist workers in {isChildSpace && activeSpaceName ? activeSpaceName : product.product_name},
             alongside your assistant. Open one to set what it may do on its own.
           </div>
         </div>

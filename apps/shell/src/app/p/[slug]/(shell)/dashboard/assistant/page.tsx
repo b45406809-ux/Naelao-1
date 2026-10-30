@@ -26,14 +26,14 @@ import {
   updateModelConfig,
   getShellManifest,
   getAssistantCapabilities,
-  listMyBusinesses,
+  listMySpaces,
   listScheduledJobs,
   listAssistantChannels,
   type AssistantPolicy,
   type AssistantCapabilities,
   type ScheduledJob,
   type ChannelLink,
-  type Business,
+  type SpaceSummary,
 } from "@/lib/api";
 import { modelLabel } from "@/components/ModelSelector";
 import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
@@ -60,12 +60,12 @@ const MODES: { id: "always_ask" | "yolo"; title: string; desc: string }[] = [
 export default function AssistantSettingsPage() {
   const product = useProduct();
   const creds = useSessionCredentials();
-  const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
+  const { activeSpaceId, activeSpaceName, isChildSpace } = useActiveSpace();
 
   const [policy, setPolicy] = React.useState<AssistantPolicy | null>(null);
   const [model, setModel] = React.useState<string | null>(null);
   const [effort, setEffort] = React.useState<string | null>(null);
-  const [business, setBusiness] = React.useState<Business | null>(null);
+  const [space, setSpace] = React.useState<SpaceSummary | null>(null);
   const [capabilities, setCapabilities] = React.useState<AssistantCapabilities | null>(null);
   const [crons, setCrons] = React.useState<ScheduledJob[]>([]);
   const [channels, setChannels] = React.useState<ChannelLink[]>([]);
@@ -88,17 +88,17 @@ export default function AssistantSettingsPage() {
       settle(listScheduledJobs(activeSpaceId, creds), setCrons),
       settle(listAssistantChannels(activeSpaceId, creds), setChannels),
     ];
-    if (isBusinessSpace) {
+    if (isChildSpace) {
       calls.push(
-        settle(listMyBusinesses(product.space_id, creds).then((l) => l.find((b) => b.id === activeSpaceId) ?? null), setBusiness)
+        settle(listMySpaces(product.space_id, creds).then((l) => l.find((b) => b.id === activeSpaceId) ?? null), setSpace)
       );
     }
     Promise.allSettled(calls).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [creds, activeSpaceId, isBusinessSpace, product.space_id]);
+  }, [creds, activeSpaceId, isChildSpace, product.space_id]);
 
-  const canEdit = canManageSpaceSettings(isBusinessSpace, business?.role);
+  const canEdit = canManageSpaceSettings(isChildSpace, space?.role);
 
   function flash(message: string) {
     setSaved(message);
@@ -187,8 +187,8 @@ export default function AssistantSettingsPage() {
             background: "var(--surface2)", fontSize: 12.5, color: "var(--text2)", marginBottom: 18,
           }}
         >
-          {isBusinessSpace
-            ? "You can see these settings but not change them — that needs the owner or an admin of this business."
+          {isChildSpace
+            ? "You can see these settings but not change them — that needs the owner or an admin of this space."
             : "This space's assistant is configured by its owner in the builder dashboard."}
         </div>
       )}
@@ -274,14 +274,14 @@ export default function AssistantSettingsPage() {
           })}
         </div>
         <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 10, lineHeight: 1.6 }}>
-          This is the business-wide default. You can also pick a different model for one conversation from the bar
+          This is the space-wide default. You can also pick a different model for one conversation from the bar
           under the message box — that choice only affects that chat.
         </p>
       </SettingsSection>
 
       <SettingsSection
         title="Effort"
-        desc="How far this business's default model is allowed to reach for help. If it delegates work to another agent, this caps how expensive that can get — see each option below."
+        desc="How far this space's default model is allowed to reach for help. If it delegates work to another agent, this caps how expensive that can get — see each option below."
       >
         <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
           {effortOptionsForModel(activeModel).map((opt) => {
@@ -307,7 +307,7 @@ export default function AssistantSettingsPage() {
 
       <SettingsSection
         title="Your own AI keys"
-        desc="Bring your own Google AI Studio (Gemini) or Groq key so this business runs on your own free/paid quota instead of the shared platform allowance. Optional — leave blank to keep using the platform's."
+        desc="Bring your own Google AI Studio (Gemini) or Groq key so this space runs on your own free/paid quota instead of the shared platform allowance. Optional — leave blank to keep using the platform's."
       >
         {creds && activeSpaceId ? (
           <ByokKeysPanel spaceId={activeSpaceId} creds={creds} canEdit={canEdit} />

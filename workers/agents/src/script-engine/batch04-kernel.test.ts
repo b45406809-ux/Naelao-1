@@ -58,7 +58,6 @@ describe("Batch 04 universal kernel", () => {
     expect(isPlannerOperationAllowed("project", "engine.coordination_patterns")).toBe(true);
     expect(isPlannerOperationAllowed("space", "project.create")).toBe(false);
     expect(isPlannerOperationAllowed("project", "thread.delegate")).toBe(true);
-    expect(isPlannerOperationAllowed("project", "wallet.request_payout")).toBe(false);
     expect(isPlannerOperationAllowed("space", "Edit")).toBe(false);
     expect(isPlannerOperationAllowed("project", "Edit")).toBe(false);
   });

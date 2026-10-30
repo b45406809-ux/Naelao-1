@@ -5,7 +5,7 @@
 // lands you back in your work rather than staring at an empty box.
 //
 // A session is still only created on a real submit — never from opening this page — which is what
-// keeps the "nothing exists until the user actually does something" rule the business-first
+// keeps the "nothing exists until the user actually does something" rule the
 // gating depends on.
 
 import * as React from "react";
@@ -14,20 +14,19 @@ import { useRouter } from "next/navigation";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { listSessions, startSession, getOnboarding, type SessionSummary } from "@/lib/api";
+import { listSessions, startSession, type SessionSummary } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
 import { ComposerDock } from "@/components/ComposerDock";
 import { getPreferredModel, storePreferredModel, getPreferredEffort, storePreferredEffort } from "@/lib/modelPreference";
 import { DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
 
-/** Openers that reflect what this assistant is actually for — running the business — rather than
- *  generic "ask me anything" filler. Every one is answerable from what it can already see. */
+/** Openers for the active Space's work and projects, grounded in what the assistant can access. */
 /** Recent conversations shown on Home. This is the landing page, so the list is the main way back
  *  into yesterday's work — eight was short enough to hide a conversation from one busy morning. */
 const HOME_RECENT_SESSIONS = 20;
 
 const STARTERS = [
-  "How is my business doing right now?",
+  "What's happening in this Space right now?",
   "What should I work on first this week?",
   "Draft a message to my customers",
   "Find something I could be doing better",
@@ -70,7 +69,7 @@ const QUICK_PROMPTS: Array<{ label: string; prompt: string; icon: React.ReactNod
 export default function HomePage() {
   const product = useProduct();
   const router = useRouter();
-  const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
+  const { activeSpaceId, activeSpaceName, isChildSpace } = useActiveSpace();
   const { session } = useProductAuth();
 
   const [input, setInput] = React.useState("");
@@ -87,7 +86,6 @@ export default function HomePage() {
   });
   const dockReasoning = React.useMemo(() => nativeReasoningForEffort(dockModel, dockEffort), [dockModel, dockEffort]);
   const [dockNotice, setDockNotice] = React.useState<string | null>(null);
-  const [setupPending, setSetupPending] = React.useState(false);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
 
   function insertPrompt(prompt: string) {
@@ -100,18 +98,8 @@ export default function HomePage() {
   React.useEffect(() => {
     if (!creds) return;
     listSessions(activeSpaceId, creds, HOME_RECENT_SESSIONS).then(setSessions).catch(() => setSessions([]));
-    // Unfinished setup is worth surfacing here rather than only on the business page: this is
-    // where someone lands, and an assistant that hasn't been connected to anything yet will give
-    // disappointing answers for reasons the user can't see.
-    if (isBusinessSpace) {
-      getOnboarding(activeSpaceId, creds)
-        .then((o) => setSetupPending(o.status !== "complete" && o.prompts.some((p) => !p.satisfied)))
-        .catch(() => setSetupPending(false));
-    } else {
-      setSetupPending(false);
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSpaceId, session, isBusinessSpace]);
+  }, [activeSpaceId, session]);
 
   async function start(text: string) {
     const trimmed = text.trim();
@@ -132,7 +120,7 @@ export default function HomePage() {
 
   if (!session) return null;
 
-  const greeting = isBusinessSpace && activeSpaceName ? activeSpaceName : product.product_name;
+  const greeting = isChildSpace && activeSpaceName ? activeSpaceName : product.product_name;
 
   // Layout comes from `.home-view` (packages/ui/src/styles.css), which centres via auto-margin
   // pseudo-elements so the content starts at the TOP once it is taller than the viewport rather
@@ -162,29 +150,6 @@ export default function HomePage() {
           What do you want to get done?
         </p>
 
-        {setupPending && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              flexWrap: "wrap",
-              marginTop: 22,
-              padding: "11px 14px",
-              borderRadius: 10,
-              background: "var(--accent-soft, #eef2ff)",
-              border: "1px solid var(--accent, #5b52f0)",
-              fontSize: 12.5,
-            }}
-          >
-            <span>Setup isn&rsquo;t finished, so your assistant can&rsquo;t see your business yet.</span>
-            <Link href={`/p/${product.slug}/spaces/${activeSpaceId}/onboarding`} style={{ color: "var(--accent)", fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
-              Finish setup →
-            </Link>
-          </div>
-        )}
-
         {creds && (
           <div style={{ marginTop: 26, width: "100%", display: "flex", justifyContent: "center" }}>
             <ComposerDock
@@ -204,7 +169,7 @@ export default function HomePage() {
                 storePreferredEffort(activeSpaceId, dockModel, effort);
               }}
               spaceName={activeSpaceName ?? undefined}
-              isBusinessSpace={isBusinessSpace}
+              isChildSpace={isChildSpace}
               onNotice={(msg) => {
                 setDockNotice(msg);
                 window.setTimeout(() => setDockNotice((cur) => (cur === msg ? null : cur)), 4000);

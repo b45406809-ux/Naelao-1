@@ -32,11 +32,10 @@ async function reserveDomain(db: D1Database, kind: "domain" | "subdomain", hostn
 
 async function isVerifiedCustomDomain(db: D1Database, tenantId: string, spaceId: string, domain: string): Promise<boolean> {
   const row = await db.prepare(
-    `SELECT 1 FROM business_services bs
-      JOIN spaces s ON s.id = bs.space_id AND s.tenant_id = bs.tenant_id AND s.status = 'active'
-      JOIN orgs o ON o.id = bs.tenant_id AND o.status = 'active'
-      WHERE bs.tenant_id = ? AND bs.space_id = ? AND bs.kind = 'custom_domain'
-        AND bs.custom_domain = ? AND bs.status = 'active'`
+    `SELECT 1 FROM space_domains d
+      JOIN spaces s ON s.id = d.space_id AND s.tenant_id = d.tenant_id AND s.status = 'active'
+      JOIN orgs o ON o.id = d.tenant_id AND o.status = 'active'
+      WHERE d.tenant_id = ? AND d.space_id = ? AND d.domain = ? AND d.status = 'active'`
   ).bind(tenantId, spaceId, domain).first();
   return row !== null;
 }

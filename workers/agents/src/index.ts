@@ -16,7 +16,7 @@ export { DynamicSandboxDO };
 
 import { Hono, type Context } from "hono";
 import { routeAgentRequest } from "agents";
-import { resolveEndUserBusinessRole } from "../../spaces/src/business-auth.js";
+import { resolveEndUserSpaceRole } from "../../spaces/src/space-auth.js";
 import { readBoundedResponseJson, errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, parseBoundedInteger, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
@@ -36,7 +36,6 @@ import { LocalTunnelDO } from "./do/LocalTunnelDO.js";
 import { namedTunnelStub } from "./tunnels/host.js";
 export { CodeRpcBroker } from "./script-engine/code-rpc-broker.js";
 export { PackageEgress } from "./script-engine/package-egress.js";
-import { LAUNCHPAD_TEMPLATES, LAUNCHPAD_CORE_AGENTS, getLaunchpadTemplate } from "./launchpad/spacetype.js";
 import { resolveSpaceContext, parseSpaceConfigForContext, loadSpaceContext, type SpaceContext } from "./launchpad/space-context.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { deployedContainerCatalogue, deployedDynamicImages } from "./script-engine/container-catalogue.js";
@@ -97,9 +96,6 @@ import {
   agentMailConfigured, createInbox, createInboundWebhook, sendFromInbox,
   verifySvixSignature, parseInboundMessageReceived, uniqueInboxUsername,
 } from "./channels/agentmail.js";
-import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
-import { seedTemplateProjects, seedGeneralProject } from "./launchpad/bootstrap.js";
-import { applyOnboardingAutonomyPolicy } from "./launchpad/autonomy-policy.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 import { customAgentToConfig } from "./agent-templates.js";
 import { writeAgentConfig, createAgentConfigLockGateway } from "./script-engine/agent-config.js";
@@ -605,7 +601,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/voice-ticket", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const { userId, role: callerRole } = getCallerIdentity(c);
   const spaceId = c.req.param("spaceId");
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || (role !== "owner" && role !== "admin")) throw forbidden("Owner voice calls require Space owner or admin access");
   const sessionId = c.req.param("sessionId");
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(sessionId)) throw badRequest("Invalid session id");
@@ -824,8 +820,8 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // resolving that, the F-36 clamp downgraded yolo for them unconditionally — so an owner who set
   // their own business to autonomous still had every action gated with nobody but themself to
   // approve it. Resolved from business_memberships server-side; a builder caller skips the lookup.
-  const businessRole = callerRole === "product_end_user"
-    ? await resolveCallerBusinessRole(c, spaceId)
+  const spaceRole = callerRole === "product_end_user"
+    ? await resolveCallerSpaceRole(c, spaceId)
     : undefined;
 
   const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string; model?: string; reasoning_effort?: string; effort?: string; progressive_tool_disclosure?: boolean; upload_names?: string[] }>();
@@ -1231,7 +1227,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         userId,
         projectId: verifiedProjectId,
         callerRole,
-        businessRole,
+        spaceRole,
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
         workerTokenBudget,
@@ -1296,7 +1292,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         "content-type": "application/json",
         ...(userId ? { "x-naelao-user-id": userId } : {}),
         ...(callerRole ? { "x-naelao-role": callerRole } : {}),
-        ...(businessRole ? { "x-naelao-business-role": businessRole } : {}),
+        ...(spaceRole ? { "x-naelao-space-role": spaceRole } : {}),
       },
       body: JSON.stringify({
         goal: body.goal,
@@ -1359,7 +1355,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     );
   }
 
-  // A-2 cutover: handleScriptRun can also return 402 (spend cap / wallet / end-user credit gate),
+  // A-2 cutover: handleScriptRun can also return 402 (spend cap / tenant quota gate),
   // 403 (revenue-reporting-lapsed gate), and 503 (script engine unavailable) — handleRun never
   // did, so the status union widens accordingly.
   return c.json(doBody, doResponse.status as 200 | 201 | 400 | 402 | 403 | 404 | 422 | 500 | 503);
@@ -2452,7 +2448,7 @@ app.post(
 
     if (!space) throw notFound("Space");
 
-    if (!await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId)) {
+    if (!await requireSpaceMembershipOrSessionAccess(c, spaceId, sessionId)) {
       // A run id is only meaningful inside its authorized conversation. Do not let a valid Space
       // member stop another person's background work by guessing its id.
       throw forbidden("You don't have access to this conversation");
@@ -2489,8 +2485,8 @@ app.get(
     const tenantId = await requireVerifiedTenant(c);
     const spaceId = c.req.param("spaceId");
     if (getCallerIdentity(c).role === "product_end_user") {
-      if (!(await requireEndUserBusinessMembership(c, spaceId))) {
-        throw forbidden("Not a member of this business");
+      if (!(await requireEndUserSpaceMembership(c, spaceId))) {
+        throw forbidden("Not a member of this Space");
       }
     }
 
@@ -2718,7 +2714,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
   const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": callerRole,
     "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) };
   const isEndUser = callerRole === "product_end_user";
-  const role = isEndUser ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = isEndUser ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!role) throw forbidden("Space membership is required for session usage");
   const scopeResponse = await c.env.SPACES_WORKER.fetch(new Request(
     `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`, { headers }));
@@ -2838,7 +2834,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/compact", async (c) => {
   const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId, "x-naelao-role": callerRole,
     "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) };
   const isEndUser = callerRole === "product_end_user";
-  const role = isEndUser ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = isEndUser ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!role) throw forbidden("Space membership is required for compaction");
   const scopeResponse = await c.env.SPACES_WORKER.fetch(new Request(
     `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/compact-scope`, { headers }));
@@ -2931,7 +2927,7 @@ app.get("/spaces/:spaceId/tasks", async (c) => {
   // filter is allowed only with an explicitly authorized Project scope; it must never expose
   // every task in a Space.
   if (role === "product_end_user" && !sessionId && !projectId) return c.json({ error_code: "task_session_or_project_scope_required" }, 400);
-  if (sessionId && !await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId)) return c.json({ error_code: "forbidden" }, 403);
+  if (sessionId && !await requireSpaceMembershipOrSessionAccess(c, spaceId, sessionId)) return c.json({ error_code: "forbidden" }, 403);
   if (projectId) {
     try { await requireProjectAccessForManagedProfile(c, spaceId, projectId, false); }
     catch { return c.json({ error_code: "forbidden" }, 403); }
@@ -2965,7 +2961,7 @@ app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
   const initialResponse = await stub.fetch(`http://task-do/tasks/${encodeURIComponent(taskId)}?timeout=0`);
   if (!initialResponse.ok) return initialResponse;
   const task = await initialResponse.json<{ session_id?: unknown; project_id?: unknown; status?: unknown }>().catch((): { session_id?: unknown; project_id?: unknown; status?: unknown } => ({}));
-  const sessionAccess = typeof task.session_id === "string" && await requireBusinessMembershipOrSessionAccess(c, spaceId, task.session_id);
+  const sessionAccess = typeof task.session_id === "string" && await requireSpaceMembershipOrSessionAccess(c, spaceId, task.session_id);
   let projectAccess = false;
   if (!sessionAccess && typeof task.project_id === "string" && task.project_id) {
     try { await requireProjectAccessForManagedProfile(c, spaceId, task.project_id, false); projectAccess = true; }
@@ -3009,8 +3005,8 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     userId?: string;
     projectId?: string;
     callerRole?: string;
-    /** Resolved server-side in /agent/run — see resolveCallerBusinessRole. */
-    businessRole?: string;
+    /** Resolved server-side in /agent/run — see resolveCallerSpaceRole. */
+    spaceRole?: string;
     sessionCreditCeiling?: number;
     workerTokenBudget?: number;
     /** WHICH business this run is for — carried from /agent/run through the Workflow so the
@@ -3040,7 +3036,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           "content-type": "application/json",
           ...(body.userId ? { "x-naelao-user-id": body.userId } : {}),
           ...(body.callerRole ? { "x-naelao-role": body.callerRole } : {}),
-          ...(body.businessRole ? { "x-naelao-business-role": body.businessRole } : {}),
+          ...(body.spaceRole ? { "x-naelao-space-role": body.spaceRole } : {}),
         },
         body: JSON.stringify({
           goal: body.goal,
@@ -3144,7 +3140,7 @@ async function requireApprovalAuthority(c: Parameters<typeof requireOwnedSpace>[
   const tenantId=await requireOwnedSpace(c,spaceId);const userId=c.req.header("x-naelao-user-id")??"";const role=c.req.header("x-naelao-role");
   if(!userId) throw unauthorized("Human approval authority required");
   if(role==="product_end_user") {
-    const membership=await resolveEndUserBusinessRole(c.env.PLATFORM_DB,spaceId,userId);
+    const membership=await resolveEndUserSpaceRole(c.env.PLATFORM_DB,spaceId,userId);
     if(membership!=="owner" && membership!=="admin") throw forbidden("Owner or admin approval authority required");
   } else {
     if(role!=="owner" && role!=="admin") throw forbidden("Owner or admin approval authority required");
@@ -3478,13 +3474,13 @@ async function connectorAliasHubRequest(c: Context<{ Bindings: AgentsEnv }>, pat
 
 app.get("/spaces/:spaceId/connector-aliases", async (c) => {
   const spaceId = c.req.param("spaceId");
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   return connectorAliasHubRequest(c, `/v1/spaces/${encodeURIComponent(spaceId)}/connector-aliases`);
 });
 
 app.post("/spaces/:spaceId/connector-aliases", async (c) => {
   const spaceId = c.req.param("spaceId");
-  if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) throw forbidden("Business admin access required");
+  if (!(await requireEndUserSpaceMembership(c, spaceId, "admin"))) throw forbidden("Space admin access required");
   const body = await c.req.json<{ alias?: string; scope?: "space_shared" | "project_bound" | "user_personal"; project_id?: string; connector_name?: string; granted_scopes?: string[] }>();
   if (!body.connector_name) throw badRequest("connector_name is required");
   const listed = await connectorAliasHubRequest(c, `/v1/spaces/${encodeURIComponent(spaceId)}/mcp-servers`);
@@ -3500,7 +3496,7 @@ app.post("/spaces/:spaceId/connector-aliases", async (c) => {
 
 app.delete("/spaces/:spaceId/connector-aliases/:aliasId", async (c) => {
   const spaceId = c.req.param("spaceId");
-  if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) throw forbidden("Business admin access required");
+  if (!(await requireEndUserSpaceMembership(c, spaceId, "admin"))) throw forbidden("Space admin access required");
   return connectorAliasHubRequest(c, `/v1/spaces/${encodeURIComponent(spaceId)}/connector-aliases/${encodeURIComponent(c.req.param("aliasId"))}`, { method: "DELETE" });
 });
 
@@ -3587,7 +3583,7 @@ async function resolveConnectorCredential(
 // platform's shared allowance. Stored space-scoped in the vault under `llm-byok:{provider}` (a
 // secret — never config_json); the agent isolate never sees it. NaelaoAgentDO resolves it at
 // run time when the resolved model is that provider's (resolveBusinessLlmOverride). The spaces
-// worker wraps these with requireBusinessMembership (GET member, PUT/DELETE admin) — this
+// worker wraps these with requireSpaceMembership (GET member, PUT/DELETE admin) — this
 // requireVerifiedTenant gate only proves SOME verified tenant, so a product_end_user must reach
 // them via that wrapper, never directly. CF Workers AI BYOK is deliberately absent: it needs a
 // business's own account-id + a scoped token + different gateway routing, a separate larger piece.
@@ -3786,7 +3782,7 @@ app.post("/spaces/:spaceId/llm-byok/models/activate", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const { userId, role: callerRole } = getCallerIdentity(c);
   const spaceId = c.req.param("spaceId");
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || (role !== "owner" && role !== "admin")) throw forbidden("Only a Space owner or admin may activate a model");
   const body = await c.req.json<{ model?: string; preflight_confirmed?: boolean }>().catch((): { model?: string; preflight_confirmed?: boolean } => ({}));
   if (!body.model || !body.model.startsWith("openrouter/")) return c.json({ error_code: "bad_request", message: "model must be an OpenRouter catalog model" }, 400);
@@ -4125,14 +4121,14 @@ app.post("/connectors/:platform/connect", async (c) => {
     return c.json({ error_code: "unavailable", message: "Connector services are not bound" }, 503);
   }
   // §A1.18: a scope_model='space' connector is a platform-wide integration for the whole
-  // business — admin-only, same as it's always been. `x-naelao-business-role` is present ONLY
+  // business — admin-only, same as it's always been. `x-naelao-space-role` is present ONLY
   // when the spaces-worker wrapper resolved a real product_end_user business role (see its own
   // comment); a builder calling with their own JWT never sends it, so this is a no-op for every
   // caller this route has always served — it only NEWLY restricts the specific case a plain
   // "member" business role would otherwise now be allowed through by the relaxed spaces-worker
   // gate. scope_model='user' needs no such check: connecting your own account is always allowed.
-  const businessRole = c.req.header("x-naelao-business-role");
-  if (connector.scope_model !== "user" && businessRole && businessRole !== "owner" && businessRole !== "admin") {
+  const spaceRole = c.req.header("x-naelao-space-role");
+  if (connector.scope_model !== "user" && spaceRole && spaceRole !== "owner" && spaceRole !== "admin") {
     return c.json({ error_code: "forbidden", message: "Connecting this app requires an admin of this business" }, 403);
   }
 
@@ -4354,7 +4350,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
   const { userId, role: callerRole } = getCallerIdentity(c);
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect a provider to an extension");
   if (!await isActiveTenantSpace(c.env, spaceId, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
@@ -4434,7 +4430,7 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connect
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
   const { role: callerRole } = getCallerIdentity(c);
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!role || !["owner", "admin"].includes(role)) throw forbidden("Only a Space owner or admin may view extension provider status");
   const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,account_id,account_label,routing_keys_json,granted_scopes_json,status,connected_at,last_verified_at
     FROM extension_provider_connections WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=?`)
@@ -4445,7 +4441,7 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connect
 
 app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/routes/available", async c => {
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
-  const { role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const { role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!role || !["owner", "admin"].includes(role)) throw forbidden("Only a Space owner or admin may view provider routing targets");
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
   const row = await c.env.PLATFORM_DB.prepare(`SELECT credential_name FROM extension_provider_connections
@@ -4474,7 +4470,7 @@ app.get("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connect
 
 app.put("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/routes", async c => {
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
-  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may set extension routing");
   if (!await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId)) return c.json({ error_code: "extension_installation_unavailable" }, 404);
   const body = await c.req.json<{ channel_ids?: unknown }>().catch(() => ({} as { channel_ids?: unknown }));
@@ -4507,7 +4503,7 @@ app.put("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connect
 
 app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/telegram/connect", async c => {
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
-  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect a Telegram bot");
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
   if (!c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER) return c.json({ error_code: "telegram_connection_unavailable" }, 503);
@@ -4578,7 +4574,7 @@ app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connec
 
 app.post("/spaces/:spaceId/projects/:projectId/extensions/:installationId/connections/:connectionId/whatsapp/connect", async c => {
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
-  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may connect WhatsApp to an extension");
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, spaceId)) return c.json({ error_code: "air_gap_egress_denied" }, 403);
   if (!c.env.PUBLIC_AGENTS_URL || !c.env.CREDENTIALS_WORKER || !c.env.WHATSAPP_APP_ID || !c.env.WHATSAPP_APP_SECRET || !c.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) return c.json({ error_code: "whatsapp_connection_unavailable" }, 503);
@@ -4645,7 +4641,7 @@ app.delete("/spaces/:spaceId/projects/:projectId/extensions/:installationId/conn
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId"), connectionId = c.req.param("connectionId");
   const { userId, role: callerRole } = getCallerIdentity(c);
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Only a Space owner or admin may disconnect an extension provider");
   const row = await c.env.PLATFORM_DB.prepare(`SELECT provider,credential_name,account_id,webhook_secret_name,routing_keys_json FROM extension_provider_connections
     WHERE tenant_id=? AND space_id=? AND project_id=? AND installation_id=? AND connection_id=? AND status IN ('active','error','expired')`)
@@ -4766,7 +4762,7 @@ app.post("/connectors/:platform/oauth/start", async (c) => {
   const body = await c.req.json<StartBody>().catch(() => ({ space_id: "", return_url: "" } as StartBody));
   if (!body.space_id) throw badRequest("space_id is required");
   if (!body.return_url) throw badRequest("return_url is required");
-  if (!await requireEndUserBusinessMembership(c, body.space_id, "admin")) return c.json({ error_code: "forbidden", message: "Only a Space owner or admin may connect a provider" }, 403);
+  if (!await requireEndUserSpaceMembership(c, body.space_id, "admin")) return c.json({ error_code: "forbidden", message: "Only a Space owner or admin may connect a provider" }, 403);
   if (!await isActiveTenantSpace(c.env, body.space_id, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
     return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
@@ -5005,7 +5001,7 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
   if (!isTrustedConnectorReturnUrl(body.return_url, c.env)) {
     return c.json({ error_code: "bad_request", message: "return_url must use an approved Naelao app origin" }, 400);
   }
-  if (!await requireEndUserBusinessMembership(c, body.space_id, "admin")) return c.json({ error_code: "forbidden", message: "Only a Space owner or admin may connect a provider" }, 403);
+  if (!await requireEndUserSpaceMembership(c, body.space_id, "admin")) return c.json({ error_code: "forbidden", message: "Only a Space owner or admin may connect a provider" }, 403);
   if (!await isActiveTenantSpace(c.env, body.space_id, tenantId)) return c.json({ error_code: "tenant_suspended" }, 403);
   if (await isSpaceNetworkEgressDenied(c.env.PLATFORM_DB, body.space_id)) {
     return c.json({ error_code: "air_gap_egress_denied", message: "This space does not permit network connectors" }, 403);
@@ -5366,136 +5362,6 @@ app.post("/channels/:channel/connect", async (c) => {
   ).bind(body.space_id, tenantId, channel, body.project_id ?? null).run();
 
   return c.json({ connected: true, channel, project_id: body.project_id ?? null, webhook_path: `/v1/channels/${channel}/inbound/${body.space_id}` }, 201);
-});
-
-// GET /project-templates — generic project templates published by the Space Template catalog.
-app.get("/project-templates", (c) => c.json({ data: PROJECT_TEMPLATES, count: PROJECT_TEMPLATES.length }));
-
-// POST /spaces/:spaceId/projects/from-template — creates a fully configured project in one
-// call, from any entry in the project-templates catalogue:
-// the project row (execution policy, spend cap, thread cap, agent binding/allowlist,
-// channel_config when the template suggests a channel) plus its starter rules and scheduled
-// jobs. For a template with a suggested channel, the builder still calls /channels/:channel/connect
-// with this project's id to actually wire a live number/server — template application only
-// sets up the Naelao-side config.
-/**
- * Apply one project-template preset to a space: create the project, configure it (kind, ceiling,
- * spend cap, channel), and seed its rules + scheduled jobs. Extracted from the route handler so a
- * SpaceType template's own `bootstrap.project_templates` can stamp the same presets during
- * onboarding without re-implementing (and drifting from) this sequence.
- *
- * Returns the created project id, or an { error } describing which step failed — callers decide
- * whether that's fatal (the explicit route: yes, surface it) or best-effort (bootstrap: no, one
- * preset failing must never block the rest of onboarding).
- */
-async function applyProjectTemplate(
-  env: AgentsEnv,
-  spaceId: string,
-  tenantId: string,
-  templateId: string,
-  name?: string,
-  // The person who asked for this, when there is one — absent for a system/onboarding-time
-  // stamp with no acting user. Forwarded as x-naelao-user-id so SpaceDO's createProject can set
-  // `created_by`, without which the new project defaults to private and is invisible to the
-  // very person who just created it (the same bug item 78 found and fixed for the assistant's
-  // own workspace-admin/project-coordination prebuilts — this route is a separate code path
-  // that had the identical gap: it never forwarded the caller's identity at all).
-  callerUserId?: string
-): Promise<{ projectId: string } | { error: string; status: number }> {
-  const template = getProjectTemplate(templateId);
-  if (!template) return { error: "unknown project template", status: 404 };
-
-  // 1. Create the project (agent binding set at creation so it's consistent from the start —
-  //    createProject validates default_agent_id is a member of allowed_agent_ids when both
-  //    are set, same as a builder setting them by hand).
-  const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
-  const headers = {
-    "content-type": "application/json",
-    "x-naelao-tenant-id": tenantId,
-    "x-naelao-internal-token": internalToken,
-    ...(callerUserId ? { "x-naelao-user-id": callerUserId } : {}),
-  };
-  const createResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      name: name ?? template.name,
-      description: template.description,
-      ...(template.default_agent_id ? { default_agent_id: template.default_agent_id } : {}),
-      ...(template.allowed_agent_ids && template.allowed_agent_ids.length > 0 ? { allowed_agent_ids: template.allowed_agent_ids } : {}),
-    }),
-  }));
-  if (!createResp.ok) return { error: await createResp.text(), status: 502 };
-  const project = await createResp.json<{ id: string; name: string; created?: boolean }>();
-  // Same fix as seedTemplateProjects (bootstrap.ts): this endpoint used to ALWAYS return ok/201
-  // even when `ON CONFLICT(space_id, name) DO NOTHING` silently no-op'd on a name that already
-  // existed — this function's own comment at its call site claimed a re-run would be "skipped...
-  // since [createProject] returns an error rather than duplicating", which was never actually
-  // true. `created` (added specifically to close this) is what makes that real: a re-run against
-  // an already-existing project of this name reconfigures it (idempotent — a plain overwrite) but
-  // does NOT re-seed rules/scheduled jobs, which are plain inserts with no dedup of their own and
-  // would otherwise double (or triple, on every re-run) every time bootstrap/complete runs again.
-  const alreadyExisted = project.created === false;
-
-  // 2. Configure the generic workspace, execution ceiling, spend cap, thread cap and optional
-  //    suggested channel. Safe to re-apply even on an already-
-  //    existing project — it's a plain overwrite of the same fields, not an additive insert.
-  const configResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}`, {
-    method: "PATCH",
-    headers,
-    body: JSON.stringify({
-      kind: "DualPane",
-      ...(template.external_channel_profile !== undefined
-        ? { external_channel_profile: template.external_channel_profile }
-        : {}),
-      execution_ceiling: template.execution_ceiling,
-      daily_spend_cap_credits: template.daily_spend_cap_credits,
-      ...(template.max_threads !== undefined ? { max_threads: template.max_threads } : {}),
-      ...(template.suggested_channel
-        ? { channel_config: { [template.suggested_channel]: { connected: false } } }
-        : {}),
-    }),
-  }));
-  if (!configResp.ok) return { error: await configResp.text(), status: 502 };
-
-  if (!alreadyExisted) {
-    // 3. Seed scheduled jobs. Workspace templates provide schedules; channel behavior belongs to
-    // an installed, permissioned extension rather than a built-in project rule engine.
-    //    a weekly community digest). Scoped to this project via project_id.
-    for (const job of template.scheduled_jobs ?? []) {
-      await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {
-        method: "POST", headers, body: JSON.stringify({ ...job, project_id: project.id }),
-      }));
-    }
-  }
-
-  return { projectId: project.id };
-}
-
-app.post("/spaces/:spaceId/projects/from-template", async (c) => {
-  const spaceId = c.req.param("spaceId");
-  const tenantId = await requireVerifiedTenant(c);
-  const { userId } = getCallerIdentity(c);
-
-  type FromTemplateBody = { template_id: string; name?: string };
-  const body = await c.req.json<FromTemplateBody>().catch(() => ({ template_id: "" }) as FromTemplateBody);
-  const template = getProjectTemplate(body.template_id);
-  if (!template) throw notFound("Project template");
-
-  const result = await applyProjectTemplate(c.env, spaceId, tenantId, body.template_id, body.name, userId || undefined);
-  if ("error" in result) {
-    return c.json({ error_code: "project_template_failed", message: result.error }, result.status as 404 | 502);
-  }
-
-  return c.json({
-    project_id: result.projectId,
-    template_id: template.id,
-      kind: "DualPane",
-    ...(template.suggested_channel ? { suggested_channel: template.suggested_channel } : {}),
-    ...(template.suggested_channel
-      ? { next_step: `POST /channels/${template.suggested_channel}/connect { space_id, secret, project_id: "${result.projectId}" }` }
-      : {}),
-  }, 201);
 });
 
 /** Internal request headers for worker configuration writes. */
@@ -6903,7 +6769,7 @@ app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
   const { userId, role: callerRole } = getCallerIdentity(c);
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Project channel inbox requires Space owner or admin access");
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(installationId)) throw badRequest("Invalid project or installation id");
   const url = new URL(c.req.url);
@@ -6917,7 +6783,7 @@ app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
 
 app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/sla", async c => {
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
-  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Inbox SLA requires Space owner or admin access");
   if (!await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId)) return c.json({ error_code: "extension_installation_unavailable" }, 404);
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId") ?? "");
@@ -6926,7 +6792,7 @@ app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
 
 app.put("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/sla", async c => {
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
-  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Inbox SLA requires Space owner or admin access");
   if (!await fetchInstalledConnectionContext(c.env, tenantId, spaceId, projectId, installationId)) return c.json({ error_code: "extension_installation_unavailable" }, 404);
   const body = await c.req.json<{ first_response_seconds?: unknown }>().catch(() => ({} as { first_response_seconds?: unknown }));
@@ -6938,7 +6804,7 @@ app.put("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
 
 app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/notes", async c => {
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
-  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Inbox notes require Space owner or admin access");
   const eventId = c.req.query("event_id") ?? "";
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(eventId)) throw badRequest("Invalid inbox event id");
@@ -6948,7 +6814,7 @@ app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
 
 app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId/inbox/notes", async c => {
   const tenantId = await requireVerifiedTenant(c), spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
-  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const { userId, role: callerRole } = getCallerIdentity(c), role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Inbox notes require Space owner or admin access");
   const body = await c.req.json<{ event_id?: unknown; note_text?: unknown }>().catch(() => ({} as { event_id?: unknown; note_text?: unknown }));
   const eventId = typeof body.event_id === "string" ? body.event_id : "", noteText = typeof body.note_text === "string" ? body.note_text : "";
@@ -6969,7 +6835,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationI
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
   const { userId, role: callerRole } = getCallerIdentity(c);
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Project channel inbox assignment requires Space owner or admin access");
   const body = await c.req.json<{ event_id?: unknown; assigned_to?: unknown; expected_assigned_to?: unknown }>().catch(() => ({} as { event_id?: unknown; assigned_to?: unknown; expected_assigned_to?: unknown }));
   const eventId = typeof body.event_id === "string" ? body.event_id : "";
@@ -7008,7 +6874,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationI
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
   const { userId, role: callerRole } = getCallerIdentity(c);
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Project channel inbox requires Space owner or admin access");
   const body = await c.req.json<{ event_id?: unknown }>().catch(() => ({} as { event_id?: unknown }));
   const eventId = typeof body.event_id === "string" ? body.event_id : "";
@@ -7035,7 +6901,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationI
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
   const { userId, role: callerRole } = getCallerIdentity(c);
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Project channel data deletion requires Space owner or admin access");
   const body = await c.req.json<{ event_id?: unknown }>().catch(() => ({} as { event_id?: unknown }));
   const eventId = typeof body.event_id === "string" ? body.event_id : "";
@@ -7062,7 +6928,7 @@ app.post("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationI
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
   const { userId, role: callerRole } = getCallerIdentity(c);
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Project channel replies require Space owner or admin access");
   const body = await c.req.json<{ event_id?: unknown; text?: unknown }>().catch(() => ({} as { event_id?: unknown; text?: unknown }));
   const eventId = typeof body.event_id === "string" ? body.event_id : "", replyText = typeof body.text === "string" ? body.text : "";
@@ -7091,7 +6957,7 @@ app.get("/spaces/:spaceId/projects/:projectId/channel-extensions/:installationId
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId"), projectId = c.req.param("projectId"), installationId = c.req.param("installationId");
   const { userId, role: callerRole } = getCallerIdentity(c);
-  const role = callerRole === "product_end_user" ? await resolveCallerBusinessRole(c, spaceId) : callerRole;
+  const role = callerRole === "product_end_user" ? await resolveCallerSpaceRole(c, spaceId) : callerRole;
   if (!userId || !["owner", "admin"].includes(role ?? "")) throw forbidden("Project channel exports require Space owner or admin access");
   const eventId = c.req.query("event_id") ?? "";
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(projectId) || !/^[A-Za-z0-9._:-]{1,160}$/.test(installationId)
@@ -7121,77 +6987,51 @@ app.get("/spaces/:spaceId/channels/unanswered", async (c) => {
 
 // ── WS-2: Space Assistant surface — read-only panels (Status/Memory/Channels/Sub-agents/Files) ──
 // Every panel is a pure consumer of an already-built backend; none of these routes ever write.
-// A product_end_user is allowed through (their OWN Space Assistant, or their business's) subject
-// to the same resolveEndUserBusinessRole floor every other end-user-reachable route uses — since
-// the agents worker doesn't share spaces worker's business-auth.ts module, this calls the spaces
-// worker's own /internal/business-role endpoint (added for exactly this cross-worker check).
+// A product_end_user is allowed through for their own Space Assistant, subject to the same
+// Space membership role checks used by the spaces worker.
 /**
- * This end user's role in THIS business ("owner" | "admin" | "member"), or undefined when they
+ * This end user's role in this Space ("owner" | "admin" | "member"), or undefined when they
  * aren't a member (or the lookup fails — fail soft: the caller only uses this to decide whether
  * yolo applies, and undefined keeps the safe always_ask posture).
  */
-async function resolveCallerBusinessRole(
+async function resolveCallerSpaceRole(
   c: { env: AgentsEnv; req: { header: (h: string) => string | undefined } },
   spaceId: string
 ): Promise<string | undefined> {
-  const { tenantId, userId } = getCallerIdentity(c);
-  if (!c.env.SPACES_WORKER || !userId || !tenantId) return undefined;
-  try {
-    const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-    const resp = await c.env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/internal/business-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(userId)}`,
-      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token } }
-    ));
-    if (!resp.ok) return undefined;
-    const { role } = await resp.json<{ role?: string }>().catch(() => ({ role: undefined }));
-    return role;
-  } catch {
-    return undefined;
-  }
+  const { role, userId } = getCallerIdentity(c);
+  if (role !== "product_end_user" || !userId) return undefined;
+  return (await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId)) ?? undefined;
 }
 
-async function requireEndUserBusinessMembership(
+async function requireEndUserSpaceMembership(
   c: { env: AgentsEnv; req: { header: (h: string) => string | undefined } },
   spaceId: string,
-  /** Minimum business role. Reads are fine for any member; anything that changes how the business
+  /** Minimum Space role. Reads are fine for any member; changes that expose the Space externally
    *  can be reached from the outside world (connecting a channel) is an owner/admin action, the
-   *  same floor requireBusinessMembership applies to its own writes on the spaces worker. */
+   *  same floor requireSpaceMembership applies to its own writes on the spaces worker. */
   minRole: "member" | "admin" = "member"
 ): Promise<boolean> {
-  const { tenantId, userId, role } = getCallerIdentity(c);
+  const { userId, role } = getCallerIdentity(c);
   if (role !== "product_end_user") return true;
-  if (!c.env.SPACES_WORKER || !userId) return false;
-  try {
-    const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-    const resp = await c.env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/internal/business-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(userId)}`,
-      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token } }
-    ));
-    if (!resp.ok) return false;
-    if (minRole === "member") return true;
-    // owner outranks admin — the creator of a business is inserted as 'owner', and an exact
-    // === "admin" check here would lock them out of their own business (the bug item 90 fixed in
-    // the shell's own UI for exactly this reason).
-    const { role: businessRole } = await resp.json<{ role?: string }>().catch(() => ({ role: undefined }));
-    return businessRole === "admin" || businessRole === "owner";
-  } catch {
-    return false;
-  }
+  if (!userId) return false;
+  const spaceRole = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, userId);
+  if (!spaceRole) return false;
+  return minRole === "member" || spaceRole === "admin" || spaceRole === "owner";
 }
 
 /**
  * Conversation-scoped read panels are also available to the product user who owns the
- * conversation. Product users can legitimately chat in the product's root space without a row
- * in business_memberships; requiring that row made the Workers panel fail even though the same
- * verified caller could read and run the session. Keep the broader business-member path, then
+ * conversation. Product users can legitimately chat in the product's root space without a
+ * membership row; requiring one made the Workers panel fail even though the same verified caller
+ * could read and run the session. Keep the membership path, then
  * fall back to SpaceDO's existing end_user_id ownership check for this exact session.
  */
-async function requireBusinessMembershipOrSessionAccess(
+async function requireSpaceMembershipOrSessionAccess(
   c: { env: AgentsEnv; req: { header: (h: string) => string | undefined } },
   spaceId: string,
   sessionId: string
 ): Promise<boolean> {
-  if (await requireEndUserBusinessMembership(c, spaceId)) return true;
+  if (await requireEndUserSpaceMembership(c, spaceId)) return true;
   const { tenantId, userId, role } = getCallerIdentity(c);
   if (role !== "product_end_user" || !tenantId || !userId || !sessionId || !c.env.SPACES_WORKER) return false;
   try {
@@ -7219,7 +7059,7 @@ async function requireBusinessMembershipOrSessionAccess(
 app.get("/spaces/:spaceId/assistant/memory", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   const category = c.req.query("category");
   const local = await stub
@@ -7273,7 +7113,7 @@ app.get("/spaces/:spaceId/assistant/memory", async (c) => {
 app.get("/spaces/:spaceId/assistant/attachment-ocr", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   const row = await c.env.PLATFORM_DB.prepare("SELECT config_json,status FROM spaces WHERE id=? AND tenant_id=?").bind(spaceId, tenantId).first<{ config_json: string | null; status: string }>();
   if (!row || row.status !== "active") throw notFound("Space");
   try {
@@ -7285,7 +7125,7 @@ app.get("/spaces/:spaceId/assistant/attachment-ocr", async (c) => {
 app.patch("/spaces/:spaceId/assistant/attachment-ocr", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) throw forbidden("Only a business owner or admin can change attachment OCR settings");
+  if (!(await requireEndUserSpaceMembership(c, spaceId, "admin"))) throw forbidden("Only a Space owner or admin can change attachment OCR settings");
   const body = await c.req.json<{ enabled?: unknown }>().catch(() => ({} as { enabled?: unknown }));
   if (typeof body.enabled !== "boolean") throw badRequest("enabled must be a boolean");
   const space = await c.env.PLATFORM_DB.prepare("SELECT status,config_json FROM spaces WHERE id=? AND tenant_id=?").bind(spaceId, tenantId).first<{ status: string; config_json: string | null }>();
@@ -7305,7 +7145,7 @@ app.patch("/spaces/:spaceId/assistant/attachment-ocr", async (c) => {
 app.get("/spaces/:spaceId/assistant/channels", async (c) => {
   const spaceId = c.req.param("spaceId");
   await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   const projectId = c.req.query("project_id");
   const scope = c.req.query("scope");
   const { results } = projectId
@@ -7325,7 +7165,7 @@ app.get("/spaces/:spaceId/assistant/channels", async (c) => {
 app.get("/spaces/:spaceId/assistant/channel-extensions", async c => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) throw forbidden("Only a business owner or admin can manage external channel extensions");
+  if (!(await requireEndUserSpaceMembership(c, spaceId, "admin"))) throw forbidden("Only a Space owner or admin can manage external channel extensions");
   const projectId = c.req.query("project_id") ?? "";
   if (!projectId) throw badRequest("project_id is required");
   const response = await c.env.SPACES_WORKER.fetch(new Request(
@@ -7455,8 +7295,8 @@ app.post("/internal/channel-extensions/session-state", async c => {
 app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) {
-    throw forbidden("Only a business owner or admin can change how this business is reached");
+  if (!(await requireEndUserSpaceMembership(c, spaceId, "admin"))) {
+    throw forbidden("Only a Space owner or admin can change how this business is reached");
   }
   const { userId } = getCallerIdentity(c);
 
@@ -7678,7 +7518,7 @@ app.get("/spaces/:spaceId/assistant/sub-agents", async (c) => {
   const parentRunId = c.req.query("parent_run_id") ?? "";
   const sessionId = c.req.query("session_id") ?? "";
   const agentId = c.req.query("agent_id") ?? "";
-  if (!(await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId))) {
+  if (!(await requireSpaceMembershipOrSessionAccess(c, spaceId, sessionId))) {
     throw forbidden("You don't have access to this conversation");
   }
   const stub = sessionId
@@ -7693,7 +7533,7 @@ app.get("/spaces/:spaceId/assistant/goal-activity", async (c) => {
   const sessionId = c.req.query("session_id") ?? "", agentId = c.req.query("agent_id") ?? "", runId = c.req.query("run_id") ?? "";
   const history = c.req.query("history") === "true";
   if ((!history && (!runId || runId.length > 192)) || !actorId) throw badRequest("A valid run ID or conversation history request and user are required");
-  if (!(await requireBusinessMembershipOrSessionAccess(c, spaceId, sessionId))) throw forbidden("You don't have access to this conversation");
+  if (!(await requireSpaceMembershipOrSessionAccess(c, spaceId, sessionId))) throw forbidden("You don't have access to this conversation");
   const stub = sessionId ? await getAgentDO(c.env, tenantId, agentId ? `${sessionId}:${agentId}` : sessionId, c.get("requestId")) : await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   const query = new URLSearchParams({ space_id: spaceId, ...(runId ? { run_id: runId } : {}), ...(history ? { history: "true" } : {}) });
   return stub.fetch(new Request(`http://agent-do/internal/goal-activity?${query}`, { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-user-id": actorId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }));
@@ -7705,7 +7545,7 @@ app.get("/spaces/:spaceId/assistant/goal-activity", async (c) => {
 app.get("/spaces/:spaceId/assistant/files", async (c) => {
   const spaceId = c.req.param("spaceId");
   await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
   const prefix = `spaces/${spaceId}/workspace/`;
   const listed = await c.env.SCRIPTS_R2.list({ prefix, limit: 200 });
@@ -7738,7 +7578,7 @@ function assistantBytesToBase64(bytes: Uint8Array): string {
 app.get("/spaces/:spaceId/assistant/files/*", async (c) => {
   const spaceId = c.req.param("spaceId");
   await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
   const prefix = `spaces/${spaceId}/workspace/`;
   const rest = c.req.path.split("/assistant/files/")[1] ?? "";
@@ -7778,7 +7618,7 @@ app.get("/spaces/:spaceId/assistant/files/*", async (c) => {
 app.get("/spaces/:spaceId/assistant/artifacts", async (c) => {
   const spaceId = c.req.param("spaceId");
   await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   if (!c.env.ARTIFACT_WORKER) return c.json({ error_code: "unavailable", message: "Artifact storage not bound" }, 503);
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const query = new URL(c.req.url).search;
@@ -7802,7 +7642,7 @@ app.get("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const artifactId = c.req.param("artifactId");
   await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   if (!c.env.ARTIFACT_WORKER) return c.json({ error_code: "unavailable", message: "Artifact storage not bound" }, 503);
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const resp = await c.env.ARTIFACT_WORKER.fetch(
@@ -7841,7 +7681,7 @@ app.delete("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {
   const spaceId = c.req.param("spaceId");
   const artifactId = c.req.param("artifactId");
   await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
   if (!c.env.ARTIFACT_WORKER) return c.json({ error_code: "unavailable", message: "Artifact storage not bound" }, 503);
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const resp = await c.env.ARTIFACT_WORKER.fetch(
@@ -7862,7 +7702,7 @@ app.delete("/spaces/:spaceId/assistant/artifacts/:artifactId", async (c) => {
 app.get("/spaces/:spaceId/assistant/capabilities", async (c) => {
   const spaceId = c.req.param("spaceId");
   await requireVerifiedTenant(c);
-  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!(await requireEndUserSpaceMembership(c, spaceId))) throw forbidden("Not a member of this Space");
 
   // Step 15: a PROJECT thread's agent does not have the space-assistant-only orchestration
   // scripts — its ScriptToolSurface is built from its own profile's prebuilt list, which never
@@ -8070,393 +7910,6 @@ app.post("/spaces/:spaceId/channels/sessions/:sessionId/takeover", async (c) => 
   return stub.fetch(new Request(`http://agent-do/channels/sessions/${encodeURIComponent(sessionId)}/takeover`, { method: "POST" }));
 });
 
-// ── First-run bootstrap: state, answers, execution ───────────────────────────
-//
-// The provisioner records what a template's bootstrap NEEDS (config_json.onboarding) and runs the
-// structural half (projects + starter threads) at creation time. What remains — the questions only
-// a human can answer (connect your Whop account, where should I reach you, how much can I do on my
-// own) — is what these routes serve. The builder dashboard has always driven this via a space PATCH
-// + bootstrap/complete; the end-user shell reaches the same state through the spaces worker's
-// /spaces/:spaceId/onboarding wrapper, so both surfaces read and write ONE record, never two.
-
-/** A space's config_json + its onboarding sub-record, as one load. Throws 404 when the caller's
- *  tenant doesn't own the space (the same ownership check every route in this file relies on). */
-async function loadSpaceOnboarding(
-  env: AgentsEnv,
-  spaceId: string,
-  tenantId: string
-): Promise<{ cfg: Record<string, unknown>; onboarding: OnboardingRecord; spaceStatus: string }> {
-  const row = await env.PLATFORM_DB.prepare(
-    "SELECT config_json, status FROM spaces WHERE id = ? AND tenant_id = ?"
-  ).bind(spaceId, tenantId).first<{ config_json: string | null; status: string | null }>();
-  if (!row) throw notFound("Space");
-  const cfg = (safeParse(row.config_json ?? "{}") as Record<string, unknown>) ?? {};
-  return {
-    cfg,
-    onboarding: (cfg["onboarding"] as OnboardingRecord | undefined) ?? {},
-    spaceStatus: row.status ?? "provisioning",
-  };
-}
-
-/** A project seed may be a plain string (a name-only, unbound reference project) or
- *  { name, default_agent_id } — see spacetype.ts's TemplateProjectSeed. */
-type RawProjectSeed = string | { name: string; default_agent_id?: string };
-
-interface OnboardingRecord {
-  projects?: RawProjectSeed[];
-  setup_scripts?: string[];
-  status?: string;
-  template_ids?: string[];
-  template_id?: string;
-  projects_created?: string[];
-}
-
-/** The templates a space was built from. Reads template_ids, falling back to the older singular
- *  template_id — both shapes exist in live records. */
-function onboardingTemplateIds(onboarding: OnboardingRecord): string[] {
-  return onboarding.template_ids ?? (onboarding.template_id ? [onboarding.template_id] : []);
-}
-
-/** Every bootstrap prompt across a space's templates, in template order. Deduped by prompt id so
- *  a multi-template business isn't asked the same question (e.g. `autonomy`) once per template. */
-function promptsForTemplates(templateIds: string[]) {
-  const seen = new Set<string>();
-  const out: NonNullable<NonNullable<ReturnType<typeof getLaunchpadTemplate>>["bootstrap"]>["prompts"] = [];
-  for (const tid of templateIds) {
-    for (const p of getLaunchpadTemplate(tid)?.bootstrap?.prompts ?? []) {
-      if (seen.has(p.id)) continue;
-      seen.add(p.id);
-      out.push(p);
-    }
-  }
-  return out;
-}
-
-/** Connector ids already registered as MCP servers for this space. Best-effort: an unreachable hub
- *  resolves to "nothing connected" rather than throwing, matching /connectors/status's own posture. */
-async function connectedConnectorIds(env: AgentsEnv, spaceId: string, tenantId: string): Promise<Set<string>> {
-  const connected = new Set<string>();
-  if (!env.MCP_HUB) return connected;
-  try {
-    const resp = await env.MCP_HUB.fetch(
-      new Request(`http://mcp-hub/v1/spaces/${spaceId}/mcp-servers`, {
-        headers: {
-          "x-naelao-tenant-id": tenantId,
-          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
-        },
-      })
-    );
-    if (resp.ok) {
-      const { data } = await resp.json<{ data?: Array<{ name: string }> }>();
-      for (const s of data ?? []) connected.add(s.name);
-    }
-  } catch {
-    // Best-effort — treated as "not connected".
-  }
-  return connected;
-}
-
-/**
- * Whether each prompt is actually satisfied. A connection/credential prompt is satisfied by a real
- * registered connector, NOT by the presence of an answer string — an owner who pasted a key that
- * failed to vault must not be told they're done. Everything else is satisfied by a non-empty answer.
- */
-function promptSatisfied(
-  prompt: { id: string; type: string; connector?: string },
-  answers: Record<string, unknown>,
-  connected: Set<string>
-): boolean {
-  if (prompt.type === "connection" || prompt.type === "credential") {
-    return prompt.connector ? connected.has(prompt.connector) : false;
-  }
-  const a = answers[prompt.id];
-  return typeof a === "string" ? a.trim().length > 0 : a !== undefined && a !== null;
-}
-
-/** Whether this deployment can actually run a connector's one-click OAuth flow. Mirrors the exact
- *  condition the /connectors/:platform/oauth/start route checks, so the two can't disagree about
- *  what "configured" means. */
-function connectionMethod(env: AgentsEnv, platform: string): "composio" | "oauth" | "manual" {
-  const connector = CONNECTOR_CATALOGUE.find((x) => x.id === platform);
-  if (connector?.composio && env.COMPOSIO_API_KEY && env.PUBLIC_AGENTS_URL) return "composio";
-  if (connector?.oauth) {
-    const record = env as unknown as Record<string, string | undefined>;
-    if (record[connector.oauth.client_id_env] && record[connector.oauth.client_secret_env] && env.PUBLIC_AGENTS_URL) return "oauth";
-  }
-  return "manual";
-}
-
-// GET /spaces/:spaceId/bootstrap — everything a setup wizard needs in ONE call: the template's
-// prompts, whatever's already been answered, and whether each is genuinely satisfied. The shell
-// renders straight from this rather than carrying its own copy of the template definitions (the
-// same reason Phase F replaced the hardcoded template list with shell/manifest's catalogue).
-app.get("/spaces/:spaceId/bootstrap", async (c) => {
-  const tenantId = await requireVerifiedTenant(c);
-  const spaceId = c.req.param("spaceId");
-  const { cfg, onboarding, spaceStatus } = await loadSpaceOnboarding(c.env, spaceId, tenantId);
-
-  const templateIds = onboardingTemplateIds(onboarding);
-  const answers = (cfg["preferences"] as Record<string, unknown> | undefined) ?? {};
-  const connected = await connectedConnectorIds(c.env, spaceId, tenantId);
-  const prompts = promptsForTemplates(templateIds).map((p) => ({
-    ...p,
-    answer: p.type === "credential" || p.type === "connection" ? undefined : answers[p.id] ?? null,
-    satisfied: promptSatisfied(p, answers, connected),
-    // Pick a real connection method for this deployment. Composio can provision its hosted
-    // auth config on demand; provider-specific OAuth remains available for connectors that use it.
-    connect_method: p.connector ? connectionMethod(c.env, p.connector) : "manual",
-    connection_available: p.connector ? connectionMethod(c.env, p.connector) !== "manual" : false,
-  }));
-
-  return c.json({
-    // "pending" is the pre-provisioner-run default for a record that predates the status field.
-    status: onboarding.status ?? "pending",
-    // A brand-new business is created before provisioning finishes, so a wizard opened straight
-    // after creation can legitimately find an empty onboarding record. Without this the UI can't
-    // tell "still provisioning, wait" apart from "nothing to configure" — two very different
-    // screens — so it's reported rather than guessed at.
-    space_status: spaceStatus,
-    template_ids: templateIds,
-    templates: templateIds.map((id) => {
-      const t = getLaunchpadTemplate(id);
-      return { id, name: t?.name ?? id, description: t?.description ?? null, connectors: t?.connectors ?? [] };
-    }),
-    prompts,
-    projects_created: onboarding.projects_created ?? [],
-    setup_scripts: onboarding.setup_scripts ?? [],
-  });
-});
-
-// POST /spaces/:spaceId/bootstrap/save — persist partial answers WITHOUT completing.
-// Load-bearing, not a convenience: connecting an app is an OAuth redirect that navigates the
-// browser away mid-wizard, so anything typed before that click has to already be on the server or
-// it's simply gone when the user comes back.
-app.post("/spaces/:spaceId/bootstrap/save", async (c) => {
-  const tenantId = await requireVerifiedTenant(c);
-  const spaceId = c.req.param("spaceId");
-  const body = await c.req.json<{ answers?: Record<string, unknown> }>().catch(() => ({}) as { answers?: Record<string, unknown> });
-  const answers = body.answers ?? {};
-  const { cfg } = await loadSpaceOnboarding(c.env, spaceId, tenantId);
-  const merged = await persistOnboardingAnswers(c.env, spaceId, tenantId, cfg, answers);
-  return c.json({ ok: true, answers: merged });
-});
-
-/** Merge answers into config_json.preferences and write back. Returns the merged preferences.
- *  Merge, never clobber — config_json also carries productConfig/template_id/onboarding. */
-async function persistOnboardingAnswers(
-  env: AgentsEnv,
-  spaceId: string,
-  tenantId: string,
-  cfg: Record<string, unknown>,
-  answers: Record<string, unknown>
-): Promise<Record<string, unknown>> {
-  const merged = { ...((cfg["preferences"] as Record<string, unknown> | undefined) ?? {}), ...answers };
-  cfg["preferences"] = merged;
-  await env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
-  ).bind(JSON.stringify(cfg), new Date().toISOString(), spaceId, tenantId).run();
-  return merged;
-}
-
-// POST /spaces/:spaceId/bootstrap/complete — finishes the onboarding the provisioner recorded:
-// creates the template's projects (each pre-bound to its default agent, per spacetype.ts's
-// TemplateProjectSeed) in the SpaceDO, seeds a starter thread in each bound project so the
-// builder opens on a pre-wired workspace rather than an empty one, wakes the assistant to run
-// the setup scripts, and marks onboarding complete. Called by the dashboard wizard after
-// credentials/preferences are collected (which it does directly via connect + config PATCH).
-app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
-  const tenantId = await requireVerifiedTenant(c);
-  const spaceId = c.req.param("spaceId");
-  const { userId: bootstrapCallerUserId } = getCallerIdentity(c);
-
-  const body = await c.req.json<{ answers?: Record<string, unknown> }>().catch(() => ({}) as { answers?: Record<string, unknown> });
-  const { cfg, onboarding } = await loadSpaceOnboarding(c.env, spaceId, tenantId);
-  // Normalize the seeds to one shape so downstream code has a single form to deal with.
-  const projectSeeds = (onboarding.projects ?? []).map((p) => (typeof p === "string" ? { name: p } : p));
-  // The templates this space was built from — needed for project_templates + first_contact, which
-  // live on the SpaceType template rather than being copied into the onboarding record (they're
-  // static template data; duplicating them into every space's config_json would fork the source
-  // of truth the moment a template is edited).
-  const bootstrapTemplateIds = onboardingTemplateIds(onboarding);
-  const alreadyComplete = onboarding.status === "complete";
-
-  // Accept the wizard's answers here too, so a single-request "finish setup" works — the shell
-  // sends them with the final call rather than needing a separate save first. The dashboard's own
-  // wizard PATCHes the space directly before calling this and sends nothing, which still works:
-  // an absent `answers` merges nothing and leaves existing preferences untouched.
-  const answers = body.answers ?? {};
-  if (Object.keys(answers).length > 0) {
-    await persistOnboardingAnswers(c.env, spaceId, tenantId, cfg, answers);
-  }
-
-  // Refuse to "complete" setup that isn't actually done. Without this, an owner who skipped the
-  // Whop connection would get a first-contact message from an assistant with nothing to read —
-  // worse than no message at all, because it looks like the product works and doesn't. Skipped for
-  // an already-complete space so re-running this endpoint (a retry, or a template that later
-  // gained a prompt) can never strand a business that finished setup under the old definition.
-  if (!alreadyComplete) {
-    const connected = await connectedConnectorIds(c.env, spaceId, tenantId);
-    const currentAnswers = (cfg["preferences"] as Record<string, unknown> | undefined) ?? {};
-    const missing = promptsForTemplates(bootstrapTemplateIds)
-      .filter((p) => p.required && !promptSatisfied(p, currentAnswers, connected))
-      .map((p) => p.id);
-    if (missing.length > 0) {
-      return c.json(
-        {
-          error_code: "onboarding_incomplete",
-          message: `Setup isn't finished yet: ${missing.join(", ")}`,
-          missing,
-        },
-        400
-      );
-    }
-  }
-
-  // 1. Create the template's projects (idempotent — SpaceDO has UNIQUE(space_id, name)) via the
-  //    SpaceDO, each with its default_agent_id, then seed a starter thread in any project that
-  //    has one. Shares seedTemplateProjects with the PROVISIONER, which now runs this same
-  //    structural pass at creation time for every path (including the end-user shell, which
-  //    never reaches this endpoint) — one implementation so the two can't drift.
-  const bootstrapInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-  const bootstrapDeps = {
-    postToSpaces: async (path: string, body: unknown) =>
-      c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker${path}`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
-        body: JSON.stringify(body),
-      })),
-    getFromSpaces: async (path: string) =>
-      c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker${path}`, {
-        headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
-      })),
-  };
-  // Apply the owner's autonomy choice to the policy the runtime actually enforces. The
-  // first choice removes every onboarding auto-approval; the middle choice keeps the
-  // provisioner's restricted routine-action list; the final choice selects yolo, whose
-  // existing role checks and forced action gates still apply. Do this before waking the
-  // assistant or sending first contact so those actions observe the selected policy.
-  if (!alreadyComplete) {
-    const preferences = (cfg["preferences"] as Record<string, unknown> | undefined) ?? {};
-    const autonomyPrompt = promptsForTemplates(bootstrapTemplateIds).find((p) => p.id === "autonomy");
-    const autonomyResult = await applyOnboardingAutonomyPolicy({
-      options: autonomyPrompt?.options,
-      answer: preferences["autonomy"],
-      policyUrl: `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/assistant-policy`,
-      headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
-      fetch: (request) => c.env.SPACES_WORKER.fetch(request),
-    });
-    if (autonomyResult.configured && !autonomyResult.applied) {
-      console.error(`[bootstrap] autonomy policy update failed for ${spaceId}`);
-      return c.json(
-        { error_code: "autonomy_policy_unavailable", message: "Could not apply the selected autonomy setting. Retry setup to continue." },
-        502
-      );
-    }
-  }
-  const seededProjects = await seedTemplateProjects(bootstrapDeps, spaceId, tenantId, projectSeeds);
-  // This endpoint's callers only ever wanted the names; the ids exist for the provisioner, which
-  // uses them to wire event rules between projects. Response shape unchanged.
-  const createdProjects = seededProjects.map((p) => p.name);
-  // Retroactive coverage for a business that predates the General-project provisioner seed (or
-  // whose seed failed best-effort at creation time) — bootstrap/complete is the one other place
-  // every business genuinely passes through, templated or not.
-  await seedGeneralProject(bootstrapDeps, spaceId);
-
-  // User-configured workers are created explicitly. Space bootstrap installs no fixed personas.
-
-  // 1b. Stamp the template's project-template presets (an external-channel preset arrives with its own
-  //     execution ceiling, spend cap and STOP/human-takeover rules already wired — exactly what an
-  //     owner should never have to assemble by hand). Best-effort: one preset failing must never
-  //     block the rest of onboarding. Skipped when a project of that name already exists, since
-  //     applyProjectTemplate's create step hits SpaceDO's UNIQUE(space_id, name) and returns an
-  //     error rather than duplicating.
-  const appliedProjectTemplates: string[] = [];
-  for (const tid of bootstrapTemplateIds) {
-    for (const presetId of getLaunchpadTemplate(tid)?.bootstrap?.project_templates ?? []) {
-      try {
-        const result = await applyProjectTemplate(c.env, spaceId, tenantId, presetId, undefined, bootstrapCallerUserId || undefined);
-        if ("projectId" in result) appliedProjectTemplates.push(presetId);
-      } catch (err) {
-        console.warn(`[bootstrap] project template '${presetId}' failed for ${spaceId}:`, (err as Error).message);
-      }
-    }
-  }
-
-  // 2. Wake the assistant to run the setup scripts (it executes them via its script engine).
-  const setupScripts = onboarding.setup_scripts ?? [];
-  if (setupScripts.length > 0) {
-    try {
-      const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
-      await stub.fetch(new Request("http://agent-do/script/run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          goal: `Finish first-run setup for this space. Run these setup steps and confirm each: ${setupScripts.join(", ")}. ` +
-            `Use script.run for each (they are prebuilt op names or skills). Report what you set up.`,
-          spaceId, agentId: "naelao-agent", tenantId,
-          sessionId: `bootstrap-${Date.now()}`,
-          context: { trigger: "bootstrap", setup_scripts: setupScripts, projects: createdProjects },
-          apiKey: c.env.ANTHROPIC_API_KEY ?? "",
-        }),
-      }));
-    } catch (err) {
-      console.warn(`[bootstrap] setup-script wake failed for ${spaceId}:`, (err as Error).message);
-    }
-  }
-
-  // 3. FIRST CONTACT — the assistant proactively reaches the owner on the channel they just
-  //    configured, with a real plan and whatever needs approval. This is what separates a
-  //    configured space from a business that has actually started: the owner shouldn't have to
-  //    open the app and ask "so what now?". The assistant composes the message itself (after
-  //    actually reading the connected account) rather than sending canned text, and respects the
-  //    owner's own autonomy setting — under "ask me first" the plan arrives as proposals, not as
-  //    work already underway. Fired once, only on the transition INTO complete, so a re-run of
-  //    this endpoint (a retry, or a builder revisiting onboarding) never re-introduces the owner
-  //    to their own business.
-  const firstContactGoal = bootstrapTemplateIds
-    .map((tid) => getLaunchpadTemplate(tid)?.bootstrap?.first_contact?.goal)
-    .find((g): g is string => Boolean(g));
-  let firstContactSent = false;
-  if (!alreadyComplete && firstContactGoal) {
-    try {
-      const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
-      await stub.fetch(new Request("http://agent-do/script/run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          goal: firstContactGoal,
-          spaceId, agentId: "naelao-agent", tenantId,
-          sessionId: `first-contact-${Date.now()}`,
-          context: {
-            trigger: "first_contact",
-            projects: createdProjects,
-            project_templates: appliedProjectTemplates,
-            preferences: cfg["preferences"] ?? {},
-          },
-          apiKey: c.env.ANTHROPIC_API_KEY ?? "",
-        }),
-      }));
-      firstContactSent = true;
-    } catch (err) {
-      console.warn(`[bootstrap] first-contact wake failed for ${spaceId}:`, (err as Error).message);
-    }
-  }
-
-  // 4. Mark onboarding complete (merge, don't clobber).
-  cfg["onboarding"] = { ...onboarding, status: "complete" };
-  await c.env.PLATFORM_DB.prepare(
-    "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
-  ).bind(JSON.stringify(cfg), new Date().toISOString(), spaceId, tenantId).run();
-
-  return c.json({
-    ok: true,
-    projects_created: createdProjects,
-    project_templates_applied: appliedProjectTemplates,
-    setup_scripts: setupScripts,
-    first_contact_sent: firstContactSent,
-  });
-});
-
 // ── Federated template learning (A1.9) — promote / inherit shared skills ──────
 // A template is a living skill library: proven space skills are promoted up to the shared
 // template library, and spaces inherit it. Routed from the router under /skills* and
@@ -8487,93 +7940,6 @@ app.post("/skills/promote", async (c) => {
   const templateLib = SkillLibrary.forTemplate(c.env.SCRIPTS_R2, templateId);
   const result = await promoteSkill(spaceLib, templateLib, body.name);
   return c.json({ ...result, template_id: templateId }, result.promoted ? 201 : 409);
-});
-
-// GET /templates — the Launchpad templates incl. their first-run bootstrap (the onboarding
-// wizard reads this: prompts to ask, projects to create, setup scripts to run, connectors to wire).
-app.get("/templates", async (c) => {
-  return c.json({
-    templates: LAUNCHPAD_TEMPLATES.map((t) => ({
-      id: t.id,
-      name: t.name,
-      description: t.description,
-      template_mode: t.template_mode ?? "ave",
-      vertical: t.vertical ?? "Digital business",
-      free_tier_eligible: t.free_tier_eligible,
-      presentation_profile: t.presentation_profile ?? "guided",
-      connectors: t.connectors ?? [],
-      coming_soon: t.coming_soon ?? false,
-      ...(t.bootstrap ? { bootstrap: t.bootstrap } : {}),
-    })),
-  });
-});
-
-// GET /catalog/shell — the browse-only catalogues the end-user Discover page renders: what a
-// business is preconfigured WITH (project presets) and WHO runs it (the core agents). Static
-// product data, deliberately projected: an agent's system_prompt is its actual behavior spec and
-// never leaves the worker, only its id/name/description do.
-app.get("/catalog/shell", (c) => {
-  return c.json({
-    project_templates: PROJECT_TEMPLATES.map((t) => ({
-      id: t.id,
-      name: t.name,
-      description: t.description,
-      kind: t.external_channel_profile ? "channel" : "workspace",
-    })),
-    agents: LAUNCHPAD_CORE_AGENTS.map((a) => ({ id: a.id, name: a.name, description: a.description })),
-  });
-});
-
-// GET /catalog/product — public SpaceType niche catalog, visible to any authenticated user.
-// Returns a summary of what's live vs. coming-soon so the builder dashboard and the
-// launchpad wizard can show accurate availability without exposing internal config.
-// The "Custom" option (template_ids: []) is always live — it lets a builder scaffold
-// from scratch with the Space Assistant (Phase G, LAUNCHPAD_ASSISTANT_PROFILE) rather
-// than picking a niche template. That's the second "live" entry the catalog always has.
-app.get("/catalog/product", (c) => {
-  const live = LAUNCHPAD_TEMPLATES.filter((t) => !t.coming_soon);
-  const comingSoon = LAUNCHPAD_TEMPLATES.filter((t) => t.coming_soon);
-  const CUSTOM_NICHE = { id: "custom", name: "Custom", description: "Build from scratch with the Space Assistant", coming_soon: false };
-  return c.json({
-    live_count: live.length + 1, // +1 for the always-live Custom option
-    coming_soon_count: comingSoon.length,
-    niches: [
-      ...LAUNCHPAD_TEMPLATES.map((t) => ({
-        id: t.id,
-        name: t.name,
-        description: t.description,
-        template_mode: t.template_mode ?? "ave",
-        vertical: t.vertical ?? "Digital business",
-          coming_soon: t.coming_soon ?? false,
-      })),
-      CUSTOM_NICHE,
-    ],
-  });
-});
-
-// GET /catalog/dev — founder/admin-only: full internal view (space types + all templates).
-// Regular users get 403 so they can't enumerate internal config or coming-soon ordering.
-app.get("/catalog/dev", (c) => {
-  const role = c.req.header("x-naelao-role");
-  if (role !== "admin" && role !== "owner") {
-    return c.json({ error_code: "forbidden", message: "Admin only" }, 403);
-  }
-  return c.json({
-    space_types: [
-      { id: "launchpad", name: "Launchpad", description: "Creator/commerce platform", status: "live" },
-      { id: "codeassist", name: "CodeAssist", description: "AI coding workspace", status: "coming_soon" },
-      { id: "legalspace", name: "LegalSpace", description: "AI legal research workspace", status: "coming_soon" },
-    ],
-    templates: LAUNCHPAD_TEMPLATES.map((t) => ({
-      id: t.id,
-      name: t.name,
-      description: t.description,
-      template_mode: t.template_mode ?? "ave",
-      vertical: t.vertical ?? "Digital business",
-      coming_soon: t.coming_soon ?? false,
-      connectors: t.connectors ?? [],
-    })),
-  });
 });
 
 // GET /container-images — the Container Marketplace catalogue (§A1.17 Phase L). Mirrors

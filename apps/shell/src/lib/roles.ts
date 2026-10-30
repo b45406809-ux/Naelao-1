@@ -9,23 +9,23 @@
 // The lesson is that an exact-match role check silently drifts from a ranked one. So the rank is
 // mirrored here, once, and every surface asks this rather than comparing strings itself.
 
-export type BusinessRole = "viewer" | "member" | "admin" | "owner";
+export type SpaceRole = "viewer" | "member" | "admin" | "owner";
 
 /** Mirrors workers/spaces/src/business-auth.ts's ROLE_RANK. Keep the two in step — a role added
  *  there but not here reads as "no access" in the UI, which fails safe but silently. */
-const ROLE_RANK: Record<BusinessRole, number> = { viewer: 0, member: 1, admin: 2, owner: 3 };
+const ROLE_RANK: Record<SpaceRole, number> = { viewer: 0, member: 1, admin: 2, owner: 3 };
 
-export function roleAtLeast(role: string | null | undefined, minimum: BusinessRole): boolean {
+export function roleAtLeast(role: string | null | undefined, minimum: SpaceRole): boolean {
   if (!role) return false;
-  const rank = ROLE_RANK[role as BusinessRole];
+  const rank = ROLE_RANK[role as SpaceRole];
   if (rank === undefined) return false;
   return rank >= ROLE_RANK[minimum];
 }
 
 /** Can this caller change the space's or an agent's configuration? The same floor
- *  `requireBusinessMembership({ PATCH: "admin" })` enforces server-side. `isBusinessSpace` is part
+ *  `requireSpaceMembership({ PATCH: "admin" })` enforces server-side. `isChildSpace` is part
  *  of the question: on a product root (team mode) an end user is never more than a member, so
  *  those settings belong to the builder dashboard, not here. */
-export function canManageSpaceSettings(isBusinessSpace: boolean, role: string | null | undefined): boolean {
-  return isBusinessSpace && roleAtLeast(role, "admin");
+export function canManageSpaceSettings(isChildSpace: boolean, role: string | null | undefined): boolean {
+  return isChildSpace && roleAtLeast(role, "admin");
 }

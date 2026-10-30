@@ -35,7 +35,6 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { mintInternalToken, readBoundedResponseJson, readBoundedResponseText } from "@naelao/http";
-import { getProjectTemplate } from "../../launchpad/project-templates.js";
 
 async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, body?: Record<string, unknown>): Promise<unknown> {
   if (!ctx.env.spacesWorker) throw new Error("workspace-admin unavailable: spaces worker binding not configured");
@@ -60,45 +59,10 @@ async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, 
   return readBoundedResponseJson(resp, 2 * 1024 * 1024);
 }
 
-async function createFromTemplate(ctx: PrebuiltOpContext, templateId: string, name?: string): Promise<unknown> {
-  const template = getProjectTemplate(templateId);
-  if (!template) throw new Error(`Unknown project template: ${templateId}`);
-  const spaceId = ctx.env.spaceId;
-
-  // 1. Create the project.
-  const project = (await spacesCall(ctx, "POST", `/spaces/${spaceId}/projects`, {
-    name: name ?? template.name,
-    description: template.description,
-    ...(template.default_agent_id ? { default_agent_id: template.default_agent_id } : {}),
-    ...(template.allowed_agent_ids && template.allowed_agent_ids.length > 0 ? { allowed_agent_ids: template.allowed_agent_ids } : {}),
-  })) as { id: string; name: string };
-
-  // 2. Configure the generic workspace's execution policy, spend cap, thread cap and channel.
-  await spacesCall(ctx, "PATCH", `/spaces/${spaceId}/projects/${project.id}`, {
-    kind: "DualPane",
-    ...(template.external_channel_profile !== undefined
-      ? { external_channel_profile: template.external_channel_profile }
-      : {}),
-    execution_ceiling: template.execution_ceiling,
-    daily_spend_cap_credits: template.daily_spend_cap_credits,
-    ...(template.max_threads !== undefined ? { max_threads: template.max_threads } : {}),
-    ...(template.suggested_channel
-      ? { channel_config: { [template.suggested_channel]: { connected: false } } }
-      : {}),
-  });
-
-  // 3. Seed scheduled jobs.
-  for (const job of template.scheduled_jobs ?? []) {
-    await spacesCall(ctx, "POST", `/spaces/${spaceId}/scheduled-jobs`, { ...job, project_id: project.id });
-  }
-
-  return project;
-}
-
 export const workspaceAdmin: PrebuiltScript = {
   name: "workspace-admin",
   description:
-    "Scaffold and manage a Space workspace: create projects, apply available project presets, " +
+    "Scaffold and manage a Space workspace: create projects, " +
     "schedule project work, list and reconfigure projects (including renaming and archiving them), " +
     "control private-project membership, and read the Space's installed assistant roster. " +
     "Creating or reconfiguring a project is a structural change to the Space — a Space manager " +
@@ -127,7 +91,6 @@ export const workspaceAdmin: PrebuiltScript = {
         ...(Array.isArray(a["allowed_agent_ids"]) ? { allowed_agent_ids: a["allowed_agent_ids"] } : {}),
       });
     },
-    "project.create_from_template": (a, c) => createFromTemplate(c, String(a["template_id"] ?? ""), a["name"] ? String(a["name"]) : undefined),
     "project.list": (_a, c) => spacesCall(c, "GET", `/spaces/${c.env.spaceId}/projects`),
     "project.configure": async (a, c) => {
       const { project_id, ...patch } = a;
@@ -135,8 +98,8 @@ export const workspaceAdmin: PrebuiltScript = {
       return spacesCall(c, "PATCH", `/spaces/${c.env.spaceId}/projects/${String(project_id)}`, patch);
     },
     // Project membership (§A1.17 Phase T1 ACL) — who can see/work in a private project. Reaching
-    // these at all requires the acting user to be an admin of the business, enforced by
-    // requireBusinessMembership on the route, not re-implemented here.
+    // these at all requires the acting user to be an admin of the Space, enforced by
+    // requireSpaceMembership on the route, not re-implemented here.
     "project.list_members": async (a, c) => {
       const projectId = String(a["project_id"] ?? "") || c.env.projectId;
       if (!projectId) throw new Error("project.list_members requires project_id");
@@ -166,8 +129,6 @@ export const workspaceAdmin: PrebuiltScript = {
   paramHints: {
     "project.create": "name (string, REQUIRED). description (string, optional). visibility " +
       "(\"private\"|\"public\", optional). default_agent_id/allowed_agent_ids (optional).",
-    "project.create_from_template": "template_id (string, REQUIRED — from the project-templates " +
-      "catalogue). name (string, optional — a custom name instead of the template's default).",
     "project.list": "no parameters.",
     "project.configure": "project_id (string, REQUIRED — the project to change). Every other field " +
       "is a partial patch (e.g. name, description, status:\"archived\", visibility).",

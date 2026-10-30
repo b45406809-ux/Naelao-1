@@ -23,12 +23,12 @@ import {
   uploadChatFiles,
   listChatUploads,
   deleteChatUpload,
-  listBusinessMembers,
+  listSpaceMembers,
   getConnectorDirectory,
   type ConnectorInfo,
   type DirectoryApp,
   type ChatUpload,
-  type BusinessMember,
+  type SpaceMember,
   type SessionCredentials,
   transcribeVoice,
 } from "@/lib/api";
@@ -101,7 +101,7 @@ export function ComposerDock({
   /** Shown as the primary pill's label. The business/space name, not the product — this dock is
    *  always scoped to whatever space the conversation belongs to. */
   spaceName,
-  isBusinessSpace,
+  isChildSpace,
   onNotice,
   onUseTip,
   onDictation,
@@ -131,7 +131,7 @@ export function ComposerDock({
   effort: EffortLevel;
   onEffortChange: (effort: EffortLevel) => void;
   spaceName?: string | undefined;
-  isBusinessSpace: boolean;
+  isChildSpace: boolean;
   onNotice?: (message: string) => void;
   /** A tip card is clickable: it drops its example straight into the composer. */
   onUseTip?: (text: string) => void;
@@ -169,7 +169,7 @@ export function ComposerDock({
   // Uploaded-before files for the CURRENT session — distinct from `pendingUploads` (this turn's
   // not-yet-sent attachments), fetched once a real session id exists.
   const [priorUploads, setPriorUploads] = React.useState<ChatUpload[]>([]);
-  const [members, setMembers] = React.useState<BusinessMember[]>([]);
+  const [members, setMembers] = React.useState<SpaceMember[]>([]);
   const [uploading, setUploading] = React.useState(false);
   // Searching the full provider directory from here, not just the dozen curated recommendations.
   // This panel used to render `connectors` alone, so an app we hadn't hand-added to the catalogue
@@ -230,13 +230,13 @@ export function ComposerDock({
   React.useEffect(() => {
     let cancelled = false;
     getConnectorStatus(spaceId, session).then((c) => { if (!cancelled) setConnectors(c); }).catch(() => {});
-    if (isBusinessSpace) {
-      listBusinessMembers(spaceId, session).then((m) => { if (!cancelled) setMembers(m); }).catch(() => {});
+    if (isChildSpace) {
+      listSpaceMembers(spaceId, session).then((m) => { if (!cancelled) setMembers(m); }).catch(() => {});
     } else {
       setMembers([]);
     }
     return () => { cancelled = true; };
-  }, [spaceId, session, isBusinessSpace]);
+  }, [spaceId, session, isChildSpace]);
 
   React.useEffect(() => {
     if (panel !== "uploads" || !sessionId) { setPriorUploads([]); return; }
@@ -713,7 +713,7 @@ export function ComposerDock({
           <div className="dock-panel-body">
             {members.length === 0 ? (
               <div style={{ fontSize: 12.5, color: "var(--text3)", padding: "6px 12px" }}>
-                Just you so far. Invite someone from the business page to work in here together.
+                Just you so far. Your Space is ready for projects, tools, and work.
               </div>
             ) : (
               members.map((m) => (
@@ -878,7 +878,7 @@ export function ComposerDock({
 
         {!threadMode && <div className="dock-spacer" />}
 
-        {!threadMode && isBusinessSpace && members.length > 0 && (
+        {!threadMode && isChildSpace && members.length > 0 && (
           <>
             <div className="dock-sep" />
             <button

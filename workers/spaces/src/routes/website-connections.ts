@@ -8,7 +8,7 @@ import {
 } from "@naelao/http";
 import { checkSsrf } from "@naelao/security";
 import type { BrowserRuntimeScope } from "@naelao/agent-sdk";
-import { resolveEndUserBusinessRole } from "../business-auth.js";
+import { resolveEndUserSpaceRole } from "../space-auth.js";
 type C = Context<{ Bindings: Env }>;
 interface Connection {
   id: string;
@@ -43,7 +43,7 @@ async function workspaceAccess(
       await getDOName("space", space, tenant, c.env.PLATFORM_SECRET)
     )
   );
-  const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, space, user);
+  const role = await resolveEndUserSpaceRole(c.env.PLATFORM_DB, space, user);
   if (!role) {
     const response = await stub.fetch(
       new Request("http://space/members?space_id=" + encodeURIComponent(space))

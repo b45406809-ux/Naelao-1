@@ -23,7 +23,7 @@ export interface NoCodeCreatorClaims {
 }
 
 const ID = /^[a-z][a-z0-9_-]{1,63}$/;
-const ADMIN_ONLY_TOOLS = new Set(["payout", "member_invite", "wallet.request_payout", "member.invite"]);
+const ADMIN_ONLY_TOOLS = new Set(["payout", "member_invite", "member.invite"]);
 const RESOURCE = /^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/;
 const MAX_TOOLS = 128;
 const MAX_KNOWLEDGE_BASES = 128;

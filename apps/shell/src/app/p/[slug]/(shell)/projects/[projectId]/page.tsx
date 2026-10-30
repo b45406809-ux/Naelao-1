@@ -59,7 +59,6 @@ const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
 
 function usagePayerLabel(payer: string): string {
   switch (payer) {
-    case "consumer_credits": return "User credits";
     case "plan_quota": return "Space plan";
     case "platform": return "Platform";
     case "legacy": return "Legacy event";
@@ -108,7 +107,7 @@ export default function ProjectDetailPage() {
 
   // Editable project policy (execution ceiling,
   // spend cap, max threads, agent bindings) — PATCH succeeds for an admin/owner in the target
-  // business; the settings section is still shown to a plain member (read-only save attempt
+  // space; the settings section is still shown to a plain member (read-only save attempt
   // will surface the 403 via toast rather than pre-computing role client-side).
   const [savingSettings, setSavingSettings] = React.useState(false);
   const [draftMaxThreads, setDraftMaxThreads] = React.useState("0");
@@ -448,10 +447,10 @@ export default function ProjectDetailPage() {
       {/* Right: project content (unchanged from the prior single-pane layout, just re-parented
           under spaces-content instead of page-view — same padding/scroll behavior). */}
       <div className="spaces-content">
-      {/* Breadcrumb: Business > Project (mockup's #projects-back-label). */}
+      {/* Breadcrumb: Space > Project (mockup's #projects-back-label). */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16, fontSize: 12, color: "var(--text3)" }}>
         <Link href={`/p/${product.slug}/spaces/${activeSpaceId}`} style={{ color: "var(--text2)", textDecoration: "none" }}>
-          {activeSpaceName ?? "Business"}
+          {activeSpaceName ?? "Space"}
         </Link>
         <span>›</span>
         <span style={{ color: "var(--text)", fontWeight: 500 }}>{project.name}</span>
@@ -540,7 +539,7 @@ export default function ProjectDetailPage() {
           spaceId={activeSpaceId}
           projectId={project.id}
           session={creds!}
-          isBusinessSpace={activeSpaceId !== product.space_id}
+          isChildSpace={activeSpaceId !== product.space_id}
         />
       </section>}
 

@@ -12,7 +12,7 @@ describe("executive cabinet capability isolation", () => {
 
   it("fails closed before a PM can touch treasury", async () => {
     const run = vi.fn();
-    await expect(delegate({ worker_id: "project_manager_worker", task: { operation: "wallet.get_balance" } }, { env: {} as never, run })).rejects.toThrow("Capability violation: project_manager_worker cannot invoke 'wallet.get_balance'");
+    await expect(delegate({ worker_id: "project_manager_worker", task: { operation: "project.delete" } }, { env: {} as never, run })).rejects.toThrow("Capability violation: project_manager_worker cannot invoke 'project.delete'");
     expect(run).not.toHaveBeenCalled();
   });
 });

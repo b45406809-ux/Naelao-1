@@ -56,7 +56,7 @@ import {
   listLocalGrants,
   createLocalGrant,
   deleteLocalGrant,
-  listMyBusinesses,
+  listMySpaces,
   getSpaceAnalytics,
   listSessions,
   type SessionCredentials,
@@ -459,13 +459,13 @@ function ConfigPanel({
   spaceId,
   session,
   agentId,
-  isBusinessSpace,
+  isChildSpace,
   projectId,
 }: {
   spaceId: string;
   session: SessionCredentials;
   agentId?: string | null | undefined;
-  isBusinessSpace: boolean;
+  isChildSpace: boolean;
   projectId?: string | null | undefined;
 }) {
   const product = useProduct();
@@ -500,9 +500,9 @@ function ConfigPanel({
         ? getAgentPolicy(spaceId, agentId!, session).then((p) => { if (!cancelled) setAgentPolicy(p); })
         : getAssistantPolicy(spaceId, session).then((p) => { if (!cancelled) setSpacePolicy(p); }),
     ];
-    if (isBusinessSpace) {
+    if (isChildSpace) {
       loaders.push(
-        listMyBusinesses(product.space_id, session)
+        listMySpaces(product.space_id, session)
           .then((list) => list.find((b) => b.id === spaceId) ?? null)
           .then((b) => { if (!cancelled) setCanEdit(canManageSpaceSettings(true, b?.role)); })
       );
@@ -512,7 +512,7 @@ function ConfigPanel({
     Promise.allSettled(loaders).catch(() => undefined);
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, session, agentId, isBusinessSpace, product.space_id]);
+  }, [spaceId, session, agentId, isChildSpace, product.space_id]);
 
   async function setSpaceMode(mode: AssistantPolicy["approval_mode"]) {
     setSaving(true);
@@ -586,7 +586,7 @@ function ConfigPanel({
           }
         />
       </div>
-      {!isBusinessSpace ? null : (
+      {!isChildSpace ? null : (
         <div style={{ padding: "4px 14px 10px" }}>
           <Link
             href={scoped ? `/p/${product.slug}/agents/${encodeURIComponent(agentId!)}` : `/p/${product.slug}/dashboard/assistant`}
@@ -778,12 +778,12 @@ function CronsPanel({
   spaceId,
   session,
   projectId,
-  isBusinessSpace,
+  isChildSpace,
 }: {
   spaceId: string;
   session: SessionCredentials;
   projectId?: string | null | undefined;
-  isBusinessSpace: boolean;
+  isChildSpace: boolean;
 }) {
   const product = useProduct();
   const [crons, setCrons] = React.useState<ScheduledJob[] | null>(null);
@@ -808,16 +808,16 @@ function CronsPanel({
 
   React.useEffect(() => {
     let cancelled = false;
-    if (!isBusinessSpace) {
+    if (!isChildSpace) {
       setCanEdit(false);
       return;
     }
-    listMyBusinesses(product.space_id, session)
+    listMySpaces(product.space_id, session)
       .then((list) => list.find((b) => b.id === spaceId) ?? null)
       .then((b) => { if (!cancelled) setCanEdit(canManageSpaceSettings(true, b?.role)); })
       .catch(() => { if (!cancelled) setCanEdit(false); });
     return () => { cancelled = true; };
-  }, [spaceId, session, isBusinessSpace, product.space_id]);
+  }, [spaceId, session, isChildSpace, product.space_id]);
 
   async function toggle(job: ScheduledJob) {
     setBusyId(job.id);
@@ -982,12 +982,12 @@ function ChannelsPanel({
   spaceId,
   session,
   projectId,
-  isBusinessSpace,
+  isChildSpace,
 }: {
   spaceId: string;
   session: SessionCredentials;
   projectId?: string | null | undefined;
-  isBusinessSpace: boolean;
+  isChildSpace: boolean;
 }) {
   const product = useProduct();
   const [channels, setChannels] = React.useState<ChannelLink[] | null>(null);
@@ -1003,13 +1003,13 @@ function ChannelsPanel({
   // owner/admin role rather than project membership alone.
   React.useEffect(() => {
     let cancelled = false;
-    if (!isBusinessSpace) { setCanManage(false); return; }
-    listMyBusinesses(product.space_id, session)
+    if (!isChildSpace) { setCanManage(false); return; }
+    listMySpaces(product.space_id, session)
       .then((list) => list.find((b) => b.id === spaceId) ?? null)
       .then((b) => { if (!cancelled) setCanManage(canManageSpaceSettings(true, b?.role)); })
       .catch(() => { if (!cancelled) setCanManage(false); });
     return () => { cancelled = true; };
-  }, [spaceId, session, isBusinessSpace, projectId, product.space_id]);
+  }, [spaceId, session, isChildSpace, projectId, product.space_id]);
 
   return (
     <>
@@ -1079,12 +1079,12 @@ function LocalMachinePanel({
   spaceId,
   session,
   projectId,
-  isBusinessSpace,
+  isChildSpace,
 }: {
   spaceId: string;
   session: SessionCredentials;
   projectId?: string | null;
-  isBusinessSpace: boolean;
+  isChildSpace: boolean;
 }) {
   const product = useProduct();
   const [grants, setGrants] = React.useState<LocalGrant[] | null>(null);
@@ -1105,13 +1105,13 @@ function LocalMachinePanel({
 
   React.useEffect(() => {
     let cancelled = false;
-    if (!isBusinessSpace) { setCanEdit(false); return; }
-    listMyBusinesses(product.space_id, session)
+    if (!isChildSpace) { setCanEdit(false); return; }
+    listMySpaces(product.space_id, session)
       .then((list) => list.find((b) => b.id === spaceId) ?? null)
       .then((b) => { if (!cancelled) setCanEdit(canManageSpaceSettings(true, b?.role)); })
       .catch(() => { if (!cancelled) setCanEdit(false); });
     return () => { cancelled = true; };
-  }, [spaceId, session, isBusinessSpace, product.space_id]);
+  }, [spaceId, session, isChildSpace, product.space_id]);
 
   async function handleCreate() {
     setFormError(null);
@@ -1949,7 +1949,7 @@ export function AssistantSidePanelBody({
   projectAgentIds,
   lastRunId,
   sessionId,
-  isBusinessSpace,
+  isChildSpace,
 }: {
   spaceId: string;
   session: SessionCredentials;
@@ -1964,17 +1964,17 @@ export function AssistantSidePanelBody({
   /** This conversation's own chat session. Required for Sub-agents to read the right DO — see
    *  SubAgentsPanel's own note. */
   sessionId?: string | null | undefined;
-  isBusinessSpace: boolean;
+  isChildSpace: boolean;
 }) {
   switch (tab) {
     case "config":
-      return <ConfigPanel spaceId={spaceId} session={session} agentId={agentId} isBusinessSpace={isBusinessSpace} projectId={projectId} />;
+      return <ConfigPanel spaceId={spaceId} session={session} agentId={agentId} isChildSpace={isChildSpace} projectId={projectId} />;
     case "memory":
       return <MemoryPanel spaceId={spaceId} session={session} />;
     case "crons":
-      return <CronsPanel spaceId={spaceId} session={session} projectId={projectId} isBusinessSpace={isBusinessSpace} />;
+      return <CronsPanel spaceId={spaceId} session={session} projectId={projectId} isChildSpace={isChildSpace} />;
     case "channels":
-      return <ChannelsPanel spaceId={spaceId} session={session} projectId={projectId} isBusinessSpace={isBusinessSpace} />;
+      return <ChannelsPanel spaceId={spaceId} session={session} projectId={projectId} isChildSpace={isChildSpace} />;
     case "heartbeats":
       return <HeartbeatsPanel spaceId={spaceId} session={session} />;
     case "sub-agents":
@@ -1990,6 +1990,6 @@ export function AssistantSidePanelBody({
     case "notifications":
       return <NotificationsPanel spaceId={spaceId} session={session} projectId={projectId} />;
     case "local-machine":
-      return <LocalMachinePanel spaceId={spaceId} session={session} projectId={projectId ?? null} isBusinessSpace={isBusinessSpace} />;
+      return <LocalMachinePanel spaceId={spaceId} session={session} projectId={projectId ?? null} isChildSpace={isChildSpace} />;
   }
 }

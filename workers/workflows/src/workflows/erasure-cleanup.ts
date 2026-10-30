@@ -6,18 +6,18 @@ const KV_DELETE_BATCH_SIZE = 100;
 export const SPACE_ERASURE_TABLES = [
   "active_sessions", "thread_sessions", "threads", "kb_chunks", "kb_documents",
   "agent_email_addresses", "agi_runs", "artifacts", "attachment_copy_claims", "blueprint_export_jobs",
-  "business_services", "capability_nonces", "channel_attachments", "channel_links", "channel_pairings",
+  "space_domains", "capability_nonces", "channel_attachments", "channel_links", "channel_pairings",
   "connector_alias_audit", "connector_aliases", "customer_voice_call_admissions",
   "customer_voice_purchase_quotes", "customer_voice_number_bindings", "customer_voice_space_policies",
   "desk_drop_tickets", "email_attachment_ocr_usage", "email_inbound_attachments", "email_reply_routes",
   "eval_runs", "eval_suites", "extension_provider_routes", "extension_provider_connections",
   "extension_publisher_keys", "installed_extensions", "kb_external_publication_documents",
-  "kb_external_publications", "launchpad_products", "fde_graduations", "llm_token_reservations",
-  "mcp_servers", "oauth_sessions", "oauth_providers", "payment_connections",
-  "payout_destinations", "project_access", "project_agent_email_addresses", "project_steward_decisions", "project_steward_runs",
+  "kb_external_publications", "fde_graduations", "llm_token_reservations",
+  "mcp_servers", "oauth_sessions", "oauth_providers",
+  "project_access", "project_agent_email_addresses", "project_steward_decisions", "project_steward_runs",
   "recipe_installations", "scheduled_job_runs", "scheduled_jobs", "space_compliance_policy",
   "space_credential_keys", "space_credentials", "space_members", "triggers", "virtual_cli_commands",
-  "webhook_subscriptions", "whop_sub_merchants", "workflow_budget_reservations", "workflow_executions_v2",
+  "webhook_subscriptions", "workflow_budget_reservations", "workflow_executions_v2",
   // Assistant communication and provisioning D1 rows contain identity and message metadata.
   // Their external profiles/callbacks are purged before this final scoped database cleanup.
   "assistant_active_voice_endpoints", "assistant_approval_decisions", "assistant_live_calls",
@@ -127,19 +127,11 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
        WHERE tenant_id = ?`,
     ).bind(orgId),
     db.prepare("DELETE FROM developer_partner_profiles WHERE user_id IN (SELECT id FROM users WHERE org_id = ?)").bind(orgId),
-    db.prepare("DELETE FROM reseller_accounts WHERE tenant_id = ?").bind(orgId),
-    db.prepare(
-      `UPDATE tenant_hierarchy SET status = 'terminated',
-       child_owner_user_id = CASE WHEN child_tenant_id = ? THEN NULL ELSE child_owner_user_id END
-       WHERE child_tenant_id = ? OR parent_tenant_id = ?`,
-    ).bind(orgId, orgId, orgId),
     // The queue has already accepted the request before the workflow can start. Once erasure
     // begins, remove the retry payload too; it contains the owner's ID and free-text reason.
     db.prepare("DELETE FROM gdpr_erasure_outbox WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM builder_api_key_index WHERE tenant_id = ?").bind(orgId),
     db.prepare("DELETE FROM service_accounts WHERE tenant_id = ?").bind(orgId),
-    db.prepare("DELETE FROM business_memberships WHERE business_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?) OR product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId, orgId),
-    db.prepare("DELETE FROM business_invites WHERE business_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?) OR product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId, orgId),
     db.prepare("DELETE FROM password_reset_tokens WHERE product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM email_verification_tokens WHERE product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
     db.prepare("DELETE FROM product_end_users WHERE product_space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
@@ -152,10 +144,6 @@ export async function eraseOrgOperationalRecords(db: D1Database, orgId: string):
     db.prepare("UPDATE gdpr_requests SET subject_id = 'erased', subject_email = NULL, status = CASE WHEN status = 'pending' THEN 'cancelled' ELSE status END, updated_at = datetime('now') WHERE tenant_id = ?").bind(orgId),
     // Earnings rows reference these subscriptions; preserve financial history while stopping renewals.
     db.prepare("UPDATE template_subscriptions SET status = 'cancelled', updated_at = datetime('now') WHERE space_id IN (SELECT id FROM spaces WHERE tenant_id = ?)").bind(orgId),
-    // Preserve the wallet's financial/provider identifiers, but remove the direct owner email.
-    db.prepare("UPDATE whop_sub_merchants SET owner_email = 'erased@deleted.invalid' WHERE tenant_id = ?").bind(orgId),
-    // Keep order totals/status for accounting while erasing customer contact/provider identifiers.
-    db.prepare("UPDATE launchpad_orders SET customer_email = 'erased@deleted.invalid', customer_name = NULL, ls_order_id = NULL, ls_subscription_id = NULL WHERE tenant_id = ?").bind(orgId),
     db.prepare("UPDATE spacetypes SET name = 'Erased SpaceType', description = NULL, schema_json = '{}', status = 'archived' WHERE org_id = ?").bind(orgId),
     db.prepare("UPDATE spaces SET name = 'Erased space', config_json = '{}', created_by = NULL, status = 'deleted', suspension_reason = 'erasure', updated_at = datetime('now') WHERE tenant_id = ?").bind(orgId),
     db.prepare("UPDATE users SET org_id = NULL WHERE org_id = ?").bind(orgId),

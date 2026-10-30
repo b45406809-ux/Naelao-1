@@ -143,83 +143,7 @@ describe("POST /spaces/:spaceId/end-users/signup", () => {
     expect(res.status).toBe(404);
   });
 
-  it("defers creditsIncludedPerMonth until email verification (security audit: closes the free-credit-farming hole)", async () => {
-    const env = makeEnv();
-    await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "credits", creditsIncludedPerMonth: 500 } });
-    const signupRes = await spacesWorker.fetch(
-      req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
-    );
-    const signup = await signupRes.json() as { end_user_id: string; email_verification_required: boolean };
-    expect(signup.email_verification_required).toBe(true);
 
-    const token = await mintInternalToken("test-platform-secret", "tenant-1");
-    const balanceOf = () => spacesWorker.fetch(
-      new Request(`https://spaces.naelao.com/internal/product-users/prod-1/${signup.end_user_id}/credits/balance`, {
-        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
-      }),
-      env as never, execCtx
-    ).then((r) => r.json() as Promise<{ balance_credits: number }>);
-
-    // Not granted yet — the signup credit sat behind an unverified email.
-    expect((await balanceOf()).balance_credits).toBe(0);
-
-    const verifyRes = await verifyEmail(env, "prod-1");
-    expect(verifyRes.status).toBe(200);
-    expect((await balanceOf()).balance_credits).toBe(500);
-  });
-
-  it("grants the platform free-tier default when pricing is unconfigured (a product with no pricingConfig at all), after verification", async () => {
-    const env = makeEnv();
-    await seedProduct(env, "prod-1", "tenant-1");
-    const signup = await (await spacesWorker.fetch(
-      req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
-    )).json() as { end_user_id: string };
-    await verifyEmail(env, "prod-1");
-
-    const token = await mintInternalToken("test-platform-secret", "tenant-1");
-    const balRes = await spacesWorker.fetch(
-      new Request(`https://spaces.naelao.com/internal/product-users/prod-1/${signup.end_user_id}/credits/balance`, {
-        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
-      }),
-      env as never, execCtx
-    );
-    expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(100);
-  });
-
-  it("grants the platform free-tier default for pricingConfig.model === 'free' too, after verification", async () => {
-    const env = makeEnv();
-    await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "free" } });
-    const signup = await (await spacesWorker.fetch(
-      req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
-    )).json() as { end_user_id: string };
-    await verifyEmail(env, "prod-1");
-
-    const token = await mintInternalToken("test-platform-secret", "tenant-1");
-    const balRes = await spacesWorker.fetch(
-      new Request(`https://spaces.naelao.com/internal/product-users/prod-1/${signup.end_user_id}/credits/balance`, {
-        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
-      }),
-      env as never, execCtx
-    );
-    expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(100);
-  });
-
-  it("does NOT apply the free-tier default for an explicit paid model (credits) with no allowance configured", async () => {
-    const env = makeEnv();
-    await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "credits" } });
-    const signup = await (await spacesWorker.fetch(
-      req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
-    )).json() as { end_user_id: string };
-
-    const token = await mintInternalToken("test-platform-secret", "tenant-1");
-    const balRes = await spacesWorker.fetch(
-      new Request(`https://spaces.naelao.com/internal/product-users/prod-1/${signup.end_user_id}/credits/balance`, {
-        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
-      }),
-      env as never, execCtx
-    );
-    expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(0);
-  });
 });
 
 describe("POST /spaces/:spaceId/end-users/login", () => {
@@ -277,9 +201,7 @@ describe("POST /spaces/:spaceId/end-users/login", () => {
 });
 
 describe("password reset (security audit follow-up: end users had no recovery path at all)", () => {
-  // Signup itself now also sends a verification-token email (email verification pass, below) for
-  // any product with a signup credit allowance — prod-1's default unconfigured pricing means
-  // signup produces ONE notify call before request-password-reset produces a second. Pull the
+  // Signup sends a verification-token email. Pull the
   // reset token specifically by matching "Reset token:", not by call index/count.
   function extractResetToken(calls: Array<{ body: string }>): string {
     for (const call of calls) {
@@ -354,7 +276,7 @@ describe("password reset (security audit follow-up: end users had no recovery pa
   });
 });
 
-describe("email verification (security audit follow-up: closes the free-credit-farming hole)", () => {
+describe("email verification", () => {
   function extractVerifyToken(calls: Array<{ body: string }>): string {
     for (const call of calls) {
       const match = /Verification token: (\S+)/.exec(call.body);
@@ -363,7 +285,7 @@ describe("email verification (security audit follow-up: closes the free-credit-f
     throw new Error("no verification token found in any notify body");
   }
 
-  it("signup sends a verification email when there's a signup credit allowance", async () => {
+  it("signup sends a verification email", async () => {
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1");
     await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
@@ -371,12 +293,6 @@ describe("email verification (security audit follow-up: closes the free-credit-f
     expect(env.__notifyCalls[0]!.subject).toBe("Verify your email");
   });
 
-  it("does NOT send a verification email when the product has no signup allowance to protect (paid model, no allowance)", async () => {
-    const env = makeEnv();
-    await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "credits" } });
-    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
-    expect(env.__notifyCalls).toHaveLength(0);
-  });
 
   it("shell UX follow-up: includes a clickable verify-email link when PRODUCT_SHELL_URL and the product's slug are both known", async () => {
     const env = { ...makeEnv(), PRODUCT_SHELL_URL: "https://app.naelao.com" };

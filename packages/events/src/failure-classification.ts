@@ -18,7 +18,7 @@ export type FailureKind =
   | "rate_limited"
   /** The payload exceeded the model's context window. */
   | "context_overflow"
-  /** A Naelao-side cap stopped it: session ceiling, project wallet, credit balance. */
+  /** A Naelao-side cap stopped it: session ceiling, project spend cap. */
   | "budget_ceiling"
   /** The loop used every step without reaching an answer. */
   | "step_exhaustion"
@@ -79,9 +79,8 @@ const RULES: Rule[] = [
     patterns: [
       /session_budget_ceiling/i,
       /insufficient_credits/i,
-      /project_wallet/i,
+
       /spend[_ ]cap/i,
-      /credit balance/i,
       /\bquota_exceeded\b/i,
       /infra_quota_exceeded/i,
     ],

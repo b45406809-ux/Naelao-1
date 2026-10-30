@@ -9,9 +9,7 @@ export interface ProductEndUser {
   end_user_id: string;
   session_token: string;
   expires_at: string;
-  /** Security audit follow-up: signup's free-credit grant is deferred until email verification
-   *  closes (prevents farming free compute with throwaway addresses) — true whenever the product
-   *  has a signup allowance to protect, so the caller knows to show the "check your email" state. */
+  /** Email verification is required before a new account can sign in. */
   email_verification_required?: boolean;
 }
 

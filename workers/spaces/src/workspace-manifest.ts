@@ -1,11 +1,10 @@
-/** Generic default Space type. Domain behavior and specialized setup ship as Space Templates and
- * extensions; this manifest only supplies the shared Naelao workspace runtime. */
+/** Launchpad is Naelao's default product. Its users create Spaces and install Space Templates. */
 import type { NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 
-export const WORKSPACE_MANIFEST: NaelaoSpaceTypeManifestV2 = {
-  id: "workspace",
-  name: "Workspace",
-  description: "A general Naelao Space for assistants, projects, extensions, and user-defined workflows.",
+export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
+  id: "launchpad",
+  name: "Launchpad",
+  description: "Naelao's AI OS for Spaces, assistants, projects, extensions, and user-defined workflows.",
   version: "1.0.0",
   author: "naelao",
   icon: "layout",
@@ -39,7 +38,7 @@ export const WORKSPACE_MANIFEST: NaelaoSpaceTypeManifestV2 = {
     agencyShell: false,
     assistantMode: "per-user",
     allowPublicSignup: false,
-    allowedChildSpaceTypes: ["workspace"],
+    allowedChildSpaceTypes: ["launchpad"],
     userPermissions: {
       canCreateSpace: true,
       canCreateSubSpaces: true,
@@ -58,12 +57,10 @@ export const WORKSPACE_MANIFEST: NaelaoSpaceTypeManifestV2 = {
   },
 };
 
-/** Existing Spaces may still carry the old type id. Keep it resolvable with the generic shell
- * defaults while hiding it from new type selection; all new Spaces use `workspace`. */
-export const LEGACY_LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
-  ...WORKSPACE_MANIFEST,
-  id: "launchpad",
-  name: "Workspace (legacy type)",
-  description: "Compatibility type for existing Spaces. New Spaces use Workspace.",
-  marketplace: { ...WORKSPACE_MANIFEST.marketplace, visible: false },
+/** Compatibility for records created with the temporary workspace type id. */
+export const WORKSPACE_MANIFEST: NaelaoSpaceTypeManifestV2 = {
+  ...LAUNCHPAD_MANIFEST,
+  id: "workspace",
+  name: "Workspace (compatibility)",
+  marketplace: { ...LAUNCHPAD_MANIFEST.marketplace, visible: false },
 };

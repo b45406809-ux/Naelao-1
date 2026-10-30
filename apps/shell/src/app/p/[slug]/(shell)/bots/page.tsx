@@ -6,13 +6,13 @@ import { Button, Card, CardDesc, CardTitle } from "@naelao/ui";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { useProduct } from "@/lib/product-context";
 import { useSessionCredentials } from "@/lib/auth-provider";
-import { createThread, listAgentDefinitions, listMyBusinesses, listProjectStewardReviews, listProjects, listScheduledJobs, listThreads, recordProjectStewardDecision, type AgentDefinitionSummary, type Project, type ProjectStewardReview, type ScheduledJob, type ThreadSummary } from "@/lib/api";
+import { createThread, listAgentDefinitions, listMySpaces, listProjectStewardReviews, listProjects, listScheduledJobs, listThreads, recordProjectStewardDecision, type AgentDefinitionSummary, type Project, type ProjectStewardReview, type ScheduledJob, type ThreadSummary } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
 import { canManageSpaceSettings } from "@/lib/roles";
 
 export default function ProjectBotsPage() {
   const product = useProduct();
-  const { activeSpaceId, isBusinessSpace } = useActiveSpace();
+  const { activeSpaceId, isChildSpace } = useActiveSpace();
   const session = useSessionCredentials();
   const router = useRouter();
   const [projects, setProjects] = React.useState<Project[]>([]);
@@ -45,7 +45,7 @@ export default function ProjectBotsPage() {
         listThreads(activeSpaceId, session),
         listScheduledJobs(activeSpaceId, session, { projectId: null, visibleProjects: true }),
         listProjectStewardReviews(activeSpaceId, session),
-        isBusinessSpace ? listMyBusinesses(product.space_id, session) : Promise.resolve([]),
+        isChildSpace ? listMySpaces(product.space_id, session) : Promise.resolve([]),
       ]);
       setProjects(nextProjects.filter((project) => project.status === "active"));
       setAgents(nextAgents);
@@ -53,13 +53,13 @@ export default function ProjectBotsPage() {
       setScheduledJobs(nextJobs);
       setStewardReviews(nextReviews);
       const business = businesses.find((item) => item.id === activeSpaceId);
-      setCanDecideReviews(canManageSpaceSettings(isBusinessSpace, business?.role));
+      setCanDecideReviews(canManageSpaceSettings(isChildSpace, business?.role));
     } catch {
       setLoadError(true);
     } finally {
       setLoading(false);
     }
-  }, [activeSpaceId, session, isBusinessSpace, product.space_id]);
+  }, [activeSpaceId, session, isChildSpace, product.space_id]);
 
   React.useEffect(() => { void refresh(); }, [refresh]);
 

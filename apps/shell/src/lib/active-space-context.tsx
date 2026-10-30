@@ -1,15 +1,13 @@
 "use client";
 
-// The space switcher previously only ever navigated to a business's own admin/detail page
-// (/spaces/:id) — Home/Projects/Threads/Assistant kept operating on the product root no matter
-// which business was selected, contradicting the whole point of a switcher. This context is the
-// missing piece: `activeSpaceId` (default = the product root's own space_id) is what every
+// The space switcher selects a user Space while Home/Projects/Threads/Assistant operate on that
+// selection. `activeSpaceId` (default = the product root's own space_id) is what every
 // shell data call should scope to, not `product.space_id` directly. `product-context.tsx` stays
 // the product root identity (slug resolution, auth) — this is a separate, orthogonal concept:
 // WHICH space the shell is currently browsing.
 //
 // Persisted via sessionStorage (not the URL) per-product, so a hard reload keeps you in the
-// business you switched to without needing a second dynanic route segment for every existing
+// Space you selected without needing a second dynamic route segment for every existing
 // page.
 
 import * as React from "react";
@@ -19,11 +17,11 @@ export interface ActiveSpaceContextValue {
   activeSpaceId: string;
   /** Display name of the active space, when known (set by whoever calls setActiveSpace). */
   activeSpaceName: string | null;
-  /** True when browsing a business other than the product root. */
-  isBusinessSpace: boolean;
+  /** True when browsing a user-created Space rather than the product root. */
+  isChildSpace: boolean;
   /** True once the sessionStorage hydration effect below has run. A consumer that auto-selects a
    *  default active space (e.g. the shell layout steering a hybrid/tenant product's user into
-   *  their first business) MUST wait for this — React runs a child's effects before its parent's
+   *  their first Space) MUST wait for this — React runs a child's effects before its parent's
    *  within one commit, so an effect in a child of ActiveSpaceProvider would otherwise fire
    *  before hydration and could clobber a real persisted choice with a computed default. Same
    *  precedent as ProductAuthProvider's own isHydrated (auth-provider.tsx). */
@@ -93,7 +91,7 @@ export function ActiveSpaceProvider({
     () => ({
       activeSpaceId,
       activeSpaceName,
-      isBusinessSpace: activeSpaceId !== productSpaceId,
+      isChildSpace: activeSpaceId !== productSpaceId,
       isHydrated,
       setActiveSpace,
       supportContact,

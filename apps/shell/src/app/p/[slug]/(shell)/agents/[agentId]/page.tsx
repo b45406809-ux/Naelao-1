@@ -24,12 +24,12 @@ import {
   updateAgentPolicy,
   getAssistantPolicy,
   listAgentDefinitions,
-  listMyBusinesses,
+  listMySpaces,
   getAssistantCapabilities,
   type AgentPolicy,
   type AssistantPolicy,
   type AgentDefinitionSummary,
-  type Business,
+  type SpaceSummary,
   type AssistantCapabilities,
 } from "@/lib/api";
 import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
@@ -41,12 +41,12 @@ export default function AgentDetailPage() {
   const params = useParams<{ agentId: string }>();
   const agentId = decodeURIComponent(String(params?.agentId ?? ""));
   const creds = useSessionCredentials();
-  const { activeSpaceId, isBusinessSpace } = useActiveSpace();
+  const { activeSpaceId, isChildSpace } = useActiveSpace();
 
   const [agent, setAgent] = React.useState<AgentDefinitionSummary | null>(null);
   const [policy, setPolicy] = React.useState<AgentPolicy | null>(null);
   const [spacePolicy, setSpacePolicy] = React.useState<AssistantPolicy | null>(null);
-  const [business, setBusiness] = React.useState<Business | null>(null);
+  const [space, setSpace] = React.useState<SpaceSummary | null>(null);
   const [capabilities, setCapabilities] = React.useState<AssistantCapabilities | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -66,17 +66,17 @@ export default function AgentDetailPage() {
       settle(listAgentDefinitions(activeSpaceId, creds).then((list) => list.find((a) => a.id === agentId) ?? null), setAgent),
       settle(getAssistantCapabilities(activeSpaceId, creds), setCapabilities),
     ];
-    if (isBusinessSpace) {
+    if (isChildSpace) {
       calls.push(
-        settle(listMyBusinesses(product.space_id, creds).then((l) => l.find((b) => b.id === activeSpaceId) ?? null), setBusiness)
+        settle(listMySpaces(product.space_id, creds).then((l) => l.find((b) => b.id === activeSpaceId) ?? null), setSpace)
       );
     }
     Promise.allSettled(calls).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [creds, activeSpaceId, agentId, isBusinessSpace, product.space_id]);
+  }, [creds, activeSpaceId, agentId, isChildSpace, product.space_id]);
 
-  const canEdit = canManageSpaceSettings(isBusinessSpace, business?.role);
+  const canEdit = canManageSpaceSettings(isChildSpace, space?.role);
 
   function flash(message: string) {
     setSaved(message);
@@ -128,8 +128,8 @@ export default function AgentDetailPage() {
             background: "var(--surface2)", fontSize: 12.5, color: "var(--text2)", marginBottom: 18,
           }}
         >
-          {isBusinessSpace
-            ? "You can see this agent's settings but not change them — that needs the owner or an admin of this business."
+          {isChildSpace
+            ? "You can see this agent's settings but not change them — that needs the owner or an admin of this space."
             : "This space's agents are configured by its owner in the builder dashboard."}
         </div>
       )}

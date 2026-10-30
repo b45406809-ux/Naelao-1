@@ -17,7 +17,7 @@
  *    explicit allowlist below; it refuses script.create / update / delete, every stored
  *    (agent-authored) script — arbitrary code is assumed mutating — and any prebuilt op NOT
  *    on the list. Deliberately a small explicit allowlist over Naelao's own op names (the
- *    same posture as wallet.ts's THIRD_PARTY_PAYMENT_CREDENTIAL_NAMES): fail closed, so a new
+ *    same posture as payment credential policy): fail closed, so a new
  *    prebuilt op is write-gated until someone consciously classifies it as read-safe. This is
  *    enforced structurally in ScriptToolSurface (the maxTier precedent), not by prompt text.
  *
@@ -143,14 +143,14 @@ export function resolveAssistantApprovalPlan(
    * fixed at the route and UI layers, one layer deeper. Resolved server-side from
    * business_memberships, never client-supplied.
    */
-  businessRole?: string | undefined
+  spaceRole?: string | undefined
 ): AssistantApprovalPlan {
   const selfAuthorizing =
     callerRole === undefined ||
     YOLO_SELF_AUTHORIZING_ROLES.has(callerRole) ||
     // A plain member is still downgraded: yolo is the owner's choice about their own business,
     // not a grant to everyone who can talk to it.
-    (callerRole === "product_end_user" && businessRole !== undefined && YOLO_SELF_AUTHORIZING_ROLES.has(businessRole));
+    (callerRole === "product_end_user" && spaceRole !== undefined && YOLO_SELF_AUTHORIZING_ROLES.has(spaceRole));
 
   const yoloApplies = policy?.approval_mode === "yolo" && selfAuthorizing;
   if (yoloApplies) {

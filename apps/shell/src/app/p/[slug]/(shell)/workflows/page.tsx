@@ -41,7 +41,7 @@ export default function WorkflowsPage() {
       </select>
       {selected && session && <div key={`${activeSpaceId}:${selected.id}`} className="card" style={{ cursor: "default" }}>
         <WorkflowPlanComposer spaceId={activeSpaceId} projectId={selected.id} session={session} />
-        <AssistantSidePanelBody tab="crons" spaceId={activeSpaceId} projectId={selected.id} session={session} isBusinessSpace={activeSpaceId !== product.space_id} />
+        <AssistantSidePanelBody tab="crons" spaceId={activeSpaceId} projectId={selected.id} session={session} isChildSpace={activeSpaceId !== product.space_id} />
       </div>}
     </>}
   </div>;

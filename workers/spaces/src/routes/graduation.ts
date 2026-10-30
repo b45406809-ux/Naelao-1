@@ -2,7 +2,7 @@ import type { SpaceBlueprint } from "@naelao/agent-sdk";
 import { evaluateBlueprintSecurity, verifyArtifactCertificate, type ConformanceCertificate } from "@naelao/security";
 import type { Hono } from "hono";
 import type { Env } from "../index.js";
-import { resolveEndUserBusinessRole } from "../business-auth.js";
+import { resolveEndUserSpaceRole } from "../space-auth.js";
 import { certifiedBlueprintKey } from "../certified-blueprint.js";
 
 export const GRADUATION_STAGES = ["consulting_embed", "blueprint_staged", "marketplace_published"] as const;
@@ -16,7 +16,7 @@ export function registerGraduationRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable" }, 503);
     const spaceId = c.req.param("spaceId");
     const role = c.req.header("x-naelao-role");
-    const membership = role === "product_end_user" ? await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, developerId) : role;
+    const membership = role === "product_end_user" ? await resolveEndUserSpaceRole(c.env.PLATFORM_DB, spaceId, developerId) : role;
     if (membership !== "owner" && membership !== "admin") return c.json({ error_code: "owner_or_admin_required" }, 403);
     const space = await c.env.PLATFORM_DB.prepare("SELECT id, name FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'").bind(spaceId, tenantId).first<{ id: string; name: string }>();
     if (!space) return c.json({ error_code: "not_found" }, 404);

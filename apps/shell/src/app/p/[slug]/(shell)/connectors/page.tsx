@@ -1,7 +1,7 @@
 "use client";
 
 
-// Sidebar → More → Connectors: the app store for the active business.
+// Sidebar → More → Connectors: the app store for the active space.
 //
 // This page used to lead with a hand-written list of about a dozen connectors (X/Twitter through
 // Meta Ads) with the real directory — several thousand apps across Composio and Pipedream — hidden
