@@ -1856,6 +1856,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     try {
+      if (method === "POST" && url.pathname === "/internal/agent/config/prepare") {
+        return this.handlePrepareAgentConfig(request);
+      }
       if(method==='POST'&&url.pathname==='/internal/worker-view')return this.handleWorkerView(request);
       if(method==='POST'&&url.pathname==='/internal/task-blackboard')return this.handleTaskBlackboard(request);
       if(method==='GET'&&url.pathname==='/internal/goal-activity')return this.handleGoalActivity(request);
@@ -5175,10 +5178,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const { merged, changed } = mergeMissingPrebuilt(config.scripts, wanted);
     if (!changed) return config;
     const healed: AgentConfig = { ...config, scripts: merged };
-    writeAgentConfig(bucket, spaceId, agentId, healed, lock ? { lockGateway: lock.gateway, holderId: lock.holderId } : {}).catch(() => {
-      /* best-effort — the in-memory union below still applies to THIS run either way */
-    });
+    // Complete this additive migration before a durable workflow snapshots its authorization
+    // grant. Fire-and-forget here let the workflow observe the old scripts.json, then revoke
+    // itself when this write completed during the first agent turn.
+    try {
+      await writeAgentConfig(bucket, spaceId, agentId, healed, lock ? { lockGateway: lock.gateway, holderId: lock.holderId } : {});
+    } catch {
+      /* The in-memory union still applies to THIS run if best-effort persistence fails. */
+    }
     return healed;
+  }
+
+  private async handlePrepareAgentConfig(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    if (!tenantId || !await verifyInternalToken(request.headers.get("x-naelao-internal-token") ?? undefined, tenantId, this.env.PLATFORM_SECRET)) {
+      return Response.json({ error_code: "forbidden" }, { status: 403 });
+    }
+    const body = await request.json<{ tenantId?: string; spaceId?: string; agentId?: string; projectId?: string; airGappedOnly?: boolean; callerRole?: string }>().catch(() => null);
+    if (!body || body.tenantId !== tenantId || !body.spaceId || !body.agentId) return Response.json({ error_code: "bad_request" }, { status: 400 });
+    const engineEnv = await this.buildScriptEngineEnv(body.spaceId, body.agentId, tenantId, undefined, body.projectId, undefined, body.airGappedOnly === true, undefined, undefined, body.callerRole);
+    if (!engineEnv) return Response.json({ error_code: "script_engine_unavailable" }, { status: 503 });
+    const config = await this.loadAgentConfigHealed(engineEnv.scriptsBucket, body.spaceId, body.agentId);
+    if (!config) return Response.json({ error_code: "agent_not_provisioned" }, { status: 404 });
+    return Response.json({ prepared: true });
   }
 
   /**

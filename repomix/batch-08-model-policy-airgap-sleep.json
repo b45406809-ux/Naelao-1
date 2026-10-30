@@ -68,7 +68,7 @@
     "workers/agents/wrangler.toml",
     "workers/spaces/src/index.ts",
     "workers/spaces/src/do/SpaceDO.ts",
-    "workers/spaces/wrangler.toml",
+    "workers/spaces/wrangler.toml"
   ],
   "ignore": {
     "useGitignore": true,

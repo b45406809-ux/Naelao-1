@@ -1161,8 +1161,21 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const preferHeader = (c.req.header("prefer") ?? "").toLowerCase();
   const preferSync = preferHeader.includes("respond-sync");
   const callbackUrl = (body as Record<string, unknown>)["callback_url"] as string | undefined;
+  const doKey = voiceExecutionKey ?? (rawBody.agent_definition_id ? `${sessionId}:${rawBody.agent_definition_id}` : sessionId);
 
   if (!preferSync && c.env.AGENT_TASK_WORKFLOW && c.env.TASK_DO) {
+    // Bring the agent's additive profile migration to a stable point before the durable workflow
+    // captures its grant version. Otherwise the first asynchronous turn can snapshot stale
+    // scripts.json, then revoke itself when NaelaoAgentDO heals that file during execution.
+    const agentStub = await getAgentDO(c.env, tenantId, doKey, c.get("requestId"));
+    const configToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+    const prepareConfig = await agentStub.fetch(new Request("http://agent-do/internal/agent/config/prepare", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": configToken },
+      body: JSON.stringify({ tenantId, spaceId, agentId, ...(verifiedProjectId ? { projectId: verifiedProjectId } : {}), airGappedOnly, callerRole }),
+    }));
+    if (!prepareConfig.ok) return c.json({ error_code: "agent_configuration_unavailable", message: "The assistant configuration could not be prepared for a durable run" }, 503);
+
     const taskId = crypto.randomUUID();
     if (rawBody.upload_names?.length) {
       if (!c.env.SCRIPTS_R2) return c.json({ error_code: "workspace_storage_unavailable" }, 503);
@@ -1208,10 +1221,11 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         // A-2 cutover: the script-native engine resolves its own system prompt/tools from the
         // agent's R2 config by agentId — systemPrompt/tools/kbContext are no longer meaningful.
         agentId,
+        agentDoKey: doKey,
         model: rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL,
         ...(dynamicModelCandidate ? { openRouterCapabilityEvidence: dynamicModelCandidate } : {}),
         taskDoName,
-        ...(voiceExecutionKey?{agentDoKey:voiceExecutionKey,controlParentDoId:voiceParentDoId}:{}),
+        ...(voiceExecutionKey ? { controlParentDoId: voiceParentDoId } : {}),
         // Go-live audit A-1/A-2: threaded through to /internal/tasks/:taskId/run's own
         // http://agent-do/script/run call — see that route's own comment.
         userId,
@@ -1258,7 +1272,6 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // (per the confirmed decision: per-thread-PER-AGENT instances, not one shared thread agent).
   // Omitting agent_definition_id keeps today's exact addressing — every existing single-agent
   // session is unaffected.
-  const doKey = voiceExecutionKey ?? (rawBody.agent_definition_id ? `${sessionId}:${rawBody.agent_definition_id}` : sessionId);
   const stub = await getAgentDO(c.env, tenantId, doKey, c.get("requestId"));
 
   // A-2 cutover: dispatch to the script-native engine (handleScriptRun) instead of the legacy

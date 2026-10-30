@@ -204,6 +204,7 @@ jobs:
             sleep 5
           done
           echo "observed_task_state=$state"
+          if [ "$state" != complete ]; then tail -n 200 "$RUNNER_TEMP/agent-test/worker.log"; fi
           test "$state" = complete
       - uses: actions/upload-artifact@v4
         if: always()

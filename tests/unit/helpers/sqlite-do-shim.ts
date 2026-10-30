@@ -43,7 +43,10 @@ function buildStorage(db: InstanceType<typeof DatabaseSync>): DOStorage {
       // does exactly this). The old `params.length === 0` branch below used to swallow this
       // case into the DDL path (db.exec() executes but discards results), silently returning
       // empty rows for any param-less SELECT.
-      if (/^select/i.test(trimmed)) {
+      // PRAGMA table_info is a read operation too. node:sqlite's db.exec() executes it but
+      // discards the rows, which made TaskDO's additive project_id migration think the column
+      // was missing and try to add a column already present in its CREATE TABLE statement.
+      if (/^(?:select|pragma\s+table_info\b)/i.test(trimmed)) {
         return { toArray: () => db.prepare(trimmed).all(...(params as never[])) as never[], rowsWritten: 0 };
       }
       if (params.length === 0) {
