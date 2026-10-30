@@ -178,7 +178,7 @@ jobs:
           status=$(curl -s -o "$RUNNER_TEMP/agent-test/member.json" -w '%{http_code}' --max-time 20 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"space_id":"test-space","user_id":"test-user","role":"owner"}' http://127.0.0.1:18800/space/spaces/test-space/members)
           echo "create_member_status=$status"; cat "$RUNNER_TEMP/agent-test/member.json"; test "$status" = 201
           for file in agents.md system-prompt.md scripts.json skills.json; do
-            case "$file" in *.json) printf '[]' > "$RUNNER_TEMP/agent-test/$file" ;; *) printf 'Test agent' > "$RUNNER_TEMP/agent-test/$file" ;; esac
+            case "$file" in scripts.json) printf '{"prebuilt":[],"startup_observe":""}' > "$RUNNER_TEMP/agent-test/$file" ;; skills.json) printf '{"skills":[]}' > "$RUNNER_TEMP/agent-test/$file" ;; *) printf 'Test agent' > "$RUNNER_TEMP/agent-test/$file" ;; esac
             pnpm exec wrangler r2 object put "naelao-agent-scripts/spaces/test-space/agents/naelao-agent/$file" --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --file "$RUNNER_TEMP/agent-test/$file"
           done
           status=$(curl -s -o "$RUNNER_TEMP/agent-test/valid-session.json" -w '%{http_code}' --max-time 20 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"goal":"test","project_id":"wrong-project"}' http://127.0.0.1:18800/agent/spaces/test-space/sessions/test-session/agent/run)
