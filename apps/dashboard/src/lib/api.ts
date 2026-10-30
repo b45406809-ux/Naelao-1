@@ -1,20 +1,10 @@
 // API client for Naelao router worker
-// G-BE01: Auth endpoints, G-BE10: SpaceType CRUD, G-BE20: Space CRUD, G-BE30: KB management
+// Team authentication, Space management, and platform APIs.
 import { getStoredToken } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
 
 // ── Types ────────────────────────────────────────────────────────────────────
-
-export interface SpaceType {
-  id: string;
-  name: string;
-  description: string;
-  status: string;
-  schema_json: string;
-  version: string;
-  created_at: string;
-}
 
 export interface Space {
   id: string;
@@ -59,7 +49,6 @@ export async function getOpenRouterWorkerModelCards(spaceId: string): Promise<Op
 
 export interface CreateSpaceInput {
   name: string;
-  spacetype_id: string;
   config_overrides?: Record<string, unknown>;
   template_id?: string;
 }
@@ -219,8 +208,6 @@ export async function resetPassword(token: string, newPassword: string): Promise
     body: JSON.stringify({ token, new_password: newPassword }),
   });
 }
-
-// ── SpaceTypes ───────────────────────────────────────────────────────────────
 
 // ── Spaces ───────────────────────────────────────────────────────────────────
 

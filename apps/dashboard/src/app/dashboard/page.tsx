@@ -35,7 +35,7 @@ export default function DashboardPage() {
       <p className="mt-5 text-sm text-gray-600">{spaces.length} {spaces.length === 1 ? "Space" : "Spaces"}</p>
       {spaces.length > 0 && <ul className="mt-3 divide-y divide-gray-100">
         {spaces.slice(0, 5).map((space) => <li key={space.id} className="flex items-center justify-between py-3">
-          <span className="font-medium text-gray-900">{space.name}</span><span className="text-xs text-gray-500">{space.spacetype_id}</span>
+          <span className="font-medium text-gray-900">{space.name}</span><span className="text-xs text-gray-500">{space.status}</span>
         </li>)}
       </ul>}
       <div className="mt-6 flex flex-wrap gap-3 border-t border-gray-100 pt-5">

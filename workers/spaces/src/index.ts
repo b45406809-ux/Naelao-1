@@ -439,7 +439,7 @@ app.post("/spaces", async (c) => {
   }
   const body = bodyValue as {
     name: string;
-    spacetype_id: string;
+    spacetype_id?: string;
     /** Optional marketplace Space Template to apply during provisioning. */
     template_id?: string;
     config_overrides?: Record<string, unknown>;
@@ -447,12 +447,15 @@ app.post("/spaces", async (c) => {
     depth?: number;
   };
 
+  if (body.spacetype_id !== undefined && body.spacetype_id !== "launchpad" && body.spacetype_id !== "workspace") {
+    return c.json({ error_code: "unsupported_product", message: "Spaces are created in Launchpad" }, 400);
+  }
   try {
     const result = await createSpaceRecord(c.env, {
       tenantId,
       ...(userId ? { userId } : {}),
       name: body.name,
-      spacetypeId: body.spacetype_id,
+      spacetypeId: "launchpad",
       ...(body.parent_space_id ? { parentSpaceId: body.parent_space_id } : {}),
       ...(body.depth !== undefined ? { depth: body.depth } : {}),
       ...(body.template_id ? { templateId: body.template_id } : {}),
@@ -5381,9 +5384,10 @@ async function loadContainerCatalogue(env: Env): Promise<Array<{ id: string; nam
 async function loadEffectiveProductConfig(
   env: Env,
   spaceTypeId: string,
-  spaceConfigJson: string | null
+  spaceConfigJson: string | null,
+  loadedManifest?: NaelaoSpaceTypeManifestV2
 ): Promise<SpaceTypeProductConfig | null> {
-  const manifest = await loadManifest(env, spaceTypeId);
+  const manifest = loadedManifest ?? await loadManifest(env, spaceTypeId);
   const base = manifest?.productConfig ?? null;
   // Per-space override (builders tune membership per product without forking the manifest).
   let override: Partial<SpaceTypeProductConfig> | undefined;
@@ -5447,7 +5451,7 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
 
   const manifest = await loadManifest(c.env, space.spacetype_id);
   if (!manifest) return c.json({ error_code: "not_found", message: "SpaceType manifest not found" }, 404);
-  const pc = await loadEffectiveProductConfig(c.env, space.spacetype_id, space.config_json);
+  const pc = await loadEffectiveProductConfig(c.env, space.spacetype_id, space.config_json, manifest);
   let spaceConfig: Record<string, unknown> = {};
   try { const parsed: unknown = JSON.parse(space.config_json ?? "{}"); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) spaceConfig = parsed as Record<string, unknown>; } catch { /* malformed legacy config uses product default */ }
 
