@@ -5,12 +5,12 @@ import { mintInternalToken } from "@naelao/http";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
-// §A1.17 Phase S: a business's own end-user member can grant the assistant access to THEIR OWN
-// machine — but only within the business they actually belong to, and only their own grants are
+// Space-scoped tunnel access: an end-user member can grant the assistant access to THEIR OWN
+// machine — but only within the Space they actually belong to, and only their own grants are
 // visible to them (directory paths are sensitive). requireInternalHmac alone (Phase M's original
 // gate) doesn't provide this: naelao-router mints that same token for EVERY authenticated
-// request it proxies, builder JWT or product_end_user alike, so without requireBusinessMembership
-// any end user of ANY business under the same owning tenant could reach another business's grants.
+// request it proxies, builder JWT or product_end_user alike, so without requireSpaceMembership
+// any end user of ANY Space under the same owning tenant could reach another Space's grants.
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 const PLATFORM_SECRET = "test-platform-secret";
@@ -24,29 +24,18 @@ const SPACES_TABLE_SQL = `
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
   );
 `;
-const BUSINESS_MEMBERSHIPS_SQL = `
-  CREATE TABLE business_memberships (
-    business_space_id TEXT NOT NULL, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active',
-    invited_by TEXT, joined_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (business_space_id, end_user_id)
-  );
-`;
 const SPACE_MEMBERS_SQL = `
   CREATE TABLE space_members (
-    id TEXT PRIMARY KEY, space_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
+    id TEXT PRIMARY KEY, space_id TEXT NOT NULL, tenant_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'member', suspended_at TEXT
   );
 `;
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL, SPACE_MEMBERS_SQL]);
-  fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('prod-root', 'tenant-1', 'active', 'Product')");
-  fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name, parent_space_id) VALUES ('biz-alice', 'tenant-1', 'active', 'Alice Biz', 'prod-root')");
-  fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name, parent_space_id) VALUES ('biz-bob', 'tenant-1', 'active', 'Bob Biz', 'prod-root')");
-  fakeDb.db.exec("INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-alice', 'prod-root', 'alice', 'admin', 'active')");
-  fakeDb.db.exec("INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-alice', 'prod-root', 'alice-member', 'member', 'active')");
-  fakeDb.db.exec("INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-bob', 'prod-root', 'bob', 'admin', 'active')");
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SPACE_MEMBERS_SQL]);
+  fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('space-1', 'tenant-1', 'active', 'Team Space')");
+  fakeDb.db.exec("INSERT INTO space_members (id, space_id, tenant_id, end_user_id, role) VALUES ('m1', 'space-1', 'tenant-1', 'alice', 'owner')");
+  fakeDb.db.exec("INSERT INTO space_members (id, space_id, tenant_id, end_user_id, role) VALUES ('m2', 'space-1', 'tenant-1', 'alice-member', 'member')");
   return {
     PLATFORM_SECRET,
     ENVIRONMENT: "test",
@@ -70,12 +59,12 @@ function req(path: string, headers: Record<string, string>, init?: RequestInit):
   return new Request(`https://spaces.naelao.com${path}`, { ...init, headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) } });
 }
 
-describe("local-grants — business membership gate (§A1.17 Phase S)", () => {
-  it("an admin member of the business can create a grant for their own machine", async () => {
+describe("local-grants — Space membership gate", () => {
+  it("an admin member of the Space can create a grant for their own machine", async () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", headers, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/alice/repo" }) }),
+      req("/spaces/space-1/local-grants", headers, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/alice/repo" }) }),
       env as never, execCtx
     );
     expect(res.status).toBe(201);
@@ -85,22 +74,22 @@ describe("local-grants — business membership gate (§A1.17 Phase S)", () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice-member");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", headers, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/alice-member/repo" }) }),
+      req("/spaces/space-1/local-grants", headers, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/alice-member/repo" }) }),
       env as never, execCtx
     );
     expect(res.status).toBe(403);
   });
 
-  it("CRITICAL: a member of a DIFFERENT business cannot create or list grants for this one", async () => {
+  it("CRITICAL: a non-member cannot create or list grants for this one", async () => {
     const env = makeEnv();
-    const bobHeaders = await endUserHeaders("tenant-1", "bob");
+    const bobHeaders = await endUserHeaders("tenant-1", "space-outsider");
     const createRes = await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", bobHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/bob/repo" }) }),
+      req("/spaces/space-1/local-grants", bobHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/bob/repo" }) }),
       env as never, execCtx
     );
     expect(createRes.status).toBe(403);
 
-    const listRes = await spacesWorker.fetch(req("/spaces/biz-alice/local-grants", bobHeaders), env as never, execCtx);
+    const listRes = await spacesWorker.fetch(req("/spaces/space-1/local-grants", bobHeaders), env as never, execCtx);
     expect(listRes.status).toBe(403);
   });
 
@@ -108,13 +97,13 @@ describe("local-grants — business membership gate (§A1.17 Phase S)", () => {
     const env = makeEnv();
     const aliceHeaders = await endUserHeaders("tenant-1", "alice");
     await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/alice/repo" }) }),
+      req("/spaces/space-1/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/alice/repo" }) }),
       env as never, execCtx
     );
 
     // alice-member has no grants of their own — the list must come back empty, not alice's.
     const memberHeaders = await endUserHeaders("tenant-1", "alice-member");
-    const listRes = await spacesWorker.fetch(req("/spaces/biz-alice/local-grants", memberHeaders), env as never, execCtx);
+    const listRes = await spacesWorker.fetch(req("/spaces/space-1/local-grants", memberHeaders), env as never, execCtx);
     expect(listRes.status).toBe(200);
     const body = await listRes.json<{ data: unknown[] }>();
     expect(body.data).toEqual([]);
@@ -125,12 +114,12 @@ describe("local-grants — business membership gate (§A1.17 Phase S)", () => {
     const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
     const aliceHeaders = await endUserHeaders("tenant-1", "alice");
     await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/alice/repo" }) }),
+      req("/spaces/space-1/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/home/alice/repo" }) }),
       env as never, execCtx
     );
 
     const builderHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token };
-    const listRes = await spacesWorker.fetch(req("/spaces/biz-alice/local-grants", builderHeaders), env as never, execCtx);
+    const listRes = await spacesWorker.fetch(req("/spaces/space-1/local-grants", builderHeaders), env as never, execCtx);
     expect(listRes.status).toBe(200);
     const body = await listRes.json<{ data: Array<{ user_id: string }> }>();
     expect(body.data.map((g) => g.user_id)).toEqual(["alice"]);
@@ -139,16 +128,16 @@ describe("local-grants — business membership gate (§A1.17 Phase S)", () => {
   it("a member (not admin) CAN mint a local-tunnel connect token for their own machine", async () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice-member");
-    const res = await spacesWorker.fetch(req("/spaces/biz-alice/local-tunnel/connect-token", headers, { method: "POST" }), env as never, execCtx);
+    const res = await spacesWorker.fetch(req("/spaces/space-1/local-tunnel/connect-token", headers, { method: "POST" }), env as never, execCtx);
     expect(res.status).toBe(200);
     const body = await res.json<{ user_id: string }>();
     expect(body.user_id).toBe("alice-member");
   });
 
-  it("a non-member cannot mint a connect token for someone else's business", async () => {
+  it("a non-member cannot mint a connect token for someone else's Space", async () => {
     const env = makeEnv();
-    const bobHeaders = await endUserHeaders("tenant-1", "bob");
-    const res = await spacesWorker.fetch(req("/spaces/biz-alice/local-tunnel/connect-token", bobHeaders, { method: "POST" }), env as never, execCtx);
+    const bobHeaders = await endUserHeaders("tenant-1", "space-outsider");
+    const res = await spacesWorker.fetch(req("/spaces/space-1/local-tunnel/connect-token", bobHeaders, { method: "POST" }), env as never, execCtx);
     expect(res.status).toBe(403);
   });
 
@@ -159,42 +148,42 @@ describe("local-grants — business membership gate (§A1.17 Phase S)", () => {
     const env = makeEnv();
     const aliceHeaders = await endUserHeaders("tenant-1", "alice"); // POST uses the CALLER's own identity, not a body field
     await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/space-wide" }) }),
+      req("/spaces/space-1/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/space-wide" }) }),
       env as never, execCtx
     );
     await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-a-only", project_id: "proj-a" }) }),
+      req("/spaces/space-1/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-a-only", project_id: "proj-a" }) }),
       env as never, execCtx
     );
     await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-b-only", project_id: "proj-b" }) }),
+      req("/spaces/space-1/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-b-only", project_id: "proj-b" }) }),
       env as never, execCtx
     );
 
     const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
     const builderHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token };
-    const res = await spacesWorker.fetch(req("/spaces/biz-alice/local-grants?project_id=proj-a", builderHeaders), env as never, execCtx);
+    const res = await spacesWorker.fetch(req("/spaces/space-1/local-grants?project_id=proj-a", builderHeaders), env as never, execCtx);
     expect(res.status).toBe(200);
     const body = await res.json<{ data: Array<{ directory: string | null }> }>();
     const dirs = body.data.map((g) => g.directory).sort();
     expect(dirs).toEqual(["/proj-a-only", "/space-wide"]); // proj-b's own grant never leaks in
   });
 
-  it("omitting ?project_id= keeps the whole-space view unchanged (business detail page's own use)", async () => {
+  it("omitting ?project_id= keeps the whole-space view unchanged (Space detail page's own use)", async () => {
     const env = makeEnv();
     const aliceHeaders = await endUserHeaders("tenant-1", "alice");
     await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-a-only", project_id: "proj-a" }) }),
+      req("/spaces/space-1/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-a-only", project_id: "proj-a" }) }),
       env as never, execCtx
     );
     await spacesWorker.fetch(
-      req("/spaces/biz-alice/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-b-only", project_id: "proj-b" }) }),
+      req("/spaces/space-1/local-grants", aliceHeaders, { method: "POST", body: JSON.stringify({ grant_type: "read", directory: "/proj-b-only", project_id: "proj-b" }) }),
       env as never, execCtx
     );
 
     const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
     const builderHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token };
-    const res = await spacesWorker.fetch(req("/spaces/biz-alice/local-grants", builderHeaders), env as never, execCtx);
+    const res = await spacesWorker.fetch(req("/spaces/space-1/local-grants", builderHeaders), env as never, execCtx);
     const body = await res.json<{ data: Array<{ directory: string | null }> }>();
     expect(body.data.length).toBe(2); // everything, regardless of project
   });

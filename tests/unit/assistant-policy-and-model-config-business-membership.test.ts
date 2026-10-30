@@ -24,14 +24,6 @@ const SPACES_TABLE_SQL = `
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
   );
 `;
-const BUSINESS_MEMBERSHIPS_SQL = `
-  CREATE TABLE business_memberships (
-    business_space_id TEXT NOT NULL, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active',
-    invited_by TEXT, joined_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (business_space_id, end_user_id)
-  );
-`;
 const SPACE_MEMBERS_SQL = `
   CREATE TABLE space_members (
     space_id TEXT NOT NULL, end_user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member',
@@ -40,11 +32,9 @@ const SPACE_MEMBERS_SQL = `
 `;
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL, SPACE_MEMBERS_SQL]);
-  fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('prod-root', 'tenant-1', 'active', 'Product')");
-  fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name, parent_space_id) VALUES ('biz-alice', 'tenant-1', 'active', 'Alice Biz', 'prod-root')");
-  fakeDb.db.exec("INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-alice', 'prod-root', 'alice', 'admin', 'active')");
-  fakeDb.db.exec("INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES ('biz-alice', 'prod-root', 'alice-member', 'member', 'active')");
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SPACE_MEMBERS_SQL]);
+  fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('space-1', 'tenant-1', 'active', 'Team Space')");
+  fakeDb.db.exec("INSERT INTO space_members (space_id, end_user_id, role) VALUES ('space-1', 'alice', 'owner'), ('space-1', 'alice-member', 'member')");
   return {
     PLATFORM_SECRET,
     ENVIRONMENT: "test",
@@ -68,12 +58,12 @@ function req(path: string, headers: Record<string, string>, init?: RequestInit):
   return new Request(`https://spaces.naelao.com${path}`, { ...init, headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) } });
 }
 
-describe("assistant-policy PATCH — business membership gate", () => {
-  it("a business admin end user CAN toggle their own business's approval policy to yolo", async () => {
+describe("assistant-policy PATCH — Space membership gate", () => {
+  it("a Space owner CAN toggle their own Space's approval policy to yolo", async () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/assistant-policy", headers, {
+      req("/spaces/space-1/assistant-policy", headers, {
         method: "PATCH",
         body: JSON.stringify({ approval_mode: "yolo", auto_approved_actions: [] }),
       }),
@@ -86,17 +76,17 @@ describe("assistant-policy PATCH — business membership gate", () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice-member");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/assistant-policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
+      req("/spaces/space-1/assistant-policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
       env as never, execCtx
     );
     expect(res.status).toBe(403);
   });
 
-  it("a non-member of this business cannot change its policy", async () => {
+  it("a non-member of this Space cannot change its policy", async () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "someone-else");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/assistant-policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
+      req("/spaces/space-1/assistant-policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
       env as never, execCtx
     );
     expect(res.status).toBe(403);
@@ -107,19 +97,19 @@ describe("assistant-policy PATCH — business membership gate", () => {
     const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
     const builderHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token };
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/assistant-policy", builderHeaders, { method: "PATCH", body: JSON.stringify({ approval_mode: "always_ask" }) }),
+      req("/spaces/space-1/assistant-policy", builderHeaders, { method: "PATCH", body: JSON.stringify({ approval_mode: "always_ask" }) }),
       env as never, execCtx
     );
     expect(res.status).toBe(200);
   });
 });
 
-describe("model-config PATCH — business membership gate + model validation", () => {
-  it("a business admin end user can set an allowed model", async () => {
+describe("model-config PATCH — Space membership gate + model validation", () => {
+  it("a Space owner can set an allowed model", async () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/model-config", headers, {
+      req("/spaces/space-1/model-config", headers, {
         method: "PATCH",
         body: JSON.stringify({ model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }),
       }),
@@ -134,7 +124,7 @@ describe("model-config PATCH — business membership gate + model validation", (
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/model-config", headers, { method: "PATCH", body: JSON.stringify({ model: "gpt-9000" }) }),
+      req("/spaces/space-1/model-config", headers, { method: "PATCH", body: JSON.stringify({ model: "gpt-9000" }) }),
       env as never, execCtx
     );
     expect(res.status).toBe(400);
@@ -144,7 +134,7 @@ describe("model-config PATCH — business membership gate + model validation", (
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice-member");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/model-config", headers, {
+      req("/spaces/space-1/model-config", headers, {
         method: "PATCH",
         body: JSON.stringify({ model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }),
       }),
@@ -153,20 +143,18 @@ describe("model-config PATCH — business membership gate + model validation", (
     expect(res.status).toBe(403);
   });
 
-  it("persists into config_json.productConfig.modelConfig.model without clobbering other overrides", async () => {
+  it("persists model config without clobbering other Space overrides", async () => {
     const env = makeEnv();
-    env.PLATFORM_DB.db.exec(
-      "UPDATE spaces SET config_json = '{\"productConfig\":{\"assistantMode\":\"per-user\"}}' WHERE id = 'biz-alice'"
-    );
+    env.PLATFORM_DB.db.exec("UPDATE spaces SET config_json = '{\"productConfig\":{\"assistantMode\":\"per-user\"}}' WHERE id = 'space-1'");
     const headers = await endUserHeaders("tenant-1", "alice");
     await spacesWorker.fetch(
-      req("/spaces/biz-alice/model-config", headers, {
+      req("/spaces/space-1/model-config", headers, {
         method: "PATCH",
         body: JSON.stringify({ model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }),
       }),
       env as never, execCtx
     );
-    const row = env.PLATFORM_DB.db.prepare("SELECT config_json FROM spaces WHERE id = 'biz-alice'").get() as { config_json: string };
+    const row = env.PLATFORM_DB.db.prepare("SELECT config_json FROM spaces WHERE id = 'space-1'").get() as { config_json: string };
     const parsed = JSON.parse(row.config_json);
     expect(parsed.productConfig.assistantMode).toBe("per-user");
     expect(parsed.productConfig.modelConfig.model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
@@ -177,22 +165,22 @@ describe("model-config PATCH — business membership gate + model validation", (
 // policy) was builder-JWT-only (tenant-match only, no requireBusinessMembership floor at all) —
 // the exact gap assistant-policy itself had before this same fix was applied to it. A business
 // admin end user had no reachable way to configure a project agent's own approvals at all.
-describe("agent policy GET/PATCH — business membership gate", () => {
-  it("a business admin end user CAN read an agent's policy", async () => {
+describe("agent policy GET/PATCH — Space membership gate", () => {
+  it("a Space owner CAN read an agent's policy", async () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/agents/agent-1/policy", headers),
+      req("/spaces/space-1/agents/agent-1/policy", headers),
       env as never, execCtx
     );
     expect(res.status).toBe(200);
   });
 
-  it("a business admin end user CAN update an agent's policy", async () => {
+  it("a Space owner CAN update an agent's policy", async () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/agents/agent-1/policy", headers, {
+      req("/spaces/space-1/agents/agent-1/policy", headers, {
         method: "PATCH",
         body: JSON.stringify({ approval_mode: "yolo", auto_approved_actions: ["web-search.search"] }),
       }),
@@ -208,22 +196,22 @@ describe("agent policy GET/PATCH — business membership gate", () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "alice-member");
     const getRes = await spacesWorker.fetch(
-      req("/spaces/biz-alice/agents/agent-1/policy", headers),
+      req("/spaces/space-1/agents/agent-1/policy", headers),
       env as never, execCtx
     );
     expect(getRes.status).toBe(200);
     const patchRes = await spacesWorker.fetch(
-      req("/spaces/biz-alice/agents/agent-1/policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
+      req("/spaces/space-1/agents/agent-1/policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
       env as never, execCtx
     );
     expect(patchRes.status).toBe(403);
   });
 
-  it("a non-member of this business cannot read or update its agent policy", async () => {
+  it("a non-member of this Space cannot read or update its agent policy", async () => {
     const env = makeEnv();
     const headers = await endUserHeaders("tenant-1", "someone-else");
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/agents/agent-1/policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
+      req("/spaces/space-1/agents/agent-1/policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
       env as never, execCtx
     );
     expect(res.status).toBe(403);
@@ -234,7 +222,7 @@ describe("agent policy GET/PATCH — business membership gate", () => {
     const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
     const builderHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token };
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/agents/agent-1/policy", builderHeaders, { method: "PATCH", body: JSON.stringify({ approval_mode: "always_ask" }) }),
+      req("/spaces/space-1/agents/agent-1/policy", builderHeaders, { method: "PATCH", body: JSON.stringify({ approval_mode: "always_ask" }) }),
       env as never, execCtx
     );
     expect(res.status).toBe(200);

@@ -6,9 +6,9 @@ import { mintInternalToken } from "../../packages/http/src/index.js";
 //
 // Before this, the panel listed connected channels and offered no way to add one: the only connect
 // route was POST /channels/:channel/connect, which the router leaves out of the end-user allowlist.
-// This is the per-business counterpart, and the thing worth protecting is its authorization —
-// an end user's claims.tid is the PRODUCT root, spanning every business under it, so a
-// tenant-match-only check would let a member of one business wire a channel onto another.
+// This is the per-Space counterpart, and the thing worth protecting is its authorization —
+// an end user's claims.tid is the PRODUCT root, spanning every Space under it, so a
+// tenant-match-only check would let a member of one Space wire a channel onto another.
 
 const SECRET = "test-platform-secret";
 const TENANT = "tenant-1";
@@ -16,7 +16,7 @@ const SPACE = "space-1";
 
 interface Stored { space_id: string; channel: string; enabled: number; project_id: string | null }
 
-function makeEnv(opts: { businessRole?: string | null; credentialsOk?: boolean } = {}) {
+function makeEnv(opts: { spaceRole?: string | null; credentialsOk?: boolean } = {}) {
   const links: Stored[] = [];
   const credentialWrites: Array<Record<string, unknown>> = [];
 
@@ -29,6 +29,7 @@ function makeEnv(opts: { businessRole?: string | null; credentialsOk?: boolean }
       PLATFORM_DB: {
         prepare: (sql: string) => ({
           bind: (...args: unknown[]) => ({
+            first: async () => sql.includes("FROM spaces") ? { id: SPACE } : opts.spaceRole ? { role: opts.spaceRole } : null,
             run: async () => {
               if (sql.includes("INSERT INTO channel_links")) {
                 links.push({
@@ -47,10 +48,6 @@ function makeEnv(opts: { businessRole?: string | null; credentialsOk?: boolean }
       },
       SPACES_WORKER: {
         fetch: async (req: Request) => {
-          if (new URL(req.url).pathname.includes("/internal/business-role")) {
-            if (!opts.businessRole) return new Response("{}", { status: 404 });
-            return new Response(JSON.stringify({ role: opts.businessRole }), { status: 200 });
-          }
           return new Response("{}", { status: 200 });
         },
       },
@@ -90,7 +87,7 @@ async function post(env: unknown, body: unknown, identity: { role: string; userI
 
 describe("POST /spaces/:spaceId/assistant/channels", () => {
   it("connects a channel and returns the webhook URL the owner still has to paste in", async () => {
-    const h = makeEnv({ businessRole: "owner" });
+    const h = makeEnv({ spaceRole: "owner" });
     const res = await post(h.env, { action: "connect", channel: "slack", secret: "shhh" }, { role: "product_end_user", userId: "eu-1" });
     expect(res.status).toBe(201);
     const body = await res.json<{ connected: boolean; webhook_url: string }>();
@@ -105,51 +102,51 @@ describe("POST /spaces/:spaceId/assistant/channels", () => {
     // A scope='user' row is invisible to the inbound webhook's own lookup (it resolves with no
     // acting user), so a "successful" connect would leave the channel silently unusable — the
     // exact bug item 55 fixed for the builder-only route.
-    const h = makeEnv({ businessRole: "admin" });
+    const h = makeEnv({ spaceRole: "admin" });
     await post(h.env, { action: "connect", channel: "discord", secret: "pubkey" }, { role: "product_end_user", userId: "eu-1" });
     expect(h.credentialWrites[0]!["scope"]).toBe("space");
     expect(h.credentialWrites[0]!["userHeader"]).toBeTruthy();
   });
 
-  it("refuses a member who is not an admin of the business", async () => {
-    // Changing how a business can be reached from the outside world is not a plain member action.
-    const h = makeEnv({ businessRole: "member" });
+  it("refuses a member who is not an admin of the Space", async () => {
+    // Changing how a Space can be reached from the outside world is not a plain member action.
+    const h = makeEnv({ spaceRole: "member" });
     const res = await post(h.env, { action: "connect", channel: "slack", secret: "x" }, { role: "product_end_user", userId: "eu-1" });
     expect(res.status).toBe(403);
     expect(h.links).toHaveLength(0);
   });
 
-  it("refuses an end user with no membership in this business at all", async () => {
-    // The cross-business hole: their claims.tid is the product root, so a tenant match alone would
-    // have let them wire a channel onto someone else's business.
-    const h = makeEnv({ businessRole: null });
+  it("refuses an end user with no membership in this Space at all", async () => {
+    // The cross-Space hole: their claims.tid is the product root, so a tenant match alone would
+    // have let them wire a channel onto someone else's Space.
+    const h = makeEnv({ spaceRole: null });
     const res = await post(h.env, { action: "connect", channel: "slack", secret: "x" }, { role: "product_end_user", userId: "eu-99" });
     expect(res.status).toBe(403);
     expect(h.links).toHaveLength(0);
   });
 
   it("lets an owner through — owner outranks admin", async () => {
-    // The creator of a business is inserted as 'owner'; an exact === "admin" check would lock them
-    // out of their own business (the bug item 90 fixed in the shell's own UI).
-    const h = makeEnv({ businessRole: "owner" });
+    // The creator of a Space is inserted as 'owner'; an exact === "admin" check would lock them
+    // out of their own Space (the bug item 90 fixed in the shell's own UI).
+    const h = makeEnv({ spaceRole: "owner" });
     const res = await post(h.env, { action: "connect", channel: "whatsapp", secret: "s" }, { role: "product_end_user", userId: "eu-1" });
     expect(res.status).toBe(201);
   });
 
   it("leaves a builder's own JWT caller unaffected", async () => {
-    const h = makeEnv({ businessRole: null });
+    const h = makeEnv({ spaceRole: null });
     const res = await post(h.env, { action: "connect", channel: "email", secret: "s" }, { role: "owner" });
     expect(res.status).toBe(201);
   });
 
   it("rejects a channel type that doesn't exist", async () => {
-    const h = makeEnv({ businessRole: "owner" });
+    const h = makeEnv({ spaceRole: "owner" });
     const res = await post(h.env, { action: "connect", channel: "signal", secret: "s" }, { role: "product_end_user", userId: "eu-1" });
     expect(res.status).toBe(400);
   });
 
   it("requires a secret to connect", async () => {
-    const h = makeEnv({ businessRole: "owner" });
+    const h = makeEnv({ spaceRole: "owner" });
     const res = await post(h.env, { action: "connect", channel: "slack" }, { role: "product_end_user", userId: "eu-1" });
     expect(res.status).toBe(400);
   });
@@ -157,7 +154,7 @@ describe("POST /spaces/:spaceId/assistant/channels", () => {
   it("turns a channel off and back on without touching the vaulted secret", async () => {
     // Disabling is reversible; wiping the secret would send the owner back to their provider's
     // dashboard to re-copy it for no reason.
-    const h = makeEnv({ businessRole: "owner" });
+    const h = makeEnv({ spaceRole: "owner" });
     await post(h.env, { action: "connect", channel: "slack", secret: "s" }, { role: "product_end_user", userId: "eu-1" });
     const writesAfterConnect = h.credentialWrites.length;
 
@@ -172,7 +169,7 @@ describe("POST /spaces/:spaceId/assistant/channels", () => {
   });
 
   it("surfaces a vault write failure instead of claiming the channel is connected", async () => {
-    const h = makeEnv({ businessRole: "owner", credentialsOk: false });
+    const h = makeEnv({ spaceRole: "owner", credentialsOk: false });
     const res = await post(h.env, { action: "connect", channel: "slack", secret: "s" }, { role: "product_end_user", userId: "eu-1" });
     expect(res.status).toBe(502);
     expect(h.links).toHaveLength(0);

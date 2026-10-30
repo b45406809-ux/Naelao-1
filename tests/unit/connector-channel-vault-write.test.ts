@@ -68,7 +68,7 @@ describe("POST /connectors/:platform/connect — vault write contract", () => {
 
     const token = await mintInternalToken(SECRET, "tenant-a");
     const res = await app.fetch(
-      new Request("https://agents.naelao.com/connectors/gumroad/connect", {
+      new Request("https://agents.naelao.com/connectors/higgsfield/connect", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -77,7 +77,7 @@ describe("POST /connectors/:platform/connect — vault write contract", () => {
           "x-naelao-role": "owner",
           "x-naelao-internal-token": token,
         },
-        body: JSON.stringify({ space_id: "space-a", api_key: "gr_secret_123" }),
+        body: JSON.stringify({ space_id: "space-a", api_key: "hf_secret_123" }),
       }),
       env as never
     );
@@ -87,17 +87,17 @@ describe("POST /connectors/:platform/connect — vault write contract", () => {
     expect(calls[0]!.path).toBe("/spaces/space-a/credentials");
     expect(calls[0]!.hasUserId).toBe(true);
     expect(calls[0]!.scope).toBe("space");
-    expect(calls[0]!.name).toBe("GUMROAD_ACCESS_TOKEN");
-    expect(calls[0]!.value).toBe("gr_secret_123");
+    expect(calls[0]!.name).toBe("HIGGSFIELD_API_KEY");
+    expect(calls[0]!.value).toBe("hf_secret_123");
   });
 
   // §A1.18 connector scope model: the spaces-worker wrapper relaxed its own gate from
   // "admin-only" to "member" (any member can attempt to connect their OWN personal connector),
   // so THIS route is now the one place that enforces admin-only for a scope_model='space'
-  // connector — resolved from x-naelao-business-role, forwarded ONLY for a product_end_user
+  // connector — resolved from x-naelao-space-role, forwarded ONLY for a product_end_user
   // caller (a builder's own JWT caller never sends it, so its existing 201 above is proof the
   // new check doesn't regress that path).
-  it("refuses a scope_model='space' connector for a non-admin business role", async () => {
+  it("refuses a scope_model='space' connector for a non-admin Space role", async () => {
     const { worker: credentialsWorker, calls } = makeCredentialsWorkerStub();
     const { worker: mcpHub } = makeMcpHubStub();
     const env = {
@@ -108,16 +108,16 @@ describe("POST /connectors/:platform/connect — vault write contract", () => {
 
     const token = await mintInternalToken(SECRET, "tenant-a");
     const res = await app.fetch(
-      new Request("https://agents.naelao.com/connectors/gumroad/connect", {
+      new Request("https://agents.naelao.com/connectors/higgsfield/connect", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-naelao-tenant-id": "tenant-a",
           "x-naelao-user-id": "end-user-1",
-          "x-naelao-business-role": "member",
+          "x-naelao-space-role": "member",
           "x-naelao-internal-token": token,
         },
-        body: JSON.stringify({ space_id: "space-a", api_key: "gr_secret_123" }),
+        body: JSON.stringify({ space_id: "space-a", api_key: "hf_secret_123" }),
       }),
       env as never
     );
@@ -125,7 +125,7 @@ describe("POST /connectors/:platform/connect — vault write contract", () => {
     expect(calls.length).toBe(0); // never even reached the vault write
   });
 
-  it("allows a scope_model='space' connector for an admin business role", async () => {
+  it("allows a scope_model='space' connector for an admin Space role", async () => {
     const { worker: credentialsWorker, calls } = makeCredentialsWorkerStub();
     const { worker: mcpHub } = makeMcpHubStub();
     const env = {
@@ -136,16 +136,16 @@ describe("POST /connectors/:platform/connect — vault write contract", () => {
 
     const token = await mintInternalToken(SECRET, "tenant-a");
     const res = await app.fetch(
-      new Request("https://agents.naelao.com/connectors/gumroad/connect", {
+      new Request("https://agents.naelao.com/connectors/higgsfield/connect", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-naelao-tenant-id": "tenant-a",
           "x-naelao-user-id": "end-user-1",
-          "x-naelao-business-role": "admin",
+          "x-naelao-space-role": "admin",
           "x-naelao-internal-token": token,
         },
-        body: JSON.stringify({ space_id: "space-a", api_key: "gr_secret_123" }),
+        body: JSON.stringify({ space_id: "space-a", api_key: "hf_secret_123" }),
       }),
       env as never
     );
@@ -163,7 +163,7 @@ describe("POST /connectors/:platform/connect — vault write contract", () => {
 
     const token = await mintInternalToken(SECRET, "tenant-a");
     const res = await app.fetch(
-      new Request("https://agents.naelao.com/connectors/gumroad/connect", {
+      new Request("https://agents.naelao.com/connectors/higgsfield/connect", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -172,7 +172,7 @@ describe("POST /connectors/:platform/connect — vault write contract", () => {
           "x-naelao-role": "owner",
           "x-naelao-internal-token": token,
         },
-        body: JSON.stringify({ space_id: "space-a", api_key: "gr_secret_123" }),
+        body: JSON.stringify({ space_id: "space-a", api_key: "hf_secret_123" }),
       }),
       env as never
     );

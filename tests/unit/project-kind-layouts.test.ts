@@ -43,10 +43,11 @@ describe("BUSINESS_FEATURE_KIND_REGISTRY", () => {
     expect(getBusinessFeatureKind("wallet")).toBeUndefined();
     expect(creatableFeatureKindsForRole("owner")).toEqual([]);
   });
-  it("recognizes generic structural kinds without a registry entry", () => {
-    expect(isKnownProjectKind("workspace")).toBe(true);
-    expect(isKnownProjectKind("customer_bot")).toBe(true);
-    expect(getBusinessFeatureKind("workspace")).toBeUndefined();
+  it("recognizes the four generic layout kinds without a domain registry entry", () => {
+    for (const kind of ["DualPane", "CanvasFirst", "HeadlessPipeline", "TerminalFirst"]) {
+      expect(isKnownProjectKind(kind)).toBe(true);
+      expect(getBusinessFeatureKind(kind)).toBeUndefined();
+    }
     expect(isKnownProjectKind("not_a_kind")).toBe(false);
   });
   it("retains role ranking for future scoped extension capabilities", () => {

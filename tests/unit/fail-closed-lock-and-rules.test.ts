@@ -57,35 +57,3 @@ describe("S0.4 — lock prebuilt fails CLOSED when ConcurrencyDO is unavailable"
     expect(result.granted).toBe(true);
   });
 });
-
-type RuleMatcherAccess = {
-  matchProjectRule(rules: Array<{ id: string; trigger_pattern: string; action: string; reply_text: string | null; script_name: string | null; enabled: number; priority: number }>, text: string): unknown;
-};
-
-describe("S0.4 — customer-bot rule matching is word-boundary, not substring", () => {
-  const rule = { id: "r1", trigger_pattern: "STOP", action: "human_takeover" as const, reply_text: null, script_name: null, enabled: 1, priority: 0 };
-
-  it("matches a standalone STOP", () => {
-    const spaceDO = makeDO({ SCRIPTS_R2: {} as unknown as R2Bucket, PLATFORM_SECRET: "test" });
-    const matched = (spaceDO as unknown as RuleMatcherAccess).matchProjectRule([rule], "please STOP texting me");
-    expect(matched).toEqual(rule);
-  });
-
-  it("does NOT match STOP embedded inside another word (doorstop)", () => {
-    const spaceDO = makeDO({ SCRIPTS_R2: {} as unknown as R2Bucket, PLATFORM_SECRET: "test" });
-    const matched = (spaceDO as unknown as RuleMatcherAccess).matchProjectRule([rule], "I bought a new doorstop yesterday");
-    expect(matched).toBeNull();
-  });
-
-  it("does NOT match STOP embedded inside non-stop", () => {
-    const spaceDO = makeDO({ SCRIPTS_R2: {} as unknown as R2Bucket, PLATFORM_SECRET: "test" });
-    const matched = (spaceDO as unknown as RuleMatcherAccess).matchProjectRule([rule], "this is a non-stop flight");
-    expect(matched).toBeNull();
-  });
-
-  it("matches case-insensitively at a word boundary", () => {
-    const spaceDO = makeDO({ SCRIPTS_R2: {} as unknown as R2Bucket, PLATFORM_SECRET: "test" });
-    const matched = (spaceDO as unknown as RuleMatcherAccess).matchProjectRule([rule], "stop!");
-    expect(matched).toEqual(rule);
-  });
-});

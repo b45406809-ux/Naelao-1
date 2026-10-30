@@ -12,20 +12,18 @@ import { LAUNCHPAD_TEMPLATES, getLaunchpadTemplate } from "../../workers/agents/
 // dashboard renders. These tests lock that contract + the reserved-money-in invariant.
 
 describe("connector catalogue", () => {
-  it("Whop is the one available connector and is fully specified", () => {
+  it("exposes Whop only as a normal external integration, not a Naelao wallet", () => {
     const whop = getConnector("whop");
     expect(whop?.status).toBe("available");
-    expect(whop?.mcp_endpoint).toBeTruthy();
-    expect((whop?.operations ?? []).length).toBeGreaterThan(0);
-    expect(whop?.auth.credential_name).toBe("WHOP_API_KEY");
+    expect(whop?.composio?.toolkit_slug).toBe("whop");
+    expect(whop?.mcp_endpoint).toBeUndefined();
+    expect((whop?.operations ?? []).every((operation) => !/checkout|charge|payout|refund|withdraw/i.test(operation.name))).toBe(true);
   });
 
-  it("availableConnectors() returns Whop + Gumroad + the growth-layer connectors in this build", () => {
-    const avail = availableConnectors().map((c) => c.id).sort();
-    expect(avail).toEqual([
-      "google-ads", "gumroad", "higgsfield", "hubspot", "instagram", "linkedin",
-      "meta-ads", "notion", "tiktok", "twitter", "whop",
-    ]);
+  it("has no hardcoded commerce behavior in kernel routes or templates", () => {
+    expect(LAUNCHPAD_TEMPLATES).toEqual([]);
+    expect(getLaunchpadTemplate("whop-seller")).toBeNull();
+    expect(getLaunchpadTemplate("customer-service")).toBeNull();
   });
 
   it("Notion is a Composio-routed connector with no direct MCP endpoint or builder credential", () => {
@@ -93,10 +91,7 @@ describe("connector catalogue", () => {
     // Money-in = collecting/moving money (create/collect payment, checkout, charge, payout) —
     // reading receipts (list_payments) is allowed (model A: the platform processed the sale).
     expect(() => validateConnectorCatalogue()).not.toThrow();
-    const whop = getConnector("whop");
-    for (const op of whop?.operations ?? []) {
-      expect(/checkout|charge|payout|refund|withdraw|collect[_-]?payment|create[_-]?payment/i.test(op.name)).toBe(false);
-    }
+    expect(availableConnectors().length).toBeGreaterThan(0);
   });
 
   it("connector ids are unique", () => {
@@ -104,20 +99,10 @@ describe("connector catalogue", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("the Whop-seller Launchpad template wires the whop connector and the mcp-connector skill", () => {
-    const tpl = getLaunchpadTemplate("whop-seller");
-    expect(tpl).not.toBeNull();
-    expect(tpl?.connectors).toContain("whop");
-    expect(tpl?.skills).toContain("mcp-connector");
-    expect(tpl?.coming_soon).toBeFalsy();
-  });
-
-  it("every template connector reference resolves to a catalogue entry", () => {
-    for (const tpl of LAUNCHPAD_TEMPLATES) {
-      for (const cid of tpl.connectors ?? []) {
-        expect(getConnector(cid), `template ${tpl.id} → connector ${cid}`).not.toBeNull();
-      }
-    }
+  it("does not bundle domain Space Templates in the Launchpad kernel", () => {
+    expect(LAUNCHPAD_TEMPLATES).toEqual([]);
+    expect(getLaunchpadTemplate("whop-seller")).toBeNull();
+    expect(getLaunchpadTemplate("customer-service")).toBeNull();
   });
 
   it("voice + support connectors are catalogued as coming_soon", () => {
@@ -128,28 +113,4 @@ describe("connector catalogue", () => {
     expect(getConnector("zendesk")?.category).toBe("support");
   });
 
-  it("the Whop-seller template ships a first-run bootstrap (credential prompts + projects)", () => {
-    const tpl = getLaunchpadTemplate("whop-seller");
-    const b = tpl?.bootstrap;
-    expect(b?.prompts.some((p) => p.type === "credential" && p.connector === "whop")).toBe(true);
-    expect(b?.projects).toContain("Members");
-    expect((b?.setup_scripts ?? []).length).toBeGreaterThan(0);
-  });
-
-  it("ships a customer-service template (support agent + bootstrap)", () => {
-    const tpl = getLaunchpadTemplate("customer-service");
-    expect(tpl).not.toBeNull();
-    expect(tpl?.agents).toContain("launchpad-support-v1");
-    expect(tpl?.bootstrap?.prompts.some((p) => p.id === "escalation_email")).toBe(true);
-  });
-
-  it("every bootstrap credential prompt names a real connector", () => {
-    for (const tpl of LAUNCHPAD_TEMPLATES) {
-      for (const p of tpl.bootstrap?.prompts ?? []) {
-        if (p.type === "credential" && p.connector) {
-          expect(getConnector(p.connector), `${tpl.id} prompt ${p.id}`).not.toBeNull();
-        }
-      }
-    }
-  });
 });

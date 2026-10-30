@@ -6,7 +6,7 @@ import { getConnector, availableConnectors, pollableConnectorIds } from "../../w
 // sibling shim worker, no core changes.
 
 describe("Gumroad MCP shim (connector #2)", () => {
-  it("Gumroad is now an available connector with ops + endpoint", () => {
+  it("Gumroad is exposed as a standard external connector with read-only operations", () => {
     const g = getConnector("gumroad");
     expect(g?.status).toBe("available");
     expect(g?.mcp_endpoint).toContain("gumroad");
@@ -37,9 +37,9 @@ describe("Gumroad MCP shim (connector #2)", () => {
     expect(toolList().length).toBe(Object.keys(TOOLS).length);
   });
 
-  it("Gumroad is poll-based (no webhook) while Whop is webhook-driven", () => {
+  it("Gumroad and Whop are polled when their catalogue entries have no webhook declaration", () => {
     // The cron poller targets available connectors WITHOUT a webhook spec.
     expect(pollableConnectorIds()).toContain("gumroad");
-    expect(pollableConnectorIds()).not.toContain("whop");
+    expect(pollableConnectorIds()).toContain("whop");
   });
 });

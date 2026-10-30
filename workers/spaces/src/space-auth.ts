@@ -55,7 +55,7 @@ export async function resolveEndUserSpaceRole(
       const role = direct.role === "moderator" ? "admin" : direct.role;
       return (["viewer", "member", "admin", "owner"] as string[]).includes(role)
         ? role as SpaceRole
-        : "member";
+        : null;
     }
     return null;
   } catch {
