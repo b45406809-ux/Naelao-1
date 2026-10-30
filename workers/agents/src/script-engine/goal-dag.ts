@@ -2,7 +2,7 @@ import { validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task-blackboard.js";
 
 export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string; status?: string }
-export type GoalTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "needs_review";
+export type GoalTaskStatus = "pending" | "running" | "verifying" | "completed" | "failed" | "blocked" | "needs_review";
 export interface GoalTaskRuntimeState {
   status: "waiting" | "assigned" | "running" | "completed" | "failed";
   capability?: string;
@@ -14,7 +14,7 @@ export interface GoalTaskRuntimeState {
   queueWaitMs?: number;
   executionMs?: number;
 }
-export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState }
+export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
 export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean }
@@ -30,6 +30,7 @@ export interface GoalDagHost {
   concurrency: number;
   taskBlackboardEnabled?: boolean;
   fixerEnabled?: boolean;
+  verify?(task: GoalTask, result: GoalWorkerResult): Promise<{ outcome: "passed" | "failed" | "uncertain"; reason: string }>;
   fix?(task: GoalTask, workerId: string, failure: GoalWorkerResult): Promise<GoalWorkerResult>;
   acquireResources?(task: GoalTask, holderId: string, onRuntimeState?: (state: GoalTaskRuntimeState) => Promise<void>): Promise<() => Promise<void>>;
   recordRuntimeMetrics?(event: { capability?: string; status: "completed" | "failed"; queueWaitMs?: number; executionMs?: number }): void;
@@ -104,6 +105,21 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     saveTail = saveTail.then(() => host.save(snapshot));
     return saveTail;
   };
+  const verifyResult = async (task: GoalTask, state: GoalTaskState): Promise<void> => {
+    if (!state.result?.ok || !host.verify) return;
+    state.status = "verifying";
+    await save();
+    try {
+      const assessment = await host.verify(task, state.result);
+      if (!assessment || !["passed", "failed", "uncertain"].includes(assessment.outcome) || typeof assessment.reason !== "string" || !assessment.reason.trim()) throw new Error("invalid_verification_result");
+      state.verification = { outcome: assessment.outcome, reason: assessment.reason.slice(0, 2000) };
+      state.status = assessment.outcome === "passed" ? "completed" : assessment.outcome === "failed" ? "failed" : "needs_review";
+    } catch {
+      state.verification = { outcome: "uncertain", reason: "Verification unavailable or invalid" };
+      state.status = "needs_review";
+    }
+    await save();
+  };
   // Existing journals created during the initial rollout may already contain messages.
   if (loaded && journal.taskBlackboardEnabled === undefined) journal.taskBlackboardEnabled = Array.isArray(journal.messages);
   if (tasks.some(task => !journal.tasks[task.id]) || Object.keys(journal.tasks).length !== tasks.length) throw new Error("goal_journal_mismatch");
@@ -121,6 +137,8 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       }
       await save();
     }
+    if (state.status === "verifying") { state.status = "needs_review"; state.verification = { outcome: "uncertain", reason: "Verification interrupted" }; await save(); }
+    else if (state.status === "completed" && state.result?.ok && !state.verification && host.verify) await verifyResult(task, state);
     recordCompletion(task, tasks, journal);
     if (journal.taskBlackboardEnabled && state.status === "completed") await save();
     await host.publish(task, state);
@@ -228,6 +246,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       }
       state.result = result;
       state.status = result.ok ? "completed" : result.status === "awaiting_planner_input" || result.status === "awaiting_human_input" || result.status === "outcome_uncertain" ? "needs_review" : "failed";
+      if (result.ok) await verifyResult(task, state);
       if (state.runtime) {
         const completedAt = Date.now();
         const executionMs = state.runtime.startedAt === undefined ? undefined : Math.max(0, completedAt - state.runtime.startedAt);
