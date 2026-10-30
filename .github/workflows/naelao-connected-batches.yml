@@ -126,7 +126,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/agent-test"
           export WRANGLER_SEND_METRICS=false
           printf 'JWT_SECRET=local-test-secret\nPLATFORM_SECRET=local-test-secret\n' > workers/spaces/.dev.vars
-          pnpm exec wrangler d1 execute naelao-platform --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --command "CREATE TABLE IF NOT EXISTS orgs (id TEXT PRIMARY KEY, status TEXT); CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, tenant_id TEXT, status TEXT, config_json TEXT, parent_space_id TEXT); INSERT INTO orgs VALUES ('test-tenant','active'); INSERT INTO spaces (id,tenant_id,status,config_json) VALUES ('test-space','test-tenant','active','{\"model_policy\":{\"mode\":\"whitelist_only\",\"allowedModelIds\":[\"@cf/meta/llama-3.3-70b-instruct-fp8-fast\"]}}');"
+          # Run the actual org, usage and token-reservation schema used by the billing worker.
+          # The earlier harness omitted BILLING_WORKER and then treated its fail-closed response
+          # as an agent failure, so it never tested durable execution past admission.
+          for migration in 0002_orgs.sql 0004_billing.sql 0007_billing_meters.sql 0032_usage_events_idempotency.sql 0072_org_quota_overage.sql 0098_llm_token_reservations.sql 0109_usage_events_v2.sql; do
+            pnpm exec wrangler d1 execute naelao-platform --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --file "infra/migrations/$migration"
+          done
+          pnpm exec wrangler d1 execute naelao-platform --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --command "CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, tenant_id TEXT, status TEXT, config_json TEXT, parent_space_id TEXT); INSERT INTO orgs (id,name,owner_id,plan_tier,status) VALUES ('test-tenant','Local test tenant','test-user','free','active'); INSERT INTO spaces (id,tenant_id,status,config_json) VALUES ('test-space','test-tenant','active','{\"model_policy\":{\"mode\":\"whitelist_only\",\"allowedModelIds\":[\"@cf/meta/llama-3.3-70b-instruct-fp8-fast\"]}}');"
           python3 - <<'PYCODE'
           from pathlib import Path
           import re
@@ -152,9 +158,10 @@ jobs:
           TOML
           build_id=$(git rev-parse HEAD | sha256sum | cut -d' ' -f1)
           printf 'JWT_SECRET=local-test-secret\nPLATFORM_SECRET=local-test-secret\nWORKFLOW_BUILD_ID=%s\n' "$build_id" > workers/agents/.dev.vars
-          pnpm exec wrangler dev --local -c .agent-probe/wrangler.toml -c workers/agents/wrangler.ci.toml -c workers/spaces/wrangler.ci.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/agent-test/worker.log" 2>&1 &
+          printf 'PLATFORM_SECRET=local-test-secret\n' > workers/billing/.dev.vars
+          pnpm exec wrangler dev --local -c .agent-probe/wrangler.toml -c workers/agents/wrangler.ci.toml -c workers/spaces/wrangler.ci.toml -c workers/billing/wrangler.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/agent-test/worker.log" 2>&1 &
           pid=$!
-          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          trap 'rm -f workers/agents/.dev.vars workers/spaces/.dev.vars workers/billing/.dev.vars workers/agents/wrangler.ci.toml workers/spaces/wrangler.ci.toml; kill "$pid" 2>/dev/null || true' EXIT
           status=000
           for i in $(seq 1 80); do
             sleep 3
@@ -195,7 +202,7 @@ jobs:
           echo "accepted_status=$status"; cat "$RUNNER_TEMP/agent-test/accepted.json"; test "$status" = 202
           node -e 'const x=require(process.argv[1]); if(x.status !== "queued" || !x.task_id) process.exit(1)' "$RUNNER_TEMP/agent-test/accepted.json"
           task_id=$(node -p 'require(process.argv[1]).task_id' "$RUNNER_TEMP/agent-test/accepted.json")
-          for i in $(seq 1 12); do
+          for i in $(seq 1 24); do
             status=$(curl -s -o "$RUNNER_TEMP/agent-test/task-$i.json" -w '%{http_code}' --max-time 10 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id")
             echo "task_poll=$i http=$status"; cat "$RUNNER_TEMP/agent-test/task-$i.json"; echo
             test "$status" = 200
@@ -204,8 +211,14 @@ jobs:
             sleep 5
           done
           echo "observed_task_state=$state"
-          if [ "$state" != complete ]; then tail -n 200 "$RUNNER_TEMP/agent-test/worker.log"; fi
-          test "$state" = complete
+          if [ "$state" != complete ] && [ "$state" != failed ]; then tail -n 200 "$RUNNER_TEMP/agent-test/worker.log"; fi
+          # This batch deliberately has no external model credential. A terminal provider
+          # failure is expected, but billing-admission failures are not: the real local billing
+          # Worker must accept/release the hold and the task must remain queryable.
+          test "$state" = complete -o "$state" = failed
+          if [ "$state" = failed ]; then
+            node -e 'const x=require(process.argv[1]); if(!x.error || /reservation_unavailable|no inference was sent/.test(x.error)) process.exit(1)' "$RUNNER_TEMP/agent-test/task-$i.json"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
