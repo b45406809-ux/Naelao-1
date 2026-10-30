@@ -47,7 +47,7 @@ jobs:
         run: |
           case "$SUITE" in
             repository) pnpm exec vitest run --config tests/vitest.config.ts ;;
-            workspace) pnpm exec vitest run --workspace vitest.workspace.ts ;;
+            workspace) pnpm exec vitest run --config vitest.workspace.ts ;;
             node) node --test infra/scripts/*.test.mjs tests/unit/local-agent-client.node.test.mjs packages/bridge/test/*.test.mjs ;;
             conformance) pnpm test:conformance ;;
             typecheck) pnpm --recursive --workspace-concurrency=2 typecheck ;;

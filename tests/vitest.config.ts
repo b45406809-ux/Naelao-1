@@ -38,6 +38,10 @@ const packageAliases = readdirSync(new URL("../packages/", import.meta.url), { w
   .sort(([left], [right]) => right.length - left.length);
 
 export default defineConfig({
+  // Keep the repository-level suite rooted in tests/. Without an explicit root Vitest 4 walks
+  // package and Worker tests too, running them under this Node-only config and producing false
+  // failures (wrong aliases, Wrangler cwd, and Worker runtime setup).
+  root: fileURLToPath(new URL(".", import.meta.url)),
   resolve: {
     alias: [
       ...packageAliases.map(([find, replacement]) => ({ find, replacement })),
