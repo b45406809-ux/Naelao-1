@@ -30,9 +30,8 @@ describe("data erasure D1 records", () => {
   it("classifies every live space-scoped table as deleted or deliberately retained", async () => {
     const db = createFakeD1(platformMigrations);
     const retainedOrSeparatelyHandled = new Set([
-      "developer_earnings_ledger", "launchpad_orders", "platform_provenance", "template_subscriptions",
-      "portal_domains", "space_provisioning_leases", "usage_events", "wallet_transactions",
-      "whop_payout_requests", "whop_sub_merchants", "website_connections",
+      "developer_earnings_ledger", "platform_provenance", "template_subscriptions",
+      "portal_domains", "space_provisioning_leases", "usage_events", "website_connections",
       "assistant_communication_identities",
     ]);
     const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
@@ -51,9 +50,9 @@ describe("data erasure D1 records", () => {
     const db = createFakeD1(platformMigrations);
     const handledTenantScoped = new Set([
       "api_keys", "builder_api_key_index", "do_registry", "eval_results", "gdpr_erasure_outbox",
-      "gdpr_requests", "idempotency_keys", "launchpad_orders", "marketplace_forks",
+      "gdpr_requests", "idempotency_keys", "marketplace_forks",
       "marketplace_listings", "marketplace_reviews", "notifications", "org_members", "portal_domains", "assistant_sessions",
-      "reseller_accounts", "service_accounts", "space_provisioning_leases", "space_type_tools",
+      "service_accounts", "space_provisioning_leases", "space_type_tools",
       "spaces", "spacetypes", "subscriptions", "usage_events", "users", "web_push_subscriptions",
       "website_connections", "assistant_communication_identities",
     ]);
@@ -61,7 +60,7 @@ describe("data erasure D1 records", () => {
     // separate policy rather than being removed by account erasure.
     const retainedTenantScoped = new Set([
       "audit_log", "invoices", "llm_token_run_settlements", "marketplace_license_overpayments",
-      "marketplace_license_purchases", "payout_requests", "platform_provenance",
+      "marketplace_license_purchases", "platform_provenance",
     ]);
     const { results: tables } = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all<{ name: string }>();
     const tenantScoped = new Set<string>();
@@ -252,10 +251,6 @@ describe("data erasure D1 records", () => {
       .run("space-a", "org-a", "type-a", "Acme space");
     db.db.prepare("INSERT INTO template_subscriptions (id, space_id, template_id, developer_user_id, attribution_channel) VALUES (?, ?, ?, ?, ?)")
       .run("sub-a", "space-a", "template-a", "developer-a", "MARKETPLACE_ORGANIC");
-    db.db.prepare("INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email) VALUES (?, ?, ?, ?, ?)")
-      .run("merchant-a", "org-a", "space-a", "company-a", "person@example.com");
-    db.db.prepare("INSERT INTO launchpad_orders (id, space_id, tenant_id, customer_email, customer_name, ls_order_id) VALUES (?, ?, ?, ?, ?, ?)")
-      .run("order-a", "space-a", "org-a", "buyer@example.com", "Buyer Name", "provider-order-a");
     db.db.prepare("INSERT INTO product_end_users (product_space_id, end_user_id, email, display_name) VALUES (?, ?, ?, ?)")
       .run("space-a", "end-user-a", "end-user@example.com", "End User");
     db.db.prepare("INSERT INTO password_reset_tokens (id, product_space_id, end_user_id, token_hash, expires_at) VALUES (?, ?, ?, ?, ?)")
@@ -264,8 +259,6 @@ describe("data erasure D1 records", () => {
       .run("verify-a", "space-a", "end-user-a", "hash-b", "2026-12-01");
     db.db.prepare("INSERT INTO builder_password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)")
       .run("builder-reset-a", "user-a", "hash-c", "2026-12-01");
-    db.db.prepare("INSERT INTO business_invites (id, business_space_id, product_space_id, email, token_hash, invited_by, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run("invite-a", "space-a", "space-a", "invitee@example.com", "token-hash", "user-a", "2026-12-01");
     db.db.prepare("INSERT INTO gdpr_requests (id, tenant_id, request_type, subject_type, subject_id, subject_email, requested_by) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("gdpr-a", "org-a", "export", "org_member", "user-a", "person@example.com", "user-a");
     db.db.prepare("INSERT INTO gdpr_requests (id, tenant_id, request_type, subject_type, subject_id, requested_by) VALUES (?, ?, ?, ?, ?, ?)")
@@ -296,10 +289,6 @@ describe("data erasure D1 records", () => {
       .run("provider-overpayment-a", "purchase-a", "org-a", "listing-a", 5000);
     db.db.prepare("INSERT INTO developer_partner_profiles (user_id, handle, payout_destination) VALUES (?, ?, ?)")
       .run("user-a", "private-handle", "private-destination");
-    db.db.prepare("INSERT INTO reseller_accounts (tenant_id, product_space_id) VALUES (?, ?)")
-      .run("org-a", "space-a");
-    db.db.prepare("INSERT INTO tenant_hierarchy (child_tenant_id, parent_tenant_id, reseller_product_space_id, child_space_id, child_owner_user_id) VALUES (?, ?, ?, ?, ?)")
-      .run("org-a", "parent-org", "parent-space", "space-a", "user-a");
     db.db.prepare("INSERT INTO audit_log (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run("audit-a", "org-a", "user-a", "user", "erasure_requested", "org", "org-a", "{}");
 
@@ -320,15 +309,8 @@ describe("data erasure D1 records", () => {
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM marketplace_license_purchases WHERE tenant_id = ?").get("org-a")).toEqual({ count: 1 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM marketplace_license_overpayments WHERE tenant_id = ?").get("org-a")).toEqual({ count: 1 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM developer_partner_profiles WHERE user_id = ?").get("user-a")).toEqual({ count: 0 });
-    expect(db.db.prepare("SELECT COUNT(*) AS count FROM reseller_accounts WHERE tenant_id = ?").get("org-a")).toEqual({ count: 0 });
-    expect(db.db.prepare("SELECT status, child_owner_user_id FROM tenant_hierarchy WHERE child_tenant_id = ?").get("org-a"))
-      .toEqual({ status: "terminated", child_owner_user_id: null });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE tenant_id = ?").get("org-a")).toEqual({ count: 1 });
     expect(db.db.prepare("SELECT status FROM template_subscriptions WHERE id = ?").get("sub-a")).toEqual({ status: "cancelled" });
-    expect(db.db.prepare("SELECT owner_email FROM whop_sub_merchants WHERE id = ?").get("merchant-a"))
-      .toEqual({ owner_email: "erased@deleted.invalid" });
-    expect(db.db.prepare("SELECT customer_email, customer_name, ls_order_id, gross_cents FROM launchpad_orders WHERE id = ?").get("order-a"))
-      .toEqual({ customer_email: "erased@deleted.invalid", customer_name: null, ls_order_id: null, gross_cents: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM product_end_users WHERE product_space_id = ?").get("space-a"))
       .toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM password_reset_tokens WHERE product_space_id = ?").get("space-a"))
@@ -336,8 +318,6 @@ describe("data erasure D1 records", () => {
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM email_verification_tokens WHERE product_space_id = ?").get("space-a"))
       .toEqual({ count: 0 });
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM builder_password_reset_tokens WHERE user_id = ?").get("user-a"))
-      .toEqual({ count: 0 });
-    expect(db.db.prepare("SELECT COUNT(*) AS count FROM business_invites WHERE business_space_id = ?").get("space-a"))
       .toEqual({ count: 0 });
     expect(db.db.prepare("SELECT subject_id, subject_email FROM gdpr_requests WHERE id = ?").get("gdpr-a"))
       .toEqual({ subject_id: "erased", subject_email: null });

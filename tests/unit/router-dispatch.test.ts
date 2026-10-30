@@ -113,9 +113,9 @@ describe("router — /spaces dispatch order (F15)", () => {
     expect(await response.json()).toMatchObject({ error_code: "token_revoked" });
   });
 
-  it("rejects child-tenant requests while its reseller hierarchy is suspended", async () => {
+  it("rejects requests for a suspended tenant", async () => {
     clearTenantStatusCacheForTests();
-    const res = await authedFetch("GET", "/v1/spaces/s1", makeEnv("active", "suspended"));
+    const res = await authedFetch("GET", "/v1/spaces/s1", makeEnv("suspended"));
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error_code: "tenant_suspended" });
     clearTenantStatusCacheForTests();

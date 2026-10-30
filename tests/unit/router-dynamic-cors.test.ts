@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import routerWorker from "../../workers/router/src/index.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
@@ -21,13 +20,11 @@ const SPACES_TABLE_SQL = `
   );
   CREATE UNIQUE INDEX idx_spaces_product_slug ON spaces(product_slug) WHERE product_slug IS NOT NULL;
 `;
-const BUSINESS_SERVICES_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0035_commerce.sql"), "utf8");
-
-function extractBusinessServicesTable(sql: string): string {
-  const start = sql.indexOf("CREATE TABLE IF NOT EXISTS business_services");
-  const end = sql.indexOf("CREATE UNIQUE INDEX IF NOT EXISTS idx_bizsvc_space_kind");
-  return sql.slice(start, end);
-}
+const SPACE_DOMAINS_SQL = `CREATE TABLE space_domains (
+  id TEXT PRIMARY KEY, space_id TEXT NOT NULL, tenant_id TEXT NOT NULL, domain TEXT NOT NULL,
+  provider_hostname_id TEXT, config_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);`;
 
 function makeFakeKv() {
   const store = new Map<string, string>();
@@ -39,7 +36,7 @@ function makeFakeKv() {
 }
 
 function makeEnv(opts: { withDb?: boolean; withKv?: boolean } = {}) {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, extractBusinessServicesTable(BUSINESS_SERVICES_MIGRATION)]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SPACE_DOMAINS_SQL]);
   const kv = makeFakeKv();
   return {
     ENVIRONMENT: "test",
@@ -61,7 +58,7 @@ async function seedProduct(env: ReturnType<typeof makeEnv>, slug: string, status
 
 async function seedCustomDomain(env: ReturnType<typeof makeEnv>, domain: string, status = "active") {
   await env.__db.prepare(
-    "INSERT INTO business_services (id, space_id, tenant_id, kind, custom_domain, status) VALUES (?, 'space-1', 'tenant-1', 'custom_domain', ?, ?)"
+    "INSERT INTO space_domains (id, space_id, tenant_id, domain, status) VALUES (?, 'space-1', 'tenant-1', ?, ?)"
   ).bind(crypto.randomUUID(), domain, status).run();
 }
 
@@ -90,7 +87,7 @@ describe("router — dynamic CORS origin resolution", () => {
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 
-  it("allows an active custom domain from business_services", async () => {
+  it("allows an active custom domain from the generic Space domain registry", async () => {
     const env = makeEnv();
     await seedCustomDomain(env, "shop.example.com");
     const res = await routerWorker.fetch(healthReq("https://shop.example.com"), env as never, execCtx);

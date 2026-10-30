@@ -411,6 +411,11 @@ export const codeExec: PrebuiltScript = {
       if (a.capabilities !== undefined && (!Array.isArray(a.capabilities) || a.capabilities.length > 64
         || a.capabilities.some(value => typeof value !== "string" || value.length > 200))) throw new Error("code_capabilities_invalid");
       const adHocCode = String(a["code"] ?? "");
+      // Composed modules have no ambient network authority. Keep that guarantee explicit at the
+      // boundary even when a runner implementation accidentally exposes fetch or browser globals.
+      if (/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(|\b(?:https?:\/\/|wss?:\/\/)/i.test(adHocCode)) {
+        throw new Error("reserved_network_access: use an authorized Naelao CLI connector command");
+      }
       await inspectMutation(adHocCode, {
         // JavaScript semicolons are not SQL statements. Actual RPC mutations still
         // enter their own host guards; retain catastrophic shell-pattern screening here.

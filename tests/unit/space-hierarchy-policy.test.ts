@@ -33,9 +33,9 @@ describe("Launchpad hierarchy policy", () => {
     expect((await call(space, "/members?space_id=legal")).json.data).toEqual([]);
   });
 
-  it("rejects malformed roots, non-Launchpad spaces, and grandchildren", async () => {
+  it("rejects malformed roots and grandchildren while retaining the default Launchpad product", async () => {
     const space = makeSpaceDO();
-    expect((await call(space, "/spaces", "POST", { id: "bad", name: "Bad", space_type: "cowork" })).status).toBe(400);
+    expect((await call(space, "/spaces", "POST", { id: "bad", name: "Bad" })).status).toBe(400);
     expect((await call(space, "/spaces", "POST", { id: "bad-root", name: "Bad", space_type: "launchpad", parent_id: "x" })).status).toBe(400);
     await call(space, "/spaces", "POST", { id: "root", name: "Root", space_type: "launchpad" });
     await call(space, "/sub-spaces", "POST", { id: "dept", parent_id: "root", name: "Department" });

@@ -155,8 +155,8 @@ describe("Builder Dashboard API — auth resolution", () => {
   });
 });
 
-describe("POST /spaces request boundaries", () => {
-  it("rejects malformed and oversized space-creation bodies before inserting a row", async () => {
+describe("retired root-product creation route", () => {
+  it("rejects all root-product creation requests without inserting a row", async () => {
     const env = makeEnv();
     const malformed = await spacesWorker.fetch(new Request("https://spaces.naelao.com/spaces", {
       method: "POST",
@@ -173,8 +173,8 @@ describe("POST /spaces request boundaries", () => {
       method: "POST", tenant: "tenant-1", role: "owner", body: "x".repeat(64 * 1024 + 1),
     }), env as never, execCtx);
 
-    expect(malformed.status).toBe(400);
-    expect(oversized.status).toBe(413);
+    expect(malformed.status).toBe(410);
+    expect(oversized.status).toBe(410);
     const count = await env.PLATFORM_DB.prepare("SELECT COUNT(*) AS count FROM spaces").first<{ count: number }>();
     expect(count?.count).toBe(0);
   });

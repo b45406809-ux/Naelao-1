@@ -88,6 +88,9 @@ export function validateProjectHydrationSeed(value: unknown, starterPaths: Reado
       actions.push({ id: action.id, label: action.label, kind: "open_channel_settings", channel: "whatsapp" });
       continue;
     }
+    // Hydration actions may only open content installed by the Space Template. Never allow a
+    // template manifest to smuggle arbitrary navigation targets into a customer's workspace.
+    if (action.kind === "open_url") return undefined;
     if ((action.kind !== "open_file" && action.kind !== "review_file") || typeof action.path !== "string" || !starterPaths.has(action.path)) return undefined;
     actions.push({ id: action.id, label: action.label, kind: action.kind, path: action.path });
   }

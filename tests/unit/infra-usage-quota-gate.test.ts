@@ -76,7 +76,7 @@ describe("NaelaoAgentDO — builder infra-credits quota gate (enforceRunGates)",
     expect(res.status).not.toBe(402);
   });
 
-  it("does not apply the builder infra-credits gate to a signed-in product end user", async () => {
+  it("applies the Space infra-credits gate to a signed-in assistant user", async () => {
     const { fetcher: BILLING_WORKER, calls } = makeBillingWorker({ infraAllowed: false });
     const env = {
       PLATFORM_SECRET: "test",
@@ -84,7 +84,8 @@ describe("NaelaoAgentDO — builder infra-credits quota gate (enforceRunGates)",
       BILLING_WORKER,
       SPACES_WORKER: { fetch: async () => Response.json({ balance_credits: 500 }) } as unknown as Fetcher,
     };
-    await runInteractive(env, { userId: "enduser-1", callerRole: "product_end_user" });
-    expect(calls.some((p) => p.endsWith("/internal/usage/infra-credits/check"))).toBe(false);
+    const res = await runInteractive(env, { userId: "enduser-1", callerRole: "product_end_user" });
+    expect(res.status).toBe(402);
+    expect(calls.some((p) => p.endsWith("/internal/usage/infra-credits/check"))).toBe(true);
   });
 });

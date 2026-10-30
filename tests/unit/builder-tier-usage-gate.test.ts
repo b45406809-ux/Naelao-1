@@ -91,11 +91,11 @@ describe("NaelaoAgentDO /script/run — builder-tier monthly usage gate (P0-3)",
     }
   });
 
-  it("does not apply to a product_end_user caller (that's the separate end-user credit gate)", async () => {
+  it("applies the Space subscription quota to a signed-in assistant user", async () => {
     const { spaceDO, calls } = await makeDO({ allowed: false });
     const res = await scriptRunAs(spaceDO, "product_end_user");
-    expect(res.status).not.toBe(402);
-    expect(calls).not.toContain("/internal/usage/llm-tokens/check");
+    expect(res.status).toBe(402);
+    expect(calls).toContain("/internal/usage/llm-tokens/check");
   });
 
   it("does not apply to a project-scoped run (the wallet gate covers that path instead)", async () => {

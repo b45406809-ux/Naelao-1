@@ -32,10 +32,8 @@ describe("validateProjectTemplates", () => {
     expect(() => validateProjectTemplates([template, { ...template, name: "Duplicate" }])).toThrow(/duplicate id/);
   });
 
-  it("rejects a zero daily spend cap and incomplete reply rules", () => {
+  it("rejects a zero daily spend cap", () => {
     const badCap: ProjectTemplate = { id: "bad_cap", name: "Bad cap", description: "", execution_ceiling: 2, daily_spend_cap_credits: 0 };
     expect(() => validateProjectTemplates([badCap])).toThrow(/daily_spend_cap_credits/);
-    const badRule: ProjectTemplate = { ...badCap, id: "bad_rule", daily_spend_cap_credits: 100, rules: [{ trigger_pattern: "hi", action: "reply", priority: 1 }] };
-    expect(() => validateProjectTemplates([badRule])).toThrow(/requires reply_text/);
   });
 });

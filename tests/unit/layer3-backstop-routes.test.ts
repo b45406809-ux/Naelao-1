@@ -19,7 +19,7 @@ function makeSpacesEnv(): Record<string, unknown> {
         bind() { return stmt; },
         async first() {
           if (/FROM spaces WHERE/.test(sql)) return { name: "Test Space", spacetype_id: "launchpad", config_json: "{}", parent_space_id: "product-1" };
-          if (/FROM space_members/.test(sql)) return null;
+          if (/FROM space_members/.test(sql)) return { role: "member" };
           if (/FROM business_memberships/.test(sql)) return { role: "member" };
           return null;
         },
@@ -74,7 +74,7 @@ describe("spaces worker — newly-gated routes reject forged direct requests", (
     expect(res.status).toBe(403);
   });
 
-  it("GET /internal/business-services rejects any truthy x-naelao-internal header (the OLD check this replaces)", async () => {
+  it("retired business-services route is unavailable", async () => {
     const res = await spacesWorker.fetch(
       new Request("https://spaces.naelao.com/internal/business-services?space_id=space-1&kind=storefront", {
         headers: { "x-naelao-internal": "anything-at-all" },
@@ -82,7 +82,7 @@ describe("spaces worker — newly-gated routes reject forged direct requests", (
       makeSpacesEnv() as never,
       execCtx
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it("POST /internal/space-types-record-install/:id rejects a static 'provisioner' string (the OLD check this replaces)", async () => {

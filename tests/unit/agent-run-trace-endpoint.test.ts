@@ -5,20 +5,21 @@ import { mintInternalToken } from "@naelao/http";
 
 // §A1 Phase HX1: GET .../sessions/:sessionId/agent/runs/:runId/trace — the structured trace's
 // HTTP side. A builder JWT always passes; a product_end_user must be an actual member of the
-// target business (checked via SPACES_WORKER's /internal/business-role, same posture as the
+// target Space (checked via SPACES_WORKER's /members, same posture as the
 // Sub-agents/Memory/Files panels) so the shell's own chat surface can re-fetch a completed run's
 // activity trail after a reload.
 
 const SECRET = "test-platform-secret";
 const execCtx = { waitUntil: (p: Promise<unknown>) => { void p; }, passThroughOnException() {} } as unknown as ExecutionContext;
 
-function makeDb() {
+function makeDb(memberRole?: string) {
   return {
     prepare(sql: string) {
       return {
         bind(..._args: unknown[]) { return this; },
         async first() {
           if (sql.includes("FROM spaces")) return { id: "space-1" };
+          if (sql.includes("FROM space_members")) return memberRole ? { role: memberRole } : null;
           return null;
         },
       };
@@ -29,11 +30,12 @@ function makeDb() {
 function makeEnv(agentDoStub: { fetch: () => Promise<Response> }, businessRole?: string) {
   return {
     PLATFORM_SECRET: SECRET,
-    PLATFORM_DB: makeDb(),
+    PLATFORM_DB: makeDb(businessRole),
     NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },
     SPACES_WORKER: { async fetch(request: Request) {
       if (new URL(request.url).pathname.endsWith("/compact-scope")) return Response.json({ project_id: "project-1", owned_by_caller: true, private_scratchpad: false });
-      return businessRole ? Response.json({ role: businessRole }) : new Response(null, { status: 404 });
+      if (new URL(request.url).pathname.endsWith("/members")) return Response.json({ data: businessRole ? [{ user_id: "user-1", role: businessRole }] : [] });
+      return new Response(null, { status: 404 });
     } },
   } as unknown as AgentsEnv;
 }
@@ -60,7 +62,7 @@ describe("GET .../sessions/:sessionId/agent/runs/:runId/trace", () => {
     expect(body).toEqual(traceBody);
   });
 
-  it("rejects a product_end_user caller who owns the session but isn't a business member", async () => {
+  it("rejects a product_end_user caller who owns the session but isn't a Space member", async () => {
     let called = false;
     const agentDoStub = { async fetch() { called = true; return Response.json({ run_id: "run-1", trace: [] }); } };
     const res = await getTrace(makeEnv(agentDoStub), "product_end_user", "user-1");
@@ -68,7 +70,7 @@ describe("GET .../sessions/:sessionId/agent/runs/:runId/trace", () => {
     expect(called).toBe(false);
   });
 
-  it("allows a product_end_user who IS a member of the business", async () => {
+  it("allows a product_end_user who is a Space member", async () => {
     const traceBody = { run_id: "run-1", trace: [{ seq: 0, phase: "observe", ts: 1000 }] };
     const agentDoStub = { async fetch() { return Response.json(traceBody); } };
     const env = makeEnv(agentDoStub, "member");

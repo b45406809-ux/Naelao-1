@@ -56,7 +56,7 @@ describe("native developer settlement restart/replay", () => {
       if (cycle === 7) expect(result.developerCents).toBe(400);
       if (cycle === 13) expect(result.developerCents).toBe(100);
     }
-    const replay = await settleTemplateSubscriptionPayment(h.env.PLATFORM_DB, "space", 2000, "ls-payment-1");
+    const replay = await settleTemplateSubscriptionPayment(h.env.PLATFORM_DB, "space", 2000, "ls-payment-1", "ls-subscription-1");
     expect(replay).toMatchObject({ cycle: 1, developerCents: 500 });
     expect(h.db.db.prepare("SELECT paid_cycles_total FROM template_subscriptions WHERE id='subscription'").get()).toMatchObject({ paid_cycles_total: 13 });
     expect(h.db.db.prepare("SELECT status, provider_subscription_id FROM template_subscriptions WHERE id='subscription'").get()).toMatchObject({ status: "active", provider_subscription_id: "ls-subscription-1" });

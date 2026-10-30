@@ -53,7 +53,10 @@ describe("NaelaoAgentDO /run uses subscription quotas instead of personal credit
 
   it("does not introduce a wallet gate for platform members", async () => {
     const { fetcher: BILLING_WORKER, calls: billingCalls } = makeBillingWorker(true);
-    const SPACES_WORKER = { fetch: async () => new Response("not found", { status: 404 }) } as unknown as Fetcher;
+    const SPACES_WORKER = { fetch: async (input: RequestInfo) => {
+      const path = new URL(typeof input === "string" ? input : (input as Request).url).pathname;
+      return path === "/internal/user-budget/debit" ? Response.json({ allowed: true }) : new Response("not found", { status: 404 });
+    } } as unknown as Fetcher;
     const env = { PLATFORM_SECRET: "test", BILLING_WORKER, SPACES_WORKER };
     const res = await runInteractive(env, "owner");
     expect((await res.json().catch(() => ({})) as { error_code?: string }).error_code).not.toBe("insufficient_credits");

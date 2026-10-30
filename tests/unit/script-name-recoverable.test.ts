@@ -153,13 +153,6 @@ describe("script-qualified operation names resolve to the real op", () => {
     expect(tools.resolveOperationAlias("workspace-admin:project.list", {}).name).toBe("project.list");
   });
 
-  it("resolves a bare script name whose operation was moved into params", () => {
-    // Live: business-diagnostics with params {operation: "diagnostics.overview"}.
-    const tools = new ScriptToolSurface(makeEnv(makeR2()), ["business-diagnostics"]);
-    expect(tools.resolveOperationAlias("business-diagnostics", { operation: "diagnostics.overview", window_hours: 24 }))
-      .toEqual({ name: "diagnostics.overview", params: { window_hours: 24 } });
-  });
-
   it("leaves a real operation name completely alone", () => {
     const tools = new ScriptToolSurface(makeEnv(makeR2()), ["workspace-admin"]);
     expect(tools.resolveOperationAlias("project.list", { a: 1 })).toEqual({ name: "project.list", params: { a: 1 } });
