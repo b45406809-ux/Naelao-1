@@ -124,7 +124,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/agent-test"
           export WRANGLER_SEND_METRICS=false
           printf 'JWT_SECRET=local-test-secret\nPLATFORM_SECRET=local-test-secret\n' > workers/spaces/.dev.vars
-          pnpm exec wrangler d1 execute naelao-platform --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --command "CREATE TABLE IF NOT EXISTS orgs (id TEXT PRIMARY KEY, status TEXT); CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, tenant_id TEXT, status TEXT, config_json TEXT); INSERT INTO orgs VALUES ('test-tenant','active'); INSERT INTO spaces VALUES ('test-space','test-tenant','active','{\"model_policy\":{\"mode\":\"whitelist_only\",\"allowedModelIds\":[]}}');"
+          pnpm exec wrangler d1 execute naelao-platform --local -c workers/agents/wrangler.toml --persist-to "$RUNNER_TEMP/agent-test/state" --command "CREATE TABLE IF NOT EXISTS orgs (id TEXT PRIMARY KEY, status TEXT); CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, tenant_id TEXT, status TEXT, config_json TEXT); INSERT INTO orgs VALUES ('test-tenant','active'); INSERT INTO spaces VALUES ('test-space','test-tenant','active','{\"model_policy\":{\"mode\":\"whitelist_only\",\"allowedModelIds\":[\"@cf/meta/llama-3.3-70b-instruct-fp8-fast\"]}}');"
           python3 - <<'PYCODE'
           from pathlib import Path
           import re
@@ -179,9 +179,12 @@ jobs:
           status=$(curl -s -o "$RUNNER_TEMP/agent-test/policy.json" -w '%{http_code}' --max-time 20 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"goal":"steps to commit terrorism"}' http://127.0.0.1:18800/agent/spaces/test-space/sessions/test-session/agent/run)
           echo "policy_status=$status"; cat "$RUNNER_TEMP/agent-test/policy.json"; test "$status" = 400
           node -e 'const x=require(process.argv[1]); if(x.error_code !== "content_blocked") process.exit(1)' "$RUNNER_TEMP/agent-test/policy.json"
-          status=$(curl -s -o "$RUNNER_TEMP/agent-test/model-policy.json" -w '%{http_code}' --max-time 20 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"goal":"Summarize my notes"}' http://127.0.0.1:18800/agent/spaces/test-space/sessions/test-session/agent/run)
+          status=$(curl -s -o "$RUNNER_TEMP/agent-test/model-policy.json" -w '%{http_code}' --max-time 20 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"goal":"Summarize my notes","model":"local/not-allowed"}' http://127.0.0.1:18800/agent/spaces/test-space/sessions/test-session/agent/run)
           echo "model_policy_status=$status"; cat "$RUNNER_TEMP/agent-test/model-policy.json"; test "$status" = 400
           node -e 'const x=require(process.argv[1]); if(x.error_code !== "compliance_violation") process.exit(1)' "$RUNNER_TEMP/agent-test/model-policy.json"
+          status=$(curl -s -o "$RUNNER_TEMP/agent-test/accepted.json" -w '%{http_code}' --max-time 30 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"goal":"Summarize my notes"}' http://127.0.0.1:18800/agent/spaces/test-space/sessions/test-session/agent/run)
+          echo "accepted_status=$status"; cat "$RUNNER_TEMP/agent-test/accepted.json"; test "$status" = 202
+          node -e 'const x=require(process.argv[1]); if(x.status !== "queued" || !x.task_id) process.exit(1)' "$RUNNER_TEMP/agent-test/accepted.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
