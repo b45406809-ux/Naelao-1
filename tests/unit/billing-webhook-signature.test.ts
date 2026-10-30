@@ -13,7 +13,9 @@ describe("Lemon Squeezy webhook ingress", () => {
       }),
       {
         ENVIRONMENT: "test",
+        PLATFORM_SECRET: "test-platform-secret",
         LEMON_SQUEEZY_WEBHOOK_SECRET: "whsec_real",
+        PLATFORM_DB: { prepare() { throw new Error("invalid webhook must be rejected before database access"); } },
       } as never,
       execCtx,
     );
