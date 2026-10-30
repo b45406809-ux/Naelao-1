@@ -148,7 +148,8 @@ jobs:
           binding = "SPACES"
           service = "naelao-spaces"
           TOML
-          printf 'JWT_SECRET=local-test-secret\nPLATFORM_SECRET=local-test-secret\n' > workers/agents/.dev.vars
+          build_id=$(git rev-parse HEAD | sha256sum | cut -d' ' -f1)
+          printf 'JWT_SECRET=local-test-secret\nPLATFORM_SECRET=local-test-secret\nWORKFLOW_BUILD_ID=%s\n' "$build_id" > workers/agents/.dev.vars
           pnpm exec wrangler dev --local -c .agent-probe/wrangler.toml -c workers/agents/wrangler.ci.toml -c workers/spaces/wrangler.ci.toml --port 18800 --persist-to "$RUNNER_TEMP/agent-test/state" --var JWT_SECRET:local-test-secret --var PLATFORM_SECRET:local-test-secret --var CREDENTIAL_ENCRYPTION_KEY:v1:$(printf '00%.0s' {1..32}) > "$RUNNER_TEMP/agent-test/worker.log" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
