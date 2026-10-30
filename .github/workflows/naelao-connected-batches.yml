@@ -185,6 +185,16 @@ jobs:
           status=$(curl -s -o "$RUNNER_TEMP/agent-test/accepted.json" -w '%{http_code}' --max-time 30 -X POST -H 'content-type: application/json' -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" --data '{"goal":"Summarize my notes"}' http://127.0.0.1:18800/agent/spaces/test-space/sessions/test-session/agent/run)
           echo "accepted_status=$status"; cat "$RUNNER_TEMP/agent-test/accepted.json"; test "$status" = 202
           node -e 'const x=require(process.argv[1]); if(x.status !== "queued" || !x.task_id) process.exit(1)' "$RUNNER_TEMP/agent-test/accepted.json"
+          task_id=$(node -p 'require(process.argv[1]).task_id' "$RUNNER_TEMP/agent-test/accepted.json")
+          for i in $(seq 1 12); do
+            status=$(curl -s -o "$RUNNER_TEMP/agent-test/task-$i.json" -w '%{http_code}' --max-time 10 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id")
+            echo "task_poll=$i http=$status"; cat "$RUNNER_TEMP/agent-test/task-$i.json"; echo
+            test "$status" = 200
+            state=$(node -p 'require(process.argv[1]).status || "unknown"' "$RUNNER_TEMP/agent-test/task-$i.json")
+            case "$state" in complete|failed) break ;; esac
+            sleep 5
+          done
+          echo "observed_task_state=$state"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
