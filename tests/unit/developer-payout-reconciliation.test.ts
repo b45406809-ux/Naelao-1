@@ -50,13 +50,13 @@ describe("native developer settlement restart/replay", () => {
     const h = harness();
     for (let cycle = 1; cycle <= 13; cycle++) {
       if (cycle === 1) h.db.db.exec("UPDATE template_subscriptions SET status='paused'");
-      const result = await settleTemplateSubscriptionPayment(h.env.PLATFORM_DB, "space", 2000, `ls-payment-${cycle}`, "ls-subscription-1");
+      const result = await settleTemplateSubscriptionPayment(h.env.PLATFORM_DB, "space", 2000, `ls-payment-${cycle}`, "ls-subscription-1", "subscription");
       expect(result.cycle).toBe(cycle);
       if (cycle === 1) expect(result.developerCents).toBe(500);
       if (cycle === 7) expect(result.developerCents).toBe(400);
       if (cycle === 13) expect(result.developerCents).toBe(100);
     }
-    const replay = await settleTemplateSubscriptionPayment(h.env.PLATFORM_DB, "space", 2000, "ls-payment-1", "ls-subscription-1");
+    const replay = await settleTemplateSubscriptionPayment(h.env.PLATFORM_DB, "space", 2000, "ls-payment-1", "ls-subscription-1", "subscription");
     expect(replay).toMatchObject({ cycle: 1, developerCents: 500 });
     expect(h.db.db.prepare("SELECT paid_cycles_total FROM template_subscriptions WHERE id='subscription'").get()).toMatchObject({ paid_cycles_total: 13 });
     expect(h.db.db.prepare("SELECT status, provider_subscription_id FROM template_subscriptions WHERE id='subscription'").get()).toMatchObject({ status: "active", provider_subscription_id: "ls-subscription-1" });
