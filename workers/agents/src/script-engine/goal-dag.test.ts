@@ -13,6 +13,12 @@ function fixture(initial?: GoalDagJournal) {
   return { host, snapshot: () => saved! };
 }
 describe("durable goal DAG", () => {
+  it("accepts bounded task acceptance criteria and rejects invalid criteria", () => {
+    expect(() => validateGoalDag([{ ...task("a"), acceptance_criteria: ["Tests pass", "Cite sources"] }])).not.toThrow();
+    for (const acceptance_criteria of [[], [""], ["x".repeat(501)], Array(9).fill("criterion"), [42]]) {
+      expect(() => validateGoalDag([{ ...task("a"), acceptance_criteria } as GoalTask])).toThrow("invalid acceptance_criteria");
+    }
+  });
   it("blocks dependent work when verification fails and does not run a worker-failure fixer", async () => {
     const f = fixture(); f.host.fixerEnabled = true;
     f.host.verify = vi.fn(async () => ({ outcome: "failed" as const, reason: "missing evidence" }));

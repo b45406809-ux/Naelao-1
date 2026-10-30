@@ -19,6 +19,8 @@ export interface GoalTask {
   id: string;
   title: string;
   subtask_spec: string;
+  /** Planner-supplied acceptance criteria; untrusted descriptions, never authority. */
+  acceptance_criteria?: string[];
   assigned_role: UniversalAgentRole;
   context_affinity?: "shared" | "isolated";
   agent_id?: string;
@@ -45,6 +47,7 @@ export function validateGoalDag(tasks: GoalTask[]): void {
   for (const task of tasks) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(task.id) || !task.title || !task.subtask_spec || !Array.isArray(task.file_paths)) throw new Error(`invalid goal task '${task.id}'`);
     if (typeof task.assigned_role !== "string" || !task.assigned_role.trim() || task.assigned_role.length > 128) throw new Error(`task '${task.id}' has an invalid assigned_role`);
+    if (task.acceptance_criteria !== undefined && (!Array.isArray(task.acceptance_criteria) || task.acceptance_criteria.length < 1 || task.acceptance_criteria.length > 8 || task.acceptance_criteria.some(item => typeof item !== "string" || !item.trim() || item.length > 500))) throw new Error(`task '${task.id}' has invalid acceptance_criteria`);
     if (!Number.isSafeInteger(task.budget_tokens) || task.budget_tokens < 1 || task.budget_tokens > MAX_SUB_AGENT_BUDGET_TOKENS) throw new Error(`task '${task.id}' budget_tokens must be within 1..${MAX_SUB_AGENT_BUDGET_TOKENS}`);
     if (task.resource_keys !== undefined && (!Array.isArray(task.resource_keys) || task.resource_keys.length > 8 || task.resource_keys.some(key => typeof key !== "string" || !/^[a-z][a-z0-9._:-]{0,95}$/.test(key)) || new Set(task.resource_keys).size !== task.resource_keys.length)) throw new Error(`task '${task.id}' has invalid resource_keys`);
     if (task.runtime_capability !== undefined && (typeof task.runtime_capability !== "string" || !/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(task.runtime_capability))) throw new Error(`task '${task.id}' has an invalid runtime_capability`);
@@ -83,6 +86,7 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
     return {
       id: String(task.id ?? `task-${index + 1}`), title: String(task.title ?? ""),
       subtask_spec: subtaskSpec,
+      ...(task.acceptance_criteria !== undefined ? { acceptance_criteria: task.acceptance_criteria as string[] } : {}),
       assigned_role: String(task.assigned_role ?? "worker") as UniversalAgentRole,
       context_affinity: contextAffinity,
       ...(typeof task.agent_id === "string" ? { agent_id: task.agent_id } : {}),
@@ -100,7 +104,7 @@ function parseTasks(value: unknown, planBudget: number): GoalTask[] {
 export const goalPlanner: PrebuiltScript = {
   name: "goal-planner", domain: "orchestration", requires_tier: 2,
   description: "Persist a frontier-planned task DAG and concurrently dispatch isolated edge workers.",
-  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
+  paramHints: { "engine.coordination_patterns": "List advisory, versioned coordination patterns. Instantiate tasks only when useful; patterns do not grant capabilities.", "engine.plan_and_delegate_goal": "objective and tasks required. Each task: id, title, subtask_spec (give the worker a detailed outcome and constraints; let it plan with its assigned capability subset), assigned_role, acceptance_criteria? (1-8 concrete outcomes, each at most 500 characters), priority? (-10..10 queue preference; host applies aging), context_affinity? (shared|isolated; inferred from file_paths when omitted), resource_keys? (up to 8 shared mutable environment keys; tasks sharing one are scheduled serially within this DAG, while unrelated ready work can proceed; advisory scheduling only), agent_id? (own configured worker), planner? (depth-2 subplanner), file_paths, dependencies?, budget_tokens up to your subscription plan's worker limit. Omit budget_tokens to use that limit. The host selects a subset of the worker's configured related tools and skills; selection never grants unconfigured tools. Keep dependent order intact and independent work parallel where useful. Worker model is selected by runtime policy, never by a task-supplied model id." },
   operations: {
     async "engine.coordination_patterns"() {
       return { patterns: structuredClone(COORDINATION_PATTERNS), advisory: true };

@@ -3782,7 +3782,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                 : "";
               const receipt = await hooks.spawnSubAgent!({ tasks: [{
                 sub_agent_id: workerId, file_paths: task.file_paths,
-                goal: `<isolated_subtask>\n${task.subtask_spec}\n</isolated_subtask>\n<file_boundary>${task.file_paths.join(", ")}</file_boundary>${predecessorContext}`,
+                goal: `<isolated_subtask>\n${task.subtask_spec}\n</isolated_subtask>\n<acceptance_criteria>${JSON.stringify(task.acceptance_criteria ?? [])}</acceptance_criteria>\n<file_boundary>${task.file_paths.join(", ")}</file_boundary>${predecessorContext}`,
                 role: task.assigned_role, ...(task.agent_id ? { agent_id: task.agent_id } : {}), ...(task.planner ? { planner: true } : {}), context_affinity: task.context_affinity,
                 ...(task.runtime_capability ? { runtime_capability: task.runtime_capability } : {}), budget_tokens: task.budget_tokens,
               }] }) as unknown as { results?: Array<{ id: string; ok: boolean; output?: unknown; error?: string; status?: string; failure_confirmed?: boolean }> };
