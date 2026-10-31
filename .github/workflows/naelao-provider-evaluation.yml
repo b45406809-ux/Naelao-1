@@ -12,7 +12,7 @@ jobs:
   free-tier-model-evaluation:
     name: Bounded Gemini and GroqCloud evaluation
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Mask provider keys and record secret presence only
@@ -31,6 +31,13 @@ jobs:
           for (const key of [...gemini, ...groq]) process.stdout.write(`::add-mask::${key}\n`);
           fs.writeFileSync('provider-presence.json', JSON.stringify({ geminiSlots: gemini.length, groqcloudSlots: groq.length, keyValuesLogged: false }) + '\n');
           JS
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install workspace test dependencies
+        run: pnpm install --no-frozen-lockfile
       - name: Run bounded synthetic provider comparison
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
@@ -44,6 +51,31 @@ jobs:
           GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
           SWARM_PROVIDER_REPORT: provider-eval.json
         run: node infra/scripts/swarm-provider-eval.mjs
+      - name: Disable follow-up calls for quota-limited providers
+        if: always()
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_ENV"
+          import fs from 'node:fs';
+          let report; try { report = JSON.parse(fs.readFileSync('provider-eval.json', 'utf8')); } catch {}
+          for (const [name, key] of [['gemini','GEMINI'],['groqcloud','GROQ']]) {
+            const result = report?.results?.find(item => item.provider === name);
+            console.log(`${key}_PLAN_CALLS_ALLOWED=${Boolean(result && !String(result.reason ?? '').includes('quota_or_rate_limited'))}`);
+          }
+          JS
+      - name: Run real-model planning through the goal DAG and host verifier
+        if: always()
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
+          NAELAO_RUN_LIVE_ARCH_BENCHMARK: 'true'
+          NAELAO_LIVE_ARCH_REPORT: live-goal-plan-benchmark.json
+          NAELAO_GOAL_BENCHMARK_REPORT: goal-architecture-benchmark.json
+        run: pnpm --filter @naelao/agents-worker exec vitest run src/script-engine/goal-architecture-benchmark.test.ts --reporter=verbose
       - name: Publish measured metrics
         if: always()
         run: |
@@ -66,6 +98,20 @@ jobs:
           function fmt(value) { return value == null ? '—' : `${(value * 100).toFixed(1)}%`; }
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
           JS
+      - name: Publish model-planning metrics
+        if: always()
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          import fs from 'node:fs';
+          let report; try { report = JSON.parse(fs.readFileSync('live-goal-plan-benchmark.json', 'utf8')); } catch {}
+          console.log('\n## Live model planning through Naelao goal runtime\n');
+          if (!report) console.log('No live planning report was produced.');
+          else {
+            console.log('| Provider/model | Calls | Valid plans | Valid DAGs | Host-verified fixtures | Plan p50/p95 ms | Mock execution p50/p95 ms | Tokens in/out |\n|---|---:|---:|---:|---:|---:|---:|---:|');
+            for (const item of report.results) console.log(`| ${item.provider}/${item.model} | ${item.requests ?? 0} | ${item.validPlans ?? 0} | ${item.validGraphs ?? 0} | ${item.verifiedFixtureRuns ?? 0} | ${item.planLatencyP50Ms ?? '—'}/${item.planLatencyP95Ms ?? '—'} | ${item.fixtureExecutionLatencyP50Ms ?? '—'}/${item.fixtureExecutionLatencyP95Ms ?? '—'} | ${item.inputTokens ?? '—'}/${item.outputTokens ?? '—'} |`);
+            console.log('\n' + report.limitations.map(item => `- ${item}`).join('\n'));
+          }
+          JS
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -73,4 +119,6 @@ jobs:
           path: |
             provider-eval.json
             provider-presence.json
+            live-goal-plan-benchmark.json
+            goal-architecture-benchmark.json
           if-no-files-found: warn
