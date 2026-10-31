@@ -13,6 +13,20 @@ function fixture(initial?: GoalDagJournal) {
   return { host, snapshot: () => saved! };
 }
 describe("durable goal DAG", () => {
+  it("fails closed without host evidence when verification is required", async () => {
+    const f = fixture(); f.host.verificationRequired = true;
+    const result = await executeGoalDag([{ ...task("a"), acceptance_criteria: ["verified"] }, task("b", ["a"])], f.host);
+    expect(result.tasks.a?.status).toBe("needs_review");
+    expect(result.tasks.b?.status).toBe("blocked");
+    expect(f.host.launch.mock.calls.map(([t]) => t.id)).toEqual(["a"]);
+  });
+  it("allows a dependent only after host evidence passes each criterion", async () => {
+    const f = fixture(); f.host.verificationRequired = true;
+    f.host.collectEvidence = vi.fn(async t => (t.acceptance_criteria ?? []).map(criterion => ({ criterion, source: "host_check" as const, outcome: "passed" as const, reference: "check:1" })));
+    const result = await executeGoalDag([{ ...task("a"), acceptance_criteria: ["verified"] }], f.host);
+    expect(result.tasks.a?.status).toBe("completed");
+    expect(f.host.collectEvidence).toHaveBeenCalledOnce();
+  });
   it("persists verification before invoking it and waits for acceptance before dispatching a dependent", async () => {
     const f = fixture();
     let release!: () => void;

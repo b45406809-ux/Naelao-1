@@ -1,5 +1,6 @@
 import { validateGoalDag, type GoalTask } from "./prebuilt/goal-planner.js";
 import { createTaskMessage, visibleTaskMessages, type TaskMessage } from "./task-blackboard.js";
+import { evaluateGoalEvidence, type GoalEvidence } from "./goal-evidence.js";
 
 export interface GoalWorkerResult { id: string; ok: boolean; output?: unknown; error?: string; status?: string }
 export type GoalTaskStatus = "pending" | "running" | "verifying" | "completed" | "failed" | "blocked" | "needs_review";
@@ -17,7 +18,7 @@ export interface GoalTaskRuntimeState {
 export interface GoalTaskState { status: GoalTaskStatus; workerId: string; result?: GoalWorkerResult; runtime?: GoalTaskRuntimeState; verification?: { outcome: "passed" | "failed" | "uncertain"; reason: string }; shadowVerification?: { outcome: "failed" | "uncertain"; reason: string } }
 export interface GoalEscalation { taskId: string; workerId: string; reason: "worker_failed" | "outcome_uncertain" | "verification_failed" | "verification_uncertain"; detail?: string; blockedTasks: string[]; nextAction: "investigate_failure" | "verify_effects_before_retry" | "review_verification" }
 export interface GoalFixerState { workerId: string; status: "running" | "completed" | "failed" | "needs_review"; result?: GoalWorkerResult }
-export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean }
+export interface GoalDagJournal { tasks: Record<string, GoalTaskState>; messages?: TaskMessage[]; taskBlackboardEnabled?: boolean; escalations?: GoalEscalation[]; fixers?: Record<string, GoalFixerState>; fixerEnabled?: boolean; verificationRequired?: boolean }
 /** Dependency results are untrusted data, scoped to an explicitly declared edge. */
 export interface GoalHandoff { taskId: string; workerId: string; output: string; truncated: boolean }
 export interface GoalDagHost {
@@ -30,6 +31,8 @@ export interface GoalDagHost {
   concurrency: number;
   taskBlackboardEnabled?: boolean;
   fixerEnabled?: boolean;
+  verificationRequired?: boolean;
+  collectEvidence?(task: GoalTask, workerId: string): Promise<GoalEvidence[]>;
   verify?(task: GoalTask, result: GoalWorkerResult): Promise<{ outcome: "passed" | "failed" | "uncertain"; reason: string }>;
   observeVerification?(task: GoalTask, result: GoalWorkerResult): Promise<{ outcome: "failed" | "uncertain"; reason: string }>;
   fix?(task: GoalTask, workerId: string, failure: GoalWorkerResult): Promise<GoalWorkerResult>;
@@ -98,7 +101,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
   validateGoalDag(tasks);
   if (!Number.isSafeInteger(host.concurrency) || host.concurrency < 1 || host.concurrency > 4) throw new Error("invalid_goal_concurrency");
   const loaded = await host.load();
-  const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, fixerEnabled: host.fixerEnabled === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
+  const journal: GoalDagJournal = loaded ?? { taskBlackboardEnabled: host.taskBlackboardEnabled === true, fixerEnabled: host.fixerEnabled === true, verificationRequired: host.verificationRequired === true, tasks: Object.fromEntries(tasks.map(task => [task.id, { status: "pending" as const, workerId: host.workerId(task.id) }])) };
   // Worker completions can checkpoint concurrently. Serialize immutable snapshots so a slow
   // earlier write cannot replace a newer journal with stale task states.
   let saveTail: Promise<void> = Promise.resolve();
@@ -108,11 +111,13 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
     return saveTail;
   };
   const verifyResult = async (task: GoalTask, state: GoalTaskState): Promise<void> => {
-    if (!state.result?.ok || !host.verify) return;
+    if (!state.result?.ok || (!host.verify && !journal.verificationRequired)) return;
     state.status = "verifying";
     await save();
     try {
-      const assessment = await host.verify(task, state.result);
+      const assessment = journal.verificationRequired
+        ? evaluateGoalEvidence(task.acceptance_criteria ?? [], await (host.collectEvidence?.(task, state.workerId) ?? Promise.resolve([])))
+        : await host.verify!(task, state.result);
       if (!assessment || !["passed", "failed", "uncertain"].includes(assessment.outcome) || typeof assessment.reason !== "string" || !assessment.reason.trim()) throw new Error("invalid_verification_result");
       state.verification = { outcome: assessment.outcome, reason: assessment.reason.slice(0, 2000) };
       state.status = assessment.outcome === "passed" ? "completed" : assessment.outcome === "failed" ? "failed" : "needs_review";
@@ -151,7 +156,7 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       await save();
     }
     if (state.status === "verifying") { state.status = "needs_review"; state.verification = { outcome: "uncertain", reason: "Verification interrupted" }; await save(); }
-    else if (state.status === "completed" && state.result?.ok && !state.verification && host.verify) await verifyResult(task, state);
+    else if (state.status === "completed" && state.result?.ok && !state.verification && (host.verify || journal.verificationRequired)) await verifyResult(task, state);
     if (state.status === "completed") await observeResult(task, state);
     recordCompletion(task, tasks, journal);
     if (journal.taskBlackboardEnabled && state.status === "completed") await save();
