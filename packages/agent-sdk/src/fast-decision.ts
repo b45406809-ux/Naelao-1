@@ -108,6 +108,11 @@ export interface SystemOneClientOptions {
   maxRetries?: number;
   /** Overall wall-clock budget across retries, including backoff. */
   timeoutMs?: number;
+  /** Host-owned reservation lifecycle; a failed or malformed response remains uncertain. */
+  billing?: {
+    reserve(input: { model: string; requestBytes: number }): Promise<string>;
+    settle(reservationId: string, outcome: { status: "confirmed"; inputTokens: number; outputTokens: number } | { status: "uncertain" }): Promise<void>;
+  };
   onDecision?: (event: {
   provider: "openrouter";
     policyCode: string;
@@ -251,6 +256,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
   private readonly maxRetries: number;
   private readonly timeoutMs: number;
   private readonly onDecision: SystemOneClientOptions["onDecision"];
+  private readonly billing: SystemOneClientOptions["billing"];
 
   constructor(options: SystemOneClientOptions = {}) {
     this.apiKey = options.apiKey;
@@ -264,11 +270,13 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       ? Math.max(100, Math.min(30_000, options.timeoutMs!))
       : 5_000;
     this.onDecision = options.onDecision;
+    this.billing = options.billing;
   }
 
   private async post(model: string, state: SystemOneState, questions: Record<string, Record<string, unknown>>): Promise<{ response: Response; signal: AbortSignal }> {
     const signal = AbortSignal.timeout(this.timeoutMs);
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    const retries = this.billing ? 0 : this.maxRetries;
+    for (let attempt = 0; attempt <= retries; attempt++) {
       let response: Response;
       try {
         response = await this.fetcher(this.endpoint, {
@@ -287,7 +295,7 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       // streams before backoff so a large error body cannot retain a socket or memory buffer.
       const retryable = [429, 529, 503].includes(response.status);
       await response.body?.cancel().catch(() => undefined);
-      if (!retryable || attempt === this.maxRetries) return { response, signal };
+      if (!retryable || attempt === retries) return { response, signal };
       await waitForRetry(Math.min(100 * 2 ** attempt, 1_000), signal);
     }
     throw new Error("system_one_network_error");
@@ -308,6 +316,9 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
   private async request(question: Record<string, unknown>, state: SystemOneState): Promise<{ answer: SystemOneAnswer; meta: Omit<FastDecisionMeta, "policyCode"> }> {
     const started = Date.now();
     const model = this.modelFor({ decision: question }, state);
+    const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions: { decision: question } })).byteLength }) : undefined;
+    let settlementStarted = false;
+    try {
     const { response, signal } = await this.post(model, state, { decision: question });
     if (!response?.ok) {
       // Provider errors may echo prompt fragments or account metadata. Preserve the status for
@@ -318,10 +329,17 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
     if (typeof payload.model !== "string" || !payload.answers || typeof payload.answers !== "object") throw new Error("system_one_invalid_response");
     const answer = payload.answers["decision"];
     if (!answer || typeof answer !== "object") throw new Error("system_one_missing_answer");
-    return { answer, meta: { provider: this.provider, model: payload.model, latencyMs: Date.now() - started, usage: usage(payload.usage) } };
+    const actualUsage = usage(payload.usage);
+    if (reservation !== undefined) { settlementStarted = true; await this.billing!.settle(reservation, { status: "confirmed", inputTokens: actualUsage.inputTokens, outputTokens: actualUsage.outputTokens }); }
+    return { answer, meta: { provider: this.provider, model: payload.model, latencyMs: Date.now() - started, usage: actualUsage } };
+    } catch (error) {
+      if (reservation !== undefined && !settlementStarted) await this.billing!.settle(reservation, { status: "uncertain" });
+      throw error;
+    }
   }
 
   private async requestMany(questions: Record<string, Record<string, unknown>>, state: SystemOneState): Promise<{ answers: Record<string, SystemOneAnswer>; meta: Omit<FastDecisionMeta, "policyCode"> }> {
+    if (this.billing) throw new Error("system_one_billed_batch_unavailable");
     const started = Date.now();
     const model = this.modelFor(questions, state);
     const { response, signal } = await this.post(model, state, questions);
