@@ -339,5 +339,5 @@ describe("goal architecture benchmark", () => {
     if (reportPath) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
     console.log(`live_model_planning_benchmark=${JSON.stringify(report)}`);
     expect(results.every(result => result.provider)).toBe(true);
-  });
+  }, 120_000);
 });

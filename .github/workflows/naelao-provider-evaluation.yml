@@ -59,7 +59,10 @@ jobs:
           let report; try { report = JSON.parse(fs.readFileSync('provider-eval.json', 'utf8')); } catch {}
           for (const [name, key] of [['gemini','GEMINI'],['groqcloud','GROQ']]) {
             const result = report?.results?.find(item => item.provider === name);
-            console.log(`${key}_PLAN_CALLS_ALLOWED=${Boolean(result && !String(result.reason ?? '').includes('quota_or_rate_limited'))}`);
+            // Planning is a separate, additional set of live calls. Only run it
+            // when the bounded verifier comparison completed without invalid
+            // responses or transport/provider failures.
+            console.log(`${key}_PLAN_CALLS_ALLOWED=${Boolean(result && result.state === 'completed' && result.validResponseRate === 1 && result.reason == null)}`);
           }
           JS
       - name: Run real-model planning through the goal DAG and host verifier

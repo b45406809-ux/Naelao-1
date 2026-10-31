@@ -235,13 +235,12 @@ async function evaluateProvider({ name, keys, model, enabled, freeConfirmed, res
 }
 
 export async function runProviderEvaluation({ env = process.env, fetcher = globalThis.fetch, now = Date.now } = {}) {
-  const deadline = now() + TOTAL_BUDGET_MS;
   const geminiKeys = parseKeys(env.GEMINI_API_KEYS || env.GEMINI_API_KEY);
   const groqKeys = parseKeys(env.GROQ_API_KEYS || env.GROQ_API_KEY);
   const started = now();
-  const gemini = await evaluateProvider({ name: "gemini", keys: geminiKeys, model: GEMINI_MODEL, enabled: env.RUN_GEMINI_FREE_EVAL === "true", freeConfirmed: env.GEMINI_FREE_TIER_CONFIRMED === "true", resolveModel: resolveGeminiModel, call: callGemini, fetcher, deadline });
+  const gemini = await evaluateProvider({ name: "gemini", keys: geminiKeys, model: GEMINI_MODEL, enabled: env.RUN_GEMINI_FREE_EVAL === "true", freeConfirmed: env.GEMINI_FREE_TIER_CONFIRMED === "true", resolveModel: resolveGeminiModel, call: callGemini, fetcher, deadline: now() + TOTAL_BUDGET_MS });
   const groqModel = env.GROQ_FREE_MODEL_ID || DEFAULT_GROQ_MODEL;
-  const groqcloud = await evaluateProvider({ name: "groqcloud", keys: groqKeys, model: groqModel, enabled: env.RUN_GROQ_FREE_EVAL === "true", freeConfirmed: env.GROQ_FREE_TIER_CONFIRMED === "true", resolveModel: resolveGroqModel, call: callGroq, fetcher, deadline });
+  const groqcloud = await evaluateProvider({ name: "groqcloud", keys: groqKeys, model: groqModel, enabled: env.RUN_GROQ_FREE_EVAL === "true", freeConfirmed: env.GROQ_FREE_TIER_CONFIRMED === "true", resolveModel: resolveGroqModel, call: callGroq, fetcher, deadline: now() + TOTAL_BUDGET_MS });
   return { schemaVersion: 2, kind: "test_only_provider_eval", generatedAt: new Date(now()).toISOString(), dataset: "synthetic-swarm-verification-v2", caseCount: CASES.length, budget: { maxCallsPerProvider: MAX_CALLS, maxInferenceRequestsPerProvider: MAX_CALLS - 1, maxOutputTokensPerCall: MAX_OUTPUT_TOKENS, deadlineMs: TOTAL_BUDGET_MS, spendLimitUsd: 0 }, pricingSnapshotDate: "2026-10-31", durationMs: now() - started, credentialPresence: { geminiSlots: geminiKeys.length, groqcloudSlots: groqKeys.length }, results: [gemini, groqcloud], limitations: ["Eight synthetic cases; small exploratory evaluation, not model certification or a statistical quality guarantee.", "Quality is advisory only; production evidence, authorization and verification remain host-controlled.", "Nominal paid-rate estimates use a dated price snapshot; confirmed free-tier usage is not charged at those rates.", "Provider account free-tier eligibility is confirmed by the workflow operator; available-model listing does not itself establish billing tier.", "Quota is shared at provider project/organization scope; key slots do not imply extra quota.", "No production router or OpenRouter configuration is changed by this test harness."] };
 }
 
