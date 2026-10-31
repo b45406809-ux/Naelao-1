@@ -3708,7 +3708,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               ...(state.runtime.startedAt !== undefined ? { started_at_ms: state.runtime.startedAt } : {}),
               ...(state.runtime.executionMs !== undefined ? { execution_ms: state.runtime.executionMs } : {}),
             }] : []).slice(0, 200);
-            const decisionReservations = [...(await this.ctx.storage.list<{ runId: string; status: string; maxCredits?: number; credits?: number }>({ prefix: "decision-reservation:", limit: 100 })).values()].filter(row => row.runId === parentRunId);
+            const decisionReservations = typeof this.ctx.storage.list === "function"
+              ? [...(await this.ctx.storage.list<{ runId: string; status: string; maxCredits?: number; credits?: number }>({ prefix: "decision-reservation:", limit: 100 })).values()].filter(row => row.runId === parentRunId)
+              : [];
             const budget = { reserved_credits: decisionReservations.filter(row => row.status === "reserved" || row.status === "uncertain").reduce((sum, row) => sum + (row.maxCredits ?? 0), 0),
               uncertain_calls: decisionReservations.filter(row => row.status === "uncertain").length,
               settled_credits: decisionReservations.filter(row => row.status === "settled").reduce((sum, row) => sum + (row.credits ?? 0), 0) };
@@ -8854,7 +8856,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   private async reconcileDecisionReservations(): Promise<void> {
-    if (!this.env.BILLING_WORKER) return;
+    if (!this.env.BILLING_WORKER || typeof this.ctx.storage.list !== "function") return;
     const rows = await this.ctx.storage.list<{ status: string; model: string; inputPrice: number; outputPrice: number; priceSnapshotAt: string; reservationId: string; runId: string; spaceId: string; projectId: string | null; tenantId: string }>({ prefix: "decision-reservation:", limit: 100 });
     for (const [key, row] of rows) {
       if (!row || row.status === "settled") continue;
@@ -8890,7 +8892,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
     const retryRow = sql.exec("SELECT MIN(next_attempt_at) AS next_at FROM billing_usage_event_outbox WHERE status='pending'").toArray()[0] as { next_at?: number | null } | undefined;
     if (typeof retryRow?.next_at === "number") candidates.push(Math.max(now + 1000, retryRow.next_at));
-    if (this.env.BILLING_WORKER) {
+    if (this.env.BILLING_WORKER && typeof this.ctx.storage.list === "function") {
       const reservations = await this.ctx.storage.list<{ status: string }>({ prefix: "decision-reservation:" });
       if ([...reservations.values()].some(row => row.status !== "settled")) candidates.push(now + 60_000);
     }
