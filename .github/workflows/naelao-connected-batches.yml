@@ -213,10 +213,20 @@ jobs:
           echo "accepted_status=$status"; cat "$RUNNER_TEMP/agent-test/accepted.json"; test "$status" = 202
           node -e 'const x=require(process.argv[1]); if(x.status !== "queued" || !x.task_id) process.exit(1)' "$RUNNER_TEMP/agent-test/accepted.json"
           task_id=$(node -p 'require(process.argv[1]).task_id' "$RUNNER_TEMP/agent-test/accepted.json")
-          echo "accepted_task_id=$task_id; terminating local Workers before retrieving its result"
+          pre_restart_state=queued
+          for i in $(seq 1 40); do
+            status=$(curl -s -o "$RUNNER_TEMP/agent-test/pre-restart-$i.json" -w '%{http_code}' --max-time 5 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id" || true)
+            if [ "$status" = 200 ]; then pre_restart_state=$(node -p 'require(process.argv[1]).status || "unknown"' "$RUNNER_TEMP/agent-test/pre-restart-$i.json"); fi
+            case "$pre_restart_state" in processing|complete|failed) cp "$RUNNER_TEMP/agent-test/pre-restart-$i.json" "$RUNNER_TEMP/agent-test/pre-restart-task.json"; break ;; esac
+            sleep 0.5
+          done
+          echo "accepted_task_id=$task_id; pre_restart_state=$pre_restart_state"
+          test "$pre_restart_state" = processing -o "$pre_restart_state" = complete -o "$pre_restart_state" = failed
+          echo "terminating local Workers after dispatch began and before first result retrieval"
           stop_agent_workers
           sleep 2
           start_agent_workers "$RUNNER_TEMP/agent-test/worker-after-restart.log"
+          token=$(node -e 'const c=require("node:crypto"), t=Date.now().toString(), sig=c.createHmac("sha256","local-test-secret").update(`internal:test-tenant:${t}`).digest("hex"); process.stdout.write(`t=${t},v1=${sig}`)')
           restart_ready=0
           for i in $(seq 1 60); do
             status=$(curl -s -o "$RUNNER_TEMP/agent-test/restart-poll.json" -w '%{http_code}' --max-time 5 -H 'x-naelao-tenant-id: test-tenant' -H 'x-naelao-user-id: test-user' -H 'x-naelao-role: owner' -H "x-naelao-internal-token: $token" "http://127.0.0.1:18800/agent/spaces/test-space/tasks/$task_id" || true)
