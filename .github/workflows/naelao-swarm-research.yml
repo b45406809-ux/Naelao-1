@@ -42,7 +42,7 @@ jobs:
             src/script-engine/goal-dag.test.ts \
             src/script-engine/r2-workspace-cas.test.ts \
             src/do/delegation-admission.test.ts \
-            --reporter=json --outputFile="$RUNNER_TEMP/swarm-vitest.json"
+            --reporter=verbose --reporter=json --outputFile="$RUNNER_TEMP/swarm-vitest.json"
           result=$?
           node --input-type=module <<'JS'
           import fs from 'node:fs';
@@ -50,7 +50,7 @@ jobs:
             const report=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/swarm-vitest.json`,'utf8'));
             console.log(`vitest totals: passed=${report.numPassedTests??'?'} failed=${report.numFailedTests??'?'} skipped=${report.numPendingTests??'?'}`);
             console.log(`vitest suite status: failed=${report.numFailedTestSuites??'?'} success=${report.success??'?'} errors=${report.unhandledErrors?.length??0}`);
-            for(const file of report.testResults??[]) if(file.status!=='passed') console.log(`failed suite: ${file.name} status=${file.status}\n${(file.message??'').slice(0,4000)}`);
+            for(const file of report.testResults??[]) if(file.status!=='passed') console.log(`failed suite detail: ${JSON.stringify(file).slice(0,7000)}`);
             for(const file of report.testResults??[]) for(const test of file.assertionResults??[]) if(test.status==='failed') console.log(`failed test: ${test.fullName}\n${(test.failureMessages??[]).join('\n').slice(0,3000)}`);
             for(const error of report.unhandledErrors??[]) console.log(`vitest runner error:\n${JSON.stringify(error).slice(0,4000)}`);
           } catch { console.log('vitest JSON result unavailable; runner/install failure may have occurred'); }
