@@ -1,0 +1,5 @@
+# Direct CPU runtime dependencies pinned to versions available from official PyPI at research time.
+transformers==5.22.1
+safetensors==0.8.0
+huggingface-hub==2.4.0
+numpy==2.5.4

@@ -1,0 +1,228 @@
+name: Naelao swarm research evaluation
+on:
+  push:
+    branches: [work]
+    paths:
+      - '.github/workflows/naelao-swarm-research.yml'
+      - 'infra/scripts/swarm-provider-eval*'
+      - 'infra/scripts/laya-*'
+      - 'workers/agents/src/script-engine/goal-*'
+      - 'workers/billing/src/decision-reservations*'
+  workflow_dispatch:
+    inputs:
+      run_laya:
+        description: Attempt pinned CPU-only Laya experiment on synthetic cases
+        type: boolean
+        default: true
+      run_live_free_providers:
+        description: Use configured provider secrets only when free-tier approval variables are true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  runtime-evaluation:
+    name: Swarm evidence, dependency and dispatch tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      - name: Run deterministic swarm evaluation suite
+        run: >-
+          pnpm --filter @naelao/agents-worker exec vitest run
+          src/script-engine/goal-evidence.test.ts
+          src/script-engine/goal-dag.test.ts
+          src/script-engine/r2-workspace-cas.test.ts
+          src/do/delegation-admission.test.ts
+          --reporter=json --outputFile="$RUNNER_TEMP/swarm-vitest.json"
+      - name: Run test-only provider harness unit tests
+        run: node --test --test-reporter=tap infra/scripts/swarm-provider-eval.test.mjs > "$RUNNER_TEMP/provider-unit.tap"
+      - name: Write deterministic evaluation report
+        if: always()
+        env:
+          TEST_RESULT: ${{ job.status }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const read=(p)=>{try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch{return null}};
+          const vitest=read(`${process.env.RUNNER_TEMP}/swarm-vitest.json`); let tap=''; try{tap=fs.readFileSync(`${process.env.RUNNER_TEMP}/provider-unit.tap`,'utf8')}catch{}
+          const tapCount=(name)=>Number(new RegExp(`# ${name} (\\d+)`).exec(tap)?.[1]??0), providerPassed=tapCount('pass'), providerFailed=tapCount('fail');
+          const report={schemaVersion:1,kind:'naelao_swarm_deterministic_evaluation',sourceCommit:process.env.SOURCE_SHA,state:process.env.TEST_RESULT==='success'?'passed':'failed',dataset:'repository-authored synthetic unit fixtures',externalBenchmarkDatasetsUsed:[],batches:[{name:'swarm-runtime',state:vitest?'completed':'blocked',passed:vitest?.numPassedTests??null,failed:vitest?.numFailedTests??null,skipped:vitest?.numPendingTests??null},{name:'provider-harness-safety',state:providerFailed===0&&providerPassed>0?'passed':'failed',passed:providerPassed,failed:providerFailed}],limitations:['Unit and mocked service tests only; no live Cloudflare deployment, production provider call, browser acceptance, or customer data.','Performance, queueing and tenant-level service isolation are not measured by this focused suite.']};
+          fs.mkdirSync('swarm-reports',{recursive:true}); fs.writeFileSync('swarm-reports/deterministic.json',JSON.stringify(report,null,2)+'\n');
+          fs.writeFileSync('swarm-reports/deterministic.md',`# Naelao deterministic swarm evaluation\n\n- Commit: ${report.sourceCommit}\n- State: ${report.state}\n- Runtime tests: ${report.batches[0].passed??'not recorded'} passed, ${report.batches[0].failed??'not recorded'} failed\n- Provider harness safety tests: ${report.batches[1].passed??'not recorded'} passed, ${report.batches[1].failed??'not recorded'} failed\n- Dataset: ${report.dataset}\n\n${report.limitations.map(x=>'- '+x).join('\n')}\n`);
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swarm-deterministic-report
+          path: swarm-reports/*
+          if-no-files-found: warn
+  billing-evaluation:
+    name: Durable verifier budget and reservation tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --no-frozen-lockfile
+      - name: Run billing reservation, quota and uncertainty tests
+        run: pnpm --filter @naelao/billing-worker exec vitest run src/decision-reservations.test.ts src/llm-quota-reservations.test.ts
+      - name: Preserve billing result
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir -p swarm-reports
+          node -e 'require("node:fs").writeFileSync("swarm-reports/billing.json",JSON.stringify({schemaVersion:1,kind:"billing_reservation_tests",sourceCommit:process.env.SHA,state:process.env.RESULT,scope:"D1 reservation idempotency, uncertainty and quota admission; mocked/local tests"},null,2)+"\n")'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swarm-billing-report
+          path: swarm-reports/*
+          if-no-files-found: warn
+  laya-experiment:
+    name: Pinned Laya CPU experiment
+    if: github.event_name == 'push' || inputs.run_laya
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check runner capacity
+        id: capacity
+        shell: bash
+        run: |
+          free -m; df -m "$RUNNER_TEMP"
+          mem_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+          disk_kb=$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4*1024}')
+          if [ "$mem_kb" -lt 8388608 ] || [ "$disk_kb" -lt 5368709120 ]; then echo 'ready=false' >> "$GITHUB_OUTPUT"; else echo 'ready=true' >> "$GITHUB_OUTPUT"; fi
+      - name: Install pinned Laya CPU runtime
+        if: steps.capacity.outputs.ready == 'true'
+        id: install
+        continue-on-error: true
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps --require-hashes -r infra/scripts/laya-wheel.txt
+          python -m pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r infra/scripts/laya-eval-requirements.txt
+      - name: Run bounded synthetic Laya comparison
+        if: steps.capacity.outputs.ready == 'true' && steps.install.outcome == 'success'
+        env:
+          USE_TF: '0'
+          HF_HUB_DISABLE_TELEMETRY: '1'
+          HF_HOME: ${{ runner.temp }}/laya-hub-cache
+          LAYA_REPORT: laya-report.json
+        run: python infra/scripts/laya-swarm-eval.py
+      - name: Record blocked Laya result
+        if: always() && (steps.capacity.outputs.ready != 'true' || steps.install.outcome != 'success')
+        env:
+          CAPACITY: ${{ steps.capacity.outputs.ready }}
+          INSTALL: ${{ steps.install.outcome }}
+        run: |
+          python - <<'PY'
+          import json,os
+          reason='runner_capacity_below_minimum' if os.environ.get('CAPACITY')!='true' else 'pinned_runtime_install_failed'
+          json.dump({'schema_version':1,'kind':'synthetic_laya_swarm_experiment','state':'blocked','blocker':reason,'source_revision':'55a19f7b7b56787e1a3e41063def9bb9a8737351','model_revision':'7b928d828b7b0e022f929d9bd2e44165aa270148','openrouter_calls':0},open('laya-report.json','w'),indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swarm-laya-report
+          path: laya-report.json
+          if-no-files-found: warn
+  free-provider-evaluation:
+    name: Opt-in free-tier provider smoke comparison
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live_free_providers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mask provider keys and report presence without revealing values
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const env=process.env, parse=(v='')=>[...new Set(v.split(',').map(s=>s.trim()).filter(Boolean))];
+          const gemini=parse(env.GEMINI_API_KEYS||env.GEMINI_API_KEY), groq=parse(env.GROQ_API_KEYS||env.GROQ_API_KEY);
+          for (const key of [...gemini,...groq]) process.stdout.write(`::add-mask::${key}\n`);
+          fs.mkdirSync('swarm-reports',{recursive:true});
+          fs.writeFileSync('swarm-reports/provider-presence.json',JSON.stringify({gemini:{configured:gemini.length>0,slots:gemini.length},groqcloud:{configured:groq.length>0,slots:groq.length},keyValuesLogged:false})+'\n');
+          JS
+      - name: Run test-only free-tier provider harness
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          RUN_GEMINI_FREE_EVAL: 'true'
+          RUN_GROQ_FREE_EVAL: 'true'
+          GEMINI_FREE_TIER_CONFIRMED: ${{ vars.GEMINI_FREE_TIER_CONFIRMED }}
+          GROQ_FREE_TIER_CONFIRMED: ${{ vars.GROQ_FREE_TIER_CONFIRMED }}
+          GROQ_FREE_MODEL_ID: ${{ vars.GROQ_FREE_MODEL_ID }}
+          SWARM_PROVIDER_REPORT: swarm-reports/provider-eval.json
+        run: node infra/scripts/swarm-provider-eval.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swarm-provider-report
+          path: swarm-reports/*
+          if-no-files-found: warn
+  summary:
+    if: always()
+    needs: [runtime-evaluation, billing-evaluation, laya-experiment, free-provider-evaluation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: swarm-*-report
+          path: reports
+          merge-multiple: true
+      - name: Publish required and optional outcomes
+        env:
+          RUNTIME: ${{ needs.runtime-evaluation.result }}
+          BILLING: ${{ needs.billing-evaluation.result }}
+          LAYA: ${{ needs.laya-experiment.result }}
+          PROVIDERS: ${{ needs.free-provider-evaluation.result }}
+          LAYA_REQUESTED: ${{ github.event_name == 'push' || inputs.run_laya }}
+          PROVIDERS_REQUESTED: ${{ inputs.run_live_free_providers }}
+          SHA: ${{ github.sha }}
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const read=(p)=>{try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch{return null}};
+          const state=(result,requested)=>result==='skipped'?(requested==='true'?'blocked: prerequisite unavailable':'not run'):result;
+          const rows=[['runtime evidence/dependency/dispatch tests',process.env.RUNTIME],['billing admission/reconciliation tests',process.env.BILLING],['Laya CPU experiment',state(process.env.LAYA,process.env.LAYA_REQUESTED)],['free-tier Gemini/GroqCloud smoke',state(process.env.PROVIDERS,process.env.PROVIDERS_REQUESTED)]];
+          const provider=read('reports/provider-eval.json'), laya=read('reports/laya-report.json'), deterministic=read('reports/deterministic.json');
+          if(provider) rows[3][1]=provider.results.map(r=>`${r.provider}: ${r.state} (${r.reason??'complete'})`).join('; ');
+          if(laya) rows[2][1]=`${laya.state}${laya.blocker?`: ${laya.blocker}`:''}`;
+          const table='## Naelao swarm research evaluation\n\nCommit: `'+process.env.SHA+'`\n\n| Batch | Outcome |\n|---|---|\n'+rows.map(r=>`| ${r[0]} | ${r[1]} |`).join('\n')+'\n\nFocused deterministic jobs are required. Provider and Laya jobs are opt-in and do not affect production routing. Artifacts include machine-readable reports; provider reports never include keys or response bodies.\n';
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,table); fs.mkdirSync('summary',{recursive:true});
+          fs.writeFileSync('summary/swarm-evaluation.json',JSON.stringify({schemaVersion:1,sourceCommit:process.env.SHA,batches:rows.map(([name,outcome])=>({name,outcome})),limitations:deterministic?.limitations??[]},null,2)+'\n');
+          if(process.env.RUNTIME!=='success'||process.env.BILLING!=='success')process.exitCode=1;
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swarm-evaluation-summary
+          path: summary/swarm-evaluation.json
+          if-no-files-found: warn
