@@ -7,6 +7,12 @@ on:
       - 'infra/scripts/swarm-provider-eval*'
       - 'infra/scripts/laya-*'
       - 'workers/agents/src/script-engine/goal-*'
+      - 'workers/agents/src/script-engine/assistant-swarm-architecture.test.ts'
+      - 'workers/agents/src/communications/blackboard-*'
+      - 'workers/agents/src/communications/heartbeat-scope*'
+      - 'workers/agents/src/voice/planner-turn*'
+      - 'workers/agents/src/agent-run-session-scope*'
+      - 'workers/spaces/src/blackboard-sharing*'
       - 'workers/agents/src/shared/openrouter-usage*'
       - 'workers/agents/src/do/NaelaoAgentDO.ts'
       - 'workers/agents/src/do/decision-usage-reconciliation.test.ts'
@@ -63,6 +69,12 @@ jobs:
             src/script-engine/goal-evidence.test.ts \
             src/script-engine/goal-dag.test.ts \
             src/script-engine/goal-architecture-benchmark.test.ts \
+            src/script-engine/assistant-swarm-architecture.test.ts \
+            src/communications/blackboard-wake.test.ts \
+            src/communications/blackboard-delivery.test.ts \
+            src/communications/heartbeat-scope.test.ts \
+            src/voice/planner-turn.test.ts \
+            src/agent-run-session-scope.test.ts \
             src/script-engine/r2-workspace-cas.test.ts \
             src/shared/openrouter-usage.test.ts \
             src/do/decision-usage-reconciliation.test.ts \
@@ -97,12 +109,14 @@ jobs:
           const read=(p)=>{try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch{return null}};
           const vitest=read(`${process.env.RUNNER_TEMP}/swarm-vitest.json`), decisionClient=read(`${process.env.RUNNER_TEMP}/decision-client-vitest.json`), architecture=read(`${process.env.RUNNER_TEMP}/goal-architecture-benchmark.json`); let tap=''; try{tap=fs.readFileSync(`${process.env.RUNNER_TEMP}/provider-unit.tap`,'utf8')}catch{}
           const tapCount=(name)=>Number(new RegExp(`# ${name} (\\d+)`).exec(tap)?.[1]??0), providerPassed=tapCount('pass'), providerFailed=tapCount('fail');
-          const report={schemaVersion:1,kind:'naelao_swarm_deterministic_evaluation',sourceCommit:process.env.SOURCE_SHA,state:process.env.TEST_RESULT==='success'?'passed':'failed',dataset:'repository-authored synthetic unit fixtures',externalBenchmarkDatasetsUsed:[],batches:[{name:'swarm-runtime-and-generation-reconciliation',state:vitest?(vitest.success?'passed':'failed'):'blocked',passed:vitest?.numPassedTests??null,failed:vitest?.numFailedTests??null,skipped:vitest?.numPendingTests??null},{name:'goal-architecture-benchmark',state:architecture?.counts?.oracleCorrectRuns===architecture?.counts?.runs?'passed':'failed',runs:architecture?.counts?.runs??null,oracleCorrectRuns:architecture?.counts?.oracleCorrectRuns??null,verifiedTasks:architecture?.counts?.completedAndVerified??null,falseAcceptances:architecture?.counts?.unverifiedFalseAcceptances??null,p50Ms:architecture?.orchestrationLatencyMs?.p50??null,p95Ms:architecture?.orchestrationLatencyMs?.p95??null},{name:'decision-client-receipt-contract',state:decisionClient?(decisionClient.success?'passed':'failed'):'blocked',passed:decisionClient?.numPassedTests??null,failed:decisionClient?.numFailedTests??null,skipped:decisionClient?.numPendingTests??null},{name:'provider-harness-safety',state:providerFailed===0&&providerPassed>0?'passed':'failed',passed:providerPassed,failed:providerFailed}],limitations:['Unit and mocked service tests only; no live Cloudflare deployment, production provider call, browser acceptance, or customer data.','Performance, queueing and tenant-level service isolation are not measured by this focused suite.']};
+          const crossLayerTests=vitest?.testResults?.find(file=>file.name?.endsWith('assistant-swarm-architecture.test.ts'))?.assertionResults??[];
+          const crossLayerPassed=crossLayerTests.filter(test=>test.status==='passed').length, crossLayerFailed=crossLayerTests.filter(test=>test.status==='failed').length;
+          const report={schemaVersion:1,kind:'naelao_swarm_deterministic_evaluation',sourceCommit:process.env.SOURCE_SHA,state:process.env.TEST_RESULT==='success'?'passed':'failed',dataset:'repository-authored synthetic unit fixtures',externalBenchmarkDatasetsUsed:[],batches:[{name:'swarm-runtime-and-generation-reconciliation',state:vitest?(vitest.success?'passed':'failed'):'blocked',passed:vitest?.numPassedTests??null,failed:vitest?.numFailedTests??null,skipped:vitest?.numPendingTests??null},{name:'assistant-planner-worker-cross-layer',state:crossLayerTests.length>0&&crossLayerFailed===0?'passed':'failed',passed:crossLayerPassed,failed:crossLayerFailed},{name:'goal-architecture-benchmark',state:architecture?.counts?.oracleCorrectRuns===architecture?.counts?.runs?'passed':'failed',runs:architecture?.counts?.runs??null,oracleCorrectRuns:architecture?.counts?.oracleCorrectRuns??null,verifiedTasks:architecture?.counts?.completedAndVerified??null,falseAcceptances:architecture?.counts?.unverifiedFalseAcceptances??null,p50Ms:architecture?.orchestrationLatencyMs?.p50??null,p95Ms:architecture?.orchestrationLatencyMs?.p95??null},{name:'decision-client-receipt-contract',state:decisionClient?(decisionClient.success?'passed':'failed'):'blocked',passed:decisionClient?.numPassedTests??null,failed:decisionClient?.numFailedTests??null,skipped:decisionClient?.numPendingTests??null},{name:'provider-harness-safety',state:providerFailed===0&&providerPassed>0?'passed':'failed',passed:providerPassed,failed:providerFailed}],limitations:['Unit and mocked service tests only; no live Cloudflare deployment, production provider call, browser acceptance, or customer data.','Performance, queueing and tenant-level service isolation are not measured by this focused suite.']};
           fs.mkdirSync('swarm-reports',{recursive:true}); fs.writeFileSync('swarm-reports/deterministic.json',JSON.stringify(report,null,2)+'\n');
           try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/swarm-vitest.json`,'swarm-reports/vitest-results.json')}catch{}
           try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/decision-client-vitest.json`,'swarm-reports/decision-client-vitest-results.json')}catch{}
           try{fs.copyFileSync(`${process.env.RUNNER_TEMP}/goal-architecture-benchmark.json`,'swarm-reports/goal-architecture-benchmark.json')}catch{}
-          fs.writeFileSync('swarm-reports/deterministic.md',`# Naelao deterministic swarm evaluation\n\n- Commit: ${report.sourceCommit}\n- State: ${report.state}\n- Runtime tests: ${report.batches[0].passed??'not recorded'} passed, ${report.batches[0].failed??'not recorded'} failed\n- Architecture benchmark: ${report.batches[1].oracleCorrectRuns??'not recorded'}/${report.batches[1].runs??'not recorded'} oracle-matched runs; ${report.batches[1].verifiedTasks??'not recorded'} verified tasks; ${report.batches[1].falseAcceptances??'not recorded'} false acceptances; p50/p95 ${report.batches[1].p50Ms??'—'}/${report.batches[1].p95Ms??'—'} ms\n- Provider harness safety tests: ${report.batches[3].passed??'not recorded'} passed, ${report.batches[3].failed??'not recorded'} failed\n- Dataset: ${report.dataset}\n\n${report.limitations.map(x=>'- '+x).join('\n')}\n`);
+          fs.writeFileSync('swarm-reports/deterministic.md',`# Naelao deterministic swarm evaluation\n\n- Commit: ${report.sourceCommit}\n- State: ${report.state}\n- Runtime tests: ${report.batches[0].passed??'not recorded'} passed, ${report.batches[0].failed??'not recorded'} failed\n- Cross-layer assistant/planner/worker tests: ${report.batches[1].passed??'not recorded'} passed, ${report.batches[1].failed??'not recorded'} failed\n- Architecture benchmark: ${report.batches[2].oracleCorrectRuns??'not recorded'}/${report.batches[2].runs??'not recorded'} oracle-matched runs; ${report.batches[2].verifiedTasks??'not recorded'} verified tasks; ${report.batches[2].falseAcceptances??'not recorded'} false acceptances; p50/p95 ${report.batches[2].p50Ms??'—'}/${report.batches[2].p95Ms??'—'} ms\n- Provider harness safety tests: ${report.batches[4].passed??'not recorded'} passed, ${report.batches[4].failed??'not recorded'} failed\n- Dataset: ${report.dataset}\n\n${report.limitations.map(x=>'- '+x).join('\n')}\n`);
           JS
       - uses: actions/upload-artifact@v4
         if: always()
