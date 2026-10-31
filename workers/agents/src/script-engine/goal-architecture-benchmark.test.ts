@@ -133,12 +133,80 @@ async function runScenario(scenario: Scenario) {
   };
 }
 
+async function runGeneratedGraphStress(seed = 0x4e41454c) {
+  let randomState = seed >>> 0;
+  const random = () => {
+    randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
+    return randomState / 0x1_0000_0000;
+  };
+  const metrics = { graphs: 64, tasks: 0, dependencyEdges: 0, dependencyDispatchViolations: 0, concurrencyViolations: 0, resourceLockViolations: 0, unverifiedCompletions: 0, incorrectFailureContainment: 0, maxObservedConcurrency: 0 };
+  for (let graphIndex = 0; graphIndex < metrics.graphs; graphIndex++) {
+    const taskCount = 2 + Math.floor(random() * 7);
+    const concurrency = 1 + (graphIndex % 4);
+    const mode = graphIndex % 3;
+    const tasks: GoalTask[] = [];
+    for (let index = 0; index < taskCount; index++) {
+      const id = `g${graphIndex}-t${index}`;
+      const dependencies = index === 0 ? [] : index === 1 ? [`g${graphIndex}-t0`] : Array.from({ length: index }, (_, parent) => parent).filter(() => random() < 0.28).map(parent => `g${graphIndex}-t${parent}`);
+      tasks.push({ ...task(id, dependencies), acceptance_criteria: [CRITERION], evidence_checks: [{ criterion: CRITERION, operation: `workspace.exists:artifacts/${id}.txt` }], ...(random() < 0.55 ? { resource_keys: [`runtime.generated.${Math.floor(random() * 2)}`] } : {}) });
+    }
+    metrics.tasks += tasks.length;
+    metrics.dependencyEdges += tasks.reduce((sum, item) => sum + (item.dependencies?.length ?? 0), 0);
+    const artifacts = new Set<string>(), dispatched: string[] = [], journalHolder: { current?: GoalDagJournal } = {};
+    const activeResources = new Set<string>();
+    let active = 0, peak = 0;
+    const host: GoalDagHost = {
+      concurrency, taskBlackboardEnabled: true, verificationRequired: true,
+      workerId: id => `generated:${id}`,
+      load: async () => journalHolder.current && structuredClone(journalHolder.current),
+      save: async value => { journalHolder.current = structuredClone(value); },
+      commitDispatches: async snapshot => { journalHolder.current = structuredClone(snapshot); },
+      publish: async () => undefined,
+      launch: async (_task, id) => ({ id, ok: false }),
+      dispatch: async (goalTask, workerId) => {
+        if ((goalTask.dependencies ?? []).some(id => journalHolder.current?.tasks[id]?.status !== "completed")) metrics.dependencyDispatchViolations++;
+        for (const key of goalTask.resource_keys ?? []) {
+          if (activeResources.has(key)) metrics.resourceLockViolations++;
+          activeResources.add(key);
+        }
+        active++; peak = Math.max(peak, active); dispatched.push(goalTask.id);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        active--;
+        for (const key of goalTask.resource_keys ?? []) activeResources.delete(key);
+        const rootFailure = goalTask.id === `g${graphIndex}-t0` && mode === 0;
+        const path = goalTask.file_paths[0]!;
+        if (!rootFailure) artifacts.add(path);
+        return { acknowledged: true, result: { id: workerId, ok: !rootFailure, ...(rootFailure ? { error: "generated_worker_failure" } : { output: `generated result ${goalTask.id}` }) } };
+      },
+      recover: async () => undefined,
+      collectEvidence: async goalTask => collectGoalEvidence(goalTask.acceptance_criteria ?? [], goalTask.evidence_checks ?? [], async operation => {
+        const path = /^workspace\.exists:(.+)$/.exec(operation)?.[1];
+        return path && artifacts.has(path) ? { outcome: "passed", reference: `generated-host:${path}` } : { outcome: "uncertain", reference: "generated-host:missing" };
+      }),
+      assessEvidence: async goalTask => goalTask.id === `g${graphIndex}-t0` && mode === 1
+        ? { outcome: "uncertain", reason: "generated decision review" }
+        : { outcome: "passed", reason: "generated host evidence confirmed" },
+    };
+    const result = await executeGoalDag(tasks, host);
+    metrics.maxObservedConcurrency = Math.max(metrics.maxObservedConcurrency, peak);
+    if (peak > concurrency) metrics.concurrencyViolations++;
+    if (Object.values(result.tasks).some(state => state.status === "completed" && state.verification?.outcome !== "passed")) metrics.unverifiedCompletions++;
+    const root = result.tasks[`g${graphIndex}-t0`];
+    const expectedRootStatus = mode === 0 ? "failed" : mode === 1 ? "needs_review" : "completed";
+    const firstChild = result.tasks[`g${graphIndex}-t1`];
+    if (root?.status !== expectedRootStatus || (mode !== 2 && firstChild?.status !== "blocked") || (mode !== 2 && dispatched.includes(`g${graphIndex}-t1`))) metrics.incorrectFailureContainment++;
+    if (tasks.some(item => ["pending", "running", "verifying"].includes(result.tasks[item.id]?.status ?? "missing"))) metrics.incorrectFailureContainment++;
+  }
+  return metrics;
+}
+
 describe("goal architecture benchmark", () => {
   it("measures verified completion, failure containment, recovery and dispatch isolation", async () => {
     const runs = [];
     for (let repeat = 0; repeat < 3; repeat++) {
       for (const scenario of scenarios(String(repeat))) runs.push(await runScenario(scenario));
     }
+    const generatedGraphStress = await runGeneratedGraphStress();
     const states = runs.flatMap(run => Object.values(run.tasks));
     const durations = runs.map(run => run.durationMs);
     const report = {
@@ -162,6 +230,7 @@ describe("goal architecture benchmark", () => {
         unknownEffectsHeldForReview: runs.reduce((sum, run) => sum + run.unknownRecoveries, 0),
       },
       concurrency: { configuredLimit: 2, observedPeak: Math.max(...runs.map(run => run.peakActive)) },
+      generatedGraphStress,
       orchestrationLatencyMs: { p50: percentile(durations, 0.5), p95: percentile(durations, 0.95), max: Number(Math.max(...durations).toFixed(3)) },
       scenarioResults: runs.map(run => ({ name: run.name, expectedStatusesMatched: run.expectedCorrect, durationMs: Number(run.durationMs.toFixed(3)) })),
       limitations: [
@@ -180,6 +249,11 @@ describe("goal architecture benchmark", () => {
     expect(report.counts.recoveredLostAcknowledgements).toBe(3);
     expect(report.counts.unknownEffectsHeldForReview).toBe(3);
     expect(report.concurrency.observedPeak).toBe(2);
+    expect(generatedGraphStress.dependencyDispatchViolations).toBe(0);
+    expect(generatedGraphStress.concurrencyViolations).toBe(0);
+    expect(generatedGraphStress.resourceLockViolations).toBe(0);
+    expect(generatedGraphStress.unverifiedCompletions).toBe(0);
+    expect(generatedGraphStress.incorrectFailureContainment).toBe(0);
   });
 
   it.skipIf(process.env.NAELAO_RUN_LIVE_ARCH_BENCHMARK !== "true")("runs real provider plans through the production DAG validator, coordinator and host evidence verifier", async () => {
