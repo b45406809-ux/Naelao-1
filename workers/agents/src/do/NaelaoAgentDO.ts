@@ -1788,6 +1788,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_sub_agents_parent ON sub_agents(parent_run_id)`);
+    // Keep the durable goal state and dispatch intent in SQLite so their transition can be
+    // committed in one transaction before any worker-side effect is attempted.
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS goal_dag_journals (
+      journal_key TEXT PRIMARY KEY, journal_json TEXT NOT NULL, updated_at INTEGER NOT NULL
+    )`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS goal_dispatch_outbox (
+      dispatch_id TEXT PRIMARY KEY, parent_run_id TEXT NOT NULL, task_id TEXT NOT NULL, worker_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('intent','delivering','acknowledged','uncertain','review')),
+      attempt INTEGER, workspace_branch TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_goal_dispatch_outbox_run ON goal_dispatch_outbox(parent_run_id,status,updated_at)`);
     // Incremental progress (spec: a parent shouldn't have to wait for a whole child run to
     // finish to see it's alive). Written by the CHILD via a cross-DO callback while `status`
     // is still 'running' — pollable by an admin/dashboard via GET /sub-agents?parent_run_id=
@@ -3796,14 +3807,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               },
             } : {}),
             workerId: taskId,
-            load: () => this.ctx.storage.get<GoalDagJournal>(key),
+            load: async () => {
+              const row = this.ctx.storage.sql.exec<{ journal_json: string }>("SELECT journal_json FROM goal_dag_journals WHERE journal_key=?", key).toArray()[0];
+              if (row) {
+                try { return JSON.parse(row.journal_json) as GoalDagJournal; } catch { throw new Error("goal_journal_corrupt"); }
+              }
+              return this.ctx.storage.get<GoalDagJournal>(key);
+            },
             save: async journal => {
-              await this.ctx.storage.put(key, structuredClone(journal));
+              const snapshot = JSON.stringify(journal);
+              this.ctx.storage.transactionSync(() => this.ctx.storage.sql.exec("INSERT INTO goal_dag_journals(journal_key,journal_json,updated_at) VALUES(?,?,?) ON CONFLICT(journal_key) DO UPDATE SET journal_json=excluded.journal_json,updated_at=excluded.updated_at", key, snapshot, Date.now()));
+              await publishCoordinationSummary(journal);
+            },
+            commitDispatches: async (journal, dispatches) => {
+              const snapshot = JSON.stringify(journal);
+              const now = Date.now();
+              this.ctx.storage.transactionSync(() => {
+                this.ctx.storage.sql.exec("INSERT INTO goal_dag_journals(journal_key,journal_json,updated_at) VALUES(?,?,?) ON CONFLICT(journal_key) DO UPDATE SET journal_json=excluded.journal_json,updated_at=excluded.updated_at", key, snapshot, now);
+                for (const item of dispatches) this.ctx.storage.sql.exec("INSERT OR IGNORE INTO goal_dispatch_outbox(dispatch_id,parent_run_id,task_id,worker_id,status,created_at,updated_at) VALUES(?,?,?,?,'intent',?,?)", item.dispatchId, parentRunId, item.task.id, item.workerId, now, now);
+              });
               await publishCoordinationSummary(journal);
             },
             recover: async (workerId) => {
               const recovered = await this.receiveFromSubAgentImpl(workerId) as { status?: string; output?: unknown; error?: string };
-              if (recovered.status !== "done" && recovered.status !== "failed") return undefined;
+              if (recovered.status !== "done" && recovered.status !== "failed") {
+                this.ctx.storage.transactionSync(() => this.ctx.storage.sql.exec("UPDATE goal_dispatch_outbox SET status='review',updated_at=? WHERE worker_id=? AND status IN ('intent','delivering','uncertain')", Date.now(), workerId));
+                return undefined;
+              }
+              const worker = this.ctx.storage.sql.exec<{ attempt: number; workspace_branch: string | null }>("SELECT attempt,workspace_branch FROM sub_agents WHERE id=?", workerId).toArray()[0];
+              this.ctx.storage.transactionSync(() => this.ctx.storage.sql.exec("UPDATE goal_dispatch_outbox SET status='acknowledged',attempt=COALESCE(?,attempt),workspace_branch=COALESCE(?,workspace_branch),updated_at=? WHERE worker_id=? AND status IN ('intent','delivering','uncertain')", worker?.attempt ?? null, worker?.workspace_branch ?? null, Date.now(), workerId));
               return { id: workerId, ok: recovered.status === "done", ...(recovered.status === "failed" ? { status: "outcome_uncertain" } : {}), ...(recovered.output !== undefined ? { output: recovered.output } : {}), ...(recovered.error ? { error: recovered.error } : {}) };
             },
             fix: async (task, workerId, failure) => {
@@ -3934,19 +3966,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               return !result.ok && !result.status && !result.failure_confirmed ? { ...result, status: "outcome_uncertain" } : result;
             },
             dispatch: async (task, workerId, handoffs, dispatchId) => {
+              const outbox = this.ctx.storage.sql.exec<{ status: string; worker_id: string }>("SELECT status,worker_id FROM goal_dispatch_outbox WHERE dispatch_id=?", dispatchId).toArray()[0];
+              if (!outbox || outbox.worker_id !== workerId || outbox.status === "uncertain" || outbox.status === "review" || outbox.status === "delivering") return { acknowledged: false };
+              const updateOutbox = (status: "delivering" | "acknowledged" | "uncertain" | "review", attempt?: number, branch?: string | null) => this.ctx.storage.transactionSync(() => this.ctx.storage.sql.exec("UPDATE goal_dispatch_outbox SET status=?,attempt=COALESCE(?,attempt),workspace_branch=COALESCE(?,workspace_branch),updated_at=? WHERE dispatch_id=? AND worker_id=?", status, attempt ?? null, branch ?? null, Date.now(), dispatchId, workerId));
               const existing = this.ctx.storage.sql.exec("SELECT attempt,parent_run_id,workspace_branch,status FROM sub_agents WHERE id=?", workerId).toArray() as Array<{ attempt: number; parent_run_id: string; workspace_branch: string | null; status: string }>;
               const prior = existing[0];
-            const expectedBranch = prior?.workspace_branch ?? null;
+              const expectedBranch = prior?.workspace_branch ?? null;
               if (prior) {
                 const recovered = await this.receiveFromSubAgentImpl(workerId) as { status?: string; output?: unknown; error?: string };
-                if (recovered.status === "done" || recovered.status === "failed") return { acknowledged: true, result: { id: workerId, ok: recovered.status === "done", ...(recovered.output !== undefined ? { output: recovered.output } : {}), ...(recovered.error ? { error: recovered.error } : {}) } };
+                if (recovered.status === "done" || recovered.status === "failed") {
+                  updateOutbox("acknowledged", prior.attempt, prior.workspace_branch);
+                  return { acknowledged: true, result: { id: workerId, ok: recovered.status === "done", ...(recovered.output !== undefined ? { output: recovered.output } : {}), ...(recovered.error ? { error: recovered.error } : {}) } };
+                }
+                updateOutbox("review", prior.attempt, prior.workspace_branch);
                 return { acknowledged: false };
               }
-              const intentKey = `goal-dispatch:${dispatchId}`;
-              const existingIntent = await this.ctx.storage.get<{ status: string; workerId: string }>(intentKey);
-              if (existingIntent && existingIntent.workerId !== workerId) throw new Error("goal_dispatch_identity_conflict");
-              if (existingIntent?.status === "uncertain") return { acknowledged: false };
-              await this.ctx.storage.put(intentKey, { status: "intent", workerId, parentRunId, taskId: task.id, createdAt: Date.now() });
+              updateOutbox("delivering");
               try {
                 const receipt = await hooks.spawnSubAgent!({ tasks: [{
                   sub_agent_id: workerId, file_paths: task.file_paths,
@@ -3955,14 +3990,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
                   ...(task.runtime_capability ? { runtime_capability: task.runtime_capability } : {}), budget_tokens: task.budget_tokens,
                 }] }) as unknown as { results?: Array<{ id: string; ok: boolean; output?: unknown; error?: string; status?: string; failure_confirmed?: boolean }> };
                 const result = receipt.results?.[0];
-                if (!result) return { acknowledged: false };
+                if (!result) { updateOutbox("uncertain"); return { acknowledged: false }; }
                 const acknowledgedAttempt = this.ctx.storage.sql.exec("SELECT attempt FROM sub_agents WHERE id=?", workerId).toArray() as Array<{ attempt: number }>;
-                await this.ctx.storage.put(intentKey, { status: "acknowledged", workerId, attempt: acknowledgedAttempt[0]?.attempt ?? 1, branch: expectedBranch, acknowledgedAt: Date.now() });
+                const workerRecord = this.ctx.storage.sql.exec<{ workspace_branch: string | null }>("SELECT workspace_branch FROM sub_agents WHERE id=?", workerId).toArray()[0];
+                updateOutbox("acknowledged", acknowledgedAttempt[0]?.attempt ?? 1, workerRecord?.workspace_branch ?? expectedBranch);
                 return { acknowledged: true, result: !result.ok && !result.status && !result.failure_confirmed ? { ...result, status: "outcome_uncertain" } : result };
               } catch {
                 const recovered = await this.receiveFromSubAgentImpl(workerId) as { status?: string; output?: unknown; error?: string };
-                if (recovered.status === "done" || recovered.status === "failed") return { acknowledged: true, result: { id: workerId, ok: recovered.status === "done", ...(recovered.output !== undefined ? { output: recovered.output } : {}), ...(recovered.error ? { error: recovered.error } : {}) } };
-                await this.ctx.storage.put(intentKey, { status: "uncertain", workerId, uncertainAt: Date.now() });
+                if (recovered.status === "done" || recovered.status === "failed") {
+                  const workerRecord = this.ctx.storage.sql.exec<{ attempt: number; workspace_branch: string | null }>("SELECT attempt,workspace_branch FROM sub_agents WHERE id=?", workerId).toArray()[0];
+                  updateOutbox("acknowledged", workerRecord?.attempt, workerRecord?.workspace_branch);
+                  return { acknowledged: true, result: { id: workerId, ok: recovered.status === "done", ...(recovered.output !== undefined ? { output: recovered.output } : {}), ...(recovered.error ? { error: recovered.error } : {}) } };
+                }
+                updateOutbox("uncertain");
                 return { acknowledged: false };
               }
             },

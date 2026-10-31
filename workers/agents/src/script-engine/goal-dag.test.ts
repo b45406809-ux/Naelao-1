@@ -286,6 +286,25 @@ describe("durable goal DAG", () => {
     await executeGoalDag([task("a")], resumed.host);
     expect(resumed.host.dispatch).not.toHaveBeenCalled();
   });
+  it("commits the running journal and dispatch outbox together before delivery", async () => {
+    const f = fixture();
+    const order: string[] = [];
+    f.host.commitDispatches = vi.fn(async (journal, dispatches) => {
+      expect(journal.tasks.a).toMatchObject({ status: "running", dispatchId: "dispatch:worker:a:1" });
+      expect(dispatches).toEqual([{ task: expect.objectContaining({ id: "a" }), workerId: "worker:a", dispatchId: "dispatch:worker:a:1" }]);
+      order.push("atomic-commit");
+    });
+    f.host.dispatch = vi.fn(async (_task, id) => { order.push("deliver"); return { acknowledged: true, result: { id, ok: true } }; });
+    await executeGoalDag([task("a")], f.host);
+    expect(order).toEqual(["atomic-commit", "deliver"]);
+  });
+  it("does not deliver when the atomic journal and outbox commit fails", async () => {
+    const f = fixture();
+    f.host.commitDispatches = vi.fn(async () => { throw new Error("storage offline"); });
+    f.host.dispatch = vi.fn();
+    await expect(executeGoalDag([task("a")], f.host)).rejects.toThrow("storage offline");
+    expect(f.host.dispatch).not.toHaveBeenCalled();
+  });
   it("recovers a lost dispatch acknowledgement without creating another attempt", async () => {
     const f = fixture();
     f.host.dispatch = vi.fn(async () => ({ acknowledged: false }));

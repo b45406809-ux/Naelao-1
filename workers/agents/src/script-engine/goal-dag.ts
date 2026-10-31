@@ -24,6 +24,8 @@ export interface GoalHandoff { taskId: string; workerId: string; output: string;
 export interface GoalDagHost {
   load(): Promise<GoalDagJournal | undefined>;
   save(journal: GoalDagJournal): Promise<void>;
+  /** Atomically persist the running task states and their dispatch outbox intents. */
+  commitDispatches?(journal: GoalDagJournal, dispatches: readonly { task: GoalTask; workerId: string; dispatchId: string }[]): Promise<void>;
   launch(task: GoalTask, workerId: string, handoffs: GoalHandoff[]): Promise<GoalWorkerResult>;
   dispatch?(task: GoalTask, workerId: string, handoffs: GoalHandoff[], dispatchId: string): Promise<{ result?: GoalWorkerResult; acknowledged: boolean }>;
   recover(workerId: string): Promise<GoalWorkerResult | undefined>;
@@ -229,7 +231,13 @@ export async function executeGoalDag(tasks: GoalTask[], host: GoalDagHost): Prom
       journal.tasks[task.id]!.status = "running";
       for (const key of task.resource_keys ?? []) activeResources.add(key);
     }
-    if (dispatch.length) await save();
+    if (dispatch.length) {
+      const snapshot = structuredClone(journal);
+      if (host.commitDispatches) {
+        saveTail = saveTail.then(() => host.commitDispatches!(snapshot, dispatch.map(task => ({ task, workerId: journal.tasks[task.id]!.workerId, dispatchId: journal.tasks[task.id]!.dispatchId! }))));
+        await saveTail;
+      } else await save();
+    }
     for (const task of dispatch) {
       const execution = (async () => {
       const state = journal.tasks[task.id]!;
