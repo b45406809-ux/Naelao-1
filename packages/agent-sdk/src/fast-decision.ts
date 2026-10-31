@@ -339,9 +339,11 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
   }
 
   private async requestMany(questions: Record<string, Record<string, unknown>>, state: SystemOneState): Promise<{ answers: Record<string, SystemOneAnswer>; meta: Omit<FastDecisionMeta, "policyCode"> }> {
-    if (this.billing) throw new Error("system_one_billed_batch_unavailable");
     const started = Date.now();
     const model = this.modelFor(questions, state);
+    const reservation = this.billing ? await this.billing.reserve({ model, requestBytes: new TextEncoder().encode(JSON.stringify({ model, state, questions })).byteLength }) : undefined;
+    let settlementStarted = false;
+    try {
     const { response, signal } = await this.post(model, state, questions);
     if (!response?.ok) {
       throw new Error(`system_one_http_${response?.status ?? "network"}`);
@@ -355,7 +357,16 @@ export class SystemOneDecisionClient implements FastDecisionGateway {
       answers[key] = answer as SystemOneAnswer;
     }
     const usageMeta = raw.usage === undefined ? {} : { usage: usage(raw.usage) };
+    if (reservation !== undefined) {
+      if (!usageMeta.usage) throw new Error("system_one_invalid_usage");
+      settlementStarted = true;
+      await this.billing!.settle(reservation, { status: "confirmed", inputTokens: usageMeta.usage.inputTokens, outputTokens: usageMeta.usage.outputTokens });
+    }
     return { answers, meta: { provider: this.provider, ...(typeof raw.model === "string" ? { model: raw.model } : { model }), latencyMs: Date.now() - started, ...usageMeta } };
+    } catch (error) {
+      if (reservation !== undefined && !settlementStarted) await this.billing!.settle(reservation, { status: "uncertain" });
+      throw error;
+    }
   }
 
   async choice<T extends string>(input: { state: SystemOneState; instructions: SystemOneInstructions; criteria: Readonly<Record<T, SystemOneInstructions | null>>; policyCode: string }): Promise<ChoiceDecision<T>> {
