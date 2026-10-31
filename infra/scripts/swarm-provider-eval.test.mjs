@@ -131,6 +131,9 @@ test("GroqCloud uses its own API endpoint and rotates only after access denial",
     if (init.headers?.authorization === "Bearer key-one") return new Response("", { status: 401 });
     const choice = expectedDecisionFromRequest(init);
     const request = JSON.parse(init.body);
+    assert.equal(request.max_completion_tokens, 128);
+    assert.equal(request.reasoning_effort, "low");
+    assert.equal(Object.hasOwn(request, "max_tokens"), false);
     assert.deepEqual(request.response_format, { type: "json_object" });
     return Response.json({ choices: [{ message: { content: JSON.stringify({ decision: choice }) } }], usage: { prompt_tokens: 10, completion_tokens: 4 } });
   };

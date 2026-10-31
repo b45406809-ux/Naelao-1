@@ -124,7 +124,7 @@ async function callGroq(key, model, testCase, fetcher, deadline) {
     const response = await fetcher("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST", signal: controller.signal,
       headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: [{ role: "user", content: promptFor(testCase) }], max_tokens: MAX_OUTPUT_TOKENS, temperature: 0, response_format: { type: "json_object" } }),
+      body: JSON.stringify({ model, messages: [{ role: "user", content: promptFor(testCase) }], max_completion_tokens: 128, reasoning_effort: "low", response_format: { type: "json_object" } }),
     });
     if (!response.ok) return { failure: classifyStatus(response.status), httpStatus: response.status, latencyMs: Math.round(performance.now() - start) };
     const body = await response.json();
