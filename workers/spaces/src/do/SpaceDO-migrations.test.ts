@@ -158,6 +158,7 @@ describe("SpaceDO migration replay", () => {
     applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS.filter(migration => migration.version < 106));
     storage.sql.exec("INSERT INTO spaces(id,name,space_type,created_at) VALUES(?,?,?,?)", "s-1", "Space", "team", "2026-10-31");
     storage.sql.exec("INSERT INTO tasks(id,space_id,title) VALUES(?,?,?)", "task-legacy", "s-1", "legacy task");
+    storage.sql.exec("INSERT INTO project_spend_reservations(reservation_id,project_id,run_id,day,credits,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,'held',?,?,?)", "legacy-r", "p-1", "run-1", "2026-10-31", 5, "2099-01-01", "now", "now");
     const taskColumnsBefore = storage.sql.exec<{ name: string }>("SELECT name FROM pragma_table_info('tasks')").toArray().map(row => row.name);
     expect(taskColumnsBefore).not.toContain("verification_status");
     applyMigrations(migrationStorage, SPACE_DO_MIGRATIONS);
@@ -167,7 +168,7 @@ describe("SpaceDO migration replay", () => {
     expect(storage.sql.exec<{ verification_status: string | null }>("SELECT verification_status FROM tasks WHERE id='task-legacy'").toArray()).toEqual([{ verification_status: null }]);
     const reservationSql = storage.sql.exec<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='project_spend_reservations'").toArray()[0]?.sql ?? "";
     expect(reservationSql).toContain("'uncertain'");
-    storage.sql.exec("INSERT INTO project_spend_reservations(reservation_id,project_id,run_id,day,credits,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,'held',?,?,?)", "legacy-r", "p-1", "run-1", "2026-10-31", 5, "2099-01-01", "now", "now");
+    expect(storage.sql.exec<{status:string;credits:number}>("SELECT status,credits FROM project_spend_reservations WHERE reservation_id='legacy-r'").toArray()).toEqual([{status:"held",credits:5}]);
     storage.sql.exec("UPDATE project_spend_reservations SET status='uncertain' WHERE reservation_id='legacy-r'");
     expect(storage.sql.exec<{status:string}>("SELECT status FROM project_spend_reservations WHERE reservation_id='legacy-r'").toArray()).toEqual([{status:"uncertain"}]);
     storage.sql.exec("INSERT INTO project_decision_uncertainties(reservation_id,project_id,marked_at) VALUES(?,?,?)", "r-1", "p-1", "2026-10-31");
