@@ -45,6 +45,33 @@ function classifyStatus(status) {
   return "provider_error";
 }
 
+/** A deliberately allowlisted view for logs. Never log provider request/response bodies. */
+export function safeProviderMetrics(result) {
+  return {
+    provider: result.provider,
+    model: result.model,
+    state: result.state,
+    reason: result.reason,
+    requests: result.requests,
+    inferenceRequests: result.inferenceRequests,
+    validResponseRate: result.validResponseRate,
+    accuracy: result.accuracy,
+    strictAccuracy: result.strictAccuracy,
+    falseAcceptanceCount: result.falseAcceptanceCount,
+    falseRejectionCount: result.falseRejectionCount,
+    confusionMatrix: result.confusionMatrix,
+    categoryMetrics: result.categoryMetrics,
+    latencyP50Ms: result.latencyP50Ms,
+    latencyP95Ms: result.latencyP95Ms,
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+    nominalPaidCost: result.nominalPaidCost,
+    cases: result.cases.map(({ id, state, decision, expected, failure, httpStatus, keySlot, latencyMs, inputTokens, outputTokens }) => ({
+      id, state, decision, expected, failure, httpStatus, keySlot, latencyMs, inputTokens, outputTokens,
+    })),
+  };
+}
+
 function parseChoice(text) {
   try {
     const value = JSON.parse(text.trim());
@@ -80,7 +107,7 @@ async function callGemini(key, model, testCase, fetcher, deadline) {
       headers: { "content-type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({ contents: [{ parts: [{ text: promptFor(testCase) }] }], generationConfig: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0, responseMimeType: "application/json" } }),
     });
-    if (!response.ok) return { failure: classifyStatus(response.status), latencyMs: Math.round(performance.now() - start) };
+    if (!response.ok) return { failure: classifyStatus(response.status), httpStatus: response.status, latencyMs: Math.round(performance.now() - start) };
     const body = await response.json();
     const text = body?.candidates?.[0]?.content?.parts?.map(part => typeof part.text === "string" ? part.text : "").join("") ?? "";
     return { decision: parseChoice(text), latencyMs: Math.round(performance.now() - start), inputTokens: Number(body?.usageMetadata?.promptTokenCount) || null, outputTokens: Number(body?.usageMetadata?.candidatesTokenCount) || null };
@@ -99,7 +126,7 @@ async function callGroq(key, model, testCase, fetcher, deadline) {
       headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
       body: JSON.stringify({ model, messages: [{ role: "user", content: promptFor(testCase) }], max_tokens: MAX_OUTPUT_TOKENS, temperature: 0, response_format: { type: "json_object" } }),
     });
-    if (!response.ok) return { failure: classifyStatus(response.status), latencyMs: Math.round(performance.now() - start) };
+    if (!response.ok) return { failure: classifyStatus(response.status), httpStatus: response.status, latencyMs: Math.round(performance.now() - start) };
     const body = await response.json();
     return { decision: parseChoice(body?.choices?.[0]?.message?.content ?? ""), latencyMs: Math.round(performance.now() - start), inputTokens: Number(body?.usage?.prompt_tokens) || null, outputTokens: Number(body?.usage?.completion_tokens) || null };
   } catch (error) {
@@ -154,7 +181,7 @@ async function evaluateProvider({ name, keys, model, enabled, freeConfirmed, res
     if (callResult.outputTokens != null) result.outputTokens += callResult.outputTokens;
     if (callResult.decision == null) {
       result.abstentions++;
-      result.cases.push({ id: testCase.id, state: failure ? "failed" : "invalid_response", failure: failure || null, keySlot: keyIndex + 1, latencyMs: callResult.latencyMs ?? null, inputTokens: callResult.inputTokens ?? null, outputTokens: callResult.outputTokens ?? null });
+      result.cases.push({ id: testCase.id, state: failure ? "failed" : "invalid_response", failure: failure || null, httpStatus: callResult.httpStatus ?? null, keySlot: keyIndex + 1, latencyMs: callResult.latencyMs ?? null, inputTokens: callResult.inputTokens ?? null, outputTokens: callResult.outputTokens ?? null });
     } else {
       result.cases.push({ id: testCase.id, state: "completed", decision: callResult.decision, expected: testCase.expected, keySlot: keyIndex + 1, latencyMs: callResult.latencyMs, inputTokens: callResult.inputTokens, outputTokens: callResult.outputTokens });
     }
@@ -226,6 +253,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
   console.log(`configured key slots (Gemini/GroqCloud): ${report.credentialPresence.geminiSlots}/${report.credentialPresence.groqcloudSlots}`);
-  for (const result of report.results) console.log(`${result.provider}: ${result.state} (${result.reason ?? "complete"}; requests=${result.requests})`);
+  for (const result of report.results) console.log(`provider_metrics=${JSON.stringify(safeProviderMetrics(result))}`);
   console.log(`report=${outputPath}`);
 }

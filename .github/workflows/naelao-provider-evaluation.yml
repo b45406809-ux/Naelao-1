@@ -56,7 +56,11 @@ jobs:
           if (!report) lines.push('Evaluation report was not produced.');
           else {
             lines.push('| Provider / model | State | Quality outcome | Inference calls | Valid response | Valid accuracy | Strict accuracy | False accepts | p50 / p95 ms | Est. paid $ / 1k cases |', '|---|---:|---|---:|---:|---:|---:|---:|---:|---:|');
-            for (const result of report.results) lines.push(`| ${result.provider} / ${result.model ?? 'unconfigured'} | ${result.state} | ${result.qualityOutcome} | ${result.inferenceRequests} | ${fmt(result.validResponseRate)} | ${fmt(result.accuracy)} | ${fmt(result.strictAccuracy)} | ${result.falseAcceptanceCount} | ${result.latencyP50Ms ?? '—'} / ${result.latencyP95Ms ?? '—'} | ${result.nominalPaidCost?.estimatedUsdPer1000Cases ?? '—'} |`);
+            for (const result of report.results) {
+              lines.push(`| ${result.provider} / ${result.model ?? 'unconfigured'} | ${result.state} | ${result.qualityOutcome} | ${result.inferenceRequests} | ${fmt(result.validResponseRate)} | ${fmt(result.accuracy)} | ${fmt(result.strictAccuracy)} | ${result.falseAcceptanceCount} | ${result.latencyP50Ms ?? '—'} / ${result.latencyP95Ms ?? '—'} | ${result.nominalPaidCost?.estimatedUsdPer1000Cases ?? '—'} |`);
+              lines.push('', `**${result.provider} case outcomes**`, '', '| Case | Expected | Decision | State | Failure / HTTP | Latency ms | Tokens in/out |', '|---|---|---|---|---|---:|---:|');
+              for (const item of result.cases) lines.push(`| ${item.id} | ${item.expected ?? '—'} | ${item.decision ?? '—'} | ${item.state} | ${item.failure ?? '—'}${item.httpStatus ? ` / ${item.httpStatus}` : ''} | ${item.latencyMs ?? '—'} | ${item.inputTokens ?? '—'} / ${item.outputTokens ?? '—'} |`);
+            }
             lines.push('', `Dataset: ${report.caseCount} synthetic cases. Model discovery requests are reported separately from inference. Price figures are paid-rate estimates from ${report.pricingSnapshotDate}; confirmed free-tier usage is not charged at these rates. Results are advisory and are not production acceptance.`);
           }
           function fmt(value) { return value == null ? '—' : `${(value * 100).toFixed(1)}%`; }

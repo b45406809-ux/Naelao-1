@@ -2,6 +2,7 @@ name: Apply Gemini batch patch
 
 on:
   push:
+    branches: [work, Mcbt5s-Backup-2]
     paths:
       - "repomix/patches/batch-*.patch"
   workflow_dispatch:

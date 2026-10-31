@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CASES, DEFAULT_GROQ_EVAL_MODEL, parseKeys, runProviderEvaluation, safeCredentialSummary } from "./swarm-provider-eval.mjs";
+import { CASES, DEFAULT_GROQ_EVAL_MODEL, parseKeys, runProviderEvaluation, safeCredentialSummary, safeProviderMetrics } from "./swarm-provider-eval.mjs";
 
 function expectedDecisionFromRequest(init) {
   const request = JSON.parse(init.body);
@@ -75,6 +75,23 @@ test("provider response contents and credential slots do not leak into errors or
   assert.equal(result.results[0].categoryMetrics.length, 8);
   assert.equal(JSON.stringify(result).includes("secret-key"), false);
   assert.equal(JSON.stringify(result).includes("private-response"), false);
+  assert.equal(JSON.stringify(safeProviderMetrics(result.results[0])).includes("private-response"), false);
+  assert.equal(JSON.stringify(safeProviderMetrics(result.results[0])).includes("not-json"), false);
+});
+
+test("provider diagnostics preserve only allowlisted case metrics and HTTP status", async () => {
+  const fetcher = async (url) => {
+    if (String(url).endsWith("/v1beta/models")) return Response.json({ models: [{ name: "models/gemini-3.5-flash-lite", supportedGenerationMethods: ["generateContent"] }] });
+    return new Response(JSON.stringify({ error: { message: "private provider detail" } }), { status: 400 });
+  };
+  const result = await runProviderEvaluation({ env: { GEMINI_API_KEY: "private-key", RUN_GEMINI_FREE_EVAL: "true", GEMINI_FREE_TIER_CONFIRMED: "true" }, fetcher });
+  const safe = safeProviderMetrics(result.results[0]);
+  assert.equal(safe.cases[0].failure, "provider_error");
+  assert.equal(safe.cases[0].httpStatus, 400);
+  assert.equal(Object.hasOwn(safe.cases[0], "prompt"), false);
+  assert.equal(Object.hasOwn(safe.cases[0], "response"), false);
+  assert.equal(JSON.stringify(safe).includes("private provider detail"), false);
+  assert.equal(JSON.stringify(safe).includes("private-key"), false);
 });
 
 test("complete evaluation reports strict quality, confusion counts and latency separately from transport completion", async () => {
