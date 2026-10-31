@@ -1,0 +1,72 @@
+name: Naelao opt-in live model evaluation
+
+on:
+  push:
+    tags:
+      - 'provider-eval-*'
+
+permissions:
+  contents: read
+
+jobs:
+  free-tier-model-evaluation:
+    name: Bounded Gemini and GroqCloud evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mask provider keys and record secret presence only
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const parse = (value = '') => [...new Set(value.split(',').map(item => item.trim()).filter(Boolean))];
+          const gemini = parse(process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY);
+          const groq = parse(process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY);
+          for (const key of [...gemini, ...groq]) process.stdout.write(`::add-mask::${key}\n`);
+          fs.writeFileSync('provider-presence.json', JSON.stringify({ geminiSlots: gemini.length, groqcloudSlots: groq.length, keyValuesLogged: false }) + '\n');
+          JS
+      - name: Run bounded synthetic provider comparison
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          RUN_GEMINI_FREE_EVAL: 'true'
+          RUN_GROQ_FREE_EVAL: 'true'
+          GEMINI_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_TIER_CONFIRMED: 'true'
+          GROQ_FREE_MODEL_ID: openai/gpt-oss-20b
+          SWARM_PROVIDER_REPORT: provider-eval.json
+        run: node infra/scripts/swarm-provider-eval.mjs
+      - name: Publish measured metrics
+        if: always()
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          let report;
+          try { report = JSON.parse(fs.readFileSync('provider-eval.json', 'utf8')); }
+          catch { report = null; }
+          const lines = ['## Naelao live model evaluation', '', `Commit: \`${process.env.GITHUB_SHA}\``, `Tag: \`${process.env.GITHUB_REF_NAME}\``, ''];
+          if (!report) lines.push('Evaluation report was not produced.');
+          else {
+            lines.push('| Provider / model | State | Quality outcome | Inference calls | Valid response | Valid accuracy | Strict accuracy | False accepts | p50 / p95 ms | Est. paid $ / 1k cases |', '|---|---:|---|---:|---:|---:|---:|---:|---:|---:|');
+            for (const result of report.results) lines.push(`| ${result.provider} / ${result.model ?? 'unconfigured'} | ${result.state} | ${result.qualityOutcome} | ${result.inferenceRequests} | ${fmt(result.validResponseRate)} | ${fmt(result.accuracy)} | ${fmt(result.strictAccuracy)} | ${result.falseAcceptanceCount} | ${result.latencyP50Ms ?? '—'} / ${result.latencyP95Ms ?? '—'} | ${result.nominalPaidCost?.estimatedUsdPer1000Cases ?? '—'} |`);
+            lines.push('', `Dataset: ${report.caseCount} synthetic cases. Model discovery requests are reported separately from inference. Price figures are paid-rate estimates from ${report.pricingSnapshotDate}; confirmed free-tier usage is not charged at these rates. Results are advisory and are not production acceptance.`);
+          }
+          function fmt(value) { return value == null ? '—' : `${(value * 100).toFixed(1)}%`; }
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swarm-live-provider-evaluation
+          path: |
+            provider-eval.json
+            provider-presence.json
+          if-no-files-found: warn
